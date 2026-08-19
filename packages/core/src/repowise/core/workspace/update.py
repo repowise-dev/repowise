@@ -11,13 +11,15 @@ import json as _json
 import logging
 import sqlite3
 import subprocess
-import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from repowise.core.workspace.extractors.service_boundary import ServiceBoundary
 
 # Per-repo update lock — the shared single-flight guard (one implementation
 # for the CLI update command and this workspace updater, which used to carry
@@ -25,12 +27,18 @@ from typing import Any
 # bypassing the CLI lock acquisition in update_cmd, so workspace updates are
 # themselves single-flight per repo.
 from repowise.core.update_lock import (
+    lock_age_seconds as _lock_age_seconds,
+)
+from repowise.core.update_lock import (
     release_update_lock as _release_lock,
 )
 from repowise.core.update_lock import (
     try_acquire_update_lock as _try_acquire_lock,
 )
 
+from ..docs_mode import docs_mode_state_fields
+from ..ingestion.change_detector import has_working_tree_changes
+from ..pipeline.phase_timing import PhaseTimingRecorder
 from .config import WorkspaceConfig
 
 _log = logging.getLogger("repowise.workspace.update")
@@ -74,6 +82,10 @@ class RepoUpdateResult:
     alias: str
     updated: bool  # True if an update was performed
     skipped_reason: str | None = None  # "up_to_date", "missing_directory", etc.
+    # How long the winning update had held the lock, when this repo deferred to
+    # one. Carried on the result because the caller reports the deferral and
+    # the age is the part that tells a slow update apart from a wedged one.
+    lock_age_seconds: float | None = None
     file_count: int = 0
     symbol_count: int = 0
     error: str | None = None
@@ -82,6 +94,12 @@ class RepoUpdateResult:
     # KG; None means the persisted block is still current. State-file writes
     # stay with the caller (_update_one), so the block rides on the result.
     kg_state: dict[str, Any] | None = None
+    # Repo-relative paths this run indexed from the working tree rather than
+    # from a commit. Persisted as state.json "working_tree_paths" so the next
+    # run can tell which of them have since been reverted or deleted — working
+    # tree state has no ``last_sync_commit`` to diff against. None on the
+    # commit-anchored path, which leaves the stored list alone.
+    working_tree_paths: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +159,41 @@ def commit_exists(repo_path: Path, sha: str) -> bool:
         return result.returncode == 0
     except Exception:
         return False
+
+
+def clear_stale_update_pending(repo_path: Path, indexed_head: str | None) -> None:
+    """Drop ``.repowise/.update.pending`` once the index has caught up to it.
+
+    The core in-flight bail (:func:`_update_one`) records the latest HEAD in
+    this marker, mirroring the CLI's ``write_update_pending``. The update that
+    holds the lock calls this on success: the marker is kept only when it
+    points to a commit strictly *ahead* of ``indexed_head`` (a newer commit not
+    yet indexed). Equal, ancestor, and no-longer-resolvable commits (rebased or
+    gc'd away) are cleared, so a bailed core update never leaves the marker
+    behind forever — the symmetric half of the CLI ``consume_update_pending``
+    fix.
+    """
+    pending_path = repo_path / ".repowise" / ".update.pending"
+    try:
+        pending_head = pending_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return
+    if pending_head and indexed_head and pending_head != indexed_head:
+        try:
+            # indexed_head is an ancestor of pending_head => strictly ahead,
+            # keep it. Non-zero (incl. unresolvable pending) => safe to clear.
+            ahead = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", indexed_head, pending_head],
+                cwd=str(repo_path),
+                capture_output=True,
+                timeout=10,
+            )
+            if ahead.returncode == 0:
+                return
+        except Exception:
+            pass
+    with suppress(OSError):
+        pending_path.unlink(missing_ok=True)
 
 
 def read_repo_state(repo_path: Path) -> dict[str, Any]:
@@ -290,6 +343,7 @@ async def _incremental_repo_update(
     state: dict[str, Any],
     base_ref: str,
     exclude_patterns: list[str] | None = None,
+    include_working_tree: bool = False,
 ) -> RepoUpdateResult | None:
     """Refresh an already-indexed repo through the incremental update path.
 
@@ -304,7 +358,7 @@ async def _incremental_repo_update(
 
     Raises on failure — the caller falls back to the full pipeline.
     """
-    from ..ingestion.change_detector import ChangeDetector
+    from ..ingestion.change_detector import ChangeDetector, merge_file_diffs
     from ..pipeline.incremental import (
         persist_incremental_index,
         rebuild_graph_and_git,
@@ -316,12 +370,30 @@ async def _incremental_repo_update(
     head = get_head_commit(repo_path) or "HEAD"
 
     detector = ChangeDetector(repo_path)
-    file_diffs = detector.get_changed_files(base_ref, head)
+    working_tree_diffs: list = []
+    working_tree_paths: list[str] | None = None
+    if include_working_tree:
+        working_tree_diffs = detector.get_working_tree_changes()
+        dirty = {fd.path for fd in working_tree_diffs}
+        # Re-diff anything the last run indexed from the working tree that no
+        # longer diverges from HEAD, so a reverted edit or a deleted untracked
+        # file stops being served. See ``stale_working_tree_diffs``.
+        working_tree_diffs += detector.stale_working_tree_diffs(
+            state.get("working_tree_paths") or [], dirty
+        )
+        working_tree_paths = sorted(dirty)
+
+    file_diffs = merge_file_diffs(
+        detector.get_changed_files(base_ref, head),
+        working_tree_diffs,
+    )
     if not file_diffs:
         # New commits but nothing the index cares about changed (merge/empty
         # commits, or every change excluded). Report success so the caller
         # bumps ``last_sync_commit`` instead of re-diffing forever.
-        return RepoUpdateResult(alias=alias, updated=True)
+        return RepoUpdateResult(
+            alias=alias, updated=True, working_tree_paths=working_tree_paths
+        )
 
     # Per-repo config, like the single-repo update path. The workspace-level
     # ``exclude_patterns`` (when provided) apply on top.
@@ -330,9 +402,13 @@ async def _incremental_repo_update(
     cfg = load_repo_config(repo_path)
     merged_excludes = _merged_repo_excludes(repo_path, exclude_patterns)
 
+    # Decay-only rows for idle files the anchor advance recovered (#728);
+    # persisted alongside the changed rows, kept out of git_meta_map so partial
+    # health's repo-wide aggregates are unaffected (mirrors the CLI path).
+    git_decay_map: dict[str, dict] = {}
     (
         parsed_files,
-        _source_map,
+        source_map,
         graph_builder,
         _structure,
         file_count,
@@ -345,11 +421,35 @@ async def _incremental_repo_update(
         git_tier=state.get("git_tier"),
         include_submodules=bool(state.get("include_submodules", False)),
         include_nested_repos=bool(state.get("include_nested_repos", False)),
+        idle_decay_sink=git_decay_map,
         log=_log.info,
     )
 
+    # Stored per-file git fields for the dead-code analyzer. ``git_meta_map``
+    # covers the changed files only, so every other file would be scored
+    # against an empty dict — which reads as "no commits in 90 days" and puts
+    # the whole repo on the 0.7 / safe-to-delete rung of the confidence ladder.
+    from ..pipeline.incremental import (
+        load_stored_function_mod_p80,
+        load_stored_git_meta,
+    )
+
+    stored_git_meta = await load_stored_git_meta(repo_path, log=_log.info)
+    # Repo-wide p80 from the persisted blame rollup, so the partial health
+    # pass scores the Function Hotspot gate against the full repo instead of
+    # this run's changed-files subset (issue #1484).
+    stored_function_mod_p80 = await load_stored_function_mod_p80(repo_path, log=_log.info)
+
     partial_health_report, dead_code_report = run_partial_analysis(
-        repo_path, graph_builder, git_meta_map, parsed_files, file_diffs, log=_log.info
+        repo_path,
+        graph_builder,
+        git_meta_map,
+        parsed_files,
+        file_diffs,
+        source_map=source_map,
+        stored_git_meta=stored_git_meta,
+        repo_function_mod_p80=stored_function_mod_p80,
+        log=_log.info,
     )
 
     # Partial health has consumed the per-file ``BlameIndex``; drop it before
@@ -387,6 +487,7 @@ async def _incremental_repo_update(
         file_diffs=file_diffs,
         knowledge_graph_result=kg,
         parsed_files=parsed_files,
+        git_decay_map=git_decay_map,
         log=_log.info,
     )
 
@@ -406,6 +507,7 @@ async def _incremental_repo_update(
         file_count=file_count,
         symbol_count=sum(len(pf.symbols) for pf in parsed_files),
         kg_state=kg_state,
+        working_tree_paths=working_tree_paths,
     )
 
 
@@ -414,6 +516,7 @@ async def update_single_repo_index(
     *,
     commit_depth: int = 500,
     exclude_patterns: list[str] | None = None,
+    include_working_tree: bool = False,
     progress: Any | None = None,
 ) -> RepoUpdateResult:
     """Refresh the index for a single repo.
@@ -462,6 +565,7 @@ async def update_single_repo_index(
                 state=state,
                 base_ref=str(base_ref),
                 exclude_patterns=exclude_patterns,
+                include_working_tree=include_working_tree,
             )
             if incremental_result is not None:
                 return incremental_result
@@ -520,21 +624,36 @@ async def update_workspace(
     ws_config: WorkspaceConfig,
     *,
     repo_filter: str | None = None,
+    only_aliases: set[str] | None = None,
+    run_hooks: bool = True,
     dry_run: bool = False,
     commit_depth: int = 500,
     exclude_patterns: list[str] | None = None,
+    include_working_tree: bool = False,
     on_repo_start: Callable[[str], None] | None = None,
     on_repo_done: Callable[[RepoUpdateResult], None] | None = None,
 ) -> list[RepoUpdateResult]:
-    """Update stale repos in the workspace.
+    """Update stale repos in the workspace (index-only).
 
     Args:
         workspace_root: Path to the workspace root directory.
         ws_config: Loaded workspace configuration.
         repo_filter: If set, only update this repo alias.
+        only_aliases: If set, restrict the run to this subset of aliases (on
+            top of ``repo_filter``). The CLI uses this to hand the fast
+            index-only path just the repos it isn't updating via the
+            single-repo docs path, so the two orchestrators never touch the
+            same repo in one workspace run.
+        run_hooks: When False, skip the cross-repo analysis hooks at the end.
+            The CLI sets this so it can run them once over the union of
+            index-only and docs repos, instead of on a partial set here.
         dry_run: If True, detect staleness but don't actually update.
         commit_depth: Max commits to analyze per file.
         exclude_patterns: Gitignore-style patterns to exclude.
+        include_working_tree: Count uncommitted work as staleness, and index
+            it. Off for every commit-anchored caller (hooks, webhooks, a
+            manual sync); ``repowise watch --workspace`` sets it, because a
+            repo it is watching normally has no new commits at all.
         on_repo_start: Called with alias when a repo update begins.
         on_repo_done: Called with result when a repo update finishes.
 
@@ -553,6 +672,9 @@ async def update_workspace(
             available = ", ".join(ws_config.repo_aliases())
             raise ValueError(f"Unknown repo '{repo_filter}'. Available: {available}")
         entries = [entry]
+
+    if only_aliases is not None:
+        entries = [e for e in entries if e.alias in only_aliases]
 
     # Step 0: Sync ``last_commit_at_index`` from each repo's state.json so
     # the workspace config doesn't drift when a child repo is updated
@@ -588,6 +710,12 @@ async def update_workspace(
             abs_path,
             stored_commit,
         )
+
+        # A watched repo's changes are uncommitted by definition, so the
+        # commit-to-commit staleness check above says "up to date" for exactly
+        # the work the watcher woke up for.
+        if not is_stale and include_working_tree and has_working_tree_changes(abs_path):
+            is_stale = True
 
         if not is_stale:
             # Nothing to regenerate, but the DB freshness stamp can still be
@@ -635,15 +763,15 @@ async def update_workspace(
             # Check + acquire are one atomic exclusive create.
             existing = _try_acquire_lock(path, new_head)
             if existing is not None:
-                elapsed = int(time.time() - existing.get("started_at", time.time()))
+                age = _lock_age_seconds(existing)
                 target_short = (existing.get("target_commit") or "")[:8]
                 _log.info(
                     "workspace_update: skipping %s — update already in flight "
-                    "(pid=%s target=%s elapsed=%ds)",
+                    "(pid=%s target=%s elapsed=%ss)",
                     alias,
                     existing.get("pid"),
                     target_short,
-                    elapsed,
+                    int(age) if age is not None else "?",
                 )
                 # Record pending so the running update can roll forward.
                 with suppress(OSError):
@@ -652,6 +780,7 @@ async def update_workspace(
                     alias=alias,
                     updated=False,
                     skipped_reason="in_flight",
+                    lock_age_seconds=age,
                 )
 
             try:
@@ -659,6 +788,7 @@ async def update_workspace(
                     path,
                     commit_depth=commit_depth,
                     exclude_patterns=exclude_patterns,
+                    include_working_tree=include_working_tree,
                 )
             finally:
                 _release_lock(path)
@@ -674,9 +804,15 @@ async def update_workspace(
                 if state_path.is_file():
                     with suppress(Exception):
                         state = _json.loads(state_path.read_text(encoding="utf-8"))
+
+                if "last_docs_commit" not in state and "last_sync_commit" in state:
+                    state["last_docs_commit"] = state["last_sync_commit"]
+
                 state["last_sync_commit"] = new_head
                 if result.kg_state:
                     state["knowledge_graph"] = result.kg_state
+                if result.working_tree_paths is not None:
+                    state["working_tree_paths"] = result.working_tree_paths
                 # Stamp the config fingerprint so the drift check in
                 # update_single_repo_index stays calibrated (and legacy repos
                 # without one stop re-triggering the full re-index).
@@ -687,8 +823,10 @@ async def update_workspace(
                 # Mark first-time so downstream tooling (status, doctor) can
                 # distinguish a never-indexed repo from one that's been
                 # updated at least once.
-                if first_time and "docs_enabled" not in state:
-                    state["docs_enabled"] = False
+                if first_time and "docs_mode" not in state and "docs_enabled" not in state:
+                    # This path indexes only; nothing renders pages here, not
+                    # even from templates.
+                    state.update(docs_mode_state_fields("none"))
                     state["docs_skip_reason"] = (
                         "first-time index via update; run "
                         "`repowise update --repo " + alias + " --docs` to generate docs"
@@ -702,6 +840,9 @@ async def update_workspace(
                 # without re-running DB persistence, so the row would otherwise
                 # lag HEAD; a no-op when persistence already stamped it.
                 await reconcile_repo_head_commit(path, new_head)
+                # Drop any stale pending marker now that we've advanced to
+                # new_head (a bailed sibling update may have written one).
+                clear_stale_update_pending(path, new_head)
 
             # Update workspace config entry
             if result.updated:
@@ -742,16 +883,35 @@ async def update_workspace(
     if changed_aliases:
         ws_config.save(workspace_root)
 
-    # Step 4: Run cross-repo hooks (Phase 3/4 placeholder)
-    if changed_aliases:
+    # Step 4: Run cross-repo hooks (Phase 3/4 placeholder). ``run_hooks`` lets
+    # the CLI defer these so they run once over the union of index-only and
+    # docs repos, rather than on this partial set.
+    if changed_aliases and run_hooks:
         await run_cross_repo_hooks(ws_config, workspace_root, changed_aliases)
 
     return results
 
 
 # ---------------------------------------------------------------------------
-# Cross-repo hooks (Phase 3/4 placeholder)
+# Cross-repo hooks
 # ---------------------------------------------------------------------------
+
+
+def _log_phase(timings: PhaseTimingRecorder, phase: str, **counts: int) -> None:
+    """Emit one structured line for a finished cross-repo phase.
+
+    Duration *and* the counts the phase produced. A timer alone cannot tell a
+    genuine speed-up from a phase that got faster by doing less work, which is
+    the specific regression workspace mode has already had once — so the counts
+    are not optional decoration.
+    """
+    detail = ", ".join(f"{k}={v}" for k, v in counts.items())
+    _log.info(
+        "workspace phase %s: %.2fs%s",
+        phase,
+        timings.timings.get(phase, 0.0),
+        f" ({detail})" if detail else "",
+    )
 
 
 async def run_cross_repo_hooks(
@@ -773,45 +933,184 @@ async def run_cross_repo_hooks(
     from .conformance import run_conformance_check
     from .contracts import ContractStore, load_contract_store, run_contract_extraction
     from .cross_repo import CrossRepoOverlay, run_cross_repo_analysis
-    from .system_graph import SystemGraph, run_system_graph_build
+    from .system_graph import (
+        SystemGraph,
+        _detect_boundaries_by_repo,
+        run_system_graph_build,
+    )
 
-    overlay = CrossRepoOverlay()
+    timings = PhaseTimingRecorder()
+
+    # Service boundaries, detected once for the whole workspace. Contract
+    # extraction and the system-graph build both need them and each used to walk
+    # every repo for its own copy.
+    boundaries_by_repo: dict[str, list[ServiceBoundary]] = {}
+    timings.on_phase_start("boundaries", None)
     try:
-        overlay = await run_cross_repo_analysis(ws_config, workspace_root, changed_repos)
+        boundaries_by_repo = await asyncio.to_thread(
+            _detect_boundaries_by_repo, ws_config, workspace_root
+        )
     except Exception:
-        _log.warning("Cross-repo analysis failed", exc_info=True)
+        _log.warning("Service boundary detection failed", exc_info=True)
+    timings.on_phase_done("boundaries")
+    _log_phase(
+        timings,
+        "boundaries",
+        repos=len(boundaries_by_repo),
+        boundaries=sum(len(b) for b in boundaries_by_repo.values()),
+    )
 
     # Snapshot the contracts as they stand on disk BEFORE extraction overwrites
-    # them — this is the cheapest honest "previous" state for the breaking-change
-    # diff (no contract history needed; the last index is the baseline).
+    # them. Two jobs, one read: the baseline for the breaking-change diff, and
+    # the source of any rows extraction carries forward instead of recomputing.
+    # Loaded here rather than inside extraction so the ordering against the
+    # write is explicit and the 360 KB parse happens once.
     previous_store = load_contract_store(workspace_root) or ContractStore()
 
-    # Contract extraction (overwrites contracts.json).
+    # Phases 1 and 2 are independent: they read disjoint inputs (git history and
+    # manifests vs source files and the parse cache), write different artifacts
+    # (cross_repo_edges.json vs contracts.json), and share no mutable state —
+    # boundaries_by_repo is computed above and passed in read-only. Both push
+    # their blocking work through asyncio.to_thread, so gather genuinely
+    # overlaps them rather than interleaving two synchronous bodies.
+    # Each coroutine times itself, so running them together does not cost the
+    # ability to say which one dominates — the question this instrumentation
+    # exists to answer, and one a single duration for the pair would destroy.
+    async def _timed(phase: str, coro: Awaitable[Any]) -> Any:
+        timings.on_phase_start(phase, None)
+        try:
+            return await coro
+        finally:
+            timings.on_phase_done(phase)
+
+    overlay_result, store_result = await asyncio.gather(
+        _timed("cross_repo_analysis", run_cross_repo_analysis(ws_config, workspace_root, changed_repos)),
+        _timed(
+            "contract_extraction",
+            run_contract_extraction(
+                ws_config,
+                workspace_root,
+                changed_repos,
+                boundaries_by_repo or None,
+                previous_store,
+            ),
+        ),
+        return_exceptions=True,
+    )
+
+    # Cancellation and interpreter-level exits are not phase failures — the old
+    # `except Exception` let them propagate by construction, and gather's
+    # return_exceptions=True does not. Re-raise them before anything downstream
+    # treats a cancelled run as a completed one.
+    for result in (overlay_result, store_result):
+        if isinstance(result, BaseException) and not isinstance(result, Exception):
+            raise result
+
+    overlay = CrossRepoOverlay()
+    if isinstance(overlay_result, Exception):
+        _log.warning("Cross-repo analysis failed", exc_info=overlay_result)
+    else:
+        overlay = overlay_result
+
     store = ContractStore()
-    try:
-        store = await run_contract_extraction(ws_config, workspace_root, changed_repos)
-    except Exception:
-        _log.warning("Contract extraction failed", exc_info=True)
+    extraction_ok = not isinstance(store_result, Exception)
+    if isinstance(store_result, Exception):
+        _log.warning("Contract extraction failed", exc_info=store_result)
+    else:
+        store = store_result
+
+    _log_phase(
+        timings,
+        "cross_repo_analysis",
+        co_changes=len(overlay.co_changes),
+        package_deps=len(overlay.package_deps),
+    )
+    _log_phase(
+        timings,
+        "contract_extraction",
+        contracts=len(store.contracts),
+        links=len(store.contract_links),
+        # Repos actually walked this run — the number that separates a real
+        # speed-up from a phase that got faster by doing less than it claims.
+        # Derived from the stamp rather than summing extraction_stats, which
+        # also carries the counters of the repos this run skipped.
+        repos_extracted=sum(
+            1 for p in store.repo_provenance.values() if p.get("extracted_at") == store.generated_at
+        ),
+        repos_reused=sum(
+            1 for p in store.repo_provenance.values() if p.get("extracted_at") != store.generated_at
+        ),
+    )
 
     # System graph — the normalized service-granular structure every workspace
     # view reads. Built last so it folds in the contracts and overlay above.
     system_graph: SystemGraph | None = None
+    timings.on_phase_start("system_graph", None)
     try:
-        system_graph = await run_system_graph_build(ws_config, workspace_root, store, overlay)
+        system_graph = await run_system_graph_build(
+            ws_config, workspace_root, store, overlay, boundaries_by_repo or None
+        )
     except Exception:
         _log.warning("System graph build failed", exc_info=True)
+    timings.on_phase_done("system_graph")
+    _log_phase(
+        timings,
+        "system_graph",
+        nodes=len(system_graph.nodes) if system_graph else 0,
+        edges=len(system_graph.edges) if system_graph else 0,
+    )
 
     # Breaking-change guard — diff the previous (on-disk) contracts against the
     # freshly extracted set and persist the impacted-consumer report.
-    try:
-        run_breaking_change_detection(workspace_root, previous_store, store)
-    except Exception:
-        _log.warning("Breaking-change detection failed", exc_info=True)
+    #
+    # Gated on the SHAPE of the result, not on whether an exception escaped.
+    # Diffing a populated baseline against an empty set reports every contract
+    # in the workspace as removed, and extraction has more than one way to hand
+    # back nothing: it raises, or it returns an empty store early because fewer
+    # than two repos are currently indexed (a repo unmounted, renamed, or having
+    # just lost its .repowise/). Both would publish themselves as the largest
+    # breaking change the workspace has ever seen. An empty result is only
+    # trustworthy when the baseline is empty too.
+    if extraction_ok and (store.contracts or not previous_store.contracts):
+        report = None
+        timings.on_phase_start("breaking_change", None)
+        try:
+            report = run_breaking_change_detection(workspace_root, previous_store, store)
+        except Exception:
+            _log.warning("Breaking-change detection failed", exc_info=True)
+        timings.on_phase_done("breaking_change")
+        _log_phase(
+            timings,
+            "breaking_change",
+            breaking=len(report.changes) if report else 0,
+        )
+    else:
+        _log.warning(
+            "Skipping breaking-change detection: extraction produced no contracts "
+            "(ok=%s) while the previous artifact holds %d — diffing these would "
+            "report the whole workspace as removed",
+            extraction_ok,
+            len(previous_store.contracts),
+        )
 
     # Conformance + cycles — check declared dependency rules and detect circular
     # service dependencies over the freshly-built system graph.
     if system_graph is not None:
+        conformance = None
+        timings.on_phase_start("conformance", None)
         try:
-            run_conformance_check(ws_config, workspace_root, system_graph)
+            conformance = run_conformance_check(ws_config, workspace_root, system_graph)
         except Exception:
             _log.warning("Conformance check failed", exc_info=True)
+        timings.on_phase_done("conformance")
+        _log_phase(
+            timings,
+            "conformance",
+            rules=conformance.rules_evaluated if conformance else 0,
+            violations=len(conformance.violations) if conformance else 0,
+            # The true total, not the capped list — a workspace with 500 cycles
+            # must not report the same number as one with 50.
+            cycles=conformance.total_cycles if conformance else 0,
+        )
+
+    _log.info("Cross-repo phase timings (seconds): %s", timings.timings)

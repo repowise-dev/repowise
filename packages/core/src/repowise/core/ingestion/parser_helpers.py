@@ -9,18 +9,26 @@ this one holds the free functions it calls. No state, no imports from
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import structlog
 from tree_sitter import Node
 
 from .extractors import node_text
+from .type_names import is_resolvable_type_name
+
+if TYPE_CHECKING:
+    from .models import Symbol
 
 log = structlog.get_logger(__name__)
 
 # Private alias for internal use (mirrors the one in parser.py)
 _node_text = node_text
+
+_WHITESPACE_RE = re.compile(r"\s+")
 
 
 def _run_query(query: object, root_node: Node) -> list[dict[str, list[Node]]]:
@@ -111,6 +119,40 @@ def _qualified_cpp_parent(name_node: Node, src: str) -> str | None:
     return text.rsplit("::", 1)[-1] or None
 
 
+def _qualified_pascal_parent(name_node: Node, src: str) -> str | None:
+    """Return the owning class for a Pascal out-of-line method header.
+
+    ``function TCalculator.Add(...): Integer;`` in an implementation
+    section is captured by pascal.scm's ``genericDot`` patterns, where the
+    bare ``@symbol.name`` is the ``rhs`` (``Add``) and the qualifying type
+    lives in the sibling ``lhs`` field (``TCalculator``). Nesting-based
+    ``_find_parent`` can't see this: the ``defProc`` node sits in the
+    unit's implementation section, physically outside the class's
+    ``declType`` body declared in the interface section. Handles both the
+    plain (``genericDot rhs: identifier``) and generic-method
+    (``genericDot rhs: genericTpl entity: identifier``) query shapes.
+
+    Uses ``node_text`` (tree-sitter's own byte-accurate decode), not raw
+    ``src`` byte-offset slicing — Pascal identifiers and unit names are
+    frequently non-ASCII (Cyrillic) in this codebase's real-world sources,
+    and slicing a decoded ``str`` by *byte* offsets misaligns on any
+    multi-byte character.
+
+    Returns ``None`` when the name node isn't inside a qualified header
+    (i.e. a free function/procedure).
+    """
+    parent = name_node.parent
+    if parent is not None and parent.type == "genericTpl":
+        parent = parent.parent
+    if parent is None or parent.type != "genericDot":
+        return None
+    lhs = parent.child_by_field_name("lhs")
+    if lhs is None:
+        return None
+    text = node_text(lhs, src).strip()
+    return text or None
+
+
 def _build_qualified_name(file_path: str, parent_name: str | None, name: str) -> str:
     module = Path(file_path).with_suffix("").as_posix().replace("/", ".")
     if parent_name:
@@ -118,55 +160,170 @@ def _build_qualified_name(file_path: str, parent_name: str | None, name: str) ->
     return f"{module}.{name}"
 
 
+_PASCAL_USES_IN_CLAUSE_RE = re.compile(rb"\bin\b[ \t]*'(?:[^'\r\n]|'')*'")
+
+
+def _sanitize_pascal_project_source(source: bytes) -> bytes:
+    """Blank Delphi/FPC project-file ``unit in 'path.pas'`` clauses.
+
+    ``.dpr``/``.dpk``/``.lpr`` project files map each unit to its source
+    path right in the ``uses`` clause -- ``uses SysUtils, MyUnit in
+    'src\\MyUnit.pas';`` -- and Delphi's IDE writes this automatically for
+    every unit added to a project, making it the norm rather than the
+    exception in real ``.dpr``/``.dpk`` files (confirmed against this
+    repo's own ``MTN2.dpr``: every non-RTL unit uses it).
+
+    tree-sitter-pascal's grammar has no rule for the trailing ``in
+    '...'`` at all. Hitting it mid-``declUses`` doesn't just fail that
+    one unit -- the parser's error recovery folds the ``in``, the path
+    string, and every subsequent comma-separated unit into one corrupted
+    ``moduleName`` node spanning to wherever it happens to resync, so a
+    single ``in`` clause was silently swallowing the rest of the ``uses``
+    list (observed on ``MTN2.dpr``: 4 imports extracted instead of ~80,
+    the 4th holding several KB of raw multi-line garbage as its
+    ``module_path``). This is an upstream grammar gap, not something a
+    ``.scm`` query can route around -- the AST itself is malformed before
+    any query runs.
+
+    Blanks the matched span with spaces (never a raw newline -- a Pascal
+    string literal can't contain one, so no line is fully consumed) to
+    preserve every other byte offset in the file, so line numbers for
+    symbols/imports/calls elsewhere are unaffected. `'ABC'` doesn't need
+    the doubled-quote (`''`) escape handled specially for *finding* the
+    end of the string here (the regex already treats `''` as staying
+    inside the literal), only for correctness of the match's own extent.
+
+    Scoped to project files specifically: this syntax is invalid outside
+    a ``uses`` clause and ``.pas``/``.pp`` unit files can't legally carry
+    it, so there's nothing to blank there and no reason to run the regex
+    over every unit file in a codebase.
+    """
+    if not _PASCAL_USES_IN_CLAUSE_RE.search(source):
+        return source
+    out = bytearray(source)
+    for m in _PASCAL_USES_IN_CLAUSE_RE.finditer(source):
+        start, end = m.span()
+        out[start:end] = b" " * (end - start)
+    return bytes(out)
+
+
+_PASCAL_PROJECT_EXTENSIONS = (".dpr", ".dpk", ".lpr")
+
+
+def prepare_pascal_source(source: bytes, path: str | None) -> bytes:
+    """Single entry point for every Pascal byte-preserving sanitizer.
+
+    Called from :func:`~.sfc_source.prepare_source` -- the same
+    registry-dispatched hook every other tree-sitter consumer (the
+    ingestion parser, plus the complexity/dataflow/duplication health
+    walkers) already calls before handing bytes to a ``Parser`` -- rather
+    than parser.py special-casing Pascal in its own if-blocks. That keeps
+    ``docs/architecture/language-support.md``'s "zero changes to
+    parser.py" promise for a new language, and means the health walkers
+    get the same clean projection the ingestion parser does instead of
+    parsing raw bytes.
+
+    Only wraps ``_sanitize_pascal_project_source`` (``.dpr``/``.dpk``/
+    ``.lpr`` ``in '...'`` clauses), gated on *path*'s extension since that
+    syntax is invalid in a plain unit file. An earlier revision of this
+    function also blanked whatever an anonymous ``array[...] of record``
+    element type's parse errors touched, discovered via ERROR-node spans
+    from a throwaway parse. Dropped after review (PR #1353): tree-sitter's
+    error recovery for that construct doesn't cleanly wrap the bad
+    construct in one ERROR node -- on the reviewer's repro, one of the
+    spans it found was the class's own legitimate closing ``end;``, and
+    blanking it produced the exact same broken structure (the following
+    method detached from its class) as running no sanitizer at all. A
+    correct fix needs a nesting-aware nested-record/variant-part scanner,
+    which is more surface area than one occurrence in one file (see the
+    dropped function's own docstring) justifies; the anon-record case is
+    left to degrade to a wrong parent for that one class, same as any
+    other unhandled grammar gap.
+    """
+    if path and path.lower().endswith(_PASCAL_PROJECT_EXTENSIONS):
+        return _sanitize_pascal_project_source(source)
+    return source
+
+
+def _dedupe_pascal_interface_symbols(
+    symbols: list[Symbol], node_types: list[str]
+) -> list[Symbol]:
+    """Drop an interface-section method signature once its implementation
+    is also present, so the two don't become two graph nodes for one method.
+
+    Pascal declares a method's signature once in the ``interface`` section
+    (``declProc``, no body) and its full body once in the
+    ``implementation`` section (``defProc``) — two distinct physical AST
+    nodes pascal.scm both legitimately captures (see the query file's
+    comment). Once ``_find_parent`` (nesting) and ``_qualified_pascal_parent``
+    (the ``TFoo.Method`` header) resolve both to the same
+    ``(parent_name, name)``, keep only the ``defProc`` version: it carries
+    the real body, which is what ``get_symbol`` should return, and the
+    ``declProc`` duplicate would otherwise leave two ``Add`` nodes in the
+    graph for one logical method.
+
+    Keyed on ``(parent_name, signature)`` — normalized, see
+    ``_pascal_dedupe_key`` — rather than just ``(parent_name, name)`` so
+    that Pascal ``overload;`` siblings (same name, different parameter
+    lists) are told apart: an interface-only overload must survive even
+    when a *different* overload of the same name has a same-file
+    implementation (verified against a reproduction where a 2-overload
+    class with only one variant implemented was silently losing the
+    other variant's interface declaration).
+
+    Normalization matters in practice, not just in theory: scanned
+    against a real ~150-file Delphi codebase, 168 method pairs shared a
+    class+name but escaped a raw-signature-text match — almost all of
+    them a long parameter list wrapped across lines differently between
+    the compact interface declaration and the implementation (extremely
+    common Delphi formatting), a handful differing only by identifier
+    case (Pascal is case-insensitive, so ``TFoo.Add`` and
+    ``TFOO.ADD`` name the same method). ``_pascal_dedupe_key`` strips all
+    whitespace and lowercases before comparing so both collapse
+    correctly.
+
+    Still imperfect: Pascal's compiler doesn't require parameter *names*
+    to match between an interface declaration and its implementation
+    (only the types, for overload resolution), so a same-file rename
+    between the two still produces different normalized keys and defeats
+    this dedup, leaving both symbols. Unlike the whitespace/case cases
+    above, no evidence of this actually happening was found in the real
+    codebase this was checked against — left as a documented gap rather
+    than parsing parameter types out of ``declArgs`` for an exact match.
+    """
+    impl_keys = {
+        _pascal_dedupe_key(s.parent_name, s.signature)
+        for s, nt in zip(symbols, node_types, strict=True)
+        if nt == "defProc"
+    }
+    return [
+        s
+        for s, nt in zip(symbols, node_types, strict=True)
+        if not (nt == "declProc" and _pascal_dedupe_key(s.parent_name, s.signature) in impl_keys)
+    ]
+
+
+def _pascal_dedupe_key(parent_name: str | None, signature: str) -> tuple[str | None, str]:
+    """Normalize a (parent, signature) pair for Pascal's interface/impl dedup.
+
+    Whitespace-insensitive (multi-line parameter lists get reformatted
+    between the interface declaration and the implementation constantly
+    in real Delphi code) and case-insensitive (identifiers are
+    case-insensitive in Pascal, so this needs to hold for the *class*
+    name half of the key too, not just the signature).
+    """
+    parent_key = parent_name.lower() if parent_name else None
+    sig_key = _WHITESPACE_RE.sub("", signature).lower()
+    return (parent_key, sig_key)
+
+
 # ---------------------------------------------------------------------------
 # Type reference helpers (used by _extract_type_refs)
 # ---------------------------------------------------------------------------
 
-# Type expressions that never resolve to a user-defined .NET type. Skipping
-# these here avoids polluting the resolver with hopeless lookups. Generic
-# args inside `IList<T>` are stripped before this check is applied.
-_BUILTIN_CSHARP_TYPES: frozenset[str] = frozenset(
-    {
-        "void",
-        "bool",
-        "byte",
-        "sbyte",
-        "char",
-        "short",
-        "ushort",
-        "int",
-        "uint",
-        "long",
-        "ulong",
-        "float",
-        "double",
-        "decimal",
-        "string",
-        "object",
-        "nint",
-        "nuint",
-        "dynamic",
-        "var",
-        # Frequently appearing BCL types that are always external — listing
-        # them here is purely a performance optimisation (one dict miss
-        # avoided per occurrence).
-        "Task",
-        "ValueTask",
-        "CancellationToken",
-        "Action",
-        "Func",
-        "Type",
-        "Exception",
-        "DateTime",
-        "DateTimeOffset",
-        "TimeSpan",
-        "Guid",
-        "Uri",
-        "Stream",
-    }
-)
-
 _PARAM_ORIGIN_BY_ANCESTOR: dict[str, str] = {
+    "type_argument_list": "generic_argument",
+    "typeof_expression": "typeof",
     "constructor_declaration": "ctor_param",
     "method_declaration": "method_param",
     "delegate_declaration": "delegate_param",
@@ -228,10 +385,9 @@ def _head_type_identifier(type_node: Node, src: str) -> str | None:
 
     The point of returning the head identifier is that the
     DotNetProjectIndex type-name lookup is keyed by unqualified type
-    name. Generic-arg recursion is intentionally NOT done here — each
-    generic arg is captured in its own ``@param.type`` if it's a real
-    parameter type, and the resolver doesn't currently track generic
-    instantiation graphs.
+    name. Generic-arg recursion is intentionally NOT done here — each generic
+    argument is captured from its own ``type_argument_list`` node, including
+    nested arguments and invocation-only type uses.
     """
     head_node: Node | None = type_node
 
@@ -260,9 +416,7 @@ def _head_type_identifier(type_node: Node, src: str) -> str | None:
     if head_node is None:
         return None
 
-    if head_node.type == "identifier":
-        text = _node_text(head_node, src)
-    elif head_node.type == "predefined_type":
+    if head_node.type == "identifier" or head_node.type == "predefined_type":
         text = _node_text(head_node, src)
     elif head_node.type == "generic_name":
         name_child = head_node.child_by_field_name("name") or next(
@@ -281,16 +435,7 @@ def _head_type_identifier(type_node: Node, src: str) -> str | None:
         ident = _first_descendant(head_node, "identifier")
         text = _node_text(ident, src) if ident else ""
 
-    if not text or not text[0].isalpha() and text[0] != "_":
-        return None
-    if text in _BUILTIN_CSHARP_TYPES:
-        return None
-    # Single-uppercase-letter heads are overwhelmingly generic params (T, K, V).
-    # Skipping them avoids spurious lookups against a type-name index that
-    # would never contain them.
-    if len(text) == 1 and text.isupper():
-        return None
-    return text
+    return text if is_resolvable_type_name(text, "csharp") else None
 
 
 def _first_descendant(node: Node, type_name: str) -> Node | None:
@@ -325,19 +470,6 @@ def _classify_param_origin(type_node: Node) -> str:
 # ---------------------------------------------------------------------------
 # Go type-reference head extraction
 # ---------------------------------------------------------------------------
-
-# Predeclared Go type names — never resolve to a user-defined type, so they
-# are dropped before the resolver lookup. ``error``/``any``/``comparable``
-# are predeclared identifiers, not keywords, but behave as builtins here.
-_GO_BUILTIN_TYPES: frozenset[str] = frozenset(
-    {
-        "string", "bool", "byte", "rune", "error", "any", "comparable",
-        "int", "int8", "int16", "int32", "int64",
-        "uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
-        "float32", "float64", "complex64", "complex128",
-    }
-)
-
 
 def _go_head_type_identifier(type_node: Node, src: str) -> str | None:
     """Return the head type name of a Go type expression, or None.
@@ -401,37 +533,12 @@ def _go_head_type_identifier(type_node: Node, src: str) -> str | None:
     else:
         return None
 
-    if not text or (not text[0].isalpha() and text[0] != "_"):
-        return None
-    if text in _GO_BUILTIN_TYPES:
-        return None
-    # Single-uppercase-letter heads are overwhelmingly generic type params.
-    if len(text) == 1 and text.isupper():
-        return None
-    return text
+    return text if is_resolvable_type_name(text, "go") else None
 
 
 # ---------------------------------------------------------------------------
 # C / C++ type-reference head extraction
 # ---------------------------------------------------------------------------
-
-# Predeclared / standard-library scalar types that never resolve to a
-# user-defined struct, so they're dropped before the resolver lookup.
-# ``primitive_type`` / ``sized_type_specifier`` nodes are filtered
-# structurally below; this set catches the ``<stdint.h>`` / ``<stddef.h>``
-# typedefs that the grammar surfaces as plain ``type_identifier`` nodes.
-_C_BUILTIN_TYPES: frozenset[str] = frozenset(
-    {
-        "void", "char", "short", "int", "long", "float", "double",
-        "signed", "unsigned", "bool", "_Bool", "_Complex",
-        "size_t", "ssize_t", "rsize_t", "ptrdiff_t", "intptr_t", "uintptr_t",
-        "int8_t", "int16_t", "int32_t", "int64_t",
-        "uint8_t", "uint16_t", "uint32_t", "uint64_t",
-        "intmax_t", "uintmax_t", "wchar_t", "wint_t", "char16_t", "char32_t",
-        "va_list", "FILE",
-    }
-)
-
 
 def _c_head_type_identifier(type_node: Node, src: str) -> str | None:
     """Return the head type name of a C / C++ type expression, or None.
@@ -480,67 +587,13 @@ def _c_head_type_identifier(type_node: Node, src: str) -> str | None:
     else:
         return None
 
-    if not text or (not text[0].isalpha() and text[0] != "_"):
-        return None
-    if text in _C_BUILTIN_TYPES:
-        return None
-    if len(text) == 1 and text.isupper():
-        return None
-    return text
+    # cpp shares this extractor; the builtin set is identical for both.
+    return text if is_resolvable_type_name(text, "c") else None
 
 
 # ---------------------------------------------------------------------------
 # TypeScript / JavaScript type-reference head extraction
 # ---------------------------------------------------------------------------
-
-# Predeclared / lib.dom / lib.es type names that never resolve to a user-
-# defined symbol in the workspace. Filtering them before the resolver
-# lookup avoids polluting the graph with edges for ubiquitous globals
-# (``string``, ``Promise``, ``Pick``) the dead-code analyzer does not
-# care about. The list intentionally errs on the side of inclusion: a
-# user type colliding with one of these names will fail to resolve via
-# the type-ref path, but cross-file usage still surfaces through the
-# value-import + call path.
-_TS_BUILTIN_TYPES: frozenset[str] = frozenset(
-    {
-        # Primitives + structural
-        "string", "number", "boolean", "bigint", "symbol",
-        "void", "null", "undefined", "never", "unknown", "any",
-        "object", "this", "Object",
-        # Built-in containers / wrappers. ``Map`` / ``Set`` / ``WeakMap``
-        # / ``WeakSet`` are intentionally **not** listed: they're routinely
-        # shadowed by user-defined types (Hono ``interface Set<E>`` /
-        # ``interface Get<E>`` is the canonical case) and filtering them
-        # at extraction time hides the same-file rescue.
-        "Array", "ReadonlyArray", "Promise", "Awaited", "WeakRef",
-        "Date", "RegExp", "Error", "TypeError", "RangeError",
-        "SyntaxError", "ReferenceError", "EvalError",
-        "Function", "CallableFunction", "NewableFunction",
-        "ArrayBuffer", "SharedArrayBuffer", "DataView",
-        "Int8Array", "Uint8Array", "Uint8ClampedArray",
-        "Int16Array", "Uint16Array", "Int32Array", "Uint32Array",
-        "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array",
-        "Iterable", "AsyncIterable", "Iterator", "AsyncIterator",
-        "IterableIterator", "AsyncIterableIterator",
-        "Generator", "AsyncGenerator", "GeneratorFunction",
-        "Proxy", "Reflect", "JSON", "Math",
-        # Utility types
-        "Record", "Partial", "Required", "Readonly",
-        "Pick", "Omit", "Exclude", "Extract", "NonNullable",
-        "Parameters", "ConstructorParameters", "ReturnType",
-        "InstanceType", "ThisType", "ThisParameterType", "OmitThisParameter",
-        "Uppercase", "Lowercase", "Capitalize", "Uncapitalize",
-        # Common DOM / Node globals that show up everywhere as parameter
-        # types — listing here is a perf optimisation, not correctness.
-        "URL", "URLSearchParams", "Request", "Response", "Headers",
-        "Blob", "File", "FormData", "FileReader",
-        "AbortController", "AbortSignal", "AbortError",
-        "EventTarget", "Event", "CustomEvent", "MessageEvent",
-        "Element", "HTMLElement", "Node", "Document", "Window",
-        "Buffer", "NodeJS",
-    }
-)
-
 
 def _ts_head_type_identifier(type_node: Node, src: str) -> str | None:
     """Return the head identifier of a TypeScript/JavaScript type, or None.
@@ -628,74 +681,12 @@ def _ts_head_type_identifier(type_node: Node, src: str) -> str | None:
     else:
         return None
 
-    # JS/TS identifiers may start with `$` or `_` in addition to a
-    # letter — Zod's ``$ZSF`` interface family is the canonical case.
-    if not text or (not text[0].isalpha() and text[0] not in ("_", "$")):
-        return None
-    if text in _TS_BUILTIN_TYPES:
-        return None
-    # Single-uppercase-letter heads are overwhelmingly generic type params
-    # (T, K, V, U). Skipping them avoids spurious lookups.
-    if len(text) == 1 and text.isupper():
-        return None
-    return text
+    return text if is_resolvable_type_name(text, "typescript") else None
 
 
 # ---------------------------------------------------------------------------
 # Java type-reference head extraction
 # ---------------------------------------------------------------------------
-
-# Primitives + ubiquitous JDK types that never resolve to a user-defined
-# Java/Kotlin class in the workspace. Stripping them at extraction time
-# avoids polluting the resolver with hopeless lookups. The list errs on
-# the side of inclusion: a user class colliding with one of these names
-# still surfaces through the value-import path, just not through the
-# type-ref path.
-_JAVA_BUILTIN_TYPES: frozenset[str] = frozenset(
-    {
-        # Java primitives + builtin type nodes
-        "boolean", "byte", "short", "int", "long", "float", "double",
-        "char", "void", "var",
-        # java.lang (auto-imported)
-        "Object", "String", "Class", "Enum", "Record",
-        "Integer", "Long", "Double", "Float", "Boolean", "Character",
-        "Byte", "Short", "Number", "Void",
-        "Thread", "Runnable", "Runtime", "Process", "ProcessBuilder",
-        "Throwable", "Exception", "RuntimeException", "Error",
-        "IllegalArgumentException", "IllegalStateException",
-        "NullPointerException", "UnsupportedOperationException",
-        "IndexOutOfBoundsException", "ClassCastException",
-        "ArithmeticException", "SecurityException", "ClassNotFoundException",
-        "InterruptedException", "CloneNotSupportedException",
-        "StringBuilder", "StringBuffer",
-        "Comparable", "Iterable", "AutoCloseable", "Cloneable",
-        "Override", "Deprecated", "SuppressWarnings",
-        "FunctionalInterface", "SafeVarargs",
-        "Math", "System",
-        # java.util ubiquitous containers (almost always external when used
-        # as a type position; the actual element type is captured separately
-        # by the same query via the type_arguments inner capture).
-        "List", "ArrayList", "LinkedList",
-        "Map", "HashMap", "LinkedHashMap", "TreeMap", "ConcurrentHashMap",
-        "Set", "HashSet", "LinkedHashSet", "TreeSet",
-        "Collection", "Collections", "Iterator", "Optional",
-        "Queue", "Deque", "ArrayDeque", "Stack",
-        # java.util.function
-        "Function", "BiFunction", "Consumer", "BiConsumer", "Supplier",
-        "Predicate", "BiPredicate", "UnaryOperator", "BinaryOperator",
-        # java.util.concurrent ubiquitous
-        "Future", "CompletableFuture", "Executor", "ExecutorService",
-        "CountDownLatch", "Semaphore", "AtomicBoolean", "AtomicInteger",
-        "AtomicLong", "AtomicReference",
-        # java.time
-        "Instant", "Duration", "LocalDate", "LocalTime", "LocalDateTime",
-        "ZonedDateTime", "OffsetDateTime", "Period", "ZoneId",
-        # java.io
-        "File", "InputStream", "OutputStream", "Reader", "Writer",
-        "IOException", "Serializable",
-    }
-)
-
 
 def _java_head_type_identifier(type_node: Node, src: str) -> str | None:
     """Return the head type identifier of a Java type expression, or None.
@@ -758,47 +749,12 @@ def _java_head_type_identifier(type_node: Node, src: str) -> str | None:
     else:
         return None
 
-    if not text or (not text[0].isalpha() and text[0] != "_"):
-        return None
-    if text in _JAVA_BUILTIN_TYPES:
-        return None
-    # Single-uppercase-letter heads are overwhelmingly generic type params.
-    if len(text) == 1 and text.isupper():
-        return None
-    return text
+    return text if is_resolvable_type_name(text, "java") else None
 
 
 # ---------------------------------------------------------------------------
 # Kotlin type-reference head extraction
 # ---------------------------------------------------------------------------
-
-_KOTLIN_BUILTIN_TYPES: frozenset[str] = frozenset(
-    {
-        # Kotlin primitives (kotlin package, auto-imported)
-        "Boolean", "Byte", "Short", "Int", "Long", "Float", "Double", "Char",
-        "String", "Unit", "Nothing", "Any", "Number",
-        "Array", "IntArray", "LongArray", "ByteArray", "ShortArray",
-        "FloatArray", "DoubleArray", "CharArray", "BooleanArray",
-        "List", "MutableList", "ArrayList",
-        "Map", "MutableMap", "HashMap", "LinkedHashMap",
-        "Set", "MutableSet", "HashSet", "LinkedHashSet",
-        "Collection", "MutableCollection",
-        "Iterable", "MutableIterable", "Iterator", "MutableIterator",
-        "Sequence", "Pair", "Triple", "Result",
-        "Comparable", "Comparator",
-        "Throwable", "Exception", "RuntimeException", "Error",
-        "IllegalArgumentException", "IllegalStateException",
-        "NullPointerException", "UnsupportedOperationException",
-        "IndexOutOfBoundsException", "ClassCastException",
-        "Lazy", "Regex", "Range", "IntRange", "LongRange", "CharRange",
-        "Enum", "Annotation",
-        # kotlin.io / kotlin.text / kotlin.collections ubiquitous
-        "Reader", "Writer", "BufferedReader", "BufferedWriter",
-        # Coroutines + JVM common
-        "Object", "Function", "Runnable", "Class", "Void",
-    }
-)
-
 
 def _kotlin_head_type_identifier(type_node: Node, src: str) -> str | None:
     """Return the head identifier of a Kotlin type expression, or None.
@@ -851,19 +807,82 @@ def _kotlin_head_type_identifier(type_node: Node, src: str) -> str | None:
     else:
         return None
 
-    if not text or (not text[0].isalpha() and text[0] != "_"):
-        return None
-    if text in _KOTLIN_BUILTIN_TYPES:
-        return None
-    if len(text) == 1 and text.isupper():
-        return None
-    return text
+    return text if is_resolvable_type_name(text, "kotlin") else None
+
+
+# ---------------------------------------------------------------------------
+# Rust type-reference head extraction
+# ---------------------------------------------------------------------------
+
+def _rust_head_type_identifier(type_node: Node, src: str) -> str | None:
+    """Return the head identifier of a Rust type expression, or None.
+
+    Rust needs its own extractor because the C#-shaped default spells a type
+    name ``identifier`` while tree-sitter-rust spells it ``type_identifier``.
+    The default therefore returned None for every bare Rust type, and for
+    ``std::io::Error`` returned the leftmost segment ``io`` — a crate name,
+    not the type.
+
+    Examples:
+        ``MyType``              -> "MyType"
+        ``&Other`` / ``&mut T`` -> "Other"  (reference_type unwrapped)
+        ``dyn MyTrait``         -> "MyTrait"
+        ``impl Shape``          -> "Shape"
+        ``Box<Inner>``          -> "Box"    -> filtered (builtin)
+        ``std::io::Error``      -> "Error"  (rightmost component)
+        ``u32`` / ``String``    -> None     (builtin)
+        ``T``                   -> None     (single-letter generic param)
+
+    Generic arguments are not recursed into: ``Vec<Foo>`` yields the head
+    ``Vec`` only. Foo reaches the resolver through its own capture, matching
+    the Go and Kotlin extractors.
+    """
+    node: Node | None = type_node
+    text = ""
+    for _ in range(8):
+        if node is None:
+            return None
+        kind = node.type
+        if kind == "type_identifier":
+            text = _node_text(node, src)
+            break
+        if kind == "scoped_type_identifier":
+            # ``std::io::Error`` — the type is the rightmost component.
+            name = node.child_by_field_name("name")
+            if name is None:
+                return None
+            node = name
+            continue
+        if kind in ("reference_type", "pointer_type"):
+            # ``&T`` / ``&mut T`` / ``*const T`` — the type field is the
+            # referent; ``mut`` and ``const`` are unnamed children.
+            node = node.child_by_field_name("type")
+            continue
+        if kind == "generic_type":
+            # ``Box<Inner>`` — head is the constructor, args are captured
+            # separately.
+            node = node.child_by_field_name("type")
+            continue
+        if kind in ("dynamic_type", "abstract_type"):
+            # ``dyn Trait`` / ``impl Trait`` — sole named child is the trait.
+            node = node.child_by_field_name("trait") or next(
+                iter(node.named_children), None
+            )
+            continue
+        if kind in ("primitive_type", "tuple_type", "unit_type", "array_type",
+                    "function_type", "never_type", "empty_type"):
+            # Builtin, or no single head name to resolve.
+            return None
+        # Unknown shape - descend into the first named child and re-classify.
+        node = next(iter(node.named_children), None)
+
+    return text if is_resolvable_type_name(text, "rust") else None
 
 
 # Per-language head-identifier extractor for ``@param.type`` captures.
 # Defaults to the C#-shaped extractor; languages with a differently-shaped
 # type grammar register their own here.
-TYPE_HEAD_EXTRACTORS: dict[str, "Callable[[Node, str], str | None]"] = {
+TYPE_HEAD_EXTRACTORS: dict[str, Callable[[Node, str], str | None]] = {
     "go": _go_head_type_identifier,
     "c": _c_head_type_identifier,
     "cpp": _c_head_type_identifier,
@@ -871,6 +890,7 @@ TYPE_HEAD_EXTRACTORS: dict[str, "Callable[[Node, str], str | None]"] = {
     "javascript": _ts_head_type_identifier,
     "java": _java_head_type_identifier,
     "kotlin": _kotlin_head_type_identifier,
+    "rust": _rust_head_type_identifier,
 }
 
 
@@ -880,9 +900,19 @@ TYPE_HEAD_EXTRACTORS: dict[str, "Callable[[Node, str], str | None]"] = {
 
 
 def _count_arguments(arg_node: Node) -> int:
-    """Count the number of arguments in an argument/argument_list node."""
+    """Count the number of arguments in an argument/argument_list node.
+
+    Comments are children of the argument list, so an argument annotated with
+    a trailing ``// name`` counted twice. Grammars spell the node type several
+    ways (``comment``, ``line_comment``, ``block_comment``), hence the
+    substring test rather than a fixed set.
+    """
     skip_types = frozenset({"(", ")", ",", "[", "]"})
-    return sum(1 for child in arg_node.children if child.type not in skip_types)
+    return sum(
+        1
+        for child in arg_node.children
+        if child.type not in skip_types and "comment" not in child.type
+    )
 
 
 def _find_enclosing_symbol(

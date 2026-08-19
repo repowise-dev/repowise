@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -27,6 +28,43 @@ from repowise.cli.main import cli
 def _git(repo: Path, *args: str) -> str:
     result = subprocess.run(["git", *args], cwd=str(repo), capture_output=True, text=True)
     return result.stdout.strip()
+
+
+def _git_commit_dated(repo: Path, message: str, date: str) -> None:
+    """Commit already-staged changes with a fixed author/committer date, so
+    decay-window tests can advance the repo's anchor deterministically."""
+    env = {**os.environ, "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date}
+    subprocess.run(
+        ["git", "commit", "-m", message], cwd=str(repo), env=env, capture_output=True, text=True
+    )
+
+
+async def _git_metadata(repo: Path, file_path: str) -> dict:
+    """Read one file's persisted git_metadata row as a dict."""
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.database import resolve_db_url
+    from repowise.core.persistence.models import GitMetadata
+
+    engine = create_engine(resolve_db_url(repo))
+    try:
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            row = (
+                (
+                    await session.execute(
+                        select(GitMetadata).where(GitMetadata.file_path == file_path)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            return {
+                "temporal_hotspot_score": row.temporal_hotspot_score,
+                "commit_count_90d": row.commit_count_90d,
+                "prior_defect_count": row.prior_defect_count,
+            }
+    finally:
+        await engine.dispose()
 
 
 def _make_git_repo(tmp_path: Path) -> Path:
@@ -107,9 +145,7 @@ def test_update_refreshes_every_index_layer(tmp_path: Path) -> None:
     assert "c.py" not in kg_path.read_text(encoding="utf-8")
 
     # A new file changes the graph shape, so every layer must move.
-    (repo / "c.py").write_text(
-        "from b import beta\n\n\ndef gamma():\n    return beta() * 2\n"
-    )
+    (repo / "c.py").write_text("from b import beta\n\n\ndef gamma():\n    return beta() * 2\n")
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "add c.py")
     new_head = _git(repo, "rev-parse", "HEAD")
@@ -137,6 +173,57 @@ def test_update_refreshes_every_index_layer(tmp_path: Path) -> None:
     kg_after = json.loads(kg_path.read_text(encoding="utf-8"))
     assert any("c.py" in (n.get("filePath") or n.get("id") or "") for n in kg_after["nodes"])
     assert state.get("knowledge_graph", {}).get("fingerprint")
+
+
+def test_update_recovers_idle_file_decayed_health(tmp_path: Path, monkeypatch) -> None:
+    """#728: an idle file's time-decayed history must recover on a plain git
+    update. a.py churns hard, then only b.py changes six months later — a.py is
+    never touched, yet its decayed hotspot score must shrink and the periodic
+    full re-score must fire (stamping ``last_full_rescore_at``)."""
+    # Anchor windows/decay to the repo's newest commit so the six-month gap is
+    # deterministic rather than measured against wall clock.
+    monkeypatch.setenv("REPOWISE_GIT_WINDOW_ANCHOR", "head")
+
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@test.com")
+    _git(repo, "config", "user.name", "Test")
+    for i in range(4):
+        (repo / "a.py").write_text("x = 1\n" * (i + 5))
+        _git(repo, "add", ".")
+        _git_commit_dated(repo, f"churn a {i}", "2024-01-01T00:00:00")
+    (repo / "b.py").write_text("y = 0\n")
+    _git(repo, "add", ".")
+    _git_commit_dated(repo, "add b", "2024-01-02T00:00:00")
+
+    _index_full(repo)
+    base = _git(repo, "rev-parse", "HEAD")
+    before = asyncio.run(_git_metadata(repo, "a.py"))
+    assert before["temporal_hotspot_score"] > 0.0
+
+    from repowise.cli.helpers import save_state
+
+    save_state(repo, {"last_sync_commit": base, "docs_enabled": False})
+
+    # Six months later, only b.py changes. a.py is idle.
+    for i in range(3):
+        (repo / "b.py").write_text(f"y = {i + 1}\n")
+        _git(repo, "add", ".")
+        _git_commit_dated(repo, f"b only {i}", "2024-07-01T00:00:00")
+
+    result = CliRunner().invoke(cli, ["update", str(repo), "--no-workspace"])
+    assert result.exit_code == 0, result.output
+
+    after = asyncio.run(_git_metadata(repo, "a.py"))
+    # The idle file's decayed hotspot score recovered (shrank) even though no
+    # commit touched it — the ratchet #728 reported is gone.
+    assert after["temporal_hotspot_score"] < before["temporal_hotspot_score"]
+
+    # The periodic full health re-score fired (no prior stamp → due) and was
+    # anchored to the repo's HEAD timestamp.
+    state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+    assert isinstance(state.get("last_full_rescore_at"), (int, float))
 
 
 def test_update_degrades_visibly_when_a_step_fails(tmp_path: Path, monkeypatch) -> None:

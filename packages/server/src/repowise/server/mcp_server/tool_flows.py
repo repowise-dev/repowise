@@ -9,19 +9,22 @@ off the hot path.
 from __future__ import annotations
 
 import time
+from itertools import pairwise
 from typing import Any
 
 from repowise.core.persistence.crud import (
     get_graph_node,
-    get_graph_nodes_by_ids,
     get_top_entry_points,
 )
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode
+from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._graph_utils import (
     bfs_trace,
-    entry_point_score as _ep_score,
     resolve_trace_communities,
+)
+from repowise.server.mcp_server._graph_utils import (
+    entry_point_score as _ep_score,
 )
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -32,7 +35,6 @@ from repowise.server.mcp_server._helpers import (
     is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.core.registry import mcp_tool_registry as mcp
 
 
 @mcp.tool(default=False)
@@ -109,19 +111,35 @@ async def get_execution_flows(
         flows: list[dict[str, Any]] = []
 
         for ep_node, ep_score in entry_nodes:
+            hop_origins: dict[tuple[str, str], str] = {}
+            termination: dict[str, Any] = {}
             trace = await bfs_trace(
-                session, repo_id, ep_node.node_id, max_depth, node_cache
+                session,
+                repo_id,
+                ep_node.node_id,
+                max_depth,
+                node_cache,
+                hop_origins,
+                termination,
             )
             # Drop excluded files reached downstream so they don't leak via the
             # trace (entry-point filtering above doesn't cover BFS descendants).
             if exclude_spec:
-                trace = filter_embedded_path_ids(trace, exclude_spec)
+                filtered = filter_embedded_path_ids(trace, exclude_spec)
+                # The walk classified the node it actually stopped at. When
+                # filtering drops that node, the trace we publish ends earlier
+                # and it ends there because of the exclude spec — reporting the
+                # walk's reason would assert the new last node calls nothing.
+                if filtered and filtered[-1] != trace[-1]:
+                    termination["reason"] = "excluded_target"
+                    termination["detail"] = {}
+                trace = filtered
 
             communities_visited, crosses = await resolve_trace_communities(
                 session, repo_id, trace, node_cache
             )
 
-            flows.append({
+            flow: dict[str, Any] = {
                 "entry_point": ep_node.node_id,
                 "entry_point_name": ep_node.name or ep_node.node_id.split("::")[-1],
                 "entry_point_score": round(ep_score, 3),
@@ -129,7 +147,17 @@ async def get_execution_flows(
                 "depth": len(trace) - 1,
                 "crosses_community": crosses,
                 "communities_visited": communities_visited,
-            })
+                "termination": termination.get("reason"),
+            }
+            if termination.get("detail"):
+                flow["termination_detail"] = termination["detail"]
+            # Which strategy produced each hop, aligned to `trace` pairwise.
+            # Omitted when no hop has one, so an older index shows no field
+            # rather than a list of nulls.
+            via = [hop_origins.get(pair) for pair in pairwise(trace)]
+            if any(via):
+                flow["trace_via"] = via
+            flows.append(flow)
 
     # Sort by score descending
     flows.sort(key=lambda f: -f["entry_point_score"])

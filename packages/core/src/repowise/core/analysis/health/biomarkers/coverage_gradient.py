@@ -27,6 +27,7 @@ the has-tests / hotspot gates.
 
 from __future__ import annotations
 
+from ....test_paths import is_test_related_path
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -43,30 +44,22 @@ _COVERAGE_HIGH = 40.0
 _COVERAGE_MEDIUM = 70.0
 
 
-def _looks_like_test_path(path: str) -> bool:
-    p = path.replace("\\", "/").lower()
-    return (
-        "/test/" in p
-        or "/tests/" in p
-        or "/__tests__/" in p
-        or p.startswith(("test/", "tests/", "__tests__/"))
-        or p.endswith(
-            ("_test.py", "_test.go", ".test.ts", ".test.tsx", ".test.js", ".spec.ts", ".spec.js")
-        )
-        or p.rsplit("/", 1)[-1].startswith("test_")
-    )
-
-
 class CoverageGradientDetector:
     name = "coverage_gradient"
     category = "test_coverage_gradient"
+    # Declares what the ``deduction`` override below already makes true: this
+    # fires on every file that has coverage data at all, so its magnitude ranks
+    # files against each other but never answers "why this file". Readers that
+    # pick one headline biomarker per file consult ``continuous_biomarkers()``
+    # to prefer a discrete cause.
+    continuous = True
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         cov = ctx.line_coverage_pct
         if cov is None:
             # No coverage data -> silent. Absent is not the same as uncovered.
             return []
-        if _looks_like_test_path(ctx.file_path):
+        if is_test_related_path(ctx.file_path, ctx.language):
             return []
 
         uncovered_fraction = max(0.0, (100.0 - float(cov)) / 100.0)

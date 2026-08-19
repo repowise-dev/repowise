@@ -9,6 +9,7 @@ decisions slice, savings headline, and health KPIs.
 
 from __future__ import annotations
 
+import configparser
 import contextlib
 import json
 import sqlite3
@@ -19,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.scoring import hotspot_health
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -37,6 +39,10 @@ router = APIRouter(
     dependencies=[Depends(verify_api_key)],
 )
 
+#: How many snapshots the health card's trend line plots. Also the width of the
+#: scalar window this route reads, so the read and the chart cannot drift.
+HEALTH_HISTORY_POINTS = 12
+
 
 def _index_storage_bytes(repowise_dir: Path) -> int:
     """Total on-disk size of a repo's ``.repowise/`` directory."""
@@ -48,6 +54,68 @@ def _index_storage_bytes(repowise_dir: Path) -> int:
             with contextlib.suppress(OSError):
                 total += path.stat().st_size
     return total
+
+
+def _remote_url(stored_url: str | None, local_path: str | None) -> str | None:
+    """Best-effort git remote for a repo.
+
+    ``repositories.url`` is client-supplied and empty for most CLI-registered
+    repos, so fall back to reading ``origin`` out of ``.git/config``. Parsed
+    rather than shelled out to: this runs on a page load, and ``git remote
+    get-url`` would cost a process spawn per request for a string sitting in a
+    file we can read.
+
+    Used only to resolve a repo avatar, so every failure path returns ``None``
+    and the UI falls back to initials.
+    """
+    if stored_url:
+        return stored_url
+    if not local_path:
+        return None
+
+    git_path = Path(local_path) / ".git"
+    # Worktrees and submodules use a `.git` FILE holding `gitdir: <path>`; the
+    # config lives in the main checkout, so follow the pointer before reading.
+    if git_path.is_file():
+        try:
+            pointer = git_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        if not pointer.startswith("gitdir:"):
+            return None
+        resolved = Path(pointer.split(":", 1)[1].strip())
+        if not resolved.is_absolute():
+            resolved = (Path(local_path) / resolved).resolve()
+        # A worktree's gitdir is `<main>/.git/worktrees/<name>`; config is two
+        # levels up. Fall back to the pointed-at dir for the submodule case.
+        git_path = resolved.parent.parent if resolved.parent.name == "worktrees" else resolved
+
+    config_path = git_path / "config"
+    if not config_path.is_file():
+        return None
+
+    # Both flags are load-bearing, not defensive boilerplate:
+    #
+    # strict=False — git tolerates duplicate keys and writes them routinely. A
+    # remote with two `fetch` refspecs is normal, and VS Code writes
+    # `vscode-merge-base` twice under a branch section. Strict parsing raises
+    # DuplicateOptionError on both, which would mean this project's own
+    # checkout never resolves a remote.
+    #
+    # interpolation=None — ConfigParser expands `%` at get() time, so a
+    # perfectly valid remote like `https://user%40company.com@dev.azure.com/...`
+    # raises InterpolationSyntaxError. Left on, that exception escapes the
+    # endpoint and turns the whole Overview into a 404 in order to render an
+    # avatar.
+    parser = configparser.ConfigParser(strict=False, interpolation=None)
+    try:
+        parser.read(config_path, encoding="utf-8")
+        for section in ('remote "origin"', 'remote "upstream"'):
+            if parser.has_option(section, "url"):
+                return parser.get(section, "url").strip() or None
+    except (OSError, configparser.Error):
+        return None
+    return None
 
 
 def _decision_slim(d: Any) -> dict:
@@ -175,7 +243,7 @@ def _build_attention_items(
 @router.get("/{repo_id}/overview-summary")
 async def overview_summary(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Everything the Overview page needs above the fold, in one call."""
     repo = await crud.get_repository(session, repo_id)
@@ -213,6 +281,30 @@ async def overview_summary(
     doc_coverage_pct = avg_confidence * 100
     total_pages = (
         await session.scalar(select(func.count(Page.id)).where(Page.repository_id == repo_id)) or 0
+    )
+    # Pages a model actually wrote, as opposed to the ones assembled from the
+    # index alone. The discriminator is the provider: "template" is the stub
+    # writer, so anything else means a real generation call produced the prose.
+    #
+    # Deliberately NOT additionally scoped to MODEL_WRITTEN_PAGE_TYPES. That
+    # narrower query looks more principled and is a lie in practice: file and
+    # symbol pages do get generated with a real provider on some runs, so
+    # scoping by type puts model-written pages in the "assembled from the index"
+    # bucket. Asking the question the honest way — did a model write this page —
+    # needs no page-type carve-out, and the answer stays true whatever the
+    # generator does next.
+    #
+    # Note a stubbed page (a provider call that failed and fell back) counts as
+    # not-prose, which is correct: it has no prose.
+    prose_pages = (
+        await session.scalar(
+            select(func.count(Page.id)).where(
+                Page.repository_id == repo_id,
+                Page.provider_name.is_not(None),
+                Page.provider_name != "template",
+            )
+        )
+        or 0
     )
     fresh_pages = (
         await session.scalar(
@@ -278,37 +370,106 @@ async def overview_summary(
     )
 
     # --- Health KPIs + deltas vs previous snapshot ------------------------
-    health_summary = await crud.get_health_summary(session, repo_id)
-    snapshots = await crud.list_health_snapshots(session, repo_id)
-    hotspot_health: float | None = None
+    # Loaded once and handed to both consumers below: the KPI rollup and the
+    # defect-accuracy stat both want every per-file row, and letting each fetch
+    # its own pulled the whole table twice per page load.
+    health_metrics = await crud.get_health_metrics(session, repo_id)
+    findings = await crud.get_health_findings(session, repo_id)
+    health_summary = await crud.get_health_summary(
+        session, repo_id, metrics=health_metrics, findings=findings
+    )
+    # Three scopes, three reads. This payload wants the *count* of retained
+    # snapshots, the newest ``HEALTH_HISTORY_POINTS`` rows' scalars for the
+    # sparkline, and the newest two rows' per-file maps for the file-count
+    # delta — and nothing else. Loading the history as entities to get that
+    # pulled every row's ``per_file_scores_json``: 2.8 MB on this index, ~9 MB
+    # at the retention cap, for 375 KB of actual use. Capping the read at two
+    # rows instead would be wrong in two visible ways — it would flatten the
+    # sparkline and report a snapshot count of 2.
+    snapshot = await crud.get_health_snapshot_headline(
+        session, repo_id, recent=HEALTH_HISTORY_POINTS
+    )
+    # The headline is the *current* number, so it comes from the metrics loaded
+    # above rather than off the newest snapshot: ``repowise update`` re-scores
+    # health without writing a snapshot, so the stored value can lag the rows
+    # every other figure on this page is built from. Costs no extra query.
+    #
+    # ``history`` and ``deltas`` below stay snapshot-derived on purpose. They
+    # are a series of recorded runs, and there is no live value for "the run
+    # before this one", so the delta means "since the last recorded snapshot".
+    hotspot_paths = await crud.get_hotspot_file_paths(session, repo_id)
+    hotspot_health_value = hotspot_health(health_metrics, hotspot_paths)
     last_indexed_at: str | None = None
     deltas: dict[str, float | None] = {
         "average_health": None,
         "hotspot_health": None,
         "file_count": None,
     }
-    if snapshots:
-        latest = snapshots[-1]
-        hotspot_health = round(float(latest.hotspot_health), 2)
-        last_indexed_at = latest.taken_at.isoformat() if latest.taken_at else None
-    if len(snapshots) >= 2:
-        prev, cur = snapshots[-2], snapshots[-1]
-        deltas["average_health"] = round(float(cur.average_health) - float(prev.average_health), 2)
-        deltas["hotspot_health"] = round(float(cur.hotspot_health) - float(prev.hotspot_health), 2)
-        try:
-            prev_files = len(json.loads(prev.per_file_scores_json or "{}"))
-            cur_files = len(json.loads(cur.per_file_scores_json or "{}"))
-            if prev_files and cur_files:
-                deltas["file_count"] = cur_files - prev_files
-        except Exception:
-            pass
+    if snapshot.snapshot_count:
+        last_indexed_at = snapshot.taken_at.isoformat() if snapshot.taken_at else None
+    if len(snapshot.recent) >= 2:
+        prev, cur = snapshot.recent[-2], snapshot.recent[-1]
+        deltas["average_health"] = round(cur.average_health - prev.average_health, 2)
+        deltas["hotspot_health"] = round(cur.hotspot_health - prev.hotspot_health, 2)
+        file_counts = await crud.get_health_snapshot_file_counts(session, repo_id, limit=2)
+        if len(file_counts) == 2 and all(file_counts):
+            deltas["file_count"] = file_counts[1] - file_counts[0]
 
-    findings = await crud.get_health_findings(session, repo_id)
     severity_breakdown = {"critical": 0, "high": 0, "medium": 0, "low": 0}
     for f in findings:
         s = (f.severity or "").lower()
         if s in severity_breakdown:
             severity_breakdown[s] += 1
+
+    # "Can you trust this score?" — the backtested precision of the defect
+    # ranking, shown on the health card. Sourced here rather than from the stats
+    # payload: this is a health number, and having the overview reach across
+    # into another page's payload for it is what broke when that payload changed.
+    #
+    # ``prior_defect`` rows only, each carrying its parsed ``details``. Two
+    # problems in one shape: the stat reads no other biomarker, so converting
+    # the other ~90% of findings was waste; and it reads the fix count and the
+    # window *out of* ``details``, which this call site never supplied — so
+    # every flagged file reported ``recent_fixes: 1`` (333 of 999 have more, up
+    # to 19) and ``window_days`` echoed the default instead of the indexed
+    # value. The health dashboard computes the same stat from the real numbers,
+    # so the two surfaces disagreed on one figure.
+    # Parsed per row: one malformed blob must not cost the whole panel.
+    prior_defect_rows: list[dict] = []
+    for f in findings:
+        if f.biomarker_type != "prior_defect":
+            continue
+        details: Any = {}
+        with contextlib.suppress(Exception):
+            details = json.loads(f.details_json) if f.details_json else {}
+        prior_defect_rows.append(
+            {
+                "file_path": f.file_path,
+                "biomarker_type": f.biomarker_type,
+                "details": details,
+            }
+        )
+
+    defect_accuracy = None
+    try:
+        from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
+
+        defect_accuracy = compute_defect_accuracy(
+            [
+                {
+                    "file_path": m.file_path,
+                    "score": m.score,
+                    "nloc": m.nloc,
+                    "has_test_file": m.has_test_file,
+                    "module": m.module,
+                }
+                for m in health_metrics
+            ],
+            prior_defect_rows,
+        )
+    except Exception:
+        # Best-effort: the card omits the panel rather than failing the page.
+        defect_accuracy = None
 
     # --- Attention items + onboarding targets -----------------------------
     decision_health = await crud.get_decision_health_summary(session, repo_id)
@@ -393,19 +554,31 @@ async def overview_summary(
     savings = await _savings_headline(repo.local_path)
     repowise_dir = Path(repo.local_path) / ".repowise" if repo.local_path else Path(".repowise")
 
+    # Serve the same read-time self-healed "indexed commit" as /api/repos and
+    # /health/overview: prefer state.json's last_sync_commit over a possibly
+    # stale DB row so the dashboard's indexed-commit display (and any freshness
+    # signal derived from it) doesn't read "behind" after a no-op update left
+    # the repositories row un-restamped.
+    from repowise.server.mcp_server._meta import resolve_indexed_commit
+
+    indexed_commit = resolve_indexed_commit(repo.head_commit, repo.local_path)
+
     return {
         "repo": {
             "id": repo.id,
             "name": repo.name,
             "local_path": repo.local_path,
             "default_branch": repo.default_branch,
-            "head_commit": repo.head_commit,
+            "head_commit": indexed_commit,
             "updated_at": repo.updated_at.isoformat() if repo.updated_at else None,
+            "remote_url": _remote_url(repo.url, repo.local_path),
         },
         "stats": {
             "file_count": file_count,
             "symbol_count": symbol_count,
             "entry_point_count": entry_point_count,
+            "doc_page_count": total_pages,
+            "doc_prose_page_count": prose_pages,
             "doc_coverage_pct": doc_coverage_pct,
             "freshness_score": freshness_score,
             "dead_export_count": dead_export_count,
@@ -416,7 +589,7 @@ async def overview_summary(
         },
         "health": {
             "average_health": health_summary.get("average_health"),
-            "hotspot_health": hotspot_health,
+            "hotspot_health": hotspot_health_value,
             "worst_performer_path": health_summary.get("worst_performer_path"),
             "worst_performer_score": health_summary.get("worst_performer_score"),
             "open_findings": health_summary.get("open_findings", 0),
@@ -427,15 +600,17 @@ async def overview_summary(
             "worst_performance_path": health_summary.get("worst_performance_path"),
             "worst_performance_score": health_summary.get("worst_performance_score"),
             "severity_breakdown": severity_breakdown,
+            "defect_accuracy": defect_accuracy,
             "last_indexed_at": last_indexed_at,
-            "snapshot_count": len(snapshots),
+            # The true total, not the length of the windowed read above.
+            "snapshot_count": snapshot.snapshot_count,
             "history": [
                 {
                     "taken_at": s.taken_at.isoformat() if s.taken_at else None,
-                    "average_health": round(float(s.average_health), 2),
-                    "hotspot_health": round(float(s.hotspot_health), 2),
+                    "average_health": round(s.average_health, 2),
+                    "hotspot_health": round(s.hotspot_health, 2),
                 }
-                for s in snapshots[-12:]
+                for s in snapshot.recent
             ],
         },
         "languages": languages,

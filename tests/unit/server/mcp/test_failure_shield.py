@@ -73,6 +73,73 @@ async def test_workspace_unknown_repo_valueerror_is_success_shaped():
 
 
 @pytest.mark.asyncio
+async def test_a_store_older_than_the_models_says_run_update_not_give_up():
+    """Drift ``init_db`` cannot repair must not read as an internal crash.
+
+    Every read path now reconciles *additive* drift, so a ``no such column``
+    that still reaches here is the kind ``_reconcile_schema`` deliberately
+    skips — a removed or renamed column, a changed type. The generic shape
+    tells the caller to stop using the tool for the rest of the session, which
+    is the worst possible advice when one ``repowise update`` fixes it.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    async def stale_store_tool() -> dict:
+        raise OperationalError(
+            "SELECT repositories.churn_anchor_sha FROM repositories",
+            {},
+            Exception("no such column: repositories.churn_anchor_sha"),
+        )
+
+    result = await shield(stale_store_tool)()
+
+    assert "predates the installed repowise" in result["error"]
+    # First line only — SQLAlchemy appends the whole compiled statement.
+    assert "\n" not in result["error"]
+    assert "repowise update" in result["remedy"]
+    assert "user" in result["remedy"]
+    assert "Retry this call once" not in result.get("guidance", "")
+
+
+@pytest.mark.asyncio
+async def test_an_unrelated_operationalerror_keeps_the_internal_error_shape():
+    """The stale-index branch is keyed on the message, so guard the negative."""
+    from sqlalchemy.exc import OperationalError
+
+    async def locked_db_tool() -> dict:
+        raise OperationalError("SELECT 1", {}, Exception("database is locked"))
+
+    result = await shield(locked_db_tool)()
+
+    assert "predates" not in result["error"]
+    assert "Retry this call once" in result["guidance"]
+
+
+@pytest.mark.asyncio
+async def test_the_users_own_question_cannot_fake_a_stale_index():
+    """`str()` on a SQLAlchemy error appends the statement AND its parameters.
+
+    `get_answer` binds the caller's question as a parameter, so matching the
+    full string let someone who merely ASKS about "no such column" be told
+    their index is stale and to re-index — over what is really a transient
+    lock. Match the driver's own message instead.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    async def locked_while_asking_about_columns() -> dict:
+        raise OperationalError(
+            "INSERT INTO answer_cache (question, payload) VALUES (?, ?)",
+            ("why do I get no such column errors when I upgrade?", "{}"),
+            Exception("database is locked"),
+        )
+
+    result = await shield(locked_while_asking_about_columns)()
+
+    assert "predates" not in result["error"], result["error"]
+    assert "Retry this call once" in result["guidance"]
+
+
+@pytest.mark.asyncio
 async def test_unexpected_exception_is_success_shaped():
     async def exploding_tool(x: int) -> dict:
         raise RuntimeError("boom")
@@ -108,14 +175,111 @@ def test_sync_callables_pass_through():
     assert shield(sync_fn) is sync_fn
 
 
-def test_server_composes_shield_into_middleware():
+@pytest.mark.asyncio
+async def test_server_composes_shield_into_middleware():
     """Pin the __init__.py wiring: every registered tool goes through the
     shield. Without this, a refactor could silently drop the composition and
-    reopen the isError-on-every-tool hole."""
-    import inspect as _inspect
+    reopen the isError-on-every-tool hole.
 
-    import repowise.server.mcp_server as mcp_mod
+    Asserted through behaviour rather than by matching the composition's
+    source text, so reordering or renaming the layers cannot fail this while
+    the guarantee still holds — nor pass while it does not.
+    """
+    from repowise.server.mcp_server import tool_middleware
 
-    source = _inspect.getsource(mcp_mod)
-    assert "_failure_shield" in source
-    assert "_savings_instrument(_failure_shield(fn))" in source
+    async def exploding_tool() -> dict:
+        raise RuntimeError("boom")
+
+    result = await tool_middleware(exploding_tool)()
+    assert isinstance(result, dict), "an exception escaped the shield"
+    assert "boom" not in repr(result).lower() or "error" in repr(result).lower()
+
+
+# ---------------------------------------------------------------------------
+# Import warm-up gate
+#
+# The deferred `import lancedb` runs on a worker thread and holds Python's
+# import locks. A tool body that lazily imports while it is in flight blocks
+# against it, and the event loop stops making progress — which also stops the
+# asyncio timeouts that would otherwise cap the call from ever firing. The
+# observed symptom was the first tool call of a session never returning. The
+# shield holds calls until the import is done so the two never overlap.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tool_waits_for_the_lancedb_import(monkeypatch):
+    """A call that arrives mid-import runs only after the import signals done."""
+    import asyncio
+
+    from repowise.server.mcp_server import _state
+
+    ready = asyncio.Event()
+    monkeypatch.setattr(_state, "_lancedb_ready", ready, raising=False)
+
+    started = asyncio.Event()
+
+    async def tool() -> dict:
+        started.set()
+        return {"ok": True}
+
+    task = asyncio.create_task(shield(tool)())
+    await asyncio.sleep(0.05)
+    assert not started.is_set(), "handler body ran while the import was in flight"
+
+    ready.set()
+    assert await task == {"ok": True}
+    assert started.is_set()
+
+
+@pytest.mark.asyncio
+async def test_no_wait_once_the_import_is_done(monkeypatch):
+    """A warmed server pays nothing: the gate is a set-Event check."""
+    import asyncio
+
+    from repowise.server.mcp_server import _state
+
+    ready = asyncio.Event()
+    ready.set()
+    monkeypatch.setattr(_state, "_lancedb_ready", ready, raising=False)
+
+    async def tool() -> dict:
+        return {"ok": True}
+
+    assert await shield(tool)() == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_no_gate_when_no_import_was_started(monkeypatch):
+    """No background import (no event) means no wait at all."""
+    from repowise.server.mcp_server import _state
+
+    monkeypatch.setattr(_state, "_lancedb_ready", None, raising=False)
+
+    async def tool() -> dict:
+        return {"ok": True}
+
+    assert await shield(tool)() == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_gate_is_bounded(monkeypatch):
+    """A pathological import degrades to a slow answer, never a stuck client."""
+    import asyncio
+
+    # Reach the module through importlib: the package re-exports `shield`
+    # under the name `_failure_shield`, so attribute access finds the function
+    # rather than the submodule.
+    import importlib
+
+    from repowise.server.mcp_server import _state
+
+    shield_mod = importlib.import_module("repowise.server.mcp_server._failure_shield")
+
+    monkeypatch.setattr(_state, "_lancedb_ready", asyncio.Event(), raising=False)
+    monkeypatch.setattr(shield_mod, "_WARMUP_TIMEOUT_S", 0.05)
+
+    async def tool() -> dict:
+        return {"ok": True}
+
+    assert await shield(tool)() == {"ok": True}

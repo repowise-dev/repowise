@@ -12,16 +12,17 @@ from __future__ import annotations
 import contextlib
 import inspect
 import io
-import re
 import sys
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 import networkx as nx
 import structlog
 
 from repowise.core.analysis.kg_curation import GENERIC_ORG_SEGMENTS, dominant_segments
+from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES, SYMBOL_USE_EDGE_TYPES
+from repowise.core.test_paths import is_test_related_path
 
 log = structlog.get_logger(__name__)
 
@@ -32,15 +33,16 @@ log = structlog.get_logger(__name__)
 _MAX_COMMUNITY_FRACTION = 0.30
 _MIN_SPLIT_SIZE = 20
 
-# Edge types to include when building file-level community subgraph
-_FILE_COMMUNITY_EDGE_TYPES = frozenset({
-    "imports", "framework", "dynamic", "extends", "implements",
-})
+# Edge types to include when building file-level community subgraph.
+# Was {imports, framework, dynamic, extends, implements}: "dynamic" matched no
+# real edge, and extends/implements are symbol-to-symbol so they never joined
+# two files.
+_FILE_COMMUNITY_EDGE_TYPES = FILE_DEPENDENCY_EDGE_TYPES
 
-# Edge types to include when building symbol-level community subgraph
-_SYMBOL_COMMUNITY_EDGE_TYPES = frozenset({
-    "calls", "extends", "implements", "has_method",
-})
+# Edge types to include when building symbol-level community subgraph.
+# Containment is kept here on purpose: a class and its methods belong in one
+# community.
+_SYMBOL_COMMUNITY_EDGE_TYPES = SYMBOL_USE_EDGE_TYPES | {"has_method"}
 
 # Generic directory segments excluded from heuristic labeling — the shared
 # organisational-container vocabulary lives in kg_curation next to its
@@ -113,7 +115,7 @@ def _directory_fallback(nodes: list[str]) -> dict[str, int]:
     return result
 
 
-def _partition(G: nx.Graph) -> tuple[dict, str]:
+def _partition(graph: nx.Graph) -> tuple[dict, str]:
     """Run community detection. Returns ({node: community_id}, algorithm_name).
 
     Tries Leiden (graspologic) first, falls back to Louvain (networkx),
@@ -126,7 +128,7 @@ def _partition(G: nx.Graph) -> tuple[dict, str]:
         if "random_seed" in inspect.signature(leiden).parameters:
             leiden_kwargs["random_seed"] = 42  # determinism (matches louvain's seed)
         with _suppress_graspologic_output():
-            result = leiden(G, **leiden_kwargs)
+            result = leiden(graph, **leiden_kwargs)
         return result, "leiden"
     except ImportError:
         pass
@@ -137,14 +139,15 @@ def _partition(G: nx.Graph) -> tuple[dict, str]:
         if "max_level" in inspect.signature(nx.community.louvain_communities).parameters:
             kwargs["max_level"] = 10
 
-        communities = nx.community.louvain_communities(G, **kwargs)
+        communities = nx.community.louvain_communities(graph, **kwargs)
         assignment = {node: cid for cid, nodes in enumerate(communities) for node in nodes}
         return assignment, "louvain"
     except Exception as exc:
         log.warning("louvain_failed_using_directory_fallback", error=str(exc))
 
     # Final fallback: directory-based grouping
-    return _directory_fallback(list(G.nodes())), "directory"
+    # Sorted: _directory_fallback numbers directories in first-seen order.
+    return _directory_fallback(sorted(graph.nodes())), "directory"
 
 
 # ---------------------------------------------------------------------------
@@ -153,10 +156,10 @@ def _partition(G: nx.Graph) -> tuple[dict, str]:
 
 
 def _split_community(
-    G: nx.Graph, nodes: list[str],
+    graph: nx.Graph, nodes: list[str],
 ) -> list[list[str]]:
     """Run a second partition pass on an oversized community subgraph."""
-    subgraph = G.subgraph(nodes)
+    subgraph = graph.subgraph(nodes)
     if subgraph.number_of_edges() == 0:
         return [[n] for n in sorted(nodes)]
     try:
@@ -172,7 +175,7 @@ def _split_community(
 
 
 def _split_oversized(
-    G: nx.Graph,
+    graph: nx.Graph,
     communities: dict[int, list[str]],
     max_fraction: float = _MAX_COMMUNITY_FRACTION,
     min_split_size: int = _MIN_SPLIT_SIZE,
@@ -184,7 +187,7 @@ def _split_oversized(
     result: list[list[str]] = []
     for nodes in communities.values():
         if len(nodes) > max_size:
-            result.extend(_split_community(G, nodes))
+            result.extend(_split_community(graph, nodes))
         else:
             result.append(nodes)
     return result
@@ -195,12 +198,12 @@ def _split_oversized(
 # ---------------------------------------------------------------------------
 
 
-def _cohesion_score(G: nx.Graph, community_nodes: list[str]) -> float:
+def _cohesion_score(graph: nx.Graph, community_nodes: list[str]) -> float:
     """Ratio of actual intra-community edges to maximum possible."""
     n = len(community_nodes)
     if n <= 1:
         return 1.0
-    subgraph = G.subgraph(community_nodes)
+    subgraph = graph.subgraph(community_nodes)
     actual = subgraph.number_of_edges()
     possible = n * (n - 1) / 2
     return round(actual / possible, 4) if possible > 0 else 0.0
@@ -230,10 +233,10 @@ def _collect_path_segments(
                 and lower not in extra_generic
                 and len(lower) > 1
                 and not lower.startswith(".")
+                and lower not in seen
             ):
-                if lower not in seen:
-                    counter[lower] += 1
-                    seen.add(lower)
+                counter[lower] += 1
+                seen.add(lower)
     return counter
 
 
@@ -329,7 +332,7 @@ def _heuristic_label(
 
 
 def _deduplicate_labels(
-    communities_info: dict[int, "CommunityInfo"],
+    communities_info: dict[int, CommunityInfo],
     extra_generic: frozenset[str] = frozenset(),
 ) -> None:
     """Add sub-labels to disambiguate communities that share the same label.
@@ -385,15 +388,18 @@ def _dominant_language(
 # Test / production separation
 # ---------------------------------------------------------------------------
 
-_TEST_PATH_RE = re.compile(
-    r"(test[s_/]|_test\.|\.test\.|\.spec\.|__tests__|conftest|fixture[s]?[/.])",
-    re.IGNORECASE,
-)
+def _is_test_node(node_id: str, data: dict) -> bool:
+    """Whether a graph file node is test material.
 
-
-def _is_test_file(path: str) -> bool:
-    """True if *path* looks like a test, fixture, or spec file."""
-    return bool(_TEST_PATH_RE.search(path))
+    Reads the flag ingestion stored on the node, which was decided with the
+    file's language in hand. The path rules are the fallback for a node that
+    predates the flag. The regex this replaced matched ``test[s_/]`` unanchored,
+    so ``src/latest/api.py`` and ``protest/main.py`` were pulled out of
+    community assignment as tests (#1103).
+    """
+    if "is_test" in data:
+        return bool(data["is_test"])
+    return is_test_related_path(node_id, data.get("language"))
 
 
 def _assign_tests_to_communities(
@@ -401,7 +407,7 @@ def _assign_tests_to_communities(
     prod_assignment: dict[str, int],
     graph: nx.DiGraph,
 ) -> dict[str, int]:
-    """Assign each test file to the community of its most-imported production file.
+    """Assign each test file to the community of a production file it links to.
 
     Falls back to a catch-all "tests" community when no import link exists.
     """
@@ -410,22 +416,14 @@ def _assign_tests_to_communities(
     test_community_id = next_cid  # shared fallback
 
     for test_path in test_nodes:
-        # Find which production file this test imports most
-        best_prod: str | None = None
-        best_weight = 0
-        for _, target, d in graph.out_edges(test_path, data=True):
-            if target in prod_assignment:
-                w = 1
-                best_prod = target if w > best_weight else best_prod
-                best_weight = max(best_weight, w)
-        for source, _, d in graph.in_edges(test_path, data=True):
-            if source in prod_assignment:
-                w = 1
-                best_prod = source if w > best_weight else best_prod
-                best_weight = max(best_weight, w)
+        # Production files this test links to, either direction. Every link
+        # weighs the same, so the tie is broken on the path. Edge iteration
+        # order is graph insertion order and varies between runs.
+        linked = {t for _, t in graph.out_edges(test_path) if t in prod_assignment}
+        linked |= {s for s, _ in graph.in_edges(test_path) if s in prod_assignment}
 
-        if best_prod is not None:
-            result[test_path] = prod_assignment[best_prod]
+        if linked:
+            result[test_path] = prod_assignment[min(linked)]
         else:
             result[test_path] = test_community_id
 
@@ -463,8 +461,9 @@ def detect_file_communities(
     # separately then assigned to the community of their most-imported
     # production file, preventing test directories from dominating labels
     # and mixing unrelated production modules.
-    prod_nodes = [n for n in file_nodes if not _is_test_file(n)]
-    test_nodes = [n for n in file_nodes if _is_test_file(n)]
+    is_test = {n: _is_test_node(n, graph.nodes[n]) for n in file_nodes}
+    prod_nodes = [n for n in file_nodes if not is_test[n]]
+    test_nodes = [n for n in file_nodes if is_test[n]]
 
     # Build undirected subgraph from production files + relevant edges
     undirected = nx.Graph()
@@ -504,8 +503,12 @@ def detect_file_communities(
     # Split oversized communities
     split_lists = _split_oversized(undirected, raw_communities)
 
-    # Re-index by size descending for deterministic ordering
-    split_lists.sort(key=len, reverse=True)
+    # Re-index by size descending. The rank becomes the community id, which
+    # becomes a module page's target_path, so it has to be a total order:
+    # size alone leaves same-size communities in partition-iteration order,
+    # and Leiden (tried before Louvain) returns a partition dict ordered by
+    # its own internals rather than by the node list we sorted above.
+    split_lists.sort(key=lambda members: (-len(members), min(members)))
 
     # Build production file assignment
     prod_assignment: dict[str, int] = {}
@@ -528,9 +531,13 @@ def detect_file_communities(
     full_undirected.add_nodes_from(file_nodes)
     for u, v, d in graph.edges(data=True):
         edge_type = d.get("edge_type", "imports")
-        if edge_type in _FILE_COMMUNITY_EDGE_TYPES and u in full_undirected and v in full_undirected:
-            if not full_undirected.has_edge(u, v):
-                full_undirected.add_edge(u, v)
+        if (
+            edge_type in _FILE_COMMUNITY_EDGE_TYPES
+            and u in full_undirected
+            and v in full_undirected
+            and not full_undirected.has_edge(u, v)
+        ):
+            full_undirected.add_edge(u, v)
 
     # Repo-dominant namespace segments (the repo's own package name, ``src``…)
     # are noise, not labels — same data-driven stripping as module naming.
@@ -573,10 +580,13 @@ def detect_symbol_communities(graph: nx.DiGraph) -> dict[str, int]:
 
     Returns {symbol_id: community_id}.
     """
-    symbol_nodes = [
+    # Sorted for the same reason detect_file_communities sorts its node list:
+    # insertion order seeds the partition, and the graph's is not stable
+    # between runs. This half was left unsorted when the file half was fixed.
+    symbol_nodes = sorted(
         n for n, d in graph.nodes(data=True)
         if d.get("node_type") == "symbol"
-    ]
+    )
 
     if not symbol_nodes:
         return {}
@@ -586,15 +596,14 @@ def detect_symbol_communities(graph: nx.DiGraph) -> dict[str, int]:
     undirected = nx.Graph()
     undirected.add_nodes_from(symbol_nodes)
 
-    for u, v, d in graph.edges(data=True):
-        edge_type = d.get("edge_type")
-        if (
-            edge_type in _SYMBOL_COMMUNITY_EDGE_TYPES
-            and u in symbol_set
-            and v in symbol_set
-        ):
-            if not undirected.has_edge(u, v):
-                undirected.add_edge(u, v)
+    community_edges = sorted(
+        (u, v)
+        for u, v, d in graph.edges(data=True)
+        if d.get("edge_type") in _SYMBOL_COMMUNITY_EDGE_TYPES
+        and u in symbol_set
+        and v in symbol_set
+    )
+    undirected.add_edges_from(community_edges)
 
     # Separate isolates
     connected = [n for n in undirected.nodes() if undirected.degree(n) > 0]
@@ -618,8 +627,9 @@ def detect_symbol_communities(graph: nx.DiGraph) -> dict[str, int]:
         raw[next_cid] = [node]
         next_cid += 1
 
-    # Re-index by size descending
-    ordered = sorted(raw.values(), key=len, reverse=True)
+    # Re-index by size descending, first member breaking ties (same total-order
+    # argument as detect_file_communities).
+    ordered = sorted(raw.values(), key=lambda members: (-len(members), min(members)))
     result: dict[str, int] = {}
     for cid, members in enumerate(ordered):
         for node in members:

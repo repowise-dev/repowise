@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import os.path
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,10 @@ from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTR
 from repowise.core.persistence.models import (
     Repository,
 )
+
+# Re-exported: MCP tools import their helpers from here, but the definition
+# lives in core because the CRUD layer needs the same escaping.
+from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like  # noqa: F401
 from repowise.server.mcp_server import _state
 
 # ---------------------------------------------------------------------------
@@ -194,16 +199,53 @@ async def _resolve_all_contexts() -> list[Any]:
 def _unsupported_repo_all(tool_name: str) -> dict:
     """Return an error dict for tools that don't support ``repo='all'``."""
     registry = _state._registry
-    if registry is not None:
-        available = registry.get_all_aliases()
-    else:
-        available = []
+    available = registry.get_all_aliases() if registry is not None else []
     return {
         "error": (
             f"repo='all' is not supported for {tool_name}. "
             f"Specify a repo alias instead. Available: {available}"
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Closed-vocabulary arguments (used by get_dead_code, get_context, search_codebase)
+# ---------------------------------------------------------------------------
+
+
+def resolve_enum_argument(
+    value: str | None,
+    valid: Collection[str],
+    *,
+    argument: str,
+    ignored: list[dict[str, Any]],
+) -> str | None:
+    """Return *value* if it is in *valid*, else drop it and record it in *ignored*.
+
+    Same rule as ``get_health``'s ``unknown_only_keys``: an argument the tool
+    does not recognise is named rather than applied. Applying it is what makes
+    a typo indistinguishable from a real negative — a misspelled filter matches
+    nothing and the tool reports the empty result as an answer (issue #1496).
+    Dropping it and saying so is recoverable; raising is not, because the caller
+    loses the answer it could still have had.
+
+    Repeated calls for one *argument* (``include`` takes a list) collect into a
+    single entry, so the vocabulary is spelled out once however many values miss.
+    """
+    if value is None or value in valid:
+        return value
+    for entry in ignored:
+        if entry["argument"] == argument:
+            entry["values"].append(value)
+            return None
+    ignored.append({"argument": argument, "values": [value], "valid": sorted(valid)})
+    return None
+
+
+def attach_ignored_arguments(result: dict[str, Any], ignored: list[dict[str, Any]]) -> None:
+    """Name the arguments the tool dropped, at the top level, or add nothing."""
+    if ignored:
+        result["ignored_arguments"] = ignored
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +428,6 @@ def _sibling_coverage(file_path: str, governing: list[dict], all_decisions: list
 
     for d in all_decisions:
         affected = json.loads(d.affected_files_json)
-        json.loads(d.affected_modules_json)
         for af in affected:
             af_dir = "/".join(af.split("/")[:-1])
             if af_dir == dir_path and af != file_path:
@@ -495,28 +536,53 @@ def _compute_alignment(
 # ---------------------------------------------------------------------------
 
 
-def _get_exclude_spec(repo_path: "Path | str") -> "Any":
+def read_repo_file_text(repo_root: Path | str | None, file_path: str) -> str | None:
+    """Read a repo-relative file's live text, or None when it cannot be served.
+
+    Refuses any path that resolves outside *repo_root*: several tools serve
+    live bytes for a path that came out of the index, and an index row is not
+    a trust boundary. Decoding is lossy on purpose (``errors="replace"``): a
+    card describing a latin-1 file should degrade to mojibake in one field,
+    rather than failing the whole call.
+
+    Several tool modules still carry their own near-identical copy of this,
+    each with one extra behaviour bolted on (a size ceiling, lines instead of
+    text). Those are left alone here rather than churned, but new callers
+    belong on this one, and a copy that needs a variation should wrap it.
+    """
+    if repo_root is None:
+        return None
+    try:
+        root = Path(str(repo_root))
+        abs_path = (root / file_path).resolve()
+        abs_path.relative_to(root.resolve())
+        return abs_path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return None
+
+
+def _get_exclude_spec(repo_path: Path | str) -> Any:
     """Compile the repo's exclusion rules into a PathSpec, or None."""
     from repowise.core.exclusion import build_exclude_spec
 
     return build_exclude_spec(repo_path)
 
 
-def is_excluded(path: "str | None", spec: "Any") -> bool:
+def is_excluded(path: str | None, spec: Any) -> bool:
     """True if *path* matches *spec* (None spec or path -> not excluded)."""
     from repowise.core.exclusion import is_excluded as _core_is_excluded
 
     return _core_is_excluded(path, spec)
 
 
-def filter_rows_by_attr(rows: list, attr: str, spec: "Any") -> list:
+def filter_rows_by_attr(rows: list, attr: str, spec: Any) -> list:
     """Shape A: drop ORM rows whose ``attr`` path is excluded."""
     if not spec:
         return rows
     return [r for r in rows if not is_excluded(getattr(r, attr, None), spec)]
 
 
-def filter_graph_nodes(nodes: list, spec: "Any") -> list:
+def filter_graph_nodes(nodes: list, spec: Any) -> list:
     """Shape B: file nodes match on ``node_id``, symbol nodes on ``file_path``."""
     if not spec:
         return nodes
@@ -529,21 +595,21 @@ def filter_graph_nodes(nodes: list, spec: "Any") -> list:
     return out
 
 
-def filter_dicts_by_key(items: list, key: str, spec: "Any") -> list:
+def filter_dicts_by_key(items: list, key: str, spec: Any) -> list:
     """Shape C: drop result dicts whose ``key`` path is excluded."""
     if not spec:
         return items
     return [d for d in items if not is_excluded(d.get(key), spec)]
 
 
-def decision_is_excluded(decision_row: "Any", spec: "Any") -> bool:
+def decision_is_excluded(decision_row: Any, spec: Any) -> bool:
     """True when a DecisionRecord is anchored entirely in excluded paths."""
     from repowise.core.exclusion import decision_is_excluded as _core_decision_is_excluded
 
     return _core_decision_is_excluded(decision_row, spec)
 
 
-def filter_path_list(paths: "list | None", spec: "Any") -> list:
+def filter_path_list(paths: list | None, spec: Any) -> list:
     """Shape D: filter a list of path strings (None -> [])."""
     if not paths:
         return []
@@ -552,7 +618,7 @@ def filter_path_list(paths: "list | None", spec: "Any") -> list:
     return [p for p in paths if not is_excluded(p, spec)]
 
 
-def filter_embedded_path_ids(ids: list, spec: "Any") -> list:
+def filter_embedded_path_ids(ids: list, spec: Any) -> list:
     """Shape E: ids look like ``"path::Name"``; match on the file portion."""
     if not spec:
         return ids

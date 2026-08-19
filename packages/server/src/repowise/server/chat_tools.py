@@ -11,6 +11,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,7 +49,11 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "get_context",
-        "description": "Get documentation, ownership, freshness, and decisions for one or more files, modules, or symbols.",
+        "description": (
+            "Triage card for files/modules/symbols: docs, freshness, hotspot bit, "
+            "signatures. Opt into full_doc, ownership, last_change, callers/callees, "
+            "metrics, community, decisions, health, or skeleton (body-elided source)."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -61,12 +67,31 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "items": {
                         "type": "string",
                         "enum": [
-                            "docs", "full_doc", "ownership", "last_change",
-                            "decisions", "freshness", "source", "callers",
-                            "callees", "metrics", "community",
+                            "full_doc",
+                            "ownership",
+                            "last_change",
+                            "callers",
+                            "callees",
+                            "metrics",
+                            "community",
+                            "decisions",
+                            "health",
+                            "skeleton",
                         ],
                     },
-                    "description": "Data blocks to include. Default: docs + freshness.",
+                    "description": (
+                        "Opt-in blocks (docs + freshness are always on): "
+                        "full_doc | ownership | last_change | callers | callees | "
+                        "metrics | community | decisions | health | skeleton."
+                    ),
+                },
+                "compact": {
+                    "type": "boolean",
+                    "description": (
+                        "Default true. False adds structure, imports, and docstrings "
+                        "to the triage card."
+                    ),
+                    "default": True,
                 },
                 "repo": {"type": "string", "description": "Repository identifier."},
             },
@@ -88,6 +113,39 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "repo": {"type": "string", "description": "Repository identifier."},
             },
             "required": ["targets"],
+        },
+        "artifact_type": "risk_report",
+    },
+    {
+        "name": "get_change_risk",
+        "description": "Score the defect risk of a live commit or branch range from diff size, diffusion, and author familiarity. Use for pre-merge ranking; use get_risk for per-file history and blast radius.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "revspec": {
+                    "type": "string",
+                    "description": "Commit or base..head range to score. Defaults to HEAD.",
+                    "default": "HEAD",
+                },
+                "repo": {"type": "string", "description": "Repository identifier."},
+                "extensions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "File suffixes to count, for example .py or .ts.",
+                },
+                "exclude_patterns": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Gitignore-style paths to omit from the score and baseline.",
+                },
+                "baseline": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 200,
+                    "description": "Recent commits used for percentile ranking; 0 disables it.",
+                },
+            },
+            "required": [],
         },
         "artifact_type": "risk_report",
     },
@@ -147,8 +205,11 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
                 "min_confidence": {
                     "type": "number",
-                    "description": "Minimum confidence threshold (default 0.5).",
-                    "default": 0.5,
+                    "description": (
+                        f"Minimum confidence threshold (default {RISK_CAP_CONFIDENCE}; "
+                        "matches RISK_CAP_CONFIDENCE)."
+                    ),
+                    "default": RISK_CAP_CONFIDENCE,
                 },
                 "safe_only": {
                     "type": "boolean",
@@ -184,6 +245,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
 def _build_registry() -> dict[str, ToolDef]:
     """Build the tool registry by importing MCP tool functions."""
     from repowise.server.mcp_server import (
+        get_change_risk,
         get_context,
         get_dead_code,
         get_overview,
@@ -202,6 +264,7 @@ def _build_registry() -> dict[str, ToolDef]:
     func_map: dict[str, Callable] = {
         "get_overview": get_overview,
         "get_context": get_context,
+        "get_change_risk": get_change_risk,
         "get_risk": get_risk,
         "get_why": get_why,
         "search_codebase": _search_concept,
@@ -261,14 +324,45 @@ def _make_json_serializable(obj: Any) -> Any:
     return str(obj)
 
 
-async def execute_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Execute a tool by name and return JSON-serializable result."""
+def _scope_repo_arg(tool_def: ToolDef, arguments: dict[str, Any], repo: str | None) -> None:
+    """Point a tool call at the repo the chat page is on.
+
+    The model only sees the repo *name* in the system prompt, so left to
+    itself it passes a string that may not be a workspace alias at all. We
+    keep its value when it names a real repo (so "compare with gateway"
+    still works) and otherwise substitute the caller's alias.
+    """
+    if not repo or "repo" not in tool_def.parameters.get("properties", {}):
+        return
+
+    import repowise.server.mcp_server as mcp_mod
+
+    workspace = mcp_mod._registry
+    if workspace is None:
+        return
+
+    requested = arguments.get("repo")
+    if requested == "all" or requested in workspace.get_all_aliases():
+        return
+    arguments["repo"] = repo
+
+
+async def execute_tool(
+    name: str, arguments: dict[str, Any], repo: str | None = None
+) -> dict[str, Any]:
+    """Execute a tool by name and return JSON-serializable result.
+
+    ``repo`` is the alias of the repo the request is scoped to (workspace
+    mode). It backstops the ``repo`` argument the model supplies.
+    """
     registry = get_tool_registry()
     tool_def = registry.get(name)
     if not tool_def:
         return {"error": f"Unknown tool: {name}"}
 
     try:
+        arguments = dict(arguments)
+        _scope_repo_arg(tool_def, arguments, repo)
         result = await tool_def.function(**arguments)
         return _make_json_serializable(result)
     except Exception as exc:
@@ -305,3 +399,27 @@ def init_tool_state(
     if repo_path is not None:
         mcp_mod._repo_path = repo_path
     logger.info("Chat tool state initialized")
+
+
+_UNSET = object()
+
+
+def set_tool_workspace(
+    registry: Any = _UNSET,
+    workspace_root: Any = _UNSET,
+    cross_repo_enricher: Any = _UNSET,
+) -> None:
+    """Publish workspace state to the MCP tool globals.
+
+    The stdio MCP server sets these in its own lifespan; the HTTP server has
+    to do the same or the tools resolve every alias against the primary
+    repo's database alone (issue #970). Arguments left out are untouched.
+    """
+    import repowise.server.mcp_server as mcp_mod
+
+    if registry is not _UNSET:
+        mcp_mod._registry = registry
+    if workspace_root is not _UNSET:
+        mcp_mod._workspace_root = workspace_root
+    if cross_repo_enricher is not _UNSET:
+        mcp_mod._cross_repo_enricher = cross_repo_enricher

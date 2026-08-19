@@ -1,10 +1,15 @@
 """npm/yarn/pnpm workspace package resolution for TypeScript imports.
 
 Reads the root ``package.json``'s ``workspaces`` field (string list or
-``{"packages": [...]}`` form), expands glob patterns, and reads each
-sibling package's ``name`` field. The resulting ``{pkg_name: dir_posix}``
-map lets the TS resolver turn ``import x from "@myorg/foo"`` into the
-correct intra-repo file rather than an ``external:`` node.
+``{"packages": [...]}`` form) and ``pnpm-workspace.yaml``'s ``packages``
+list, expands glob patterns, and reads each sibling package's ``name``
+field. The resulting ``{pkg_name: dir_posix}`` map lets the TS resolver
+turn ``import x from "@myorg/foo"`` into the correct intra-repo file
+rather than an ``external:`` node.
+
+Both manifests are consulted because they are not interchangeable: pnpm
+does not read the ``workspaces`` field at all, so a pnpm monorepo
+declares its members only in ``pnpm-workspace.yaml``.
 
 Subpath imports (``@myorg/foo/bar/baz``) honour Node.js ``"exports"``
 subpath patterns when the workspace's ``package.json`` declares them:
@@ -24,10 +29,15 @@ flattened to the first plausible source target. Packages without an
 
 from __future__ import annotations
 
+import contextlib
 import json
+import posixpath
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from .pnpm_workspace import read_pnpm_workspace_patterns
 
 if TYPE_CHECKING:
     from .context import ResolverContext
@@ -105,7 +115,7 @@ def _scan_repo_files(repo_path: Path, *, prune_nested_git: bool = True) -> _Repo
     return scan
 
 
-def _get_repo_scan(ctx: "ResolverContext") -> _RepoFileScan:
+def _get_repo_scan(ctx: ResolverContext) -> _RepoFileScan:
     """Memoized accessor — one walk per resolver context."""
     cached = getattr(ctx, "_ts_repo_file_scan", None)
     if cached is not None:
@@ -159,8 +169,48 @@ def _flatten_export_value(value: Any) -> str | None:
     return None
 
 
-def _build_exports_map(pkg_data: dict) -> dict[str, str]:
-    """Return ``{exports_key: relative_target}`` for a workspace package.
+def _ordered_export_targets(value: Any) -> tuple[str, ...]:
+    """Every target a Node ``exports`` entry can mean, best first.
+
+    The head is exactly what :func:`_flatten_export_value` chose, so a package
+    whose ranked condition names a file the repository contains binds the file
+    it always bound. The tail is every other leaf, ranked conditions before
+    unranked ones, and is reached only when the head names nothing indexed.
+
+    The tail has to exist because a package may publish its sources under a
+    condition no fixed list can name — zod uses ``@zod/source`` — while every
+    condition this module ranks names build output a source checkout does not
+    contain, leaving the whole package unresolvable.
+    """
+    ordered: list[str] = []
+    head = _flatten_export_value(value)
+    if head is not None:
+        ordered.append(head)
+
+    def walk(node: Any) -> None:
+        if isinstance(node, str):
+            if node not in ordered:
+                ordered.append(node)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+        elif isinstance(node, dict):
+            for cond in _CONDITION_PRIORITY:
+                if cond in node:
+                    walk(node[cond])
+            for cond, inner in node.items():
+                if cond not in _CONDITION_PRIORITY:
+                    walk(inner)
+
+    walk(value)
+    return tuple(ordered)
+
+
+_DECLARATION_SUFFIXES: tuple[str, ...] = (".d.ts", ".d.mts", ".d.cts")
+
+
+def _build_exports_map(pkg_data: dict) -> dict[str, tuple[str, ...]]:
+    """Return ``{exports_key: (target, ...)}`` for a workspace package.
 
     ``exports`` may be a single string (shorthand for ``{".": <str>}``)
     or a subpath dict. Keys that don't start with ``.`` are dropped (the
@@ -170,34 +220,40 @@ def _build_exports_map(pkg_data: dict) -> dict[str, str]:
     if raw is None:
         return {}
     if isinstance(raw, str):
-        return {".": raw}
+        return {".": (raw,)}
     if not isinstance(raw, dict):
         return {}
-    out: dict[str, str] = {}
+    out: dict[str, tuple[str, ...]] = {}
     for key, value in raw.items():
         if not isinstance(key, str) or not key.startswith("."):
             continue
-        flat = _flatten_export_value(value)
-        if flat is None:
+        # A key whose ranked walk yields nothing is dropped, exactly as before.
+        # Keeping it on the strength of a spare candidate alone would let that
+        # candidate answer in the exports step, ahead of the fallbacks that
+        # answer for such a key today — a moved binding rather than a new one.
+        if _flatten_export_value(value) is None:
             continue
-        out[key] = flat
+        out[key] = _ordered_export_targets(value)
     return out
 
 
-def _match_export_key(subpath: str, exports_map: dict[str, str]) -> str | None:
+def _match_export_key(
+    subpath: str, exports_map: dict[str, tuple[str, ...]]
+) -> tuple[str, ...] | None:
     """Resolve a subpath against an ``exports`` map.
 
     ``subpath`` is the part of the import specifier after the package
     name, with no leading slash (``""`` for the bare package, ``"lib/x"``
     for ``@org/pkg/lib/x``). Exact keys win over wildcard patterns; among
-    wildcards the longest static prefix wins (Node spec).
+    wildcards the longest static prefix wins (Node spec). Returns the
+    matched key's candidate targets in priority order.
     """
     key = "." if subpath == "" else "./" + subpath
     if key in exports_map:
         return exports_map[key]
-    best_target: str | None = None
+    best_targets: tuple[str, ...] | None = None
     best_prefix_len = -1
-    for pattern, target in exports_map.items():
+    for pattern, targets in exports_map.items():
         if "*" not in pattern:
             continue
         prefix, _, suffix = pattern.partition("*")
@@ -210,11 +266,16 @@ def _match_export_key(subpath: str, exports_map: dict[str, str]) -> str | None:
             if suffix
             else key[len(prefix) :]
         )
-        resolved = target.replace("*", captured, 1) if "*" in target else target
         if len(prefix) > best_prefix_len:
-            best_target = resolved
+            # Beyond the head, a candidate carrying no ``*`` is dropped: the
+            # same fixed file would otherwise answer every distinct subpath
+            # under this key, quietly collapsing them onto one another.
+            kept = targets[:1] + tuple(t for t in targets[1:] if "*" in t)
+            best_targets = tuple(
+                t.replace("*", captured, 1) if "*" in t else t for t in kept
+            )
             best_prefix_len = len(prefix)
-    return best_target
+    return best_targets
 
 
 def _read_workspaces_field(pkg_data: dict) -> list[str]:
@@ -231,9 +292,87 @@ def _read_workspaces_field(pkg_data: dict) -> list[str]:
 def build_workspace_map(repo_path: Path | None) -> dict[str, str]:
     """Return ``{package_name: dir_posix}`` for every workspace package.
 
-    Empty dict if no root ``package.json`` or no ``workspaces`` field.
+    Empty dict when neither ``package.json``'s ``workspaces`` field nor
+    ``pnpm-workspace.yaml`` declares any members.
     """
     return {name: info["dir"] for name, info in build_workspace_info(repo_path).items()}
+
+
+@dataclass(frozen=True)
+class _WorkspaceDeclaration:
+    """Which globs govern a repo's workspace, and whether the root is a member."""
+
+    includes: tuple[str, ...]
+    excludes: tuple[str, ...]
+    include_root: bool
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.includes and not self.include_root
+
+
+def _read_workspace_declaration(repo_path: Path) -> _WorkspaceDeclaration:
+    """Resolve the governing manifest into member globs.
+
+    pnpm keeps its member globs in ``pnpm-workspace.yaml`` and does not read
+    ``package.json``'s ``workspaces`` field at all, so the two manifests are
+    not interchangeable and must not be merged: unioning them would register a
+    member pnpm never installs, turning a registry dependency into a fake
+    intra-repo edge. When the pnpm manifest is present it is authoritative.
+    """
+    pnpm = read_pnpm_workspace_patterns(repo_path)
+    if pnpm is not None:
+        includes, excludes = pnpm
+        # "The root package is always included, even when custom location
+        # wildcards are used" — pnpm's ``packages`` setting. So a root-only
+        # workspace (no ``packages`` key) still has exactly one member.
+        return _WorkspaceDeclaration(tuple(includes), tuple(excludes), include_root=True)
+
+    root_pkg = repo_path / "package.json"
+    if not root_pkg.is_file():
+        return _WorkspaceDeclaration((), (), include_root=False)
+    try:
+        data = json.loads(root_pkg.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return _WorkspaceDeclaration((), (), include_root=False)
+    if not isinstance(data, dict):
+        return _WorkspaceDeclaration((), (), include_root=False)
+    return _WorkspaceDeclaration(
+        tuple(_read_workspaces_field(data)), (), include_root=False
+    )
+
+
+def _expand_member_dirs(repo_path: Path, declared: _WorkspaceDeclaration) -> list[Path]:
+    """Expand member globs to directories, minus the negated ones.
+
+    Negated entries are expanded with the SAME globber as the includes and
+    subtracted, rather than matched with a second pattern language. ``pathspec``
+    was the obvious candidate and is wrong here: it implements git-ignore
+    semantics, under which a slashless ``foo`` matches at any depth and a
+    directory match swallows its descendants, so ``!foo`` and ``!packages/*``
+    would silently drop members pnpm keeps. ``Path.glob`` anchors at the repo
+    root and honours single-segment ``*``, which is what fast-glob (pnpm's
+    matcher) does for these forms.
+
+    The root, when it is a member, is never subject to the negated patterns.
+
+    Both loops tolerate a pattern ``Path.glob`` refuses: the strings come from
+    a hand-written manifest, and an absolute entry raises ``NotImplementedError``
+    while an empty one raises ``ValueError``. A bad entry drops itself rather
+    than the whole workspace, which is how every other manifest read in this
+    module already behaves.
+    """
+    excluded: set[Path] = set()
+    for pattern in declared.excludes:
+        with contextlib.suppress(NotImplementedError, ValueError):
+            excluded.update(p for p in repo_path.glob(pattern) if p.is_dir())
+
+    dirs: list[Path] = [repo_path] if declared.include_root else []
+    for pattern in declared.includes:
+        with contextlib.suppress(NotImplementedError, ValueError):
+            globbed = [repo_path] if pattern == "." else repo_path.glob(pattern)
+            dirs.extend(p for p in globbed if p.is_dir() and p not in excluded)
+    return dirs
 
 
 def build_workspace_info(repo_path: Path | None) -> dict[str, dict[str, Any]]:
@@ -247,65 +386,44 @@ def build_workspace_info(repo_path: Path | None) -> dict[str, dict[str, Any]]:
     """
     if repo_path is None or not repo_path.is_dir():
         return {}
-    root_pkg = repo_path / "package.json"
-    if not root_pkg.is_file():
-        return {}
-    try:
-        data = json.loads(root_pkg.read_text(encoding="utf-8", errors="ignore"))
-    except Exception:
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    patterns = _read_workspaces_field(data)
-    if not patterns:
+    declared = _read_workspace_declaration(repo_path)
+    if declared.is_empty:
         return {}
 
     result: dict[str, dict[str, Any]] = {}
-    for pattern in patterns:
-        if pattern == ".":
-            ws_dirs = [repo_path]
-        else:
-            ws_dirs = repo_path.glob(pattern)
-        for ws_dir in ws_dirs:
-            if not ws_dir.is_dir():
-                continue
-            ws_pkg = ws_dir / "package.json"
-            if not ws_pkg.is_file():
-                continue
-            try:
-                ws_data = json.loads(ws_pkg.read_text(encoding="utf-8", errors="ignore"))
-            except Exception:
-                continue
-            if not isinstance(ws_data, dict):
-                continue
-            name = ws_data.get("name")
-            if not isinstance(name, str) or not name:
-                continue
-            try:
-                rel = ws_dir.relative_to(repo_path).as_posix()
-            except ValueError:
-                continue
-            result[name] = {
-                "dir": rel,
-                "exports": _build_exports_map(ws_data),
-                "main": ws_data.get("module") if isinstance(ws_data.get("module"), str)
-                        else (ws_data.get("main") if isinstance(ws_data.get("main"), str) else None),
-            }
+    for ws_dir in _expand_member_dirs(repo_path, declared):
+        try:
+            rel = ws_dir.relative_to(repo_path).as_posix()
+        except ValueError:
+            continue
+        ws_pkg = ws_dir / "package.json"
+        if not ws_pkg.is_file():
+            continue
+        try:
+            ws_data = json.loads(ws_pkg.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:
+            continue
+        if not isinstance(ws_data, dict):
+            continue
+        name = ws_data.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        result[name] = {
+            "dir": rel,
+            "exports": _build_exports_map(ws_data),
+            "main": ws_data.get("module") if isinstance(ws_data.get("module"), str)
+                    else (ws_data.get("main") if isinstance(ws_data.get("main"), str) else None),
+        }
     return result
 
 
-def get_or_build_workspace_info(ctx: "ResolverContext") -> dict[str, dict[str, Any]]:
+def get_or_build_workspace_info(ctx: ResolverContext) -> dict[str, dict[str, Any]]:
     cached = getattr(ctx, "_ts_workspace_info", None)
     if cached is not None:
         return cached
     info = build_workspace_info(ctx.repo_path)
     ctx._ts_workspace_info = info  # type: ignore[attr-defined]
     return info
-
-
-def get_or_build_workspace_map(ctx: "ResolverContext") -> dict[str, str]:
-    """Backward-compat shim — kept for callers that only need name → dir."""
-    return {name: info["dir"] for name, info in get_or_build_workspace_info(ctx).items()}
 
 
 _PROBE_EXTENSIONS: tuple[str, ...] = (
@@ -320,6 +438,35 @@ _PROBE_EXTENSIONS: tuple[str, ...] = (
 )
 
 
+def _normalize_repo_rel(base: str) -> str:
+    """Collapse a joined repo-relative path so it can match ``path_set``.
+
+    Callers build candidates as ``f"{pkg_dir}/{sub}"``, and the workspace
+    ROOT's dir is ``"."`` (pnpm always includes the root; npm/yarn repos may
+    list ``"."`` explicitly). That join yields ``"./src/index.ts"``, which
+    never equals the repo-relative ``"src/index.ts"`` a path set holds — so
+    without this every root-package import silently failed to resolve.
+
+    A trailing slash survives: one caller uses the result as a ``startswith``
+    prefix, where dropping it would let ``src/locales`` also match
+    ``src/locales-old``.
+
+    A path that collapses ENTIRELY to the root (``"./"`` — the root package's
+    ``"."`` joined with an empty subpath) normalizes to ``""``, not ``"./"``:
+    ``posixpath.normpath("./")`` is ``"."``, and re-appending the slash would
+    leave a prefix no repo-relative path starts with. That case is reachable
+    from ``_expand_exports_wildcard`` whenever a root package's wildcard
+    target sits at the repo root (``{"./*": "./*.ts"}``) rather than under a
+    subdirectory, and it silently dropped every match.
+    """
+    if not (base.startswith("./") or "/./" in base):
+        return base
+    normalized = posixpath.normpath(base)
+    if normalized == ".":
+        return ""
+    return f"{normalized}/" if base.endswith("/") and not normalized.endswith("/") else normalized
+
+
 def _probe_path(base: str, path_set: set[str]) -> str | None:
     """Locate a concrete file for ``base`` (a repo-relative path stem).
 
@@ -328,6 +475,7 @@ def _probe_path(base: str, path_set: set[str]) -> str | None:
     pattern). Then probes common TS/JS extensions and ``index.*``
     children so directory-shaped specifiers resolve to a barrel file.
     """
+    base = _normalize_repo_rel(base)
     if base in path_set:
         return base
     for ext in _PROBE_EXTENSIONS:
@@ -341,7 +489,7 @@ def _probe_path(base: str, path_set: set[str]) -> str | None:
     return None
 
 
-def resolve_via_workspaces(module_path: str, ctx: "ResolverContext") -> str | None:
+def resolve_via_workspaces(module_path: str, ctx: ResolverContext) -> str | None:
     """Resolve a bare specifier (``@scope/pkg`` or ``@scope/pkg/sub/file``)
     against the workspace map. Honours each workspace's ``exports``
     subpath map (Node.js spec) before falling back to a ``<pkg>/<subpath>``
@@ -356,30 +504,54 @@ def resolve_via_workspaces(module_path: str, ctx: "ResolverContext") -> str | No
     # ``@scope/pkg`` and resolve ``sub/x`` under that workspace's dir.
     best_name: str | None = None
     for name in info:
-        if module_path == name or module_path.startswith(name + "/"):
-            if best_name is None or len(name) > len(best_name):
-                best_name = name
+        if (module_path == name or module_path.startswith(name + "/")) and (
+            best_name is None or len(name) > len(best_name)
+        ):
+            best_name = name
     if best_name is None:
         return None
 
     pkg = info[best_name]
     dir_posix: str = pkg["dir"]
-    exports_map: dict[str, str] = pkg["exports"]
+    exports_map: dict[str, tuple[str, ...]] = pkg["exports"]
     sub = module_path[len(best_name) :].lstrip("/")
 
-    # 1) ``exports`` field — the package's authoritative subpath map.
-    if exports_map:
-        target = _match_export_key(sub, exports_map)
-        if target is not None:
-            # Targets are package-relative ("./src/lib/foo.ts"). Strip the
-            # leading "./" and join with the package dir to get a repo path.
-            stripped = target.lstrip("./")
-            resolved = _probe_path(f"{dir_posix}/{stripped}", ctx.path_set)
+    targets = _match_export_key(sub, exports_map) if exports_map else None
+
+    def probe_target(target: str) -> str | None:
+        # Targets are package-relative ("./src/lib/foo.ts"). Strip the
+        # leading "./" and join with the package dir to get a repo path.
+        return _probe_path(f"{dir_posix}/{target.lstrip('./')}", ctx.path_set)
+
+    def spare_export_target() -> str | None:
+        """A candidate past the ranked one, for when nothing else answered.
+
+        Kept behind every pre-existing probe so this can only fill a specifier
+        that resolved to nothing: a package naming its sources under a
+        condition no fixed list ranks is unreachable otherwise, but reordering
+        would move imports that already bind, which is a different change.
+
+        A declaration file is never taken here. It carries no bodies, so
+        binding one as an entry resolves every call through it to a signature
+        — worse than the external node it would replace, which claims nothing.
+        """
+        for target in (targets or ())[1:]:
+            if target.endswith(_DECLARATION_SUFFIXES):
+                continue
+            resolved = probe_target(target)
             if resolved is not None:
                 return resolved
+        return None
+
+    # 1) ``exports`` field — the package's authoritative subpath map.
+    if targets:
+        resolved = probe_target(targets[0])
+        if resolved is not None:
+            return resolved
 
     # 2) Bare-package fallback — no ``exports[.]`` entry: try index.*,
-    #    then ``main``/``module`` from package.json.
+    #    then ``main``/``module`` from package.json, then the entries a
+    #    package publishing only from a build directory leaves reachable.
     if not sub:
         cand = _probe_path(f"{dir_posix}/index", ctx.path_set)
         if cand is not None:
@@ -387,6 +559,13 @@ def resolve_via_workspaces(module_path: str, ctx: "ResolverContext") -> str | No
         main = pkg.get("main")
         if isinstance(main, str):
             cand = _probe_path(f"{dir_posix}/{main.lstrip('./')}", ctx.path_set)
+            if cand is not None:
+                return cand
+        cand = spare_export_target()
+        if cand is not None:
+            return cand
+        for source_root in ("src", "lib"):
+            cand = _probe_path(f"{dir_posix}/{source_root}/index", ctx.path_set)
             if cand is not None:
                 return cand
         return None
@@ -402,7 +581,7 @@ def resolve_via_workspaces(module_path: str, ctx: "ResolverContext") -> str | No
         cand = _probe_path(f"{dir_posix}/{src_root}/{sub}", ctx.path_set)
         if cand is not None:
             return cand
-    return None
+    return spare_export_target()
 
 
 # ---------------------------------------------------------------------------
@@ -451,24 +630,24 @@ def _expand_exports_wildcard(
     # suffix=``.ts``. The Node spec only allows one ``*`` per pattern.
     stripped = target.lstrip("./")
     prefix, _, suffix = stripped.partition("*")
-    base_prefix = f"{pkg_dir}/{prefix}"
+    # Normalized because this is a startswith probe rather than a _probe_path
+    # lookup — a root package's ``"."`` dir would otherwise make every
+    # candidate fail the prefix test.
+    base_prefix = _normalize_repo_rel(f"{pkg_dir}/{prefix}")
     matches: set[str] = set()
     for candidate in path_set:
         if not candidate.startswith(base_prefix):
             continue
         if suffix and not candidate.endswith(suffix):
             continue
-        # Reject paths whose captured segment crosses a directory boundary
-        # unless the pattern itself spans dirs (``**`` is not part of the
-        # spec; ``*`` matches a single segment).
-        captured = candidate[len(base_prefix) : len(candidate) - len(suffix) if suffix else len(candidate)]
-        if "/" in captured and exports_pattern.endswith("/*"):
-            continue
+        # Node.js package exports spec explicitly allows the `*` wildcard
+        # to match any string including `/` (directory boundaries).
+        # We previously incorrectly rejected paths spanning directories.
         matches.add(candidate)
     return matches
 
 
-def build_ts_workspace_index(ctx: "ResolverContext") -> TsWorkspaceIndex:
+def build_ts_workspace_index(ctx: ResolverContext) -> TsWorkspaceIndex:
     """Build the workspace index for *ctx*.
 
     Idempotent — safe to call multiple times. Reads the workspace
@@ -482,9 +661,15 @@ def build_ts_workspace_index(ctx: "ResolverContext") -> TsWorkspaceIndex:
     path_set = ctx.path_set
     for _name, pkg in packages.items():
         dir_posix: str = pkg["dir"]
-        exports_map: dict[str, str] = pkg.get("exports") or {}
-        for pattern, target in exports_map.items():
-            entries.update(_expand_exports_wildcard(target, pattern, dir_posix, path_set))
+        exports_map: dict[str, tuple[str, ...]] = pkg.get("exports") or {}
+        for pattern, targets in exports_map.items():
+            # The ranked target only. The spare candidates exist to bind an
+            # import the resolver would otherwise drop; letting them widen the
+            # published-entry set would suppress dead-code findings instead,
+            # which is a different change and is not what was measured here.
+            entries.update(
+                _expand_exports_wildcard(targets[0], pattern, dir_posix, path_set)
+            )
         # ``main``/``module`` shorthand — package's primary entry.
         main = pkg.get("main")
         if isinstance(main, str):
@@ -494,7 +679,7 @@ def build_ts_workspace_index(ctx: "ResolverContext") -> TsWorkspaceIndex:
     return TsWorkspaceIndex(packages=packages, exports_entry_paths=entries)
 
 
-def get_or_build_ts_index(ctx: "ResolverContext") -> TsWorkspaceIndex:
+def get_or_build_ts_index(ctx: ResolverContext) -> TsWorkspaceIndex:
     """Memoized accessor — builds the index once per resolver context."""
     cached = getattr(ctx, "_ts_workspace_index", None)
     if cached is not None:
@@ -509,24 +694,22 @@ def get_or_build_ts_index(ctx: "ResolverContext") -> TsWorkspaceIndex:
 # graph never observes through the TS/JS parser path.
 # ---------------------------------------------------------------------------
 
-import re as _re
-
-_MDX_IMPORT_RE = _re.compile(
+_MDX_IMPORT_RE = re.compile(
     r"""import\s+
         (?:type\s+)?
         (?:\{[^}]*\}|\*\s+as\s+\w+|\w+(?:\s*,\s*\{[^}]*\})?)
         \s+from\s+['"]([^'"]+)['"]""",
-    _re.VERBOSE,
+    re.VERBOSE,
 )
 
-_VITEST_INCLUDE_RE = _re.compile(
+_VITEST_INCLUDE_RE = re.compile(
     r"""include\s*:\s*\[\s*((?:['"][^'"]+['"]\s*,?\s*)+)\]""",
-    _re.MULTILINE,
+    re.MULTILINE,
 )
-_VITEST_STRING_RE = _re.compile(r"""['"]([^'"]+)['"]""")
+_VITEST_STRING_RE = re.compile(r"""['"]([^'"]+)['"]""")
 
 
-def find_mdx_import_targets(ctx: "ResolverContext") -> set[str]:
+def find_mdx_import_targets(ctx: ResolverContext) -> set[str]:
     """Return repo-relative paths reached only via ``import`` in MDX/MD files.
 
     React-component libraries published as documentation (``.mdx`` files
@@ -574,7 +757,7 @@ def find_mdx_import_targets(ctx: "ResolverContext") -> set[str]:
     return targets
 
 
-def _vitest_glob_to_regex(glob: str) -> _re.Pattern[str]:
+def _vitest_glob_to_regex(glob: str) -> re.Pattern[str]:
     """Translate a vitest/minimatch glob into a regex matching repo paths.
 
     ``**`` matches zero-or-more path segments (including empty); a single
@@ -611,10 +794,10 @@ def _vitest_glob_to_regex(glob: str) -> _re.Pattern[str]:
             out.append(c)
             i += 1
     out.append("$")
-    return _re.compile("".join(out))
+    return re.compile("".join(out))
 
 
-def find_vitest_include_targets(ctx: "ResolverContext") -> set[str]:
+def find_vitest_include_targets(ctx: ResolverContext) -> set[str]:
     """Return repo-relative source files matching vitest ``include`` globs.
 
     Belt-and-suspenders alongside the ``*.test.*`` never-flag pattern —
@@ -697,11 +880,11 @@ def _iter_script_tokens(script: str) -> list[str]:
     *shape*, not faithful argv reconstruction.
     """
     # Replace shell chain operators with spaces so each chunk parses.
-    cleaned = _re.sub(r"&&|\|\||;|\|", " ", script)
+    cleaned = re.sub(r"&&|\|\||;|\|", " ", script)
     return [tok.strip("'\"") for tok in cleaned.split() if tok.strip("'\"")]
 
 
-def find_npm_script_entry_targets(ctx: "ResolverContext") -> set[str]:
+def find_npm_script_entry_targets(ctx: ResolverContext) -> set[str]:
     """Return repo-relative source files referenced by ``package.json`` scripts.
 
     Hono's ``benchmarks/{jsx,routers,query-param}/**`` and zod's
@@ -788,7 +971,7 @@ def find_npm_script_entry_targets(ctx: "ResolverContext") -> set[str]:
                     and "?" not in token
                 ):
                     candidate = (pkg_prefix + token).lstrip("./")
-                    candidate = _re.sub(r"\\", "/", candidate)
+                    candidate = re.sub(r"\\", "/", candidate)
                     # Normalise ``a/./b`` and ``a/../b`` segments.
                     parts: list[str] = []
                     for seg in candidate.split("/"):
@@ -814,7 +997,7 @@ def find_npm_script_entry_targets(ctx: "ResolverContext") -> set[str]:
                         rel_glob = rel_glob[2:]
                     try:
                         regex = _vitest_glob_to_regex(rel_glob)
-                    except _re.error:
+                    except re.error:
                         continue
                     for candidate in path_set:
                         if regex.match(candidate):

@@ -5,7 +5,7 @@ Also works as a base for any OpenAI-compatible API endpoint via the
 `base_url` parameter.
 
 Recommended models (as of 2026):
-    - gpt-5.4-nano   — fastest, cheapest ($0.20/$1.25 per MTok) [default]
+    - gpt-5.6-luna   — fastest, cheapest ($0.20/$1.20 per MTok) [default]
     - gpt-5.4-mini   — balanced speed and quality ($0.75/$4.50 per MTok)
     - gpt-5.4        — highest quality ($2.50/$15 per MTok)
 """
@@ -18,6 +18,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 import structlog
+from openai import APIError as _OpenAIAPIError
 from openai import APIStatusError as _OpenAIAPIStatusError
 from openai import AsyncOpenAI
 from openai import RateLimitError as _OpenAIRateLimitError
@@ -34,6 +35,7 @@ from repowise.core.providers.llm.base import (
     RateLimitError,
     ensure_reasoning_supported,
     fallback_model_option,
+    normalize_stop_reason,
     parse_retry_after,
     provider_retry_stop,
     provider_retry_wait,
@@ -91,6 +93,17 @@ def _openai_supported_reasoning_modes(model: str) -> tuple[ReasoningMode, ...]:
         return ("none", "low", "medium", "high")
     if leaf.startswith("gpt-5-pro"):
         return ("high",)
+    if leaf.startswith("gpt-5.6"):
+        # 5.6 dropped `minimal` and added `xhigh`. Must stay above the generic
+        # `gpt-5` branch, which is a prefix of this one and would otherwise win
+        # and offer `minimal`, which 5.6 rejects, and only on a live call.
+        #
+        # `max` is deliberately absent even though the model docs list it: the
+        # API rejects it with `unsupported_value`, naming exactly the five
+        # below. Verified live on both gpt-5.6-luna and gpt-5.6-sol
+        # (2026-08-15). Family-level rather than per-model on the same
+        # evidence: the two variants answered identically.
+        return ("none", "low", "medium", "high", "xhigh")
     if leaf.startswith("gpt-5"):
         return ("minimal", "low", "medium", "high")
     return ("low", "medium", "high")
@@ -126,9 +139,28 @@ def _openai_reasoning_kwargs(reasoning: ReasoningMode, *, model: str) -> dict[st
         }
     if mode == "off":
         return {}
-    if mode in ("none", "minimal", "low", "medium", "high", "xhigh"):
+    # `max` is listed for completeness over ReasoningMode, not because any
+    # OpenAI model accepts it today. None does, so the validation gate above
+    # rejects it first. It is here so that whenever one does, adding it to that
+    # model's tuple is the only edit needed: the previous shape passed
+    # validation and then dropped the effort silently, which reads as "max
+    # worked" while the request carried no reasoning_effort at all.
+    if mode in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
         return {"reasoning_effort": mode}
     return {}
+
+
+def _openai_temperature(model: str, requested: float) -> float:
+    """Clamp temperature for models that only accept the default value.
+
+    OpenAI's reasoning-era models (GPT-5+, o1/o3/o4) reject any explicit
+    ``temperature`` other than the default of ``1``; sending our usual low
+    sampling temperature returns a 400 ``unsupported_value`` error. For those
+    models we force ``1.0`` and pass the requested value through otherwise.
+    """
+    if _supports_openai_reasoning_effort(model):
+        return 1.0
+    return requested
 
 
 def _is_openai_text_model(model_id: str) -> bool:
@@ -204,7 +236,7 @@ class OpenAIProvider(BaseProvider):
 
     Args:
         api_key:   OpenAI API key. Falls back to OPENAI_API_KEY env var.
-        model:     Model identifier. Defaults to gpt-4o.
+        model:     Model identifier. Defaults to gpt-5.6-luna.
         base_url:  Optional custom base URL for OpenAI-compatible endpoints.
         rate_limiter: Optional RateLimiter instance.
     """
@@ -212,7 +244,7 @@ class OpenAIProvider(BaseProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "gpt-5.4-nano",
+        model: str = "gpt-5.6-luna",
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
         cost_tracker: CostTracker | None = None,
@@ -303,7 +335,7 @@ class OpenAIProvider(BaseProvider):
             kwargs: dict[str, Any] = {
                 "model": self._model,
                 "max_completion_tokens": max_tokens,
-                "temperature": temperature,
+                "temperature": _openai_temperature(self._model, temperature),
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -324,6 +356,10 @@ class OpenAIProvider(BaseProvider):
             ) from exc
         except _OpenAIAPIStatusError as exc:
             raise ProviderError("openai", str(exc), status_code=exc.status_code) from exc
+        except _OpenAIAPIError as exc:
+            raise ProviderError(
+                "openai", str(exc), status_code=getattr(exc, "status_code", None)
+            ) from exc
 
         usage = response.usage
         cached = 0
@@ -331,11 +367,15 @@ class OpenAIProvider(BaseProvider):
             details = getattr(usage, "prompt_tokens_details", None)
             if details is not None:
                 cached = getattr(details, "cached_tokens", 0) or 0
+        choice = response.choices[0]
+        stop_reason, provider_stop_reason = normalize_stop_reason(choice.finish_reason)
         result = GeneratedResponse(
-            content=response.choices[0].message.content or "",
+            content=choice.message.content or "",
             input_tokens=usage.prompt_tokens if usage else 0,
             output_tokens=usage.completion_tokens if usage else 0,
             cached_tokens=cached,
+            stop_reason=stop_reason,
+            provider_stop_reason=provider_stop_reason,
             usage={
                 "prompt_tokens": usage.prompt_tokens if usage else 0,
                 "completion_tokens": usage.completion_tokens if usage else 0,
@@ -362,7 +402,7 @@ class OpenAIProvider(BaseProvider):
                     model=self._model,
                     input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
-                    operation="doc_generation",
+                    operation=self._cost_tracker.operation,
                     file_path=None,
                 )
 
@@ -386,7 +426,7 @@ class OpenAIProvider(BaseProvider):
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_completion_tokens": max_tokens,
-            "temperature": temperature,
+            "temperature": _openai_temperature(self._model, temperature),
             "messages": full_messages,
             "stream": True,
         }
@@ -406,6 +446,10 @@ class OpenAIProvider(BaseProvider):
             ) from exc
         except _OpenAIAPIStatusError as exc:
             raise ProviderError("openai", str(exc), status_code=exc.status_code) from exc
+        except _OpenAIAPIError as exc:
+            raise ProviderError(
+                "openai", str(exc), status_code=getattr(exc, "status_code", None)
+            ) from exc
 
         # Track in-progress tool calls (OpenAI streams them incrementally)
         tool_calls_acc: dict[int, dict[str, Any]] = {}
@@ -479,3 +523,7 @@ class OpenAIProvider(BaseProvider):
             ) from exc
         except _OpenAIAPIStatusError as exc:
             raise ProviderError("openai", str(exc), status_code=exc.status_code) from exc
+        except _OpenAIAPIError as exc:
+            raise ProviderError(
+                "openai", str(exc), status_code=getattr(exc, "status_code", None)
+            ) from exc

@@ -41,8 +41,6 @@ const fileNode = (id: string, language: string) => ({
 // Minimal prop set — no graphs supplied, so the canvas renders its empty state
 // while the toolbar (and its color-mode control) still mounts.
 const baseProps = {
-  moduleGraph: undefined,
-  isLoadingModuleGraph: false,
   fullGraph: undefined,
   isLoadingFullGraph: false,
   architectureGraph: undefined,
@@ -59,29 +57,33 @@ describe("GraphFlow shell", () => {
     expect(screen.getByText("No graph data")).toBeTruthy();
   });
 
+  // Uses "language" as the controlled value because it is the one that is not
+  // the default. This was "risk" until that lens was removed for painting
+  // `pagerank * 3` through unreachable thresholds; the assertion is about
+  // control flow, not about which lens, so it survives the swap unchanged.
   it("reflects a controlled colorMode and reports changes without self-updating", () => {
     const onColorModeChange = vi.fn();
     render(
       <GraphFlow
         {...baseProps}
-        colorMode="risk"
+        colorMode="language"
         onColorModeChange={onColorModeChange}
       />,
     );
 
-    // Controlled value wins: Risk is active, Community (the default) is not.
-    expect(screen.getByRole("button", { name: "Risk" }).getAttribute("aria-pressed")).toBe("true");
+    // Controlled value wins: Language is active, Community (the default) is not.
+    expect(screen.getByRole("button", { name: "Language" }).getAttribute("aria-pressed")).toBe("true");
     expect(
       screen.getByRole("button", { name: "Community" }).getAttribute("aria-pressed"),
     ).toBe("false");
 
     // Clicking another mode reports out but does NOT change the displayed mode —
     // the host owns the value and hasn't pushed a new prop yet.
-    fireEvent.click(screen.getByRole("button", { name: "Language" }));
-    expect(onColorModeChange).toHaveBeenCalledWith("language");
-    expect(screen.getByRole("button", { name: "Risk" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Community" }));
+    expect(onColorModeChange).toHaveBeenCalledWith("community");
+    expect(screen.getByRole("button", { name: "Language" }).getAttribute("aria-pressed")).toBe("true");
     expect(
-      screen.getByRole("button", { name: "Language" }).getAttribute("aria-pressed"),
+      screen.getByRole("button", { name: "Community" }).getAttribute("aria-pressed"),
     ).toBe("false");
   });
 
@@ -92,8 +94,8 @@ describe("GraphFlow shell", () => {
       screen.getByRole("button", { name: "Language" }).getAttribute("aria-pressed"),
     ).toBe("true");
 
-    fireEvent.click(screen.getByRole("button", { name: "Risk" }));
-    expect(screen.getByRole("button", { name: "Risk" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Community" }));
+    expect(screen.getByRole("button", { name: "Community" }).getAttribute("aria-pressed")).toBe("true");
     expect(
       screen.getByRole("button", { name: "Language" }).getAttribute("aria-pressed"),
     ).toBe("false");
@@ -139,13 +141,20 @@ describe("GraphFlow shell", () => {
     expect(screen.getByText("No dead files in this repo")).toBeTruthy();
   });
 
-  it("opens the flow picker on the module overview and jumps to the full graph on selection", () => {
-    const onViewModeChange = vi.fn();
+  it("highlights the FILES an execution flow runs through, not its symbols", () => {
+    // `calls` edges only ever join symbol nodes, so a trace is a list of
+    // `file::symbol` ids while this canvas draws files. The trace head focused
+    // must therefore be the containing file, or the picker silently does
+    // nothing on every repo.
+    vi.useFakeTimers();
     render(
       <GraphFlow
         {...baseProps}
-        initialViewMode="module"
-        onViewModeChange={onViewModeChange}
+        initialViewMode="full"
+        fullGraph={{
+          nodes: [fileNode("app.py", "python"), fileNode("core.py", "python")],
+          links: [],
+        }}
         executionFlows={{
           total_entry_points: 1,
           flows: [
@@ -166,10 +175,11 @@ describe("GraphFlow shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Execution flows" }));
     expect(screen.getByText("Execution Flows")).toBeTruthy();
 
-    // Selecting a flow from the module overview switches to the file-level
-    // graph so the trace can actually be highlighted.
     fireEvent.click(screen.getByText("main"));
-    expect(onViewModeChange).toHaveBeenCalledWith("full");
+    act(() => {
+      vi.advanceTimersByTime(900);
+    });
+    expect(focusNodeSpy).toHaveBeenCalledWith("app.py");
   });
 
   it("focuses the flow trace head once the graph gains it, exactly once", () => {
@@ -202,8 +212,12 @@ describe("GraphFlow shell", () => {
     });
     expect(focusNodeSpy).not.toHaveBeenCalled();
 
-    // The full graph lands: the deferred focus fires once for the trace head.
-    const nodes = flows.flows[0]!.trace.map((id) => fileNode(id, "python"));
+    // The full graph lands: the deferred focus fires once for the trace head's
+    // containing FILE (the trace itself names symbols, which this canvas has
+    // no nodes for).
+    const nodes = flows.flows[0]!.trace.map((id) =>
+      fileNode(id.split("::")[0]!, "python"),
+    );
     rerender(
       <GraphFlow
         {...baseProps}
@@ -212,7 +226,7 @@ describe("GraphFlow shell", () => {
         fullGraph={{ nodes, links: [] }}
       />,
     );
-    expect(focusNodeSpy).toHaveBeenCalledWith("app.py::main");
+    expect(focusNodeSpy).toHaveBeenCalledWith("app.py");
     expect(focusNodeSpy).toHaveBeenCalledTimes(1);
 
     // Later graph changes must not re-steer the camera for the same flow.
@@ -227,7 +241,7 @@ describe("GraphFlow shell", () => {
     expect(focusNodeSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("refuses hierarchical layout above the ELK cap and explains why", () => {
+  it("shows hierarchical layout as unavailable above the ELK cap, with the reason", () => {
     const nodes = Array.from({ length: 501 }, (_, i) =>
       fileNode(`f${i}.ts`, "typescript"),
     );
@@ -239,14 +253,45 @@ describe("GraphFlow shell", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Hierarchical" }));
+    const button = screen.getByRole("button", { name: "Hierarchical" });
 
-    // The mode must not activate — force stays on — and the notice says why.
-    expect(
-      screen.getByRole("button", { name: "Hierarchical" }).getAttribute("aria-pressed"),
-    ).toBe("false");
-    expect(screen.getByRole("status").textContent).toContain(
-      "Hierarchical layout is limited to 500 nodes",
+    // Unavailable up front rather than live-then-refusing. ELK's 500-node cap
+    // sits below the graph loader's 1,500-node floor, and "load more" only
+    // raises it — so on any repo past the cap this control could never act,
+    // and used to say so only after you pressed it.
+    expect(button.hasAttribute("disabled")).toBe(true);
+    expect(button.getAttribute("title")).toContain(
+      "Hierarchical layout needs 500 nodes or fewer",
     );
+
+    // The reason must not offer a remedy that cannot work. The module filter,
+    // the community filter and search all dim rather than remove, so none of
+    // them changes `graph.order`, which is the number this cap is measured
+    // against — an earlier version told the reader to use exactly those.
+    expect(button.getAttribute("title")).not.toMatch(
+      /module filter|Modules scope|narrow the view/i,
+    );
+
+    // Clicking a disabled control changes nothing.
+    fireEvent.click(button);
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("leaves hierarchical layout available when the graph fits under the cap", () => {
+    const nodes = Array.from({ length: 40 }, (_, i) =>
+      fileNode(`f${i}.ts`, "typescript"),
+    );
+    render(
+      <GraphFlow
+        {...baseProps}
+        initialViewMode="full"
+        fullGraph={{ nodes, links: [] }}
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "Hierarchical" });
+    expect(button.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(button);
+    expect(button.getAttribute("aria-pressed")).toBe("true");
   });
 });

@@ -22,7 +22,7 @@ async def list_health_findings(
     min_severity: str | None = Query(None),
     dimension: str | None = Query(None),
     limit: int = Query(100, ge=1, le=1000),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
     findings = await crud.get_health_findings(
         session,
@@ -49,7 +49,7 @@ async def update_finding_status(
     repo_id: str,
     finding_id: str,
     payload: FindingStatusUpdate,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     if payload.status not in _ALLOWED_STATUSES:
         raise HTTPException(

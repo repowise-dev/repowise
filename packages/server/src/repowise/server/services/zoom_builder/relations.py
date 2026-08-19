@@ -79,7 +79,7 @@ def aggregate_relations(
             continue
         key = (parent, child_a, child_b)
         counts[key] += 1
-        types[key].add(etype or "imports")
+        types[key].add(etype)
 
     relations: list[ZoomRelation] = []
     for (parent, child_a, child_b), count in counts.items():

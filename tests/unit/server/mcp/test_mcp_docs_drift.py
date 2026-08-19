@@ -1,4 +1,4 @@
-"""docs/MCP_TOOLS.md must track the live MCP tool registry.
+"""docs/agent/MCP_TOOLS.md must track the live MCP tool registry.
 
 The doc's tool inventory (headings) and surface counts used to be hand-edited
 and could silently drift from the registered surface; this pins both, the same
@@ -15,7 +15,7 @@ import pytest
 from repowise.core.registry import mcp_tool_registry
 from repowise.server.mcp_server._tool_selection import LEAN_TOOLS
 
-DOC = Path(__file__).parents[4] / "docs" / "MCP_TOOLS.md"
+DOC = Path(__file__).parents[4] / "docs" / "agent" / "MCP_TOOLS.md"
 
 
 @pytest.fixture(scope="module")
@@ -24,8 +24,11 @@ def doc_text() -> str:
 
 
 def _entries():
-    import repowise.server.mcp_server  # noqa: F401  (registers the tools)
+    # Tool modules import lazily, so importing the package alone no longer
+    # registers anything — the surface has to be asked for explicitly.
+    from repowise.server.mcp_server import ensure_full_surface
 
+    ensure_full_surface()
     return mcp_tool_registry.entries()
 
 
@@ -46,7 +49,7 @@ def test_surface_counts_match_registry(doc_text: str):
 
     m = re.search(
         r"(\d+) tools are registered in total\. A single-repo server advertises "
-        r"(\d+) by default.*?Workspace mode adds (\d+) more automatically, for (\d+)",
+        r"(\d+) by default.*?Workspace mode adds (\d+) more automatically.*?, for (\d+)",
         doc_text,
         flags=re.DOTALL,
     )

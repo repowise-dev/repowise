@@ -6,6 +6,7 @@ import asyncio
 
 from sqlalchemy import select
 
+from repowise.core.ingestion.models import NON_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     GitMetadata,
@@ -14,6 +15,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -24,7 +26,7 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
-from .assessment import _assess_one_target, _get_active_contributor_count
+from .assessment import _assess_one_target, _get_active_contributor_count, fix_annotation
 from .directives import _build_pr_directive, _governance_directive
 from .enrichment import _enrich_cross_repo, _enrich_health, _finalize_dep_summaries
 
@@ -35,13 +37,30 @@ async def get_risk(
     repo: str | None = None,
     changed_files: list[str] | None = None,
 ) -> dict:
-    """What history says about touching these files — churn, owners, blast radius.
+    """What history says about touching these files — bug fixes, churn, owners.
 
-    Fuses git temporal signals (churn percentile, trend, bus factor) with
-    graph topology (dependents, co-changes, impact surface) and security
-    findings. Consult before editing 95th+ churn-percentile files. Pass
+    Fuses git temporal signals (``hotspot_score``/``owner_pct`` are 0-1; trend;
+    bus factor) with graph topology (dependents, co-changes, impact surface)
+    and security findings. Consult before editing a bug-fixed or busy file. Pass
     changed_files for PR mode: the response leads with a directive block
-    (will_break, missing_cochanges, missing_tests) — read it first.
+    (will_break, missing_cochanges, missing_tests, tests_to_run) — read it
+    first. tests_to_run is coverage-backed: the tests the per-test map proves
+    exercise the changed files, empty when no coverage map is ingested. To
+    score a commit or ``base..head`` range instead, use ``get_change_risk``.
+
+    defect_profile appears only on files with counted bug fixes: how many landed
+    in the trailing 6 months, how long ago the last one was, a bug_magnet flag
+    for sustained recent fix pressure, and top_symbols. Read top_symbols as
+    "mostly here" rather than exact — symbol spans are current-tree while each
+    fix's line ranges are numbered on its own parent commit. Nothing names the
+    commit that introduced a bug. global_hotspots ranks the same way: fix
+    history first, churn as fallback.
+
+    episodes counts the dated records bound to a target — what happened here and
+    why, evidenced by a commit or a filesystem fact. It appears only when there
+    is at least one, and get_why serves the bodies. A directory target
+    aggregates everything beneath it, so compare the numbers within a kind of
+    target, not across kinds.
 
     Args:
         targets: file paths to assess.
@@ -59,10 +78,16 @@ async def get_risk(
         repository = await _get_repo(session)
         repo_id = repository.id
 
-        # Pre-load edges
+        # Pre-load edges. Dependency edges only: everything below reads these as
+        # "X depends on Y", and the graph also carries containment and co-change
+        # edges. Leaving co_changes in made the relation circular: a co-change
+        # partner was fed back in as an import link, so every partner that
+        # cleared the count floor was annotated ``(imports)``, including the
+        # markdown and JSON files that are graph nodes but import nothing.
         res = await session.execute(
             select(GraphEdge).where(
                 GraphEdge.repository_id == repo_id,
+                GraphEdge.edge_type.notin_(NON_DEPENDENCY_EDGE_TYPES),
             )
         )
         all_edges = res.scalars().all()
@@ -104,27 +129,48 @@ async def get_risk(
             ]
         )
 
-        # Global hotspots (excluding requested targets)
+        # Elsewhere-in-the-repo attention list (excluding requested targets).
+        # Ranked on bug-fix history first, churn second. This list sits beside
+        # per-target verdicts that already read "bug-prone" off counted fixes,
+        # so ranking it purely on churn made the two halves of one response
+        # disagree about what deserves attention. Admitting bug magnets matters
+        # as much as the ordering: filtering on is_hotspot alone means a file
+        # fixed four times last month that is not busy can never appear.
+        # Churn stays the fallback, so a repo with no fix convention keeps
+        # exactly the list it had. These are full ORM rows, so the fix columns
+        # are already in memory and this adds no query.
         target_set = set(targets)
         res = await session.execute(
             select(GitMetadata)
             .where(
                 GitMetadata.repository_id == repo_id,
-                GitMetadata.is_hotspot == True,  # noqa: E712
+                (GitMetadata.is_hotspot == True)  # noqa: E712
+                | (GitMetadata.bug_magnet == True),  # noqa: E712
             )
-            .order_by(GitMetadata.churn_percentile.desc())
+            .order_by(
+                GitMetadata.bug_magnet.desc(),
+                GitMetadata.fix_mass.desc(),
+                GitMetadata.churn_percentile.desc(),
+            )
             .limit(len(targets) + 5)
         )
         all_hotspots = filter_rows_by_attr(list(res.scalars().all()), "file_path", exclude_spec)
-        global_hotspots = [
-            {
+        global_hotspots = []
+        for h in all_hotspots:
+            if h.file_path in target_set:
+                continue
+            entry = {
                 "file_path": h.file_path,
                 "hotspot_score": h.churn_percentile,
                 "primary_owner": h.primary_owner_name,
             }
-            for h in all_hotspots
-            if h.file_path not in target_set
-        ][:5]
+            # Silent on files with no counted fixes, so a repo without fix
+            # history pays nothing for this.
+            fixes = fix_annotation(h)
+            if fixes is not None:
+                entry.update(fixes)
+            global_hotspots.append(entry)
+        global_hotspots = global_hotspots[:5]
 
         # A. PR blast radius (only when caller passes changed_files)
         pr_blast_radius: dict | None = None
@@ -145,6 +191,12 @@ async def get_risk(
     # Attach per-file health_score + top_biomarkers (up to 3) drawn from the
     # health tables. Conservative: missing data → no field, never invented.
     await _enrich_health(results, ctx, repo_id)
+
+    # ---- Precedent enrichment ----------------------------------------------
+    # One integer per target: how many dated episodes are bound here. A number
+    # invites a follow-up get_why; a paragraph would spend the budget of every
+    # caller that only wanted the risk card. Absent rather than zero.
+    await asyncio.to_thread(_enrich_episodes, results, ctx.path)
 
     response: dict = {
         "targets": {r["target"]: r for r in results},

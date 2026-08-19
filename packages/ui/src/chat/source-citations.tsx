@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import { ArrowUpRight } from "lucide-react";
 import { getPageTypeIcon } from "../lib/page-types";
+import { filePageId } from "../shared/entity/routes";
 import type { ChatUIToolCall } from "@repowise-dev/types/chat";
 
 export interface SourceReference {
@@ -35,7 +36,15 @@ export function extractSources(
     if (tc.name === "search_codebase") {
       const results = (result.results as Array<Record<string, unknown>>) ?? [];
       for (const r of results) {
-        const pageId = r.page_id as string;
+        // `page_id` is `${page_type}:${target_path}`, and the tool now omits it
+        // wherever those two rebuild it. Derive rather than skip: the previous
+        // `const pageId = r.page_id` dropped the whole row — and its citation —
+        // for any result without one. Same fallback the get_context branch uses.
+        const pageType = r.page_type as string | undefined;
+        const targetPath = r.target_path as string | undefined;
+        const pageId =
+          (r.page_id as string | undefined) ??
+          (pageType && targetPath ? `${pageType}:${targetPath}` : "");
         if (!pageId || seen.has(pageId)) continue;
         seen.add(pageId);
         sources.push({
@@ -56,7 +65,7 @@ export function extractSources(
         for (const [target, info] of Object.entries(targets)) {
           const docs = info.docs as Record<string, unknown> | undefined;
           if (!docs) continue;
-          const pageId = (docs.page_id as string) ?? `file_page:${target}`;
+          const pageId = (docs.page_id as string) ?? filePageId(target);
           if (seen.has(pageId)) continue;
           seen.add(pageId);
           sources.push({
@@ -93,10 +102,12 @@ export function extractSources(
       const decisions = (result.decisions as Array<Record<string, unknown>>)
         ?? (result.matching_decisions as Array<Record<string, unknown>>)
         ?? [];
-      for (const d of decisions) {
+      const stale = (result.stale_decisions as Array<Record<string, unknown>>) ?? [];
+      const rows = [...decisions, ...stale];
+      for (const d of rows) {
         const affectedFiles = (d.affected_files as string[]) ?? [];
         for (const filePath of affectedFiles.slice(0, 3)) {
-          const pageId = `file_page:${filePath}`;
+          const pageId = filePageId(filePath);
           if (seen.has(pageId)) continue;
           seen.add(pageId);
           sources.push({
@@ -108,21 +119,6 @@ export function extractSources(
             toolName: tc.name,
           });
         }
-      }
-    }
-
-    if (tc.name === "get_architecture_diagram") {
-      const pageId = "architecture_diagram:";
-      if (!seen.has(pageId)) {
-        seen.add(pageId);
-        sources.push({
-          id: `${tc.id}:arch-diagram`,
-          pageId,
-          title: "Knowledge Graph",
-          pageType: "architecture_diagram",
-          targetPath: "",
-          toolName: tc.name,
-        });
       }
     }
   }
@@ -165,31 +161,39 @@ export function SourceCitations({
   if (sources.length === 0) return null;
 
   return (
-    <div className="mt-2 pt-2 border-t border-[var(--color-border-default)]/50">
-      <p className="text-[10px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium mb-1.5">
+    <div className="mt-5 pt-4 border-t border-[var(--color-border-default)]">
+      <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] mb-2.5">
         Sources
       </p>
-      <div className="flex flex-wrap gap-1.5">
-        {sources.map((source, idx) => (
-          <a
-            key={source.id}
-            href={buildHref ? buildHref(source) : defaultBuildHref(source, prefix)}
-            className="group inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1 text-[10px] text-[var(--color-text-secondary)] hover:border-[var(--color-accent-primary)] hover:text-[var(--color-accent-primary)] hover:bg-[var(--color-accent-muted)] transition-all"
-          >
-            <span className="flex items-center justify-center h-3.5 w-3.5 rounded-sm bg-[var(--color-bg-overlay)] text-[10px] font-bold text-[var(--color-text-tertiary)] group-hover:bg-[var(--color-accent-primary)] group-hover:text-white shrink-0 transition-colors">
-              {idx + 1}
-            </span>
-            <SourceIcon pageType={source.pageType} className="h-3 w-3 shrink-0 opacity-60" />
-            <span className="truncate max-w-[160px] font-medium">{source.title}</span>
-            {source.confidence != null && (
-              <span className="text-[10px] text-[var(--color-text-tertiary)] tabular-nums">
-                {(source.confidence * 100).toFixed(0)}%
-              </span>
-            )}
-            <ArrowUpRight className="h-2.5 w-2.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-          </a>
+      {/* Links, not chips. Each one goes somewhere, so the accent is earned on
+          hover; a border and a ground on every entry turned a list of eight
+          into a wall of boxes that outweighed the answer above it. The counter
+          badge went with them — numbering is only worth its weight when the
+          prose cites [1], and a reply does not. */}
+      <ul className="flex flex-col gap-1.5">
+        {sources.map((source) => (
+          <li key={source.id}>
+            <a
+              href={buildHref ? buildHref(source) : defaultBuildHref(source, prefix)}
+              className="group inline-flex items-baseline gap-2 text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors"
+            >
+              <SourceIcon
+                pageType={source.pageType}
+                className="h-3.5 w-3.5 shrink-0 self-center text-[var(--color-text-tertiary)] group-hover:text-[var(--color-accent-primary)] transition-colors"
+              />
+              {/* No truncation: a cut title reports a layout decision to the
+                  reader as missing content. Long ones wrap. */}
+              <span className="font-medium">{source.title}</span>
+              {source.confidence != null && (
+                <span className="font-mono text-[11px] text-[var(--color-text-tertiary)] tabular-nums">
+                  {(source.confidence * 100).toFixed(0)}%
+                </span>
+              )}
+              <ArrowUpRight className="h-3 w-3 shrink-0 self-center opacity-0 group-hover:opacity-100 transition-opacity" />
+            </a>
+          </li>
         ))}
-      </div>
+      </ul>
     </div>
   );
 }

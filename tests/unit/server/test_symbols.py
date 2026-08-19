@@ -154,3 +154,43 @@ async def test_get_symbol_by_db_id(client: AsyncClient, app) -> None:
 async def test_get_symbol_not_found(client: AsyncClient) -> None:
     resp = await client.get("/api/symbols/nonexistent")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_search_symbols_treats_underscore_literally(client: AsyncClient, app) -> None:
+    """``_`` in a query is a character, not a LIKE single-char wildcard.
+
+    Without escaping, searching ``a_b`` also returns ``axb`` — which reads as
+    the search being broken, and is how most Python names are spelled.
+    """
+    repo = await create_test_repo(client)
+    await _insert_symbol(
+        app.state.session_factory,
+        repo["id"],
+        name="load_config",
+        symbol_id="src/main.py::load_config",
+        qualified_name="src.main.load_config",
+    )
+    await _insert_symbol(
+        app.state.session_factory,
+        repo["id"],
+        name="loadXconfig",
+        symbol_id="src/main.py::loadXconfig",
+        qualified_name="src.main.loadXconfig",
+    )
+
+    resp = await client.get("/api/symbols", params={"repo_id": repo["id"], "q": "load_config"})
+    assert resp.status_code == 200
+    names = {item["name"] for item in resp.json()["items"]}
+    assert names == {"load_config"}
+
+
+@pytest.mark.asyncio
+async def test_search_symbols_treats_percent_literally(client: AsyncClient, app) -> None:
+    """A bare ``%`` must not turn into "match every symbol"."""
+    repo = await create_test_repo(client)
+    await _insert_symbol(app.state.session_factory, repo["id"])
+
+    resp = await client.get("/api/symbols", params={"repo_id": repo["id"], "q": "%"})
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 0

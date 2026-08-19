@@ -2,6 +2,11 @@
 
 import { useState, useCallback } from "react";
 import { FileCardDialog } from "@repowise-dev/ui/shared/file-card";
+import {
+  docsPagePath,
+  fileEntityPath,
+  filePageId,
+} from "@repowise-dev/ui/shared/entity";
 import type { FileCardData, FileCardLinks } from "@repowise-dev/ui/shared/file-card";
 
 /**
@@ -22,8 +27,15 @@ export function useFileCardHost(repoId?: string) {
         customLinks ??
         (repoId
           ? {
+              file: fileEntityPath(`/repos/${repoId}`, next.file_path),
               graph: `/repos/${repoId}/architecture?view=graph&node=${encodeURIComponent(next.file_path)}`,
-              docs: `/repos/${repoId}/docs?file=${encodeURIComponent(next.file_path)}`,
+              // `?file=` was read by nothing in the docs surface, so this
+              // button silently opened the repo overview — a different file's
+              // prose, looking exactly like the link had worked. The reader is
+              // `?page=`, keyed by the wiki page id. Most files have no page,
+              // and that case now says so by name rather than landing the
+              // reader somewhere plausible and wrong.
+              docs: docsPagePath(`/repos/${repoId}`, filePageId(next.file_path)),
               symbols: `/repos/${repoId}/architecture?view=symbols&q=${encodeURIComponent(next.file_path)}`,
               blastRadius: `/repos/${repoId}/code-health?tab=impact&file=${encodeURIComponent(next.file_path)}`,
               deadCode: `/repos/${repoId}/code-health?tab=dead-code`,

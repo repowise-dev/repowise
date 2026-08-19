@@ -2,6 +2,162 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.44.0
+
+### Changed
+- Version bump to track the 0.44.0 release. No command, skill, hook or MCP tool
+  surface changed this cycle: the live `list_tools()` set is unchanged, no
+  `@click.option` moved on any documented command, and `hooks.json` still
+  mirrors `claude_config.py`.
+
+## 0.43.0
+
+### Changed
+- `/repowise:risk` documents what the command now leads with: the bug-fix
+  history of the files a change touches, with the 0-10 score reported beside it
+  as a measure of diff size and spread rather than a verdict on danger. Also
+  records that omitting the revspec scores uncommitted work when the tree is
+  dirty, and adds `--baseline` and `-t/--target` (#1583, #1593).
+- `/repowise:init` describes `--no-editor-setup` as what it now does: it skips
+  the four project-local files (`.mcp.json`, `.claude/CLAUDE.md`,
+  `.vscode/mcp.json`, `.vscode/extensions.json`) as well as the machine-wide
+  registration, so only `.repowise/` is touched. Adds `--save-key` /
+  `--no-save-key` (#1572, #1595).
+- `/repowise:decision` documents the flag-driven form of `decision add`, which
+  records without prompting once `--title` and `--decision` are both present and
+  is the form to use with no terminal (#1566).
+- `/repowise:why` documents that `--target` with no question now answers about
+  those files instead of falling through to the health dashboard, and that a
+  question the store cannot answer returns a redirect rather than the closest
+  records (#1558, #1566).
+
+## 0.42.0
+
+### Changed
+- The six skills now render from a source shared with the Codex plugin rather
+  than being maintained as two hand-kept copies that had already drifted in
+  wording, headings and one directory name. A drift report fails when the two
+  hosts diverge (#1450).
+
+## 0.41.0
+
+### Added
+- `/repowise:ask`, `/repowise:context`, `/repowise:symbol`, `/repowise:why` and
+  `/repowise:export`: slash commands for the remaining CLI adapters, so Claude
+  can synthesise answers, pull triage cards, read live-verified symbol bodies,
+  query decisions and archaeology, and export the wiki or a Structurizr model
+  without an MCP-only flow (#1428).
+
+## 0.40.0
+
+### Added
+- `/repowise:security` runs the full-history secret scan. Working-tree scanning
+  already happens during `init` and `update`; this command is for walking git
+  history to find secrets that were later removed. No model call, and re-runs
+  are idempotent (#1107).
+
+### Changed
+- The `PostToolUse` matcher no longer selects `Bash` or `PowerShell`. Across one
+  287-session corpus those were 51% of all hook invocations and 0.7% of the
+  emissions, and the cost is process start, paid before repowise reads the
+  payload. An installed machine narrows itself on the next CLI invocation
+  without a re-init (#1382).
+- A `PostToolUseFailure` entry is registered, matching
+  `Read|Edit|Write|Grep|Glob|NotebookEdit`. When a failed path's basename
+  resolves to exactly one indexed file still on disk, repowise names it (#1336).
+- Version bump to track the repowise 0.40.0 release. The MCP tool surface is
+  unchanged; the CLI flags the commands document still match the shipped CLI.
+
+## 0.39.0
+
+### Changed
+- Version bump to track the repowise 0.39.0 release. The MCP tool surface, the
+  CLI flags the commands document and the hook matchers in `hooks/hooks.json`
+  are unchanged this cycle; the parity check found no drift. `get_answer`
+  gained a field in its response payload (#1306), which no command or skill
+  documents.
+
+## 0.38.0
+
+### Changed
+- Version bump to track the repowise 0.38.0 release. The MCP tool surface, the
+  CLI flags the commands document and the hook matchers in `hooks/hooks.json`
+  are unchanged this cycle; the parity check found no drift.
+
+## 0.37.0
+
+### Added
+- `/repowise:init` documents `--no-editor-setup` (and the matching
+  `REPOWISE_SKIP_EDITOR_SETUP=1`), which skips global MCP and hook
+  registration. The codebase-exploration skill points at it for scratch
+  clones, fixtures and worktrees (#1086).
+
+### Changed
+- Version bump to track the repowise 0.37.0 release.
+- The augment hook command in `hooks/hooks.json` guards on the console script
+  being present, so a shell that cannot find `repowise-augment` stays silent
+  instead of reporting a failure on every matched tool call (#1141).
+- `/repowise:dead-code` re-synced with the CLI's `--min-confidence` default,
+  now anchored to `RISK_CAP_CONFIDENCE` (#1087).
+- The code-health skill reflects the `get_health` response surface: targets
+  that cannot be resolved are reported rather than dropped, and the response
+  no longer repeats itself (#1142).
+- `DEVELOPER.md` covers the no-editor-setup path.
+
+## 0.36.0
+
+### Changed
+- Version bump to track the repowise 0.36.0 release.
+- `/repowise:health` dropped `--safe-only`, which never did anything on
+  `health`. The flag remains live on `dead-code` (#1027).
+
+## 0.35.0
+
+### Changed
+- Version bump to track the repowise 0.35.0 release.
+- `init`, `status` and the reader docs follow the one-renderer wiki model:
+  `--prose` / `--no-prose` is the single wiki-spend switch, `init` can start
+  keyless from structure, and any page upgrades to model prose later with
+  `repowise generate`. The deprecated `--index-only` / `--docs` aliases are no
+  longer written into new guidance.
+- MCP tool surface and hooks docs re-synced with the server (#1017).
+
+## 0.34.1
+
+### Added
+- `/repowise:coverage` — ingest or inspect coverage reports (`coverage add` /
+  `coverage status`).
+- `/repowise:impacted-tests` — map a commit / range / staged diff to the tests
+  that exercise changed lines.
+
+## 0.34.0
+
+### Changed
+- Plugin docs: MCP tool surface is the **ten flagship tools** (including
+  `get_change_risk`) plus `list_repos`; hooks docs now match bundled
+  `SessionStart` + full `PostToolUse` matcher.
+- Version bump to track the repowise 0.34.0 release.
+- `pre-modification` skill reads the new `defect_profile` block on `get_risk`
+  (fix count, last fix age, `bug_magnet`, `top_symbols`) and leads with it.
+- `init`, `update`, and `health` commands document `-v, --verbose`; `init` and
+  `update` are now quiet by default.
+
+## 0.33.0
+
+### Added
+- `change-review` skill for reviewing a change against the risk and blast-radius
+  tools (shipped for both the Claude Code and Codex plugins).
+
+### Changed
+- Version bump to track the repowise 0.33.0 release.
+- `risk` command documents the new `-x/--exclude` flag and `.riskignore` support.
+
+## 0.32.0
+
+### Changed
+- Version bump to track the repowise 0.32.0 release. No command, skill, or MCP
+  tool-surface changes this cycle.
+
 ## 0.31.0
 
 ### Changed

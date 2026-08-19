@@ -26,11 +26,22 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ._shared import _find_repo_root
+from ._shared import _find_repo_root, emitting_build
 from .bash_staleness import _read_in_flight_marker
 from .decision_inject import _session_decision_block
 
-_CORE_TOOLS = "get_answer, get_context, get_symbol, search_codebase, get_risk"
+#: The tools this block points a fresh session at. **Entry points only.**
+#:
+#: ``get_symbol`` used to be in this list and is deliberately not. It is a
+#: follow-up on an id another response already handed over, and naming it here
+#: — three times per session, in the one block every session reads first — is
+#: what turns it into a first-reach tool. An agent that sees it listed beside
+#: ``get_answer`` spends most of its retrieval calls fetching one symbol at a
+#: time; an agent that does not, reaches for the coarse tools instead. The tool
+#: is still served and still in the CLAUDE.md table, just not advertised as
+#: somewhere to start. Same reasoning, at more length, in
+#: ``generation/editor_files/tool_table.py``.
+_CORE_TOOLS = "get_answer, get_context, search_codebase, get_risk"
 
 
 def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
@@ -60,18 +71,30 @@ def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
 
 
 def _freshness_block(repo_path: Path, last_sync: str) -> str | None:
-    """The live index-freshness paragraph (the original SessionStart block)."""
+    """The live index-freshness paragraph (the original SessionStart block).
+
+    The tag carries the emitting build. It costs a few tokens once per session
+    and it makes the injections that follow attributable to the install that
+    produced them, which a transcript otherwise cannot recover. The ledger
+    stamps every row for the same reason; this is the half a transcript can
+    read back.
+
+    A sidechain has no SessionStart, so a subagent's emissions are attributable
+    through the ledger's ``build`` column only. That is a real gap, stated
+    rather than papered over.
+    """
+    tag = f"[repowise {emitting_build()}]"
     head = _git_head(repo_path)
     if head is None:
         return (
-            "[repowise] This repository has a local codebase index. Prefer the "
+            f"{tag} This repository has a local codebase index. Prefer the "
             f"repowise MCP tools ({_CORE_TOOLS}) over raw file reads for locating "
             "and understanding code before you edit."
         )
 
     if head == last_sync:
         return (
-            f"[repowise] Codebase index is current (HEAD {head[:8]}). The MCP tools "
+            f"{tag} Codebase index is current (HEAD {head[:8]}). The MCP tools "
             f"({_CORE_TOOLS}) serve content verified against this exact tree; prefer "
             "them over raw file reads for locating and understanding code before you edit."
         )
@@ -83,7 +106,7 @@ def _freshness_block(repo_path: Path, last_sync: str) -> str | None:
             f"started {int(elapsed)}s ago" if isinstance(elapsed, (int, float)) else "running now"
         )
         return (
-            f"[repowise] Index update in progress ({elapsed_str}), catching up to "
+            f"{tag} Index update in progress ({elapsed_str}), catching up to "
             f"{head[:8]}. The MCP tools remain reliable meanwhile; a response carries "
             "`stale_warning` only when a file it serves actually changed."
         )
@@ -91,7 +114,7 @@ def _freshness_block(repo_path: Path, last_sync: str) -> str | None:
     changed = _changed_file_count(repo_path, last_sync, head)
     drift = f" ({changed} files changed since)" if changed is not None else ""
     return (
-        f"[repowise] Index is behind HEAD: indexed {last_sync[:8]}, now {head[:8]}{drift}. "
+        f"{tag} Index is behind HEAD: indexed {last_sync[:8]}, now {head[:8]}{drift}. "
         f"The MCP tools ({_CORE_TOOLS}) stay reliable: a response carries `stale_warning` "
         "only when a file it serves actually changed, and silence means current. "
         "Run `repowise update` to resync."

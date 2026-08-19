@@ -1,12 +1,18 @@
-"""Regex-tier import extraction for languages without a tree-sitter grammar.
+"""Import-only extraction for languages the symbol pipeline does not parse.
 
 Languages whose ``LanguageSpec.import_support`` is ``"partial"`` via the
-lightweight-resolver mechanism get their import statements extracted here
-with per-language regexes over the raw source text — no AST. The parser
-consults :func:`extract_lightweight_imports` on its no-grammar path, so
-these files keep an empty symbol list (the regex tier claims no symbol
-knowledge) but carry real :class:`~..models.Import` entries that flow
-through the standard resolver dispatch.
+lightweight-resolver mechanism get their import statements extracted here.
+The parser consults :func:`extract_lightweight_imports` on its
+no-``LanguageConfig`` path, so these files keep an empty symbol list — this
+tier claims no symbol knowledge — but carry real :class:`~..models.Import`
+entries that flow through the standard resolver dispatch.
+
+That empty-symbols contract, not the parsing technique, is what defines the
+tier. Most members here have no tree-sitter grammar at all and match with
+per-language regexes over the raw text. ``html`` is the exception: repowise
+already ships ``tree-sitter-html`` for Vue, so its extractor uses the real
+grammar. It stays here because what it produces is the same — imports, no
+symbols.
 """
 
 from __future__ import annotations
@@ -20,9 +26,9 @@ from .elixir import extract_elixir_imports
 from .erlang import extract_erlang_imports
 from .fsharp import extract_fsharp_imports
 from .haskell import extract_haskell_imports
+from .html import extract_html_imports
 from .lean import extract_lean_imports
 from .sql import extract_dbt_imports
-
 
 ExtractorFn = Callable[[str], list[Import]]
 
@@ -37,6 +43,8 @@ _EXTRACTORS: dict[str, ExtractorFn] = {
     # dbt {{ ref() }} / {{ source() }}, the only import system .sql files
     # have; plain SQL contains neither form, so this is a no-op outside dbt.
     "sql": extract_dbt_imports,
+    # <script src> / <link href>. AST-backed rather than regex — see above.
+    "html": extract_html_imports,
 }
 
 LIGHTWEIGHT_IMPORT_LANGUAGES = frozenset(_EXTRACTORS)

@@ -14,6 +14,7 @@ import {
 } from "./biomarker-glossary";
 import { BiomarkerDetails, type BiomarkerDetailsRecord } from "./biomarker-details";
 import { SEVERITY_CHIP, SEVERITY_LABEL, SEVERITY_ORDER, type Severity } from "./tokens";
+import { SeverityMark } from "./severity-mark";
 
 /** Severity → dot color, same ramp as every score pill on the surface. */
 const SEVERITY_DOT: Record<Severity, string> = {
@@ -215,11 +216,15 @@ function BiomarkerGroup({
         <span className="ml-auto inline-flex items-center gap-1.5 text-xs tabular-nums">
           {(Object.keys(sevCounts) as Severity[]).map((s) =>
             sevCounts[s] > 0 ? (
+              // A count keyed by colour, so it gets the dot and the figure and
+              // no ground. Filled chips here tiled into stripes that outweighed
+              // the marker name they belonged to.
               <span
                 key={s}
-                className={`inline-flex items-center rounded px-1.5 py-0.5 font-semibold ${SEVERITY_CHIP[s]}`}
+                className="inline-flex items-center gap-1 font-semibold"
                 title={SEVERITY_LABEL[s]}
               >
+                <SeverityMark severity={s} compact />
                 {sevCounts[s]}
               </span>
             ) : null,
@@ -322,11 +327,7 @@ function FindingRow({
       onClick={interactive ? () => onSelect!(f) : undefined}
     >
       <div className="flex items-center gap-2">
-        <span
-          className={`inline-block rounded px-2 py-0.5 text-[10px] uppercase font-semibold ${SEVERITY_CHIP[f.severity]}`}
-        >
-          {SEVERITY_LABEL[f.severity]}
-        </span>
+        <SeverityMark severity={f.severity} />
         {!hideBiomarker ? (
           <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--color-text-primary)]">
             {biomarkerLabel(f.biomarker_type)}

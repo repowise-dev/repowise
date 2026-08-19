@@ -56,15 +56,35 @@ class Repository(Base):
     # from that sample — otherwise a multi-year repo reads as a few months old
     # (issue #730). NULL until the first index writes them / for non-git repos.
     total_commit_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    first_commit_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    first_commit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # All-time unique authors (mailmap-folded) and the founding author's name.
     # Contributor count shares the #730 bug when read off the bounded sample;
     # the founder rides along free (the root commit is already loaded for the
     # first-commit date). Both NULL until the first index writes them.
     total_contributor_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     first_commit_author: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # The root commit's subject line, and lifetime churn across the whole
+    # history. Both share the #730 reasoning: the bounded ``git_commits`` sample
+    # cannot answer either without understating a long-lived repo. Churn is NULL
+    # when the history was too deep to walk (see ``_lifetime_churn``).
+    first_commit_subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    total_lines_added: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_lines_deleted: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The commit the two churn totals above were computed at, so the next capture
+    # can add the range since it instead of re-walking the whole history (the
+    # walk was the single most expensive git call on the update path). Written
+    # only together with a churn figure, and only trusted after the next capture
+    # re-proves it is still an ancestor of HEAD and that the commit counts
+    # reconcile. NULL on indexes written before this, which just means the next
+    # capture walks once and anchors itself.
+    churn_anchor_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # ``parser_fingerprint()`` of the build that last wrote this repo's
+    # ``graph_edges``. An incremental update only rewrites the git-changed
+    # files' edges, so a query/extractor change would otherwise reach a file
+    # only when that file happened to change. A mismatch here widens the next
+    # update's edge reconcile to every parsed file, once. NULL on stores written
+    # before this, which is treated as a mismatch and heals the same way.
+    graph_edges_parser_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     settings_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
@@ -137,6 +157,31 @@ class Page(Base):
     metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     # Developer-authored notes that survive LLM re-generation.
     human_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # --- Where the page sits in the wiki -----------------------------------
+    # Hierarchy lives here rather than being reassembled by each reader from
+    # page_type and target_path prefixes, so MCP, the web app and the editor
+    # extension all navigate the same tree.
+    #
+    # parent_page_id references another page's id but carries no foreign key,
+    # because the generated-page sweep deletes parents whose structural key
+    # moved and the surviving children have to outlive them. Placement drops
+    # any edge that does not land on a real page, so a dangling parent is
+    # prevented where the tree is built rather than by the database.
+    parent_page_id: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    # Rank among siblings sharing a parent. Reading order, deliberately not
+    # generation_level, which is a build dependency order and unrelated.
+    display_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    # Dotted position in the outline, e.g. "2.4.1". Display only: it is
+    # recomputed from the tree, so nothing may key on it.
+    section_number: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The stable identity a structurally-keyed page is derived from, kept
+    # alongside the id so a key change is visible rather than only inferable
+    # from a page that stopped being reproduced.
+    structural_key: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -202,7 +247,18 @@ class GraphNode(Base):
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
 
-    __table_args__ = (UniqueConstraint("repository_id", "node_id", name="uq_graph_node"),)
+    __table_args__ = (
+        UniqueConstraint("repository_id", "node_id", name="uq_graph_node"),
+        # ``node_type == "file"`` is the most-issued predicate on this table and
+        # nothing covered it: ``uq_graph_node`` is keyed ``(repository_id,
+        # node_id)``, so every "all the file nodes" read seeked on the repo and
+        # then filtered ~36k rows in memory to return ~3.4k. Measured on the
+        # repowise index, the two reads ``get_health`` issues per dashboard call
+        # (language map, test-path set): 29.0ms -> 9.2ms and 27.2ms -> 8.4ms.
+        # Audited for the LIMIT-without-ORDER-BY hazard 0046 records — every
+        # ``node_type``-filtered query in the tree that limits also orders.
+        Index("ix_graph_nodes_repo_type", "repository_id", "node_type"),
+    )
 
 
 class ExternalSystem(Base):
@@ -252,6 +308,18 @@ class GraphEdge(Base):
     imported_names_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     edge_type: Mapped[str] = mapped_column(String(64), nullable=False, default="imports")
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    # Provenance of a synthesised edge (e.g. "same_package", "header_source_pair").
+    # NULL for edges that come from a real import/using directive. Cycle detection
+    # reads it to drop intra-compilation-unit edges; see
+    # repowise.core.ingestion.cohesion. Persisted because the health engine and
+    # incremental updates run against a graph rehydrated from these rows.
+    hint_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Which resolution strategy produced a ``calls`` / ``references`` edge, from
+    # the closed ``ResolutionOrigin`` vocabulary. NULL means the row predates
+    # the vocabulary or the edge is not resolver-produced — not "unknown".
+    # Persisted because the graph is rehydrated from these rows, so an
+    # unpersisted origin would exist only on the indexing run that minted it.
+    resolution_origin: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -264,6 +332,17 @@ class GraphEdge(Base):
             "edge_type",
             name="uq_graph_edge_typed",
         ),
+        # The unique constraint above serves every read keyed on
+        # ``source_node_id`` and nothing keyed on ``target_node_id``, so the
+        # inbound half of every adjacency question — "what depends on this?" —
+        # scanned the table. ``get_graph_edges_for_node`` records the measured
+        # cost in its own docstring: on django's 120k-edge index the hottest
+        # node goes 10.9ms to 38.2ms once the inbound branch has to sort its
+        # scan into a temp b-tree for the ranked cut. The file page pays that
+        # twice per view, through that function and through
+        # ``get_node_degree_counts``. Additive, so ``_reconcile_schema``
+        # creates it on existing databases at the next ``init_db``.
+        Index("ix_graph_edges_repo_target", "repository_id", "target_node_id"),
     )
 
 
@@ -383,7 +462,22 @@ class WikiSymbol(Base):
         DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
     )
 
-    __table_args__ = (UniqueConstraint("repository_id", "symbol_id", name="uq_wiki_symbol"),)
+    __table_args__ = (
+        UniqueConstraint("repository_id", "symbol_id", name="uq_wiki_symbol"),
+        # The unique constraint's implicit index is keyed on ``symbol_id``, so a
+        # lookup by *file* could only seek on ``repository_id`` and then filter
+        # the repo's symbols in memory. That is the shape behind every
+        # file-scoped symbol join (health findings -> symbol ids, the file
+        # drawer, the symbol panel), not just one caller. Measured on a real
+        # 28,175-symbol index, a 400-path lookup returning 6,937 rows went
+        # 33.3ms -> 11.7ms, the plan flipping to a keyed seek, same rows.
+        #
+        # Adding this changed which index the planner picks for *other* queries
+        # on this table, and an unordered ``LIMIT`` there is decided by whatever
+        # order the chosen index walks. ``augment_cmd``'s symbol rescue had two
+        # such queries and now orders explicitly — see ``symbols_named``.
+        Index("ix_wiki_symbols_repo_path", "repository_id", "file_path"),
+    )
 
 
 class GitMetadata(Base):
@@ -445,7 +539,26 @@ class GitMetadata(Base):
     # Prior-defect history: bug-fix commits touching this file in the trailing
     # ~6-month defect window (anchored to the index's as_of reference). Consumed
     # by the ``prior_defect`` health biomarker — a leakage-aware process signal.
+    #
+    # ``prior_defect_count`` keeps only fixes whose diff changes production code
+    # (see ingestion.git_indexer.fix_shape); ``prior_defect_raw_count`` is every
+    # subject-matched fix, kept alongside so the filtered-out noise stays
+    # inspectable instead of silently vanishing from the count.
     prior_defect_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    prior_defect_raw_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Bug-magnet rollup over this file's ``fix_events``, recomputed after every
+    # index and update. ``fix_mass`` is ``prior_defect_count`` with a 90-day
+    # half-life applied (analysis.health.fix_attribution), so a file whose fixes
+    # all sit at the window's trailing edge stops looking like one fixed three
+    # times this month; ``bug_magnet`` is that mass past the three-fresh-fixes
+    # trigger. ``fix_symbol_counts_json`` maps ``WikiSymbol.symbol_id`` to how
+    # many of those fixes landed in it. The mass is stored beside the flag on
+    # purpose: a bare boolean cannot be argued with.
+    fix_mass: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    bug_magnet: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_fix_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fix_symbol_counts_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
     # Temporal hotspot score: exponentially time-decayed churn signal
     temporal_hotspot_score: Mapped[float | None] = mapped_column(Float, nullable=True, default=0.0)
@@ -465,6 +578,17 @@ class GitMetadata(Base):
     agent_commit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     agent_authored_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     agent_tier_counts_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+    # Line-level agent share (agent-trace standard): distinct file
+    # lines an AI/mixed contributor wrote, interval-union deduped across every
+    # trace record for this path, plus a {model_id: line_count} breakdown
+    # (opus vs sonnet). The denominator ("N% AI-written") is the file's current
+    # LOC, applied downstream — the git indexer stores only the AI numerator so
+    # it stays LOC-decoupled. Both stay 0/"{}" unless the repo ships
+    # .agent-trace/traces.jsonl. Model buckets can overlap (a line touched by
+    # two models counts in both), so their sum may exceed agent_line_count.
+    agent_line_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    agent_line_model_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
@@ -502,6 +626,12 @@ class GitCommit(Base):
     author_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     author_email: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Minutes east of UTC when the commit was made. ``committed_at`` is stored as
+    # a UTC instant, which loses the author's local wall-clock — so time-of-day
+    # analysis (stats punch card, per-author peak hour) needs this to avoid
+    # reporting a 10pm commit in Mumbai as a mid-afternoon one. NULL on rows
+    # written before the offset was captured.
+    committed_offset_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     subject: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
     # Kamei change features (diff size + diffusion of THIS change)
@@ -535,6 +665,89 @@ class GitCommit(Base):
     agent_autonomy_tier: Mapped[int | None] = mapped_column(Integer, nullable=True)
     agent_channel: Mapped[str | None] = mapped_column(String(32), nullable=True)
     agent_confidence: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # Model that wrote the change, in models.dev ``provider/model`` form (e.g.
+    # ``anthropic/claude-opus-4``), read from the agent-trace record that
+    # attributed the commit. Set only for the ``agent_trace`` channel (no other
+    # local channel carries a model); NULL for human or non-trace commits.
+    agent_model_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+
+class FixEvent(Base):
+    """One bug-fix commit's effect on one file, with its bug-introducing candidates.
+
+    ``GitMetadata.prior_defect_count`` is the aggregate of these rows; this table
+    is the evidence underneath it. Each row records what a fix commit did to one
+    file (:mod:`ingestion.git_indexer.fix_shape` kind, the old-side line ranges it
+    replaced, how many lines it changed) and, for ``code_fix`` rows, the ranked
+    commits that ``git blame`` puts on those lines at ``fix^`` — the SZZ
+    bug-introducing candidates.
+
+    ``committed_at`` is load-bearing. Rows are stored **undecayed**: every recency
+    weight downstream (biomarker mass, bug-magnet flag, rollups) is derived at read
+    time from this column, so changing a half-life is a read-time decision and
+    never needs a reindex.
+
+    Joins: ``fix_sha`` and each inducing sha to :class:`GitCommit` (which already
+    carries agent provenance), and ``file_path`` + ``old_ranges_json`` to
+    :class:`WikiSymbol` / :class:`GitFunctionBlame` line ranges.
+
+    Retention mirrors the ``prior_defect`` window: a full index seeds the trailing
+    window, updates append newer fix commits and prune rows that have aged out, so
+    the table always holds exactly the window a fresh index would produce.
+    """
+
+    __tablename__ = "fix_events"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "fix_sha", "file_path", name="uq_fix_event"),
+        Index("ix_fix_events_repo_path", "repository_id", "file_path"),
+        Index("ix_fix_events_repo_time", "repository_id", "committed_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    fix_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # fix_shape kind for the WHOLE commit, repeated on each of its file rows:
+    # the classification is a property of the diff, not of one file in it.
+    shape_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="code_fix")
+
+    # Inclusive ``[[start, end], ...]`` spans on the PRE-fix file. Empty for a
+    # pure insertion, which replaced nothing.
+    old_ranges_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    changed_loc: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # DEAD, always ``"[]"``. Once held ranked SZZ blame candidates naming the
+    # commit that introduced each bug. Nothing ever read it: the surfaces that
+    # would have are cut, so the blame pass that filled it was removed too. The
+    # column stays because emptying it is free and dropping it is a table
+    # rebuild. Do NOT read this as "traced and found nothing".
+    inducing_shas_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+
+    # Per-bucket changed-line counts from the fix taxonomy. Always empty: the
+    # taxonomy classifier was measured and cut, never built.
+    taxonomy_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+    # ``WikiSymbol.symbol_id``s whose CURRENT line span overlaps this row's
+    # ``old_ranges_json``, so a file-level fix history can be read per symbol.
+    # ``attribution`` says how much to trust the join: ``exact`` only when
+    # nothing has touched the file since the fix (so the current spans are the
+    # spans the fix saw), ``approximate`` when lines may have shifted underneath,
+    # ``none`` when there was nothing to attribute — a pure insertion, an
+    # unparsed file. See analysis.health.fix_attribution.
+    symbol_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    attribution: Mapped[str] = mapped_column(String(16), nullable=False, default="none")
+
+    committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
@@ -641,7 +854,7 @@ class DecisionRecord(Base):
     # Provenance
     source: Mapped[str] = mapped_column(
         String(32), nullable=False, default="cli"
-    )  # git_archaeology | inline_marker | readme_mining | cli
+    )  # git_archaeology | inline_marker | adr | pr | comment | session | cli
     evidence_file: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
@@ -864,9 +1077,28 @@ class LlmCost(Base):
 
 
 class SecurityFinding(Base):
-    """A security signal detected during file ingestion."""
+    """A security signal detected during file ingestion or full-history scan.
+
+    Working-tree findings (from indexing) store ``""`` for ``commit_sha`` (not
+    NULL). Full-history scans (``repowise security scan --history``) populate
+    ``commit_sha`` / ``commit_at`` so a finding can be tied to the commit that
+    introduced it. The ``(repository_id, file_path, kind, line_number,
+    commit_sha)`` constraint makes re-runs idempotent: the same signal in the
+    same commit is never double-inserted, while a signal that recurs across
+    distinct commits stays a separate row (its provenance differs).
+    """
 
     __tablename__ = "security_findings"
+    __table_args__ = (
+        UniqueConstraint(
+            "repository_id",
+            "file_path",
+            "kind",
+            "line_number",
+            "commit_sha",
+            name="uq_security_finding_provenance",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     repository_id: Mapped[str] = mapped_column(
@@ -877,9 +1109,19 @@ class SecurityFinding(Base):
     severity: Mapped[str] = mapped_column(String(20), nullable=False)
     snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
     line_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Full-history provenance. Working-tree rows store "" (not NULL); history
+    # rows store the introducing commit SHA. The constraint above uses these
+    # for dedup.
+    commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True, default="")
+    commit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     detected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
+
+    @property
+    def found_in_history(self) -> bool:
+        """True when this finding was sourced from git history (has a commit)."""
+        return bool(self.commit_sha)
 
 
 class DeadCodeFinding(Base):
@@ -904,7 +1146,12 @@ class DeadCodeFinding(Base):
     lines: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     start_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
     end_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    package: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # ``package`` dropped: it was ``Path(file_path).parts[0]``, equal to the
+    # path's own first segment on 445/445 findings, so it carried nothing the
+    # row did not already show. Safe to remove because it was nullable —
+    # ``commit_count_90d`` is NOT NULL, and the local SQLite reconciler is
+    # additive-only, so removing that one would break inserts against every
+    # index already on disk. It is surfaced instead.
     evidence_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     safe_to_delete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     primary_owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -916,6 +1163,10 @@ class DeadCodeFinding(Base):
     analyzed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
+
+    # The table had no index, so the per-file lookup the file page issues
+    # full-scanned every finding in the repo to return the handful on one path.
+    __table_args__ = (Index("ix_dead_code_repo_path", "repository_id", "file_path"),)
 
 
 class HealthFinding(Base):
@@ -946,6 +1197,17 @@ class HealthFinding(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+    # The table had no index at all, so every read full-scanned it. Two shapes
+    # are served: a file-scoped lookup (``get_health`` with targets, the call an
+    # agent makes to self-check a file before and after an edit) and a
+    # repo-wide top-N ordered by impact. The first index turns the scan into a
+    # seek; the second lets the ranked read stop early instead of sorting the
+    # whole table into a temp B-tree.
+    __table_args__ = (
+        Index("ix_health_findings_repo_status_path", "repository_id", "status", "file_path"),
+        Index("ix_health_findings_repo_status_impact", "repository_id", "status", "health_impact"),
     )
 
 
@@ -1013,6 +1275,13 @@ class HealthFileMetric(Base):
     defect_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     maintainability_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     performance_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Commit this row was scored against. Health is a separate pass from indexing
+    # and can lag it, so ``Repository.head_commit`` does not answer "how old is
+    # this score". Per-row rather than per-repo because the incremental path
+    # (``upsert_health_metrics``) rewrites only the files that changed, so the
+    # table legitimately holds rows from several passes at once. NULL on every
+    # row written before this column existed.
+    analyzed_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
     )
@@ -1039,6 +1308,13 @@ class HealthSnapshot(Base):
     worst_performer_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     worst_performer_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     per_file_scores_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    # ``{path: total_deduction}`` for the files whose score is held at the
+    # floor, and only those — everywhere else the deduction is exactly
+    # ``10 - score``, so this carries what the clamp destroys and nothing more.
+    # A sibling column rather than a richer value inside ``per_file_scores_json``
+    # because that blob's ``{path: score}`` shape is parsed by three readers,
+    # two of which would fail quietly if a value became a dict.
+    per_file_deductions_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
 
 class CoverageFile(Base):

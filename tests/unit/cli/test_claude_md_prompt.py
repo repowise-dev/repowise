@@ -2,9 +2,14 @@
 
 The CLAUDE.md opt-out prompt used to live inside ``interactive_advanced_config``
 and was therefore skipped entirely in full mode, and the answer was not always
-threaded back to the writer in every code path. These tests pin the current
-behaviour: the Claude editor integration owns that prompt and feeds the
-resulting project-file option into the writer.
+threaded back to the writer in every code path. These tests pin the property
+that fixed it, which survives the prompt itself moving twice: whatever the user
+answers reaches the writer, and the writer persists the opt-out.
+
+The answer now comes from the one agent checklist rather than from a yes/no the
+Claude integration owned. The checklist's own behaviour is tested in
+``test_editor_setup``; what is tested here is the second half — that unticking
+Claude Code still ends in no CLAUDE.md and a persisted opt-out.
 """
 
 from __future__ import annotations
@@ -13,48 +18,37 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from click.testing import CliRunner
 from rich.console import Console
 
 from repowise.cli.editor_integrations import claude as claude_integration
-from repowise.cli.editor_setup import EditorSetupOptions
 
 
 def _silent_console() -> Console:
     return Console(file=StringIO(), force_terminal=False)
 
 
-def test_prompt_disables_claude_md_when_user_says_no() -> None:
-    runner = CliRunner()
-    with runner.isolation(input="n\n"):
-        options = claude_integration.ClaudeCodeSetup().configure_options(
-            _silent_console(),
-            EditorSetupOptions(prompt_for_project_files=True),
-        )
+def test_unticking_claude_code_reaches_the_writer(monkeypatch, tmp_path: Path) -> None:
+    """The whole path: checklist answer -> options -> the writer's opt-out."""
+    from repowise.cli.editor_setup import select_agents_interactively
+    from repowise.cli.ui import agent_selection
 
-    assert "claude_md" in options.disabled_project_files
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr(agent_selection, "interactive_agent_select", lambda *_a: set())
 
+    options = select_agents_interactively(_silent_console(), tmp_path, _empty_options())
+    claude_integration.ClaudeCodeSetup().write_project_files(
+        _silent_console(), tmp_path, options
+    )
 
-def test_prompt_keeps_claude_md_when_user_says_yes() -> None:
-    runner = CliRunner()
-    with runner.isolation(input="y\n"):
-        options = claude_integration.ClaudeCodeSetup().configure_options(
-            _silent_console(),
-            EditorSetupOptions(prompt_for_project_files=True),
-        )
-
-    assert "claude_md" not in options.disabled_project_files
+    assert not (tmp_path / ".claude").exists()
+    cfg = (tmp_path / ".repowise" / "config.yaml").read_text(encoding="utf-8")
+    assert "claude_md: false" in cfg
 
 
-def test_prompt_keeps_claude_md_on_default_enter() -> None:
-    runner = CliRunner()
-    with runner.isolation(input="\n"):
-        options = claude_integration.ClaudeCodeSetup().configure_options(
-            _silent_console(),
-            EditorSetupOptions(prompt_for_project_files=True),
-        )
+def _empty_options():
+    from repowise.cli.editor_setup import EditorSetupOptions
 
-    assert "claude_md" not in options.disabled_project_files
+    return EditorSetupOptions()
 
 
 def test_maybe_generate_skips_write_when_user_opted_out(tmp_path: Path) -> None:

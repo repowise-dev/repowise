@@ -38,6 +38,7 @@ from .crud import (
     get_conversation,
     get_cross_community_edges,
     get_dead_code_findings,
+    get_dead_code_git_fields,
     get_dead_code_summary,
     get_decision,
     get_decision_health_summary,
@@ -89,6 +90,7 @@ from .crud import (
     upsert_kg_tour_steps,
     upsert_page,
     upsert_page_from_generated,
+    upsert_pages_from_generated,
     upsert_repository,
 )
 from .database import (
@@ -225,6 +227,7 @@ __all__ = [
     "get_db_url",
     # dead code crud
     "get_dead_code_findings",
+    "get_dead_code_git_fields",
     "get_dead_code_summary",
     "get_decision",
     "get_decision_edges",
@@ -287,5 +290,6 @@ __all__ = [
     "upsert_kg_tour_steps",
     "upsert_page",
     "upsert_page_from_generated",
+    "upsert_pages_from_generated",
     "upsert_repository",
 ]

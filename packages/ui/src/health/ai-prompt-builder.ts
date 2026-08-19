@@ -12,6 +12,8 @@
  * follow-up questions before making its first move.
  */
 
+import { deadCodeRiskFactorLabel } from "@repowise-dev/types/dead-code";
+
 import { biomarkerInfo, CATEGORY_LABEL } from "./biomarker-glossary";
 import type { RefactoringTarget } from "./refactoring-card";
 import {
@@ -624,7 +626,9 @@ export function buildDeadCodeAiPrompt({
         `- \`${path}\`${symbols ? ` — ${symbols}` : ""}`,
         kinds.length ? `  - Kind: ${kinds.join(", ")}` : null,
         reason ? `  - Why flagged: ${reason}` : null,
-        risk.length ? `  - Runtime-load risk to rule out first: ${risk.join(", ")}` : null,
+        risk.length
+          ? `  - Runtime-load risk to rule out first: ${risk.map(deadCodeRiskFactorLabel).join(", ")}`
+          : null,
       ]
         .filter(Boolean)
         .join("\n");

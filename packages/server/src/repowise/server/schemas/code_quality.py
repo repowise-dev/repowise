@@ -36,6 +36,15 @@ class DeadCodeFindingResponse(BaseModel):
     primary_owner: str | None
     status: str
     note: str | None
+    # When the file was last touched — the staleness signal behind the
+    # confidence ladder. Deliberately not ``age_days``: that is measured from
+    # the *first* commit, so it answers "how old is this file", not "how long
+    # has this been dead", and the two disagree on 75% of findings.
+    last_commit_at: datetime | None
+    # Commits to the file in the last 90 days. Top rung of the confidence
+    # ladder (0 commits is what earns the high tiers), so surfacing it is what
+    # makes a low confidence score legible: the file is still being worked on.
+    commit_count_90d: int
 
     @classmethod
     def from_orm(cls, obj: object) -> DeadCodeFindingResponse:
@@ -65,6 +74,8 @@ class DeadCodeFindingResponse(BaseModel):
             primary_owner=obj.primary_owner,  # type: ignore[attr-defined]
             status=obj.status,  # type: ignore[attr-defined]
             note=obj.note,  # type: ignore[attr-defined]
+            last_commit_at=obj.last_commit_at,  # type: ignore[attr-defined]
+            commit_count_90d=obj.commit_count_90d,  # type: ignore[attr-defined]
         )
 
 
@@ -88,6 +99,19 @@ class SecurityFindingResponse(BaseModel):
     severity: str
     snippet: str | None
     detected_at: datetime
+    # Where in the file. Checked against the live tree before serving, so a
+    # line that drifted is either corrected or withdrawn — see
+    # ``services/security_lines.py``. ``None`` means the snippet is gone from
+    # the file and no line can honestly be given.
+    line_number: int | None
+    # False when the line above could not be confirmed against live source
+    # (file unreadable, or the snippet recurs). Surfaces must mark it.
+    line_verified: bool
+    # Present when the finding was sourced from git history (full-history
+    # scan). ``None`` for working-tree findings produced during indexing.
+    commit_sha: str | None
+    commit_at: datetime | None
+    found_in_history: bool
 
 
 class RepoStatsResponse(BaseModel):

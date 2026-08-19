@@ -27,6 +27,7 @@ from .fsharp import SPEC as _FSHARP
 from .go import SPEC as _GO
 from .graphql import SPEC as _GRAPHQL
 from .haskell import SPEC as _HASKELL
+from .html import SPEC as _HTML
 from .java import SPEC as _JAVA
 from .javascript import SPEC as _JAVASCRIPT
 from .json import SPEC as _JSON
@@ -40,6 +41,7 @@ from .nim import SPEC as _NIM
 from .objectivec import SPEC as _OBJECTIVEC
 from .ocaml import SPEC as _OCAML
 from .openapi import SPEC as _OPENAPI
+from .pascal import SPEC as _PASCAL
 from .php import SPEC as _PHP
 from .proto import SPEC as _PROTO
 from .python import SPEC as _PYTHON
@@ -49,11 +51,13 @@ from .rust import SPEC as _RUST
 from .scala import SPEC as _SCALA
 from .shell import SPEC as _SHELL
 from .sql import SPEC as _SQL
+from .svelte import SPEC as _SVELTE
 from .swift import SPEC as _SWIFT
 from .terraform import SPEC as _TERRAFORM
 from .toml import SPEC as _TOML
 from .typescript import SPEC as _TYPESCRIPT
 from .unknown import SPEC as _UNKNOWN
+from .vue import SPEC as _VUE
 from .xaml import SPEC as _XAML
 from .yaml import SPEC as _YAML
 from .zig import SPEC as _ZIG
@@ -66,6 +70,10 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _PYTHON,
     _TYPESCRIPT,
     _JAVASCRIPT,
+    # Must follow _TYPESCRIPT: shares_grammar_with resolves against the
+    # registry built so far, so typescript's grammar has to be loaded first.
+    _SVELTE,
+    _VUE,
     _GO,
     _RUST,
     _JAVA,
@@ -84,6 +92,7 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _SWIFT,
     _SCALA,
     _DART,
+    _PASCAL,
     # -----------------------------------------------------------------
     # Config / data / markup languages (passthrough — no AST)
     # -----------------------------------------------------------------
@@ -100,6 +109,11 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _ASCIIDOC,
     _SQL,
     _OPENAPI,
+    # HTML carries no symbols, but <script src>/<link href> are real file-level
+    # edges — extracted on the no-grammar path and resolved as document- or
+    # root-relative asset paths. Markup, so it is never reported as dead code
+    # while its edges still anchor what it references.
+    _HTML,
     # XAML / AXAML markup for WPF, WinUI 3, UWP, MAUI, Avalonia, Uno.
     # No AST grammar — handled by the XamlDynamicHints extractor which
     # emits ``dynamic_uses`` edges to bound C# types. Registered here so

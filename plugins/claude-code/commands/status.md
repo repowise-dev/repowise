@@ -19,6 +19,6 @@ Check if Repowise is set up for this project and report its health.
 
 4. Present the results to the user in a readable summary.
 
-5. If total pages is 0 and no provider is shown, this was likely an index-only run. Tell the user: "Your repo is in analysis-only mode (graph + git + dead code). Run `/repowise:init` again with an LLM provider to generate full documentation and enable semantic search."
+5. If pages exist but no provider is shown, the wiki is template-rendered. Tell the user: "Your wiki is rendered from structure. Run `repowise generate` to upgrade any subset to model-written prose." If total pages is 0, the run did not finish, so suggest `repowise init --resume`.
 
 6. If the user provides arguments like "$ARGUMENTS", check if they're asking for a specific path and pass it: `repowise status $ARGUMENTS`

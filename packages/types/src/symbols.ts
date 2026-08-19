@@ -6,6 +6,8 @@
  * adapters synthesise both before passing data to components.
  */
 
+import type { ResolutionOriginWire } from "./graph";
+
 export type SymbolKind =
   | "function"
   | "method"
@@ -67,6 +69,10 @@ export interface CodeSymbol {
   blame_median_author_time?: number | null;
   blame_owner_name?: string | null;
   blame_owner_line_pct?: number | null;
+  /** Counted bug fixes attributed to this symbol, populated by the list
+   *  endpoint from the per-file rollup. Null when the index predates it,
+   *  0 when it ran and found no fixes here. */
+  fix_count?: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,14 +87,48 @@ export interface SymbolCallEntry {
   start_line: number | null;
   edge_type: string;
   confidence: number;
+  /** Absent on an index built before origins were stamped. */
+  resolution_origin?: ResolutionOriginWire | null;
+}
+
+/**
+ * Which side of the symbol a relation sits on. `in` means the other symbol
+ * reaches this one.
+ */
+export type SymbolRelationDirection = "in" | "out";
+
+/**
+ * One relation kind on one side of a symbol, with the count it was cut from.
+ *
+ * `total` is counted unbounded while `rows` is capped, so a surface reports
+ * "10 of 1,516" rather than rendering the cap as if it were the answer.
+ * `group` partitions `edge_type` into the four families the engine's
+ * `SYMBOL_USE_EDGE_TYPES` covers; `symbol-relations.ts` in `@repowise-dev/ui`
+ * is the only place either becomes English.
+ */
+export interface SymbolRelationGroup<Row = SymbolCallEntry> {
+  direction: SymbolRelationDirection;
+  edge_type: string;
+  group: "heritage" | "wiring" | "reference";
+  total: number;
+  rows: Row[];
 }
 
 export interface SymbolDetailGraph {
   pagerank: number;
   in_degree: number;
   out_degree: number;
+  /** `calls` edges only. Every other relation kind is in `relations`. */
   callers: SymbolCallEntry[];
   callees: SymbolCallEntry[];
+  /** True `calls` counts. `callers.length` is the row cap, not the count.
+   *  Absent on a backend that predates the split, so a surface must fall back
+   *  to the array length rather than rendering `undefined`. */
+  caller_total?: number;
+  callee_total?: number;
+  /** Heritage, framework wiring and references, each named and counted
+   *  separately. Absent on an older backend. */
+  relations?: SymbolRelationGroup[];
 }
 
 export interface SymbolFileContext {
@@ -104,6 +144,10 @@ export interface SymbolDetailResponse {
   graph: SymbolDetailGraph;
   governing_decisions: { id: string; title: string; status: string }[];
   file_context: SymbolFileContext;
+  /** Counted bug fixes attributed to this symbol, and the file's last counted
+   *  fix. Both null on an index that predates the fix-event rollup. */
+  fix_count?: number | null;
+  fix_last_at?: string | null;
 }
 
 export interface SymbolList {
@@ -122,14 +166,19 @@ export interface SymbolBodyCall {
   file: string;
   edge_type: string;
   confidence?: number | null;
+  resolution_origin?: ResolutionOriginWire | null;
 }
 
 /** Graph-intelligence block for the unified body (optional — degrades when absent). */
 export interface SymbolBodyGraph {
   in_degree: number;
   out_degree: number;
+  /** `calls` edges only — see `SymbolDetailGraph.callers`. */
   callers: SymbolBodyCall[];
   callees: SymbolBodyCall[];
+  caller_total?: number;
+  callee_total?: number;
+  relations?: SymbolRelationGroup<SymbolBodyCall>[];
   pagerank_percentile?: number | null;
   betweenness_percentile?: number | null;
   community_label?: string | null;
@@ -189,6 +238,14 @@ export interface SymbolDetailData {
   blame_median_author_time?: number | null;
   blame_owner_name?: string | null;
   blame_owner_line_pct?: number | null;
+  /** Counted bug fixes whose replaced lines landed in this symbol, over the
+   *  same 6-month window as `prior_defect_count`. Approximate by construction:
+   *  symbol spans are current-tree while each fix's ranges are numbered on its
+   *  own parent commit, so any surface showing it must hedge. `fix_last_at` is
+   *  the file's most recent counted fix, because a count without recency reads the
+   *  same at two weeks and two years. */
+  fix_count?: number | null;
+  fix_last_at?: string | null;
   graph?: SymbolBodyGraph | null;
   /** Heritage relations (extends/implements + extended-by). Renders when present. */
   heritage?: SymbolHeritage | null;

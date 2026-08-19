@@ -12,6 +12,13 @@ import {
   type WikiLinkKind,
   type WikiLinkRef,
 } from "./wiki-links-types";
+import {
+  buildPathIndex,
+  elidePath,
+  resolvePath,
+  type PathIndex,
+  type PathIndexablePage,
+} from "./path-index";
 
 /**
  * Resolves an inline backtick ref to an internal wiki page href, or null
@@ -112,6 +119,8 @@ function ClientCodeBlock({ code, language }: { code: string; language: string })
 function buildComponents(
   resolveLink: WikiLinkLookup | null,
   LinkComponent: WikiLinkComponent,
+  pathIndex: PathIndex,
+  buildPathHref: ((pageId: string) => string) | undefined,
 ): Components {
   const Link = LinkComponent;
   return {
@@ -174,26 +183,49 @@ function buildComponents(
       return <ClientCodeBlock code={trimmed} language={lang} />;
     }
 
-    // Inline code: if the ref resolves to a known wiki page, render it as
-    // a clickable internal link instead of a dead code span. We already
-    // computed these targets in interlinking.py — just surface them.
+    // Inline code. Two states, and they have to look different:
+    //
+    //   live — resolves to a page in this wiki. A faint ground, primary ink,
+    //          accent only on hover.
+    //   dead — nothing behind it. Plain mono in tertiary ink, no ground.
+    //
+    // Previously both rendered in full-saturation accent, which turned a list
+    // of file paths into a wall of orange and made the clickable ones no more
+    // clickable-looking than the rest. Decorating only what you can follow
+    // inverts that: the loud thing on the page is the thing that does
+    // something.
     const text = typeof children === "string" ? children : extractText(children);
-    const resolved = resolveLink ? resolveLink(text.trim()) : null;
-    if (resolved) {
+    const anchor = text.trim();
+    // The interlinker's own resolutions win — it can resolve symbols and page
+    // titles, which the path index deliberately does not attempt.
+    const linked = resolveLink ? resolveLink(anchor) : null;
+    const viaPath = linked ? null : resolvePath(pathIndex, anchor);
+    const href = linked?.href ?? (viaPath ? buildPathHref?.(viaPath.pageId) : undefined);
+
+    if (href) {
+      const full = viaPath?.path ?? anchor;
+      const { head, tail } = elidePath(full);
       return (
         <Link
-          href={resolved.href}
-          title={`Go to ${text.trim()}`}
-          className="rounded bg-[var(--color-accent-muted)] px-1.5 py-0.5 text-[0.85em] font-mono text-[var(--color-accent-primary)] underline decoration-dotted underline-offset-2 hover:bg-[var(--color-accent-primary)] hover:text-white transition-colors"
+          href={href}
+          title={full}
+          className="rounded bg-[color-mix(in_srgb,var(--color-text-primary)_6%,transparent)] px-1.5 py-0.5 text-[0.85em] font-mono whitespace-nowrap text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-accent-muted)] hover:text-[var(--color-accent-primary)] hover:underline hover:underline-offset-2"
         >
-          {children}
+          {head ? (
+            <>
+              <span className="opacity-55">{head}</span>
+              {tail}
+            </>
+          ) : (
+            children
+          )}
         </Link>
       );
     }
 
     return (
       <code
-        className="rounded bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-[0.85em] font-mono text-[var(--color-accent-primary)]"
+        className="text-[0.85em] font-mono text-[var(--color-text-tertiary)]"
         {...props}
       >
         {children}
@@ -272,6 +304,12 @@ interface WikiMarkdownProps {
   buildHref?: (pageId: string, kind: WikiLinkKind) => string;
   /** Router-aware link (e.g. Next.js ``Link``). Defaults to a plain ``<a>``. */
   LinkComponent?: WikiLinkComponent;
+  /**
+   * The loaded page list, used to resolve inline path refs the backend's
+   * interlinking pass left unresolved. Omit it and those refs simply render
+   * as plain code spans, exactly as before.
+   */
+  pages?: readonly PathIndexablePage[];
 }
 
 export function WikiMarkdown({
@@ -279,7 +317,12 @@ export function WikiMarkdown({
   wikiLinks,
   buildHref,
   LinkComponent = "a",
+  pages,
 }: WikiMarkdownProps) {
+  // Keyed on the page list identity: the reader loads it once per repo, so
+  // this runs once rather than on every content change.
+  const pathIndex = useMemo(() => buildPathIndex(pages ?? []), [pages]);
+
   const components = useMemo(() => {
     let resolveLink: WikiLinkLookup | null = null;
     if (wikiLinks && wikiLinks.length > 0 && buildHref) {
@@ -290,8 +333,12 @@ export function WikiMarkdown({
         return { href: buildHref(hit.pageId, hit.kind), kind: hit.kind };
       };
     }
-    return buildComponents(resolveLink, LinkComponent);
-  }, [wikiLinks, buildHref, LinkComponent]);
+    // Path hits are always file-kind by construction.
+    const buildPathHref = buildHref
+      ? (pageId: string) => buildHref(pageId, "file")
+      : undefined;
+    return buildComponents(resolveLink, LinkComponent, pathIndex, buildPathHref);
+  }, [wikiLinks, buildHref, LinkComponent, pathIndex]);
 
   // Parsing + reconciling a large markdown document is the dominant cost when a
   // page opens. Memoize the rendered tree on (content, components) so unrelated

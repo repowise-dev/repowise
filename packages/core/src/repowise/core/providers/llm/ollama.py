@@ -9,7 +9,7 @@ No API key required for local deployments. This makes repowise usable in:
     - Cost-sensitive projects
 
 Popular models (pull with `ollama pull <model>`):
-    - llama3.2          — good general-purpose, 3B/11B variants
+    - qwen3.5:4b        — good general-purpose small model (default)
     - codellama         — code-focused, good for doc generation
     - deepseek-coder-v2 — strong on code understanding
     - qwen2.5-coder     — excellent multilingual code model
@@ -20,20 +20,17 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import os
 from collections.abc import AsyncIterator
 from typing import Any
 
 import structlog
+from openai import APIError as _OpenAIAPIError
 from openai import APIStatusError as _OpenAIAPIStatusError
 from openai import AsyncOpenAI
-from tenacity import (
-    RetryError,
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential_jitter,
-)
+from openai import RateLimitError as _OpenAIRateLimitError
+from tenacity import RetryError, retry
 
 from repowise.core.providers.llm.base import (
     BaseProvider,
@@ -42,19 +39,22 @@ from repowise.core.providers.llm.base import (
     GeneratedResponse,
     ProviderError,
     ProviderModelOption,
+    RateLimitError,
     ensure_reasoning_supported,
     fallback_model_option,
+    normalize_stop_reason,
+    parse_retry_after,
+    provider_retry_stop,
+    provider_retry_wait,
+    provider_should_retry,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode
 
 log = structlog.get_logger(__name__)
 
-_MAX_RETRIES = 3
-_MIN_WAIT = 1.0
-_MAX_WAIT = 8.0  # Ollama can be slow on first load, allow more wait time
-
 _DEFAULT_BASE_URL = "http://localhost:11434"
+_OLLAMA_REASONING_MODES: tuple[ReasoningMode, ...] = ("off",)
 
 
 def _normalize_base_url(url: str) -> str:
@@ -65,11 +65,22 @@ def _normalize_base_url(url: str) -> str:
     return url
 
 
+def _ollama_reasoning_kwargs(reasoning: ReasoningMode) -> dict[str, Any]:
+    """Translate a validated repowise reasoning intent to Ollama kwargs."""
+    if reasoning == "off":
+        return {"reasoning_effort": "none"}
+    return {}
+
+
 def _ollama_model_options(
     base_url: str,
     fallback_model: str,
 ) -> tuple[ProviderModelOption, ...]:
-    fallback = fallback_model_option(fallback_model)
+    reasoning_modes = ("auto", *_OLLAMA_REASONING_MODES)
+    fallback = fallback_model_option(
+        fallback_model,
+        reasoning_modes=reasoning_modes,
+    )
     try:
         import httpx
 
@@ -103,7 +114,7 @@ def _ollama_model_options(
             ProviderModelOption(
                 model=model_id,
                 label=model_id,
-                reasoning_modes=("auto",),
+                reasoning_modes=reasoning_modes,
                 recommended=model_id == fallback_model,
                 source="local",
                 notes=notes,
@@ -123,7 +134,7 @@ class OllamaProvider(BaseProvider):
     Uses Ollama's OpenAI-compatible endpoint. No API key required.
 
     Args:
-        model:        Ollama model name (e.g., 'llama3.2', 'codellama').
+        model:        Ollama model name (e.g., 'qwen3.5:4b', 'llama3.2').
                       Must be pulled first: `ollama pull <model>`
         base_url:     Ollama server URL. Defaults to http://localhost:11434.
                       The /v1 suffix is appended automatically if missing.
@@ -131,9 +142,14 @@ class OllamaProvider(BaseProvider):
                       concurrent requests against a resource-constrained machine).
     """
 
+    # Generation speed here is the user's own hardware, and a cold model pays
+    # a load from disk on top. Two minutes covers a mid-size local model on a
+    # laptop; the 30s default cancels one before it finishes warming up.
+    interactive_timeout_s: float = 120.0
+
     def __init__(
         self,
-        model: str = "llama3.2",
+        model: str = "qwen3.5:4b",
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
     ) -> None:
@@ -153,6 +169,9 @@ class OllamaProvider(BaseProvider):
     def model_name(self) -> str:
         return self._model
 
+    def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
+        return ("auto", *_OLLAMA_REASONING_MODES)
+
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
         return _ollama_model_options(self._base_url, self._model)
 
@@ -166,7 +185,16 @@ class OllamaProvider(BaseProvider):
         reasoning: ReasoningMode = "auto",
         cache_hints: tuple = (),
     ) -> GeneratedResponse:
-        ensure_reasoning_supported("ollama", self._model, reasoning)
+        reasoning_mode = ensure_reasoning_supported(
+            "ollama",
+            self._model,
+            reasoning,
+            _OLLAMA_REASONING_MODES,
+            detail=(
+                "Ollama maps reasoning='off' to reasoning_effort='none' "
+                "through its OpenAI-compatible chat completions API."
+            ),
+        )
         if self._rate_limiter:
             await self._rate_limiter.acquire(estimated_tokens=max_tokens)
 
@@ -178,23 +206,42 @@ class OllamaProvider(BaseProvider):
         )
 
         try:
-            return await self._generate_with_retry(
+            result = await self._generate_with_retry(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 request_id=request_id,
+                reasoning=reasoning_mode,
             )
         except RetryError as exc:
             raise ProviderError(
                 "ollama",
-                f"All {_MAX_RETRIES} retries exhausted: {exc}",
+                f"All retries exhausted: {exc}",
             ) from exc
 
+        # Record the call so a local index still shows accurate call/token
+        # counts on the Costs page — priced at $0, since the ``ollama/`` prefix
+        # marks it local (see ``is_local_model``). Recorded in the outer method
+        # (not the @retry-wrapped inner one) so a retry can never double-count.
+        # The tracker is attached externally by the orchestrator, so it may be
+        # absent.
+        tracker = getattr(self, "_cost_tracker", None)
+        if tracker is not None:
+            with contextlib.suppress(Exception):
+                await tracker.record(
+                    model=f"ollama/{self._model}",
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    operation=tracker.operation,
+                    file_path=None,
+                )
+        return result
+
     @retry(
-        retry=retry_if_exception_type(ProviderError),
-        stop=stop_after_attempt(_MAX_RETRIES),
-        wait=wait_exponential_jitter(initial=_MIN_WAIT, max=_MAX_WAIT),
+        retry=provider_should_retry,
+        stop=provider_retry_stop,
+        wait=provider_retry_wait,
         reraise=True,
     )
     async def _generate_with_retry(
@@ -204,26 +251,46 @@ class OllamaProvider(BaseProvider):
         max_tokens: int,
         temperature: float,
         request_id: str | None,
+        reasoning: ReasoningMode,
     ) -> GeneratedResponse:
         try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                messages=[
+            request_kwargs: dict[str, Any] = {
+                "model": self._model,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-            )
+            }
+            request_kwargs.update(_ollama_reasoning_kwargs(reasoning))
+            response = await self._client.chat.completions.create(**request_kwargs)
+        except _OpenAIRateLimitError as exc:
+            raise RateLimitError(
+                "ollama",
+                str(exc),
+                status_code=429,
+                retry_after=parse_retry_after(
+                    getattr(getattr(exc, "response", None), "headers", None)
+                ),
+            ) from exc
         except _OpenAIAPIStatusError as exc:
             raise ProviderError("ollama", str(exc), status_code=exc.status_code) from exc
+        except _OpenAIAPIError as exc:
+            raise ProviderError(
+                "ollama", str(exc), status_code=getattr(exc, "status_code", None)
+            ) from exc
 
         usage = response.usage
+        choice = response.choices[0]
+        stop_reason, provider_stop_reason = normalize_stop_reason(choice.finish_reason)
         result = GeneratedResponse(
-            content=response.choices[0].message.content or "",
+            content=choice.message.content or "",
             input_tokens=usage.prompt_tokens if usage else 0,
             output_tokens=usage.completion_tokens if usage else 0,
             cached_tokens=0,
+            stop_reason=stop_reason,
+            provider_stop_reason=provider_stop_reason,
             usage={
                 "prompt_tokens": usage.prompt_tokens if usage else 0,
                 "completion_tokens": usage.completion_tokens if usage else 0,
@@ -265,8 +332,21 @@ class OllamaProvider(BaseProvider):
 
         try:
             stream = await self._client.chat.completions.create(**kwargs)
+        except _OpenAIRateLimitError as exc:
+            raise RateLimitError(
+                "ollama",
+                str(exc),
+                status_code=429,
+                retry_after=parse_retry_after(
+                    getattr(getattr(exc, "response", None), "headers", None)
+                ),
+            ) from exc
         except _OpenAIAPIStatusError as exc:
             raise ProviderError("ollama", str(exc), status_code=exc.status_code) from exc
+        except _OpenAIAPIError as exc:
+            raise ProviderError(
+                "ollama", str(exc), status_code=getattr(exc, "status_code", None)
+            ) from exc
 
         tool_calls_acc: dict[int, dict[str, Any]] = {}
 
@@ -314,5 +394,18 @@ class OllamaProvider(BaseProvider):
                     tool_calls_acc.clear()
                     stop_reason = "tool_use" if finish == "tool_calls" else "end_turn"
                     yield ChatStreamEvent(type="stop", stop_reason=stop_reason)
+        except _OpenAIRateLimitError as exc:
+            raise RateLimitError(
+                "ollama",
+                str(exc),
+                status_code=429,
+                retry_after=parse_retry_after(
+                    getattr(getattr(exc, "response", None), "headers", None)
+                ),
+            ) from exc
         except _OpenAIAPIStatusError as exc:
             raise ProviderError("ollama", str(exc), status_code=exc.status_code) from exc
+        except _OpenAIAPIError as exc:
+            raise ProviderError(
+                "ollama", str(exc), status_code=getattr(exc, "status_code", None)
+            ) from exc

@@ -8,12 +8,13 @@ file under the project's 400-line ceiling.
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import networkx as nx
 import structlog
 
+from ..cohesion import SAME_PACKAGE_HINT, UNIT_FANOUT_LANGUAGES
 from ..models import ParsedFile
 from ..resolvers import ResolverContext, resolve_import
 from ..resolvers.go import read_go_module_path, read_go_modules
@@ -51,10 +52,24 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
     ) -> None:
         self._graph: nx.DiGraph = nx.DiGraph()
         self._parsed_files: dict[str, ParsedFile] = {}  # path → ParsedFile
+        # Raw source bytes the caller already read, keyed like _parsed_files.
+        # Populated via ``set_source_map`` before ``build()``; the language
+        # warmups that scan file text read it instead of re-opening every
+        # file. Empty means "not supplied": every reader falls back to disk.
+        self._source_map: dict[str, bytes] = {}
         self._built = False
         # Resolver-built DotNetProjectIndex, stashed by build() for the
         # dynamic-hints phase to reuse (see build()).
         self.dotnet_index: Any | None = None
+        # ``TraversalStats`` for the walk that produced this graph, stashed by
+        # the caller. Carried here rather than widened into the return tuples
+        # of ``build_repo_graph``/``rebuild_graph_and_git`` (ten unpack sites
+        # across the CLI, workspace and tests) because the only consumer is the
+        # dead-code analyzer, which already receives this object. It needs to
+        # know which source files the walk dropped on size: without that,
+        # "nothing imports this" cannot be told apart from "the importer was
+        # never read" (#1237).
+        self.traversal_stats: Any | None = None
         self._repo_path: Path | None = Path(repo_path) if repo_path else None
         # Mirrors the traverser flags: when submodules or nested repos are
         # indexed, resolver filesystem scans must not prune them (both are
@@ -96,6 +111,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._subgraph_lock = threading.Lock()
         self._file_subgraph_cache: nx.DiGraph | None = None
         self._symbol_subgraph_cache: nx.DiGraph | None = None
+        self._cycle_subgraph_cache: nx.DiGraph | None = None
         # Shared import-name maps (built once per build(), injected into the
         # call + heritage resolvers; reset whenever files change).
         self._import_name_maps: Any | None = None
@@ -117,6 +133,10 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
 
         self.__dict__.update(state)
         self._subgraph_lock = threading.Lock()
+        # A bundle pickled by an older build predates this cache attribute, and
+        # this is an explicit cross-version process boundary — default it rather
+        # than let the first cycle_subgraph() call raise AttributeError.
+        self.__dict__.setdefault("_cycle_subgraph_cache", None)
 
     def set_tsconfig_resolver(self, resolver: Any) -> None:
         """Attach a :class:`TsconfigResolver` for TS/JS path-alias resolution."""
@@ -137,6 +157,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._execution_flow_cache = None
         self._file_subgraph_cache = None
         self._symbol_subgraph_cache = None
+        self._cycle_subgraph_cache = None
         self._import_name_maps = None
 
     def _invalidate_subgraph_caches(self) -> None:
@@ -149,6 +170,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         """
         self._file_subgraph_cache = None
         self._symbol_subgraph_cache = None
+        self._cycle_subgraph_cache = None
 
     def release_graph(self) -> None:
         """Drop the in-memory NetworkX object after metrics are materialized.
@@ -170,6 +192,14 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
     # ------------------------------------------------------------------
     # Building
     # ------------------------------------------------------------------
+
+    def set_source_map(self, source_map: dict[str, bytes] | None) -> None:
+        """Hand the builder the source bytes already read for the indexed set.
+
+        Call before :meth:`build`. Keys must match ``file_info.path`` (the
+        same repo-relative POSIX key ``add_file`` registers under).
+        """
+        self._source_map = source_map or {}
 
     def add_file(self, parsed: ParsedFile) -> None:
         """Register one parsed file and its symbols in the graph."""
@@ -196,6 +226,22 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
 
         # --- Symbol nodes ---
         for sym in parsed.symbols:
+            # A declaration must never displace a definition already indexed
+            # under this id — the same rule ``call_resolver._build_indices``
+            # applies to its own symbol table, and it belongs here too because
+            # the id is ``<path>::<name>``, so a C++ header that defines a
+            # class and re-declares it later (a second namespace block, a
+            # template primary declaration beside its specializations) collapses
+            # both into one node and the *last* emission wins. Left unguarded,
+            # the one-line declaration overwrites a definition's span, kind and
+            # ``is_declaration``, and every consumer that tells the two apart
+            # then reads the header line as the whole symbol.
+            if sym.is_declaration:
+                existing = self._graph.nodes.get(sym.id)
+                if existing is not None and existing.get("is_declaration") is False:
+                    self._graph.add_edge(path, sym.id, edge_type="defines")
+                    continue
+
             self._graph.add_node(
                 sym.id,
                 node_type="symbol",
@@ -212,6 +258,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                 signature=sym.signature,
                 decorators=sym.decorators,
                 is_exported_symbol=sym.is_exported_symbol,
+                is_declaration=sym.is_declaration,
                 docstring=sym.docstring,
             )
 
@@ -285,6 +332,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             go_modules=go_modules,
             has_sfc_files=any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
             parsed_files=self._parsed_files,
+            source_map=self._source_map,
         )
 
         # --- Phase 1 prelude: language-specific warmups ---
@@ -312,6 +360,11 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
             _lang = parsed.file_info.language
             _t0 = _t.monotonic()
             file_imports: set[str] = set()
+            # A unit fan-out that resolves to the importer's own package lands on
+            # its siblings; those edges are cohesion, not dependency. See
+            # repowise.core.ingestion.cohesion.
+            _unit_fanout = _lang in UNIT_FANOUT_LANGUAGES
+            _own_dir = PurePosixPath(path).parent.as_posix() if _unit_fanout else ""
             for imp in parsed.imports:
                 # Go and JVM imports name a package *directory*; fan the edge
                 # out to every file in the resolved package so sibling files
@@ -342,6 +395,12 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                     from ..resolvers.cpp import resolve_cpp_import_all
 
                     targets = resolve_cpp_import_all(imp.module_path, path, ctx)
+                elif _lang == "python":
+                    # ``from pkg import submodule`` must also edge into the
+                    # submodule file, not just ``pkg/__init__.py`` (#666).
+                    from ..resolvers.python import resolve_python_import_all
+
+                    targets = resolve_python_import_all(imp, path, ctx)
                 else:
                     single = resolve_import(imp.module_path, path, _lang, ctx)
                     targets = (single,) if single else ()
@@ -355,12 +414,24 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                         merged = list(set(existing + imp.imported_names))
                         self._graph[path][target]["imported_names"] = merged
                     else:
-                        self._graph.add_edge(
-                            path,
-                            target,
-                            edge_type="imports",
-                            imported_names=list(imp.imported_names),
-                        )
+                        edge_attrs: dict[str, Any] = {
+                            "edge_type": "imports",
+                            "imported_names": list(imp.imported_names),
+                        }
+                        # ``external:`` targets are excluded before the
+                        # directory test, not after: an external node id has no
+                        # directory, and a single-segment one such as
+                        # ``external:strings`` yields parent ``"."`` — which is
+                        # exactly _own_dir for any root-level file, so every
+                        # dot-free stdlib import from the repo root would
+                        # otherwise be stamped a same-package sibling.
+                        if (
+                            _unit_fanout
+                            and not target.startswith("external:")
+                            and PurePosixPath(target).parent.as_posix() == _own_dir
+                        ):
+                            edge_attrs["hint_source"] = SAME_PACKAGE_HINT
+                        self._graph.add_edge(path, target, **edge_attrs)
             import_targets[path] = file_imports
             lang_import_time[_lang] = lang_import_time.get(_lang, 0.0) + (_t.monotonic() - _t0)
             if progress:
@@ -391,7 +462,19 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                 # only contribute to file-reachability — not to
                 # ``import_targets`` which gates cross-file call /
                 # heritage lookups.
-                if data.get("edge_type") in ("imports", "type_use"):
+                # ``no_scope_widening`` marks a type-use edge whose target was
+                # inferred (the repo declares that type name in exactly one
+                # file) rather than read off an import the file actually
+                # writes. Such an edge is real evidence the target is used, so
+                # it still counts for file reachability and the unused-export
+                # pass, but it is not evidence that this file's bare names
+                # resolve into the target — feeding it to ``import_targets``
+                # let unrelated same-named symbols match and minted false call
+                # edges (measured on goose: 25% precision on the edges it
+                # gained).
+                if data.get("edge_type") in ("imports", "type_use") and not data.get(
+                    "no_scope_widening"
+                ):
                     import_targets.setdefault(path, set()).add(target)
         if progress:
             _phase_done = getattr(progress, "on_phase_done", None)
@@ -455,6 +538,10 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # --- Phase 3: Resolve symbol-level calls ---
         self._resolve_calls(import_targets, progress=progress)
 
+        # --- Phase 4: Base method → the implementations that answer for it ---
+        # Post-pass: needs heritage resolved and reads only the graph.
+        self._resolve_override_dispatch(progress=progress)
+
         self._built = True
 
         # Keep the resolver-built DotNetProjectIndex reachable after the
@@ -462,9 +549,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         # the same type map and otherwise rebuilds the index from disk.
         # Only stashed when this build pruned nested git repos, because a
         # standalone rebuild always prunes — the maps must be identical.
-        self.dotnet_index = (
-            getattr(ctx, "_dotnet_index", None) if self._prune_nested_git else None
-        )
+        self.dotnet_index = getattr(ctx, "_dotnet_index", None) if self._prune_nested_git else None
 
         # Count edge types for logging
         edge_counts: dict[str, int] = {}

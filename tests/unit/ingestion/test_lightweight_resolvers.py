@@ -91,6 +91,8 @@ class TestDispatch:
             "erlang",
             "fsharp",
             "sql",
+            # <script src>/<link href>; AST-backed, unlike its siblings here.
+            "html",
         } == LIGHTWEIGHT_IMPORT_LANGUAGES
 
     def test_other_language_returns_empty(self) -> None:

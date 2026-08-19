@@ -18,8 +18,10 @@ from repowise.core.analysis.health.refactoring import (
     registered_detectors,
 )
 from repowise.core.analysis.health.refactoring.extract_helper import (
+    _MAX_SNIPPET_LINES,
     _common_directory,
     _merge_ranges_per_file,
+    _suggested_name,
 )
 
 
@@ -64,6 +66,7 @@ def _ctx(
     *,
     findings: list | None = None,
     module_map: dict[str, str] | None = None,
+    source_lines: list[str] | None = None,
 ) -> RefactoringContext:
     return RefactoringContext(
         file_path=file_path,
@@ -74,6 +77,7 @@ def _ctx(
         dependents_count=0,
         clones=clones,
         module_map=module_map or {},
+        source_lines=source_lines,
     )
 
 
@@ -229,6 +233,28 @@ def test_test_file_occurrences_dropped():
     ] == []
 
 
+def test_test_support_occurrences_dropped():
+    # Extracting a shared helper out of conftest.py is the same bad advice as
+    # extracting one out of a test, so support counts as test material (#1103).
+    pair = _pair("pkg/a.py", "tests/conftest.py", 10, 25, 40, 55)
+    assert [
+        s
+        for s in detect_refactorings(_ctx("pkg/a.py", [pair]))
+        if s.refactoring_type == "extract_helper"
+    ] == []
+
+
+def test_production_path_containing_the_word_test_is_kept():
+    # `src/latest/` is production: an unanchored match would drop this
+    # occurrence and collapse a real two-site clone to one.
+    pair = _pair("pkg/a.py", "src/latest/api.py", 10, 25, 40, 55)
+    assert [
+        s
+        for s in detect_refactorings(_ctx("pkg/a.py", [pair]))
+        if s.refactoring_type == "extract_helper"
+    ] != []
+
+
 def test_test_file_dropped_but_real_sites_kept():
     clones = [
         _pair("pkg/a.py", "pkg/b.py", 10, 25, 40, 55),
@@ -310,26 +336,53 @@ def test_confidence_medium_when_dormant():
 # ---- suggested site ------------------------------------------------------
 
 
-def test_suggested_site_community_centroid():
-    pair = _pair("api/a.py", "core/b.py", 10, 25, 40, 55)
-    module_map = {"api/a.py": "api", "core/b.py": "api"}
+def _site_for(module_map: dict[str, str] | None) -> dict:
+    """The suggested site for one fixed cross-package clone, under *module_map*.
+
+    The occurrences deliberately live in different top-level packages, so the
+    only honest shared directory is the shallow ``pkg`` -- the case where a
+    community label reads nicer and is wrong.
+    """
+    pair = _pair("pkg/api/a.py", "pkg/core/b.py", 10, 25, 40, 55)
     s = next(
         s
-        for s in detect_refactorings(_ctx("api/a.py", [pair], module_map=module_map))
+        for s in detect_refactorings(_ctx("pkg/api/a.py", [pair], module_map=module_map))
         if s.refactoring_type == "extract_helper"
     )
-    assert s.plan["suggested_site"]["module"] == "api"
+    return s.plan
 
 
-def test_suggested_site_directory_fallback():
+def test_suggested_site_is_the_shared_directory_only():
+    plan = _site_for(None)
+    assert plan["suggested_site"] == {"directory": "pkg"}
+    assert plan["suggested_name"] == "pkg_helper"
+
+
+def test_suggested_site_ignores_a_hostile_community_label():
+    """The load-bearing property: the plan no longer depends on which write
+    path produced it.
+
+    ``module_map`` is populated by the full-index path alone -- the incremental,
+    re-score and ``repowise health`` paths leave it empty -- so a label-derived
+    site made the payload's namespace a function of the last writer. Here the
+    label ``ui`` is on *neither* occurrence's path, which is the shape measured
+    on the real index (905 of 905 labelled plans named a directory no
+    occurrence lived in). A detector that still read it would answer ``ui``.
+    """
+    hostile = {"pkg/api/a.py": "ui", "pkg/core/b.py": "ui"}
+    assert _site_for(hostile) == _site_for(None)
+    assert "module" not in _site_for(hostile)["suggested_site"]
+    assert _site_for(hostile)["suggested_name"] == "pkg_helper"
+
+
+def test_suggested_site_prefers_the_deepest_shared_directory():
     pair = _pair("pkg/sub/a.py", "pkg/sub/b.py", 10, 25, 40, 55)
     s = next(
         s
         for s in detect_refactorings(_ctx("pkg/sub/a.py", [pair]))
         if s.refactoring_type == "extract_helper"
     )
-    assert s.plan["suggested_site"]["module"] is None
-    assert s.plan["suggested_site"]["directory"] == "pkg/sub"
+    assert s.plan["suggested_site"] == {"directory": "pkg/sub"}
 
 
 def test_common_directory_helper():
@@ -337,6 +390,105 @@ def test_common_directory_helper():
     assert _common_directory(["a/b/x.py", "a/c/y.py"]) == "a"
     assert _common_directory(["a/x.py", "b/y.py"]) is None
     assert _common_directory(["x.py", "a/y.py"]) is None
+
+
+# ---- snippet + suggested name --------------------------------------------
+
+
+def _numbered_source(n: int) -> list[str]:
+    # 1-indexed content so a slice is easy to assert: line k reads "line k".
+    return [f"line {i}" for i in range(1, n + 1)]
+
+
+def test_snippet_sliced_from_anchor_region():
+    pair = _pair("pkg/a.py", "pkg/b.py", 10, 25, 40, 55)
+    s = next(
+        s
+        for s in detect_refactorings(
+            _ctx("pkg/a.py", [pair], source_lines=_numbered_source(80))
+        )
+        if s.refactoring_type == "extract_helper"
+    )
+    assert s.plan["snippet_start_line"] == 10
+    assert s.plan["snippet_truncated"] is False
+    lines = s.plan["snippet"].split("\n")
+    assert lines[0] == "line 10"
+    assert lines[-1] == "line 25"
+    assert len(lines) == 16
+
+
+def test_snippet_none_without_source():
+    pair = _pair("pkg/a.py", "pkg/b.py", 10, 25, 40, 55)
+    s = next(
+        s
+        for s in detect_refactorings(_ctx("pkg/a.py", [pair]))
+        if s.refactoring_type == "extract_helper"
+    )
+    assert s.plan["snippet"] is None
+    assert s.plan["snippet_start_line"] is None
+    assert s.plan["snippet_truncated"] is False
+
+
+def test_snippet_capped_and_flagged():
+    # A 60-line block clips to the cap and flags it.
+    pair = _pair("pkg/a.py", "pkg/b.py", 10, 69, 100, 159)
+    s = next(
+        s
+        for s in detect_refactorings(
+            _ctx("pkg/a.py", [pair], source_lines=_numbered_source(200))
+        )
+        if s.refactoring_type == "extract_helper"
+    )
+    assert s.plan["snippet_truncated"] is True
+    assert len(s.plan["snippet"].split("\n")) == _MAX_SNIPPET_LINES
+
+
+def test_snippet_clamped_to_short_file():
+    # Clone range runs past EOF (a stale-ish range); clamp, never IndexError.
+    pair = _pair("pkg/a.py", "pkg/b.py", 10, 25, 40, 55)
+    s = next(
+        s
+        for s in detect_refactorings(
+            _ctx("pkg/a.py", [pair], source_lines=_numbered_source(18))
+        )
+        if s.refactoring_type == "extract_helper"
+    )
+    lines = s.plan["snippet"].split("\n")
+    assert lines[0] == "line 10"
+    assert lines[-1] == "line 18"
+
+
+def test_suggested_name_from_directory():
+    pair = _pair("pkg/sub/a.py", "pkg/sub/b.py", 10, 25, 40, 55)
+    s = next(
+        s
+        for s in detect_refactorings(_ctx("pkg/sub/a.py", [pair]))
+        if s.refactoring_type == "extract_helper"
+    )
+    # directory site "pkg/sub" -> leaf "sub"
+    assert s.plan["suggested_name"] == "sub_helper"
+
+
+def test_suggested_name_helper_unit():
+    assert _suggested_name({"directory": "api"}) == "api_helper"
+    # path leaf, hyphens normalised
+    assert _suggested_name({"directory": "web/api-client"}) == "api_client_helper"
+    # leading digit made identifier-safe
+    assert _suggested_name({"directory": "3d"}) == "_3d_helper"
+    # already ends in helper -> no double suffix
+    assert _suggested_name({"directory": "render_helper"}) == "render_helper"
+    # no usable label -> stable fallback
+    assert _suggested_name({"directory": None}) == "shared_helper"
+
+
+def test_suggested_name_ignores_a_legacy_community_label():
+    """A plan stored before the community label was dropped still carries
+    ``module``. It is the key that produced names like ``repowise_helper`` --
+    the repo naming its own helper -- so it must not be revived as a fallback;
+    ``directory`` was the correct value on those rows and is what wins."""
+    assert _suggested_name({"module": "core", "directory": "pkg/sub"}) == "sub_helper"
+    # Even with no directory at all, the label is not consulted.
+    assert _suggested_name({"module": "repowise", "directory": None}) == "shared_helper"
 
 
 # ---- determinism ---------------------------------------------------------
@@ -355,3 +507,173 @@ def test_deterministic_and_stable_order():
     # Bigger recovered impact first.
     assert [s.line_start for s in a] == [100, 10]
     assert [(s.target_symbol, s.plan) for s in a] == [(s.target_symbol, s.plan) for s in b]
+
+
+# ---- declaration-only blocks are not extractable -------------------------
+#
+# A clone made entirely of declarations has no behaviour to share, so a plan
+# proposing to extract it is advice no editor can follow. Three real shapes
+# from this repo's own index motivated the gate, and the worst of them arrived
+# in the most-trusted slot in the payload (highest occurrence count, biggest
+# blast radius): an `x49` import block and an `x32` one.
+#
+# The unit cases below cannot be revert-tested (the helper is new, so a revert
+# cannot import it); the `detect_refactorings` cases can, and do — without the
+# gate the detector emits a plan for every one of them.
+
+
+def _decl_source(body: list[str], *, at: int, total: int = 80) -> list[str]:
+    """A file whose lines *at*..*at+len(body)* are *body*, rest inert code."""
+    lines = [f"    value_{i} = compute_{i}(seed)" for i in range(1, total + 1)]
+    lines[at - 1 : at - 1 + len(body)] = body
+    return lines
+
+
+_IMPORT_BLOCK = [
+    "from repowise.cli.helpers import (",
+    "    clear_update_queued,",
+    "    console,",
+    "    consume_update_pending,",
+    "    ensure_repowise_dir,",
+    "    find_workspace_root,",
+    "    get_head_commit,",
+    "    load_config,",
+    "    save_state,",
+    ")",
+]
+
+_SIGNATURE_BLOCK = [
+    "def update_command(",
+    "    path: str | None,",
+    "    provider_name: str | None,",
+    "    since: str | None,",
+    "    dry_run: bool,",
+    "    workspace: bool,",
+    "    index_only: bool = False,",
+    "    concurrency: int = 10,",
+    ")",
+]
+
+_FIELD_BLOCK = [
+    "    name: str = ''",
+    "    items: list[str] = field(default_factory=list)",
+    "    mapping: dict[str, int] = field(default_factory=dict)",
+    "    alternatives: list[str] = field(default_factory=list)",
+    "    count: int = 0",
+    "    enabled: bool = False",
+    "    label: str = 'none'",
+    "    weight: float = 1.0",
+]
+
+_REAL_BLOCK = [
+    "    if result is not None:",
+    "        try:",
+    "            save_knowledge_graph_json(repo_path, result)",
+    "        except Exception as exc:",
+    "            degraded.append(exc)",
+    "    emitter.done(ok=True, pages_generated=0)",
+    "    consume_update_pending(repo_path, head)",
+    "    total = compute_total(rows)",
+    "    scaled = total * weight",
+]
+
+
+def _plans_for(body: list[str]):
+    """Plans the detector emits for a cross-file clone whose block is *body*."""
+    pair = _pair("pkg/a.py", "pkg/b.py", 10, 10 + len(body) - 1, 40, 40 + len(body) - 1)
+    return [
+        s
+        for s in detect_refactorings(
+            _ctx("pkg/a.py", [pair], source_lines=_decl_source(body, at=10))
+        )
+        if s.refactoring_type == "extract_helper"
+    ]
+
+
+def test_import_block_clone_emits_no_plan():
+    """You cannot extract `from x import (...)` into a shared helper."""
+    assert _plans_for(_IMPORT_BLOCK) == []
+
+
+def test_function_signature_clone_emits_no_plan():
+    """Two functions whose parameter lists agree are not duplicated behaviour."""
+    assert _plans_for(_SIGNATURE_BLOCK) == []
+
+
+def test_dataclass_field_run_emits_no_plan():
+    """Unrelated dataclasses sharing a run of `field(default_factory=...)`
+    declarations share a shape, not code. This is the case filed as C6."""
+    assert _plans_for(_FIELD_BLOCK) == []
+
+
+def test_real_duplicated_code_still_emits_a_plan():
+    """The gate must stay conservative: a false negative silently drops real
+    duplication, which is the more expensive mistake."""
+    plans = _plans_for(_REAL_BLOCK)
+    assert len(plans) == 1
+    assert plans[0].plan["duplicated_lines"] == len(_REAL_BLOCK)
+
+
+def test_gate_abstains_when_no_source_is_threaded():
+    """No source means no evidence to reject on, so the plan survives — the
+    detector's pre-existing behaviour for non-clone / unreadable files."""
+    pair = _pair("pkg/a.py", "pkg/b.py", 10, 25, 40, 55)
+    plans = [
+        s
+        for s in detect_refactorings(_ctx("pkg/a.py", [pair], source_lines=None))
+        if s.refactoring_type == "extract_helper"
+    ]
+    assert len(plans) == 1
+
+
+def test_declaration_only_unit_cases():
+    from repowise.core.analysis.health.refactoring.extract_helper import (
+        _is_declaration_only,
+    )
+
+    # Rejected: nothing to extract.
+    assert _is_declaration_only(_IMPORT_BLOCK)
+    assert _is_declaration_only(_SIGNATURE_BLOCK)
+    assert _is_declaration_only(_FIELD_BLOCK)
+    assert _is_declaration_only(["    ALPHA = 'a'", "    BETA = 'b'", "    GAMMA = 'c'"])
+    assert _is_declaration_only(["import os", "import sys", "from x import y"])
+    assert _is_declaration_only(['export { A } from "./a";', 'export * from "./b";'])
+    assert _is_declaration_only(["    # only a comment", "", "    # another"])
+
+    # Kept: real behaviour, by three different routes.
+    assert not _is_declaration_only(["    if x:", "        go()"])  # control flow
+    assert not _is_declaration_only(["    emit(a)", "    emit(b)"])  # statement calls
+    assert not _is_declaration_only(["    t = compute(x)"])  # computed assignment
+    assert not _is_declaration_only(["    total = sum_rows(rows)", "    n = len(total)"])
+
+    # A type annotation does not make code a declaration. This is the shape an
+    # adversarial review caught the first version of the gate dropping, and it
+    # is one of the most common lines in typed Python and TypeScript, so it is
+    # the highest-frequency false negative the gate could have had.
+    assert not _is_declaration_only(
+        [
+            "    result: int = calculate_total(items, tax_rate)",
+            "    status: str = fetch_status(connection)",
+        ]
+    )
+    # What separates it from a field run is the *constructor*, not the call: a
+    # closed vocabulary of field declarations is still a declaration.
+    assert _is_declaration_only(
+        [
+            "    items: list[str] = field(default_factory=list)",
+            "    id: int = Column(Integer)",
+            "    kids: list = relationship('K')",
+        ]
+    )
+
+    # A leading `*` is a javadoc continuation in one language and a pointer
+    # dereference in another. Stripping it unconditionally emptied the line list
+    # and read as "nothing but declarations", defanging the gate for C and Go.
+    assert not _is_declaration_only(["*x = compute_value(a, b);", "*y = another(c);"])
+    assert _is_declaration_only(["    * @param foo the thing", "    * @returns nothing"])
+
+    # Single-word control flow carries no other token to recognise it by, so it
+    # has to be in the keyword list or it reads as a bare identifier.
+    assert not _is_declaration_only(["    continue", "    continue"])
+    assert not _is_declaration_only(["    break", "    break"])
+    assert not _is_declaration_only(["    defer f.Close()", "    defer g.Close()"])

@@ -1,17 +1,30 @@
 """Onboarding slot identifiers and reading order.
 
-The Onboarding collection is a fixed set of eight curated pages. Two slots are
-"promoted" — they reuse the existing `repo_overview` and `architecture_diagram`
-pages, tagged via ``metadata.onboarding_slot``. The other six are new pages
-with ``page_type='onboarding'`` and a ``metadata.subkind`` discriminator.
+The Onboarding collection is a fixed set of six curated slots. One slot is
+"promoted": it reuses the existing `repo_overview` page, tagged via
+``metadata.onboarding_slot``. The other five are new pages with
+``page_type='onboarding'`` and a ``metadata.subkind`` discriminator.
 
 Slot identifiers are used three ways:
   - as the ``metadata.subkind`` value on generated pages,
   - as the trailing path of ``target_path = f"onboarding/{slot}"``,
   - as the ordering key in the web UI's Onboarding folder.
 
-Keep the order list in lockstep with ``packages/ui/src/lib/page-types.ts``
-``ONBOARDING_ORDER``.
+Every slot here must also appear in ``ONBOARDING_SLOT_TITLES`` in
+``packages/ui/src/lib/page-types.ts``: that map gates whether a page is placed
+in the Onboarding folder at all, and a slot missing from it falls through to
+path-based grouping and surfaces as a stray ``onboarding/`` directory. The
+reading *order* is not duplicated there — it arrives on the pages themselves as
+``display_order``, assigned from this tuple at generation time.
+
+A slot without enough signal is skipped at generation time, so a repo can end
+up with fewer than five.
+
+Retiring a slot is not just a deletion here. The pages already written into
+every existing index have to be retired too, or they keep being served: see
+``generation.page_redirects`` for where their ids now send a reader, and
+``pipeline.persist.sweep_retired_pages`` for how the rows leave a store
+that was built before the cut.
 """
 
 from __future__ import annotations
@@ -22,32 +35,30 @@ from __future__ import annotations
 # rendered prompt is byte-identical. Bump when a builder or template change
 # should reach already-cached pages. (File pages have an equivalent in
 # ``_generation_fingerprint``; onboarding pages had none until this.)
-ONBOARDING_GENERATION_VERSION = "2"
+ONBOARDING_GENERATION_VERSION = "3"
 
 # ---- Slot identifiers ----
 
 SLOT_PROJECT_OVERVIEW = "project_overview"
-SLOT_ARCHITECTURE_GUIDE = "architecture_guide"
-SLOT_GUIDED_TOUR = "guided_tour"
 SLOT_GETTING_STARTED = "getting_started"
-SLOT_CODEBASE_MAP = "codebase_map"
 SLOT_KEY_CONCEPTS = "key_concepts"
 SLOT_HOW_IT_WORKS = "how_it_works"
-SLOT_DEVELOPMENT_GUIDE = "development_guide"
 SLOT_ACTIVE_LANDSCAPE = "active_landscape"
+SLOT_GLOSSARY = "glossary"
 
 # Fixed reading order. Slots not yet implemented are silently skipped at
 # generation time and absent from the UI tree.
+#
+# The glossary is last on purpose: it is a lookup surface rather than a reading
+# step, and a reader who does not yet know the vocabulary is not helped by
+# meeting all of it at once.
 ONBOARDING_ORDER: tuple[str, ...] = (
     SLOT_PROJECT_OVERVIEW,
-    SLOT_ARCHITECTURE_GUIDE,
-    SLOT_GUIDED_TOUR,
     SLOT_GETTING_STARTED,
-    SLOT_CODEBASE_MAP,
     SLOT_KEY_CONCEPTS,
     SLOT_HOW_IT_WORKS,
-    SLOT_DEVELOPMENT_GUIDE,
     SLOT_ACTIVE_LANDSCAPE,
+    SLOT_GLOSSARY,
 )
 
 # Maps existing page_type → onboarding slot. The generator tags these pages
@@ -55,34 +66,17 @@ ONBOARDING_ORDER: tuple[str, ...] = (
 # extra content is generated for promoted slots.
 PROMOTED_SLOTS: dict[str, str] = {
     "repo_overview": SLOT_PROJECT_OVERVIEW,
-    "architecture_diagram": SLOT_ARCHITECTURE_GUIDE,
 }
 
 # Human-readable titles used both server-side (page title) and as a fallback
 # label in the UI when a page hasn't been hydrated yet.
 SLOT_TITLES: dict[str, str] = {
     SLOT_PROJECT_OVERVIEW: "Project Overview",
-    SLOT_ARCHITECTURE_GUIDE: "Architecture Guide",
-    SLOT_GUIDED_TOUR: "Guided Tour",
     SLOT_GETTING_STARTED: "Getting Started",
-    SLOT_CODEBASE_MAP: "Codebase Map",
     SLOT_KEY_CONCEPTS: "Key Concepts",
     SLOT_HOW_IT_WORKS: "How It Works",
-    SLOT_DEVELOPMENT_GUIDE: "Development Guide",
     SLOT_ACTIVE_LANDSCAPE: "Active Landscape",
-}
-
-
-SLOT_PREREQUISITES: dict[str, tuple[str, ...]] = {
-    SLOT_PROJECT_OVERVIEW: (),
-    SLOT_ARCHITECTURE_GUIDE: (),
-    SLOT_GUIDED_TOUR: (SLOT_PROJECT_OVERVIEW,),
-    SLOT_GETTING_STARTED: (),
-    SLOT_CODEBASE_MAP: (SLOT_PROJECT_OVERVIEW,),
-    SLOT_KEY_CONCEPTS: (SLOT_PROJECT_OVERVIEW, SLOT_ARCHITECTURE_GUIDE),
-    SLOT_HOW_IT_WORKS: (SLOT_ARCHITECTURE_GUIDE, SLOT_KEY_CONCEPTS),
-    SLOT_DEVELOPMENT_GUIDE: (SLOT_GETTING_STARTED, SLOT_HOW_IT_WORKS),
-    SLOT_ACTIVE_LANDSCAPE: (SLOT_CODEBASE_MAP,),
+    SLOT_GLOSSARY: "Glossary",
 }
 
 

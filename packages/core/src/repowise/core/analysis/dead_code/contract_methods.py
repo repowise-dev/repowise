@@ -26,7 +26,6 @@ overrides without static callers, etc.
 
 from __future__ import annotations
 
-
 # Method names reserved by COM / IUnknown / IDispatch. Case-sensitive —
 # Windows COM uses PascalCase universally.
 _COM_CONTRACT_METHOD_NAMES: frozenset[str] = frozenset({
@@ -138,7 +137,7 @@ _CPP_CONTRACT_METHOD_NAMES: frozenset[str] = frozenset({
     "operator()",
     "operator->",
     "operator->*",
-    "operator*",                 # also dereference; deduped by set
+    "operator*",                 # also dereference; deduped by set  # noqa: B033
     # ---- Allocation operators (overloaded new/delete) ---------------
     "operator new",
     "operator new[]",
@@ -193,14 +192,13 @@ def is_contract_method(sym_name: str, sym_kind: str | None, language: str | None
     # class body (e.g. ``STDMETHODIMP CFoo::QueryInterface(...)``) as
     # kind=function rather than method. Accept both — the name + COM
     # language combination is restrictive enough on its own.
-    if sym_kind in ("constructor", "destructor"):
-        # The parser emits constructors as ``kind="method"`` with the
-        # bare class name, and destructors as ``kind="method"`` with a
-        # leading ``~``. Either way, the language runtime dispatches
-        # them (construction site / object teardown / RAII unwind), not
-        # a static caller. Treat both as contract methods for C/C++.
-        if language in _CPP_LANGUAGES:
-            return True
+    # The parser emits constructors as ``kind="method"`` with the bare
+    # class name, and destructors as ``kind="method"`` with a leading
+    # ``~``. Either way, the language runtime dispatches them
+    # (construction site / object teardown / RAII unwind), not a static
+    # caller. Treat both as contract methods for C/C++.
+    if sym_kind in ("constructor", "destructor") and language in _CPP_LANGUAGES:
+        return True
     if sym_kind not in ("method", "function"):
         return False
     if language in _COM_LANGUAGES and sym_name in _COM_CONTRACT_METHOD_NAMES:

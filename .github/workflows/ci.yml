@@ -44,6 +44,31 @@ jobs:
         run: uv run pytest tests/unit/ -v --tb=short
 
   # ---------------------------------------------------------------------------
+  # Python lint — ruff. Deliberately its own job rather than a step inside the
+  # test matrix: the result is identical on 3.11/3.12/3.13 (target-version is
+  # pinned in pyproject.toml), so running it there would burn three runners to
+  # learn one thing, and a lint failure would masquerade as a test failure.
+  # ---------------------------------------------------------------------------
+  lint-python:
+    name: Python lint (ruff)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-packages
+
+      - name: Run ruff
+        run: uv run ruff check .
+
+  # ---------------------------------------------------------------------------
   # Integration tests (run on push to main only, slower)
   # ---------------------------------------------------------------------------
   test-integration:
@@ -101,6 +126,12 @@ jobs:
       - name: Test api-client
         run: npm run test --workspace @repowise-dev/api-client
 
+      - name: Test types
+        run: npm run test --workspace @repowise-dev/types
+
+      - name: Test ui
+        run: npm run test --workspace @repowise-dev/ui
+
   # ---------------------------------------------------------------------------
   # VS Code extension — type check, bundle-size gate, and Electron smoke test
   # ---------------------------------------------------------------------------
@@ -138,3 +169,76 @@ jobs:
 
       - name: Package VSIX (no login required)
         run: npm run package --workspace packages/vscode
+
+  # ---------------------------------------------------------------------------
+  # Structurizr DSL — parse the emitter's output with the real parser.
+  #
+  # The unit tests can prove our own invariants (braces balance, no dangling
+  # references, stable identifiers) but not that the result is valid
+  # Structurizr; only Structurizr's parser knows that. Silently invalid DSL is
+  # the one failure mode users would notice before we did.
+  #
+  # Path-gated because it pulls a ~300MB image: it runs when the emitter or the
+  # sample changes, not on every PR.
+  # ---------------------------------------------------------------------------
+  structurizr-dsl:
+    name: Structurizr DSL parses
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check whether the emitter changed
+        id: changed
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            emitter:
+              - 'packages/server/src/repowise/server/services/c4_builder/**'
+              # Every C4 id is rendered through this, so a change here changes
+              # every identifier in the emitted file.
+              - 'packages/core/src/repowise/core/ids.py'
+              - 'scripts/emit_sample_dsl.py'
+              - 'tests/unit/server/test_structurizr_export.py'
+              - '.github/workflows/ci.yml'
+
+      - name: Install uv
+        if: steps.changed.outputs.emitter == 'true'
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Install dependencies
+        if: steps.changed.outputs.emitter == 'true'
+        run: uv sync --all-packages
+
+      - name: Emit a sample workspace and fragment
+        if: steps.changed.outputs.emitter == 'true'
+        run: uv run python scripts/emit_sample_dsl.py dsl-sample
+
+      - name: Validate the standalone workspace
+        if: steps.changed.outputs.emitter == 'true'
+        run: |
+          docker run --rm -v "$PWD/dsl-sample:/work" \
+            structurizr/structurizr:latest validate -workspace /work/workspace.dsl
+
+      - name: Validate the fragment via a host workspace
+        if: steps.changed.outputs.emitter == 'true'
+        run: |
+          docker run --rm -v "$PWD/dsl-sample/fragment:/work" \
+            structurizr/structurizr:latest validate -workspace /work/workspace.dsl
+
+      - name: Render every view
+        if: steps.changed.outputs.emitter == 'true'
+        run: |
+          # The image runs as uid 65532, which cannot write into a checkout
+          # owned by the runner. Give the render its own world-writable
+          # directory rather than letting it write beside the DSL.
+          mkdir -m 777 dsl-sample/rendered
+          docker run --rm -v "$PWD/dsl-sample:/work" \
+            structurizr/structurizr:latest export -workspace /work/workspace.dsl \
+            -format mermaid -output /work/rendered
+          # An exporter that wrote nothing also exits 0.
+          test "$(find dsl-sample/rendered -name '*.mmd' | wc -l)" -gt 0

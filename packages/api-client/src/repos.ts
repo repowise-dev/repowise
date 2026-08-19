@@ -1,3 +1,4 @@
+import type { ReposSummaryResponse } from "@repowise-dev/types/repos";
 import { apiGet, apiPost, apiPatch, apiDelete } from "./client";
 import type {
   RepoCreate,
@@ -6,10 +7,20 @@ import type {
   JobResponse,
   RepoStatsResponse,
   PreflightResponse,
+  GenerateRequest,
+  GenerateEstimate,
+  JobLaunchResponse,
 } from "./types";
 
 export async function listRepos(): Promise<RepoResponse[]> {
   return apiGet<RepoResponse[]>("/api/repos");
+}
+
+/** One-call payload for the multi-repo dashboard: every registered repo's
+ *  headline figures. Replaces `listRepos` plus a `getRepoStats` and a
+ *  `getGitSummary` per repo, whose cost grew with the repository count. */
+export async function getReposSummary(): Promise<ReposSummaryResponse> {
+  return apiGet<ReposSummaryResponse>("/api/repos/summary");
 }
 
 export async function getRepo(repoId: string): Promise<RepoResponse> {
@@ -51,6 +62,25 @@ export async function preflightIndex(
     undefined,
     coveragePct !== undefined ? { coverage_pct: coveragePct } : undefined,
   );
+}
+
+/** Cost + page counts for a generate selection, cascade fallout included.
+ *  Heavy (rehydrates the graph and re-parses), so fetch it lazily — never on
+ *  every render. */
+export async function generateEstimate(
+  repoId: string,
+  body: GenerateRequest,
+): Promise<GenerateEstimate> {
+  return apiPost<GenerateEstimate>(`/api/repos/${repoId}/generate/estimate`, body);
+}
+
+/** Launch a scoped generate job (writes the selected pages with a model).
+ *  Returns the job id + a short-lived stream token to watch progress. */
+export async function generatePages(
+  repoId: string,
+  body: GenerateRequest,
+): Promise<JobLaunchResponse> {
+  return apiPost<JobLaunchResponse>(`/api/repos/${repoId}/generate`, body);
 }
 
 export async function deleteRepo(repoId: string): Promise<{ ok: boolean; deleted_pages: number }> {

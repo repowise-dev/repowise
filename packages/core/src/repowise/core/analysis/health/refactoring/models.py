@@ -22,14 +22,41 @@ type without touching this module. For Extract Class:
 For Extract Helper:
 
 - ``plan`` = ``{"occurrences": [{"file": str, "line_start": int,
-  "line_end": int}, ...], "suggested_site": {"module": str | None,
-  "directory": str | None}, "duplicated_lines": int}`` — every site of the
-  duplicated block and where the shared helper should live.
+  "line_end": int}, ...], "suggested_site": {"directory": str | None},
+  "duplicated_lines": int, "snippet": str | None,
+  "snippet_start_line": int | None, "snippet_truncated": bool,
+  "suggested_name": str}`` lists every site of the duplicated block,
+  where the shared helper should live, and the block itself: the anchor site's
+  source
+  text (identical across sites by definition, so stored once and capped at
+  ``_MAX_SNIPPET_LINES``), the 1-indexed line it starts on, whether the cap
+  clipped it, and a deterministic starting name for the helper. ``snippet`` is
+  ``None`` when the source could not be read (the plan still stands on its line
+  ranges). ``suggested_site`` is one namespace, the filesystem: it used to also
+  carry a graph community label under ``module``, which named a directory the
+  occurrences did not live in on every measured row. Plans stored before that
+  removal still carry the key; read ``directory``, which was correct on those
+  rows too.
 - ``evidence`` = ``{"occurrence_count": int, "duplicated_lines": int,
   "token_count": int, "co_change_count": int, "is_intra_file": bool}`` — the
   size + activity signals that justify extracting a helper.
 - ``blast_radius`` = ``{"files": [...], "file_count": int,
   "co_change_count": int}`` — the other files that must change in lockstep.
+
+For Extract Method:
+
+- ``plan`` = ``{"span": {"start": int, "end": int}, "params": [str, ...],
+  "returns": [str, ...], "suggested_name": str}`` — the lines to lift, the
+  inferred signature, and a deterministic starting name (from the slice's single
+  OUT value, else the enclosing function). Always a string; it is an editable
+  starting point and is not unique within a file.
+- ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` — the size and
+  complexity the residual method sheds.
+- ``blast_radius`` = ``{"scope": "local"}`` — the one type whose blast radius is
+  categorical rather than counted: extraction adds a private helper and changes
+  no signature, so nothing outside the file moves. It replaced a hardcoded
+  ``{"callers_count": 0}`` that no consumer could tell apart from a measured
+  zero.
 
 For Move Method:
 
@@ -108,11 +135,17 @@ class RefactoringContext:
     # Consumed by the Extract Helper detector. Empty when duplication is
     # disabled or the file has no clones.
     clones: list[Any] = field(default_factory=list)
-    # Repo-wide file -> community/module label map (a shared reference, not a
-    # per-file copy). The Extract Helper detector reads it to place the
-    # extracted helper at the community centroid of the clone's occurrences.
-    # Empty on small repos that produced no community labels — the detector
-    # then falls back to a shared-directory site.
+    # Repo-wide file -> graph community label map (a shared reference, not a
+    # per-file copy). Read by Split File alone, as an *affinity* proxy: two
+    # symbols calling into the same foreign cluster belong together, and a
+    # semantic cluster is the right unit for that question. It is not a path,
+    # so it must never name a location — Extract Helper used to site a new
+    # helper at the community centroid and thereby proposed directories the
+    # code was not in.
+    #
+    # Populated only by the full-index path; the incremental, re-score and
+    # ``repowise health`` paths leave it empty. Split File degrades to the
+    # callee's file path, so the signal weakens rather than changing namespace.
     module_map: dict[str, str] = field(default_factory=dict)
     # The repo's symbol/file graph (a ``networkx.DiGraph``, typed ``Any`` to
     # avoid importing networkx into the model layer). A shared read-only
@@ -125,6 +158,12 @@ class RefactoringContext:
     # engine precomputes the repo's SCC index once and threads the per-file
     # slice in, so Break Cycle never recomputes SCCs per file.
     file_scc: tuple[str, ...] | None = None
+    # Symbol ids of the methods defined in this file, sliced from the repo-wide
+    # index the engine precomputes once (``graph_signals.build_methods_by_file``),
+    # so Move Method never scans the whole graph per file. ``None`` means the
+    # index was not provided (direct detector use) — the detector then derives
+    # the list from the graph itself, exactly as before.
+    file_methods: tuple[str, ...] | None = None
     # Per-flagged-function dataflow analyses (``dataflow.FunctionAnalysis``
     # records, typed ``Any`` to avoid importing the dataflow layer into the
     # model). The engine builds these only for files carrying a method-level
@@ -141,6 +180,13 @@ class RefactoringContext:
     # index) is the documented "no signal" outcome — the detector degrades to its
     # call/import signals only.
     blame_index: Any = None
+    # This file's source as 1-indexed lines (``source_lines[0]`` is line 1). The
+    # engine reads it only for files that carry clone pairs, so the cost stays
+    # proportional to clone-bearing files rather than the whole repo. The Extract
+    # Helper detector slices the anchor block out of it for the plan's snippet;
+    # every other detector ignores it. ``None`` when the file was not read (no
+    # clones) or the read failed; the detector then omits the snippet.
+    source_lines: list[str] | None = None
 
 
 @dataclass

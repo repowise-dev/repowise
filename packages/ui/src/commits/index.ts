@@ -1,4 +1,5 @@
 export * from "./code-evolution-chart";
+export * from "./commits-lede";
 export * from "./commit-table";
 export * from "./commit-detail-card";
 export * from "./risk-driver-breakdown";
@@ -6,3 +7,6 @@ export * from "./priority-badge";
 export * from "./credibility-strip";
 export * from "./agent-badge";
 export * from "./agent-trend-strip";
+export * from "./commit-risk-histogram";
+export * from "./commit-risk-scatter";
+export * from "./commit-distribution";

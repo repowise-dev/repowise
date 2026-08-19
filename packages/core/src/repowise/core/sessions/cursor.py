@@ -73,8 +73,8 @@ def iter_new_events(
     """Events appended to *path* since the stored cursor, advancing it.
 
     The file is read in binary so offsets are exact bytes; each line decodes
-    tolerantly before hitting the adapter. ``OSError`` propagates, matching
-    :meth:`HarnessAdapter.iter_events`.
+    tolerantly before hitting the adapter's shared read loop. ``OSError``
+    propagates, matching :meth:`HarnessAdapter.iter_events`.
     """
     stat = path.stat()
     cursor = store.get(path)
@@ -84,18 +84,27 @@ def iter_new_events(
     if start == stat.st_size and cursor is not None and cursor.get("mtime") == stat.st_mtime:
         return  # nothing appended since the last pass
 
-    offset = start
     with path.open("rb") as fh:
         if start:
             fh.seek(start)
-        for raw_bytes in fh:
-            if not raw_bytes.endswith(b"\n"):
-                break  # write in progress; next pass picks it up
-            offset += len(raw_bytes)
-            store.advance(path, offset=offset, mtime=stat.st_mtime)
-            raw = raw_bytes.decode("utf-8", errors="replace")
-            if prefilter is not None and not prefilter(raw):
-                continue
-            event = adapter.normalize(raw)
-            if event is not None:
-                yield event
+        lines = _cursored_lines(fh, path, store, start=start, mtime=stat.st_mtime)
+        yield from adapter.events_from_lines(lines, prefilter=prefilter, path=path)
+
+
+def _cursored_lines(
+    fh: Iterator[bytes], path: Path, store: CursorStore, *, start: int, mtime: float
+) -> Iterator[str]:
+    """Decoded lines from *fh*, advancing the cursor as each is handed over.
+
+    The cursor moves when a complete line is read, not when an event is
+    yielded for it, so a line the prefilter drops is still consumed exactly
+    once. A partially consumed iterator therefore leaves the cursor at the
+    last line it actually read.
+    """
+    offset = start
+    for raw_bytes in fh:
+        if not raw_bytes.endswith(b"\n"):
+            break  # write in progress; next pass picks it up
+        offset += len(raw_bytes)
+        store.advance(path, offset=offset, mtime=mtime)
+        yield raw_bytes.decode("utf-8", errors="replace")

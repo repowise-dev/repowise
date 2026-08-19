@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 from pathlib import Path
 
@@ -632,53 +631,6 @@ class TestToJson:
 
 
 # ---------------------------------------------------------------------------
-# Persistence
-# ---------------------------------------------------------------------------
-
-
-class TestPersist:
-    def test_persist_creates_tables(self, tmp_path: Path) -> None:
-        import aiosqlite
-
-        b = GraphBuilder()
-        b.add_file(_parsed("a.py"))
-        b.add_file(_parsed("b.py", imports=[_imp("a")]))
-        b.build()
-
-        db_path = tmp_path / "graph.db"
-
-        async def run() -> None:
-            await b.persist(db_path, repo_id="test-repo")
-            async with aiosqlite.connect(db_path) as db:
-                async with db.execute("SELECT * FROM graph_nodes") as cur:
-                    rows = await cur.fetchall()
-                # 2 file nodes + 2 synthetic __module__ symbol nodes
-                assert len(rows) == 4
-                async with db.execute("SELECT * FROM graph_edges") as cur:
-                    edges = await cur.fetchall()
-                # 1 import edge + 2 defines edges for __module__ symbols
-                assert len(edges) == 3
-
-        asyncio.run(run())
-
-    def test_persist_stores_repo_id(self, tmp_path: Path) -> None:
-        import aiosqlite
-
-        b = GraphBuilder()
-        b.add_file(_parsed("x.py"))
-
-        db_path = tmp_path / "graph.db"
-
-        async def run() -> None:
-            await b.persist(db_path, repo_id="my-project")
-            async with aiosqlite.connect(db_path) as db:
-                async with db.execute("SELECT repo_id FROM graph_nodes LIMIT 1") as cur:
-                    row = await cur.fetchone()
-                assert row is not None
-                assert row[0] == "my-project"
-
-
-# ---------------------------------------------------------------------------
 # C++ compile_commands.json dependency resolution
 # ---------------------------------------------------------------------------
 
@@ -908,7 +860,7 @@ class TestRustImports:
 # ---------------------------------------------------------------------------
 
 
-class TestGoImports:
+class TestGoImportsWithGoMod:
     def test_go_mod_resolves_local_import(self, tmp_path: Path) -> None:
         """go.mod module path enables resolving internal package imports."""
         (tmp_path / "go.mod").write_text("module github.com/org/myapp\n\ngo 1.21\n")
@@ -963,7 +915,10 @@ class TestDynamicEdgeExcludeFilter:
         return DynamicEdge(
             source="src/main.py",
             target=target,
-            edge_type="co_change",
+            # Incidental to this test, but it has to be a real DynamicKind:
+            # anything else is minted as `dynamic_<kind>` and lands in the
+            # graph as an edge type nothing declares.
+            edge_type="dynamic_uses",
             hint_source="git",
             weight=1.0,
         )
@@ -979,3 +934,36 @@ class TestDynamicEdgeExcludeFilter:
         gb._graph.add_node("src/main.py")
         gb.add_dynamic_edges([self._edge("src/utils.py")])
         assert "src/utils.py" in gb._graph
+
+
+class TestInlineTestHintDoesNotMarkFileAsTest:
+    """A ``:test`` hint records that a file *contains* tests, not that it is one.
+
+    Rust keeps unit tests inside the production file, so the old propagation
+    marked every ``src/lib.rs`` with an inline ``mod tests`` as a test file and
+    dropped it from dead-code analysis, the knowledge graph and key-concept
+    selection (#1103).
+    """
+
+    def _test_edge(self, source: str):
+        from repowise.core.ingestion.dynamic_hints import DynamicEdge
+
+        return DynamicEdge(
+            source=source,
+            target=source,
+            edge_type="dynamic_uses",
+            hint_source="rust:test",
+            weight=1.0,
+        )
+
+    def test_production_file_with_inline_tests_keeps_its_flag(self):
+        gb = GraphBuilder("/tmp/fake")
+        gb._graph.add_node("src/lib.rs", is_test=False)
+        gb.add_dynamic_edges([self._test_edge("src/lib.rs")])
+        assert gb._graph.nodes["src/lib.rs"]["is_test"] is False
+
+    def test_the_hint_is_still_recorded_on_the_edge(self):
+        gb = GraphBuilder("/tmp/fake")
+        gb._graph.add_node("src/lib.rs", is_test=False)
+        gb.add_dynamic_edges([self._test_edge("src/lib.rs")])
+        assert gb._graph.edges["src/lib.rs", "src/lib.rs"]["hint_source"] == "rust:test"

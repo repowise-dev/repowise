@@ -27,7 +27,7 @@ def test_provider_name():
 
 def test_default_model():
     p = OpenRouterProvider(api_key="sk-or-test")
-    assert p.model_name == "anthropic/claude-sonnet-4.6"
+    assert p.model_name == "google/gemini-3.5-flash-lite"
 
 
 def test_api_key_from_env(monkeypatch):
@@ -157,7 +157,11 @@ def test_available_model_options_uses_models_endpoint(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_chat_response(text: str = "# Doc\nContent.") -> MagicMock:
+def _make_mock_chat_response(
+    text: str = "# Doc\nContent.",
+    *,
+    finish_reason: str = "stop",
+) -> MagicMock:
     usage = MagicMock()
     usage.prompt_tokens = 120
     usage.completion_tokens = 60
@@ -165,6 +169,7 @@ def _make_mock_chat_response(text: str = "# Doc\nContent.") -> MagicMock:
 
     choice = MagicMock()
     choice.message.content = text
+    choice.finish_reason = finish_reason
 
     response = MagicMock()
     response.choices = [choice]
@@ -183,6 +188,8 @@ async def test_generate_returns_generated_response():
 
     assert isinstance(result, GeneratedResponse)
     assert result.content == "Hello from OpenRouter"
+    assert result.stop_reason == "end_turn"
+    assert result.provider_stop_reason == "stop"
 
 
 async def test_generate_token_counts():

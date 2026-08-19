@@ -278,74 +278,99 @@
 ; to prevent false-positive dead code flags on functions passed by name.
 (call_expression
   arguments: (arguments
-    (identifier) @call.target
+    (identifier) @reference.name
   )
-) @call.site
+)
 
-; Type argument in turbofish: func::<MyType>(...), Channel::<MyType>::new()
-; Creates a reference edge so MyType is not flagged as unused.
-(generic_function
-  type_arguments: (type_arguments
-    (type_identifier) @call.target
+; Associated function or method as a callback argument: register(Foo::bar),
+; iter.map(Type::method). A separate pattern because the bare one above matches
+; only an (identifier), and this shape is the one that can name a method.
+(call_expression
+  arguments: (arguments
+    (scoped_identifier
+      path: (_) @reference.receiver
+      name: (identifier) @reference.name
+    )
   )
-) @call.site
+)
 
 ; Scoped identifier in struct field initializer: Foo { field: module::func }
 ; Captures the final identifier as a reference to prevent false dead code flags.
 (field_initializer
   value: (scoped_identifier
-    path: (_) @call.receiver
-    name: (identifier) @call.target
+    path: (_) @reference.receiver
+    name: (identifier) @reference.name
   )
-) @call.site
+)
 
 ; Plain identifier in struct field initializer: Foo { field: my_func }
 (field_initializer
-  value: (identifier) @call.target
-) @call.site
+  value: (identifier) @reference.name
+)
 
 ; ---------------------------------------------------------------------------
-; Type references — track types used in signatures to prevent false dead code
+; Type references — drive file-level ``type_use`` edges
 ; ---------------------------------------------------------------------------
+; These positions previously carried ``@call.target``/``@call.site``, which
+; recorded the enclosing function as *calling* the type: ``fn take(x: MyType)``
+; became take -> MyType in the call graph. A type is not callable, so every one
+; of those edges was wrong. The nodes captured are unchanged — only the
+; capture name moves to the cross-language ``@param.type``, which
+; parser._extract_type_refs turns into TypeReference records and
+; type_ref_resolution._resolve_rust_type_refs resolves into ``type_use``
+; edges. The dead-code reference the old captures existed to provide is
+; preserved, because type_use is a file-level use edge.
+;
+; Each pattern captures the bare ``type_identifier`` rather than the enclosing
+; type node, keeping this a 1:1 move; the Rust head extractor in
+; parser_helpers.py unwraps ``&T`` / ``Box<T>`` / ``dyn T`` / ``std::io::Error``
+; for the day a capture widens, and filters the 55 rust builtins.
 
 ; Type reference in function parameter: fn foo(x: MyType)
 (parameter
-  type: (type_identifier) @call.target
-) @call.site
+  type: (type_identifier) @param.type
+)
 
 ; Type reference via &dyn: fn foo(x: &dyn MyTrait)
 (parameter
   type: (reference_type
     type: (dynamic_type
-      (type_identifier) @call.target
+      (type_identifier) @param.type
     )
   )
-) @call.site
+)
 
 ; Type reference via impl Trait: fn foo(x: impl MyTrait)
 (parameter
   type: (abstract_type
-    (type_identifier) @call.target
+    (type_identifier) @param.type
   )
-) @call.site
+)
 
 ; Trait bound in generic parameter: fn foo<T: MyTrait>()
 ; Also matches where clauses: where T: MyTrait + OtherTrait
 (trait_bounds
-  (type_identifier) @call.target
-) @call.site
+  (type_identifier) @param.type
+)
 
 ; Return type reference: fn foo() -> MyType
 (function_item
-  return_type: (type_identifier) @call.target
-) @call.site
+  return_type: (type_identifier) @param.type
+)
 
 ; dyn Trait in type arguments: Box<dyn MyTrait>, Arc<dyn MyTrait>
 (type_arguments
   (dynamic_type
-    (type_identifier) @call.target
+    (type_identifier) @param.type
   )
-) @call.site
+)
+
+; Type argument in turbofish: func::<MyType>(...), Channel::<MyType>::new()
+(generic_function
+  type_arguments: (type_arguments
+    (type_identifier) @param.type
+  )
+)
 
 ; ---------------------------------------------------------------------------
 ; Fields

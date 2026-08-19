@@ -19,11 +19,9 @@ import type {
   CommunitySummaryItem,
   ExecutionFlows,
   GraphExport,
-  ModuleGraph,
 } from "@repowise-dev/types/graph";
 
 export type ViewMode =
-  | "module"
   | "full"
   | "architecture"
   | "dead"
@@ -34,8 +32,6 @@ export type ViewMode =
 const DEFAULT_VIEW_MODE: ViewMode = "architecture";
 
 export interface GraphData {
-  moduleGraph: ModuleGraph | undefined;
-  isLoadingModuleGraph: boolean;
   fullGraph: GraphExport | undefined;
   isLoadingFullGraph: boolean;
   constellationGraph: ArchitectureGraph | undefined;
@@ -53,9 +49,6 @@ export interface GraphData {
   stats: { nodes: number; edges: number } | null;
   viewMode: ViewMode;
   setViewMode: (mode: ViewMode) => void;
-  /** Legacy breadcrumb drill-down state, owned by the ui shell. */
-  setModulePath: (path: string[]) => void;
-  setHasExpandedModules: (expanded: boolean) => void;
   /** Currently-expanded constellation hubs; drives the incremental slice fetch. */
   setExpandedHubs: (ids: number[]) => void;
 }
@@ -107,8 +100,6 @@ function useHostSlice<T>(
 
 export function useGraphData(host: WebviewHost, refreshToken: number): GraphData {
   const [viewMode, setViewMode] = useState<ViewMode>(DEFAULT_VIEW_MODE);
-  const [modulePath, setModulePath] = useState<string[]>([]);
-  const [hasExpandedModules, setHasExpandedModules] = useState(false);
   const [expandedHubs, setExpandedHubs] = useState<number[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -120,19 +111,13 @@ export function useGraphData(host: WebviewHost, refreshToken: number): GraphData
     setError(null);
   }, [viewMode, refreshToken]);
 
-  const isDrilledDown = modulePath.length > 0;
-  // The full file graph backs the drill-down, the flat file/unified scopes, and
-  // module expansion; execution flows only trace a file-level path, so they
-  // ride the same gate rather than fetching on the constellation mount.
-  const needsFullGraph =
-    isDrilledDown ||
-    viewMode === "full" ||
-    viewMode === "unified" ||
-    hasExpandedModules;
+  // The full file graph backs the flat file/unified scopes; execution flows
+  // only trace a file-level path, so they ride the same gate rather than
+  // fetching on the constellation mount.
+  const needsFullGraph = viewMode === "full" || viewMode === "unified";
 
   // Stable fetchers (host is created once at mount) so the slice effects don't
   // re-run on every render.
-  const fetchModuleGraph = useCallback(() => host.api.moduleGraph(), [host]);
   const fetchFullGraph = useCallback(() => host.api.fullGraph(), [host]);
   const fetchConstellation = useCallback(
     () => host.api.architectureCommunityGraph(),
@@ -143,12 +128,6 @@ export function useGraphData(host: WebviewHost, refreshToken: number): GraphData
   const fetchHotFiles = useCallback(() => host.api.hotFilesGraph(), [host]);
   const fetchExecutionFlows = useCallback(() => host.api.executionFlows(), [host]);
 
-  const moduleSlice = useHostSlice(
-    viewMode === "module",
-    refreshToken,
-    fetchModuleGraph,
-    onError,
-  );
   const fullSlice = useHostSlice(needsFullGraph, refreshToken, fetchFullGraph, onError);
   const constellationSlice = useHostSlice(
     viewMode === "architecture",
@@ -210,7 +189,6 @@ export function useGraphData(host: WebviewHost, refreshToken: number): GraphData
     setConstellationSlices(new Map());
   }, [refreshToken]);
 
-  const moduleGraph = moduleSlice.data as ModuleGraph | undefined;
   const fullGraph = fullSlice.data as GraphExport | undefined;
   const constellationGraph = constellationSlice.data as
     | ArchitectureGraph
@@ -229,10 +207,6 @@ export function useGraphData(host: WebviewHost, refreshToken: number): GraphData
               edges: constellationGraph.edges.length,
             }
           : null;
-      case "module":
-        return moduleGraph
-          ? { nodes: moduleGraph.nodes.length, edges: moduleGraph.edges.length }
-          : null;
       case "dead":
         return deadCodeGraph
           ? { nodes: deadCodeGraph.nodes.length, edges: deadCodeGraph.links.length }
@@ -246,11 +220,9 @@ export function useGraphData(host: WebviewHost, refreshToken: number): GraphData
           ? { nodes: fullGraph.nodes.length, edges: fullGraph.links.length }
           : null;
     }
-  }, [viewMode, constellationGraph, moduleGraph, deadCodeGraph, hotFilesGraph, fullGraph]);
+  }, [viewMode, constellationGraph, deadCodeGraph, hotFilesGraph, fullGraph]);
 
   return {
-    moduleGraph,
-    isLoadingModuleGraph: moduleSlice.isLoading,
     fullGraph,
     isLoadingFullGraph: fullSlice.isLoading,
     constellationGraph,
@@ -266,8 +238,6 @@ export function useGraphData(host: WebviewHost, refreshToken: number): GraphData
     stats,
     viewMode,
     setViewMode,
-    setModulePath,
-    setHasExpandedModules,
     setExpandedHubs,
   };
 }

@@ -1,16 +1,18 @@
 """Per-language visibility determination functions.
 
 Most languages can determine visibility from a symbol's name + modifier
-text alone (the ``visibility_fn`` shape). C/C++ is the exception: its
-visibility comes from surrounding AST context — ``public:`` / ``private:``
-access specifier siblings inside a class body, ``static`` storage class
-at file scope, or ``__declspec(dllexport)`` / GCC visibility attributes.
-``refine_cpp_visibility`` handles that node-aware refinement; the
-parser calls it after the generic ``visibility_fn`` for C/C++ files.
+text alone (the ``visibility_fn`` shape). Some cannot, because the answer
+depends on surrounding AST context — C/C++ ``public:`` / ``private:``
+access specifier siblings, ``static`` storage class at file scope and
+``__declspec(dllexport)`` attributes; C#'s no-modifier default, which
+differs by enclosing declaration; TS/JS export position. Each has a
+``refine_*_visibility`` the parser calls after the generic
+``visibility_fn``.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -77,7 +79,13 @@ def kotlin_visibility(_name: str, modifier_texts: list[str]) -> str:
 
 
 def csharp_visibility(_name: str, modifier_texts: list[str]) -> str:
-    """C# visibility — public/private/protected/internal, default internal."""
+    """C# visibility — public/private/protected/internal.
+
+    The no-modifier default returned here is the *top-level type* one;
+    every other declaration site has a different default that depends on
+    what encloses it, which this signature cannot see.
+    ``refine_csharp_visibility`` corrects it from the AST.
+    """
     combined = " ".join(modifier_texts).lower()
     if "private" in combined:
         return "private"
@@ -87,7 +95,7 @@ def csharp_visibility(_name: str, modifier_texts: list[str]) -> str:
         return "internal"
     if "public" in combined:
         return "public"
-    return "internal"  # C# default is internal
+    return "internal"
 
 
 def swift_visibility(_name: str, modifier_texts: list[str]) -> str:
@@ -126,6 +134,212 @@ def php_visibility(_name: str, modifier_texts: list[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# TS / JS node-aware visibility refinement
+# ---------------------------------------------------------------------------
+
+# ``export { a, b as c }`` lists (with or without a ``from`` clause),
+# ``export default name``, and TS ``export = name`` — the deferred-export
+# forms that make a plainly-declared top-level symbol part of the module's
+# public surface.
+_TS_EXPORT_LIST_RE = re.compile(r"\bexport\s*\{([^}]*)\}")
+_TS_EXPORT_DEFAULT_RE = re.compile(r"\bexport\s+default\s+([A-Za-z_$][\w$]*)")
+_TS_EXPORT_ASSIGN_RE = re.compile(r"\bexport\s*=\s*([A-Za-z_$][\w$]*)")
+_TS_CJS_EXPORTS_RE = re.compile(r"\bmodule\.exports\b|\bexports\s*[.\[]")
+
+# The same list form, plus whatever follows the closing brace, so a clause with
+# a ``from`` source can be told from one without. Only the source-less form
+# publishes a name for a symbol the file declares itself; the other is a
+# re-export the import pipeline already carries.
+_TS_EXPORT_LIST_SOURCE_RE = re.compile(r"\bexport\s*\{([^}]*)\}\s*(from\b)?")
+
+# Dropped outright rather than blanked: nothing downstream of the alias scan
+# reads a line number, and collapsing a comment between a clause and its
+# ``from`` is what lets the two be told apart at all.
+_TS_BLOCK_COMMENT = re.compile(r"/\*(?:.|\n)*?\*/")
+_TS_LINE_COMMENT = re.compile(r"//.*")
+
+_TS_CLASSLIKE_ANCESTORS = frozenset(
+    {
+        "class_declaration",
+        "abstract_class_declaration",
+        "class_body",
+        "interface_body",
+        "enum_body",
+        "internal_module",  # TS ``namespace X { ... }``
+    }
+)
+
+
+def ts_deferred_export_names(src: str) -> frozenset[str] | None:
+    """Names exported after their declaration, or ``None`` when unsafe to track.
+
+    CommonJS surfaces (``module.exports`` / ``exports.x``) assign exports
+    dynamically, so per-name tracking is unreliable — return ``None`` and the
+    caller keeps everything public (the safe direction).
+    """
+    if _TS_CJS_EXPORTS_RE.search(src):
+        return None
+    names: set[str] = set()
+    for m in _TS_EXPORT_LIST_RE.finditer(src):
+        for part in m.group(1).split(","):
+            # ``local as exported`` — the local name is what we match against.
+            base = part.strip().split(" as ")[0].strip()
+            if base:
+                names.add(base)
+    for regex in (_TS_EXPORT_DEFAULT_RE, _TS_EXPORT_ASSIGN_RE):
+        for m in regex.finditer(src):
+            names.add(m.group(1))
+    return frozenset(names)
+
+
+def ts_export_aliases(src: str) -> dict[str, str]:
+    """``{exported name: local name}`` for renaming, source-less export clauses.
+
+    ``export { stringType as string }`` is the only place a module states that
+    the symbol it declares as ``stringType`` is published as ``string``. It
+    carries no ``from`` clause, so it is not an import and nothing in the
+    import pipeline records it; the file's symbol table keeps the local name,
+    and every namespace, barrel and member lookup downstream asks for the
+    published one.
+
+    Clauses that do not rename are omitted: the two names agree, so the symbol
+    table already answers and an entry would only duplicate it.
+    """
+    # Every alias is written ``local as exported``, so a file without that
+    # token cannot hold one and need not be scanned. Most files do not, and
+    # the scan is over the whole source.
+    if " as " not in src:
+        return {}
+
+    # Comments are stripped first, and this map is the reason it is worth the
+    # pass. ``ts_deferred_export_names`` reads the same clause unstripped and a
+    # commented-out one only ever mislabels a symbol public; here it would name
+    # a local symbol as some module's published API and mint a call edge to it.
+    cleaned = _TS_LINE_COMMENT.sub("", _TS_BLOCK_COMMENT.sub("", src))
+
+    aliases: dict[str, str] = {}
+    for m in _TS_EXPORT_LIST_SOURCE_RE.finditer(cleaned):
+        if m.group(2):  # ``export { a as b } from "./x"`` — a re-export
+            continue
+        for part in m.group(1).split(","):
+            local, separator, exported = (p.strip() for p in part.partition(" as "))
+            if not separator or not local.isidentifier() or not exported.isidentifier():
+                continue
+            # A name published twice under one spelling has no single answer,
+            # and guessing costs a wrong edge where refusing costs none.
+            aliases[exported] = local if aliases.get(exported, local) == local else ""
+    return {exported: local for exported, local in aliases.items() if local}
+
+
+def refine_ts_visibility(
+    def_node: Node, current_visibility: str, name: str, deferred_exports: frozenset[str] | None
+) -> str:
+    """Demote non-exported TS/JS top-level symbols to ``private``.
+
+    ``ts_visibility`` only sees class-member accessibility modifiers, so every
+    top-level declaration lands ``public`` whether or not it carries an
+    ``export`` — which makes plainly-private module helpers eligible for the
+    dead-code unused-export pass and inflates the file's derived export list.
+    A symbol stays public only when its declaration sits under an
+    ``export_statement`` or its name appears in a deferred-export form.
+    Class/namespace members are left untouched (their visibility is governed
+    by the member modifiers and the enclosing declaration's export).
+    """
+    if current_visibility != "public":
+        return current_visibility
+    if deferred_exports is None:
+        return current_visibility
+    node = def_node.parent
+    while node is not None:
+        if node.type == "export_statement":
+            return "public"
+        if node.type in _TS_CLASSLIKE_ANCESTORS:
+            return current_visibility
+        node = node.parent
+    if name in deferred_exports:
+        return "public"
+    return "private"
+
+
+# ---------------------------------------------------------------------------
+# C# node-aware visibility refinement
+# ---------------------------------------------------------------------------
+
+_CS_ACCESS_KEYWORDS = frozenset({"public", "private", "protected", "internal"})
+
+# What a declaration with no accessibility modifier defaults to, keyed by the
+# declaration that encloses it. Anything not listed (a namespace, or the
+# compilation unit) leaves the top-level-type default of ``internal`` standing.
+# ``record struct`` is a ``record_declaration`` carrying a ``struct`` token,
+# not a node type of its own, so it needs no entry.
+_CS_DEFAULT_BY_ENCLOSING: dict[str, str] = {
+    "interface_declaration": "public",
+    "class_declaration": "private",
+    "struct_declaration": "private",
+    "record_declaration": "private",
+    "enum_declaration": "public",
+}
+
+
+def _csharp_declared_access(def_node: Node) -> str | None:
+    """The accessibility the declaration writes, or ``None`` if it writes none.
+
+    Read from the AST rather than from the captured modifier texts. The
+    queries capture a single ``(modifier)`` child and the parser's dedup keeps
+    the first match, so ``static internal void M()`` arrives at the
+    ``visibility_fn`` as ``["static"]`` with the accessibility dropped —
+    every declaration that writes a non-accessibility modifier first is
+    invisible to text alone.
+
+    The keyword is the ``modifier`` node's own child type, so this never
+    slices the source: ``src`` is decoded text and node offsets are byte
+    offsets, which diverge after any multi-byte character (a leading UTF-8
+    BOM is enough).
+    """
+    written = {
+        keyword.type for c in def_node.children if c.type == "modifier" for keyword in c.children
+    } & _CS_ACCESS_KEYWORDS
+    if not written:
+        return None
+    # Same precedence the modifier-text fn uses, so a pair reads identically
+    # whichever half the capture happened to keep: ``private protected`` is
+    # recorded private, ``protected internal`` protected.
+    for keyword in ("private", "protected", "internal", "public"):
+        if keyword in written:
+            return keyword
+    return None
+
+
+def refine_csharp_visibility(def_node: Node, current_visibility: str) -> str:
+    """Give a C# declaration the accessibility it writes, else its scope's default.
+
+    ``csharp_visibility`` sees modifier text only, and that text is both
+    truncated (see ``_csharp_declared_access``) and defaulted to the
+    top-level-type answer. The real default is ``private`` inside a
+    class/struct/record and ``public`` inside an interface or enum — a
+    two-bucket error that puts most C# members in the wrong dead-code pool.
+    """
+    declared = _csharp_declared_access(def_node)
+    if declared is not None:
+        return declared
+    # An explicit interface implementation (``void IFoo.Bar() { }``) forbids
+    # modifiers and is unreachable through the class, only through the
+    # interface. Calling it private would put a member with a live caller
+    # into the narrow dead-code pool.
+    if any(c.type == "explicit_interface_specifier" for c in def_node.children):
+        return "public"
+    node = def_node.parent
+    while node is not None:
+        default = _CS_DEFAULT_BY_ENCLOSING.get(node.type)
+        if default is not None:
+            return default
+        if node.type in ("namespace_declaration", "file_scoped_namespace_declaration"):
+            break
+        node = node.parent
+    return current_visibility
+
+
+# ---------------------------------------------------------------------------
 # C / C++ node-aware visibility refinement
 # ---------------------------------------------------------------------------
 
@@ -133,7 +347,7 @@ _CPP_EXPORT_MARKERS: tuple[str, ...] = (
     "__declspec(dllexport)",
     "__declspec( dllexport )",
     'visibility("default")',
-    "visibility(\"default\")",
+    'visibility("default")',
     # WebAssembly / emscripten / WASI export surfaces. A function compiled
     # to WASM and called across the JS<->WASM boundary carries one of these
     # markers; without them the export reads as an unused symbol because no
@@ -147,7 +361,7 @@ _CPP_EXPORT_MARKERS: tuple[str, ...] = (
     "WASM_EXPORT",
     "export_name(",
     "__attribute__((used))",
-    "__attribute__((visibility(\"default\")))",
+    '__attribute__((visibility("default")))',
 )
 
 
@@ -163,7 +377,11 @@ def _preceding_access_specifier(def_node: Node) -> str | None:
     while sibling is not None:
         if sibling.type == "access_specifier":
             # The specifier's text is "public" / "private" / "protected".
-            children = [c for c in sibling.children if c.is_named or c.type in ("public", "private", "protected")]
+            children = [
+                c
+                for c in sibling.children
+                if c.is_named or c.type in ("public", "private", "protected")
+            ]
             for c in children:
                 if c.type in ("public", "private", "protected"):
                     return c.type
@@ -218,9 +436,7 @@ def _has_file_scope_static(def_node: Node, src: str) -> bool:
     return False
 
 
-def refine_cpp_visibility(
-    def_node: Node, current_visibility: str, src: str
-) -> tuple[str, bool]:
+def refine_cpp_visibility(def_node: Node, current_visibility: str, src: str) -> tuple[str, bool]:
     """Return ``(visibility, is_exported)`` for a C/C++ symbol.
 
     Inputs:

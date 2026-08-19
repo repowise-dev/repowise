@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import click
@@ -45,6 +46,7 @@ def _workspace_summary(path: Path) -> dict[str, object] | None:
 def _print_network_startup(
     transport: str,
     repo_path: Path,
+    host: str,
     port: int,
     workspace: dict[str, object] | None,
 ) -> None:
@@ -52,8 +54,16 @@ def _print_network_startup(
     endpoint = "mcp" if transport == "streamable-http" else "sse"
     console.print(
         f"[bold green]Starting repowise MCP server ({label})[/bold green]\n"
-        f"URL: http://127.0.0.1:{port}/{endpoint}"
+        f"URL: http://{host}:{port}/{endpoint}"
     )
+
+    if not os.environ.get("REPOWISE_API_KEY") and host in ("0.0.0.0", "::"):
+        console.print(
+            "[bold yellow]SECURITY WARNING:[/bold yellow] MCP server is binding to "
+            f"[bold]{host}[/bold] without REPOWISE_API_KEY set. "
+            "All tools are unauthenticated and network-accessible. "
+            "Set REPOWISE_API_KEY or bind to 127.0.0.1."
+        )
 
     if workspace is not None:
         aliases = workspace["aliases"]
@@ -85,13 +95,22 @@ def _print_network_startup(
     help="Port for HTTP/SSE transports (default: 7338).",
 )
 @click.option(
+    "--host",
+    default=None,
+    help=(
+        "Host to bind for HTTP/SSE transports. Defaults to the REPOWISE_HOST "
+        "environment variable, or 127.0.0.1. Use 0.0.0.0 to listen on all "
+        "interfaces (without REPOWISE_API_KEY a security warning will be printed)."
+    ),
+)
+@click.option(
     "--tools",
     default=None,
     help=(
         "Override which tools are exposed. A comma-separated list is an "
         "explicit allowlist; prefix names with + or - to adjust the default "
         "set (e.g. '+get_dependency_path,-get_dead_code'); 'lean' selects "
-        "the five-tool agent-lean profile. Overrides the mcp.tools config "
+        "the six-tool agent-lean profile. Overrides the mcp.tools config "
         "block."
     ),
 )
@@ -106,16 +125,17 @@ def mcp_command(
     path: str | None,
     transport: str,
     port: int,
+    host: str | None,
     tools: str | None,
     all_tools: bool,
 ) -> None:
     """Start the MCP server for editor integration.
 
     Exposes a curated set of tools for querying the repowise wiki via the MCP
-    protocol: ten in single-repo mode, plus three workspace-only tools in
-    workspace mode. Two more (get_dependency_path, get_execution_flows) are
-    opt-in via ``--tools`` or the ``mcp.tools`` config block. Supports stdio
-    (for Claude Code, Codex, Cursor, Cline), streamable HTTP, and legacy SSE
+    protocol: eleven by default in single-repo mode, plus two more by default
+    in workspace mode. Four more are opt-in via ``--tools`` or the
+    ``mcp.tools`` config block. Supports stdio
+    (for Claude Code, Codex, Cursor), streamable HTTP, and legacy SSE
     transports.
 
     Loads ``<repo>/.repowise/.env`` into the environment before starting so
@@ -127,7 +147,7 @@ def mcp_command(
         repowise mcp                     # stdio, current directory
         repowise mcp /path/to/repo       # stdio, specific repo
         repowise mcp --tools +get_execution_flows  # default set plus one
-        repowise mcp --tools lean        # five-tool agent-lean profile
+        repowise mcp --tools lean        # six-tool agent-lean profile
         repowise mcp --all               # every available tool
         repowise mcp --transport streamable-http  # HTTP on port 7338
     """
@@ -145,8 +165,10 @@ def mcp_command(
             "Run 'repowise init' first to generate documentation."
         )
 
+    resolved_host = host or os.environ.get("REPOWISE_HOST", "127.0.0.1")
+
     if transport in {"sse", "streamable-http"}:
-        _print_network_startup(transport, repo_path, port, workspace)
+        _print_network_startup(transport, repo_path, resolved_host, port, workspace)
     else:
         # stdio mode — no console output (it would corrupt the protocol)
         pass
@@ -158,6 +180,7 @@ def mcp_command(
     run_mcp(
         transport=transport,
         repo_path=str(repo_path),
+        host=resolved_host,
         port=port,
         tools=tools_override,
     )

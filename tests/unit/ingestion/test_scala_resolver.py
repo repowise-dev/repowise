@@ -75,11 +75,26 @@ class TestScalaIndex:
         assert result == rel
 
     def test_no_build_file_falls_through(self, tmp_path: Path) -> None:
+        # No build file, no package clause, and a path that does not mirror
+        # the package — neither signal places the file where the import says,
+        # so the name alone must not bind it.
         (tmp_path / "src").mkdir()
         (tmp_path / "src" / "Foo.scala").write_text("class Foo\n")
         ctx = _ctx(tmp_path, ["src/Foo.scala"])
         result = resolve_scala_import("com.example.Foo", "main.scala", ctx)
-        assert result == "src/Foo.scala"
+        assert result == "external:com.example.Foo"
+
+    def test_no_build_file_falls_through_on_a_matching_path(
+        self, tmp_path: Path
+    ) -> None:
+        # Same shape, still no build file and no package clause, but the path
+        # mirrors the package: the directory fallback answers.
+        src = tmp_path / "src" / "com" / "example"
+        src.mkdir(parents=True)
+        (src / "Foo.scala").write_text("class Foo\n")
+        ctx = _ctx(tmp_path, ["src/com/example/Foo.scala"])
+        result = resolve_scala_import("com.example.Foo", "main.scala", ctx)
+        assert result == "src/com/example/Foo.scala"
 
 
 def _make_scala(repo: Path, rel_path: str, package: str, decl: str) -> str:
@@ -172,3 +187,14 @@ class TestScalaWorkspaceResolution:
         ctx = _ctx(tmp_path, [core, app])
         result = resolve_scala_import("com.example.core.Engine", app, ctx)
         assert result == core
+
+    def test_third_party_import_does_not_take_a_same_named_local_class(
+        self, tmp_path: Path
+    ) -> None:
+        local = _make_scala(
+            tmp_path, "core/src/main/scala/com/acme/json/Reader.scala",
+            "com.acme.json", "class Reader",
+        )
+        ctx = _ctx(tmp_path, [local])
+        result = resolve_scala_import("io.circe.parser.Reader", "Main.scala", ctx)
+        assert result == "external:io.circe.parser.Reader"

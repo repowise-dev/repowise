@@ -9,7 +9,7 @@ Preferred entry points:
     from repowise.core.providers.llm import get_provider
     from repowise.core.providers.embedding import get_embedder
 
-    provider = get_provider("openai", api_key="sk-...", model="gpt-5.4-nano")
+    provider = get_provider("openai", api_key="sk-...", model="gpt-5.6-luna")
     response = await provider.generate(system_prompt="...", user_prompt="...")
 
     embedder = get_embedder("openai", api_key="sk-...")
@@ -19,6 +19,7 @@ Backward-compatible imports still work:
     from repowise.core.providers import get_provider  # → llm.registry
 """
 
+from repowise.core.providers.embedding import get_embedder, list_embedders, register_embedder
 from repowise.core.providers.llm.base import (
     BaseProvider,
     ChatProvider,
@@ -29,7 +30,6 @@ from repowise.core.providers.llm.base import (
     RateLimitError,
 )
 from repowise.core.providers.llm.registry import get_provider, list_providers, register_provider
-from repowise.core.providers.embedding import get_embedder, list_embedders, register_embedder
 
 __all__ = [
     # LLM
@@ -40,11 +40,11 @@ __all__ = [
     "GeneratedResponse",
     "ProviderError",
     "RateLimitError",
-    "get_provider",
-    "list_providers",
-    "register_provider",
     # Embedding
     "get_embedder",
+    "get_provider",
     "list_embedders",
+    "list_providers",
     "register_embedder",
+    "register_provider",
 ]

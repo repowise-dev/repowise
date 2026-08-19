@@ -52,6 +52,20 @@ MIGRATIONS: tuple[Migration, ...] = (
         summary="Baseline store format (additive schema reconcile is automatic).",
         action=None,
     ),
+    # v1 -> v2: the derived concept tree. Old stores carry per-directory module
+    # pages; the current build groups files into named subsystem pages with
+    # written prose and a navigable tree. No reconcile can rebuild that from the
+    # old pages, so this is REINDEX_RECOMMENDED: we inform, never auto-run, and
+    # `stamp` holds an un-reindexed store at v1 so the notice persists.
+    Migration(
+        to_version=2,
+        tier=UpgradeTier.REINDEX_RECOMMENDED,
+        summary=(
+            "This wiki predates concept subsystem pages. A re-index builds a "
+            "navigable page tree with a written page for each subsystem."
+        ),
+        action=None,
+    ),
 )
 
 

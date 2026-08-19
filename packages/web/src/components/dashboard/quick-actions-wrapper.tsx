@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
   QuickActions as QuickActionsShell,
+  DEFAULT_QUICK_ACTIONS,
   type QuickActionKey,
 } from "@repowise-dev/ui/dashboard/quick-actions";
 import { syncRepo, fullResyncRepo } from "@/lib/api/repos";
@@ -19,6 +21,14 @@ interface Props {
   modelName?: string;
   lastSyncAt?: string | null;
   lastResyncAt?: string | null;
+  /** Button arrangement — see `QuickActionsProps.variant`. Overview passes
+   *  `header` so sync is the one primary action. */
+  variant?: "row" | "header";
+}
+
+/** Human label for an action key, for toast copy. */
+function labelFor(key: QuickActionKey): string {
+  return DEFAULT_QUICK_ACTIONS.find((a) => a.key === key)?.label ?? key;
 }
 
 export function QuickActionsWrapper({
@@ -28,8 +38,13 @@ export function QuickActionsWrapper({
   modelName = "",
   lastSyncAt,
   lastResyncAt,
+  variant,
 }: Props) {
+  const router = useRouter();
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  // Which action started the job on screen, so its completion can be reported
+  // and refreshed in its own terms rather than as a generic doc generation.
+  const [activeKey, setActiveKey] = useState<QuickActionKey | null>(null);
 
   // Hydrate from any in-flight job so refreshes don't lose progress visibility.
   useEffect(() => {
@@ -52,19 +67,38 @@ export function QuickActionsWrapper({
     };
   }, [repoId]);
 
+  function startWatching(jobId: string, key: QuickActionKey | null) {
+    setActiveJobId(jobId);
+    setActiveKey(key);
+  }
+
+  function handleJobDone(status: "completed" | "failed" | "cancelled") {
+    const key = activeKey;
+    setActiveJobId(null);
+    setActiveKey(null);
+    if (key === "dead-code") {
+      if (status === "completed") toast.success("Dead code scan finished");
+      else if (status === "failed") toast.error("Dead code scan failed");
+    }
+    // This page is server-rendered: without a refresh the "Dead Exports" tile
+    // the scan exists to move keeps showing its pre-scan number, and the same
+    // goes for every stat a sync, re-index or bulk generate just changed.
+    if (status === "completed") router.refresh();
+  }
+
   async function handleAction(key: QuickActionKey) {
     try {
       if (key === "sync") {
         const job = await syncRepo(repoId);
-        setActiveJobId(job.id);
+        startWatching(job.id, key);
         toast.info(`Sync started${repoName ? ` — ${repoName}` : ""}`);
       } else if (key === "resync") {
         const job = await fullResyncRepo(repoId);
-        setActiveJobId(job.id);
+        startWatching(job.id, key);
         toast.info(`Full resync started${repoName ? ` — ${repoName}` : ""}`);
       } else if (key === "dead-code") {
         const { job_id } = await analyzeDeadCode(repoId);
-        setActiveJobId(job_id);
+        startWatching(job_id, key);
         toast.info("Dead code analysis started");
       }
     } catch (e) {
@@ -77,7 +111,8 @@ export function QuickActionsWrapper({
           ]);
           const inflight = running[0] ?? pending[0];
           if (inflight) {
-            setActiveJobId(inflight.id);
+            // Someone else's job: watch it, but do not claim it as this action.
+            startWatching(inflight.id, null);
             toast.info(
               "Showing progress for the in-flight job. Cancel it from the panel to start a new one.",
             );
@@ -87,7 +122,7 @@ export function QuickActionsWrapper({
           // fall through
         }
       }
-      toast.error(`${key} failed`, { description: msg });
+      toast.error(`${labelFor(key)} failed`, { description: msg });
     }
   }
 
@@ -95,18 +130,24 @@ export function QuickActionsWrapper({
     <GenerationProgressWrapper
       jobId={activeJobId}
       repoName={repoName}
-      onDone={() => setActiveJobId(null)}
+      // A dead-code scan runs the index-only pipeline, so the generic
+      // "Documentation updated - 0 pages generated" toast would describe it
+      // wrongly. It reports itself below instead.
+      quiet={activeKey === "dead-code"}
+      onDone={handleJobDone}
     />
   ) : null;
 
   return (
     <QuickActionsShell
+      actions={DEFAULT_QUICK_ACTIONS}
       onAction={handleAction}
       lastSyncAt={lastSyncAt}
       lastResyncAt={lastResyncAt}
       pageCount={pageCount}
       modelName={modelName}
       activeJobSlot={activeSlot}
+      variant={variant}
     />
   );
 }

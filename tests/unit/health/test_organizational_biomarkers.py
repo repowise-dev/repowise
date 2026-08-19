@@ -339,7 +339,10 @@ def test_change_entropy_fires_on_high_percentile():
     out = ChangeEntropyDetector().detect(_ctx(meta))
     assert len(out) == 1
     assert out[0].severity == "medium"  # 0.80 <= pct < 0.90
-    assert out[0].details["change_entropy_pct"] == 0.88
+    # Stored 0-1 in, emitted 0-100 out: the detail shares its key with
+    # FileSignals.change_entropy_pct, which has always been 0-100, and the two
+    # land in the same get_health response.
+    assert out[0].details["change_entropy_pct"] == 88.0
 
 
 def test_change_entropy_escalates_to_critical_on_hotspot():

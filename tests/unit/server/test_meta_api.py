@@ -62,6 +62,30 @@ async def test_version_endpoint_populates_store_status(client: AsyncClient, tmp_
     """A resolvable repo with a state.json fills the store-format fields."""
     import json
 
+    from repowise.core.upgrade import STORE_FORMAT_VERSION
+    from tests.unit.server.conftest import create_test_repo
+
+    repo = await create_test_repo(client, tmp_path)
+    repo_dir = tmp_path / "test-repo"
+    (repo_dir / ".repowise").mkdir(parents=True, exist_ok=True)
+    (repo_dir / ".repowise" / "state.json").write_text(
+        json.dumps({"store_format_version": STORE_FORMAT_VERSION, "written_by_version": "0.21.0"}),
+        encoding="utf-8",
+    )
+
+    resp = await client.get("/api/meta/version", params={"repo_id": repo["id"]})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["store_format_version"] == STORE_FORMAT_VERSION
+    assert body["store_compatible"] is True
+    assert body["reindex_recommended"] is False
+
+
+@pytest.mark.asyncio
+async def test_version_endpoint_flags_reindex_for_old_store(client: AsyncClient, tmp_path) -> None:
+    """A store predating the concept tree reports reindex-recommended, not forced."""
+    import json
+
     from tests.unit.server.conftest import create_test_repo
 
     repo = await create_test_repo(client, tmp_path)
@@ -76,8 +100,9 @@ async def test_version_endpoint_populates_store_status(client: AsyncClient, tmp_
     assert resp.status_code == 200
     body = resp.json()
     assert body["store_format_version"] == 1
-    assert body["store_compatible"] is True
-    assert body["reindex_recommended"] is False
+    assert body["store_compatible"] is False
+    assert body["reindex_recommended"] is True
+    assert body["reindex_command"]
 
 
 @pytest.mark.asyncio

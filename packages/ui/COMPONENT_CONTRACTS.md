@@ -193,10 +193,137 @@ Filter unions:
 
 ---
 
-## `dead-code/summary-bar` â€” `SummaryBar`
+## `dead-code/dead-code-view` - `DeadCodeView`
 
-Four-tile summary header for a dead-code report: total findings,
-deletable lines, breakdown by kind, breakdown by confidence band.
+The whole Dead Code page: summary tiles, the safe-to-delete pile, the
+"where it clusters" rollups, and the drill-down findings table. Owns the
+optimistic patch + undo toast, bulk resolve, the AI cleanup prompt modal,
+Re-analyze, and the status filter that switches which slice the table shows.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `adapter` | `DeadCodeAdapter` | yes | Everything host-specific: fetching, mutation, links, navigation. |
+
+Behaviour worth knowing:
+- Two fetches. The open slice feeds the pile, the rollups and the table;
+  a second, conditional fetch backs the status filter when it is not "open".
+  Both are capped at 500 rows. The open slice has a repo-wide total to
+  compare against, so its hint says "Showing N of M"; a non-open status has
+  no server-side total, so its hint can only say "First N".
+- A failed fetch with nothing to show renders a retry card and nothing else:
+  it must never fall through to an empty state, which would read as a clean
+  repository. A failed refresh over rows already in hand keeps the table and
+  puts the card above it.
+- Optimistic row state lives here, not in the table, so resolving a row moves
+  the pile and the rollups with it and undo can put it back.
+
+---
+
+## `dead-code/dead-code-adapter` - `DeadCodeAdapter`
+
+The host injection point. Hosted consumes this, so treat it as public API:
+adding a required member is a breaking change for every consumer.
+
+| Member | Type | Required | Notes |
+|--------|------|----------|-------|
+| `cacheKey` | `string` | yes | Seeds the view's SWR keys. Keep stable per repo/snapshot. |
+| `repoId` | `string` | yes | Repo identity for hosts that need it. Nothing in this package reads it today; links come from `fileHref` / `graphHref`. |
+| `getSummary` | `() => Promise<DeadCodeSummary>` | yes | |
+| `listFindings` | `(opts?: { limit?: number; status?: DeadCodeStatus }) => Promise<DeadCodeFinding[]>` | yes | `status` defaults to `"open"` server-side. |
+| `analyze` | `() => Promise<{ job_id?: string } \| void>` | yes | Returning a `job_id` lets the view wait and refresh itself. |
+| `waitForAnalysis` | `(jobId: string) => Promise<void>` | no | Without it the view cannot know when to refetch, and says so in its toast. |
+| `patchFinding` | `(id: string, patch: DeadCodePatchInput) => Promise<DeadCodeFinding>` | yes | Must return the updated finding; the view stores it as the optimistic override. |
+| `fileHref` | `(path: string) => string` | yes | Makes the path a link and the row clickable. |
+| `graphHref` | `(path: string) => string` | no | Omit and the per-row Graph action disappears, which keeps app routes out of this package. |
+| `navigate` | `(href: string) => void` | yes | Host router push. |
+
+---
+
+## `dead-code/findings-table` - `FindingsTable`
+
+The drill-down table: kind tabs driven by the data, a search box, sortable
+columns, the confidence slider, a cleanup-ready switch, bulk resolve, and
+per-row status actions. Built on `shared/responsive-table` with
+`stacked="sm"` and windowed rows.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `findings` | `DeadCodeFinding[]` | yes | One status slice; the table filters it by kind / confidence / safety client-side. |
+| `onPatch` | `(id, { status }) => Promise<DeadCodeFinding>` | yes | Host owns the API call and the undo toast. |
+| `onBulkResolve` | `(ids: string[]) => Promise<string[]>` | no | Must return the ids that actually resolved, not the ids it was given. The table reconciles against that, never against position. |
+| `fileHref` | `(path: string) => string` | no | |
+| `onNavigate` | `(href: string) => void` | no | Needed alongside `fileHref` for client-side row clicks. |
+| `graphHref` | `(path: string) => string` | no | |
+| `onGeneratePrompt` | `(ids: string[]) => void` | no | Drives both the per-row icon button and "AI prompt for N selected". |
+| `status` | `DeadCodeStatus` | no | Which slice is on screen. Defaults to `"open"`; bulk resolve only appears there. |
+| `isLoading` | `boolean` | no | Shows a skeleton instead of an empty state during the first fetch. |
+
+Selection is always intersected with the rows currently visible, so raising
+the confidence slider after selecting cannot resolve rows the user can no
+longer see.
+
+---
+
+## `dead-code/finding-cells` - cell renderers
+
+`FindingIdentity`, `FindingConfidence`, `FindingSafety` and
+`FindingRowActions` back the table's columns. `FindingRowActions` is separate
+because it owns per-row pending/confirm state that a plain `render(row)`
+closure cannot hold; it offers resolve/ack/FP on an open finding and Reopen
+on anything already actioned. `DEAD_CODE_STATUS_LABELS` is the shared label
+map for the status filter.
+
+---
+
+## `dead-code/safe-to-delete-pile` - `SafeToDeletePile`
+
+The "what do I delete" punchline: per-file rollup of the cleanup-ready
+findings with the AI cleanup CTA.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `findings` | `SafeToDeletePileFinding[]` | yes | Caller passes the safe slice; structural subset of `DeadCodeFinding`. |
+| `onPropose` | `(ids: string[]) => void` | no | Opens the AI prompt modal; omit and the CTA disappears. |
+| `onSelect` | `(finding: DeadCodeFinding) => void` | no | Row click. |
+| `reclaimableLines` | `number` | no | The repo-wide total. Pass it only when the findings are not a capped slice, otherwise it sits next to counts describing a different population. |
+
+---
+
+## `dead-code/owner-leaderboard` - `OwnerLeaderboard`
+
+Inline bar chart of dead-code lines per primary contributor. No charting
+dependency.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `findings` | `OwnerLeaderboardFinding[]` | yes | Structural subset of `DeadCodeFinding`. |
+| `topN` | `number` | no | Default 8. |
+| `safeOnly` | `boolean` | no | Count only cleanup-ready findings. |
+| `onSelect` | `(owner: string) => void` | no | Turns each bar into a button. |
+| `className` | `string` | no | |
+
+---
+
+## `dead-code/findings-breakdown-grid` - `FindingsBreakdownGrid`
+
+Confidence-tier by kind heat matrix. Its own `<table>` is deliberate:
+this is a matrix, not a list, so `ResponsiveTable` is the wrong primitive.
+Tier boundaries come from `DEAD_CODE_CONFIDENCE` in
+`@repowise-dev/types/dead-code`, which mirrors the engine's
+`SAFE_CONFIDENCE_THRESHOLD`. The low row renders only when something is in
+it, since the list endpoint floors at the medium boundary.
+
+| Prop | Type | Required | Notes |
+|------|------|----------|-------|
+| `findings` | `FindingsBreakdownItem[]` | yes | Needs only `kind` and `confidence`. |
+| `className` | `string` | no | |
+
+---
+
+## `dead-code/summary-bar` - `SummaryBar`
+
+Four-tile summary header for a dead-code report: total findings, candidate
+lines, breakdown by kind, breakdown by confidence band.
 
 | Prop | Type | Required | Notes |
 |------|------|----------|-------|
@@ -375,32 +502,68 @@ the caller. Co-change is a temporal hint, not a verified dependency, and
 Hierarchical edge-bundling diagram (`d3-hierarchy` radial cluster +
 `d3-shape` `curveBundle`). Files sit on a ring grouped by their directory
 hierarchy; bundled arcs link files that change together. Dots are colored by
-health band and sized by lines + coupling degree. Hovering a file lifts its
-couplings (colored by the partner's health band) and dims the rest. Focus is
-controllable (`focusedPath`/`onFocusChange`) for cross-highlight with a table,
-or falls back to internal hover state.
+health band and sized by lines + coupling degree. Hovering a file peeks its
+couplings (colored by the partner's health band) and dims the rest; clicking a
+file pins a sticky selection (persistent accent ring) and clicking empty canvas
+clears it. The effective focus (`focusedPath` = hover ?? pinned) is controlled
+for cross-highlight with a table, and falls back to internal hover/pin state.
 
 | Prop | Type | Required |
 |------|------|----------|
 | `nodes` | `CouplingNode[]` (`@repowise-dev/types/coupling`) | yes |
 | `edges` | `CouplingEdge[]` (`@repowise-dev/types/coupling`) | yes |
 | `totalEdges` | `number` (pre-cap count, for the "showing N of M" line) | no |
-| `focusedPath` | `string \| null` (controlled focus) | no |
-| `onFocusChange` | `(path: string \| null) => void` | no |
+| `focusedPath` | `string \| null` (effective focus: hover ?? pinned) | no |
+| `pinnedPath` | `string \| null` (sticky selection; draws the ring) | no |
+| `onHover` | `(path: string \| null) => void` (transient peek) | no |
+| `onPinToggle` | `(path: string \| null) => void` (click a dot / empty canvas) | no |
 | `size` | `number` (square viewBox edge, default 760) | no |
 
 ### `coupling/coupling-table` — `CouplingTable`
 
-The precise, ranked companion to the diagram: one row per coupling
-(strongest first) with a strength bar and last-shared-commit date. Clicking a
-row toggles focus on that file; rows incident to the focused file are
-emphasised. Uses `shared/responsive-table`.
+The precise, ranked companion to the diagram: one row per coupling with a
+strength bar and last-shared-commit date, sortable by Strength or Last. File
+names are links (when `linkForPath` is set); clicking a row pins its source
+file, and hovering a row (or a name) peeks that file. Uses
+`shared/responsive-table`.
 
 | Prop | Type | Required |
 |------|------|----------|
 | `edges` | `CouplingEdge[]` (`@repowise-dev/types/coupling`) | yes |
-| `focusedPath` | `string \| null` | no |
-| `onFocusChange` | `(path: string \| null) => void` | no |
+| `focusedPath` | `string \| null` (effective focus) | no |
+| `pinnedPath` | `string \| null` (drives the selected-row style) | no |
+| `onHover` | `(path: string \| null) => void` | no |
+| `onPinToggle` | `(path: string \| null) => void` | no |
+| `onGeneratePrompt` | `(edge: CouplingEdge) => void` (shows the AI decouple action) | no |
+| `linkForPath` | `(path: string) => string` (makes file names links) | no |
+| `LinkComponent` | link component for file links (defaults to `<a>`) | no |
+
+### `coupling/coupling-explorer` — `CouplingExplorer`
+
+The full change-coupling surface: the diagram over a sortable/filterable table,
+sharing one focus model, plus the AI-decouple modal and a default pin on the
+most-coupled hub. Lives in the shared package so OSS and hosted share the
+interaction; the host supplies only the link prefix and optional URL sync.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `data` | `CouplingGraphResponse` (`@repowise-dev/types/coupling`) | yes |
+| `repoLinkPrefix` | `string` (e.g. `/repos/abc`; makes file names links) | no |
+| `LinkComponent` | link component for file links (defaults to `<a>`) | no |
+| `initialFocus` | `string \| null` (seed pin, e.g. from a `?focus=` deep link) | no |
+| `onFocusChange` | `(path: string \| null) => void` (reflect the pin to the URL) | no |
+
+### `dashboard/coupling-mini-card` — `CouplingMiniCard`
+
+Overview front-door for the (sidebar-less) change-coupling view: previews the
+top few coupled pairs with strength bars and links to the full page. Fully
+presentational.
+
+| Prop | Type | Required |
+|------|------|----------|
+| `edges` | `CouplingEdge[]` (top couplings, strongest-first) | yes |
+| `href` | `string` (link to the full coupling view) | yes |
+| `LinkComponent` | link component (defaults to `<a>`) | no |
 
 ---
 
@@ -520,8 +683,15 @@ nothing when the backlink list is empty.
 
 ## `wiki/git-history-panel` — `GitHistoryPanel`
 
-Sidebar panel summarising file lifecycle, commit categories, top
-authors with bars, co-change partners, and recent commits.
+Sidebar panel summarising file lifecycle, fix history, commit categories,
+top authors with bars, co-change partners, and recent commits.
+
+The Age row needs at least one recorded commit before it will render a zero
+age, because `formatAgeDays(0)` reads "< 1 day" and `age_days` is stored NOT
+NULL with a `0` default — so a file whose git indexing never completed is
+otherwise indistinguishable from one created today. Author shares fall back to
+`commit_count / commit_count_total` when a row carries no `pct`, which is what
+the file-detail endpoint serves.
 
 | Prop | Type | Required |
 |------|------|----------|
@@ -550,10 +720,8 @@ Returns `null` when fewer than two headings are found.
 ## `graph/*` — Graph layout, presentation, and chrome
 
 Presentational graph pieces — chrome (toolbar/legend/sidebar/menu),
-ELK layout primitives, `@xyflow/react` node/edge components, and the
-floating `GraphTooltip`. The `GraphContext` provider also lives here
-so node/edge components can be consumed independently of the
-`graph-flow` data-fetching host.
+ELK layout primitives, and `@xyflow/react` node/edge components.
+State reaches the canvas as props; there is no graph context.
 
 `graph-flow` and the panels (`graph-doc-panel`, `graph-community-panel`,
 `path-finder-panel`) live HERE as presentational shells; `packages/web`
@@ -562,19 +730,18 @@ the datasets in. The canvas renders via Sigma (`graph/sigma/`), not
 `@xyflow/react` (the xyflow node/edge components remain for the module
 browser and embedded views).
 
-### `graph/context` — `GraphContext`, `GraphProvider`, `useGraphContext`, `GraphContextValue`
+### `graph/context` — `Signal`
 
-Standalone context module. Node and edge components consume it to
-read selection / hover / highlight state without depending on the
-`graph-flow` host implementation. Hosts wrap their tree in
-`<GraphProvider value={...}>`.
+Shared graph vocabulary. `Signal` is the overlay-toggle union
+(`"dead" | "hot" | "architecture" | "hideTests"`).
 
-| Export | Type | Notes |
-|--------|------|-------|
-| `GraphContext` | `React.Context<GraphContextValue>` | Default value renders inert. |
-| `GraphProvider` | `React.Provider<GraphContextValue>` | Alias of `GraphContext.Provider`. |
-| `useGraphContext` | `() => GraphContextValue` | Sugar for `useContext(GraphContext)`. |
-| `GraphContextValue` | interface | `highlightedPath`, `highlightedEdges`, `colorMode`, `riskScores`, `hoveredNodeId`, `connectedNodeIds`, `connectedEdgeIds`, `selectedNodeId`, `searchDimmedNodes`. |
+This module used to export a `GraphContext` / `GraphProvider` /
+`useGraphContext` / `GraphContextValue` trio mirroring ~18 fields of
+`graph-flow`'s state. It had no consumers — every field already reaches
+the canvas as a prop, and Sigma owns hover and highlight itself — so the
+provider only re-rendered the shell and rebuilt an 18-key object on every
+interaction. Removed rather than kept "just in case": a second path to
+the same state would only drift from the props.
 
 ### `graph/elk-layout` and `graph/use-elk-layout`
 
@@ -588,24 +755,13 @@ Pure layout primitives. Functions: `layoutFileGraph`,
 ### `graph/nodes/*`, `graph/edges/*`
 
 `FileNode`, `ModuleGroupNode`, `DependencyEdge` — `@xyflow/react`
-node/edge renderers. Consume `GraphContext` for selection / hover /
-path-highlight state. Wear `FileNodeData` / `ModuleNodeData` /
-`DependencyEdgeData` types from `graph/elk-layout`.
+node/edge renderers. Receive selection / path-highlight state as props.
+Wear `FileNodeData` / `ModuleNodeData` / `DependencyEdgeData` types from
+`graph/elk-layout`.
 
-### `graph/graph-tooltip` — `GraphTooltip`
-
-Floating tooltip over a focused node, smart-positioned against the
-viewport edges. Renders file or module metadata depending on
-`nodeType`.
-
-| Prop | Type | Required |
-|------|------|----------|
-| `nodeId` | `string` | yes |
-| `nodeType` | `string` (`fileNode` / `moduleGroup`) | yes |
-| `data` | `Record<string, unknown>` (cast to `FileNodeData` or `ModuleNodeData`) | yes |
-| `x`, `y` | `number` | yes |
-| `onClose` / `onViewDocs` | `() => void` | yes |
-| `onExplore` | `() => void` | no — when omitted, the action button is hidden |
+There is no React tooltip component. The hover card users see on the
+Sigma canvas is painted by `defaultDrawNodeHover` in
+`graph/sigma/use-sigma.ts`, not rendered as DOM.
 
 ### `graph/graph-context-menu` â€” `GraphContextMenu`
 
@@ -731,15 +887,91 @@ link to `/commits?commit=`). `SavingsMini` accepts the structural
 ## `files/*` — File entity page
 
 The canonical "everything about this file" page used by
-`/repos/[id]/files/<path>`. `FilePage` (client) assembles the header
-(path, health badge, signal chips, governing decisions) plus Doc /
-Health / History / Coverage / Graph tabs; per-tab components are
-exported individually. Data arrives as one `FileDetailResponse`
-(`@repowise-dev/types/files`); the host supplies `docSlot` (rendered
-markdown), `coverageCodeHtml` (shiki output whose `.line` nodes carry
-`data-covered` attributes), and `onFindingStatusChange` for triage.
-`symbols/symbol-page` (`SymbolPage`) is the symbol-page sibling fed by
-`SymbolDetailResponse`.
+`/repos/[id]/files/<path>`. `symbols/symbol-page` (`SymbolPage`) is the
+symbol-page sibling fed by `SymbolDetailResponse`.
+
+**The page is four pieces, not one component, and the split is the
+hydration boundary.** A host composes them; it does not hand a
+`FileDetailResponse` to a client component.
+
+| Piece | Where it runs | Job |
+|---|---|---|
+| `FilePageHeader` | server | Eyebrow, path as identity, the `PageLede` figure, the marker row, the `StatRibbon`. |
+| `fileTabsFor(data)` | server | The tab row as `FileTabDef[]` — label, blurb, badge. `resolveFileTab` narrows a `?tab=` value against it. |
+| `buildFilePanels({...})` | server | Renders the six pure tab bodies and returns them keyed by tab id. Takes `healthPanel` as an already-wrapped node. |
+| `FilePage` | client | The shell: header slot, `ViewTabs`, active panel. Imports `ViewTabs` and nothing else from the slice. |
+
+`FilePage` used to be `"use client"` and import all seven tab bodies, so
+the whole slice plus a twice-serialised `FileDetailResponse` reached the
+browser to render one tab. `file-health-tab` is now the only file in
+`files/*` carrying `"use client"` — it owns triage state, two virtualised
+lists and a measured trend. Because its triage callback and href builders
+are functions, a host wraps it itself and passes the result in as
+`healthPanel`; that wrapper is the page's only client boundary besides
+the shell.
+
+Two consequences a host must honour:
+
+- **Key the shell on the file path.** Tab clicks are a shallow
+  `history.replaceState`, so a soft navigation from one file page to
+  another keeps React's state at the same tree position and strands the
+  active tab out of sync with the URL. Every cross-file link in the tab
+  bodies is a plain `<a>` today, which hides this; converting one to a
+  router link without the key surfaces it.
+- **`fields=slim` is the default fetch.** Only Documentation, Health and
+  Coverage read the four unbounded blocks the aggregate can drop, so the
+  route fetches slim unless the requested tab is one of those, and tells
+  the shell through `refetchTabs` which tabs need a round trip on first
+  click. A tab with nothing behind it is left out of that list rather
+  than buying a trip to be shown the same empty state.
+
+Bands come from `bandForScore` (`@repowise-dev/types/health`), never from
+`scoreBadgeClass` — that is a four-step presentation ramp and this page
+sits one click from the treemap and the health map, which both paint the
+canonical three.
+
+**The doors, and who owns each end.** The page had thirty surfaces linking
+into it and almost nothing linking out, and the docs surface — the one that
+knows a page documents *this exact path* — linked to it zero times.
+
+- `FilePageHeader` takes `wikiHref`. It used to live in the Doc tab, which
+  made the only link to the wiki reachable only from the tab that already
+  renders the wiki. Pass it **only when a page exists** — this route already
+  knows, and the reader's missing-page reply is for someone who typed the id,
+  not for a link the product offered. It reads "Read in Docs", naming the
+  surface the nav names: "Documentation" is the tab forty pixels below it, and
+  two controls with near enough one name, one staying and one leaving, is the
+  two-verbs-one-subject problem relocated rather than fixed.
+- `DocsReader` takes `buildFileHref`, and renders the door only for a
+  `file_page`. `page.target_path` is the repo-relative path the file route
+  takes, so nothing parses an id. Optional, so a host with no file route
+  (the VS Code webview) renders no door rather than a broken one.
+- `buildFilePanels` forwards `LinkComponent` to Overview, History, Decisions
+  and Dependencies. **This does not move the hydration boundary**: a
+  `next/link` element *rendered from* a server component is still server
+  markup. An `onClick` would not be — that is what would drag a body back
+  into the client bundle.
+- Because those cross-file links are soft navigations now, the shell's
+  `key` on the file path is load-bearing rather than defensive. Without it a
+  file → file click keeps React's tab state at the same tree position and
+  strands the active tab out of sync with the URL.
+
+Route builders are `fileEntityPath`, `symbolEntityPath`, `filePageId` and
+`docsPagePath` from `shared/entity`. `filePageId` exists because the
+`"file_page:<path>"` id has to agree with a backend primary key and was
+spelled out at five call sites; `pageHref` derives its parse prefix from the
+builder so the two cannot drift. The docs surface reads `?page=`, never
+`?file=` — three surfaces shipped a `?file=` link that nothing read, which
+meant they silently opened the repo overview and looked like they had worked.
+
+Repointing them at `?page=` puts real traffic on ids that resolve to nothing,
+because page selection is budgeted and most files have no page. So
+`DocsReader` takes `missingPageId` and answers by naming the page that is
+missing, instead of the "Select a page, choose one from the tree" prompt meant
+for a reader who asked for nothing. `docs-explorer` sets it only once the
+fetch has settled, or the line flashes over a request about to succeed. It
+deliberately does **not** fall back to the overview: a reader who asked about
+one file must not silently land in another file's prose.
 
 ### `dashboard/attention-panel` â€” `AttentionPanel`
 

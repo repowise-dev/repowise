@@ -14,13 +14,16 @@ from __future__ import annotations
 from pathlib import Path
 from textwrap import dedent
 
+import pytest
+
+from repowise.core import fs_walk
 from repowise.core.workspace.cross_repo import (
+    _index_csproj_files,
     _scan_csproj,
     detect_package_dependencies,
 )
 from repowise.core.workspace.extractors.grpc_extractor import GrpcExtractor
 from repowise.core.workspace.extractors.http_extractor import HttpExtractor
-
 
 # ---------------------------------------------------------------------------
 # HTTP — ASP.NET
@@ -229,3 +232,96 @@ class TestScanCsproj:
         deps = detect_package_dependencies(repos)
         kinds = {d.kind for d in deps}
         assert "dotnet_project_ref" in kinds
+
+    def test_detect_package_dependencies_walks_each_repo_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The .csproj scan must not re-walk every tree once per repo.
+
+        The assembly-name map spans the whole workspace but does not depend on
+        the repo being scanned, so building it per repo cost R*R + R tree
+        walks. One walk per repo is the floor: each repo's project files have
+        to be found once.
+        """
+        repos = self._two_repo_workspace(tmp_path)
+        (repos["api"] / "src" / "Api" / "Api.csproj").write_text(
+            _csproj(packages=["Acme.Common"])
+        )
+
+        walked: list[Path] = []
+        real_iter_glob = fs_walk.iter_glob
+
+        def counting_iter_glob(root, patterns, **kwargs):
+            if patterns == "*.csproj":
+                walked.append(Path(root))
+            return real_iter_glob(root, patterns, **kwargs)
+
+        monkeypatch.setattr(fs_walk, "iter_glob", counting_iter_glob)
+
+        deps = detect_package_dependencies(repos)
+
+        assert len(walked) == len(repos), (
+            f"expected one *.csproj walk per repo ({len(repos)}), got {len(walked)}: {walked}"
+        )
+        # The saving must not have cost us the dependency itself.
+        assert any(d.kind == "dotnet_nuget_internal" for d in deps)
+
+    def test_shared_index_matches_standalone_scan(self, tmp_path: Path) -> None:
+        """A shared index must produce exactly what an isolated scan produces."""
+        repos = self._two_repo_workspace(tmp_path)
+        (repos["api"] / "src" / "Api" / "Api.csproj").write_text(
+            _csproj(
+                deps=[r"..\..\..\shared-libs\src\Common\Common.csproj"],
+                packages=["Acme.Common", "Newtonsoft.Json"],
+            )
+        )
+
+        standalone = _scan_csproj(repos["api"], repos, alias="api")
+        shared = _scan_csproj(
+            repos["api"], repos, alias="api", csproj_index=_index_csproj_files(repos)
+        )
+
+        assert standalone == shared
+        assert standalone  # guard against both sides being vacuously empty
+
+    def test_assembly_name_collision_resolves_to_last_repo(self, tmp_path: Path) -> None:
+        """Two repos publishing one assembly name: the later repo wins.
+
+        The shared index builds this map once instead of per repo, so pin the
+        ordering it depends on — a map rebuilt in a different order would
+        silently retarget the edge at the other repo.
+        """
+        repos = self._two_repo_workspace(tmp_path)
+        rival = tmp_path / "rival-libs"
+        (rival / "src" / "Common").mkdir(parents=True)
+        (rival / "src" / "Common" / "Rival.csproj").write_text(
+            _csproj(assembly_name="Acme.Common")
+        )
+        (repos["api"] / "src" / "Api" / "Api.csproj").write_text(
+            _csproj(packages=["Acme.Common"])
+        )
+        # "shared" then "rival": last one to claim the name owns it.
+        ordered = {"api": repos["api"], "shared": repos["shared"], "rival": rival}
+
+        deps = detect_package_dependencies(ordered)
+        nuget = [d for d in deps if d.kind == "dotnet_nuget_internal"]
+        assert [d.target_repo for d in nuget] == ["rival"]
+
+    def test_scan_uses_the_repo_path_it_is_given(self, tmp_path: Path) -> None:
+        """A repo_path disagreeing with repo_paths[alias] must still be scanned.
+
+        The shared index is keyed by alias, so a caller passing a different
+        tree for that alias must not silently get the indexed tree's results.
+        """
+        repos = self._two_repo_workspace(tmp_path)
+        other = tmp_path / "other-api"
+        (other / "src" / "Api").mkdir(parents=True)
+        (other / "src" / "Api" / "Other.csproj").write_text(
+            _csproj(packages=["Acme.Common"])
+        )
+        # repo_paths["api"] holds no .csproj at all; the scanned tree does.
+        deps = _scan_csproj(
+            other, repos, alias="api", csproj_index=_index_csproj_files(repos)
+        )
+        assert [d.target_repo for d in deps] == ["shared"]
+        assert deps[0].source_manifest == "src/Api/Other.csproj"

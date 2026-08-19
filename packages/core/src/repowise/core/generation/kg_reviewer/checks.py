@@ -18,6 +18,8 @@ import re
 from collections import Counter, defaultdict
 from pathlib import PurePosixPath
 
+from repowise.core.ids import file_path_of
+
 from .findings import Finding, Severity
 
 # Structural / type words that carry no information beyond the file's name and
@@ -58,7 +60,7 @@ def _is_file_node(node: dict) -> bool:
 
 
 def _node_path(node: dict) -> str:
-    return node.get("filePath") or node.get("id", "").removeprefix("file:")
+    return node.get("filePath") or file_path_of(node.get("id", "")) or ""
 
 
 def _words(text: str) -> list[str]:

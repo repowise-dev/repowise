@@ -37,9 +37,9 @@ MCP tools and skills activate automatically.
 
 ### Five intelligence layers
 
-Graph (tree-sitter dependency graph, 15 languages) · Git (hotspots, ownership,
+Graph (tree-sitter dependency graph, 16 languages) · Git (hotspots, ownership,
 co-change, bus factor) · Docs (LLM-generated wiki + semantic search) · Decisions
-(architectural rationale mined from eight sources) · Code Health (1–10
+(architectural rationale mined from five sources) · Code Health (1–10
 defect-validated score from deterministic markers).
 
 ### Slash commands
@@ -50,11 +50,19 @@ defect-validated score from deterministic markers).
 | `/repowise:status` | Health check — sync state, page counts, provider info |
 | `/repowise:update` | Incremental update — sync the index with recent code changes |
 | `/repowise:search` | Search the codebase wiki (fulltext, semantic, or symbol) |
+| `/repowise:ask` | Cited, synthesised answer to a codebase question (LLM call) |
+| `/repowise:context` | Triage card for files/modules/symbols (layer, hotspot, freshness) |
+| `/repowise:symbol` | Read one symbol body with live-verified line bounds |
 | `/repowise:reindex` | Rebuild the vector store (re-embed; no LLM calls) |
 | `/repowise:health` | Code-health KPIs, lowest-scoring files, refactoring targets, trends |
+| `/repowise:coverage` | Ingest or inspect coverage reports (lights up untested hotspots + per-test map) |
+| `/repowise:impacted-tests` | Tests whose coverage intersects a change (commit / range / staged) |
 | `/repowise:risk` | Defect-risk score for a change (commit or `base..head` range) |
+| `/repowise:security` | Full-history secret scan (`repowise security scan --history`) |
 | `/repowise:dead-code` | Unreachable files, unused exports, zombie packages by confidence |
+| `/repowise:export` | Export wiki pages or a Structurizr architecture model |
 | `/repowise:decision` | List, inspect, add, or confirm architectural decisions |
+| `/repowise:why` | Why the code is shaped this way (decisions + archaeology) |
 | `/repowise:doctor` | Diagnose (and optionally repair) the setup, keys, and index drift |
 
 ### Automatic skills
@@ -63,14 +71,16 @@ Claude uses these when relevant — no slash command needed:
 
 - **Codebase exploration** — routes questions to `get_overview` / `get_answer` / `search_codebase` / `get_context` / `get_symbol` instead of raw file reads.
 - **Pre-modification check** — calls `get_risk` (and `get_health` for refactors) before editing to assess blast radius.
-- **Change review** — for a PR / branch / working-tree diff, combines `repowise risk` (whole-change score) with `get_risk`'s per-file `directive` block (will-break / missing co-changes / missing tests).
+- **Change review** — for a PR / branch / working-tree diff, combines `get_change_risk` (whole-change score) with `get_risk`'s per-file `directive` block (will-break / missing co-changes / missing tests).
 - **Code health** — answers quality / complexity / "what to refactor" via `get_health`.
 - **Architectural decisions** — queries `get_why` for the *why* before architectural changes.
 - **Dead-code cleanup** — uses `get_dead_code`, conservatively, during cleanup.
 
-### MCP tools (9)
+### MCP tools (10 flagship + `list_repos`)
 
-Registered automatically when the plugin is enabled:
+Registered automatically when the plugin is enabled. The default single-repo
+surface is the ten flagship tools below plus `list_repos` (see
+[MCP_TOOLS.md](../../docs/agent/MCP_TOOLS.md)):
 
 | Tool | What it answers |
 |------|-----------------|
@@ -80,6 +90,7 @@ Registered automatically when the plugin is enabled:
 | `get_symbol` | Raw source of one symbol with exact line bounds |
 | `search_codebase` | Hybrid code search — `mode="auto"` routes identifiers to indexed symbols, paths to files, prose to semantic wiki search |
 | `get_risk` | Per-file hotspot, dependents, co-changes, owners; PR `directive` block with `changed_files` |
+| `get_change_risk` | Whole-change defect-risk score for a commit or `base..head` range |
 | `get_why` | Architectural decisions — search, path-anchored, or health dashboard |
 | `get_dead_code` | Unused/unreachable findings tiered by confidence |
 | `get_health` | 1–10 code-health score and marker findings per file |
@@ -88,21 +99,29 @@ Registered automatically when the plugin is enabled:
 
 | Mode | What you get | Requirements |
 |------|-------------|-------------|
-| **Index-only** | Graph + Git + Code Health + Dead Code | Nothing (no LLM) |
-| **Full** | Index-only **plus** Docs, semantic search, and Decisions | LLM API key |
-| **Local (Ollama)** | Full mode, fully offline | Ollama running |
+| **Default (keyless)** | Graph + Git + Code Health + Dead Code + a full wiki rendered from structure | Nothing |
+| **Model-written wiki** | Same, with LLM-written pages and decision mining | Provider key |
+| **Local (Ollama)** | Model-written wiki, fully offline | Ollama running |
 
-Index-only builds with zero LLM calls; full mode adds the documentation layer on
-top, which can continue in the background. Run `/repowise:init` and Claude helps
+The keyless default makes zero LLM calls and still produces a complete wiki; a
+provider key changes who writes the pages, not whether you get them, and that
+layer can continue in the background. Run `/repowise:init` and Claude helps
 you choose.
 
 ## Proactive context (hooks)
 
-The plugin registers a `PostToolUse` hook that runs `repowise-augment` after
-`Bash` / `Grep` / `Glob`. It stays silent unless it has something asymmetric to
-add — rescuing a zero-result grep with the closest indexed symbol, ranking a
-flood of matches by graph centrality, or flagging a stale index after a commit.
-No LLM, no network. (`repowise init` installs the same hook in
+The plugin registers two hooks that run `repowise-augment`:
+
+- **`SessionStart`** (`startup|resume|clear`) — emits live index-freshness /
+  trust context at session start.
+- **`PostToolUse`** after
+  `Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*` —
+  stays silent unless it has something asymmetric to add (rescuing a
+  zero-result grep with the closest indexed symbol, ranking a flood of
+  matches by graph centrality, flagging a stale read, or recording
+  read-after-served MCP traffic).
+
+No LLM, no network. (`repowise init` installs the same hooks in
 `~/.claude/settings.json`; running both is safe — duplicate enrichment is
 de-duplicated.)
 
@@ -119,9 +138,9 @@ MCP server, but the `repowise` binary must be installed and on PATH.
 
 **`pip install` fails on Windows:** try `python -m pip install repowise`.
 
-**Semantic search / `get_answer` returns nothing:** the repo may be in index-only
-mode (no wiki). Re-run `/repowise:init` with an LLM provider, or `/repowise:reindex`
-if pages exist but embeddings are missing.
+**Semantic search / `get_answer` returns nothing:** the wiki may be
+template-rendered (no embeddings). Run `/repowise:reindex`, or `repowise generate`
+to upgrade pages with a model.
 
 **Stale results after code changes:** run `/repowise:update`.
 

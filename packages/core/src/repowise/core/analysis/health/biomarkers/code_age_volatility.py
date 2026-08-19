@@ -16,7 +16,8 @@ by the FULL git tier:
 
 Tier-aware: when ``ctx.blame_index`` is ``None`` (ESSENTIAL git tier),
 or empty, the detector emits zero findings. Function-level no-op is the
-documented "no signal" outcome until ``backfill_blame()`` runs.
+documented "no signal" outcome until the FULL-tier backfill
+(``backfill_full_tier()``) runs.
 
 Severity (calibrated against the 1-year / 2-year age boundaries):
 

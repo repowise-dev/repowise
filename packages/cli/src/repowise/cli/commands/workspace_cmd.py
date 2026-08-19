@@ -9,13 +9,17 @@ from typing import TYPE_CHECKING
 import click
 from rich.table import Table
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
     console,
     find_workspace_root,
+    resolve_max_file_pages,
     resolve_reasoning,
     resolve_repo_path,
     run_async,
 )
+from repowise.cli.output import emit_json, format_option, json_option, resolve_format
+from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 
 if TYPE_CHECKING:
     from repowise.core.workspace.config import WorkspaceConfig
@@ -41,6 +45,61 @@ def _require_workspace(start: Path | None = None) -> tuple[Path, WorkspaceConfig
         )
     ws_config = WorkspaceConfig.load(ws_root)
     return ws_root, ws_config
+
+
+def _format_age(generated_at: str | None) -> str:
+    """Render an ISO timestamp as a short age, or say it is missing."""
+    from datetime import datetime
+
+    if not generated_at:
+        return "never built"
+    try:
+        stamped = datetime.fromisoformat(generated_at)
+    except ValueError:
+        return f"stamped {generated_at}"
+    if stamped.tzinfo is None:
+        stamped = stamped.replace(tzinfo=UTC)
+    seconds = (datetime.now(UTC) - stamped).total_seconds()
+    if seconds < 90:
+        return "just now"
+    if seconds < 5400:
+        return f"{round(seconds / 60)} minutes ago"
+    if seconds < 172800:
+        return f"{round(seconds / 3600)} hours ago"
+    return f"{round(seconds / 86400)} days ago"
+
+
+def _report_artifact_provenance(
+    ws_root: Path,
+    ws_config: WorkspaceConfig,  # type: ignore[name-defined]
+    generated_at: str | None,
+    artifact_repos: list[str],
+) -> None:
+    """Print how old the artifact is, and flag config/artifact disagreement.
+
+    Commands that read a persisted artifact otherwise present it as the state
+    of the tree right now. When the config and the artifact list different
+    repos, that gap is itself the finding — it means the artifact describes a
+    workspace that no longer exists, or that the config lost a repo.
+    """
+    console.print(f"[dim]Read from .repowise-workspace/, built {_format_age(generated_at)}.[/dim]")
+
+    configured = {e.alias for e in ws_config.repos}
+    covered = set(artifact_repos)
+    missing_from_config = sorted(covered - configured)
+    missing_from_artifact = sorted(configured - covered)
+    if missing_from_config:
+        console.print(
+            f"[yellow]![/yellow] Covers {', '.join(missing_from_config)}, which "
+            f"{'is' if len(missing_from_config) == 1 else 'are'} no longer in "
+            f"{ws_root.name}/.repowise-workspace.yaml."
+        )
+    if missing_from_artifact:
+        console.print(
+            f"[yellow]![/yellow] {', '.join(missing_from_artifact)} "
+            f"{'is' if len(missing_from_artifact) == 1 else 'are'} configured but "
+            "absent from this artifact; re-run 'repowise update --workspace'."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +301,24 @@ def _format_relative_time(iso_timestamp: str | None) -> str:
 @click.option(
     "--concurrency", type=int, default=10, help="Max concurrent LLM calls during doc generation."
 )
+@click.option(
+    "--save-key/--no-save-key",
+    "save_key",
+    default=True,
+    help=(
+        "Save the provider API key this run authenticated with into the added "
+        "repo's .repowise/.env (gitignored). Default: on, because each workspace repo "
+        "has its own .repowise/, so each needs its own key to be answerable by "
+        "the MCP server. Same switch as `repowise init --no-save-key`."
+    ),
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show debug logs from the pipeline.",
+)
 def workspace_add(
     path: str,
     alias: str | None,
@@ -250,6 +327,8 @@ def workspace_add(
     provider_name: str | None,
     model: str | None,
     concurrency: int,
+    save_key: bool,
+    verbose: bool,
 ) -> None:
     """Add a repo to the workspace and (by default) index + generate docs for it.
 
@@ -263,6 +342,8 @@ def workspace_add(
     Use ``--no-index`` to only register the entry without indexing, or
     ``--no-docs`` to index without LLM generation.
     """
+    configure_cli_logging(verbose=verbose)
+
     from repowise.core.workspace.config import RepoEntry
 
     repo_path = Path(path).resolve()
@@ -329,6 +410,7 @@ def workspace_add(
         model=model,
         concurrency=concurrency,
         docs_skip_reason=docs_skip_reason,
+        save_key=save_key,
     )
 
 
@@ -393,7 +475,7 @@ def _inherit_distill_verdict(repo_path: Path, primary_cfg: dict) -> None:
 
     ``repowise init`` records ``distill.commands.enabled`` in every repo it
     asks about; a repo added later would otherwise default to enabled (with
-    the ``ask`` posture) the moment ``.repowise/`` exists — even after a
+    the ``allow`` posture) the moment ``.repowise/`` exists — even after a
     workspace-wide decline. No explicit verdict on the primary → leave the
     new repo's config untouched.
     """
@@ -459,6 +541,7 @@ def _run_index_for_repo(
     model: str | None = None,
     concurrency: int = 10,
     docs_skip_reason: str | None = None,
+    save_key: bool = True,
 ) -> None:
     """Run the ingestion pipeline on a single repo, optionally with LLM docs.
 
@@ -486,8 +569,14 @@ def _run_index_for_repo(
     primary_cfg: dict = {}
     if primary is not None:
         from repowise.cli.helpers import load_config as _load_cfg
+        from repowise.cli.ui import load_dotenv
 
-        primary_cfg = _load_cfg((ws_root / primary.path).resolve())
+        primary_path = (ws_root / primary.path).resolve()
+        primary_cfg = _load_cfg(primary_path)
+        # The provider settings are inherited from the primary repo, so the
+        # credential that goes with them lives in the primary's ``.env`` —
+        # the new repo has none yet. Same call `init`'s workspace flow makes.
+        load_dotenv(primary_path)
 
     effective_provider = provider_name or primary_cfg.get("provider")
     effective_model = model or primary_cfg.get("model")
@@ -562,12 +651,18 @@ def _run_index_for_repo(
     state: dict = {
         "last_sync_commit": head,
         "total_pages": generated_pages,
-        "docs_enabled": bool(generate_docs and provider is not None),
+        # No template fallback on this path: without a provider the added repo
+        # is indexed with no pages at all.
+        **docs_mode_state_fields("llm" if generate_docs and provider is not None else "none"),
     }
     if generate_docs and provider is not None:
         state["provider"] = provider.provider_name
         state["model"] = provider.model_name
-    save_state(repo_path, state)
+    # `workspace add` freshly full-indexes the repo, so this from-scratch state
+    # is a current-format store, not one predating the concept tree. Stamp the
+    # terminal version rather than clamping to v1 and nagging a repo this run
+    # just built to re-index itself.
+    save_state(repo_path, state, full_index=True)
 
     # Persist provider settings into the added repo's config.yaml so future
     # `repowise update` runs don't have to re-prompt.
@@ -580,6 +675,7 @@ def _run_index_for_repo(
             exclude_patterns=exclude_patterns or None,
             commit_limit=int(commit_limit) if commit_limit else None,
             reasoning=resolved_reasoning,
+            save_key=save_key,
         )
 
     # Update workspace config entry
@@ -597,7 +693,7 @@ def _run_index_for_repo(
 
     # Honest completion notice — exact remediation command for the
     # docs-skipped case.
-    if not state["docs_enabled"]:
+    if resolve_docs_mode(state) == "none":
         reason = docs_skip_reason or "docs disabled"
         console.print(f"\n[yellow]Note:[/yellow] '{alias}' indexed without docs ({reason}).")
         console.print(
@@ -638,7 +734,7 @@ def _generate_docs_for_added_repo(
         create_session_factory,
         get_session,
         init_db,
-        upsert_page_from_generated,
+        upsert_pages_from_generated,
         upsert_repository,
     )
 
@@ -660,16 +756,23 @@ def _generate_docs_for_added_repo(
             graph_builder.add_file(parsed)
         except Exception:
             continue
+
+    from repowise.core.ingestion import wire_tsconfig_resolver
+
+    wire_tsconfig_resolver(graph_builder, repo_path)
     graph_builder.build()
 
     from repowise.core.repo_config import load_repo_config
 
     repo_cfg = load_repo_config(repo_path)
-    config = GenerationConfig(
+    config = GenerationConfig.from_repo_config(
+        repo_cfg,
         max_concurrency=concurrency,
         reasoning=reasoning,
         wiki_style=repo_cfg.get("wiki_style", "comprehensive"),
         language=repo_cfg.get("language", "en"),
+        # Whole-repo selection, so honour the per-repo file-page cap.
+        max_file_pages=resolve_max_file_pages(config=repo_cfg),
     )
     assembler = ContextAssembler(config)
     generator = PageGenerator(
@@ -696,12 +799,17 @@ def _generate_docs_for_added_repo(
                 name=repo_path.name,
                 local_path=str(repo_path),
             )
-            for p in pages:
-                await upsert_page_from_generated(session, p, repo.id)
+            await upsert_pages_from_generated(session, pages, repo.id)
         fts = FullTextSearch(engine)
         await fts.ensure_index()
         for p in pages:
-            await fts.index(p.page_id, p.title, p.content)
+            await fts.index(
+                p.page_id,
+                p.title,
+                p.content,
+                summary=p.summary,
+                target_path=p.target_path,
+            )
         await engine.dispose()
         return len(pages)
 
@@ -763,8 +871,29 @@ def workspace_remove(alias: str) -> None:
     default=False,
     help="Auto-add all discovered repos without prompting.",
 )
-def workspace_scan(path: str | None, yes: bool) -> None:
+@click.option(
+    "--exclude",
+    "exclude_globs",
+    multiple=True,
+    metavar="GLOB",
+    help=(
+        "Skip discovered repos whose path matches this glob, relative to the "
+        "workspace root (e.g. 'test-repos/*'). Repeatable."
+    ),
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show debug logs from the pipeline.",
+)
+def workspace_scan(
+    path: str | None, yes: bool, exclude_globs: tuple[str, ...], verbose: bool
+) -> None:
     """Scan the workspace root for new repos not yet in the config."""
+    configure_cli_logging(verbose=verbose)
+
     from repowise.core.workspace.config import RepoEntry
     from repowise.core.workspace.scanner import scan_for_repos
 
@@ -783,6 +912,22 @@ def workspace_scan(path: str | None, yes: bool) -> None:
         if r.path.as_posix() not in existing_paths and r.alias not in existing_aliases
     ]
 
+    if exclude_globs:
+        from fnmatch import fnmatchcase
+
+        def _excluded(repo_path: Path) -> bool:
+            try:
+                rel = repo_path.relative_to(ws_root).as_posix()
+            except ValueError:
+                rel = repo_path.as_posix()
+            return any(fnmatchcase(rel, g) for g in exclude_globs)
+
+        before = len(new_repos)
+        new_repos = [r for r in new_repos if not _excluded(r.path)]
+        skipped = before - len(new_repos)
+        if skipped:
+            console.print(f"[dim]Excluded {skipped} repo(s) by --exclude.[/dim]")
+
     if not new_repos:
         console.print("[green]No new repositories discovered.[/green]")
         return
@@ -793,6 +938,18 @@ def workspace_scan(path: str | None, yes: bool) -> None:
         console.print(f"  [cyan]{repo.alias}[/cyan] — {repo.path}{indexed_marker}")
 
     console.print()
+
+    # A scan of a directory full of fixtures can find a hundred repos, and
+    # prompting per repo with no way out but Ctrl-C is not a choice. Ask once
+    # before starting, so declining everything costs one keystroke.
+    if not yes and not click.confirm(
+        f"Review these {len(new_repos)} repo(s) one at a time?", default=True
+    ):
+        console.print(
+            "\nNo repos added. Narrow the scan with [bold]--exclude 'dir/*'[/bold] "
+            "or add all with [bold]--yes[/bold]."
+        )
+        return
 
     added = 0
     for repo in new_repos:
@@ -870,8 +1027,11 @@ def workspace_set_default(alias: str) -> None:
 @workspace_group.command("diagnostics")
 @click.argument("path", required=False, default=None)
 @click.option("--repo", "repo_alias", default=None, help="Limit the report to one repo alias.")
-@click.option("--json", "as_json", is_flag=True, help="Emit raw diagnostics JSON.")
-def workspace_diagnostics(path: str | None, repo_alias: str | None, as_json: bool) -> None:
+@format_option(help="Output format. ``json`` emits the raw diagnostics.")
+@json_option()
+def workspace_diagnostics(
+    path: str | None, repo_alias: str | None, fmt: str, as_json: bool
+) -> None:
     """Explain the cross-repo contract link count.
 
     Reports, per repo, how many providers and consumers were found, which
@@ -879,12 +1039,11 @@ def workspace_diagnostics(path: str | None, repo_alias: str | None, as_json: boo
     the answer to "why are there so few links?". Reads the system graph built
     during 'repowise update --workspace'.
     """
-    import json as _json
-
     from repowise.core.workspace.system_graph import load_system_graph
 
+    fmt = resolve_format(fmt, as_json)
     start = resolve_repo_path(path)
-    ws_root, _ws_config = _require_workspace(start)
+    ws_root, ws_config = _require_workspace(start)
 
     graph = load_system_graph(ws_root)
     if graph is None:
@@ -902,19 +1061,29 @@ def workspace_diagnostics(path: str | None, repo_alias: str | None, as_json: boo
         unmatched = [u for u in unmatched if u.repo == repo_alias]
         orphans = [o for o in orphans if o.repo == repo_alias]
 
-    if as_json:
-        payload = {
-            "total_providers": diag.total_providers,
-            "total_consumers": diag.total_consumers,
-            "total_links": diag.total_links,
-            "weak_link_count": diag.weak_link_count,
-            "repo_breakdown": [r.to_dict() for r in breakdown],
-            "unmatched_consumers": [u.to_dict() for u in unmatched],
-            "unmatched_by_reason": diag.unmatched_by_reason,
-            "orphan_providers": [o.to_dict() for o in orphans],
-        }
-        console.print_json(_json.dumps(payload))
+    if fmt == "json":
+        emit_json(
+            {
+                "generated_at": graph.generated_at or None,
+                "total_providers": diag.total_providers,
+                "total_consumers": diag.total_consumers,
+                "total_links": diag.total_links,
+                "weak_link_count": diag.weak_link_count,
+                "repo_breakdown": [r.to_dict() for r in breakdown],
+                "unmatched_consumers": [u.to_dict() for u in unmatched],
+                "unmatched_by_reason": diag.unmatched_by_reason,
+                "orphan_providers": [o.to_dict() for o in orphans],
+                "providers_by_layer": diag.providers_by_layer,
+                "consumers_by_layer": diag.consumers_by_layer,
+                "http_consumers_unresolved": diag.http_consumers_unresolved,
+                "http_consumer_coverage": diag.http_consumer_coverage,
+            }
+        )
         return
+
+    _report_artifact_provenance(
+        ws_root, ws_config, graph.generated_at, [r.repo for r in diag.repo_breakdown]
+    )
 
     # Per-repo provider/consumer breakdown
     table = Table(title=f"Contract extraction — {ws_root.name}")
@@ -936,6 +1105,35 @@ def workspace_diagnostics(path: str | None, repo_alias: str | None, as_json: boo
     )
     if diag.weak_link_count:
         console.print(f"  [yellow]{diag.weak_link_count}[/yellow] weak (low-confidence) link(s).")
+
+    # Extraction coverage. Only two honest numbers exist here: which tier
+    # produced each contract, and how many client calls were located but not
+    # resolved. There is no count of route decorators nobody recognised, so no
+    # provider recall percentage is claimed.
+    def _layers(counts: dict[str, int]) -> str:
+        return ", ".join(f"{n} {layer}" for layer, n in sorted(counts.items()))
+
+    if diag.providers_by_layer or diag.consumers_by_layer:
+        console.print("\n  [bold]Extraction coverage[/bold]")
+        if diag.providers_by_layer:
+            layers = _layers(diag.providers_by_layer)
+            console.print(f"    Providers   {diag.total_providers} ({layers})")
+        if diag.consumers_by_layer:
+            layers = _layers(diag.consumers_by_layer)
+            console.print(f"    Consumers   {diag.total_consumers} ({layers})")
+        coverage = diag.http_consumer_coverage
+        if coverage is not None:
+            http_consumers = sum(r.consumers_by_type.get("http", 0) for r in diag.repo_breakdown)
+            console.print(
+                f"    HTTP calls  {http_consumers} of "
+                f"{http_consumers + diag.http_consumers_unresolved} resolved to an "
+                f"endpoint ([bold]{coverage * 100:.0f}%[/bold]); "
+                f"{diag.http_consumers_unresolved} located but not statically resolvable."
+            )
+        console.print(
+            "    [dim]'index' contracts come from the parsed symbol table, 'regex' "
+            "from a text dialect. Calls no dialect recognises are not counted here.[/dim]"
+        )
 
     # Unmatched consumers grouped by reason
     if unmatched:
@@ -972,8 +1170,9 @@ def workspace_diagnostics(path: str | None, repo_alias: str | None, as_json: boo
 
 @workspace_group.command("check")
 @click.argument("path", required=False, default=None)
-@click.option("--json", "as_json", is_flag=True, help="Emit the raw conformance report as JSON.")
-def workspace_check(path: str | None, as_json: bool) -> None:
+@format_option(help="Output format. ``json`` emits the raw conformance report.")
+@json_option()
+def workspace_check(path: str | None, fmt: str, as_json: bool) -> None:
     """Architecture lint — fail on dependency-rule violations or cycles.
 
     Checks the declared ``conformance`` rules in ``.repowise-workspace.yaml``
@@ -982,7 +1181,6 @@ def workspace_check(path: str | None, as_json: bool) -> None:
     recomputes from) the system graph built by 'repowise update --workspace', so
     editing rules and re-running picks them up without a full re-index.
     """
-    import json as _json
     import sys
 
     from repowise.core.workspace.conformance import (
@@ -991,6 +1189,7 @@ def workspace_check(path: str | None, as_json: bool) -> None:
     )
     from repowise.core.workspace.system_graph import load_system_graph
 
+    fmt = resolve_format(fmt, as_json)
     start = resolve_repo_path(path)
     ws_root, ws_config = _require_workspace(start)
 
@@ -1007,11 +1206,23 @@ def workspace_check(path: str | None, as_json: bool) -> None:
         tags_by_repo_from_config(ws_config),
     )
 
-    if as_json:
-        console.print_json(_json.dumps(report.to_dict()))
+    if fmt == "json":
+        emit_json(report.to_dict())
         if report.has_findings:
             sys.exit(1)
         return
+
+    # State the scope before the verdict. "No cycles" over an empty graph and
+    # "no cycles" over 7 services across 3 repos are the same sentence and very
+    # different results, and only one of them is a pass.
+    _report_artifact_provenance(
+        ws_root, ws_config, graph.generated_at, sorted({n.repo for n in graph.nodes})
+    )
+    console.print(
+        f"Checked [bold]{len(graph.nodes)}[/bold] service(s) across "
+        f"[bold]{len({n.repo for n in graph.nodes})}[/bold] repo(s) against "
+        f"[bold]{report.rules_evaluated}[/bold] declared rule(s)."
+    )
 
     rule_count = report.rules_evaluated
     if rule_count == 0:
@@ -1062,8 +1273,9 @@ def workspace_check(path: str | None, as_json: bool) -> None:
 
 @workspace_group.command("metrics")
 @click.argument("path", required=False, default=None)
-@click.option("--json", "as_json", is_flag=True, help="Emit the raw metrics as JSON.")
-def workspace_metrics(path: str | None, as_json: bool) -> None:
+@format_option(help="Output format. ``json`` emits the raw metrics.")
+@json_option()
+def workspace_metrics(path: str | None, fmt: str, as_json: bool) -> None:
     """Architecture metrics — propagation cost, core, and a 1-10 score.
 
     Computes the standard architecture-complexity metrics over the system graph
@@ -1073,8 +1285,6 @@ def workspace_metrics(path: str | None, as_json: bool) -> None:
     Declared-rule violations, if any, are folded into the score. CI-friendly
     plain output.
     """
-    import json as _json
-
     from repowise.core.workspace.architecture_metrics import compute_architecture_metrics
     from repowise.core.workspace.conformance import (
         check_conformance,
@@ -1082,6 +1292,7 @@ def workspace_metrics(path: str | None, as_json: bool) -> None:
     )
     from repowise.core.workspace.system_graph import load_system_graph
 
+    fmt = resolve_format(fmt, as_json)
     start = resolve_repo_path(path)
     ws_root, ws_config = _require_workspace(start)
 
@@ -1101,8 +1312,8 @@ def workspace_metrics(path: str | None, as_json: bool) -> None:
         generated_at=graph.generated_at,
     )
 
-    if as_json:
-        console.print_json(_json.dumps(metrics.to_dict()))
+    if fmt == "json":
+        emit_json(metrics.to_dict())
         return
 
     if metrics.node_count == 0:
@@ -1112,6 +1323,10 @@ def workspace_metrics(path: str | None, as_json: bool) -> None:
             "relationships."
         )
         return
+
+    _report_artifact_provenance(
+        ws_root, ws_config, graph.generated_at, sorted({n.repo for n in graph.nodes})
+    )
 
     score_color = "green" if metrics.score >= 8 else "yellow" if metrics.score >= 4 else "red"
     console.print(

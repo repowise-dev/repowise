@@ -45,14 +45,14 @@ class ResumeLedger:
 
         try:
             async with get_session(self._sf) as session:
-                jobs = await _store(session).list_jobs(repository_id=self._repo_id)
+                jobs = await _store(session).list_jobs(
+                    repository_id=self._repo_id, state=JobState.COMPLETED
+                )
         except Exception as exc:
             logger.debug("resume_ledger_read_failed", error=str(exc))
             return set()
         done: set[ResumePhase] = set()
         for j in jobs:
-            if j.state != JobState.COMPLETED:
-                continue
             try:
                 done.add(ResumePhase(j.phase))
             except ValueError:

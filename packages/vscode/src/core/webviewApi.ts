@@ -300,7 +300,8 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
 
     // Docs
     pagesList: () => cached("docs:pages", (id) => listAllPages(id)),
-    pageById: (pageId) => cached(`docs:page:${pageId}`, () => getPageById(pageId)),
+    pageById: (pageId) =>
+      cached(`docs:page:${pageId}`, (id) => getPageById(pageId, id)),
     fileDetail: (relPath) => cached(`docs:file:${relPath}`, (id) => getFileDetail(id, relPath)),
 
     // Branch risk

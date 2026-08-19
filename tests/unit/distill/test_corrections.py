@@ -27,7 +27,7 @@ from repowise.core.distill.corrections import (
     strip_preamble,
     update_corrections_block,
 )
-from repowise.core.distill.missed import transcript_dir_for
+from repowise.core.sessions import transcript_dir_for
 
 NOW = time.time()
 
@@ -444,10 +444,11 @@ class TestManagedBlock:
 class TestCli:
     @pytest.fixture(autouse=True)
     def _redirect_transcripts(self, projects: Path, monkeypatch) -> None:
-        from repowise.core.distill import corrections as core
-
+        # The CLI has no --projects-root, so redirect discovery at the
+        # adapter: ClaudeCodeAdapter.discover reads this as a module global.
         monkeypatch.setattr(
-            core, "transcript_dir_for", lambda root, _=None: transcript_dir_for(root, projects)
+            "repowise.core.sessions.adapters.claude_code.transcript_dir_for",
+            lambda root, projects_root=None: transcript_dir_for(root, projects),
         )
 
     def test_report_only_by_default(self, repo: Path, projects: Path, monkeypatch) -> None:

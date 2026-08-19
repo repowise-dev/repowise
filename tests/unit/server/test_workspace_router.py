@@ -6,7 +6,7 @@ import json
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -176,6 +176,7 @@ def _create_workspace_repo_db(
             CREATE TABLE repositories (id TEXT PRIMARY KEY);
             CREATE TABLE graph_nodes (
                 id TEXT PRIMARY KEY,
+                node_type TEXT NOT NULL DEFAULT 'file',
                 language TEXT,
                 symbol_count INTEGER DEFAULT 0
             );
@@ -191,9 +192,12 @@ def _create_workspace_repo_db(
                 nloc INTEGER NOT NULL
             );
             INSERT INTO repositories (id) VALUES ('repo-backend');
-            INSERT INTO graph_nodes (id, language, symbol_count) VALUES
-                ('src/a.py', 'python', 2),
-                ('src/b.py', 'python', 3);
+            INSERT INTO graph_nodes (id, node_type, language, symbol_count) VALUES
+                ('src/a.py', 'file', 'python', 2),
+                ('src/b.py', 'file', 'python', 3),
+                ('src/a.py::Foo', 'symbol', 'python', 0),
+                ('src/a.py::Foo.bar', 'symbol', 'python', 0),
+                ('src/b.py::baz', 'symbol', 'python', 0);
             INSERT INTO wiki_pages (id, confidence) VALUES
                 ('page-a', 0.8),
                 ('page-b', 0.6);
@@ -505,6 +509,32 @@ class TestGetWorkspaceGraph:
         assert backend["health_score"] == 62.0
         assert backend["health_score_source"] == "derived"
 
+    @pytest.mark.asyncio
+    async def test_weights_a_zero_nloc_file_as_one_line(self, tmp_path: Path) -> None:
+        """A zero-nloc row still counts once, rather than dropping out of the average.
+
+        The score is a weighted mean over nloc, so a naive weight would let an
+        empty file contribute nothing. Both scores here would otherwise average
+        to 80.0; the clamped weight is what makes it 60.0.
+        """
+        ws_config = _make_ws_config()
+        _create_workspace_repo_db(
+            tmp_path,
+            "backend",
+            health_rows=[(4.0, 0), (8.0, 1)],
+        )
+        app = _make_workspace_app(
+            ws_config=ws_config,
+            workspace_root=str(tmp_path),
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace/graph")
+
+        assert resp.status_code == 200
+        backend = next(n for n in resp.json()["nodes"] if n["name"] == "backend")
+        assert backend["health_score"] == 60.0
+
 
 # ---------------------------------------------------------------------------
 # Tests — _query_repo_stats
@@ -512,11 +542,21 @@ class TestGetWorkspaceGraph:
 
 
 class TestQueryRepoStats:
-    def _make_wiki_db(self, db_path: Path, rows: list[tuple[int, float]]) -> None:
+    def _make_wiki_db(
+        self,
+        db_path: Path,
+        rows: list[tuple[int, float]],
+        *,
+        graph_nodes: list[tuple[str, str, str]] | None = None,
+    ) -> None:
         """Create a minimal wiki.db with a git_metadata table.
 
         ``rows`` is a list of ``(is_hotspot, churn_percentile)`` tuples.
         churn_percentile is stored on the real 0.0-1.0 scale.
+
+        ``graph_nodes`` is an optional list of ``(node_id, node_type, language)``
+        tuples inserted into ``graph_nodes``, letting a test model the mix of
+        file and symbol rows the real table contains.
         """
         db_path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(str(db_path)) as conn:
@@ -527,6 +567,8 @@ class TestQueryRepoStats:
                 CREATE TABLE repositories (id TEXT PRIMARY KEY);
                 CREATE TABLE graph_nodes (
                     id TEXT PRIMARY KEY,
+                    node_type TEXT NOT NULL DEFAULT 'file',
+                    language TEXT,
                     symbol_count INTEGER DEFAULT 0
                 );
                 CREATE TABLE wiki_pages (id TEXT PRIMARY KEY, confidence REAL);
@@ -542,6 +584,11 @@ class TestQueryRepoStats:
                 conn.execute(
                     "INSERT INTO git_metadata (id, is_hotspot, churn_percentile) VALUES (?, ?, ?)",
                     (f"src/f{idx}.py", is_hotspot, churn),
+                )
+            for node_id, node_type, language in graph_nodes or []:
+                conn.execute(
+                    "INSERT INTO graph_nodes (id, node_type, language) VALUES (?, ?, ?)",
+                    (node_id, node_type, language),
                 )
 
     def test_hotspot_count_uses_is_hotspot_flag(self, tmp_path: Path) -> None:
@@ -569,6 +616,66 @@ class TestQueryRepoStats:
         stats = workspace._query_repo_stats(db_path)
 
         assert stats["hotspot_count"] == 0
+
+    
+    def test_file_count_excludes_symbol_nodes(self, tmp_path: Path) -> None:
+        """Regression: graph_nodes stores file *and* symbol rows.
+
+        file_count must only count node_type='file' rows. Previously an
+        unfiltered COUNT(*) inflated the number by every symbol (function,
+        class, etc.) indexed alongside each file — roughly 10x on real repos.
+        """
+        db_path = tmp_path / ".repowise" / "wiki.db"
+        self._make_wiki_db(
+            db_path,
+            rows=[],
+            graph_nodes=[
+                ("src/a.py", "file", "python"),
+                ("src/b.py", "file", "python"),
+                ("src/c.py", "file", "python"),
+                # Every file contributes several symbol rows to the same table.
+                ("src/a.py::Foo", "symbol", "python"),
+                ("src/a.py::Foo.bar", "symbol", "python"),
+                ("src/a.py::Foo.baz", "symbol", "python"),
+                ("src/b.py::qux", "symbol", "python"),
+                ("src/b.py::quux", "symbol", "python"),
+                ("src/c.py::corge", "symbol", "python"),
+            ],
+        )
+
+        stats = workspace._query_repo_stats(db_path)
+
+        assert stats["file_count"] == 3
+
+    def test_top_language_excludes_symbol_nodes(self, tmp_path: Path) -> None:
+        """Regression: top-language must be derived from file rows only.
+
+        A language with fewer files can still "win" on an unfiltered count
+        if its files happen to contain lots of symbol rows. Here Python has
+        more files (3) than JavaScript (1), but JavaScript's single file has
+        many more symbol rows — an unfiltered query would incorrectly pick
+        JavaScript as the top language.
+        """
+        db_path = tmp_path / ".repowise" / "wiki.db"
+        self._make_wiki_db(
+            db_path,
+            rows=[],
+            graph_nodes=[
+                ("src/a.py", "file", "python"),
+                ("src/b.py", "file", "python"),
+                ("src/c.py", "file", "python"),
+                ("src/dense.js", "file", "javascript"),
+                ("src/dense.js::f1", "symbol", "javascript"),
+                ("src/dense.js::f2", "symbol", "javascript"),
+                ("src/dense.js::f3", "symbol", "javascript"),
+                ("src/dense.js::f4", "symbol", "javascript"),
+                ("src/dense.js::f5", "symbol", "javascript"),
+            ],
+        )
+
+        top_language = workspace._query_top_language(db_path)
+
+        assert top_language == "python"
 
 
 # ---------------------------------------------------------------------------
@@ -953,3 +1060,98 @@ class TestGetConformance:
         data = resp.json()
         assert data["violation_count"] == 0
         assert data["cycle_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests — per-repo query budget
+# ---------------------------------------------------------------------------
+
+
+class TestRepoQueryBudget:
+    """Pin the per-repo sqlite cost of the workspace listing.
+
+    Workspace repos each live in their own wiki.db, so unlike the dashboard's
+    /api/repos/summary there is no shared table to GROUP BY and the total query
+    count is necessarily O(repos). What must stay flat is the cost *per* repo:
+    this fails if someone adds a query to the loop or reintroduces a second
+    sweep over the same databases.
+    """
+
+    QUERIES_PER_REPO = 7
+    CONNECTIONS_PER_REPO = 2
+
+    def _config_for(self, aliases: list[str]):
+        ws_config = MagicMock()
+        repos = []
+        for i, alias in enumerate(aliases):
+            r = MagicMock()
+            r.alias = alias
+            r.path = f"./{alias}"
+            r.is_primary = i == 0
+            r.indexed_at = None
+            r.last_commit_at_index = None
+            repos.append(r)
+        ws_config.repos = repos
+        ws_config.default_repo = aliases[0]
+        return ws_config
+
+    async def _measure(self, tmp_path: Path, count: int) -> tuple[int, int]:
+        """Return (statements, connections) for one GET /api/workspace."""
+        root = tmp_path / f"ws{count}"
+        aliases = [f"repo{i}" for i in range(count)]
+        for alias in aliases:
+            _create_workspace_repo_db(root, alias, health_rows=[(7.0, 100)])
+
+        statements = 0
+        connections = 0
+        real_connect = sqlite3.connect
+
+        def counting_connect(*args, **kwargs):
+            nonlocal connections
+            connections += 1
+            conn = real_connect(*args, **kwargs)
+
+            def trace(_stmt):
+                nonlocal statements
+                statements += 1
+
+            conn.set_trace_callback(trace)
+            return conn
+
+        app = _make_workspace_app(
+            ws_config=self._config_for(aliases),
+            workspace_root=str(root),
+        )
+        transport = ASGITransport(app=app)
+        with patch.object(sqlite3, "connect", counting_connect):
+            async with AsyncClient(transport=transport, base_url="http://test") as c:
+                resp = await c.get("/api/workspace")
+        assert resp.status_code == 200
+        assert len(resp.json()["repos"]) == count
+        return statements, connections
+
+    @pytest.mark.asyncio
+    async def test_per_repo_cost_does_not_grow_with_repo_count(
+        self, tmp_path: Path
+    ) -> None:
+        two_stmts, two_conns = await self._measure(tmp_path, 2)
+        six_stmts, six_conns = await self._measure(tmp_path, 6)
+
+        assert two_stmts / 2 == six_stmts / 6, (
+            f"per-repo statements moved from {two_stmts / 2} (2 repos) to "
+            f"{six_stmts / 6} (6 repos) — the loop is doing more work per repo"
+        )
+        assert two_conns / 2 == six_conns / 6, (
+            f"per-repo connections moved from {two_conns / 2} to {six_conns / 6}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_per_repo_cost_is_pinned(self, tmp_path: Path) -> None:
+        """Pinned so "flat" has a value, and so a second sweep cannot slip back in.
+
+        Six stats queries plus one weighted health average, over one connection
+        for the stats block and one for the health read.
+        """
+        statements, connections = await self._measure(tmp_path, 3)
+        assert statements == self.QUERIES_PER_REPO * 3
+        assert connections == self.CONNECTIONS_PER_REPO * 3

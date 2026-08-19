@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 from httpx import AsyncClient
@@ -10,6 +11,8 @@ from httpx import AsyncClient
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from tests.unit.server.conftest import create_test_repo
+
+_LAST_FIX_AT = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
 
 
 async def _insert_git_metadata(session_factory, repo_id: str) -> None:
@@ -37,9 +40,12 @@ async def _insert_git_metadata(session_factory, repo_id: str) -> None:
             change_entropy=1.5,
             change_entropy_pct=0.9,
             prior_defect_count=4,
+            bug_magnet=True,
+            last_fix_at=_LAST_FIX_AT,
             temporal_hotspot_score=12.3,
             commit_count_capped=True,
             original_path="src/old_main.py",
+            fix_symbol_counts_json=json.dumps({"src/main.py::run": 3}),
         )
         await crud.upsert_git_metadata(
             session,
@@ -83,6 +89,29 @@ async def test_get_git_metadata(client: AsyncClient, app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_file_detail_carries_symbol_fix_counts(client: AsyncClient, app) -> None:
+    """The file page answers "which symbol keeps breaking" without a second call.
+
+    The map is joined onto the file-detail git block rather than onto
+    HotspotResponse, so the hotspots list is not made to carry a per-symbol
+    dict on every row.
+    """
+    repo = await create_test_repo(client)
+    await _insert_git_metadata(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/files/src/main.py")
+    assert resp.status_code == 200, resp.text
+    git = resp.json()["git"]
+    assert git["fix_symbol_counts"] == {"src/main.py::run": 3}
+
+    # A file the rollup never touched reports an empty map, not a missing key,
+    # so a consumer can index into it unconditionally.
+    resp = await client.get(f"/api/repos/{repo['id']}/files/src/utils.py")
+    assert resp.status_code == 200
+    assert resp.json()["git"]["fix_symbol_counts"] == {}
+
+
+@pytest.mark.asyncio
 async def test_get_git_metadata_not_found(client: AsyncClient) -> None:
     repo = await create_test_repo(client)
     resp = await client.get(
@@ -109,6 +138,36 @@ async def test_get_hotspots(client: AsyncClient, app) -> None:
     assert data[0]["change_entropy_pct"] == 90.0
     assert data[0]["prior_defect_count"] == 4
     assert data[0]["original_path"] == "src/old_main.py"
+    # The magnet flag rides with its timestamp: consumers must be able to put
+    # an age beside it, or they drop the flag rather than show it unanchored.
+    assert data[0]["bug_magnet"] is True
+    assert data[0]["last_fix_at"].startswith("2026-03-01T12:00:00")
+
+
+@pytest.mark.asyncio
+async def test_hotspots_omit_fix_flag_when_never_fixed(client: AsyncClient, app) -> None:
+    """A file with no counted fixes reports the flag off and no timestamp."""
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_git_metadata(
+            session,
+            repository_id=repo["id"],
+            file_path="src/clean.py",
+            commit_count_total=30,
+            commit_count_90d=9,
+            commit_count_30d=2,
+            is_hotspot=True,
+            is_stable=False,
+            churn_percentile=0.8,
+            age_days=100,
+        )
+
+    resp = await client.get(f"/api/repos/{repo['id']}/hotspots")
+    assert resp.status_code == 200
+    row = resp.json()["items"][0]
+    assert row["prior_defect_count"] == 0
+    assert row["bug_magnet"] is False
+    assert row["last_fix_at"] is None
 
 
 @pytest.mark.asyncio
@@ -225,9 +284,10 @@ async def test_get_commit_detail_has_drivers(client: AsyncClient, app) -> None:
     assert data["author_experience"] == 3
     # Re-scoring the stored features reproduces the persisted score exactly.
     assert data["change_risk_score"] == 8.5
-    assert len(data["drivers"]) == 7  # la, ld, nf, nd, ns, entropy, exp
+    # The reportable drivers only: nf/nd/ns still enter the score, but their
+    # fitted signs are collinearity with diff size, so they explain nothing.
     feats = {d["feature"] for d in data["drivers"]}
-    assert {"la", "exp", "entropy"} <= feats
+    assert feats == {"la", "ld", "entropy", "exp"}
 
 
 @pytest.mark.asyncio
@@ -271,9 +331,7 @@ async def _insert_agent_commit(session_factory, repo_id: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_commits_carry_agent_provenance_and_top_driver(
-    client: AsyncClient, app
-) -> None:
+async def test_commits_carry_agent_provenance_and_top_driver(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     await _insert_git_commits(app.state.session_factory, repo["id"])
     await _insert_agent_commit(app.state.session_factory, repo["id"])
@@ -297,23 +355,82 @@ async def test_commits_carry_agent_provenance_and_top_driver(
 
 
 @pytest.mark.asyncio
+async def test_commits_carry_the_author_total_behind_the_new_contributor_badge(
+    client: AsyncClient, app
+) -> None:
+    """The badge keys on this, not on ``author_experience``.
+
+    Experience is a running count, so it is near zero for everyone at the old
+    edge of the indexed window; a total does not move with a commit's position
+    in it. Ann's three commits must all report 3, including her earliest.
+    """
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+    await _insert_agent_commit(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits", params={"sort": "date"})
+    assert resp.status_code == 200
+    items = {c["short_sha"]: c for c in resp.json()["items"]}
+
+    assert items["aaaaaaaa"]["author_commit_count"] == 3
+    assert items["bbbbbbbb"]["author_commit_count"] == 3
+    assert items["cccccccc"]["author_commit_count"] == 3
+    # A different author with a single commit is the genuine new contributor.
+    assert items["dddddddd"]["author_commit_count"] == 1
+
+    detail = await client.get(f"/api/repos/{repo['id']}/commits/aaaaaaaa")
+    assert detail.status_code == 200
+    assert detail.json()["author_commit_count"] == 3
+
+
+@pytest.mark.asyncio
 async def test_commits_authorship_filter(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     await _insert_git_commits(app.state.session_factory, repo["id"])
     await _insert_agent_commit(app.state.session_factory, repo["id"])
 
-    agents = await client.get(
-        f"/api/repos/{repo['id']}/commits", params={"authorship": "agent"}
-    )
+    agents = await client.get(f"/api/repos/{repo['id']}/commits", params={"authorship": "agent"})
     assert agents.status_code == 200
     assert agents.json()["total"] == 1
     assert agents.json()["items"][0]["agent_name"] == "claude-code"
 
-    humans = await client.get(
-        f"/api/repos/{repo['id']}/commits", params={"authorship": "human"}
-    )
+    humans = await client.get(f"/api/repos/{repo['id']}/commits", params={"authorship": "human"})
     assert humans.json()["total"] == 3
     assert all(c["agent_name"] is None for c in humans.json()["items"])
+
+
+@pytest.mark.asyncio
+async def test_commit_stats_risk_histogram(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    await _insert_git_commits(app.state.session_factory, repo["id"])
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits/stats")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    hist = data["risk_histogram"]
+    assert len(hist) == 20  # 0.5-wide bins across the 0-10 score axis
+    assert sum(b["count"] for b in hist) == 3
+    # Fixture scores 2.0 / 5.0 / 8.5 land in their own bins, nowhere else.
+    filled = {b["start"]: b["count"] for b in hist if b["count"]}
+    assert filled == {2.0: 1, 5.0: 1, 8.5: 1}
+
+    # The cuts must sit inside the distribution and keep their order, so the
+    # chart's dashed lines land where the priority pills change.
+    assert data["moderate_cut"] < data["high_cut"]
+    assert 2.0 <= data["moderate_cut"] <= 8.5
+
+
+@pytest.mark.asyncio
+async def test_commit_stats_histogram_empty_without_scores(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+
+    resp = await client.get(f"/api/repos/{repo['id']}/commits/stats")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["risk_histogram"] == []
+    assert data["moderate_cut"] is None
+    assert data["high_cut"] is None
 
 
 @pytest.mark.asyncio

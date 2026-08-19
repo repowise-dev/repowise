@@ -14,7 +14,7 @@ from httpx import AsyncClient
 
 from repowise.core.persistence.crud import get_repository, upsert_git_commits_bulk
 from repowise.core.persistence.database import get_session
-from repowise.server.routers.stats import _activity
+from repowise.server.routers.stats import _commit_pass
 from tests.unit.server.conftest import create_test_repo
 
 
@@ -53,7 +53,7 @@ async def test_contributor_count_folds_noreply_and_same_name(client: AsyncClient
 
     async with get_session(app.state.session_factory) as session:
         repo_row = await get_repository(session, repo["id"])
-        activity = await _activity(session, repo["id"], repo_row)
+        activity = (await _commit_pass(session, repo["id"], repo_row))["origin"]
 
     # No whole-history totals stored on the repo, so the count folds the
     # bounded sample's author identities (Jane + Bob, not 4).
@@ -85,7 +85,7 @@ async def test_activity_prefers_whole_history_totals(client: AsyncClient, app) -
 
     async with get_session(app.state.session_factory) as session:
         repo_row = await get_repository(session, repo["id"])
-        activity = await _activity(session, repo["id"], repo_row)
+        activity = (await _commit_pass(session, repo["id"], repo_row))["origin"]
 
     assert activity["total_commits"] == 5000
     assert activity["contributor_count"] == 42

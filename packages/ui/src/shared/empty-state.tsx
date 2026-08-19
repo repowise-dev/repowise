@@ -11,9 +11,23 @@ interface EmptyStateProps {
     onClick: () => void;
   };
   className?: string;
+  /**
+   * Heading level for the title. Defaults to `h3`, which is right where the
+   * empty state stands in for a section inside one. Pass `h2` where it *is*
+   * the whole panel — the file page's tab bodies do, and without it the page
+   * runs `h1` (the path) straight to `h3` with nothing between.
+   */
+  titleAs?: "h2" | "h3";
 }
 
-export function EmptyState({ icon, title, description, action, className }: EmptyStateProps) {
+export function EmptyState({
+  icon,
+  title,
+  description,
+  action,
+  className,
+  titleAs: Heading = "h3",
+}: EmptyStateProps) {
   return (
     <div
       className={cn(
@@ -27,7 +41,9 @@ export function EmptyState({ icon, title, description, action, className }: Empt
         </div>
       )}
       <div className="space-y-1">
-        <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">{title}</h3>
+        <Heading className="text-sm font-semibold text-[var(--color-text-primary)]">
+          {title}
+        </Heading>
         {description && (
           <p className="text-sm text-[var(--color-text-secondary)]">{description}</p>
         )}

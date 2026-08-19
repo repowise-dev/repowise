@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
+from typing import Any
 
 from sqlalchemy import select
 
@@ -13,16 +14,23 @@ from repowise.core.persistence.models import (
     GitMetadata,
     Page,
 )
+from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.core.registry import mcp_tool_registry as mcp
+from repowise.core.test_paths import is_test_path, is_test_related_path
+from repowise.server.mcp_server._answer_pipeline import _RRF_K, _RRF_SCORE_SCALE
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
     _is_path,
     _resolve_all_contexts,
     _resolve_repo_context,
+    attach_ignored_arguments,
     filter_dicts_by_key,
+    resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._page_paths import file_candidates, hit_file_path
+from repowise.server.mcp_server._prose_symbols import symbol_backed_pages
 from repowise.server.mcp_server.tool_search_symbols import (
     _qual_norm,
     search_paths_single,
@@ -32,6 +40,13 @@ from repowise.server.mcp_server.tool_search_symbols import (
 # Minimum relevance score below which results are dropped. Prevents
 # returning semantically unrelated pages when the corpus has no real match.
 _MIN_RELEVANCE_SCORE = 0.03
+
+# Freshness tie-breaker, added (not multiplied) to a hit's fused relevance.
+# The RRF-fused score spaces adjacent ranks ~0.05 apart, so this stays under
+# one rank step: recency orders otherwise-comparable hits without overriding
+# retrieval relevance. Recency itself scales it (0.5 for 90-day activity, 1.0
+# for 30-day).
+_FRESHNESS_TIEBREAK = 0.03
 
 # Pure-identifier pattern: a single bareword that looks like a code symbol
 # (no spaces, no punctuation other than _/.). These are almost always
@@ -110,8 +125,9 @@ def _prose_dominates(query: str, identifiers: list[str]) -> bool:
     return (total - ident_count) > ident_count
 
 
-def _interleave_hybrid(query: str, symbols: list[dict], concepts: list[dict],
-                       limit: int, exact: bool) -> list[dict]:
+def _interleave_hybrid(
+    query: str, symbols: list[dict], concepts: list[dict], limit: int, exact: bool
+) -> list[dict]:
     """Order one hybrid result window from the two incomparable score scales.
 
     Symbol SQL scores (~43, +100 on an exact-name hit) and concept relevance
@@ -141,14 +157,6 @@ def _interleave_hybrid(query: str, symbols: list[dict], concepts: list[dict],
 # who phrases one here clearly wants the decision pages ranked honestly.
 _DECISION_DOWNWEIGHT = 0.6
 
-# Deterministic template pages (the Phase G coverage tail) are factual but
-# thin — they exist so every source file is retrievable, not to out-argue a
-# rich LLM page. A mild multiplicative down-weight breaks ties toward the LLM
-# page when both match a conceptual query, without burying a deterministic
-# page that is genuinely the best hit (its file has no LLM page). A stronger
-# demotion would re-bury the coverage the tail pages add.
-_DETERMINISTIC_DOWNWEIGHT = 0.9
-
 _WHY_SHAPED_RE = re.compile(
     r"^\s*(why|when\s+did|when\s+was|who\s+decided|who\s+chose|what\s+was\s+the\s+(reason|rationale))\b"
     r"|\b(decision|decided|rationale|adr)\b",
@@ -170,41 +178,93 @@ def _downweight_decisions(output: list[dict], query: str) -> None:
             item["relevance_score"] = round(item["relevance_score"] * _DECISION_DOWNWEIGHT, 4)
 
 
-def _downweight_deterministic(output: list[dict], det_ids: set) -> None:
-    """Scale down deterministic-template pages' relevance in place.
+# Test file pages compete against the implementation they exercise and win
+# retrieval on any shared vocabulary ("conftest" for a fixtures question,
+# "decision" for a downweight question) — observed live as a test file ranking
+# #1 for a plain implementation query. A test is rarely a better first Read than
+# the code under test, so demote it, unless the query is explicitly about tests.
+_TEST_DOWNWEIGHT = 0.6
 
-    A thin projection page should not displace a rich LLM page when both
-    match a conceptual query. The multiplicative factor only breaks ties —
-    a deterministic page that is clearly the best hit (its file has no LLM
-    page) still surfaces, preserving the coverage the tail adds.
+_TEST_QUERY_RE = re.compile(
+    r"\b(test|tests|testing|tested|unit[\s-]?test|integration[\s-]?test|pytest|fixture|mock|spec)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_test_query(query: str) -> bool:
+    """True when the query is explicitly about tests, so test pages rank naturally."""
+    return bool(_TEST_QUERY_RE.search(query))
+
+
+def _is_test_page(item: dict) -> bool:
+    """True when a hit is a file_page documenting a test file.
+
+    Tests only, deliberately not test support: a ``conftest.py`` or a fixture
+    module is often exactly what the person searching wanted, so it keeps its
+    rank. The ``kind`` filter counts both (see :func:`_classify_hit_kind`) —
+    asking for tests and asking to rank tests lower are different questions.
     """
-    if not det_ids:
+    return item.get("page_type") == "file_page" and is_test_path(item.get("target_path") or "")
+
+
+def _downweight_test_pages(output: list[dict], query: str) -> None:
+    """Scale test file_page relevance in place unless the query is about tests."""
+    if _is_test_query(query):
         return
     for item in output:
-        if item.get("page_id") in det_ids and item.get("relevance_score"):
-            item["relevance_score"] = round(
-                item["relevance_score"] * _DETERMINISTIC_DOWNWEIGHT, 4
-            )
+        if item.get("relevance_score") and _is_test_page(item):
+            item["relevance_score"] = round(item["relevance_score"] * _TEST_DOWNWEIGHT, 4)
 
 
-def _sort_demoting_decisions(output: list[dict], query: str) -> None:
-    """Sort by relevance, ranking decision records below every file-backed
-    page on non-why queries.
+def _sort_demoting_noise(output: list[dict], query: str) -> None:
+    """Sort by relevance, ranking retrieval noise below every real page.
 
-    The multiplicative down-weight alone is washed out when decision scores
-    dominate (short dense titles win cosine similarity by a margin > the
-    0.6 factor) — observed live as 5/5 irrelevant decisions for a plain
-    implementation query. For non-why queries a decision record is never a
-    better first Read than a file page, so the demotion is absolute; the
-    down-weighted score still orders decisions among themselves.
+    Two classes crowd the top ranks on a plain implementation query and are
+    demoted absolutely for their query class (the relevance score still orders
+    each class among itself):
+
+    - decision records — short dense titles win cosine similarity by a margin
+      wider than the multiplicative down-weight (observed live as 5/5 irrelevant
+      decisions for one query). Rationale questions are get_why's territory, so
+      a why-shaped query ranks them naturally instead.
+    - test file pages — a test is rarely a better first Read than the code it
+      exercises. A query explicitly about tests ranks them naturally instead.
     """
     why = _is_why_shaped(query)
+    test_focused = _is_test_query(query)
 
     def key(item: dict) -> tuple:
-        demoted = (not why) and item.get("page_type") == "decision_record"
-        return (1 if demoted else 0, -(item.get("relevance_score") or 0.0))
+        pt = item.get("page_type")
+        is_decision = (not why) and pt == "decision_record"
+        is_test = (not test_focused) and _is_test_page(item)
+        return (1 if (is_decision or is_test) else 0, -(item.get("relevance_score") or 0.0))
 
     output.sort(key=key)
+
+
+def _norm_decision_title(title: str) -> str:
+    """Normalize a decision title to collapse near-duplicate phrasings."""
+    return re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
+
+
+def _dedup_decisions(output: list[dict]) -> list[dict]:
+    """Collapse near-duplicate decision records by normalized title (order-preserving).
+
+    Live search returned five near-identical "CLI incremental update regenerates
+    only affected pages" variants filling positions 3-8. Callers dedup AFTER the
+    score sort, so the surviving variant is the highest-scored one; non-decision
+    pages always pass through untouched.
+    """
+    seen: set[str] = set()
+    out: list[dict] = []
+    for item in output:
+        if item.get("page_type") == "decision_record":
+            key = _norm_decision_title(item.get("title", ""))
+            if key and key in seen:
+                continue
+            seen.add(key)
+        out.append(item)
+    return out
 
 
 async def _non_decision_fallback(ctx, query: str, fetch_limit: int) -> list[dict]:
@@ -216,12 +276,16 @@ async def _non_decision_fallback(ctx, query: str, fetch_limit: int) -> list[dict
     decisions, and let the caller merge the survivors.
     """
     results = []
-    with contextlib.suppress(TimeoutError, Exception):
-        results = await asyncio.wait_for(
-            ctx.vector_store.search(query, limit=fetch_limit * 4),
-            timeout=8.0,
-        )
+    src = "vector"
+    # Skipped on a keyless index, which then falls through to the FTS branch.
+    if store_has_semantic_vectors(ctx.vector_store):
+        with contextlib.suppress(TimeoutError, Exception):
+            results = await asyncio.wait_for(
+                ctx.vector_store.search(query, limit=fetch_limit * 4),
+                timeout=8.0,
+            )
     if not results:
+        src = "fts"
         with contextlib.suppress(Exception):
             results = await ctx.fts.search(query, limit=fetch_limit * 4)
 
@@ -238,6 +302,7 @@ async def _non_decision_fallback(ctx, query: str, fetch_limit: int) -> list[dict
                 "page_type": r.page_type,
                 "snippet": r.snippet,
                 "relevance_score": r.score,
+                "sources": [src],
             }
         )
     return out
@@ -261,6 +326,64 @@ async def _rescue_all_decision_window(
     return output
 
 
+# Slots at the tail of a concept window reserved for files reached through the
+# symbol index rather than through their page. A generated file page renders
+# only public symbols, so a question about a private helper or a local name has
+# nothing to match in either the full-text index or the embedding. The symbol
+# index is where those names live. One slot in three, taken from the weakest
+# end of the window, is a cheap price for reaching a class of file the page
+# retrievers structurally cannot see. No-op when the symbol leg finds nothing.
+_SYMBOL_TAIL_DIVISOR = 3
+
+
+def _symbol_tail_reserve(limit: int) -> int:
+    """How many tail slots the symbol leg may take from a window of *limit*."""
+    return limit // _SYMBOL_TAIL_DIVISOR
+
+
+async def _append_symbol_backed(
+    ctx, query: str, output: list[dict], limit: int, kind: str | None
+) -> list[dict]:
+    """Give the weakest tail slots to files the symbol index reached.
+
+    Concept hits keep the head. Symbol-backed files not already in the window
+    take up to :func:`_symbol_tail_reserve` slots, and the concept hits they
+    displaced fall in behind them (nothing is dropped before the caller's
+    ``limit`` cut). Returns ``output`` unchanged when the symbol leg is empty
+    or every file it named is already present.
+    """
+    reserve = _symbol_tail_reserve(limit)
+    if reserve <= 0 or kind in ("config", "doc"):
+        # config/doc windows are asking for pages with no symbols in them.
+        return output
+    pages = await symbol_backed_pages(ctx, query, max_files=reserve * 2)
+    if not pages:
+        return output
+
+    present = {item.get("target_path") for item in output}
+    extra = [p for p in pages if p["target_path"] not in present][:reserve]
+    if not extra:
+        return output
+    # Score them just under the last concept hit so the ordering the caller
+    # sees stays monotone; they are additions to the window, not a re-ranking
+    # of it.
+    floor = min((item.get("relevance_score") or 0.0) for item in output) if output else 0.0
+    additions = [
+        {
+            "page_id": p["page_id"],
+            "title": p["title"],
+            "page_type": p["page_type"],
+            "target_path": p["target_path"],
+            "snippet": (p.get("summary") or "")[:200],
+            "relevance_score": round(max(floor - 0.001 * (i + 1), 0.0), 4),
+            "sources": ["symbol"],
+        }
+        for i, p in enumerate(extra)
+    ]
+    head = output[: max(0, limit - len(additions))]
+    return head + additions + output[len(head) :]
+
+
 def _fetch_limit_for(limit: int, kind: str | None) -> int:
     """Over-fetch headroom for post-filters and decision down-weighting.
 
@@ -276,7 +399,8 @@ def _fetch_limit_for(limit: int, kind: str | None) -> int:
 # Path-prefix heuristics for the ``kind`` filter. We classify a hit's
 # target_path against these prefixes; if none match, the hit falls into
 # ``other`` and is dropped only when the caller asked for a specific kind.
-_TEST_PATH_TOKENS = ("/test/", "/tests/", "/__tests__/", "test_", "_test.", ".spec.", ".test.")
+# Tests are not in this list: they come from ``repowise.core.test_paths``, the
+# same rules that stamped the file's ``is_test`` flag at ingestion.
 _CONFIG_PATH_TOKENS = (
     "pyproject.toml",
     "package.json",
@@ -305,17 +429,32 @@ def _classify_hit_kind(target_path: str, page_type: str) -> str:
     them fall through to the path heuristics classified every decision
     record as "implementation", so ``kind="implementation"`` returned
     decision pages instead of filtering them out.
+
+    ``test`` is the union of tests and test support here: someone asking for
+    ``kind="implementation"`` does not want a ``conftest.py`` back, and someone
+    asking for ``kind="test"`` does.
+
+    Config wins over test, which the token list this replaced never had to
+    decide: ``.github/workflows/tests.yml`` is a workflow whatever it is named,
+    and dropping it from ``kind="config"`` would be the more surprising answer.
     """
     tp = (target_path or "").lower()
     if page_type in ("module_page", "symbol_spotlight") or tp.endswith(".md"):
         return "doc"
     if not tp or page_type not in ("file_page",):
         return "doc"
-    if any(tok in tp for tok in _TEST_PATH_TOKENS):
-        return "test"
     if any(tok in tp for tok in _CONFIG_PATH_TOKENS):
         return "config"
+    # Original case, not ``tp``: the camel (FooTest.java) and .NET project-dir
+    # (Foo.Tests/) rules are deliberately case-sensitive.
+    if is_test_related_path(target_path):
+        return "test"
     return "implementation"
+
+
+# Every value :func:`_classify_hit_kind` can return; anything else can only ever
+# match nothing, which is why an unknown kind is dropped rather than filtered on.
+_VALID_KINDS = frozenset({"implementation", "test", "config", "doc"})
 
 
 def _filter_by_kind(output: list[dict], kind: str | None) -> list[dict]:
@@ -333,27 +472,71 @@ def _filter_by_kind(output: list[dict], kind: str | None) -> list[dict]:
     ]
 
 
+def _attach_paths(output: list[dict], page_info: dict) -> None:
+    """Stamp ``target_path``, and ``file`` wherever the page id is not one.
+
+    A ``symbol_spotlight``'s target_path is ``file.py::Symbol``: a page id, and
+    not something a consumer can open. ``target_path`` is left exactly as it is
+    because callers pipe it into get_symbol, and ``file`` is added beside it so
+    nothing downstream has to know to split on ``::``.
+
+    This lives in one function because it did not used to. The concept branch
+    of ``search_codebase`` set ``file``; ``_search_single_repo``, which is what
+    the hybrid and federated branches call, did not. A query carrying a
+    CamelCase token routes to hybrid, so the tool's headline path kept serving
+    page ids in a field read as a path. Measured on the dev-fix1 predictions:
+    45.4% of the python served paths still carried ``::``, and resolving them
+    takes gold containment from 19 to 39 of 50 instances.
+    """
+    for item in output:
+        item["target_path"] = page_info.get(item["page_id"], "")
+        if "::" in item["target_path"]:
+            item["file"] = item["target_path"].split("::", 1)[0]
+
+
+def _drop_derivable_page_ids(results: list[dict]) -> list[dict]:
+    """Strip ``page_id`` from every result that can rebuild it, in place.
+
+    A page id is ``compute_page_id(page_type, target_path)`` — literally
+    ``f"{page_type}:{target_path}"`` (``core/generation/models.py``) — and both
+    halves ship in the same row. So the field is 229-369 characters per
+    response, 7.8-10.3% of the payload, restating two of its own siblings. It
+    is ranking plumbing: every internal use above keys the fused dict on it,
+    and none of that needs to reach the wire.
+
+    Conditional rather than unconditional, and the condition is the derivation
+    itself. ``_attach_paths`` writes ``target_path: ""`` for a hit whose Page
+    row did not load, and a row like that cannot be rebuilt — so it keeps its
+    id instead of losing one. The rule is "drop it only where it is provably
+    redundant", which is also the check: if this ever stops firing, the
+    invariant it rests on has changed.
+
+    Consumers rebuild with the same expression; ``ui/src/chat/source-citations``
+    does exactly that, and used to skip any row whose ``page_id`` was missing.
+    """
+    for item in results:
+        derived = f"{item.get('page_type', '')}:{item.get('target_path', '')}"
+        if item.get("page_id") == derived:
+            item.pop("page_id", None)
+    return results
+
+
 async def _load_page_info(
     session, output: list[dict], *, with_git: bool = False
-) -> tuple[dict, set, dict, set]:
-    """Batch-load target paths, tombstones, deterministic markers, and git.
+) -> tuple[dict, set, dict]:
+    """Batch-load target paths, tombstones, and git.
 
-    Returns ``(page_info, tombstoned, git_map, det_ids)`` where ``page_info``
-    maps page_id -> target_path, ``tombstoned`` is the set of tombstoned
-    page_ids, ``git_map`` maps file_path -> GitMetadata (empty unless
-    ``with_git``), and ``det_ids`` is the set of page_ids for deterministic
-    template pages (the coverage tail — ``provider_name == "template"``).
+    Returns ``(page_info, tombstoned, git_map)`` where ``page_info`` maps
+    page_id -> target_path, ``tombstoned`` is the set of tombstoned page_ids,
+    and ``git_map`` maps file_path -> GitMetadata (empty unless ``with_git``).
     """
     page_ids = [item["page_id"] for item in output]
     res = await session.execute(
-        select(Page.id, Page.target_path, Page.freshness_status, Page.provider_name).where(
-            Page.id.in_(page_ids)
-        )
+        select(Page.id, Page.target_path, Page.freshness_status).where(Page.id.in_(page_ids))
     )
     rows = res.all()
     page_info = {row[0]: row[1] for row in rows}
     tombstoned = {row[0] for row in rows if row[2] == "tombstone"}
-    det_ids = {row[0] for row in rows if row[3] == "template"}
 
     git_map: dict[str, GitMetadata] = {}
     if with_git:
@@ -363,11 +546,19 @@ async def _load_page_info(
                 select(GitMetadata).where(GitMetadata.file_path.in_(target_paths))
             )
             git_map = {g.file_path: g for g in git_res.scalars().all()}
-    return page_info, tombstoned, git_map, det_ids
+    return page_info, tombstoned, git_map
 
 
 def _apply_freshness_boost(item: dict, gm: GitMetadata | None) -> None:
-    """Boost an item's relevance for recently-active files (in place)."""
+    """Nudge a recently-active file up as a bounded tie-breaker (in place).
+
+    Additive, not multiplicative: the fused relevance score is RRF-based, which
+    compresses adjacent ranks to roughly ``_FRESHNESS_TIEBREAK`` apart. A
+    percentage boost on that scale would let a fresh rank-2 hit leapfrog a
+    stale rank-0 hit, overriding retrieval relevance with recency. Sized below
+    one rank step, freshness only orders hits retrieval already ranks close
+    together.
+    """
     if not gm or not item.get("relevance_score"):
         return
     c30 = gm.commit_count_30d or 0
@@ -378,7 +569,7 @@ def _apply_freshness_boost(item: dict, gm: GitMetadata | None) -> None:
         recency = 0.5
     else:
         recency = 0.0
-    item["relevance_score"] = round(item["relevance_score"] * (1 + 0.2 * recency), 4)
+    item["relevance_score"] = round(item["relevance_score"] + _FRESHNESS_TIEBREAK * recency, 4)
 
 
 def _assign_confidence(output: list[dict], score_key: str, target_key: str) -> None:
@@ -398,64 +589,104 @@ async def _wait_for_vector_store(ctx) -> None:
             await asyncio.wait_for(ctx.vector_store_ready.wait(), timeout=30.0)
 
 
-async def _retrieve_with_method(ctx, query: str, fetch_limit: int) -> tuple[list, str]:
-    """Try semantic search, fall back to FTS.
+async def _safe_fts(ctx, query: str, limit: int) -> list:
+    """FTS search, bounded and failure-swallowing (returns [] on error/timeout)."""
+    if ctx.fts is None:
+        return []
+    with contextlib.suppress(Exception):
+        return await asyncio.wait_for(ctx.fts.search(query, limit=limit), timeout=5.0)
+    return []
 
-    Returns ``(results, method)`` where ``method`` is ``"embedding"`` or
-    ``"bm25"`` so callers can surface which retrieval backend produced the
-    list — embedding misses fall through to FTS silently otherwise.
+
+async def _safe_vector(ctx, query: str, limit: int) -> list:
+    """Vector search, bounded and failure-swallowing (returns [] on error/timeout).
+
+    Readiness is awaited by the caller (``_wait_for_vector_store``) before the
+    fused retrieve runs, so this path does not re-wait.
+
+    Returns nothing on a keyless index. ``store_has_semantic_vectors`` explains
+    why the mock's vectors cannot be ranked on; the reason this is enforced here
+    rather than in ``_fused_retrieve`` is that this function is the only place
+    the vector leg is entered, so a later caller inherits the guard.
     """
-    results = []
-    method = "embedding"
-    with contextlib.suppress(TimeoutError, Exception):
-        results = await asyncio.wait_for(
-            ctx.vector_store.search(query, limit=fetch_limit),
-            timeout=8.0,
-        )
-    if not results:
-        method = "bm25"
-        with contextlib.suppress(Exception):
-            results = await ctx.fts.search(query, limit=fetch_limit)
-    return results, method
+    if ctx.vector_store is None or not store_has_semantic_vectors(ctx.vector_store):
+        return []
+    with contextlib.suppress(Exception):
+        return await asyncio.wait_for(ctx.vector_store.search(query, limit=limit), timeout=8.0)
+    return []
 
 
-def _build_output(
-    results: list, page_type: str | None, search_method: str | None = None
-) -> list[dict]:
-    """Map raw search hits to result dicts, dropping off-type and low-score hits.
+def _fused_entry(r) -> dict:
+    """Seed a fused-result dict from a retriever hit (RRF score added by caller)."""
+    return {
+        "page_id": r.page_id,
+        "title": r.title,
+        "page_type": r.page_type,
+        "snippet": r.snippet,
+        "_rrf": 0.0,
+        "_sources": set(),
+    }
 
-    When ``search_method`` is given it is attached to each item; the federated
-    path attaches it later per-repo so it passes ``None``.
+
+async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | None) -> list[dict]:
+    """Retrieve by fusing FTS and vector search via Reciprocal Rank Fusion.
+
+    Both retrievers run in parallel; a hit's score is the sum of
+    ``1/(rank + k)`` over the retrievers that surfaced it, scaled into the
+    BM25 range the downstream relevance gates were tuned against. Each hit
+    carries a ``sources`` list (``"fts"``, ``"vector"``, or both) — a page
+    found by both retrievers is a stronger match than one found by one mode.
+
+    This mirrors get_answer's ``hybrid_retrieve`` so the two entry points rank
+    the same corpus identically. The prior path ran vector search and fell
+    back to FTS only when vector returned nothing, so a page FTS ranked highly
+    but vector missed never surfaced here.
+
+    A hit is admitted only when its raw retriever score clears
+    ``_MIN_RELEVANCE_SCORE`` — the fused score is rank-based and would
+    otherwise sit well above the floor for every window hit, letting an
+    off-topic query return its nearest-but-unrelated neighbours. Rank position
+    (for RRF) is the hit's place in the retriever's own list, unchanged by the
+    floor.
     """
-    output = []
-    for r in results:
-        if page_type and r.page_type != page_type:
-            continue
+    fts_results, vec_results = await asyncio.gather(
+        _safe_fts(ctx, query, fetch_limit),
+        _safe_vector(ctx, query, fetch_limit),
+    )
+
+    fused: dict[str, dict] = {}
+    for rank, r in enumerate(vec_results):
         if r.score < _MIN_RELEVANCE_SCORE:
             continue
-        item = {
-            "page_id": r.page_id,
-            "title": r.title,
-            "page_type": r.page_type,
-            "snippet": r.snippet,
-            "relevance_score": r.score,
-        }
-        if search_method is not None:
-            item["search_method"] = search_method
-        output.append(item)
+        entry = fused.setdefault(r.page_id, _fused_entry(r))
+        entry["_rrf"] += 1.0 / (rank + _RRF_K)
+        entry["_sources"].add("vector")
+    for rank, r in enumerate(fts_results):
+        if r.score < _MIN_RELEVANCE_SCORE:
+            continue
+        entry = fused.setdefault(r.page_id, _fused_entry(r))
+        entry["_rrf"] += 1.0 / (rank + _RRF_K)
+        entry["_sources"].add("fts")
+
+    output: list[dict] = []
+    for entry in fused.values():
+        if page_type and entry["page_type"] != page_type:
+            continue
+        entry["relevance_score"] = round(entry.pop("_rrf") * _RRF_SCORE_SCALE, 4)
+        entry["sources"] = sorted(entry.pop("_sources"))
+        output.append(entry)
+    output.sort(key=lambda item: item["relevance_score"], reverse=True)
     return output
 
 
 async def _search_single_repo(
     ctx, query: str, limit: int, page_type: str | None, kind: str | None = None
-) -> tuple[list[dict], str]:
+) -> list[dict]:
     """Run search against a single repo context.
 
-    Returns ``(results, method)`` where ``method`` is ``"embedding"`` or
-    ``"bm25"`` so the caller can surface which retrieval backend produced
-    the list — embedding misses fall through to FTS silently in the existing
-    code, and the agent has no way to distinguish a strong embedding hit
-    from a fallback BM25 hit otherwise.
+    Fuses FTS and vector retrieval via RRF (see ``_fused_retrieve``), so each
+    hit carries a ``sources`` list naming the retrievers that surfaced it
+    rather than a single backend label.
 
     The ``kind`` filter runs here, on the over-fetched list and BEFORE the
     limit cut — filtering after per-repo truncation returned fewer than
@@ -464,31 +695,29 @@ async def _search_single_repo(
     await _wait_for_vector_store(ctx)
 
     fetch_limit = _fetch_limit_for(limit, kind)
-    results, method = await _retrieve_with_method(ctx, query, fetch_limit)
-    output = _build_output(results, page_type)
+    output = await _fused_retrieve(ctx, query, fetch_limit, page_type)
 
     _downweight_decisions(output, query)
     output = await _rescue_all_decision_window(ctx, output, query, fetch_limit)
 
-    # Attach target_path + deterministic markers and drop excluded hits per
-    # repo (so federated search honours each repo's own exclude_patterns)
-    # before ranking. Runs on the over-fetched list so the kind filter below
-    # has real headroom. Load precedes the sort so both the decision demotion
-    # and the deterministic down-weight see the page metadata they key on.
-    det_ids: set = set()
+    # Attach target_path and drop excluded hits per repo (so federated search
+    # honours each repo's own exclude_patterns) before ranking. Runs on the
+    # over-fetched list so the kind filter below has real headroom. Load
+    # precedes the sort/demotion so they see the page metadata they key on
+    # (test demotion needs target_path to classify a test file page).
     if output:
         async with get_session(ctx.session_factory) as session:
-            page_info, tombstoned, _, det_ids = await _load_page_info(session, output)
+            page_info, tombstoned, _ = await _load_page_info(session, output)
         output = [item for item in output if item["page_id"] not in tombstoned]
-        for item in output:
-            item["target_path"] = page_info.get(item["page_id"], "")
+        _attach_paths(output, page_info)
         output = filter_dicts_by_key(output, "target_path", _get_exclude_spec(ctx.path))
 
-    _downweight_deterministic(output, det_ids)
-    _sort_demoting_decisions(output, query)
+    _downweight_test_pages(output, query)
+    _sort_demoting_noise(output, query)
+    output = _dedup_decisions(output)
 
     output = _filter_by_kind(output, kind)
-    return output[:limit], method
+    return output[:limit]
 
 
 async def _federated_search(
@@ -499,11 +728,10 @@ async def _federated_search(
     all_results = []
 
     for ctx in contexts:
-        repo_results, repo_method = await _search_single_repo(ctx, query, limit, page_type, kind)
+        repo_results = await _search_single_repo(ctx, query, limit, page_type, kind)
         for rank, item in enumerate(repo_results):
             item["repo"] = ctx.alias
             item["rrf_score"] = 1.0 / (rank + 60)  # RRF constant k=60
-            item["search_method"] = repo_method
         all_results.extend(repo_results)
 
     # Sort by RRF score and take top N
@@ -513,20 +741,33 @@ async def _federated_search(
     # Derive confidence from RRF position
     _assign_confidence(output, "rrf_score", "confidence_score")
 
-    return {"results": output, "_meta": _build_meta()}
+    response: dict = {"results": output, "_meta": _build_meta()}
+    # Drawn from every repo's ranked list, not the merged cut: a workspace
+    # search that spends its window on module pages should still be able to
+    # name files.
+    if candidates := file_candidates(all_results, limit=limit):
+        response["candidates"] = candidates
+    # Last, so nothing above has to know the field is on its way out.
+    _drop_derivable_page_ids(output)
+    return response
 
 
 def _result_paths(results: list[dict]) -> list[str]:
     """File paths a result set serves, for target-scoped freshness.
 
-    Symbol hits carry ``file``; concept/page hits carry ``target_path``.
+    Symbol hits carry ``file``; page hits are resolved through their page type,
+    so a module page's group key and an onboarding slot resolve to nothing
+    rather than being handed on as if they were files. Freshness is per-file
+    git metadata, and a directory has none, so a page id reaching here could
+    only ever fail to match.
+
     An empty result set returns ``[]`` (meaning "no file content served",
     which suppresses the repo-level stale warning by design).
     """
     paths: list[str] = []
     for item in results:
-        p = item.get("file") or item.get("target_path")
-        if isinstance(p, str) and p:
+        p = hit_file_path(item)
+        if p:
             paths.append(p)
     return paths
 
@@ -620,9 +861,23 @@ async def _structured_search(
     files: list[dict] = []
     concepts: list[dict] = []
 
+    # A hybrid query is prose wrapped around an identifier ("where is X
+    # defined"). The symbol scorer ranks on token overlap, so handing it the
+    # raw prose lets stopword-ish tokens ("is" -> is_ci, "filter" ->
+    # FilterRegistry) outrank the identifier the question is actually about,
+    # which then never reaches _has_exact_symbol and the response claims the
+    # symbol is unindexed. Score symbols on the extracted identifiers instead.
+    symbol_query = query
+    if mode == "hybrid":
+        _idents = _embedded_identifiers(query)
+        if _idents:
+            symbol_query = " ".join(_idents)
+
     for ctx in contexts:
         if mode in ("symbol", "hybrid"):
-            s = await search_symbols_single(ctx, query, limit, symbol_kind=symbol_kind, kind=kind)
+            s = await search_symbols_single(
+                ctx, symbol_query, limit, symbol_kind=symbol_kind, kind=kind
+            )
             _tag_repo(s, ctx, multi)
             symbols.extend(s)
         if mode == "path":
@@ -630,9 +885,8 @@ async def _structured_search(
             _tag_repo(f, ctx, multi)
             files.extend(f)
         if mode == "hybrid":
-            c, method = await _search_single_repo(ctx, query, limit, page_type, kind)
+            c = await _search_single_repo(ctx, query, limit, page_type, kind)
             for item in c:
-                item.setdefault("search_method", method)
                 item["type"] = "page"
             _tag_repo(c, ctx, multi)
             concepts.extend(c)
@@ -669,6 +923,18 @@ async def _structured_search(
         "mode": mode,
         "_meta": _build_meta(repository=repository, targets=_result_paths(results)),
     }
+    # Symbols first, then everything else the window holds: in symbol and
+    # hybrid modes the ranked pool leads with symbol hits, and those are the
+    # entries most likely to collapse onto one another (several symbols of one
+    # file). Deduping them is the point.
+    #
+    # Bound to its own name, NOT to ``candidates``: that one holds the query's
+    # identifiers, which the exact-match note below quotes. Rebinding it here
+    # made the note quote file paths as if they were the identifiers asked for,
+    # and — worse — made its gate true for any query with results at all, so a
+    # prose query that names no identifier was told no symbol matched it.
+    if file_cands := file_candidates(results, limit=limit):
+        response["candidates"] = file_cands
     # Exact-match honesty: an identifier-shaped query whose target names no
     # indexed symbol still returns fuzzy neighbours. Say so, or the agent
     # anchors on a wrong hit that looks authoritative (their Alamofire
@@ -688,6 +954,8 @@ async def _structured_search(
             )
     if grep_hint and not results:
         response["grep_hint"] = grep_hint
+    # Last, so nothing above has to know the field is on its way out.
+    _drop_derivable_page_ids(results)
     return response
 
 
@@ -703,19 +971,30 @@ async def search_codebase(
 ) -> dict:
     """Find code by concept, symbol, or path — hybrid codebase search.
 
+    For QUESTIONS ("how does X work", "where is Y handled", "why is Z like
+    this"), call get_answer instead: it runs this same hybrid retrieval
+    internally and synthesizes a cited answer, so searching first is a wasted
+    round-trip. Use this tool when you want the raw ranked hits themselves —
+    enumerating matches, resolving an identifier to a symbol_id, or scoping a
+    later get_context call.
+
     mode="auto" (default) routes the query: identifier-shaped queries search
     the indexed symbols (returns symbol_id/file/line bounds — pipe into
     get_symbol), path-shaped queries resolve files (pipe into get_context),
-    and conceptual queries ("rate limiting", "where do we handle webhooks")
-    run wiki-semantic search. Mixed natural-language + identifier queries run
-    hybrid (symbol hits first, then concept pages). Concept results carry
-    search_method ("embedding" or "bm25" fallback: verify those); decision
-    records rank below file pages unless the query is why-shaped.
+    and conceptual queries run wiki-semantic search. Mixed queries run hybrid,
+    symbol hits first. Decision records rank below file pages unless the query
+    is why-shaped.
+
+    `candidates` lists up to `limit` distinct openable file paths, best first.
+    Some results are pages, not files; this is what to Read.
 
     Args:
         query: identifier, path, or natural-language query.
         limit: max results (default 5).
-        page_type: file_page | module_page | symbol_spotlight (concept only).
+        page_type: restrict to one page type. Common: file_page (per-file
+            docs, always present) or module_page (subsystem/concept pages).
+            Any stored type filters (repo_overview, layer_page, scc_page,
+            api_contract, infra_page, symbol_spotlight).
         kind: implementation | test | config | doc (concept/symbol modes).
         repo: alias, or "all" for workspace-wide.
         mode: auto | concept | symbol | path | hybrid.
@@ -724,10 +1003,17 @@ async def search_codebase(
     grep_hint = _grep_hint_for(query)
     resolved_mode = _resolve_mode(query, mode)
 
+    # An unknown kind used to take the same ``return False`` as a kind that is
+    # simply inapplicable, so a typo and a real empty result looked identical.
+    ignored: list[dict[str, Any]] = []
+    kind = resolve_enum_argument(kind, _VALID_KINDS, argument="kind", ignored=ignored)
+
     if resolved_mode in ("symbol", "path", "hybrid"):
-        return await _structured_search(
+        structured = await _structured_search(
             query, limit, page_type, kind, symbol_kind, repo, resolved_mode, grep_hint
         )
+        attach_ignored_arguments(structured, ignored)
+        return structured
 
     if repo == "all":
         # kind is filtered per-repo inside _search_single_repo, before each
@@ -735,6 +1021,7 @@ async def search_codebase(
         federated = await _federated_search(query, limit, page_type, kind)
         if grep_hint and not federated.get("results"):
             federated["grep_hint"] = grep_hint
+        attach_ignored_arguments(federated, ignored)
         return federated
 
     ctx = await _resolve_repo_context(repo)
@@ -745,37 +1032,27 @@ async def search_codebase(
 
     await _wait_for_vector_store(ctx)
 
-    # Try semantic search, fall back to FTS. Track which backend supplied the
-    # hits so the response can surface it per-result — silent fallback hides
-    # a quality cliff that the agent should weigh into its trust budget.
-    # Always over-fetch (see _fetch_limit_for): post-filters trim hits, and
-    # decision down-weighting needs file pages inside the window to promote.
+    # Fuse FTS + vector via RRF (see _fused_retrieve) so a page either mode
+    # ranks highly surfaces here, matching get_answer's retrieval. Always
+    # over-fetch (see _fetch_limit_for): post-filters trim hits, and decision
+    # down-weighting needs file pages inside the window to promote.
     fetch_limit = _fetch_limit_for(limit, kind)
-    results, search_method = await _retrieve_with_method(ctx, query, fetch_limit)
-    output = _build_output(results, page_type, search_method)
+    output = await _fused_retrieve(ctx, query, fetch_limit, page_type)
 
     _downweight_decisions(output, query)
-    rescued = await _rescue_all_decision_window(ctx, output, query, fetch_limit)
-    if len(rescued) > len(output):
-        # Fallback entries enter after the method was determined; they came
-        # from the same backend.
-        for item in rescued:
-            item.setdefault("search_method", search_method)
-        output = rescued
+    output = await _rescue_all_decision_window(ctx, output, query, fetch_limit)
 
     # Batch-lookup page target paths for the kind filter + git freshness boost
     if output:
         async with get_session(ctx.session_factory) as session:
-            page_info, tombstoned, git_map, det_ids = await _load_page_info(
-                session, output, with_git=True
-            )
+            page_info, tombstoned, git_map = await _load_page_info(session, output, with_git=True)
         # Tombstoned pages document deleted/renamed files — never results.
         output = [item for item in output if item["page_id"] not in tombstoned]
 
         # Attach target_path to each item so the kind filter (path-prefix
-        # heuristic) and downstream get_context callers can act on it.
-        for item in output:
-            item["target_path"] = page_info.get(item["page_id"], "")
+        # heuristic) and downstream get_context callers can act on it, and
+        # ``file`` wherever the page id is symbol-qualified.
+        _attach_paths(output, page_info)
 
         output = filter_dicts_by_key(output, "target_path", _get_exclude_spec(ctx.path))
 
@@ -785,13 +1062,22 @@ async def search_codebase(
             gm = git_map.get(target_path) if target_path else None
             _apply_freshness_boost(item, gm)
 
-        # Down-weight thin deterministic pages so they don't displace a rich
-        # LLM page, then re-sort by adjusted relevance with decisions hard-
-        # demoted on non-why queries.
-        _downweight_deterministic(output, det_ids)
-        _sort_demoting_decisions(output, query)
+        # Re-sort by adjusted relevance with retrieval noise (decisions on
+        # non-why queries, test pages on non-test queries) hard-demoted, then
+        # collapse near-duplicate decisions to one.
+        _downweight_test_pages(output, query)
+        _sort_demoting_noise(output, query)
+        output = _dedup_decisions(output)
 
     output = _filter_by_kind(output, kind)
+    # Files the page retrievers structurally cannot see (a private helper, a
+    # local name, anything a file page's public-symbol table omits) get the
+    # weakest tail slots. No-op when the symbol leg names nothing new.
+    with contextlib.suppress(Exception):
+        output = await _append_symbol_backed(ctx, query, output, limit, kind)
+    # The full ranked pool, kept before the caller's cut so ``candidates``
+    # below can reach past it. See its comment for why that matters.
+    ranked = list(output)
     output = output[:limit]
 
     # Derive confidence_score from relative position in the result set.
@@ -801,6 +1087,11 @@ async def search_codebase(
         "results": output,
         "_meta": _build_meta(repository=repository, targets=_result_paths(output)),
     }
+    if candidates := file_candidates(ranked, limit=limit):
+        response["candidates"] = candidates
     if grep_hint and not output:
         response["grep_hint"] = grep_hint
+    attach_ignored_arguments(response, ignored)
+    # Last, so nothing above has to know the field is on its way out.
+    _drop_derivable_page_ids(output)
     return response

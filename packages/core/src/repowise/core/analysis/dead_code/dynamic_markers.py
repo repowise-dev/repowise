@@ -19,6 +19,37 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from repowise.core.ids import is_external
+from repowise.core.ingestion.models import is_dynamic_edge
+
+
+def read_source_text(
+    rel_path: str,
+    abs_path: str,
+    source_map: dict[str, bytes] | None,
+) -> str:
+    """Decoded source for *rel_path*, preferring ingestion's already-read bytes.
+
+    The dead-code prepasses each scan the whole indexed file set for text
+    markers. Ingestion already read every one of those files into
+    ``source_map`` (keyed by the same repo-relative path as ``parsed_files``),
+    so a hit here replaces a full-repo disk pass with a dict lookup.
+
+    Decoding is deliberately identical on both paths, so a ``source_map`` hit
+    and a disk fallback can never disagree about the same bytes. The codec is
+    utf-8, not the locale's: this used to pin ``getpreferredencoding()`` to
+    reproduce the ``Path.read_text(errors="ignore")`` the prepasses called,
+    but that call was itself the bug: source files are utf-8, and the locale
+    codec is cp1252 on a default Windows install. Every marker is ASCII, so no
+    marker match changes; the surrounding text stops being mojibake.
+    """
+    data: bytes | None = None
+    if source_map is not None:
+        data = source_map.get(rel_path)
+    if data is None:
+        data = Path(abs_path).read_bytes()
+    return data.decode("utf-8", errors="ignore")
+
 
 # Patterns in source that indicate dynamic/runtime imports, keyed by suffix.
 _DYNAMIC_IMPORT_MARKERS: dict[str, tuple[str, ...]] = {
@@ -448,7 +479,10 @@ _DYNAMIC_IMPORT_MARKERS: dict[str, tuple[str, ...]] = {
 }
 
 
-def find_dynamic_import_files(parsed_files: dict) -> set[str]:
+def find_dynamic_import_files(
+    parsed_files: dict,
+    source_map: dict[str, bytes] | None = None,
+) -> set[str]:
     """Return the set of file paths whose source contains a dynamic-import marker."""
     result: set[str] = set()
     for path, pf in parsed_files.items():
@@ -460,7 +494,7 @@ def find_dynamic_import_files(parsed_files: dict) -> set[str]:
             markers = _DYNAMIC_IMPORT_MARKERS.get(src_path.suffix)
             if not markers:
                 continue
-            source = src_path.read_text(errors="ignore")
+            source = read_source_text(path, file_info.abs_path, source_map)
             if any(marker in source for marker in markers):
                 result.add(path)
         except Exception:
@@ -482,14 +516,13 @@ def find_dynamic_edge_files(graph) -> set[str]:
     result: set[str] = set()
     try:
         for u, v, data in graph.edges(data=True):
-            etype = data.get("edge_type", "")
-            if etype != "dynamic" and not etype.startswith("dynamic_"):
+            if not is_dynamic_edge(data.get("edge_type", "")):
                 continue
             for endpoint in (u, v):
                 if endpoint is None:
                     continue
                 endpoint_str = str(endpoint)
-                if endpoint_str.startswith("external:"):
+                if is_external(endpoint_str):
                     continue
                 node_data = graph.nodes.get(endpoint, {})
                 file_path = node_data.get("file_path")

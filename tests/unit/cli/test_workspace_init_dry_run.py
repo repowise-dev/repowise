@@ -57,7 +57,6 @@ def _ctx(repo: Path, *, dry_run: bool) -> _WorkspaceCtx:
         yes=True,
         resume=False,
         onboarding=False,
-
         wiki_style="default",
         language="en",
         resolved_reasoning="auto",

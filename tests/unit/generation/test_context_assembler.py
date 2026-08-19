@@ -1,6 +1,8 @@
-"""Tests for generation/context_assembler.py — 22 tests."""
+"""Tests for generation/context_assembler.py."""
 
 from __future__ import annotations
+
+import dataclasses
 
 import networkx as nx
 
@@ -85,6 +87,38 @@ def test_assemble_file_page_returns_context(
     assert ctx.language == "python"
 
 
+def test_assemble_file_page_does_not_retain_source(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics
+):
+    """No field carries the file's source text (issue #1394).
+
+    A run keeps one context per code file alive from level 2 until it ends, so
+    anything on the context is multiplied by the size of the repository. The
+    context used to carry a budget-trimmed copy of the whole file that nothing
+    read, which is what exhausted memory on large repositories. Asserted on the
+    values rather than on a field name so re-introducing the source under any
+    other name fails here too.
+    """
+    # A multi-line slice, because the per-file vocabulary legitimately keeps
+    # single words off the source and would make a one-word sentinel ambiguous.
+    body = "def sentinel_body():\n    return 41 + 1\n"
+    ctx = ContextAssembler(sample_config).assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        f"# header\n{body}".encode(),
+    )
+
+    retained = [
+        f.name
+        for f in dataclasses.fields(ctx)
+        if body in str(getattr(ctx, f.name))
+    ]
+    assert retained == []
+
+
 def test_assemble_file_page_dependents_from_graph(
     sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
 ):
@@ -121,6 +155,50 @@ def test_assemble_file_page_dependencies_from_graph(
     )
     assert "python_pkg/models.py" in ctx.dependencies
     assert "python_pkg/utils.py" in ctx.dependencies
+
+
+def test_assemble_file_page_filters_dependency_edges_by_semantics(
+    sample_config, sample_parsed_file, graph_metrics, sample_source_bytes
+):
+    """Only structural file-to-file edges become dependencies or dependents."""
+    path = sample_parsed_file.file_info.path
+    graph = nx.DiGraph()
+    file_nodes = (
+        path,
+        "imported.py",
+        "importer.py",
+        "type_provider.py",
+        "framework_entrypoint.py",
+        "historical_dependency.py",
+        "historical_dependent.py",
+        "external_file.py",
+    )
+    graph.add_nodes_from((node, {"node_type": "file"}) for node in file_nodes)
+    graph.add_node(f"{path}::Calculator", node_type="symbol")
+    graph.add_node("external:third-party", node_type="external")
+    graph.nodes["external_file.py"]["language"] = "external"
+
+    graph.add_edge(path, "imported.py", edge_type="imports")
+    graph.add_edge("importer.py", path, edge_type="imports")
+    graph.add_edge(path, "type_provider.py", edge_type="type_use")
+    graph.add_edge("framework_entrypoint.py", path, edge_type="framework")
+    graph.add_edge(path, f"{path}::Calculator", edge_type="defines")
+    graph.add_edge(path, "historical_dependency.py", edge_type="co_changes")
+    graph.add_edge("historical_dependent.py", path, edge_type="co_changes")
+    graph.add_edge(path, "external:third-party", edge_type="imports")
+    graph.add_edge(path, "external_file.py", edge_type="imports")
+
+    ctx = ContextAssembler(sample_config).assemble_file_page(
+        sample_parsed_file,
+        graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+
+    assert ctx.dependencies == ["imported.py", "type_provider.py"]
+    assert ctx.dependents == ["importer.py", "framework_entrypoint.py"]
 
 
 def test_assemble_file_page_token_budget_respected(
@@ -232,6 +310,36 @@ def test_assemble_module_page_public_symbols(
     assert ctx.public_symbols >= 0
 
 
+def test_assemble_module_page_ranks_its_entry_points(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    """``module_page.j2`` renders these under an "Entry points" heading.
+
+    The input is ``file_contexts`` order — whatever the selector handed over —
+    so without ranking the heading led with whichever entry point happened to
+    be assembled first. Here that is a deep glue leaf.
+    """
+    from dataclasses import replace
+
+    assembler = ContextAssembler(sample_config)
+    base = assembler.assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    contexts = [
+        replace(base, file_path="src/features/api/index.ts", is_entry_point=True),
+        replace(base, file_path="src/util.py", is_entry_point=False),
+        replace(base, file_path="src/main.py", is_entry_point=True),
+    ]
+    ctx = assembler.assemble_module_page("python_pkg", "python", contexts, sample_graph)
+
+    assert ctx.entry_points == ["src/main.py", "src/features/api/index.ts"]
+
+
 # ---------------------------------------------------------------------------
 # assemble_scc_page
 # ---------------------------------------------------------------------------
@@ -271,6 +379,27 @@ def test_assemble_repo_overview_top_files_sorted(
     )
     if len(ctx.top_files_by_pagerank) >= 2:
         assert ctx.top_files_by_pagerank[0].score >= ctx.top_files_by_pagerank[1].score
+
+
+def test_assemble_repo_overview_leaves_out_crates_and_frameworks(
+    sample_config, sample_repo_structure
+):
+    """PageRank is computed over the whole graph, externals included.
+
+    A Rust crate arrives as ``external:serde::Deserialize`` — the separator is
+    part of the crate path, not a symbol — and a framework node as
+    ``framework:typo3-core``. Reading either as one of the repository's own
+    files puts a third-party name at the top of the generated overview.
+    """
+    assembler = ContextAssembler(sample_config)
+    pagerank = {
+        "external:serde::Deserialize": 0.9,
+        "framework:typo3-core": 0.8,
+        "external:react": 0.7,
+        "python_pkg/calculator.py": 0.5,
+    }
+    ctx = assembler.assemble_repo_overview(sample_repo_structure, pagerank, [], {})
+    assert [f.path for f in ctx.top_files_by_pagerank] == ["python_pkg/calculator.py"]
 
 
 def test_assemble_repo_overview_circular_dep_count(
@@ -318,7 +447,9 @@ def test_assemble_module_page_threads_phase2_signals(
         sample_source_bytes,
     )
     decisions = [{"title": "X", "decision": "Y", "rationale": ""}]
-    dead = [{"symbol_name": "foo", "reason": "no callers", "confidence": 0.9, "safe_to_delete": True}]
+    dead = [
+        {"symbol_name": "foo", "reason": "no callers", "confidence": 0.9, "safe_to_delete": True}
+    ]
     externals = [{"name": "fastapi", "category": "framework", "ecosystem": "pypi"}]
     ctx = assembler.assemble_module_page(
         "auth/login",
@@ -369,3 +500,34 @@ def test_assemble_api_contract_language_matches(sample_config, sample_parsed_fil
     assembler = ContextAssembler(sample_config)
     ctx = assembler.assemble_api_contract(sample_parsed_file, b"content")
     assert ctx.language == sample_parsed_file.file_info.language
+
+
+# ---------------------------------------------------------------------------
+# Dependency edges name other files, never this one
+# ---------------------------------------------------------------------------
+
+
+def test_foreign_edge_rejects_this_files_own_symbols():
+    """The graph carries file->symbol edges, so a file is its own successor.
+
+    Left in, those symbol nodes dominated the rendered dependency list: they
+    were 70% of every dependency line on the file pages, and on some pages
+    they were the entire list.
+    """
+    from repowise.core.analysis.dead_code.file_reachability import is_foreign_edge
+
+    path = "pkg/mod.py"
+    assert not is_foreign_edge("pkg/mod.py", path)
+    assert not is_foreign_edge("pkg/mod.py::Thing", path)
+    assert not is_foreign_edge("pkg/mod.py::Thing::method", path)
+    assert not is_foreign_edge("external:requests", path)
+
+
+def test_foreign_edge_keeps_real_neighbours():
+    from repowise.core.analysis.dead_code.file_reachability import is_foreign_edge
+
+    path = "pkg/mod.py"
+    assert is_foreign_edge("pkg/other.py", path)
+    assert is_foreign_edge("pkg/other.py::Thing", path)
+    # A path that merely shares a prefix is a different file.
+    assert is_foreign_edge("pkg/mod_extra.py", path)

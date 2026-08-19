@@ -49,6 +49,9 @@ class SymbolResponse(BaseModel):
     blame_median_author_time: int | None = None
     blame_owner_name: str | None = None
     blame_owner_line_pct: float | None = None
+    # Counted bug fixes attributed to this symbol (from the per-file rollup;
+    # null when the index predates it, 0 when it ran and found none here).
+    fix_count: int | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> SymbolResponse:

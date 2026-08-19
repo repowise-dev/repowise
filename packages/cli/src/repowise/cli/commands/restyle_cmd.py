@@ -18,6 +18,7 @@ from typing import Any
 
 import click
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
     config_fingerprint,
     console,
@@ -32,6 +33,7 @@ from repowise.cli.helpers import (
     save_state,
 )
 from repowise.cli.ui import load_dotenv
+from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.styles import (
     DEFAULT_STYLE,
     is_known_style,
@@ -76,7 +78,7 @@ async def _run_restyle(
         create_session_factory,
         get_session,
         init_db,
-        upsert_page_from_generated,
+        upsert_pages_from_generated,
         upsert_repository,
     )
     from repowise.core.pipeline import rehydrate_graph_builder, run_generation
@@ -124,14 +126,19 @@ async def _run_restyle(
     await cost_tracker.flush()
 
     async with get_session(sf) as session:
-        for page in generated_pages:
-            await upsert_page_from_generated(session, page, repo_id)
+        await upsert_pages_from_generated(session, generated_pages, repo_id)
 
     try:
         fts = FullTextSearch(engine)
         await fts.ensure_index()
         for page in generated_pages:
-            await fts.index(page.page_id, page.title, page.content)
+            await fts.index(
+                page.page_id,
+                page.title,
+                page.content,
+                summary=page.summary,
+                target_path=page.target_path,
+            )
     except Exception:
         pass  # FTS indexing is best-effort
 
@@ -146,6 +153,13 @@ async def _run_restyle(
 @click.option("--model", default=None, help="Model identifier override.")
 @click.option("--concurrency", type=int, default=12, help="Max concurrent LLM calls.")
 @click.option("--reasoning", default=None, help="Reasoning mode override.")
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show debug logs from the pipeline.",
+)
 @click.option("--yes", "-y", is_flag=True, default=False, help="Skip the confirmation prompt.")
 def restyle_command(
     style: str | None,
@@ -154,6 +168,7 @@ def restyle_command(
     model: str | None,
     concurrency: int,
     reasoning: str | None,
+    verbose: bool,
     yes: bool,
 ) -> None:
     """Switch a repo's wiki STYLE and regenerate every page in the new voice.
@@ -164,6 +179,8 @@ def restyle_command(
     This regenerates the whole wiki with LLM calls (a cost), reusing the existing
     index/graph/git so no re-resolution or re-blame is needed.
     """
+    configure_cli_logging(verbose=verbose)
+
     repo_path = resolve_repo_path(path)
     load_dotenv(repo_path)
     state = load_state(repo_path)
@@ -180,15 +197,27 @@ def restyle_command(
     style = style.strip().lower()
     if not is_known_style(style, repo_path):
         valid = ", ".join(s.name for s in list_styles(repo_path))
-        raise click.ClickException(f"Unknown style '{style}'. Choose one of: {valid}.")
+        # An unknown STYLE is a mis-typed argument, not a product failure:
+        # BadArgumentUsage renders the usage hint and (via the telemetry
+        # classifier) records as a usage_error rather than an error.
+        raise click.BadArgumentUsage(f"Unknown style '{style}'. Choose one of: {valid}.")
 
-    # Restyle only makes sense for a full index (one that has generated docs).
+    # Restyle only makes sense once there are pages to restyle.
     if not state:
         raise click.ClickException(f"No index found at {repo_path}. Run `repowise init` first.")
-    if not state.get("docs_enabled", False):
+    docs_mode = resolve_docs_mode(state)
+    if docs_mode == "none":
         raise click.ClickException(
-            "This repo is index-only (no wiki pages to restyle). "
+            "This repo has no wiki pages to restyle. "
             "Run `repowise update --full` to generate docs first."
+        )
+    if docs_mode == "deterministic":
+        # A wiki with no written prose is a fine starting point: restyle writes
+        # the subsystem pages with a model in the chosen style, the same work
+        # `generate --all` does with a style override.
+        console.print(
+            "[yellow]This repo's wiki has no written prose yet.[/yellow] "
+            "Restyling writes the subsystem pages with a model, which costs money."
         )
 
     if style == current:
@@ -211,18 +240,14 @@ def restyle_command(
 
     from repowise.core.generation import GenerationConfig
 
-    config = GenerationConfig(
+    config = GenerationConfig.from_repo_config(
+        cfg,
         max_concurrency=concurrency,
         language=cfg.get("language", "en"),
         reasoning=resolve_reasoning(reasoning, cfg),
         enable_onboarding=bool(cfg.get("enable_onboarding", True)),
         wiki_style=style,
     )
-    import dataclasses
-
-    tier1_top_n = cfg.get("tier1_top_n")
-    if tier1_top_n is not None:
-        config = dataclasses.replace(config, tier1_top_n=tier1_top_n)
 
     exclude_patterns = list(cfg.get("exclude_patterns") or [])
 
@@ -241,6 +266,9 @@ def restyle_command(
 
     head = get_head_commit(repo_path)
     state["last_sync_commit"] = head
+    # A restyle rewrites every page with a model, so a template wiki stops
+    # being one here. Without this, `update` keeps defaulting to index-only.
+    state.update(docs_mode_state_fields("llm"))
     state["total_pages"] = len(generated_pages)
     state["config_fingerprint"] = config_fingerprint(repo_path)
     save_state(repo_path, state)

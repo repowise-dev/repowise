@@ -22,6 +22,9 @@ LanguageTag = Literal[
     "python",
     "typescript",
     "javascript",
+    # Single-file components — parsed as TypeScript via sfc_source.
+    "svelte",
+    "vue",
     "go",
     "rust",
     "java",
@@ -35,6 +38,7 @@ LanguageTag = Literal[
     "scala",
     "luau",
     "dart",
+    "pascal",
     # Passthrough code languages (no AST parser yet — empty ParsedFile,
     # files enter the graph via the generic resolver). Before these tags
     # existed the traverser silently skipped such files as unknown, so e.g.
@@ -68,6 +72,8 @@ LanguageTag = Literal[
     "sql",
     "openapi",
     "xaml",
+    # Markup with no symbols, but <script src>/<link href> are real edges.
+    "html",
     "unknown",
 ]
 
@@ -112,6 +118,13 @@ SymbolKind = Literal[
     "module",
     "macro",
     "variable",
+    # Rust's ``field_declaration`` only. Every other language maps its fields
+    # and properties to ``variable``; Rust keeps them separate, and the call
+    # resolver relies on that to refuse a field as a bare-name call target
+    # (``_NON_CALLABLE_KINDS``). Normalising this to ``variable`` would make
+    # Rust fields indistinguishable from callable values and silently undo
+    # that refusal, so it is declared here rather than mapped away.
+    "property",
 ]
 
 # ---------------------------------------------------------------------------
@@ -180,6 +193,12 @@ class Symbol:
     # ``__declspec(dllexport)`` / ``__attribute__((visibility("default")))``).
     # Used by dead-code analysis to whitelist exported entry points.
     is_exported_symbol: bool = False
+    # True when this record is a bodiless declaration — a C/C++ forward
+    # declaration in a header. The definition carrying the same name lives in
+    # a .cpp and is the symbol a call should attach to; the call resolver
+    # redirects onto it, and the dead-code pass never reports a declaration,
+    # since a declaration is not independently deletable.
+    is_declaration: bool = False
 
 
 @dataclass
@@ -246,26 +265,258 @@ class HeritageRelation:
 # Edge types used in the symbol-level dependency graph
 # ---------------------------------------------------------------------------
 
+# The vocabulary is exhaustive and *true*: every member is emitted by some
+# producer, and no producer emits anything outside it. Both halves are load
+# bearing. A declared-but-never-emitted member is what let a dozen consumers
+# each write a set against a type that does not exist, and an emitted-but-
+# undeclared type is what made every one of those sets silently incomplete.
+#
+# `tests/unit/ingestion/test_edge_type_vocabulary.py` holds both directions
+# shut: it AST-walks every `add_edge` call in the packages and fails on a
+# literal that is not a member here.
+#
+# Removed 2026-08-14, each measured at 0 rows across 42 local indexes with no
+# producer anywhere in the tree: `has_property` (only `defines` and
+# `has_method` are emitted for containment), `method_overrides` (a
+# `HeritageKind`, never an edge type — the TS mirror in
+# `packages/types/src/symbols.ts` still declares it as a heritage kind, which
+# is correct), and bare `dynamic`.
 EdgeType = Literal[
     "imports",
     "defines",
     "calls",
     "has_method",
-    "has_property",
     "extends",
     "implements",
-    "method_overrides",
     "method_implements",
+    # Base method → an implementation that can answer for it. Named for what
+    # it asserts rather than for a heritage relation: the pass matches by
+    # method name and compares no signature, so it is a possible dispatch
+    # target, not a proven override. `method_implements` could not be reused —
+    # it runs implementor → interface, and this edge has to point the other
+    # way for a traversal starting at the base to reach the implementation.
+    "dispatches_to",
     "co_changes",
     "framework",
-    "dynamic",
+    # The symbol-level sibling of `framework`, emitted when a handler can name
+    # both ends as symbols. Deliberately not `calls`: nothing here is a call the
+    # parser could have seen, and letting it read as one would put an inferred
+    # wiring hop into an execution flow as if it were source.
+    "framework_binds",
+    # A data reference rather than a call: C# member access, file → file. It
+    # used to name two unrelated things — the Express route wiring emitted it
+    # symbol → symbol — which is why one consumer set could not say which layer
+    # it meant. That producer now emits `framework_binds`.
+    "reads",
+    # Dynamic-dispatch hints. `dynamic_hints` extractors emit a `DynamicKind`
+    # sub-type and `EdgesMixin.add_dynamic_edges` prefixes it, so `url_route`
+    # reaches the graph as `dynamic_url_route` and never as itself. Consumers
+    # matching bare `"dynamic"` — three of them did — match none of these.
+    "dynamic_uses",
+    "dynamic_imports",
+    "dynamic_url_route",
     # Synthesised file-to-file edge emitted from constructor / method /
     # delegate / record parameter type references in statically-typed
     # languages (currently C#; see type_ref_resolution.py). Distinct
     # from ``imports`` so analyses can weight it lower and so the
     # persistence layer can surface provenance for these edges.
     "type_use",
+    # A function named without being called: a dispatch-table entry, a
+    # callback field, an argument to a registration macro (currently C/C++;
+    # see the ``@reference.name`` captures). Symbol → symbol, and deliberately
+    # not ``calls`` — nothing here proves the function is ever invoked, only
+    # that something holds a handle to it, which is enough to make deleting it
+    # unsafe.
+    "references",
 ]
+
+# Runtime mirror of the Literal, for the places that must test membership
+# rather than annotate. Derived, never hand-written — a second hand-written
+# copy is the exact failure this phase exists to remove.
+EDGE_TYPE_VALUES: frozenset[str] = frozenset(get_args(EdgeType))
+
+# Which resolution strategy produced a `calls` / `references` edge. Same
+# closed-vocabulary discipline as `EdgeType`, held shut by the same test.
+#
+# An edge is not a fact. `global_unique` binds a name to the only symbol
+# carrying it anywhere in the repo, which is a guess; `same_file` is a
+# certainty. Both used to reach a consumer as an unlabelled arrow, so an agent
+# reading a flow could not tell which it was looking at.
+#
+# Every origin has exactly one confidence (see `CallResolver`), so the origin
+# distribution and the confidence histogram are two views of the same data —
+# which is what makes the stamping checkable against the existing numbers.
+# NULL on an edge means the row predates this vocabulary, not "unknown origin".
+ResolutionOrigin = Literal[
+    "same_file",  # 0.95 — defined in the calling file
+    "self_scope",  # 0.95 — self/this, method on the caller's own class
+    "enclosing_class",  # 0.95 — bare call, bound to the caller's own class
+    "receiver_same_file",  # 0.93 — receiver names a class in this file
+    "same_package",  # 0.90 — Go/JVM sibling file, no import needed
+    "import_scoped",  # 0.90 — the name was imported from the defining file
+    "receiver_same_package",  # 0.90 — receiver is a same-package class (JVM)
+    "package_alias",  # 0.88 — Go pkg.Func, resolved across the whole package
+    "module_alias",  # 0.88 — receiver is an imported module
+    "crate_root",  # 0.88 — Rust crate-scoped reference
+    "receiver_import",  # 0.88 — receiver class found in an imported file
+    "import_merged",  # 0.85 — in *some* imported file; which one is unattributed
+    "same_target",  # 0.85 — C/C++ sibling TU of the same build target
+    # 0.75 — the (class, method) pair exists somewhere in the repo. The member
+    # analogue of `global_unique`, and no more than that: the strategy is
+    # named for Rust trait impls but is gated on no language.
+    "receiver_global",
+    "global_unique",  # 0.50 — the name is unique repo-wide. A guess.
+    # The four below reach the same scopes as their untyped twins, but through
+    # a receiver whose type was read off its declaration rather than written at
+    # the call. They share their twin's confidence deliberately: the inferred
+    # type had to declare the method before an edge was emitted, so the
+    # evidence is no weaker — what differs is how the receiver was named, and
+    # that is precisely what an origin is for.
+    "receiver_typed_same_file",  # 0.93
+    "receiver_typed_same_package",  # 0.90 (JVM)
+    "receiver_typed_import",  # 0.88
+    "receiver_typed_global",  # 0.75
+    # The same four scopes again, for a receiver typed from the enclosing
+    # class's fields rather than from the calling body. Kept apart from the
+    # four above because they are a different scan over a different scope, and
+    # an origin that cannot separate them cannot be audited.
+    "receiver_field_same_file",  # 0.93
+    "receiver_field_same_package",  # 0.90 (JVM)
+    "receiver_field_import",  # 0.88
+    "receiver_field_global",  # 0.75
+    # The same four scopes once more, for a receiver a framework decorator
+    # retyped — `@shared_task def add` is a `Task`, so `add.s()` is `Task::s`.
+    # Separate because the evidence is a decorator table, not a declaration.
+    "receiver_framework_same_file",  # 0.93
+    "receiver_framework_same_package",  # 0.90
+    "receiver_framework_import",  # 0.88
+    "receiver_framework_global",  # 0.75
+    # 0.90 — the caller's own class does not declare the method but exactly one
+    # of its ancestors does. Below the two same-class origins because the walk
+    # compares no signature and reads no visibility, so it can reach a method
+    # the language would not actually dispatch to.
+    "self_inherited",  # 0.90 — explicit self/this receiver
+    "enclosing_inherited",  # 0.90 — implicit receiver, bare call
+]
+
+RESOLUTION_ORIGIN_VALUES: frozenset[str] = frozenset(get_args(ResolutionOrigin))
+
+# What a dynamic-hint extractor reports, *before* `add_dynamic_edges` prefixes
+# it. Deliberately a separate vocabulary from `EdgeType`: `url_route` is a
+# legal hint kind and never a legal graph edge type, and conflating the two is
+# what put `url_route` in the plan for this phase as an edge type to declare
+# when the graph has never held one.
+DynamicKind = Literal["dynamic_uses", "dynamic_imports", "url_route"]
+
+# Structural containment, not reference. ``defines`` is file → symbol and
+# ``has_method`` is class symbol → member symbol, so both endpoints describe
+# the same code rather than one depending on the other. Their target is a
+# ``path::Name`` symbol node, which is why a consumer that keys on file paths
+# gets nothing usable out of them.
+CONTAINMENT_EDGE_TYPES: frozenset[str] = frozenset({"defines", "has_method"})
+
+# Evidence from history rather than from code: two files move together in
+# commits, not one referencing the other. This is the one that bites, because
+# a co-change edge fed back in as a dependency makes every co-change partner
+# look like an import of its own subject.
+TEMPORAL_EDGE_TYPES: frozenset[str] = frozenset({"co_changes"})
+
+# Edge types that are *not* code dependencies, and so must be excluded by any
+# consumer answering "what depends on this?" about FILES.
+#
+# Excluding containment is right for that question and wrong for traversal.
+# Containment is the only bridge between the two layers of the graph: files are
+# joined to each other by ``imports`` / ``type_use``, symbols to each other by
+# ``calls`` / ``extends`` / ``implements``, and nothing points from a symbol
+# back to a file. Drop ``defines`` and a caller can no longer walk from a file
+# to the functions it declares, so anything traversing the graph wants
+# ``TEMPORAL_EDGE_TYPES`` and a ``node_type`` check instead.
+NON_DEPENDENCY_EDGE_TYPES: frozenset[str] = CONTAINMENT_EDGE_TYPES | TEMPORAL_EDGE_TYPES
+
+# ---------------------------------------------------------------------------
+# The named views. Ask for the one that matches your question.
+# ---------------------------------------------------------------------------
+#
+# Before these existed, thirteen modules each kept a private set answering some
+# version of "which edges count as a dependency", and no two were identical:
+# `type_use` was a dependency in five and absent from four, `reads` appeared in
+# one of thirteen, and three tested for a bare `"dynamic"` that no producer has
+# ever emitted — so they matched none of the 6,153 real `dynamic_*` edges.
+#
+# The split below is not a taste call. Measured across 42 local indexes, every
+# edge type lands on one side 100% of the time, with a single exception noted
+# on `reads`. Add a member here, not a set of your own, and say which view you
+# want at the call site.
+
+# File → file code references: static imports, C#-style type references,
+# synthesised framework wiring, and dispatch the parser cannot see statically.
+# This is the right view for anything building a *file*-level subgraph —
+# communities, dependency cycles, coupling. Note what is absent: `co_changes`
+# is history rather than code, and symbol-level types put both endpoints on
+# nodes a file-keyed consumer cannot resolve.
+FILE_DEPENDENCY_EDGE_TYPES: frozenset[str] = frozenset(
+    {
+        "imports",
+        "type_use",
+        "framework",
+        "dynamic_uses",
+        "dynamic_imports",
+        "dynamic_url_route",
+        # C# member access (`var x = new T(); x.Prop`) resolves to the file
+        # declaring the type, so this is a real file-level reference. See the
+        # note on SYMBOL_USE_EDGE_TYPES: `reads` is emitted at both layers.
+        "reads",
+    }
+)
+
+# Symbol → symbol references. "Something reaches this symbol", so containment
+# is excluded: a class containing a method is not the method being used.
+#
+# `reads` is a member here for a reason that no longer holds: its symbol-level
+# producer moved to `framework_binds`, so `csharp_member_reads` is the only one
+# left and it emits file → file. A file node can never be a symbol node's
+# predecessor, so membership is inert rather than wrong. Retiring it moves the
+# vocabulary and belongs to a diff that can measure that.
+SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
+    {
+        "calls",
+        "extends",
+        "implements",
+        "method_implements",
+        # An implementation is used by every call written against the base it
+        # answers for, and that call lands on the base. Without this the whole
+        # implementation side of an interface reads as called by nobody.
+        "dispatches_to",
+        # A fixture nobody calls and a collaborator nobody constructs are both
+        # used — by the container, which no parser sees.
+        "framework_binds",
+        "reads",
+        # Naming a function is using it. A handler sitting in a dispatch table
+        # is never called anywhere a parser can see, and treating that as "no
+        # use" reported entire registration layers as safe to delete (#1602).
+        "references",
+    }
+)
+
+
+# "Does anything use this symbol at all?" — the reachability view. Adds
+# ``type_use`` to the symbol set: a C#-style type reference is a real use, and
+# the dead-code analyzer and the C/C++ reachability pass both asked for exactly
+# this union with their own private copy.
+REACHABILITY_USE_EDGE_TYPES: frozenset[str] = SYMBOL_USE_EDGE_TYPES | {"type_use"}
+
+
+def is_dynamic_edge(edge_type: str | None) -> bool:
+    """Whether *edge_type* is a dynamic-dispatch hint.
+
+    Prefix-matched on purpose. The sub-type is open — ``add_dynamic_edges``
+    mints ``dynamic_<kind>`` from whatever a hint extractor reports — so a set
+    membership test here is what goes stale when a new hint kind lands, and
+    three separate consumers matching a bare ``"dynamic"`` is how that failure
+    already shipped. The trailing underscore is load bearing: without it a
+    future ``dynamically_*`` type would match by accident.
+    """
+    return edge_type is not None and edge_type.startswith("dynamic_")
 
 
 @dataclass
@@ -281,10 +532,17 @@ class TypeReference:
     type_name: str  # head identifier (e.g. "IBasketService" from "IBasketService<T>")
     line: int  # 1-indexed source line
     origin: Literal[
-        "ctor_param", "method_param", "delegate_param",  # C#
-        "param_type", "field_type", "composite_literal",  # Go
-        "return_type", "type_alias", "generic_constraint",  # TS/JS
-        "extends", "implements",  # TS heritage clauses (file-level type_use)
+        "ctor_param",
+        "method_param",
+        "delegate_param",  # C#
+        "param_type",
+        "field_type",
+        "composite_literal",  # Go
+        "return_type",
+        "type_alias",
+        "generic_constraint",  # TS/JS
+        "extends",
+        "implements",  # TS heritage clauses (file-level type_use)
     ] = "ctor_param"
 
 
@@ -296,6 +554,11 @@ class ParsedFile:
     symbols: list[Symbol]
     imports: list[Import]
     exports: list[str]  # names exported by this file
+    # ``{exported name: local name}`` where a TS/JS module publishes a symbol
+    # it declares under a different name (``export { stringType as string }``).
+    # Empty for every other language and for the far commoner clause that does
+    # not rename, where the symbol table already answers.
+    export_aliases: dict[str, str] = field(default_factory=dict)
     calls: list[CallSite] = field(default_factory=list)
     heritage: list[HeritageRelation] = field(default_factory=list)
     docstring: str | None = None  # module/file-level docstring
@@ -308,6 +571,23 @@ class ParsedFile:
     # Python only; lets the dead-code unused-export pass rescue symbols whose
     # only use is intra-module. See ``python_local_refs``.
     local_refs: frozenset[str] = field(default_factory=frozenset)
+    # C/C++ sites that name a function without calling it: a dispatch table
+    # entry, a callback field, an argument to a registration macro. Reuses
+    # ``CallSite`` because resolving one is the identical problem — a name, the
+    # symbol enclosing it, and a line — and it lets these ride the same
+    # resolution tiers. They become ``references`` edges, not ``calls``.
+    references: list[CallSite] = field(default_factory=list)
+
+
+def symbol_id_language(parsed_files: dict[str, ParsedFile], symbol_id: str) -> str | None:
+    """Language of the file a symbol ID belongs to, or ``None`` if unparsed.
+
+    Lives beside the ID vocabulary rather than in either resolver — both need
+    it for the same cross-language rejection.
+    """
+    file_path = symbol_id.split("::")[0] if "::" in symbol_id else symbol_id
+    parsed = parsed_files.get(file_path)
+    return parsed.file_info.language if parsed else None
 
 
 def compute_content_hash(source: bytes) -> str:

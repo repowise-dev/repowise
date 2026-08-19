@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from repowise.core.generation.selection.scoring import score_file
-from repowise.core.generation.page_generator.tiering import partition_file_tiers
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -47,12 +44,20 @@ class TestScoreFileKGBonus:
     def test_tour_file_scores_higher(self):
         parsed = _make_parsed()
         base = score_file(
-            parsed, pagerank=0.5, betweenness=0.0,
-            max_pagerank=1.0, max_betweenness=1.0, is_hotspot=False,
+            parsed,
+            pagerank=0.5,
+            betweenness=0.0,
+            max_pagerank=1.0,
+            max_betweenness=1.0,
+            is_hotspot=False,
         )
         boosted = score_file(
-            parsed, pagerank=0.5, betweenness=0.0,
-            max_pagerank=1.0, max_betweenness=1.0, is_hotspot=False,
+            parsed,
+            pagerank=0.5,
+            betweenness=0.0,
+            max_pagerank=1.0,
+            max_betweenness=1.0,
+            is_hotspot=False,
             kg_bonus=0.30,
         )
         assert boosted > base
@@ -61,12 +66,20 @@ class TestScoreFileKGBonus:
     def test_edge_connector_scores_higher(self):
         parsed = _make_parsed()
         base = score_file(
-            parsed, pagerank=0.5, betweenness=0.0,
-            max_pagerank=1.0, max_betweenness=1.0, is_hotspot=False,
+            parsed,
+            pagerank=0.5,
+            betweenness=0.0,
+            max_pagerank=1.0,
+            max_betweenness=1.0,
+            is_hotspot=False,
         )
         boosted = score_file(
-            parsed, pagerank=0.5, betweenness=0.0,
-            max_pagerank=1.0, max_betweenness=1.0, is_hotspot=False,
+            parsed,
+            pagerank=0.5,
+            betweenness=0.0,
+            max_pagerank=1.0,
+            max_betweenness=1.0,
+            is_hotspot=False,
             kg_bonus=0.15,
         )
         assert boosted > base
@@ -74,12 +87,20 @@ class TestScoreFileKGBonus:
     def test_combined_tour_and_edge_connector(self):
         parsed = _make_parsed()
         base = score_file(
-            parsed, pagerank=0.5, betweenness=0.0,
-            max_pagerank=1.0, max_betweenness=1.0, is_hotspot=False,
+            parsed,
+            pagerank=0.5,
+            betweenness=0.0,
+            max_pagerank=1.0,
+            max_betweenness=1.0,
+            is_hotspot=False,
         )
         boosted = score_file(
-            parsed, pagerank=0.5, betweenness=0.0,
-            max_pagerank=1.0, max_betweenness=1.0, is_hotspot=False,
+            parsed,
+            pagerank=0.5,
+            betweenness=0.0,
+            max_pagerank=1.0,
+            max_betweenness=1.0,
+            is_hotspot=False,
             kg_bonus=0.45,
         )
         assert boosted - base == pytest.approx(0.45, abs=0.01)
@@ -87,12 +108,20 @@ class TestScoreFileKGBonus:
     def test_zero_kg_bonus_no_change(self):
         parsed = _make_parsed()
         score_a = score_file(
-            parsed, pagerank=0.5, betweenness=0.0,
-            max_pagerank=1.0, max_betweenness=1.0, is_hotspot=False,
+            parsed,
+            pagerank=0.5,
+            betweenness=0.0,
+            max_pagerank=1.0,
+            max_betweenness=1.0,
+            is_hotspot=False,
         )
         score_b = score_file(
-            parsed, pagerank=0.5, betweenness=0.0,
-            max_pagerank=1.0, max_betweenness=1.0, is_hotspot=False,
+            parsed,
+            pagerank=0.5,
+            betweenness=0.0,
+            max_pagerank=1.0,
+            max_betweenness=1.0,
+            is_hotspot=False,
             kg_bonus=0.0,
         )
         assert score_a == score_b
@@ -100,58 +129,23 @@ class TestScoreFileKGBonus:
     def test_kg_bonus_before_test_penalty(self):
         parsed = _make_parsed(is_test=True)
         base = score_file(
-            parsed, pagerank=0.5, betweenness=0.0,
-            max_pagerank=1.0, max_betweenness=1.0, is_hotspot=False,
+            parsed,
+            pagerank=0.5,
+            betweenness=0.0,
+            max_pagerank=1.0,
+            max_betweenness=1.0,
+            is_hotspot=False,
         )
         boosted = score_file(
-            parsed, pagerank=0.5, betweenness=0.0,
-            max_pagerank=1.0, max_betweenness=1.0, is_hotspot=False,
+            parsed,
+            pagerank=0.5,
+            betweenness=0.0,
+            max_pagerank=1.0,
+            max_betweenness=1.0,
+            is_hotspot=False,
             kg_bonus=0.30,
         )
         assert boosted > base
-
-
-# ---------------------------------------------------------------------------
-# partition_file_tiers with kg_file_scores
-# ---------------------------------------------------------------------------
-
-
-class TestTieringWithKGScores:
-    def test_tour_file_promoted_to_tier1(self):
-        paths = {"tour.py", "regular.py"}
-        pagerank = {"tour.py": 0.3, "regular.py": 0.5}
-        kg_scores = {"tour.py": 0.30}
-        tier1, tier2 = partition_file_tiers(paths, pagerank, tier1_top_n=1, kg_file_scores=kg_scores)
-        assert "tour.py" in tier1
-        assert "regular.py" in tier2
-
-    def test_no_kg_scores_uses_pagerank_only(self):
-        paths = {"a.py", "b.py"}
-        pagerank = {"a.py": 0.3, "b.py": 0.5}
-        tier1, tier2 = partition_file_tiers(paths, pagerank, tier1_top_n=1)
-        assert "b.py" in tier1
-        assert "a.py" in tier2
-
-    def test_kg_scores_none(self):
-        paths = {"a.py", "b.py"}
-        pagerank = {"a.py": 0.3, "b.py": 0.5}
-        tier1, tier2 = partition_file_tiers(paths, pagerank, tier1_top_n=1, kg_file_scores=None)
-        assert "b.py" in tier1
-
-    def test_all_tier1_ignores_kg_scores(self):
-        paths = {"a.py", "b.py"}
-        pagerank = {"a.py": 0.3, "b.py": 0.5}
-        kg_scores = {"a.py": 1.0}
-        tier1, tier2 = partition_file_tiers(paths, pagerank, tier1_top_n=None, kg_file_scores=kg_scores)
-        assert tier1 == paths
-        assert tier2 == set()
-
-    def test_equal_pagerank_kg_breaks_tie(self):
-        paths = {"x.py", "y.py"}
-        pagerank = {"x.py": 0.5, "y.py": 0.5}
-        kg_scores = {"x.py": 0.15}
-        tier1, tier2 = partition_file_tiers(paths, pagerank, tier1_top_n=1, kg_file_scores=kg_scores)
-        assert "x.py" in tier1
 
 
 # ---------------------------------------------------------------------------
@@ -177,8 +171,12 @@ class TestComputeKGFileScores:
                 {"id": "layer:core", "name": "Core", "nodeIds": ["file:src/core.py"]},
             ],
             "tour": [
-                {"order": 1, "title": "Entry", "description": "Start here",
-                 "nodeIds": ["file:src/main.py"]},
+                {
+                    "order": 1,
+                    "title": "Entry",
+                    "description": "Start here",
+                    "nodeIds": ["file:src/main.py"],
+                },
             ],
         }
         (tmp_path / "src").mkdir()
@@ -246,8 +244,12 @@ class TestComputeKGFileScores:
                 {"id": "layer:api", "name": "API", "nodeIds": ["file:src/api.py"]},
             ],
             "tour": [
-                {"order": 1, "title": "Core", "description": "Core logic",
-                 "nodeIds": ["file:src/core.py"]},
+                {
+                    "order": 1,
+                    "title": "Core",
+                    "description": "Core logic",
+                    "nodeIds": ["file:src/core.py"],
+                },
             ],
         }
         (tmp_path / "src").mkdir()

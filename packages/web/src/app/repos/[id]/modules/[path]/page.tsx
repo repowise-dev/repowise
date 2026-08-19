@@ -27,7 +27,7 @@ export default function ModuleHealthPage() {
 
   return (
     <ModuleDetailShell
-      backHref={`/repos/${id}/code-health?tab=modules`}
+      backHref={`/repos/${id}/code-health?tab=triage`}
       LinkComponent={Link}
     >
       {isLoading && (
@@ -52,7 +52,9 @@ export default function ModuleHealthPage() {
         <ModuleHealthDetailView
           module={data}
           breadcrumb={[
-            { label: "Modules", href: `/repos/${id}/code-health?tab=modules` },
+            // There is no Modules tab any more — it folded into the map's hub
+            // layer on the overview. Name where the link actually goes.
+            { label: "Code Health", href: `/repos/${id}/code-health?tab=triage` },
             { label: modulePath.split("/").pop() || modulePath },
           ]}
           LinkComponent={Link}

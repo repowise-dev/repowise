@@ -35,6 +35,7 @@ from repowise.core.providers.llm.base import (
     RateLimitError,
     ensure_reasoning_supported,
     fallback_model_option,
+    normalize_stop_reason,
     parse_retry_after,
     provider_retry_stop,
     provider_retry_wait,
@@ -97,7 +98,10 @@ def _kimi_temperature(
     requested: float,
 ) -> float:
     if model.startswith("kimi-for-coding"):
-        return 0.6
+        # The Kimi coding endpoint rejects any temperature other than 1 for
+        # these models ("invalid temperature: only 1 is allowed for this
+        # model"), so the requested value cannot be honoured here.
+        return 1.0
     if model.startswith(("kimi-k2.5", "kimi-k2.6")):
         return 0.6 if normalize_reasoning(reasoning) in ("off", "none") else 1.0
     return requested
@@ -280,11 +284,15 @@ class KimiProvider(BaseProvider):
             raise ProviderError("kimi", str(exc), status_code=exc.status_code) from exc
 
         usage = response.usage
+        choice = response.choices[0]
+        stop_reason, provider_stop_reason = normalize_stop_reason(choice.finish_reason)
         result = GeneratedResponse(
-            content=response.choices[0].message.content or "",
+            content=choice.message.content or "",
             input_tokens=usage.prompt_tokens if usage else 0,
             output_tokens=usage.completion_tokens if usage else 0,
             cached_tokens=0,
+            stop_reason=stop_reason,
+            provider_stop_reason=provider_stop_reason,
             usage={
                 "prompt_tokens": usage.prompt_tokens if usage else 0,
                 "completion_tokens": usage.completion_tokens if usage else 0,
@@ -310,7 +318,7 @@ class KimiProvider(BaseProvider):
                     model=self._model,
                     input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
-                    operation="doc_generation",
+                    operation=self._cost_tracker.operation,
                     file_path=None,
                 )
 

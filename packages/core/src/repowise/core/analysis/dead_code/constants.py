@@ -3,20 +3,27 @@
 These tuples / frozensets shape what the analyzer treats as "always
 alive" (framework decorators, never-flag path globs) and where to skip
 entirely (test fixture directories, non-code languages).
+
+``never_flag_match`` lives here rather than on the analyzer because the
+pattern list it reads is here and because it is a pure function of a path:
+:func:`~.file_reachability.is_file_reachable` needs it, and a matcher that
+only the analyzer could reach was the reason the two callers of that
+predicate answered "is this file reachable?" differently.
 """
 
 from __future__ import annotations
+
+import fnmatch
+import os
+import re
+from functools import lru_cache
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
 # Non-code languages that should never be flagged as dead code.
 # Derived from the centralised LanguageRegistry — passthrough config/infra
 # languages plus "unknown".
-_NON_CODE_LANGUAGES: frozenset[str] = frozenset(
-    spec.tag
-    for spec in _LANG_REGISTRY.all_specs()
-    if spec.is_passthrough and (not spec.is_code or spec.is_infra) and spec.tag != "openapi"
-) | {"unknown"}
+_NON_CODE_LANGUAGES: frozenset[str] = _LANG_REGISTRY.unparseable_or_unknown_languages()
 
 # Patterns that should never be flagged as dead.
 _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
@@ -72,20 +79,20 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # ---- .NET / C# conventions --------------------------------------
     # Implicit / generated / framework-loaded files that have no
     # static importers by design.
-    "*GlobalUsings.cs",          # global usings — file-implicit, never imported by symbol
-    "*.xaml.cs",                 # XAML code-behind, wired by the source generator
+    "*GlobalUsings.cs",  # global usings — file-implicit, never imported by symbol
+    "*.xaml.cs",  # XAML code-behind, wired by the source generator
     "*.xaml",
     "*.razor",
-    "*.razor.cs",                # Blazor code-behind
-    "*.razor.js",                # Blazor JS interop side-files
+    "*.razor.cs",  # Blazor code-behind
+    "*.razor.js",  # Blazor JS interop side-files
     "*.cshtml",
     "*.cshtml.cs",
-    "*.designer.cs",             # Roslyn designer
+    "*.designer.cs",  # Roslyn designer
     "*Designer.cs",
-    "*.g.cs",                    # Roslyn-generated
+    "*.g.cs",  # Roslyn-generated
     "*.g.i.cs",
     "*.AssemblyInfo.cs",
-    "*MauiProgram.cs",           # MAUI app entry — invoked by host, not imported
+    "*MauiProgram.cs",  # MAUI app entry — invoked by host, not imported
     "*App.xaml.cs",
     "*AppShell.xaml.cs",
     # Aspire / ServiceDefaults host wiring is consumed by AppHost project graph,
@@ -380,29 +387,29 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/out/Release/**",
     # Generated source-file patterns. Wired in at build time, no static
     # importer; the analyzer should silence them universally.
-    "moc_*.cpp",                # Qt MOC
+    "moc_*.cpp",  # Qt MOC
     "moc_*.cc",
-    "ui_*.h",                   # Qt UIC
-    "qrc_*.cpp",                # Qt RCC
+    "ui_*.h",  # Qt UIC
+    "qrc_*.cpp",  # Qt RCC
     "qrc_*.cc",
-    "*.moc",                    # inline MOC includes
-    "*.pb.cc",                  # protoc generated
+    "*.moc",  # inline MOC includes
+    "*.pb.cc",  # protoc generated
     "*.pb.h",
-    "*.pb-c.c",                 # protobuf-c
+    "*.pb-c.c",  # protobuf-c
     "*.pb-c.h",
-    "*.grpc.pb.cc",             # protoc-gen-grpc
+    "*.grpc.pb.cc",  # protoc-gen-grpc
     "*.grpc.pb.h",
-    "*.capnp.c++",              # Cap'n Proto
+    "*.capnp.c++",  # Cap'n Proto
     "*.capnp.h",
     "*.flatbuffers.h",
-    "*_generated.h",            # FlatBuffers convention
-    "*.tab.c",                  # Bison / Yacc
+    "*_generated.h",  # FlatBuffers convention
+    "*.tab.c",  # Bison / Yacc
     "*.tab.h",
-    "*.yy.c",                   # Flex / Lex
+    "*.yy.c",  # Flex / Lex
     "*_lex.cc",
-    "*_wrap.cxx",               # SWIG
+    "*_wrap.cxx",  # SWIG
     "*_wrap.cpp",
-    "*.cython.cpp",             # Cython
+    "*.cython.cpp",  # Cython
     # Vendored / third-party roots. The existing ``vendor`` / ``third_party``
     # / ``deps`` globs only cover ``.c`` / ``.h``; extend them to the full
     # C++ extension set, and add the additional vendor conventions
@@ -747,21 +754,21 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # Generated-name suffixes that have unambiguous tool ownership.
     "*_Generated.java",
     "*$Generated.java",
-    "*MapperImpl.java",            # MapStruct compile-time impl
+    "*MapperImpl.java",  # MapStruct compile-time impl
     "*Dagger*.java",
     "*AutoValue_*.java",
     "*ServiceGrpc.java",
-    "*OuterClass.java",            # protoc generated outer class
+    "*OuterClass.java",  # protoc generated outer class
     "*$WrapperImpl.java",
     # ---- Dart / Flutter conventions ---------------------------------------
     # build_runner codegen outputs — linked from their source file via
     # ``part`` directives, regenerated by tooling, never hand-imported.
     "*.g.dart",
-    "*.freezed.dart",              # freezed data classes
-    "*.gr.dart",                   # auto_route generated router
-    "*.config.dart",               # injectable DI config
-    "*.mocks.dart",                # mockito codegen
-    "*.gen.dart",                  # flutter_gen assets
+    "*.freezed.dart",  # freezed data classes
+    "*.gr.dart",  # auto_route generated router
+    "*.config.dart",  # injectable DI config
+    "*.mocks.dart",  # mockito codegen
+    "*.gen.dart",  # flutter_gen assets
     # package:test / integration_test runners execute these directly; no
     # static importer exists. ``example/`` is pub.dev's showcase convention.
     "*_test.dart",
@@ -782,6 +789,9 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
 _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "pytest.fixture",
     "pytest.mark",
+    # Unqualified ``from pytest import fixture`` form — the decorator text is
+    # bare ``fixture``, which the dotted prefixes above never match.
+    "fixture",
     # Flask
     "app.route",
     "blueprint.route",
@@ -836,7 +846,7 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "Configuration",
     "ControllerAdvice",
     "RestControllerAdvice",
-    "Mapper",                      # MapStruct + MyBatis
+    "Mapper",  # MapStruct + MyBatis
     "SpringBootApplication",
     "SpringBootConfiguration",
     "EnableAutoConfiguration",
@@ -848,14 +858,14 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "Entity",
     "MappedSuperclass",
     "Embeddable",
-    "Converter",                   # JPA AttributeConverter
+    "Converter",  # JPA AttributeConverter
     "QuarkusMain",
     "QuarkusTest",
     "QuarkusIntegrationTest",
     "NativeImageTest",
     "MicronautApplication",
     "MicronautTest",
-    "Path",                        # JAX-RS
+    "Path",  # JAX-RS
     "Provider",
     "WebServlet",
     "WebFilter",
@@ -875,7 +885,7 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "EventListener",
     "TransactionalEventListener",
     "Scheduled",
-    "Schedule",                    # Quarkus
+    "Schedule",  # Quarkus
     "JmsListener",
     "KafkaListener",
     "RabbitListener",
@@ -887,6 +897,12 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "OnClose",
     "OnMessage",
     "OnError",
+    # OSGi declarative-services lifecycle. The container calls these by
+    # reflection off the component descriptor, so they are private and have no
+    # caller in source by design.
+    "Activate",
+    "Deactivate",
+    "Modified",
     "PactTestFor",
     "Pact",
     # ---- JVM: test method markers -----------------------------------
@@ -905,11 +921,11 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "AfterClass",
     "DataProvider",
     "ArchTest",
-    "Container",                   # Testcontainers
+    "Container",  # Testcontainers
     "DynamicTest",
-    "JsonCreator",                 # Jackson factory method — reflectively invoked
+    "JsonCreator",  # Jackson factory method — reflectively invoked
     "JsonProperty",
-    "Mojo",                        # Maven plugin entry
+    "Mojo",  # Maven plugin entry
     "Goal",
     "RegisterForReflection",
     # ---- JVM: routing / HTTP-verb annotations -----------------------
@@ -926,7 +942,7 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "ExceptionHandler",
     "InitBinder",
     "ModelAttribute",
-    "GET",                         # JAX-RS / Quarkus / Micronaut
+    "GET",  # JAX-RS / Quarkus / Micronaut
     "POST",
     "PUT",
     "DELETE",
@@ -955,8 +971,58 @@ _FRAMEWORK_DECORATOR_SUFFIXES: tuple[str, ...] = (
     ".command",
     ".group",
     ".callback",
+    # Registry registration (``@filter_registry.register``) is deliberately not
+    # here. It is one spelling of a rule that must also reach the bare
+    # ``@register_drainer`` form, which no dotted suffix can ever match, so
+    # ``_is_framework_registered`` carries both rather than this list carrying
+    # half.
+    # FastAPI / Flask / Sanic route decorators on a receiver the prefix list
+    # doesn't anticipate (``api = FastAPI()``, ``_repo_health_router =
+    # APIRouter()``). A decorator ending in an HTTP verb or routing method is
+    # a route registration regardless of the local variable name — the same
+    # reasoning that added ``.command`` for locally-named Click groups.
+    ".route",
+    ".get",
+    ".post",
+    ".put",
+    ".delete",
+    ".patch",
+    ".head",
+    ".options",
+    ".websocket",
+    ".middleware",
+    ".exception_handler",
+    # Startup/shutdown lifecycle hooks (``@app.on_event("shutdown")``). The
+    # framework calls them and nothing imports them, exactly as for the route
+    # decorators above; the list simply never carried the hook form.
+    ".on_event",
+    # Celery apps under a non-``app``/``celery`` local name (``@worker.task``).
+    ".task",
+    # Django template tags and filters. ``@register.tag(name="result_list")``
+    # registers the function under a string key; the template then invokes it
+    # as ``{% result_list cl %}``, so no Python source ever names it. The
+    # registry object is conventionally ``register`` but is file-local, which
+    # is why this matches the suffix rather than the receiver.
+    ".tag",
+    ".filter",
+    ".simple_tag",
+    ".inclusion_tag",
 )
 
+# Languages whose idiom is a static holder class: a container the source never
+# names at a call site, because the call names only the member. C# extension
+# methods are the shape (``Guard.Against.EmptyBasket(...)`` against a
+# ``static class BasketGuards``). Kept as a set rather than inlined so widening
+# it is a deliberate, measurable act.
+_CONTAINER_USE_LANGUAGES: frozenset[str] = frozenset({"csharp"})
+
+# Annotations whose *argument* is the signal, so the base name alone cannot be
+# matched: ``@SuppressWarnings`` says nothing on its own, and only the
+# ``"unused"`` argument is the author stating that the symbol is deliberately
+# uncalled. Matched against the raw decorator text rather than its base.
+_DELIBERATELY_UNUSED_ANNOTATIONS: tuple[tuple[str, str], ...] = (
+    ("SuppressWarnings", "unused"),
+)
 
 
 # Default dynamic patterns (plugins, handlers, etc.)
@@ -983,37 +1049,39 @@ _DEFAULT_DYNAMIC_PATTERNS: tuple[str, ...] = (
 # on the first segment and treats everything as a candidate package; without
 # this guard, dotfile dirs like `.github` get reported as "zombie packages
 # with no importers" on every repo.
-_NEVER_PACKAGE_DIRS: frozenset[str] = frozenset({
-    ".github",
-    ".gitlab",
-    ".vscode",
-    ".idea",
-    ".aspire",
-    ".config",
-    ".devcenter",
-    ".devcontainer",
-    ".husky",
-    ".changeset",
-    ".azure",
-    ".azuredevops",
-    ".circleci",
-    ".buildkite",
-    ".cargo",
-    ".yarn",
-    "docs",
-    "doc",
-    "documentation",
-    "examples",
-    "scripts",
-    "assets",
-    "static",
-    "public",
-    "tests",
-    "test",
-    "benches",
-    "bench",
-    "fuzz",
-})
+_NEVER_PACKAGE_DIRS: frozenset[str] = frozenset(
+    {
+        ".github",
+        ".gitlab",
+        ".vscode",
+        ".idea",
+        ".aspire",
+        ".config",
+        ".devcenter",
+        ".devcontainer",
+        ".husky",
+        ".changeset",
+        ".azure",
+        ".azuredevops",
+        ".circleci",
+        ".buildkite",
+        ".cargo",
+        ".yarn",
+        "docs",
+        "doc",
+        "documentation",
+        "examples",
+        "scripts",
+        "assets",
+        "static",
+        "public",
+        "tests",
+        "test",
+        "benches",
+        "bench",
+        "fuzz",
+    }
+)
 
 
 # Path segments that indicate test fixture / sample data directories.
@@ -1035,17 +1103,107 @@ _FIXTURE_PATH_SEGMENTS: tuple[str, ...] = (
 # ``namespace JSX`` block is an integration point with the JSX
 # transformer, not dead code. The set is intentionally small and
 # targeted; anything broader risks masking genuinely-unused exports.
-_TS_JSX_NAMESPACE_TYPES: frozenset[str] = frozenset({
-    "IntrinsicElements",
-    "IntrinsicAttributes",
-    "IntrinsicClassAttributes",
-    "Element",
-    "ElementType",
-    "ElementClass",
-    "ElementAttributesProperty",
-    "ElementChildrenAttribute",
-    "LibraryManagedAttributes",
-})
+_TS_JSX_NAMESPACE_TYPES: frozenset[str] = frozenset(
+    {
+        "IntrinsicElements",
+        "IntrinsicAttributes",
+        "IntrinsicClassAttributes",
+        "Element",
+        "ElementType",
+        "ElementClass",
+        "ElementAttributesProperty",
+        "ElementChildrenAttribute",
+        "LibraryManagedAttributes",
+    }
+)
+
+
+@lru_cache(maxsize=8)
+def _never_flag_regex(patterns: tuple[str, ...]) -> re.Pattern[str]:
+    """Compile *patterns* into one alternation regex equivalent to fnmatch.
+
+    ``fnmatch.fnmatch(path, p)`` normcases both sides and matches the
+    translated glob; doing that per (node x pattern) costs ~540 fnmatch
+    calls per node and dominated the whole dead-code pass (measured: 50s of
+    a 51s analyze() on a 13k-node graph, mostly Windows ``normcase``).
+    One pre-normcased alternation keeps the exact same match semantics at
+    one regex match per node.
+    """
+    return re.compile("|".join(fnmatch.translate(os.path.normcase(p)) for p in patterns))
+
+
+@lru_cache(maxsize=8)
+def _never_flag_suffix_index(
+    patterns: tuple[str, ...],
+) -> tuple[re.Pattern[str] | None, dict[str, re.Pattern[str]], tuple[int, ...]]:
+    """Split *patterns* into suffix-keyed buckets that can be skipped wholesale.
+
+    ``_never_flag_regex`` puts all 579 patterns in one alternation, and
+    ``.match()`` tries every branch at position 0 — most of them beginning
+    ``.*``, so each branch scans the path. Measured cold on a 63k-node repo
+    that is 206 microseconds per unique path and 12.8s of an 18.1s dead-code
+    analysis, the single largest cost in the pass.
+
+    The filter is sound because ``fnmatch.translate`` ends *each* alternative
+    with ``\\Z`` and the join keeps that per-branch (``(?s:A)\\Z|(?s:B)\\Z``),
+    so every branch has to match the whole string. A pattern whose text after
+    its last ``*`` is the literal ``S`` can therefore only match a path ending
+    in ``S``: testing it against a path that does not end in ``S`` is wasted
+    work, never a dropped match. Patterns ending in ``*`` constrain nothing at
+    the tail and stay in one always-tried group.
+
+    Within a bucket the branches keep their original translated form, so the
+    atomic groups ``fnmatch`` emits for interior ``*literal`` runs — which
+    commit to the first occurrence and never retry a later one — behave
+    exactly as they did in the single alternation. Alternation order does not
+    matter to a boolean "did anything match".
+
+    Returns ``(always_tried_regex_or_None, {suffix: regex}, suffix_lengths)``.
+    """
+    always: list[str] = []
+    by_suffix: dict[str, list[str]] = {}
+    for pattern in patterns:
+        norm = os.path.normcase(pattern)
+        # No pattern in the set uses ``?`` or a character class (checked by
+        # test_never_flag_suffix_index_covers_pattern_shapes), so the text
+        # after the last ``*`` is a plain literal tail.
+        suffix = norm.rsplit("*", 1)[-1]
+        translated = fnmatch.translate(norm)
+        if suffix:
+            by_suffix.setdefault(suffix, []).append(translated)
+        else:
+            always.append(translated)
+    compiled = {s: re.compile("|".join(v)) for s, v in by_suffix.items()}
+    return (
+        re.compile("|".join(always)) if always else None,
+        compiled,
+        tuple(sorted({len(s) for s in compiled})),
+    )
+
+
+@lru_cache(maxsize=131072)
+def never_flag_match(path: str) -> bool:
+    """Memoized never-flag match for the default pattern set.
+
+    Equivalent to ``_never_flag_regex(_NEVER_FLAG_PATTERNS).match(...)``, and
+    pinned to it path-for-path by ``test_never_flag_regex.py``. Pure function
+    of *path*: the pattern set is a module constant, so process-wide
+    memoization is sound. The detector passes ask about the same node ids
+    repeatedly (every graph node is checked by the unreachable-files and the
+    unused-exports passes), which is what the cache is for; this function is
+    what the *first* ask of each id costs.
+    """
+    norm = os.path.normcase(path)
+    always, by_suffix, suffix_lengths = _never_flag_suffix_index(_NEVER_FLAG_PATTERNS)
+    if always is not None and always.match(norm):
+        return True
+    for length in suffix_lengths:
+        if length > len(norm):
+            break
+        bucket = by_suffix.get(norm[-length:])
+        if bucket is not None and bucket.match(norm):
+            return True
+    return False
 
 
 def _is_fixture_path(path: str) -> bool:

@@ -29,14 +29,12 @@ cache next to it.
 
 from __future__ import annotations
 
-import contextlib
-import os
-import pickle
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import structlog
+
+from repowise.core.cache_seal import dump_sealed_pickle, load_sealed_pickle
 
 from .limits import DuplicationLimits
 
@@ -95,8 +93,7 @@ def load_pair_index(
     """Load and validate the artifact; ``None`` on any mismatch/error."""
     path = Path(cache_dir) / _INDEX_FILENAME
     try:
-        with path.open("rb") as fh:
-            payload = pickle.load(fh)
+        payload = load_sealed_pickle(path, domain=_INDEX_FILENAME)
         if (
             payload.get("version") != _INDEX_VERSION
             or payload.get("window_tokens") != window_tokens
@@ -116,7 +113,7 @@ def load_pair_index(
         )
     except FileNotFoundError:
         return None
-    except Exception as exc:  # corrupt / unreadable -> full re-detect
+    except Exception as exc:  # corrupt / unsigned / unreadable -> full re-detect
         log.debug("duplication_pair_index_load_failed", error=str(exc))
         return None
 
@@ -125,7 +122,6 @@ def save_pair_index(cache_dir: Path, index: DuplicationPairIndex) -> None:
     """Atomically persist *index*; failures degrade to a future full run."""
     path = Path(cache_dir) / _INDEX_FILENAME
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "version": _INDEX_VERSION,
             "window_tokens": index.window_tokens,
@@ -138,14 +134,6 @@ def save_pair_index(cache_dir: Path, index: DuplicationPairIndex) -> None:
             "window_budget_hit": index.window_budget_hit,
             "timed_out": index.timed_out,
         }
-        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=_INDEX_FILENAME, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as fh:
-                pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
-            os.replace(tmp_name, path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_name)
-            raise
+        dump_sealed_pickle(path, payload, domain=_INDEX_FILENAME)
     except Exception as exc:
         log.debug("duplication_pair_index_save_failed", error=str(exc))

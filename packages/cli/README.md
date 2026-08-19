@@ -57,11 +57,10 @@ repowise init [PATH] [OPTIONS]
 |--------|---------|-------------|
 | `--provider` | `anthropic` | LLM provider: `anthropic`, `openai`, `ollama`, `litellm` |
 | `--model` | provider default | Model identifier (e.g., `claude-opus-4-6`, `gpt-4o`) |
-| `--concurrency` | `5` | Max simultaneous LLM calls |
+| `--concurrency` | `10` | Max simultaneous LLM calls |
 | `--skip-tests` | off | Skip test files during generation |
 | `--resume` | off | Resume an interrupted init job from last checkpoint |
 | `--dry-run` | off | Show generation plan and cost estimate without calling the LLM |
-| `--no-batch` | off | Disable Anthropic batch API (faster wall-clock time, higher cost) |
 
 ```bash
 # Current directory, Anthropic (default)
@@ -80,9 +79,9 @@ repowise init --dry-run
 repowise init --resume
 ```
 
-**Batch API:** When using the Anthropic provider, `repowise init` uses the Message Batches API by default, which reduces cost by ~50%. Pass `--no-batch` to use streaming instead (returns results immediately, costs more).
-
 **Prompt caching:** The Anthropic provider caches the shared system prompt and repository context across all generation calls. On large repos, this typically cuts cost by 60–90%.
+
+See [`docs/reference/CLI_REFERENCE.md`](../../docs/reference/CLI_REFERENCE.md) for the full current `init` flag set (`--prose` / `--no-prose`, `--index-only`, etc.).
 
 ---
 
@@ -120,7 +119,7 @@ repowise update --since a1b2c3d
 
 ### `repowise watch`
 
-Watch a repository for file changes and automatically run `repowise update` after a debounce period. Useful during active development.
+Watch a repository for file changes and automatically run `repowise update` after a debounce period. Useful during active development: it indexes the working tree, so staged, unstaged and untracked files reach the index without a commit.
 
 ```
 repowise watch [PATH] [OPTIONS]
@@ -131,6 +130,7 @@ repowise watch [PATH] [OPTIONS]
 | `--provider` | last used | LLM provider |
 | `--model` | provider default | Model override |
 | `--debounce` | `2000` | Milliseconds to wait after the last change before updating |
+| `--index-only` | off | Skip LLM page regeneration on every trigger |
 
 ```bash
 # Watch current directory
@@ -138,9 +138,12 @@ repowise watch
 
 # Custom debounce (wait 5 seconds after last change)
 repowise watch --debounce 5000
+
+# Keep the index current without a model call per save
+repowise watch --index-only
 ```
 
-Press `Ctrl+C` to stop. Changes to `.repowise/` are automatically ignored.
+Press `Ctrl+C` to stop. Writes to `.repowise/`, `.git/`, build output, and the files repowise manages itself (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`) never trigger an update.
 
 ---
 
@@ -174,7 +177,8 @@ repowise search "AuthService" --mode symbol
 
 ### `repowise export`
 
-Export all wiki pages to files on disk in Markdown, HTML, or JSON format.
+Export wiki pages to files on disk (Markdown, HTML, or JSON), or emit the
+architecture model as [Structurizr DSL](https://structurizr.com).
 
 ```
 repowise export [PATH] [OPTIONS]
@@ -182,8 +186,12 @@ repowise export [PATH] [OPTIONS]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--format` | `markdown` | Output format: `markdown`, `html`, `json` |
-| `--output`, `-o` | `.repowise/export` | Output directory |
+| `--format` | `markdown` | `markdown`, `html`, `json`, or `structurizr` |
+| `--output`, `-o` | `.repowise/export` | Output directory (for `structurizr`, a path ending in `.dsl` names the file) |
+| `--full` | off | JSON only: include decisions, dead code, hotspots, provenance |
+| `--standalone` | off | Structurizr only: emit a complete workspace with default views |
+| `--components` | off | Structurizr only: include the component level (one box per directory) |
+| `--no-externals` | off | Structurizr only: omit third-party dependencies |
 
 ```bash
 # Export as Markdown to .repowise/export/
@@ -194,9 +202,18 @@ repowise export --format json -o ./wiki-export
 
 # Export as HTML
 repowise export --format html -o ./docs/wiki
+
+# Architecture as Structurizr DSL (model fragment by default)
+repowise export --format structurizr
+repowise export --format structurizr --standalone -o arch/
 ```
 
-The JSON output is a single `wiki_pages.json` file with all pages as an array. Markdown and HTML outputs write one file per page.
+Markdown and HTML write one file per page. JSON writes a single
+`wiki_pages.json`. Structurizr writes one `.dsl` file from the existing
+graph (no LLM). See
+[`docs/architecture/structurizr-export.md`](../../docs/architecture/structurizr-export.md)
+and the full flag set in
+[`docs/reference/CLI_REFERENCE.md`](../../docs/reference/CLI_REFERENCE.md).
 
 ---
 
@@ -339,7 +356,11 @@ repowise mcp --transport streamable-http
 repowise mcp --transport sse
 ```
 
-Exposes 16 MCP tools for querying wiki pages, symbols, the dependency graph, git analytics, ownership data, hotspots, dead code findings, and decision intelligence.
+Exposes 17 registered MCP tools (11 advertised by default in single-repo mode:
+ten flagship tools plus `list_repos`) for querying wiki pages, symbols, the
+dependency graph, git analytics, ownership data, hotspots, dead code findings,
+code health, change risk, and decision intelligence. Full surface:
+[`docs/agent/MCP_TOOLS.md`](../../docs/agent/MCP_TOOLS.md).
 
 **Claude Code setup** — add to `~/.claude/settings.json`:
 

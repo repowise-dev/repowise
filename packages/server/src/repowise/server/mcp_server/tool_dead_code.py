@@ -9,7 +9,9 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.dead_code.models import DeadCodeKind
 from repowise.core.analysis.dead_code.risk_factors import (
+    RISK_CAP_CONFIDENCE,
     effective_safe_to_delete,
     path_risk_factors,
 )
@@ -27,7 +29,9 @@ from repowise.server.mcp_server._helpers import (
     _is_workspace_mode,
     _resolve_all_contexts,
     _resolve_repo_context,
+    attach_ignored_arguments,
     filter_rows_by_attr,
+    resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
@@ -156,13 +160,27 @@ async def _get_dead_code_all_repos(
     return result_ws
 
 
+# The bands this tool tiers by, in one place: the tier descriptions quote them
+# and ``min_confidence="high"`` resolves to them, so the vocabulary the response
+# is organised by and the one it accepts cannot drift apart (#1496). Deliberately
+# this tool's own numbers — the web and CLI tier at 0.7/0.4
+# (``DEAD_CODE_CONFIDENCE`` in packages/types/src/dead-code.ts); reconciling the
+# two changes output and is not this change.
+_TIER_FLOORS: dict[str, float] = {"high": 0.8, "medium": 0.5, "low": 0.0}
+
+# The four kinds the analyzer writes, taken from the enum it writes them with
+# rather than re-listed here, so a fifth kind never reads as a caller's typo.
+_DEAD_CODE_KINDS = frozenset(k.value for k in DeadCodeKind)
+
+
 def _build_tiers_from_dicts(
     merged_findings: list[dict], limit: int, tier: str | None
 ) -> dict[str, Any]:
     """Build the high/medium/low tier structure from pre-serialized dicts."""
-    high = [f for f in merged_findings if f["confidence"] >= 0.8]
-    medium = [f for f in merged_findings if 0.5 <= f["confidence"] < 0.8]
-    low = [f for f in merged_findings if f["confidence"] < 0.5]
+    hi, med = _TIER_FLOORS["high"], _TIER_FLOORS["medium"]
+    high = [f for f in merged_findings if f["confidence"] >= hi]
+    medium = [f for f in merged_findings if med <= f["confidence"] < hi]
+    low = [f for f in merged_findings if f["confidence"] < med]
 
     def _tier_from_dicts(items: list[dict], desc: str) -> dict:
         return {
@@ -211,11 +229,32 @@ _TIER_DESC_LOW = (
 )
 
 
+def _resolve_min_confidence(value: float | str, ignored: list[dict[str, Any]]) -> float:
+    """Resolve ``min_confidence`` to a float, accepting this tool's tier names.
+
+    The response is organised by ``high`` / ``medium`` / ``low`` and each tier
+    description states its band, so those are the words a caller reaches for;
+    the parameter used to reject them outright (#1496). A numeric string is
+    accepted too, because widening the annotation to ``float | str`` is what
+    lets one through in the first place.
+    """
+    if isinstance(value, bool) or not isinstance(value, str):
+        return float(value)
+    name = value.strip()
+    if name in _TIER_FLOORS:
+        return _TIER_FLOORS[name]
+    try:
+        return float(name)
+    except ValueError:
+        resolve_enum_argument(name, _TIER_FLOORS, argument="min_confidence", ignored=ignored)
+        return RISK_CAP_CONFIDENCE
+
+
 @mcp.tool()
 async def get_dead_code(
     repo: str | None = None,
     kind: str | None = None,
-    min_confidence: float = 0.5,
+    min_confidence: float | str = RISK_CAP_CONFIDENCE,
     safe_only: bool = False,
     limit: int = 20,
     tier: str | None = None,
@@ -236,7 +275,10 @@ async def get_dead_code(
     Args:
         repo: usually omitted.
         kind: unreachable_file | unused_export | unused_internal | zombie_package.
-        min_confidence: floor, default 0.5 (0.7 = cleanup-ready only).
+            An unrecognised value is dropped and named in ignored_arguments,
+            never applied as a filter that matches nothing.
+        min_confidence: floor, default 0.4 (0.7 = cleanup-ready only). Also
+            accepts a tier name: "high" (0.8) | "medium" (0.5) | "low" (0.0).
         safe_only: deletion-ready findings only (no runtime-load risk).
         limit: max findings per tier (clamped to 25).
         tier: "high" (>=0.8) | "medium" | "low".
@@ -256,10 +298,18 @@ async def get_dead_code(
     limit = min(max(limit, 1), max_per_tier)
     limit_clamped = requested_limit > max_per_tier
 
+    # Validated before anything is fetched: an unrecognised kind or tier is
+    # dropped rather than filtered on, so the answer is the unfiltered one plus
+    # a note, not "No dead code found matching your filters" over 445 findings.
+    ignored: list[dict[str, Any]] = []
+    kind = resolve_enum_argument(kind, _DEAD_CODE_KINDS, argument="kind", ignored=ignored)
+    tier = resolve_enum_argument(tier, _TIER_FLOORS, argument="tier", ignored=ignored)
+    confidence_floor = _resolve_min_confidence(min_confidence, ignored)
+
     filters = _FindingFilters(
         kind=kind,
         safe_only=safe_only,
-        min_confidence=min_confidence,
+        min_confidence=confidence_floor,
         directory=directory,
         owner=owner,
         excluded_kinds=_compute_excluded_kinds(
@@ -280,7 +330,9 @@ async def get_dead_code(
 
     # --- repo="all": aggregate dead code across all repos ---
     if repo == "all":
-        return await _get_dead_code_all_repos(filters, limit, tier, _maybe_limit_note)
+        result_ws = await _get_dead_code_all_repos(filters, limit, tier, _maybe_limit_note)
+        attach_ignored_arguments(result_ws, ignored)
+        return result_ws
 
     # --- Single repo path ---
     ctx = await _resolve_repo_context(repo)
@@ -337,6 +389,7 @@ async def get_dead_code(
     _maybe_limit_note(result)
 
     result["_meta"] = _build_meta(repository=repository)
+    attach_ignored_arguments(result, ignored)
     collector.attach(result)
     return result
 
@@ -399,8 +452,9 @@ def _effective_safe(f: Any) -> bool:
     """Re-derive deletion-readiness for a DeadCodeFinding ORM row.
 
     Mirrors the API/CLI: the persisted boolean is only ever downgraded, never
-    trusted blindly, so config/bootstrap/database/environment/script files (and
-    findings written before risk factors existed) never read as safe-to-delete.
+    trusted blindly, so config/bootstrap/database/environment/script/asset
+    files (and findings written before risk factors existed) never read as
+    safe-to-delete.
     """
     return effective_safe_to_delete(f.confidence, f.file_path, f.safe_to_delete)
 
@@ -417,7 +471,13 @@ def _serialize_finding(f: Any, git_meta_map: dict | None = None) -> dict:
         "risk_factors": list(path_risk_factors(f.file_path)),
         "lines": f.lines,
         "last_commit_at": f.last_commit_at.isoformat() if f.last_commit_at else None,
+        # Recent churn is the top rung of the confidence ladder, so the agent
+        # gets the same reason for a low score that the web page now shows.
+        "commit_count_90d": f.commit_count_90d,
         "primary_owner": f.primary_owner,
+        # NB: age_days runs from the file's *first* commit, so it is the file's
+        # age, not how long this has been dead — the two disagree on 75% of
+        # findings. last_commit_at above is the staleness signal.
         "age_days": f.age_days,
     }
     # Phase 4: add last meaningful change date
@@ -441,16 +501,17 @@ def _build_tiers(
     With a *collector*, findings beyond the per-tier limit are captured for
     the omission store instead of being silently truncated.
     """
+    hi, med = _TIER_FLOORS["high"], _TIER_FLOORS["medium"]
     high = sorted(
-        [f for f in findings if f.confidence >= 0.8],
+        [f for f in findings if f.confidence >= hi],
         key=lambda f: (-f.confidence, -f.lines),
     )
     medium = sorted(
-        [f for f in findings if 0.5 <= f.confidence < 0.8],
+        [f for f in findings if med <= f.confidence < hi],
         key=lambda f: (-f.confidence, -f.lines),
     )
     low = sorted(
-        [f for f in findings if f.confidence < 0.5],
+        [f for f in findings if f.confidence < med],
         key=lambda f: (-f.confidence, -f.lines),
     )
 

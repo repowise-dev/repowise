@@ -89,6 +89,45 @@ class TestWalkSnapshotEquivalence:
         snap = WalkSnapshot(tree, prune_dirs=PRUNED_DIRS_DERIVED)
         assert [p.name for p in snap.iter_glob(other, "*.go")] == ["lone.go"]
 
+    def test_from_files_matches_walk_snapshot(self, tree: Path) -> None:
+        """A from_files snapshot over the walk's own file set answers every
+        query with the same results (set-wise; entry order is sorted preorder
+        rather than walk order, and extract_all sorts its output anyway)."""
+        walk_snap = WalkSnapshot(tree, prune_dirs=PRUNED_DIRS_DERIVED)
+        rel_files = [
+            p.relative_to(tree).as_posix() for p in walk_snap.iter_glob(tree, "*") if p.is_file()
+        ]
+        list_snap = WalkSnapshot.from_files(tree, rel_files)
+        for pattern in QUERIES:
+            walked = {p for p in walk_snap.iter_glob(tree, pattern) if p.is_file()}
+            listed = {p for p in list_snap.iter_glob(tree, pattern) if p.is_file()}
+            assert listed == walked, pattern
+
+    def test_from_files_reconstructs_directories(self, tree: Path) -> None:
+        list_snap = WalkSnapshot.from_files(
+            tree, ["app/settings/base.py", "pkg/settings/local.py", "pkg/sub/deep/b.go"]
+        )
+        # Directory-name pattern yields the reconstructed dirs.
+        dirs = sorted(
+            p.relative_to(tree).as_posix() for p in list_snap.iter_glob(tree, "settings")
+        )
+        assert dirs == ["app/settings", "pkg/settings"]
+        # Subtree-rooted query serves only that subtree.
+        sub = [p.name for p in list_snap.iter_glob(tree / "pkg", "*.py")]
+        assert sub == ["local.py"]
+
+    def test_from_files_hides_files_not_in_list(self, tree: Path) -> None:
+        # settings.py exists on disk but is not in the fed list: invisible.
+        list_snap = WalkSnapshot.from_files(tree, ["main.go"])
+        assert list(list_snap.iter_glob(tree, "settings.py")) == []
+        assert [p.name for p in list_snap.iter_glob(tree, "*.go")] == ["main.go"]
+
+    def test_from_files_is_deterministic(self, tree: Path) -> None:
+        rels = ["b/two.py", "a/one.py", "a/sub/three.py"]
+        first = list(WalkSnapshot.from_files(tree, rels).iter_glob(tree, "*.py"))
+        second = list(WalkSnapshot.from_files(tree, reversed(rels)).iter_glob(tree, "*.py"))
+        assert first == second
+
     def test_extractor_rglob_uses_attached_snapshot(self, tree: Path) -> None:
         from repowise.core.ingestion.dynamic_hints.base import DynamicHintExtractor
 

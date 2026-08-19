@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.signals import iso_utc
 from repowise.core.persistence import crud
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import (
@@ -16,12 +18,14 @@ from repowise.core.persistence.models import (
     GraphNode,
     WikiSymbol,
 )
+from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import Paginated, SymbolImportanceComponents, SymbolResponse
 from repowise.server.services.symbol_ranking import (
     compute_components,
     rank_symbols,
 )
+from repowise.server.services.symbol_relations import load_symbol_relations
 
 router = APIRouter(
     prefix="/api/symbols",
@@ -31,6 +35,11 @@ router = APIRouter(
 
 
 SortKey = Literal["importance", "name", "complexity", "kind"]
+
+#: Bound parameters per IN-clause. SQLite's ceiling is 32766 on current builds
+#: and it raises rather than degrading, so any list that grows with repo size
+#: gets split at a comfortable fraction of it.
+_IN_CLAUSE_CHUNK = 5000
 
 
 def _attach_signals(
@@ -84,6 +93,69 @@ async def _attach_blame(
     return items
 
 
+async def _fixed_symbol_ids(session: AsyncSession, repo_id: str) -> set[str]:
+    """Every symbol id with at least one counted bug fix, across the repo.
+
+    The rollup stores one ``symbol_id -> count`` map per file, so this is a scan
+    of the files that have fix history, not the ``fix_events`` table. Returned
+    as a set because both callers (the list filter and its counts) want
+    membership, and it is bounded by the defect window rather than by repo size.
+    """
+    rows = await session.execute(
+        select(GitMetadata.fix_symbol_counts_json).where(
+            GitMetadata.repository_id == repo_id,
+            GitMetadata.fix_symbol_counts_json.isnot(None),
+            GitMetadata.fix_symbol_counts_json != "{}",
+        )
+    )
+    fixed: set[str] = set()
+    for (raw,) in rows.all():
+        try:
+            counts = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(counts, dict):
+            fixed.update(k for k, v in counts.items() if v)
+    return fixed
+
+
+async def _attach_fix_counts(
+    session: AsyncSession, repo_id: str, items: list[SymbolResponse]
+) -> list[SymbolResponse]:
+    """Join the page's symbols against the per-file fix rollup in one query.
+
+    Mirrors :func:`_attach_blame`, and deliberately scoped to the page's files
+    so the response carries one integer per symbol rather than whole-file maps.
+
+    ``None`` means the file has no ``git_metadata`` row at all, which is genuinely
+    unknown. It does NOT distinguish "the rollup has not run" from "the rollup
+    ran and found nothing", because the column stores ``"{}"`` for both; a file
+    with a row therefore reports a real ``0``.
+    """
+    paths = {s.file_path for s in items if s.file_path}
+    if not paths:
+        return items
+    rows = await session.execute(
+        select(GitMetadata.file_path, GitMetadata.fix_symbol_counts_json).where(
+            GitMetadata.repository_id == repo_id,
+            GitMetadata.file_path.in_(paths),
+        )
+    )
+    by_path: dict[str, dict] = {}
+    for path, raw in rows.all():
+        try:
+            counts = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(counts, dict):
+            by_path[path] = counts
+    for s in items:
+        counts = by_path.get(s.file_path)
+        if counts is not None:
+            s.fix_count = int(counts.get(s.symbol_id, 0))
+    return items
+
+
 async def _file_signals(
     session: AsyncSession, repo_id: str, paths: set[str]
 ) -> tuple[dict[str, tuple[float, bool]], dict[str, tuple[float | None, bool | None]]]:
@@ -133,10 +205,11 @@ async def search_symbols(
     ),
     in_hot_files: bool = Query(False, description="Only symbols whose file is a hotspot"),
     in_entry_points: bool = Query(False, description="Only symbols in entry-point files"),
+    bug_fixed: bool = Query(False, description="Only symbols with a counted bug fix"),
     sort: SortKey = Query("importance", description="Sort key"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> Paginated[SymbolResponse]:
     """Search symbols by name/kind/language with importance-aware ranking.
 
@@ -148,7 +221,7 @@ async def search_symbols(
 
     base = select(WikiSymbol).where(WikiSymbol.repository_id == repo_id)
     if q:
-        base = base.where(WikiSymbol.name.ilike(f"%{q}%"))
+        base = base.where(WikiSymbol.name.ilike(f"%{escape_like(q)}%", escape=LIKE_ESCAPE))
     if kind:
         base = base.where(WikiSymbol.kind == kind)
     if language:
@@ -186,6 +259,25 @@ async def search_symbols(
             )
             ep_set = {r.node_id for r in ep_paths}
             base = base.where(WikiSymbol.file_path.in_(ep_set or {""}))
+
+    # Symbol-level, unlike the two file-level filters above: a bug-fixed file
+    # says little about the one function you are looking at.
+    if bug_fixed:
+        fixed = await _fixed_symbol_ids(session, repo_id)
+        if not fixed:
+            base = base.where(WikiSymbol.symbol_id.is_(None))
+        else:
+            # Chunked: `fixed` is every symbol repo-wide with a counted fix, and
+            # on a large actively-fixed repo that is thousands of ids. SQLite
+            # caps bound parameters (32766 on current builds) and hard-fails
+            # past it, so the IN-list is split rather than left to grow with the
+            # repo.
+            ids = sorted(fixed)
+            clauses = [
+                WikiSymbol.symbol_id.in_(ids[i : i + _IN_CLAUSE_CHUNK])
+                for i in range(0, len(ids), _IN_CLAUSE_CHUNK)
+            ]
+            base = base.where(or_(*clauses))
 
     total = await session.scalar(select(func.count()).select_from(base.subquery())) or 0
 
@@ -247,6 +339,7 @@ async def search_symbols(
             )
 
     items = await _attach_blame(session, repo_id, items)
+    items = await _attach_fix_counts(session, repo_id, items)
     next_offset = offset + limit if offset + limit < total else None
     return Paginated[SymbolResponse](
         items=items,
@@ -260,7 +353,7 @@ async def search_symbols(
 async def symbol_detail(
     repo_id: str = Query(..., description="Repository ID"),
     symbol_id: str = Query(..., description="Symbol ID ({path}::{name})"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Everything the symbol entity page renders, in one call.
 
@@ -299,44 +392,12 @@ async def symbol_detail(
     )
     [symbol] = await _attach_blame(session, repo_id, [symbol])
 
-    # Callers/callees from the symbol graph (call + heritage edges).
-    callers: list[dict] = []
-    callees: list[dict] = []
+    # Callers/callees from the symbol graph. The filter is what makes the
+    # comment true: unfiltered, a symbol's inbound containment edge — from its
+    # own declaring file or class, which 34,570 of 34,808 symbols on this repo
+    # have — was served as a caller.
     node = await crud.get_graph_node(session, repo_id, symbol_id)
-    if node is not None:
-        edges = await crud.get_graph_edges_for_node(
-            session, repo_id, symbol_id, direction="both", limit=40
-        )
-        other_ids = {
-            e.source_node_id if e.source_node_id != symbol_id else e.target_node_id for e in edges
-        }
-        node_map = await crud.get_graph_nodes_by_ids(session, repo_id, list(other_ids))
-        for e in edges:
-            inbound = e.target_node_id == symbol_id
-            other_id = e.source_node_id if inbound else e.target_node_id
-            other = node_map.get(other_id)
-            entry = {
-                "symbol_id": other_id,
-                "name": other.name
-                if other and other.name
-                else (other_id.split("::")[-1] if "::" in other_id else other_id),
-                "kind": other.kind if other else "unknown",
-                "file": other.file_path
-                if other and other.file_path
-                else (other_id.split("::")[0] if "::" in other_id else other_id),
-                "start_line": other.start_line if other else None,
-                "edge_type": e.edge_type or "calls",
-                "confidence": round(e.confidence or 0.0, 3),
-            }
-            (callers if inbound else callees).append(entry)
-        callers.sort(key=lambda x: (-x["confidence"], x["name"]))
-        callees.sort(key=lambda x: (-x["confidence"], x["name"]))
-
-    degrees = (
-        await crud.get_node_degree_counts(session, repo_id, symbol_id)
-        if node is not None
-        else {"in_degree": 0, "out_degree": 0}
-    )
+    relations = await load_symbol_relations(session, repo_id, symbol_id, present=node is not None)
 
     governing = [
         {"id": d.id, "title": d.title, "status": d.status}
@@ -358,21 +419,57 @@ async def symbol_detail(
         "symbol": symbol.model_dump(mode="json"),
         "graph": {
             "pagerank": round((node.pagerank if node else 0.0) or 0.0, 6),
-            "in_degree": degrees["in_degree"],
-            "out_degree": degrees["out_degree"],
-            "callers": callers,
-            "callees": callees,
+            # Degree across every use edge type, so it stays a graph metric
+            # rather than a second, disagreeing caller count. Summed from the
+            # counts the rows were cut from — it is NOT `caller_total`, which
+            # is calls only, and a surface wanting "N callers" wants that one.
+            "in_degree": relations.in_degree,
+            "out_degree": relations.out_degree,
+            # Calls only. Every other relation kind is carried by `relations`
+            # under its own name, so a subclass is no longer served as a caller.
+            "callers": [r.model_dump(mode="json") for r in relations.callers],
+            "callees": [r.model_dump(mode="json") for r in relations.callees],
+            # True counts. `len(callers)` is the cap, not the answer.
+            "caller_total": relations.caller_total,
+            "callee_total": relations.callee_total,
+            "relations": [g.model_dump(mode="json") for g in relations.groups],
         },
         "governing_decisions": governing,
         "file_context": file_context,
+        # Symbol-level fix history, read off the file rollup already loaded
+        # above, so no extra query and no `fix_events` scan to recompute a
+        # number the rollup stores. None on a pre-rollup index.
+        "fix_count": _symbol_fix_count(git_meta, symbol_id),
+        # Reuses the health signals serializer so the offset is attached the
+        # same way here as on every other surface: SQLite hands these back
+        # naive, and a naive ISO string is parsed as LOCAL time by JS.
+        "fix_last_at": iso_utc(getattr(git_meta, "last_fix_at", None)),
     }
+
+
+def _symbol_fix_count(git_meta: object | None, symbol_id: str) -> int | None:
+    """How many counted bug fixes landed in *symbol_id*, or ``None`` if unknown.
+
+    The rollup stores the whole file's ``symbol_id -> count`` map, so this is a
+    dict lookup. ``None`` means there is no ``git_metadata`` row for the file;
+    a row with an empty map reports a real ``0``, since the column cannot tell
+    "the rollup has not run" from "it ran and found nothing".
+    """
+    if git_meta is None:
+        return None
+    raw = getattr(git_meta, "fix_symbol_counts_json", None) or "{}"
+    try:
+        counts = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return int(counts.get(symbol_id, 0)) if isinstance(counts, dict) else None
 
 
 @router.get("/by-name/{name}", response_model=list[SymbolResponse])
 async def lookup_by_name(
     name: str,
     repo_id: str = Query(..., description="Repository ID"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> list[SymbolResponse]:
     """Look up symbols by exact or fuzzy name match.
 
@@ -393,7 +490,7 @@ async def lookup_by_name(
         select(WikiSymbol)
         .where(
             WikiSymbol.repository_id == repo_id,
-            WikiSymbol.name.ilike(f"%{name}%"),
+            WikiSymbol.name.ilike(f"%{escape_like(name)}%", escape=LIKE_ESCAPE),
         )
         .limit(10)
     )
@@ -404,7 +501,7 @@ async def lookup_by_name(
 @router.get("/{symbol_db_id}", response_model=SymbolResponse)
 async def get_symbol(
     symbol_db_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> SymbolResponse:
     """Get a single symbol by its database ID."""
 

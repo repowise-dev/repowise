@@ -13,7 +13,7 @@ from repowise.server.deps import get_db_session
 
 async def with_repo(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> Repository:
     """Resolve the repository or raise 404.
 
@@ -26,11 +26,6 @@ async def with_repo(
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
     return repo
-
-
-def _escape_like(s: str) -> str:
-    """Escape special characters for SQL LIKE patterns."""
-    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 async def _get_documented_paths(session: AsyncSession, repo_id: str) -> set[str]:

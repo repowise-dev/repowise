@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repowise"
-version = "0.31.0"
+version = "0.44.0"
 description = "The codebase intelligence layer for your AI coding agent — dependency graph, git history, dead code, decisions, and code health, exposed over MCP"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -49,8 +49,16 @@ dependencies = [
     "tree-sitter-swift>=0.0.1",
     "tree-sitter-scala>=0.23,<1",
     "tree-sitter-php>=0.23,<1",
+    "tree-sitter-pascal>=0.11,<1",
     "tree-sitter-luau>=1.2,<2",
     "tree-sitter-bash>=0.23,<1",
+    # Markup grammars for single-file components: these locate <script> blocks
+    # and markup expressions only; the JS inside them is parsed with the
+    # TypeScript grammar (see sfc_source.py). There is no tree-sitter-vue on
+    # PyPI — the HTML grammar parses a .vue SFC cleanly, since <template>,
+    # <script> and <style> are just elements to it.
+    "tree-sitter-svelte>=1,<2",
+    "tree-sitter-html>=0.23,<1",
     # SQL parsing (multi-dialect, error-tolerant, pure Python)
     "sqlglot>=26,<28",
     # Dependency graph
@@ -85,7 +93,7 @@ dependencies = [
     "uvicorn[standard]>=0.32,<1",
     "mcp>=1.0,<2",
     "apscheduler>=3.10,<4",
-    "cryptography>=48.0.1,<49",
+    "cryptography>=50.0.0,<51",
     # LLM providers (bundled — no extras needed)
     "anthropic>=0.40,<1",
     "openai>=1.50,<3",
@@ -122,7 +130,7 @@ repowise-rewrite = "repowise.cli.rewrite_hook:main"
 Homepage = "https://github.com/repowise-dev/repowise"
 Repository = "https://github.com/repowise-dev/repowise"
 Issues = "https://github.com/repowise-dev/repowise/issues"
-Documentation = "https://github.com/repowise-dev/repowise/blob/main/docs/USER_GUIDE.md"
+Documentation = "https://github.com/repowise-dev/repowise/blob/main/docs/start/USER_GUIDE.md"
 
 # ---------------------------------------------------------------------------
 # setuptools — auto-discover packages across three src/ roots
@@ -145,6 +153,12 @@ namespaces = true
 # core (the neutral home shared by cli + server). Kept in sync with the
 # canonical docs/CHANGELOG.md by a drift-guard test (see tests/unit/upgrade).
 "repowise.core.upgrade" = ["_data/CHANGELOG.md"]
+# Codex slash commands. A Codex plugin manifest has no slot for commands, so
+# ~/.codex/prompts is the only surface that yields one and the CLI is the only
+# thing that can write it, which means the content has to be in the wheel.
+# Generated from plugins/shared/commands/ by scripts/gen_plugin_content.py and
+# pinned by tests/unit/cli/test_plugin_content.py.
+"repowise.cli.agent_targets" = ["_data/codex_prompts/*.md"]
 
 # ---------------------------------------------------------------------------
 # uv workspace (kept for local development)
@@ -175,6 +189,10 @@ dev = [
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+# Language sample fixtures are analyzer *inputs*, not code we run. Several are
+# deliberately malformed (undefined names, unclosed file handles) because that is
+# exactly the finding the test asserts on. Linting them would fail forever.
+extend-exclude = ["tests/fixtures/lang_samples"]
 
 [tool.ruff.lint]
 select = [
@@ -188,11 +206,36 @@ select = [
     "RUF", # ruff-specific rules
 ]
 ignore = [
-    "E501",  # line too long (handled by formatter)
+    "E501",    # line too long (handled by formatter)
+    "RUF001",  # ambiguous unicode in strings — we ship prose with – — → in it
+    "RUF002",  # ambiguous unicode in docstrings
+    "RUF003",  # ambiguous unicode in comments
 ]
 
 [tool.ruff.lint.isort]
 known-first-party = ["repowise"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency markers are evaluated once at import and are immutable by
+# design, so B008 (function call in default argument) does not apply to them.
+# Listed explicitly rather than ignoring B008 outright, which would also hide the
+# genuine mutable-default bugs the rule exists to catch.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Header",
+    "fastapi.Body",
+    "fastapi.Form",
+    "fastapi.File",
+    "fastapi.Cookie",
+    "fastapi.Security",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests favour readability over naming purity: fixtures shadow builtins, helper
+# classes mirror the CamelCase names of the things they stand in for.
+"tests/**/*.py" = ["N802", "N806", "N818"]
 
 # ---------------------------------------------------------------------------
 # mypy — strict type checking

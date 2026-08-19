@@ -36,6 +36,49 @@ from repowise.core.persistence.models import DecisionRecord, GitMetadata
 # needs and doesn't want ADR-driven hedging).
 _WHY_PATTERN = re.compile(r"\bwhy\b", re.IGNORECASE)
 
+# Heuristic for "how does X work" mechanism questions. Two precise signals, both
+# tuned to avoid the union path's two failure directions:
+#
+#   * ``_MECHANISM_HOW_RE`` — "how" as a whole word, but NOT the quantity/degree
+#     phrasings ("how many/much/long/large/big/old/often"), which are VALUE
+#     questions, nor "how come" (a "why" in disguise). "How does X verify …" is
+#     mechanism; "how many definitions of X" is not.
+#   * ``_MECHANISM_LEAD_RE`` — an imperative walkthrough verb at the START of the
+#     question ("explain …", "trace …", "walk me through …"). Anchored to the
+#     lead so it fires on "Explain how bounds heal" but not on a naming question
+#     that merely contains the word ("where is the trace helper defined").
+#
+# A bare mechanism VERB anywhere in the sentence is deliberately NOT a signal: it
+# false-fires on lookup questions ("where is compute_score defined", "what does
+# route_request return") that the union-of-bodies reply answers correctly. On the
+# real question distribution every mechanism question leads with "how" or an
+# imperative, so the verb-anywhere path bought recall we don't need at a precision
+# cost we can't afford — dropped.
+_MECHANISM_HOW_RE = re.compile(
+    r"\bhow\b(?!\s+(?:many|much|long|large|big|old|often|frequently|come)\b)",
+    re.IGNORECASE,
+)
+_MECHANISM_LEAD_RE = re.compile(
+    r"^\s*(?:explain|describe|trace|outline|walk(?:\s+me)?\s+through|step\s+through)\b",
+    re.IGNORECASE,
+)
+
+
+def is_mechanism_question(question: str) -> bool:
+    """True when the question asks HOW a mechanism works, not merely names a symbol.
+
+    "How does get_symbol verify bounds?" is a mechanism question whose answer may
+    live in a *different* file than the named symbol's body — so the exact-name
+    union fast path (which just dumps the named symbol's definitions) is the wrong
+    reply, even for a small union. A bare naming/lookup question ("what does X
+    return", "where is Y defined") or a value question ("how many definitions of
+    X") is not a mechanism question and still unions.
+    """
+    if not question:
+        return False
+    return bool(_MECHANISM_HOW_RE.search(question) or _MECHANISM_LEAD_RE.search(question))
+
+
 # How many decision records to inject, and per-record truncation. Three is
 # usually enough — most files are governed by 0–2 active ADRs; 3 gives room
 # for one tangential overlap without blowing the context budget.
@@ -51,7 +94,15 @@ _MAX_PRELUDE_COMMITS_PER_HIT = 2
 # have to thread through the orchestrator.
 _MAX_SYMBOL_DOC_CHARS = 120
 _MATCHED_SYMBOL_DOC_CHARS = 400
+# A hit's fallback text is a one-line LLM summary or a 200-char page opener,
+# so 800 is already generous for those.
 _MAX_CHARS_PER_HIT_SUMMARY = 800
+# A real page excerpt is a different thing and gets its own cap. It was
+# sharing the summary cap, which truncated fetched page content to less than
+# half of what the fetch had asked the database for. This value must stay at
+# or above the fetch size — tool_answer.answer checks that at import time,
+# since the fetch size lives in another module.
+_MAX_CHARS_PER_HIT_EXCERPT = 1500
 
 
 def is_why_question(question: str) -> bool:
@@ -164,9 +215,7 @@ async def build_structured_prelude(
         sections.append(f"Recent significant commits: {commits_line}")
 
     if decisions:
-        titles = "; ".join(
-            f"{d['title']} ({d['status']})" for d in decisions
-        )
+        titles = "; ".join(f"{d['title']} ({d['status']})" for d in decisions)
         sections.append(f"Decision records touching these files: {titles}")
 
     if not sections:
@@ -188,7 +237,7 @@ def _top_symbols_summary(hits: list[dict]) -> str:
                 name = s.get("name") or s.get("signature") or ""
                 kind = s.get("kind") or "?"
                 if name:
-                    matched.append(f"{name} ({kind}) in {h.get('target_path','')}")
+                    matched.append(f"{name} ({kind}) in {h.get('target_path', '')}")
             if len(matched) >= 4:
                 break
         if len(matched) >= 4:
@@ -208,9 +257,7 @@ def _top_symbols_summary(hits: list[dict]) -> str:
     return ""
 
 
-async def _recent_commits_summary(
-    hits: list[dict], ctx: Any, repo_id: str
-) -> str:
+async def _recent_commits_summary(hits: list[dict], ctx: Any, repo_id: str) -> str:
     """Short summary of significant commits across the top hits.
 
     GitMetadata.significant_commits_json is already filtered by the indexer
@@ -263,6 +310,7 @@ def build_context_block(
     decisions: list[dict] | None = None,
     *,
     max_chars_per_hit: int = _MAX_CHARS_PER_HIT_SUMMARY,
+    max_chars_per_excerpt: int = _MAX_CHARS_PER_HIT_EXCERPT,
 ) -> str:
     """Format the LLM prompt body: prelude + decisions block + per-hit excerpts.
 
@@ -276,7 +324,7 @@ def build_context_block(
         parts.append(prelude.rstrip())
     if decisions:
         parts.append(_format_decisions_block(decisions))
-    parts.append(_format_hits_block(hits, max_chars_per_hit))
+    parts.append(_format_hits_block(hits, max_chars_per_hit, max_chars_per_excerpt))
     return "\n\n".join(p for p in parts if p)
 
 
@@ -292,12 +340,24 @@ def _format_decisions_block(decisions: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _format_hits_block(hits: list[dict], max_chars_per_hit: int) -> str:
+def _format_hits_block(
+    hits: list[dict],
+    max_chars_per_hit: int,
+    max_chars_per_excerpt: int = _MAX_CHARS_PER_HIT_EXCERPT,
+) -> str:
     """Format the per-hit excerpts. Mirrors the prior tool_answer behaviour."""
     parts: list[str] = []
     for i, h in enumerate(hits, start=1):
-        body_src = h.get("summary") or h.get("snippet") or ""
-        body = body_src[:max_chars_per_hit]
+        # Prefer a real page excerpt when one was attached, so the LLM reads
+        # the page's actual prose rather than a one-line summary of it. It is
+        # capped separately: the excerpt's size was already decided by the
+        # fetch, and re-applying the (smaller) summary cap here threw away
+        # content the query had paid for.
+        excerpt = h.get("excerpt") or ""
+        if excerpt:
+            body = excerpt[:max_chars_per_excerpt]
+        else:
+            body = (h.get("summary") or h.get("snippet") or "")[:max_chars_per_hit]
         # Tag expanded hits so the LLM knows they didn't surface in retrieval
         # directly — useful context when deciding how much weight to put on
         # them in the answer.
@@ -305,8 +365,8 @@ def _format_hits_block(hits: list[dict], max_chars_per_hit: int) -> str:
         sources = h.get("_sources") or set()
         src_tag = f" [{'+'.join(sorted(sources))}]" if sources else ""
         block = [
-            f"[{i}] {h.get('target_path','')} (score={h.get('score', 0.0):.3f}){tag}{src_tag}",
-            f"    title: {h.get('title','')}",
+            f"[{i}] {h.get('target_path', '')} (score={h.get('score', 0.0):.3f}){tag}{src_tag}",
+            f"    title: {h.get('title', '')}",
             f"    summary: {body}",
         ]
         symbols = h.get("symbols") or []

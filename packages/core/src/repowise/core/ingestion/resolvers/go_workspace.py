@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from ..source_text import source_text
 from .go import read_go_modules
 
 if TYPE_CHECKING:
@@ -59,7 +60,17 @@ class GoPackageIndex:
     """Maps a fully-qualified import path → its package directory."""
 
     def files_for_import(self, import_path: str) -> tuple[str, ...]:
-        """Return every ``.go`` file in the package the import resolves to.
+        """Return the *importable* ``.go`` files of the package the import names.
+
+        ``_test.go`` files are excluded: they are compiled only into their own
+        package's test binary and are never part of the surface an importer
+        sees, so fanning an import out onto them asserts a dependency that
+        cannot exist. Left in, they let unrelated packages' test files reach
+        each other and close large false import cycles (issue #1294).
+
+        ``GoPackage.files`` keeps the full list — sibling cohesion, dead-code
+        rescue, and type-reference resolution all need test files to be part of
+        their own package. Only the *import* surface is narrowed here.
 
         Empty tuple when the import path is not a local package (e.g. an
         external ``github.com/...`` dependency) — callers fall back to the
@@ -69,7 +80,9 @@ class GoPackageIndex:
         if pkg_dir is None:
             return ()
         pkg = self.packages.get(pkg_dir)
-        return pkg.files if pkg else ()
+        if not pkg:
+            return ()
+        return tuple(f for f in pkg.files if not f.endswith("_test.go"))
 
     def package_for_file(self, file_path: str) -> GoPackage | None:
         """Return the package owning *file_path*, or None."""
@@ -118,13 +131,13 @@ def _scan_go_file(text: str) -> tuple[str, bool, bool, bool, bool]:
     return pkg_name, pkg_name == "main", build_constrained, has_init, has_main_func
 
 
-def _read_text(ctx: "ResolverContext", rel_path: str) -> str:
+def _read_text(ctx: ResolverContext, rel_path: str) -> str:
     if ctx.repo_path is None:
         return ""
-    try:
-        return (ctx.repo_path / rel_path).read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return ""
+    # ``getattr``: the call resolver builds this index from a stand-in
+    # context with no source map (``call_resolver._Ctx``).
+    source_map = getattr(ctx, "source_map", None)
+    return source_text(rel_path, ctx.repo_path / rel_path, source_map) or ""
 
 
 def _import_path_for_dir(
@@ -139,10 +152,11 @@ def _import_path_for_dir(
     best: tuple[str, str] | None = None
     best_len = -1
     for module_dir, mod_path in go_modules:
-        if module_dir == "" or pkg_dir == module_dir or pkg_dir.startswith(module_dir + "/"):
-            if len(module_dir) > best_len:
-                best = (module_dir, mod_path)
-                best_len = len(module_dir)
+        if (
+            module_dir == "" or pkg_dir == module_dir or pkg_dir.startswith(module_dir + "/")
+        ) and len(module_dir) > best_len:
+            best = (module_dir, mod_path)
+            best_len = len(module_dir)
     if best is None:
         return None
     module_dir, mod_path = best
@@ -150,7 +164,7 @@ def _import_path_for_dir(
     return f"{mod_path}/{suffix}" if suffix else mod_path
 
 
-def build_go_package_index(ctx: "ResolverContext") -> GoPackageIndex:
+def build_go_package_index(ctx: ResolverContext) -> GoPackageIndex:
     """Group every ``.go`` file in ``ctx.path_set`` by package directory.
 
     One walk over the path set; each file is read at most once to detect
@@ -217,7 +231,7 @@ def build_go_package_index(ctx: "ResolverContext") -> GoPackageIndex:
 _INDEX_KEY = "_go_package_index"
 
 
-def get_or_build_go_index(ctx: "ResolverContext") -> GoPackageIndex:
+def get_or_build_go_index(ctx: ResolverContext) -> GoPackageIndex:
     """Return the cached GoPackageIndex, building it on first access."""
     cached = getattr(ctx, _INDEX_KEY, None)
     if cached is not None:

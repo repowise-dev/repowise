@@ -206,3 +206,39 @@ async def test_neither_id_nor_symbol_id_returns_shaped_error(setup_mcp, repo_on_
 
     result = await get_symbol()
     assert "required" in (result.get("error") or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_generated_schema_advertises_id_alias():
+    """The runtime ``id``-vs-``symbol_id`` coercion only helps if ``id`` is
+    actually advertised to clients. FastMCP builds each tool's inputSchema by
+    introspecting the live function signature, so a client validates its call
+    against that schema *before* the body runs. The direct-call tests above
+    bypass that boundary; this pins the advertised contract itself.
+
+    Reads the schema the way a client does — ``FastMCP.list_tools()`` returns
+    ``mcp.types.Tool`` objects whose ``inputSchema`` is the JSON schema sent
+    over the wire. Fails if ``id`` (or ``symbol_id``) is dropped from the
+    signature."""
+    from repowise.server.mcp_server import mcp
+
+    tools = await mcp.list_tools()
+    tool = next((t for t in tools if t.name == "get_symbol"), None)
+    assert tool is not None, "get_symbol is not registered on the MCP surface"
+
+    props = tool.inputSchema.get("properties", {})
+    # Both the canonical name and its alias must be advertised...
+    assert "symbol_id" in props
+    assert "id" in props, (
+        "get_symbol no longer advertises the `id` alias in its generated "
+        "schema; clients calling id= will be rejected at the validation "
+        "boundary before the runtime coercion can run"
+    )
+
+    # ...and `id` must be an optional string (str | None = None), not required.
+    id_schema = props["id"]
+    accepts_string = id_schema.get("type") == "string" or any(
+        variant.get("type") == "string" for variant in id_schema.get("anyOf", [])
+    )
+    assert accepts_string, f"`id` is not typed as a string: {id_schema}"
+    assert "id" not in tool.inputSchema.get("required", [])

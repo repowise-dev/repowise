@@ -140,6 +140,38 @@ def test_test_to_production_pair_is_filtered():
     assert HiddenCouplingDetector().detect(ctx) == []
 
 
+def test_test_support_is_test_material_when_paired_with_production():
+    """``conftest.py`` against a production file is an expected test/production
+    pairing, so it is filtered like any test would be.
+
+    Both ends go through the one shared classifier, which counts fixture plugins
+    as test material (#1103). Two *test-material* files are a different case and
+    still score — the rule only skips the asymmetric pairing.
+    """
+    ctx = _ctx(
+        "tests/conftest.py",
+        partners={"src/cart.py": 18},
+        self_commits=20,
+        repo_commits={"src/cart.py": 22},
+    )
+    assert HiddenCouplingDetector().detect(ctx) == []
+
+
+def test_production_path_containing_the_word_test_is_not_test_material():
+    """``src/latest/`` is production on both ends, so the pair is still scored.
+
+    An unanchored ``test[s_/]`` match would classify ``src/latest/api.py`` as a
+    test and filter this pair away as an expected test/production pairing.
+    """
+    ctx = _ctx(
+        "src/latest/api.py",
+        partners={"src/billing.py": 18},
+        self_commits=20,
+        repo_commits={"src/billing.py": 22},
+    )
+    assert HiddenCouplingDetector().detect(ctx) != []
+
+
 def test_findings_capped_at_top_three_partners():
     partners = {
         "src/a.py": 18,

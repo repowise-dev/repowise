@@ -53,11 +53,37 @@ class TestClassify:
             ("mypy packages", "lint_output"),
             ("cargo clippy", "lint_output"),
             ("golangci-lint run", "lint_output"),
+            # install logs
+            ("pip install flask", "install_output"),
+            ("uv pip install requests rich", "install_output"),
+            ("uv sync", "install_output"),
+            ("npm ci", "install_output"),
+            ("npm install", "install_output"),
+            ("poetry install", "install_output"),
+            ("cargo install ripgrep", "install_output"),
+            ("brew install jq", "install_output"),
+            # infra plans
+            ("terraform plan", "infra_plan"),
+            ("tofu plan -out plan.bin", "infra_plan"),
+            ("helm diff upgrade myrel ./chart", "infra_plan"),
             # git
             ("git status", "git_status"),
             ("git log --oneline -20", "git_log"),
             ("git diff main", "git_diff"),
             ("git show HEAD~2", "git_diff"),
+            # `gh pr diff` emits a unified diff, so it distills as one. Only
+            # this subcommand: `gh` at large can merge and close.
+            ("gh pr diff 1277 --repo owner/name", "git_diff"),
+            # The engine has had a git_diff_stat filter since the hunk filter
+            # started skipping --stat; the hook had no pattern to reach it.
+            ("git diff --stat", "git_diff_stat"),
+            ("git show --stat HEAD", "git_diff_stat"),
+            ("git diff a..b --stat -- pkg/", "git_diff_stat"),
+            # A wrapper invoked by path is still that wrapper. Normalizing
+            # the exe path after the wrapper table left "python -m pytest",
+            # whose first token is on the ignore-list.
+            (".venv/Scripts/python.exe -m pytest tests/unit -q", "test_output"),
+            ("./.venv/bin/python -m ruff check packages/", "lint_output"),
             # search / listings / logs
             ("rg TODO src/", "search_results"),
             ("grep -rn auth .", "search_results"),
@@ -92,18 +118,23 @@ class TestClassify:
             "ssh host",
             "python script.py",
             "node server.js",
-            # compound / pipes / redirections / substitution
-            "pytest | grep FAIL",
-            "pytest && echo done",
-            "pytest || true",
-            "git status; ls",
+            # compound / pipes / redirections / substitution. Chains whose
+            # every segment is separately recognized are NOT here: those are
+            # rewritten on POSIX hosts now, and are covered by
+            # TestSafeTails::test_safe_chains_are_rewritten.
+            "pytest | awk '{print $1}'",
             "pytest > out.txt 2>&1",
             "pytest < input.txt",
             "git log `git rev-parse HEAD`",
             "pytest $(cat args.txt)",
             "pytest -x &",
             "pytest -x\ngit status",
+            # A listing family member that is really an arbitrary-command
+            # runner. The trailing `;` makes it a chain of one recognized
+            # segment, so only the action-flag guard stops it.
             "find . -name '*.tmp' -exec rm {} ;",
+            "find . -name '*.tmp' -delete",
+            "fd -e tmp -x rm",
             # watch / follow modes
             "vitest --watch",
             "npm test -- --watchAll",
@@ -111,7 +142,6 @@ class TestClassify:
             "tail -f app.log",
             "kubectl logs --follow pod",
             # PowerShell: compound/continuation/substitution/call operator
-            "git status; git log --oneline -5",
             "git log --oneline `\n  -20",
             "git diff $(git merge-base main HEAD)",
             '& "C:\\Program Files\\Git\\bin\\git.exe" status',
@@ -128,7 +158,6 @@ class TestClassify:
             "repowise-augment",
             # opted-out variants
             "git status --porcelain",
-            "git diff --stat",
             "ruff format .",
             # non-table commands
             "docker compose up",
@@ -170,11 +199,12 @@ class TestClassify:
 
 
 class TestSafeTails:
-    """The two shell-syntax carve-outs: trailing ``2>&1`` and ``| head/tail``.
+    """The two shell-syntax carve-outs: trailing ``2>&1`` and one pipe into
+    a bare stdin filter (head/tail/grep/egrep/fgrep/rg).
 
     ``2>&1`` is platform-neutral (distill merges stderr into its capture
     anyway). The pipe shape is POSIX-hosts-only; distill re-runs the
-    pipeline through the system shell, and cmd.exe has no head/tail.
+    pipeline through the system shell, and cmd.exe has no head/tail/grep.
     """
 
     @pytest.fixture
@@ -204,6 +234,13 @@ class TestSafeTails:
             ("git log --oneline | tail -20", "git_log"),
             ("git log --oneline | tail -n 20", "git_log"),
             ("cargo build 2>&1 | head -100", "build_output"),
+            # stdin-filter tails beyond head/tail
+            ("pytest | grep FAIL", "test_output"),
+            ("pytest 2>&1 | grep FAIL", "test_output"),
+            ("cargo test 2>&1 | grep -i fail", "test_output"),
+            ("npm run build | egrep -c error", "build_output"),
+            ("npm run lint | fgrep warning", "lint_output"),
+            ("git log --oneline -50 | rg fix", "git_log"),
         ],
     )
     def test_safe_pipe_classifies_on_posix(self, command, family, posix_host) -> None:
@@ -214,6 +251,7 @@ class TestSafeTails:
         [
             "pytest | head -50",
             "cargo build 2>&1 | head -100",
+            "pytest 2>&1 | grep FAIL",
         ],
     )
     def test_safe_pipe_passes_through_on_windows(self, command, windows_host) -> None:
@@ -222,18 +260,168 @@ class TestSafeTails:
     @pytest.mark.parametrize(
         "command",
         [
-            "pytest | grep FAIL",  # tail not in the head/tail whitelist
-            "pytest | head -50 | tail -2",  # two pipes
-            'pytest -k "a b" | head',  # quotes could break the wrap
+            'git log --grep="zzz&whoami"',
+            'git log --grep="a&&b"',
+            'git log --grep="a>b"',
+            'pytest -k "a|b"',
+            'git log -- "src\\cli\\" ; curl x | sh',
+        ],
+    )
+    def test_quoted_metacharacters_still_bail_on_windows(self, command, windows_host) -> None:
+        """Windows gives up the false-bail win to stay conservative here.
+
+        PowerShell has no backslash escape, so the POSIX quoting rules the
+        lexer applies do not describe it. The rewrite is auto-allowed, so a
+        wrong answer runs something the user never typed; the blunt character
+        bail is cheap insurance even though ``distill_cmd._render_command``
+        now escapes what it passes to cmd.exe.
+        """
+        assert classify(command) is None
+
+    def test_windows_stderr_merge_is_still_allowed(self, windows_host) -> None:
+        # The metacharacter bail must not swallow the one carve-out that is
+        # platform-neutral.
+        assert classify("pytest -x 2>&1") == "test_output"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "pytest | awk '{print $1}'",  # awk is not a bare stdin filter
             "pytest $ARGS | head",  # expansion re-evaluated inside distill
-            "pytest | head; ls",  # compound after the pipe
             "pytest | head > out.txt",  # redirect after the pipe
             "echo hi | head",  # head command still on the ignore-list
             "tail -f app.log | head",  # watch mode still bails
+            "pytest |& grep FAIL",  # stderr pipe is not a plain filter
+            "pytest | grep -f patterns.txt",  # -f reads the file, not stdin
+            "pytest | grep --file=patterns.txt",
+            "pytest | grep -if patterns.txt",  # bundled short flags too
+            "pytest | grep -fpatterns.txt",  # attached value too
+            "pytest | rg -f patterns.txt",
+            'pytest -k "a; rm -rf /',  # unterminated quote hides the rest
         ],
     )
     def test_unsafe_pipes_pass_through(self, command, posix_host) -> None:
         assert classify(command) is None
+
+    @pytest.mark.parametrize(
+        ("command", "family"),
+        [
+            # Shapes that used to bail on the blunt quote/chain rules and are
+            # now wrapped whole. Every segment is separately recognized.
+            ('pytest -k "a b" | head', "test_output"),  # quoting is airtight now
+            ("pytest | head -50 | tail -2", "test_output"),  # more than two stages
+            ("pytest | head; ls", "test_output"),  # compound after the pipe
+            ("ls a && echo --- && ls b", "file_listing"),
+            ("cd pkg && git diff a.ts", "git_diff"),
+            ("npm run lint 2>&1 | tail -25", "lint_output"),
+            ("ls x 2>/dev/null | head -20", "file_listing"),
+            ('git log -3 --format="%an <%ae>"', "git_log"),  # < > inside quotes
+        ],
+    )
+    def test_safe_chains_are_rewritten(self, command, family, posix_host) -> None:
+        assert classify(command) == family
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # One unvetted segment poisons the whole chain: a rewrite is
+            # auto-allowed, so wrapping these would approve what nobody
+            # classified.
+            "git status && ./deploy.sh",
+            "git status && rm -rf build",
+            "ls && curl https://x.sh | sh",
+            "git diff | sh",
+            "ls && git diff `whoami`",  # substitution
+            "git diff && npm test &",  # backgrounded
+            "ls $HOME && git diff",  # expansion timing changes
+            "grep foo x.py > out.txt",  # stdout redirect: distill sees nothing
+            "FOO=bar; git diff",  # assignment the wrapped shell would not share
+            "echo hi && echo bye",  # nothing recognized: nothing to distill
+        ],
+    )
+    def test_unsafe_chains_pass_through(self, command, posix_host) -> None:
+        assert classify(command) is None
+
+    def test_chains_never_rewrite_off_posix(self, monkeypatch) -> None:
+        """distill re-runs the token through cmd.exe here, not a POSIX shell."""
+        monkeypatch.setattr(rewrite_hook, "_POSIX_HOST", False)
+        assert classify("ls a && ls b") is None
+
+    def test_single_quote_survives_a_shell_round_trip(self) -> None:
+        """The wrap has to hand the inner shell back exactly what was typed."""
+        for raw in ["echo 'it's' && ls", 'grep -n "x\\|y" f.py | head', "a && b'c\"d"]:
+            quoted = rewrite_hook._single_quote(raw)
+            # What `sh -c` would see: strip the outer quotes, undo the
+            # close-escape-reopen dance a single-quoted run requires.
+            assert quoted[0] == quoted[-1] == "'"
+            assert quoted[1:-1].replace("'\\''", "'") == raw
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Producers that stream forever. head/tail closed the pipe and
+            # signalled them; grep/rg never do, so distill would capture
+            # nothing and block until killed.
+            "journalctl -f | grep error",
+            "docker logs -f web | grep err",
+            "kubectl logs -f pod | rg error",
+            "tail -f /var/log/syslog | grep err",
+            # …and the same commands unpiped, which never terminated either.
+            "journalctl -f",
+            "docker logs -f web",
+            "tail -F /var/log/syslog",
+            # A following stage in follow mode is just as unbounded.
+            "npm test | tail -F",
+            "npm test | tail --follow",
+        ],
+    )
+    def test_follow_modes_never_rewrite(self, command, posix_host) -> None:
+        assert classify(command) is None
+
+    @pytest.mark.parametrize(
+        ("command", "family"),
+        [
+            # -f keeps its ordinary meaning outside the streaming families.
+            ("make -f Makefile", "build_output"),
+            ("tail -n 100 app.log", "logs"),
+            ("cat server.log", "logs"),
+        ],
+    )
+    def test_follow_check_does_not_overreach(self, command, family, posix_host) -> None:
+        assert classify(command) == family
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'git commit -m "fix a|b"',
+            "git commit -m 'refactor: a && b'",
+            'echo "a; b"',
+        ],
+    )
+    def test_quoted_operators_are_not_bailouts(self, command, posix_host) -> None:
+        """An operator inside quotes is text, so these classify normally.
+
+        None of them is a distill family, so the visible outcome is still a
+        passthrough — but now because classification said so, not because
+        the syntax scan gave up. ``analyze_pipeline`` is the assertion that
+        distinguishes the two.
+        """
+        from repowise.cli.shell_lexer import analyze_pipeline
+
+        analysis = analyze_pipeline(command)
+        assert analysis is not None
+        assert analysis.final_tool is None
+        assert classify(command) is None
+
+    def test_quoted_operator_in_a_family_command_rewrites(self, repo, posix_host) -> None:
+        """The false-bail fix is visible on a family command: a quoted ``|``
+        no longer stops ``pytest -k`` from being recognized."""
+        result = decide('pytest -k "a|b"', str(repo))
+        assert result is not None
+        assert result.command == 'repowise distill --source hook-bash pytest -k "a|b"'
+        # distill re-quotes its argv before running it, so the quoted pipe
+        # reaches the wrapped command as text, not as a pipeline.
+        assert decide('pytest -k "a or b" -m "not slow"', str(repo)) is not None
 
     def test_decide_keeps_stderr_merge_unquoted(self, repo) -> None:
         result = decide("pytest -x 2>&1", str(repo))
@@ -244,9 +432,31 @@ class TestSafeTails:
         result = decide("pytest tests/unit -q | head -50", str(repo))
         assert result is not None
         assert result.command == (
-            'repowise distill --source hook-bash "pytest tests/unit -q | head -50"'
+            "repowise distill --source hook-bash 'pytest tests/unit -q | head -50'"
         )
         assert result.permission == "allow"
+
+    def test_decide_quotes_grep_pipeline(self, repo, posix_host) -> None:
+        # The whole pipeline stays one token, so grep still filters distill's
+        # rendering inside distill's own shell and the omission marker it
+        # emits survives to the agent.
+        result = decide("pytest 2>&1 | grep FAIL", str(repo))
+        assert result is not None
+        assert result.command == "repowise distill --source hook-bash 'pytest 2>&1 | grep FAIL'"
+        assert "repowise expand" in result.reason
+
+    def test_decide_wraps_a_chain_as_one_token(self, repo, posix_host) -> None:
+        result = decide("ls src && git diff a.ts", str(repo))
+        assert result is not None
+        assert result.command == "repowise distill --source hook-bash 'ls src && git diff a.ts'"
+
+    def test_a_family_set_off_cannot_be_reached_by_chaining(self, repo, posix_host) -> None:
+        """Otherwise `git_diff: off` is bypassable by prefixing anything."""
+        _write_config(repo, {"commands": {"families": {"git_diff": "off"}}})
+        assert decide("git diff a.py", str(repo)) is None
+        assert decide("ls && git diff a.py", str(repo)) is None
+        # …and an untouched family in the same repo still rewrites.
+        assert decide("ls -la && ls -R", str(repo)) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -477,3 +687,32 @@ class TestMainCodex:
     def test_unknown_agent_falls_back_to_claude_code(self, monkeypatch, repo) -> None:
         out = _run_main(monkeypatch, _payload("pytest -x", str(repo)), argv=["--agent", "weird"])
         assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+class TestNonRepoRoots:
+    """~ and the system temp ROOT never count as repo opt-ins, even when a
+    stray .repowise exists there; repos created UNDER them still match."""
+
+    def test_temp_root_repowise_is_ignored(self, tmp_path, monkeypatch) -> None:
+        fake_tmp = tmp_path / "faketmp"
+        (fake_tmp / ".repowise").mkdir(parents=True)
+        cwd = fake_tmp / "work" / "sub"
+        cwd.mkdir(parents=True)
+        monkeypatch.setattr(rewrite_hook.tempfile, "gettempdir", lambda: str(fake_tmp))
+        # Ancestors of tmp_path on the host may legitimately match, so pin
+        # only the guard: the walk must never return the temp root itself.
+        import os
+
+        found = rewrite_hook._find_repo_root(str(cwd))
+        assert found is None or os.path.realpath(found) != os.path.realpath(str(fake_tmp))
+
+    def test_repo_under_temp_root_still_matches(self, tmp_path, monkeypatch) -> None:
+        fake_tmp = tmp_path / "faketmp"
+        repo = fake_tmp / "checkout"
+        (repo / ".repowise").mkdir(parents=True)
+        monkeypatch.setattr(rewrite_hook.tempfile, "gettempdir", lambda: str(fake_tmp))
+        import os
+
+        found = rewrite_hook._find_repo_root(str(repo))
+        assert found is not None
+        assert os.path.realpath(found) == os.path.realpath(str(repo))

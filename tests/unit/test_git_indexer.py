@@ -46,6 +46,11 @@ def _make_diff(b_path: str, a_path: str | None = None):
 # ---------------------------------------------------------------------------
 
 
+def _iso(ts: int) -> str:
+    """Git ``%cI`` for a unix timestamp — the offset field the parser expects."""
+    return datetime.fromtimestamp(int(ts), UTC).isoformat()
+
+
 class TestSignificantCommitFilter:
     """Merges, bumps, chore, and bot commits are filtered out; normal commits pass.
 
@@ -391,7 +396,7 @@ class TestStableClassification:
         for i in range(15):
             ts = int((old_date - timedelta(days=i)).timestamp())
             log_lines.append(
-                f"\x00sha{i:04d}\x1fAlice\x1falice@example.com\x1fAlice\x1falice@example.com\x1f{ts}\x1f\x1ffeat: old commit {i}\x1f"
+                f"\x00sha{i:04d}\x1fAlice\x1falice@example.com\x1fAlice\x1falice@example.com\x1f{ts}\x1f{_iso(ts)}\x1f\x1ffeat: old commit {i}\x1f"
             )
         mock_repo.git.log.return_value = "\n".join(log_lines)
 
@@ -420,7 +425,7 @@ class TestStableClassification:
         for i, (name, email, when) in enumerate(specs):
             ts = int(when.timestamp())
             log_lines.append(
-                f"\x00sha{i:04d}\x1f{name}\x1f{email}\x1f{name}\x1f{email}\x1f{ts}\x1f\x1ffeat: c{i}\x1f"
+                f"\x00sha{i:04d}\x1f{name}\x1f{email}\x1f{name}\x1f{email}\x1f{ts}\x1f{_iso(ts)}\x1f\x1ffeat: c{i}\x1f"
             )
         mock_repo.git.log.return_value = "\n".join(log_lines)
 
@@ -448,7 +453,7 @@ class TestGitWindowAnchor:
         for i in range(15):
             ts = int((old_date - timedelta(days=i)).timestamp())
             log_lines.append(
-                f"\x00sha{i:04d}\x1fAlice\x1falice@example.com\x1fAlice\x1falice@example.com\x1f{ts}\x1f\x1ffeat: old {i}\x1f"
+                f"\x00sha{i:04d}\x1fAlice\x1falice@example.com\x1fAlice\x1falice@example.com\x1f{ts}\x1f{_iso(ts)}\x1f\x1ffeat: old {i}\x1f"
             )
         mock_repo.git.log.return_value = "\n".join(log_lines)
         # HEAD tip = the newest of the (old) batch.
@@ -510,22 +515,56 @@ class TestPriorDefectCount:
     shared keyword rule, and attributes each fix to every indexable file it
     touched — mirroring the defect benchmark's prior-defects baseline."""
 
-    def _mock_repo(self, records: list[tuple[str, list[str]]]) -> MagicMock:
-        """records: list of (subject, [touched paths]). Builds the --name-only
-        log output and routes prior_sha resolution vs the windowed walk."""
+    @staticmethod
+    def _code_diff(paths: list[str]) -> str:
+        """A ``-U0`` patch that changes real code in each of *paths*."""
+        return "".join(
+            f"diff --git a/{p} b/{p}\n--- a/{p}\n+++ b/{p}\n"
+            f"@@ -10 +10 @@\n-    return None\n+    return value\n"
+            for p in paths
+        )
+
+    def _mock_repo(
+        self,
+        records: list[tuple[str, list[str]]],
+        diffs: dict[int, str] | None = None,
+    ) -> MagicMock:
+        """records: list of (subject, [touched paths]).
+
+        Builds the ``--name-only`` log output and routes the three ``git log``
+        shapes the pass issues: prior_sha resolution, the windowed walk, and the
+        batched ``--no-walk --patch`` shape pass. *diffs* overrides the patch for
+        a record by index; the default is a plain code change, so a commit that
+        the subject rule matches also classifies as ``code_fix``.
+
+        The record shape mirrors the real format exactly, terminator included:
+        this fixture stands in for git, so a format it does not emit is a test
+        that passes on output git would never produce. Each record carries a
+        one-line commit body, because a body is the field the terminator exists
+        to separate from the path block.
+        """
         mock_repo = MagicMock()
         mock_repo.head.commit.hexsha = "HEADSHA"
         chunks = []
+        patches = {}
         for i, (subject, paths) in enumerate(records):
-            body = "\n".join(paths)
-            chunks.append(f"\x00sha{i:04d}\x1f{subject}\n{body}")
+            sha = f"{i:040d}"
+            path_block = "\n".join(paths)
+            chunks.append(
+                f"\x00{sha}\x1f{1_700_000_000 - i}\x1f{subject}"
+                f"\x1fwhy commit {i} happened\x02\n{path_block}"
+            )
+            patches[sha] = (diffs or {}).get(i, self._code_diff(paths))
         log_out = "\n".join(chunks)
 
         def _log(*args, **kwargs):
-            # prior_sha resolution carries --before / -1; the walk carries
-            # --name-only. Route on that.
+            # prior_sha resolution carries --before / -1; the shape pass carries
+            # --no-walk; the windowed walk carries --name-only. Route on that.
             if any(str(a).startswith("--before") for a in args):
                 return "PRIORSHA"
+            if "--no-walk" in args:
+                shas = [a for a in args if len(str(a)) == 40]
+                return "\n".join(f"\x00{sha}\n{patches[sha]}" for sha in shas)
             return log_out
 
         mock_repo.git.log.side_effect = _log
@@ -544,10 +583,11 @@ class TestPriorDefectCount:
                 ("fix lint", ["src/app.py"]),  # excluded keyword
             ]
         )
-        counts = compute_prior_defects(
+        result = compute_prior_defects(
             repo, {"src/app.py", "src/util.py"}, as_of_ts=1_700_000_000.0
         )
-        assert counts == {"src/app.py": 2, "src/util.py": 1}
+        assert result.counts == {"src/app.py": 2, "src/util.py": 1}
+        assert result.raw_counts == {"src/app.py": 2, "src/util.py": 1}
 
     def test_ignores_non_indexable_paths(self) -> None:
         from repowise.core.ingestion.git_indexer.prior_defects import (
@@ -559,8 +599,8 @@ class TestPriorDefectCount:
                 ("fix: bug", ["src/app.py", "docs/readme.md"]),
             ]
         )
-        counts = compute_prior_defects(repo, {"src/app.py"}, as_of_ts=1_700_000_000.0)
-        assert counts == {"src/app.py": 1}
+        result = compute_prior_defects(repo, {"src/app.py"}, as_of_ts=1_700_000_000.0)
+        assert result.counts == {"src/app.py": 1}
 
     def test_zero_when_no_fixes(self) -> None:
         from repowise.core.ingestion.git_indexer.prior_defects import (
@@ -573,8 +613,57 @@ class TestPriorDefectCount:
                 ("docs: update readme", ["src/app.py"]),
             ]
         )
-        counts = compute_prior_defects(repo, {"src/app.py"}, as_of_ts=1_700_000_000.0)
-        assert counts == {}
+        result = compute_prior_defects(repo, {"src/app.py"}, as_of_ts=1_700_000_000.0)
+        assert result.counts == {}
+        assert result.raw_counts == {}
+
+    def test_non_code_fixes_are_filtered_but_still_counted_raw(self) -> None:
+        """A docstring-only "fix" stops incrementing the biomarker's count.
+
+        The raw total keeps it, so the noise a repo carries stays inspectable
+        instead of silently disappearing from the signal.
+        """
+        from repowise.core.ingestion.git_indexer.prior_defects import (
+            compute_prior_defects,
+        )
+
+        repo = self._mock_repo(
+            [
+                ("fix: real crash", ["src/app.py"]),
+                ("fix: wording in the module docstring", ["src/app.py"]),
+            ],
+            diffs={
+                1: (
+                    "diff --git a/src/app.py b/src/app.py\n"
+                    "--- a/src/app.py\n+++ b/src/app.py\n"
+                    "@@ -3 +3 @@\n"
+                    "-    # returns the parsed thing\n"
+                    "+    # returns the parsed value\n"
+                )
+            },
+        )
+        result = compute_prior_defects(repo, {"src/app.py"}, as_of_ts=1_700_000_000.0)
+        assert result.counts == {"src/app.py": 1}
+        assert result.raw_counts == {"src/app.py": 2}
+
+    def test_unreadable_diff_counts_the_fix(self) -> None:
+        """A failed shape pass falls back to the raw behaviour, never to zero."""
+        from repowise.core.ingestion.git_indexer.prior_defects import (
+            compute_prior_defects,
+        )
+
+        repo = self._mock_repo([("fix: crash", ["src/app.py"])])
+
+        def _log(*args, **kwargs):
+            if any(str(a).startswith("--before") for a in args):
+                return "PRIORSHA"
+            if "--no-walk" in args:
+                raise RuntimeError("git exploded")
+            return "\x00" + "0" * 40 + "\x1f1700000000\x1ffix: crash\x1fwhy\x02\nsrc/app.py"
+
+        repo.git.log.side_effect = _log
+        result = compute_prior_defects(repo, {"src/app.py"}, as_of_ts=1_700_000_000.0)
+        assert result.counts == {"src/app.py": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -602,7 +691,9 @@ class TestNumstatParsing:
                 f"\x1f{e.get('email', 'dev@x.com')}"
                 f"\x1f{e.get('committer', e.get('author', 'Dev'))}"
                 f"\x1f{e.get('committer_email', e.get('email', 'dev@x.com'))}"
-                f"\x1f{e['ts']}\x1f{e.get('parents', '')}"
+                f"\x1f{e['ts']}"
+                f"\x1f{datetime.fromtimestamp(int(e['ts']), UTC).isoformat()}"
+                f"\x1f{e.get('parents', '')}"
                 f"\x1f{e.get('subject', 'some commit')}"
                 f"\x1f{e.get('body', '')}"
             )
@@ -690,7 +781,7 @@ class TestNumstatParsing:
         # First record is malformed (only 3 fields), second is valid
         raw = (
             f"\x00badsha\x1fAlice\x1falice@x.com\n"  # only 3 fields
-            f"\x00goodsha\x1fBob\x1fbob@x.com\x1fBob\x1fbob@x.com\x1f{recent_ts}\x1f\x1ffeat: valid commit\x1f\n"
+            f"\x00goodsha\x1fBob\x1fbob@x.com\x1fBob\x1fbob@x.com\x1f{recent_ts}\x1f{_iso(recent_ts)}\x1f\x1ffeat: valid commit\x1f\n"
             f"10\t5\ttest.py\n"
         )
         mock_repo.git.log.return_value = raw
@@ -708,7 +799,7 @@ class TestNumstatParsing:
         recent_ts = int((datetime.now(UTC) - timedelta(days=5)).timestamp())
         raw = (
             f"\x00sha1\x1fAlice\x1fa@x.com\x1fAlice\x1fa@x.com\x1f{recent_ts}"
-            f"\x1fparent1 parent2\x1fMerge branch main\x1f\n"
+            f"\x1f{_iso(recent_ts)}\x1fparent1 parent2\x1fMerge branch main\x1f\n"
             f"5\t2\tmerged.py\n"
         )
         mock_repo.git.log.return_value = raw
@@ -728,13 +819,13 @@ class TestNumstatParsing:
         # Simulates --follow output: recent commit uses new name,
         # older commit uses rename notation, oldest uses old name.
         raw = (
-            f"\x00sha1\x1fAlice\x1fa@x.com\x1fAlice\x1fa@x.com\x1f{recent_ts}\x1f\x1ffeat: update\x1f\n"
+            f"\x00sha1\x1fAlice\x1fa@x.com\x1fAlice\x1fa@x.com\x1f{recent_ts}\x1f{_iso(recent_ts)}\x1f\x1ffeat: update\x1f\n"
             f"10\t3\tsrc/new_name.py\n"
             f"\n"
-            f"\x00sha2\x1fAlice\x1fa@x.com\x1fAlice\x1fa@x.com\x1f{old_ts}\x1f\x1frename file\x1f\n"
+            f"\x00sha2\x1fAlice\x1fa@x.com\x1fAlice\x1fa@x.com\x1f{old_ts}\x1f{_iso(old_ts)}\x1f\x1frename file\x1f\n"
             f"0\t0\t{{src/old_name.py => src/new_name.py}}\n"
             f"\n"
-            f"\x00sha3\x1fAlice\x1fa@x.com\x1fAlice\x1fa@x.com\x1f{old_ts - 86400}\x1f\x1ffeat: old work\x1f\n"
+            f"\x00sha3\x1fAlice\x1fa@x.com\x1fAlice\x1fa@x.com\x1f{old_ts - 86400}\x1f{_iso(old_ts - 86400)}\x1f\x1ffeat: old work\x1f\n"
             f"20\t5\tsrc/old_name.py\n"
         )
         mock_repo.git.log.return_value = raw
@@ -767,6 +858,95 @@ class TestGitUnavailableGraceful:
         assert summary.hotspots == 0
         assert summary.stable_files == 0
         assert metadata == []
+
+    @pytest.mark.asyncio
+    async def test_partial_clone_skips_history_without_touching_objects(self) -> None:
+        """A promisor clone must not turn local indexing into a network fetch."""
+        indexer = GitIndexer("/tmp/repo")
+        repo = MagicMock()
+        repo.git.config.side_effect = [
+            "remote.origin.promisor true",
+            "blob:none",
+        ]
+        on_start = MagicMock()
+        on_warning = MagicMock()
+
+        with (
+            patch.object(indexer, "_get_repo", return_value=repo),
+            patch.object(indexer, "_get_tracked_files") as get_tracked_files,
+        ):
+            summary, metadata = await indexer.index_repo(
+                "test-repo-id",
+                on_start=on_start,
+                on_warning=on_warning,
+            )
+
+        assert summary.files_indexed == 0
+        assert metadata == []
+        on_start.assert_called_once_with(0)
+        on_warning.assert_called_once()
+        assert "partial clone" in on_warning.call_args.args[0]
+        assert "blob:none" in on_warning.call_args.args[0]
+        get_tracked_files.assert_not_called()
+        repo.git.log.assert_not_called()
+        repo.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_partial_clone_skips_incremental_file_history(self) -> None:
+        """Incremental updates must not re-enter the blob-dependent walk."""
+        indexer = GitIndexer("/tmp/repo")
+        repo = MagicMock()
+        repo.git.config.side_effect = [
+            "remote.origin.promisor true",
+            "blob:none",
+        ]
+        on_warning = MagicMock()
+
+        with patch.object(indexer, "_get_repo", return_value=repo):
+            metadata = await indexer.index_changed_files(
+                ["changed.py"],
+                on_warning=on_warning,
+            )
+
+        assert metadata == []
+        on_warning.assert_called_once()
+        assert "partial clone" in on_warning.call_args.args[0]
+        repo.git.log.assert_not_called()
+        repo.close.assert_called_once()
+
+    def test_partial_clone_skips_incremental_commit_capture(self) -> None:
+        """Standalone commit capture must obey the same no-fetch invariant."""
+        indexer = GitIndexer("/tmp/repo")
+        repo = MagicMock()
+        repo.git.config.side_effect = [
+            "remote.origin.promisor true",
+            "blob:none",
+        ]
+
+        with patch.object(indexer, "_get_repo", return_value=repo):
+            rows = indexer.capture_new_commit_rows()
+
+        assert rows == []
+        repo.git.log.assert_not_called()
+        repo.close.assert_called_once()
+
+    @pytest.mark.parametrize("promisor_value", ["true", "1", "yes", "on"])
+    def test_partial_clone_accepts_git_boolean_aliases(self, promisor_value: str) -> None:
+        indexer = GitIndexer("/tmp/repo")
+        repo = MagicMock()
+        repo.git.config.side_effect = [
+            f"remote.origin.promisor {promisor_value}",
+            "blob:none",
+        ]
+
+        assert indexer._partial_clone_filter(repo) == "blob:none"
+
+    def test_non_promisor_clone_keeps_history_enabled(self) -> None:
+        indexer = GitIndexer("/tmp/repo")
+        repo = MagicMock()
+        repo.git.config.side_effect = RuntimeError("no matching config")
+
+        assert indexer._partial_clone_filter(repo) is None
 
 
 # ---------------------------------------------------------------------------

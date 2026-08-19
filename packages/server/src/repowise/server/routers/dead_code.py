@@ -5,7 +5,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.dead_code.risk_factors import effective_safe_to_delete
+from repowise.core.analysis.dead_code.risk_factors import (
+    RISK_CAP_CONFIDENCE,
+    effective_safe_to_delete,
+)
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import (
@@ -27,11 +30,11 @@ router = APIRouter(
 async def list_dead_code(
     repo_id: str,
     kind: str | None = Query(None, description="Filter by finding kind"),
-    min_confidence: float = Query(0.4, ge=0.0, le=1.0),
+    min_confidence: float = Query(RISK_CAP_CONFIDENCE, ge=0.0, le=1.0),
     status: str = Query("open"),
     safe_only: bool = Query(False),
     limit: int = Query(100, ge=1, le=500),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> list[DeadCodeFindingResponse]:
     """List dead code findings for a repository."""
     findings = await crud.get_dead_code_findings(
@@ -54,7 +57,7 @@ async def list_dead_code(
 async def analyze_dead_code(
     repo_id: str,
     request: Request,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Trigger a fresh dead code analysis.
 
@@ -100,7 +103,7 @@ async def analyze_dead_code(
 )
 async def dead_code_summary(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> DeadCodeSummaryResponse:
     """Get aggregate dead code statistics for a repository."""
     summary = await crud.get_dead_code_summary(session, repo_id)
@@ -111,7 +114,7 @@ async def dead_code_summary(
 async def resolve_finding(
     finding_id: str,
     body: DeadCodePatchRequest,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> DeadCodeFindingResponse:
     """Update the status of a dead code finding."""
     valid_statuses = {"acknowledged", "resolved", "false_positive", "open"}

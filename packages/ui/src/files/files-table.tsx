@@ -5,9 +5,10 @@ import { ArrowDown, ArrowUp, FlaskConical, LogIn } from "lucide-react";
 import type { FileRow } from "@repowise-dev/types/files";
 import { cn } from "../lib/cn";
 import { formatLOC, truncatePath } from "../lib/format";
+import { healthInk } from "../health/tokens";
 
 export type SortKey =
-  | "importance"
+  | "dependents"
   | "health"
   | "churn"
   | "loc"
@@ -26,11 +27,17 @@ interface FilesTableProps {
 const ROW_HEIGHT = 44;
 const OVERSCAN = 8;
 
-function scoreClass(score: number | null): string {
-  if (score == null) return "text-[var(--color-text-tertiary)]";
-  if (score < 4) return "text-[var(--color-risk-high)]";
-  if (score < 7) return "text-[var(--color-risk-medium)]";
-  return "text-[var(--color-risk-low)]";
+/**
+ * The health figure's colour, from the same function the treemap tiles use.
+ *
+ * This banded at 7 while `healthInk` bands at 8, so the 7.x files — and there
+ * are a lot of them — read green in this column, green in the map's tooltip and
+ * amber on the tile the tooltip was attached to. Three vocabularies for one
+ * number on one page. Match the mark you sit next to; every other mark on this
+ * page is on the canonical bands.
+ */
+function scoreInk(score: number | null): string {
+  return score == null ? "var(--color-text-tertiary)" : healthInk(score);
 }
 
 function SortHeader({
@@ -40,6 +47,7 @@ function SortHeader({
   sortDir,
   onSort,
   className,
+  title,
 }: {
   label: string;
   col: SortKey;
@@ -47,11 +55,14 @@ function SortHeader({
   sortDir: "asc" | "desc";
   onSort: (key: SortKey) => void;
   className?: string;
+  /** What the column measures, for a header whose name is not self-evident. */
+  title?: string;
 }) {
   const active = sortKey === col;
   return (
     <button
       onClick={() => onSort(col)}
+      title={title}
       className={cn(
         "flex items-center gap-1 text-left transition-colors hover:text-[var(--color-text-primary)]",
         active ? "text-[var(--color-text-primary)]" : "text-[var(--color-text-tertiary)]",
@@ -77,7 +88,7 @@ function SortHeader({
 // the cells' `hidden …:flex` visibility so the grid never mis-aligns or
 // overflows — the first column is always `minmax(0,1fr)` so paths truncate.
 const GRID =
-  "grid grid-cols-[minmax(0,1fr)_auto_56px] sm:grid-cols-[minmax(0,1fr)_64px_64px_64px] md:grid-cols-[minmax(0,1fr)_72px_84px_72px_64px_72px] items-center gap-2 px-3 sm:px-4";
+  "grid grid-cols-[minmax(0,1fr)_auto_56px] sm:grid-cols-[minmax(0,1fr)_92px_64px_64px] md:grid-cols-[minmax(0,1fr)_100px_84px_72px_64px_72px] items-center gap-2 px-3 sm:px-4";
 
 export function FilesTable({ files, fileHref, sortKey, sortDir, onSort }: FilesTableProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -100,8 +111,9 @@ export function FilesTable({ files, fileHref, sortKey, sortDir, onSort }: FilesT
       >
         <SortHeader label="File" col="name" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
         <SortHeader
-          label="Imp."
-          col="importance"
+          label="Dependents"
+          col="dependents"
+          title="PageRank percentile over the import graph: how much of the codebase reaches this file, directly or through others."
           sortKey={sortKey}
           sortDir={sortDir}
           onSort={onSort}
@@ -188,21 +200,24 @@ export function FilesTable({ files, fileHref, sortKey, sortDir, onSort }: FilesT
                       </span>
                     </span>
 
-                    {/* Importance */}
+                    {/* Dependents. One decimal, not `Math.round`: the server
+                        rounds the percentile to 0.1 and rounding again to a
+                        whole number printed "100" on every row above the
+                        99.5th, so a repo of 5,000 files led with ~25 rows
+                        showing one identical figure for 25 different values —
+                        a sort you could not see the basis of. */}
                     <span className="flex items-center justify-end gap-1.5 tabular-nums text-[var(--color-text-secondary)]">
                       <span
                         className="hidden h-1.5 rounded-full bg-[var(--color-accent-primary)] sm:inline-block"
                         style={{ width: `${Math.max(2, (f.pagerank_pct / 100) * 28)}px` }}
                       />
-                      {Math.round(f.pagerank_pct)}
+                      {f.pagerank_pct.toFixed(1)}
                     </span>
 
                     {/* Health */}
                     <span
-                      className={cn(
-                        "flex justify-end tabular-nums",
-                        scoreClass(f.defect_score),
-                      )}
+                      className="flex justify-end tabular-nums"
+                      style={{ color: scoreInk(f.defect_score) }}
                     >
                       {f.defect_score != null ? f.defect_score.toFixed(1) : "—"}
                     </span>

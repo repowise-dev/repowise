@@ -7,6 +7,10 @@ export interface SecurityFinding {
   severity: "high" | "med" | "low" | string;
   snippet: string | null;
   detected_at: string;
+  /** Verified against the live tree; `null` when the snippet has moved away. */
+  line_number: number | null;
+  line_verified: boolean;
+  commit_at: string | null;
 }
 
 export async function listSecurityFindings(

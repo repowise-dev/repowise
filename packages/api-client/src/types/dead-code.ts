@@ -24,6 +24,10 @@ export interface DeadCodeFindingResponse {
   primary_owner: string | null;
   status: DeadCodeStatus;
   note: string | null;
+  /** When the file was last touched — the staleness signal, not `age_days`. */
+  last_commit_at: string | null;
+  /** Commits to the file in the last 90 days; 0 is what earns a high confidence. */
+  commit_count_90d: number;
 }
 
 export interface DeadCodePatchRequest {

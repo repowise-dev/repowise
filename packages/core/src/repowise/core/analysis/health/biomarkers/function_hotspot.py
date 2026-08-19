@@ -7,7 +7,8 @@ project commit shas onto each function's line range and pair churn with
 structural complexity.
 
 Tier-aware: ``ctx.blame_index`` is ``None`` on the ESSENTIAL git tier
-(per-line blame is deferred to ``backfill_blame()``); in that case the
+(per-line blame is deferred to the FULL-tier backfill,
+``backfill_full_tier()``); in that case the
 detector emits zero findings. The same no-op holds when the engine
 could not compute the repo-wide p80 (no functions had a non-zero
 mod_count).

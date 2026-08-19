@@ -1,6 +1,7 @@
 "use client";
 
 import type { FileSignals } from "@repowise-dev/types/health";
+import { formatRelativeTimeOrNull } from "../lib/format";
 
 export interface FileSignalsPanelProps {
   signals: FileSignals | null | undefined;
@@ -28,7 +29,7 @@ export function FileSignalsPanel({ signals, hideHeading = false }: FileSignalsPa
   return (
     <section className="space-y-2">
       {!hideHeading && (
-        <h3 className="text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+        <h3 className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           Signals
         </h3>
       )}
@@ -36,8 +37,9 @@ export function FileSignalsPanel({ signals, hideHeading = false }: FileSignalsPa
         <Group label="Process">
           <Row
             value={priorDefectValue(signals.prior_defect_count)}
-            caption="bug-fix commits in the last 6 months"
+            caption={defectCaption(signals)}
             present={signals.prior_defect_count != null}
+            badge={magnetBadge(signals)}
           />
           <Row
             value={
@@ -45,7 +47,7 @@ export function FileSignalsPanel({ signals, hideHeading = false }: FileSignalsPa
                 ? null
                 : `${Math.round(signals.change_entropy_pct)}th pct`
             }
-            caption="change scatter — how spread out its edits are"
+            caption="change scatter: how spread out its edits are"
             present={signals.change_entropy_pct != null}
           />
           <Row
@@ -73,7 +75,7 @@ export function FileSignalsPanel({ signals, hideHeading = false }: FileSignalsPa
                 : ownerValue(signals.recent_owner_name, signals.recent_owner_commit_pct)
             }
             caption={
-              ownerHandoff ? "recent owner (90d) — differs from primary" : "recent owner (90d)"
+              ownerHandoff ? "recent owner (90d), differs from primary" : "recent owner (90d)"
             }
             present={signals.recent_owner_name != null}
             emphasize={ownerHandoff}
@@ -123,6 +125,27 @@ function priorDefectValue(n: number | null): string | null {
   return n === 0 ? "No bug-fixes" : `${n} bug-fix${n === 1 ? "" : "es"}`;
 }
 
+/** The bug-fix caption, with recency folded in when we know it. */
+function defectCaption(s: FileSignals): string {
+  const base = "bug-fix commits in the last 6 months";
+  const last = formatRelativeTimeOrNull(s.last_fix_at, "");
+  return last ? `${base}, last ${last}` : base;
+}
+
+/**
+ * The magnet pill, and only when the caption can carry an age beside it.
+ *
+ * `bug_magnet` is a claim about *recent* fix pressure, so the contract requires
+ * any copy showing it to show `last_fix_at` too: a file fixed four times two
+ * years ago must not read like one fixed four times this month. Without a
+ * timestamp the badge would say exactly that, so it goes quiet instead. The
+ * count beside it is windowed and stands on its own.
+ */
+function magnetBadge(s: FileSignals): string | undefined {
+  if (!s.bug_magnet || !s.prior_defect_count) return undefined;
+  return formatRelativeTimeOrNull(s.last_fix_at, "") ? "Bug magnet" : undefined;
+}
+
 function velocityValue(s: FileSignals): string | null {
   if (s.commit_count_90d == null) return null;
   const added = s.lines_added_90d ?? 0;
@@ -148,10 +171,15 @@ function plural(n: number, word: string): string {
   return n === 1 ? word : `${word}s`;
 }
 
+/**
+ * One signal column. A hairline above it rather than a box around it: three
+ * bordered cards side by side make the group labels compete with the values
+ * they label, and on the 640px drawer they were most of the panel's ink.
+ */
 function Group({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-3 space-y-2">
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)]">
+    <div className="flex flex-col gap-2 border-t border-[var(--color-border-default)] pt-2.5">
+      <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
         {label}
       </p>
       <div className="space-y-2">{children}</div>
@@ -164,16 +192,19 @@ function Row({
   caption,
   present,
   emphasize = false,
+  badge,
 }: {
   value: string | null;
   caption: string;
   present: boolean;
   emphasize?: boolean;
+  /** Optional pill beside the value (e.g. "Bug magnet"). */
+  badge?: string | undefined;
 }) {
   return (
     <div>
       <p
-        className={`text-xs font-semibold tabular-nums ${
+        className={`flex items-center gap-1.5 text-xs font-semibold tabular-nums ${
           present
             ? emphasize
               ? "text-[var(--color-accent-primary)]"
@@ -182,6 +213,11 @@ function Row({
         }`}
       >
         {present ? value : "No signal"}
+        {present && badge != null && (
+          <span className="rounded-full border border-[var(--color-accent-muted)] bg-[var(--color-accent-muted)] px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-[var(--color-accent-primary)]">
+            {badge}
+          </span>
+        )}
       </p>
       <p className="text-[10px] leading-tight text-[var(--color-text-tertiary)]">{caption}</p>
     </div>

@@ -16,10 +16,10 @@ export interface TrendChartProps {
 export function TrendChart({ history, height = 220 }: TrendChartProps) {
   if (!history || history.length === 0) {
     return (
-      <div className="rounded-lg border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-6 text-center text-sm text-[var(--color-text-tertiary)]">
-        No snapshots yet. Each index or sync records one; the trend appears
-        from the second snapshot on.
-      </div>
+      <p className="max-w-[62ch] text-sm text-[var(--color-text-secondary)]">
+        No snapshots yet. Each index or sync records one; the trend appears from the
+        second snapshot on.
+      </p>
     );
   }
 
@@ -47,9 +47,11 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
   };
 
   return (
-    <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3">
-      <div className="flex items-center justify-between gap-4 mb-2">
-        <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
+    // No card. The chart sits inside a section that already names it, so a
+    // border here is a second frame around content that has one.
+    <div className="flex flex-col">
+      <div className="mb-2 flex items-center justify-between gap-4">
+        <h3 className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           KPI trend
         </h3>
         <div className="flex items-center gap-3 text-xs text-[var(--color-text-tertiary)]">

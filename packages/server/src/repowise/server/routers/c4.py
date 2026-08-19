@@ -34,7 +34,6 @@ from repowise.server.schemas import (
     ZoomRelationResponse,
 )
 from repowise.server.services import c4_builder
-from repowise.server.services.zoom_builder import ZoomMap, build_zoom_map
 from repowise.server.services.c4_builder.mermaid import (
     to_mermaid_l1,
     to_mermaid_l2,
@@ -51,6 +50,11 @@ from repowise.server.services.c4_builder.serialize import (
     build_architecture_view_response,
     external_system_response,
 )
+from repowise.server.services.c4_builder.structurizr import (
+    DEFAULT_FILENAME as STRUCTURIZR_FILENAME,
+)
+from repowise.server.services.c4_builder.structurizr import to_dsl
+from repowise.server.services.zoom_builder import ZoomMap, build_zoom_map
 
 router = APIRouter(
     prefix="/api/graph",
@@ -136,6 +140,51 @@ async def get_c4_mermaid(
     repo = await c4_builder.load_repo(session, repo_id)
     system_name = repo.name if repo is not None else repo_id
     return PlainTextResponse(to_mermaid_l3(view_l3, system_name=system_name))
+
+
+@router.get(
+    "/{repo_id}/c4/structurizr",
+    response_class=PlainTextResponse,
+    responses={200: {"content": {"text/plain": {}}}},
+)
+async def get_c4_structurizr(
+    repo_id: str,
+    standalone: bool = Query(
+        False, description="Emit a complete runnable workspace instead of a model fragment"
+    ),
+    components: bool = Query(False, description="Include the component (L3) level"),
+    externals: bool = Query(True, description="Include third-party dependencies"),
+    session: AsyncSession = Depends(get_db_session),
+) -> PlainTextResponse:
+    """Structurizr DSL for this repository — open it in Structurizr Lite.
+
+    By default this is the contents of a ``model`` block, meant to be included
+    from the caller's own ``workspace.dsl`` so their views and styles survive
+    regeneration. ``standalone=true`` returns a workspace that renders on its
+    own.
+
+    Built on demand from the persisted graph, like the other C4 endpoints —
+    nothing is written at index time.
+
+    An unknown ``repo_id`` returns 200 and an empty-but-valid model rather
+    than 404, matching the l1/l2/mermaid routes beside it: they all build from
+    whatever rows the id matches, and none of them looks the repository up
+    first. Deliberate rather than drift — a lone 404 here would make this the
+    one C4 route with its own contract. The CLI does guard the case, because
+    there a wrong path is a typo worth naming.
+    """
+    model = await c4_builder.build_model(session, repo_id, include_components=components)
+    dsl = to_dsl(
+        model,
+        standalone=standalone,
+        include_components=components,
+        include_externals=externals,
+    )
+    filename = "workspace.dsl" if standalone else STRUCTURIZR_FILENAME
+    return PlainTextResponse(
+        dsl,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +309,7 @@ def _zoom_response(zoom: ZoomMap) -> ZoomMapResponse:
                 ),
                 summary=n.summary,
                 language=n.language,
+                health_score=(round(n.health_score, 2) if n.health_score is not None else None),
                 is_entry_point=n.is_entry_point,
                 is_hotspot=n.is_hotspot,
                 is_dead=n.is_dead,

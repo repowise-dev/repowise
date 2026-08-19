@@ -18,7 +18,7 @@ Rules of thumb baked into the hint generators:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +31,7 @@ from typing import Any
 _STALE_AGE_FLOOR_DAYS = 90
 
 
-def _read_live_head(local_path: str | None) -> str | None:
+def read_live_head(local_path: str | None) -> str | None:
     """Read the repo's current git HEAD SHA via plain file I/O.
 
     Returns a full 40-char SHA, or ``None`` when the repo isn't a git checkout
@@ -211,7 +211,7 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
     Pass ``targets`` (the file/symbol/module paths this response actually
     serves) to scope the mismatch signal: when HEAD has moved but none of the
     served targets changed between the indexed commit and live HEAD, the
-    response carries ``index_behind: true`` instead of ``stale_warning``.
+    response carries ``index_behind: true`` on its own, with no ``stale_warning``.
     "Silence means current" only trains trust if the warning fires only when
     the served content is actually affected — a repo-wide warning after every
     unrelated commit teaches the agent to ignore the field. ``targets=None``
@@ -225,8 +225,16 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
     Conditionally emitted:
       * ``live_head``       — only when it differs from the indexed commit
       * ``stale_warning``   — only on a real signal (a served target changed,
-        HEAD mismatch on a repo-level response, OR very old with no git)
-      * ``index_behind``    — HEAD moved but no served target is affected
+        HEAD mismatch with real file changes on a repo-level response, OR very
+        old with no git)
+      * ``index_behind``.   The live-vs-indexed comparison ran and reached a
+        definitive answer: ``true`` whenever HEAD has moved (with or without an
+        accompanying ``stale_warning``, which is the sharper, content-scoped
+        signal), ``false`` when the two commits match. Omitted only when the
+        comparison could not run at all (no git, no local path, or no indexed
+        commit), so absence means "not evaluated", never "false". Emitting the
+        false case matters downstream: a field that is only ever present as
+        ``true`` makes every consumer-side rate read 100%.
 
     Defensive throughout: any missing piece is dropped rather than raised so
     an upstream change to the Repository model can never poison a tool result.
@@ -238,8 +246,8 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
     updated_at = getattr(repository, "updated_at", None)
     age_days: int | None = None
     if isinstance(updated_at, datetime):
-        ua = updated_at if updated_at.tzinfo else updated_at.replace(tzinfo=timezone.utc)
-        age_days = max(0, (datetime.now(timezone.utc) - ua).days)
+        ua = updated_at if updated_at.tzinfo else updated_at.replace(tzinfo=UTC)
+        age_days = max(0, (datetime.now(UTC) - ua).days)
         out["index_age_days"] = age_days
 
     local_path = getattr(repository, "local_path", None)
@@ -251,29 +259,43 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
     if indexed_full:
         out["indexed_commit"] = indexed_full[:12] if isinstance(indexed_full, str) else indexed_full
 
-    live_full = _read_live_head(local_path)
+    live_full = read_live_head(local_path)
 
     if live_full and indexed_full:
         if live_full != indexed_full:
             out["live_head"] = live_full[:12]
+            # HEAD moved, so the index *is* behind, true regardless of which
+            # sub-branch below fires. Emitted unconditionally here (rather than
+            # only on the quiet branches) so consumers can compute a rate:
+            # a key that only ever appears as True makes every aggregate 100%.
+            out["index_behind"] = True
             changed = (
-                _changed_files_between(local_path, indexed_full, live_full)
-                if targets is not None and local_path
-                else None
+                _changed_files_between(local_path, indexed_full, live_full) if local_path else None
             )
-            if targets is not None and changed is not None:
+            if changed is not None and not changed:
+                # HEAD moved but the two trees are identical (an empty commit, a
+                # merge that changed nothing, a tag-only move). Nothing this or
+                # any other response serves can be stale, so the repo-level
+                # warning was crying wolf on a repo that was completely current —
+                # and a warning that fires when nothing changed trains an agent
+                # to stop reading the field. Checked before the targets branch
+                # because it holds for repo-level responses too, which are
+                # exactly the ones that previously always warned.
+                pass
+            elif targets is not None and changed is not None:
                 if targets_hit_by_changes(targets, changed):
                     out["stale_warning"] = (
                         "A file this response serves changed after indexing — "
                         "verify against source or run `repowise update`."
                     )
-                else:
-                    out["index_behind"] = True
             else:
                 # The two SHAs are already in ``indexed_commit`` / ``live_head`` —
                 # don't repeat them in prose. Just the directive.
                 out["stale_warning"] = "Index is behind live HEAD — run `repowise update`."
-        # Match: deliberately emit nothing extra. Silence is the signal.
+        else:
+            # Match. No prose, since silence is the signal, but the comparison
+            # did run and its answer is "not behind", so say so explicitly.
+            out["index_behind"] = False
     elif live_full is None and age_days is not None and age_days > _STALE_AGE_FLOOR_DAYS:
         # No git signal available and the index is genuinely old.
         out["stale_warning"] = (
@@ -282,39 +304,6 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
         )
 
     return out
-
-
-# Question patterns where narrative wiki context wins over symbol-body slicing.
-# Used to suppress "use get_symbol" hints — those questions need surrounding prose.
-_EXPLAIN_TOKENS = (
-    "explain",
-    "why ",
-    "why is",
-    "why does",
-    "why was",
-    "how does",
-    "how do",
-    "how is",
-    "how are",
-    "what is the relationship",
-    "describe",
-    "walk me through",
-    "tell me about",
-    "purpose of",
-)
-
-
-def is_explanation_question(question: str | None) -> bool:
-    """True if the question reads like 'explain X', not 'find X'.
-
-    Used as a guard before any hint that would push the agent toward
-    symbol-level (narrower) retrieval. Conservative by design: any explanation
-    cue suppresses the hint.
-    """
-    if not question:
-        return False
-    q = question.strip().lower()
-    return any(tok in q for tok in _EXPLAIN_TOKENS)
 
 
 def build_meta(
@@ -368,19 +357,36 @@ def _embedder_meta() -> dict[str, Any]:
     fell back to mock vectors, every tool response carries ``embedder: "mock"``,
     ``embedder_degraded: True``, and a human-readable ``embedder_warning`` so an
     agent can detect — programmatically — that semantic search is broken instead
-    of trusting empty/garbage retrieval. Emits nothing when the embedder is
-    healthy or unresolved, so healthy responses stay clean.
+    of trusting empty/garbage retrieval. A healthy embedder still carries
+    ``embedder_degraded: False`` and nothing else, so responses stay quiet while
+    the field remains a two-valued signal: telemetry that only ever sees the
+    ``true`` case cannot tell a 100% degradation rate from a write-only key.
+    Absent entirely means the embedder was never initialised: not evaluated,
+    not healthy.
+
+    A *keyless* index is a different state and gets a different field. Nothing
+    is broken and nothing was misconfigured, so it is not flagged as degraded;
+    but retrieval really is full-text-only, and a caller that assumes semantic
+    matching is running will misread a lexical miss as "not in the codebase".
+    ``semantic_search: false`` says so once per response without crying wolf.
     """
     # Lazy import: `_state` is a sibling module; importing it at call-time keeps
     # `_meta` free of any package import-ordering coupling.
     from repowise.server.mcp_server import _state
 
     status = getattr(_state, "_embedder_status", None)
-    if not status or not status.get("degraded"):
+    if not status:
+        # Embedder never initialised, so there is nothing to report either way.
+        # Absence means "not evaluated", distinct from an explicit ``false``.
         return {}
+    if not status.get("degraded"):
+        if status.get("active") == "mock":
+            return {"embedder": "mock", "embedder_degraded": False, "semantic_search": False}
+        return {"embedder_degraded": False}
     out: dict[str, Any] = {
         "embedder": status.get("active", "mock"),
         "embedder_degraded": True,
+        "semantic_search": False,
     }
     reason = status.get("reason")
     if reason:
@@ -407,12 +413,48 @@ def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:
     return None
 
 
-def answer_hint(confidence: str, retrieval_count: int) -> str | None:
+def answer_hint(
+    confidence: str,
+    retrieval_count: int,
+    *,
+    degraded: str | None = None,
+    retrieval_quality: str | None = None,
+    has_bodies: bool = False,
+) -> str | None:
     """Hint for `get_answer` callers.
 
     Encourages verification when confidence is low; never tells the agent to
     "trust the answer" — that's the over-trust failure mode.
+
+    A degraded payload is keyed separately, because "low" means something
+    different there. Everywhere else it rates an answer that exists and might be
+    wrong, so "go verify" is the right push. On a degraded payload there is no
+    synthesised text at all: what is missing is the prose, not the evidence, and
+    the evidence beside it can be excellent. Telling an install with no LLM to
+    doubt its files on every question is what made a keyless agent call
+    search_codebase after every get_answer: one question, two calls, measured on
+    11 of 26 questions whose rank-1 file was right. So say which half is missing
+    and let `retrieval_quality` rate the other half.
     """
+    if degraded:
+        if retrieval_quality == "weak":
+            return (
+                "No synthesis, and retrieval was weak. Refine the query with "
+                "search_codebase rather than reading these files in order."
+            )
+        # Name symbol_bodies only when there is one. A hint that points at a key
+        # the payload does not carry is the same misdirection this branch exists
+        # to remove, and strong retrieval without an anchored body is an ordinary
+        # outcome here (a prose question naming no identifier).
+        if has_bodies:
+            return (
+                "Synthesis is what is missing here, not retrieval. Answer from "
+                "symbol_bodies; retrieval_quality rates what was served."
+            )
+        return (
+            "Synthesis is what is missing here, not retrieval. retrieval_quality "
+            "rates the ranked hits; start from the first one."
+        )
     if confidence == "low":
         return "Low confidence — Read the listed fallback_targets to verify before answering."
     if retrieval_count == 0:

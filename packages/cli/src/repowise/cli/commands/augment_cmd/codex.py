@@ -1,8 +1,16 @@
-"""Codex lifecycle hooks: SessionStart/UserPromptSubmit + post-edit staleness.
+"""Codex lifecycle hooks: SessionStart context + post-edit staleness.
 
 SessionStart delivers a short MCP-usage context block plus the same
 relevance-ranked standing-decisions block that Claude Code receives
 (see :mod:`.decision_inject`), so decisions follow the user across agents.
+
+``UserPromptSubmit`` is still *answered* here but is no longer *registered* by
+anything we install — see ``_RETIRED_EVENTS`` in the Codex target. Nothing that
+ships routes this event any more, so the branch below exists for one population:
+an install whose ``.codex/hooks.json`` predates the retirement and has not yet
+been migrated. Handling it keeps that transition graceful rather than turning a
+stale config into a silent hook error, and the migration removes the
+registration the next time any repowise command touches the file.
 """
 
 from __future__ import annotations
@@ -10,7 +18,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from ._shared import _find_repo_root
-from .decision_inject import _edit_decision_notice, _session_decision_block
+from .decision_inject import (
+    _edit_decision_notice,
+    _edit_fix_history_notice,
+    _session_decision_block,
+)
 from .read_state import _load_session_state, _save_session_state
 
 _MCP_CONTEXT = (
@@ -22,9 +34,7 @@ _MCP_CONTEXT = (
 )
 
 
-def _handle_codex_context_event(
-    event: str, cwd: str, session_id: str = ""
-) -> str | None:
+def _handle_codex_context_event(event: str, cwd: str, session_id: str = "") -> str | None:
     """Return Codex developer context + standing decisions on SessionStart."""
     if event not in ("SessionStart", "UserPromptSubmit"):
         return None
@@ -67,8 +77,9 @@ def _handle_post_edit_use(
         "risk checks, or dead-code results."
     )
 
-    # Governing-decision notice — same builder Claude Code's edit-time path uses.
-    notice: str | None = None
+    # Governing-decision and bug-history notices, from the same builders Claude
+    # Code's edit-time path uses, under the same per-session caps.
+    notices: list[str] = []
     if tool_input is not None and session_id:
         file_path = tool_input.get("file_path") if isinstance(tool_input, dict) else None
         if isinstance(file_path, str) and file_path.strip():
@@ -77,10 +88,16 @@ def _handle_post_edit_use(
             rel = _relativize(file_path, repo_path)
             if rel is not None:
                 state = _load_session_state(repo_path, session_id)
-                try:
-                    notice = _edit_decision_notice(repo_path, rel, session_id, state)
-                except Exception:
-                    notice = None
+                for emit in (
+                    lambda: _edit_decision_notice(repo_path, rel, session_id, state),
+                    lambda: _edit_fix_history_notice(repo_path, rel, session_id),
+                ):
+                    try:
+                        line = emit()
+                    except Exception:
+                        line = None
+                    if line:
+                        notices.append(line)
                 _save_session_state(repo_path, state)
 
-    return "\n".join(filter(None, (staleness, notice))) if notice else staleness
+    return "\n".join([staleness, *notices]) if notices else staleness

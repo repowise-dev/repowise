@@ -249,8 +249,3 @@ export function humanizeType(type: string): string {
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ");
 }
-
-/** Truncates to `max` characters, appending an ellipsis when cut. */
-export function truncate(text: string, max = 80): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
-}

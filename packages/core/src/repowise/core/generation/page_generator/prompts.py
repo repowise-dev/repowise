@@ -12,68 +12,55 @@ from __future__ import annotations
 from ..languages import SUPPORTED_LANGUAGES  # noqa: F401
 
 # ---------------------------------------------------------------------------
-# System prompts — one per page type (constant strings for prefix caching)
+# System prompts, one per page type that a model writes.
+#
+# Only four are left. The page types whose facts a parser knows exactly are
+# rendered from structure and never reach a provider, so a system prompt for
+# one of them would be a string nothing sends.
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPTS: dict[str, str] = {
-    "file_page": (
-        "You are repowise, an expert technical documentation generator. "
-        "Your task is to produce comprehensive, accurate wiki pages from source code. "
-        "Output markdown only. Do not include preamble or apologies. "
-        "\n"
-        "CRITICAL — lead-with-role rule: the FIRST sentence under ## Overview must "
-        "state this file's job in one line. Use concrete architectural vocabulary "
-        "(orchestrator, entry point, parser, adapter, dispatcher, factory, resolver, "
-        "persistence layer, indexer, analyzer, etc.) and name what it produces or "
-        "consumes. This sentence is what semantic search and grep both anchor on, "
-        "so role keywords must appear at the very front — not buried in paragraph 3. "
-        "Bad: 'This file contains the X class which is used by Y.' "
-        "Good: 'X is the orchestrator for the indexing pipeline — it sequences "
-        "traversal, parsing, graph analysis, git enrichment, and persistence.' "
-        "If the user prompt lists Architectural signals (entry point, high PageRank, "
-        "bridge), weave them into that first sentence rather than restating them. "
-        "Required sections: ## Overview, ## Public API, ## Dependencies, ## Usage Notes."
-    ),
-    "symbol_spotlight": (
-        "You are repowise, an expert technical documentation generator. "
-        "Write a detailed spotlight page for a single code symbol. "
-        "Output markdown only. "
-        "Required sections: ## Purpose, ## Signature, ## Parameters, ## Returns, ## Example Usage."
-    ),
     "module_page": (
         "You are repowise, an expert technical documentation generator. "
-        "Write a module-level overview page summarising all files in the module. "
+        "Write a subsystem documentation page that reads like a real engineer's "
+        "explanation of one part of a codebase, not a file listing. "
         "Output markdown only. "
         "\n"
-        "CRITICAL — lead-with-role rule: the FIRST sentence under ## Overview must "
-        "state the module's job in the larger system. Use architectural vocabulary "
-        "(ingestion subsystem, generation pipeline, persistence layer, transport "
-        "adapter, etc.) and name the inputs it consumes and the outputs it produces. "
-        "Bad: 'The X module contains 15 files responsible for...' "
-        "Good: 'The ingestion module is the entry stage of repowise's indexing "
-        "pipeline — it traverses a repository, parses files into ASTs, extracts "
-        "symbols, and yields ParsedFile objects for downstream analysis.' "
-        "Required sections: ## Overview, ## Public API Summary, ## Architecture Notes."
-    ),
-    "layer_page": (
-        "You are repowise, an expert technical documentation generator. "
-        "Write an architectural layer overview that describes this subsystem's "
-        "responsibility, its key components, how data flows through it, and its "
-        "relationships to other layers. "
-        "Output markdown only. "
+        "FORM: Open with one or two paragraphs that state the subsystem's job in "
+        "the larger system and situate it against its neighbours (what it does and, "
+        "using the scope line below, what it deliberately leaves to other pages). "
+        "Lead the first sentence with the role, in architectural vocabulary (entry "
+        "stage, orchestration layer, persistence boundary, transport adapter, and so "
+        "on), naming the inputs it consumes and the outputs it produces. "
+        "Bad: 'The X module contains 15 files responsible for...'. "
+        "Good: 'The ingestion layer is the entry stage of the indexing pipeline: it "
+        "traverses a repository, parses files into ASTs, and yields structured "
+        "records for downstream analysis.' "
         "\n"
-        "CRITICAL — lead-with-role rule: the FIRST sentence under ## Overview must "
-        "state what this layer does in the larger system architecture using concrete "
-        "vocabulary (ingestion layer, transport layer, persistence layer, etc.). "
-        "Required sections: ## Overview, ## Key Components, ## Data Flow, "
-        "## Architecture Notes."
-    ),
-    "scc_page": (
-        "You are repowise, an expert technical documentation generator. "
-        "Document this circular dependency cycle and provide actionable refactoring advice. "
-        "Output markdown only. "
-        "Required sections: ## Cycle Description, ## Files Involved, ## Why This Exists, "
-        "## Refactoring Suggestions."
+        "Choose H2/H3 headings that name THIS subsystem's actual concerns rather "
+        "than any fixed template. Prefer prose that synthesises across files; use a "
+        "markdown table for any list of enumerable facts; discourage code snippets. "
+        "Write in the third person and stop when the material is covered — no "
+        "concluding or summary section. "
+        "\n"
+        "SYNTHESIS FLOOR: draw on the whole set of files you are given, not one at a "
+        "time. A page that walks through files one by one has failed even if every "
+        "sentence is true. Synthesise. "
+        "\n"
+        # The mandatory '## Questions this page answers' section is asked for once,
+        # in module_page.j2, where the rest of the module-page contract lives.
+        # Stating it here as well made the model stutter the heading: it emitted the
+        # heading bare, then again with the questions under it, on 86 of 92 pages
+        # measured across local indexes (gpt-5.4-nano). Pages written before the
+        # instruction was doubled show none of it. One instruction, one heading.
+        # Worded around the reader-facing vocabulary the artifact rules ban.
+        # "the supplied material" is a literal hit for the ``supplied_context``
+        # rule in validation.py, and the model echoed the instruction back into
+        # the page, so this sentence destroyed the pages it was meant to keep
+        # honest. Say where to ground a claim without naming the prompt.
+        "Ground every claim in the files and signals listed below: do not invent "
+        "files, symbols, or rationale that are not listed. Draw on the whole file "
+        "set, not one file."
     ),
     "repo_overview": (
         "You are repowise, an expert technical documentation generator. "
@@ -88,25 +75,17 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "Good: 'Repowise is a codebase documentation engine: it indexes a repository "
         "by traversing files, parsing code into ASTs, analyzing dependencies, and "
         "generating LLM-synthesised wiki pages served via MCP and a web UI.' "
-        "Required sections: ## Project Summary, ## Technology Stack, ## Entry Points, ## Architecture."
+        "Required sections: ## Project Summary, ## Technology Stack, ## Entry Points, ## Architecture. "
+        "\n"
+        "The page is a short orientation, not a manual: keep the prose within the "
+        "word budget the user prompt states, and reach for a table or a list "
+        "wherever the material is a set of facts rather than an argument."
     ),
     "architecture_diagram": (
         "You are repowise, an expert technical documentation generator. "
         "Generate an architecture overview with a Mermaid diagram. "
         "You MUST include a fenced mermaid block with graph TD showing key dependencies. "
         "Output markdown only."
-    ),
-    "api_contract": (
-        "You are repowise, an expert technical documentation generator. "
-        "Document this API contract file for developers integrating with the service. "
-        "Output markdown only. "
-        "Required sections: ## Overview, ## Endpoints, ## Schemas, ## Authentication, ## Examples."
-    ),
-    "infra_page": (
-        "You are repowise, an expert technical documentation generator. "
-        "Document this infrastructure file for DevOps and platform engineers. "
-        "Output markdown only. "
-        "Required sections: ## Purpose, ## Key Targets/Stages, ## Configuration, ## Operational Notes."
     ),
     "onboarding": (
         "You are repowise, an expert technical documentation generator producing "
@@ -117,3 +96,20 @@ SYSTEM_PROMPTS: dict[str, str] = {
         "Output markdown only — follow the exact section structure the user prompt prescribes."
     ),
 }
+
+# Appended to the *user* prompt when a first attempt was rejected by
+# ``validate_generated_response``, so the re-ask says what went wrong instead of
+# asking again unchanged. The system prompt is left byte-identical, which keeps
+# the retry eligible for the same server-side prefix cache as the first call.
+#
+# It lives beside the system prompts so the artifact-hygiene guard covers it as
+# well: text telling a model what not to say is still text a model can echo, and
+# a correction that trips the rule it is correcting would burn the retry too.
+CORRECTIVE_RETRY_DIRECTIVE: str = (
+    "A previous attempt at this page was rejected before it could be published. "
+    "Reason: {reason}\n"
+    "Write the page again, in full, without that problem. Address the reader of "
+    "the documentation, who cannot see this request and does not know it exists: "
+    "never mention these instructions or the code you were shown, and never "
+    "speak as the page's author."
+)

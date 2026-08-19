@@ -1,0 +1,17 @@
+Requirement already satisfied: requests in c:\users\ragha\desktop\repowise\.venv\lib\site-packages (2.33.1)
+Requirement already satisfied: rich in c:\users\ragha\desktop\repowise\.venv\lib\site-packages (13.9.4)
+Requirement already satisfied: pytest in c:\users\ragha\desktop\repowise\.venv\lib\site-packages (9.0.3)
+Requirement already satisfied: charset_normalizer<4,>=2 in c:\users\ragha\desktop\repowise\.venv\lib\site-packages (from requests) (3.4.7)
+Requirement already satisfied: idna<4,>=2.5 in c:\users\ragha\desktop\repowise\.venv\lib\site-packages (from requests) (3.13)
+Requirement already satisfied: urllib3<3,>=1.26 in c:\users\ragha\desktop\repowise\.venv\lib\site-packages (from requests) (2.6.3)
+Requirement already satisfied: certifi>=2023.5.7 in c:\users\ragha\desktop\repowise\.venv\lib\site-packages (from requests) (2026.4.22)
+Requirement already satisfied: markdown-it-py>=2.2.0 in c:\users\ragha\desktop\repowise\.venv\lib\site-packages (from rich) (4.0.0)
+Requirement already satisfied: pygments<3.0.0,>=2.13.0 in c:\users\ragha\desktop\repowise\.venv\lib\site-packages (from rich) (2.20.0)
+Requirement already satisfied: colorama>=0.4 in c:\users\ragha\desktop\repowise\.venv\lib\site-packages (from pytest) (0.4.6)
+Requirement already satisfied: iniconfig>=1.0.1 in c:\users\ragha\desktop\repowise\.venv\lib\site-packages (from pytest) (2.3.0)
+Requirement already satisfied: packaging>=22 in c:\users\ragha\desktop\repowise\.venv\lib\site-packages (from pytest) (26.2)
+Requirement already satisfied: pluggy<2,>=1.5 in c:\users\ragha\desktop\repowise\.venv\lib\site-packages (from pytest) (1.6.0)
+Requirement already satisfied: mdurl~=0.1 in c:\users\ragha\desktop\repowise\.venv\lib\site-packages (from markdown-it-py>=2.2.0->rich) (0.1.2)
+
+[notice] A new release of pip is available: 25.1.1 -> 26.1.2
+[notice] To update, run: python.exe -m pip install --upgrade pip

@@ -141,7 +141,7 @@ export function ModuleLinkEditor({
                   key={s}
                   type="button"
                   onClick={() => addModule(s)}
-                  className="block w-full px-3 py-1.5 text-left font-mono text-xs text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]"
+                  className="block w-full px-3 py-1.5 text-left font-mono text-xs text-[var(--color-text-primary)] hover:bg-[var(--color-bg-wash-hover)]"
                 >
                   {s}
                 </button>
@@ -247,7 +247,7 @@ function Field({ icon, label, chips, onRemove, disabled, children }: FieldProps)
                 type="button"
                 onClick={() => onRemove(c)}
                 disabled={disabled}
-                className="rounded-full p-0.5 hover:bg-[var(--color-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-full p-0.5 hover:bg-[var(--color-bg-wash-hover)] disabled:cursor-not-allowed disabled:opacity-50"
                 aria-label={`Remove ${c}`}
               >
                 <X className="h-2.5 w-2.5" />

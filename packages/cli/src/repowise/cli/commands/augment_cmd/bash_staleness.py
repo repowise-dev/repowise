@@ -6,6 +6,8 @@ import contextlib
 import json
 from pathlib import Path
 
+from repowise.core.docs_mode import resolve_docs_mode
+
 from ._shared import _find_repo_root
 
 _GIT_COMMIT_PATTERNS = (
@@ -107,8 +109,7 @@ def _handle_bash_post(tool_input: dict, tool_output: object, cwd: str) -> str | 
         return None
     _record_warning(repo_path, head)
 
-    docs_enabled = state.get("docs_enabled", True)
-    artifact = "Wiki" if docs_enabled else "Index"
+    artifact = "Index" if resolve_docs_mode(state) == "none" else "Wiki"
     return (
         f"[repowise] {artifact} is stale — last indexed at commit "
         f"{last_sync[:8]}, HEAD is now {head[:8]}. "

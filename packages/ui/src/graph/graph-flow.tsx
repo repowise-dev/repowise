@@ -9,13 +9,12 @@ import {
   type ReactNode,
 } from "react";
 import { useTheme } from "next-themes";
-import { ChevronRight, Home, X } from "lucide-react";
+import { X } from "lucide-react";
 import { Skeleton } from "../ui/skeleton";
 import { EmptyState } from "../shared/empty-state";
-import { GraphProvider, type GraphContextValue, type Signal } from "./context";
-import { groupNodesAsModules, type FileNodeData, type ModuleNodeData } from "./elk-layout";
+import { type Signal } from "./context";
+import { type FileNodeData, type ModuleNodeData } from "./elk-layout";
 
-const EMPTY_STRING_SET = new Set<string>();
 // Resting zoom when easing the camera onto a constellation hub. Looser than the
 // default file-node focus (0.15) so the hub *and* its surrounding cluster stay
 // visible instead of the disc filling the whole viewport.
@@ -23,33 +22,22 @@ const HUB_FOCUS_RATIO = 0.45;
 // Below this node count file graphs build synchronously; at or above it we
 // build in chunks off the critical path (see sigmaGraph below).
 const ASYNC_BUILD_THRESHOLD = 1000;
-// One-time "double-click to expand" hint for the modules scope.
-const MODULE_HINT_KEY = "repowise-graph-module-hint";
 
-/** Deterministic 0–1 value from a string (FNV-1a) — stable layout jitter. */
-function hashUnit(s: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return (h >>> 0) / 0xffffffff;
-}
-import { useExpandedModules } from "./use-expanded-modules";
 import { useExpandedHubs } from "./use-expanded-hubs";
-import { traceToEdgeKeys } from "./graph-flow-helpers";
+import { traceToEdgeKeys, traceToFileTrace } from "./graph-flow-helpers";
 import { useGraphContextMenu } from "./use-graph-context-menu";
 import { useGraphSearch } from "./use-graph-search";
 import { useCommunityFilter } from "./use-community-filter";
+import { useModuleFilter } from "./use-module-filter";
 import { useGraphKeyboardShortcuts } from "./use-graph-keyboard-shortcuts";
-import { GraphToolbar, type ColorMode, type ViewMode, type LayoutMode, type GraphTheme, type Scope } from "./graph-toolbar";
+import { GraphToolbar, type ColorMode, type ViewMode, type LayoutMode, type GraphTheme } from "./graph-toolbar";
 import { GraphLegend } from "./graph-legend";
 import { GraphContextMenu } from "./graph-context-menu";
 import { GraphInspectionPanel } from "./graph-inspection-panel";
+import { GraphFlowPanel } from "./graph-flow-panel";
 import { GraphShortcutHelp } from "./graph-shortcut-help";
 import type {
   GraphExport,
-  ModuleGraph,
   ExecutionFlows,
   CommunitySummaryItem,
   ArchitectureGraph,
@@ -59,10 +47,6 @@ import { SigmaCanvas, type SigmaCanvasHandle } from "./sigma/sigma-canvas";
 import {
   fileGraphToGraphology,
   fileGraphToGraphologyAsync,
-  moduleGraphToGraphology,
-  groupFilesAsModules,
-  settleGraph,
-  isExternalModuleId,
 } from "./sigma/graphology-adapter";
 import {
   architectureToGraphology,
@@ -74,17 +58,8 @@ import { ELK_MAX_NODES, elkSkipReason } from "./sigma/use-elk-sigma-layout";
 import type { SigmaNodeAttributes, SigmaEdgeAttributes } from "./sigma/types";
 import type GraphologyGraph from "graphology";
 import { useEgoFilter } from "./sigma/use-ego-filter";
-import {
-  NODE_BASE_SIZES,
-  EDGE_COLORS,
-  getScaledNodeSize,
-  getNodeMass,
-  languageColor as sigmaLanguageColor,
-} from "./sigma/constants";
 
 export interface GraphFlowProps {
-  moduleGraph: ModuleGraph | undefined;
-  isLoadingModuleGraph: boolean;
   fullGraph: GraphExport | undefined;
   isLoadingFullGraph: boolean;
   architectureGraph: GraphExport | undefined;
@@ -107,6 +82,18 @@ export interface GraphFlowProps {
   communities?: CommunitySummaryItem[];
   executionFlows?: ExecutionFlows;
   initialViewMode?: ViewMode;
+  /** Controlled scope. Scope is now steered from the page's section header
+   *  (`GraphScopeSwitcher`) rather than from a pill cluster on the canvas, so
+   *  the host owns the value and URL-syncs it. Omit to let the component track
+   *  its own, seeded by {@link initialViewMode}. */
+  viewMode?: ViewMode;
+  /** The module filter's current selection (a path prefix from
+   *  `moduleGroupFor`), or null for "all modules". Controlled by the host so
+   *  the control can live in the section header beside the scope switcher. */
+  activeModule?: string | null;
+  /** Fired with the module groups present in the rendered graph, so the host
+   *  can populate its filter control. Counts are of nodes actually drawn. */
+  onModuleGroupsChange?: (groups: { id: string; fileCount: number }[]) => void;
   /** Initial node color mode (uncontrolled seed). Hosts derive this from their
    *  URL state instead of the component reading window.location. Ignored when
    *  {@link colorMode} is supplied. */
@@ -121,8 +108,6 @@ export interface GraphFlowProps {
   /** Fired when the node color mode changes (toolbar or 1/2/3 shortcut) so
    *  hosts can sync it to the URL. */
   onColorModeChange?: (mode: ColorMode) => void;
-  onModulePathChange?: (path: string[]) => void;
-  onExpandedModulesChange?: (expanded: Set<string>) => void;
   onNodeClick?: (nodeId: string, nodeType: string) => void | Promise<void>;
   onNodeViewDocs?: (nodeId: string) => void;
   /** "Symbols" action in the inspection panel — jump to the symbols view
@@ -148,16 +133,10 @@ export interface GraphFlowProps {
    *  hosting page dismiss any competing right-rail panel (doc panel etc.)
    *  so the right side is a single sidebar. */
   onCommunityPanelOpen?: (communityId: number) => void;
-  /** Restricts the toolbar's scope cluster. Explore passes `["modules","full"]`
-   *  so the constellation scope (now the Knowledge Graph view's Communities
-   *  lens) is not reachable from here. Defaults to all scopes. */
-  availableScopes?: Scope[];
 }
 
 export function GraphFlow(props: GraphFlowProps) {
   const {
-    moduleGraph,
-    isLoadingModuleGraph,
     fullGraph,
     isLoadingFullGraph,
     constellationGraph,
@@ -172,13 +151,14 @@ export function GraphFlow(props: GraphFlowProps) {
     communities,
     executionFlows,
     initialViewMode,
+    viewMode: controlledViewMode,
+    activeModule: controlledActiveModule,
+    onModuleGroupsChange,
     initialColorMode,
     colorMode: controlledColorMode,
     initialSelectedNode,
     onViewModeChange,
     onColorModeChange,
-    onModulePathChange,
-    onExpandedModulesChange,
     onNodeClick,
     onNodeViewDocs,
     onNodeViewSymbols,
@@ -186,15 +166,19 @@ export function GraphFlow(props: GraphFlowProps) {
     renderPathFinder,
     renderCommunityPanel,
     onCommunityPanelOpen,
-    availableScopes,
   } = props;
 
   const sigmaRef = useRef<SigmaCanvasHandle>(null);
   const focusTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // ---- Core state ----
-  // Default scope is the constellation (radial Knowledge Graph).
-  const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode ?? "architecture");
+  // Default scope is the constellation (radial Knowledge Graph). Controlled by
+  // the host when `viewMode` is supplied — the scope switcher lives in the
+  // page's section header now, so the URL is the source of truth.
+  const [viewModeState, setViewModeState] = useState<ViewMode>(
+    initialViewMode ?? "architecture",
+  );
+  const viewMode = controlledViewMode ?? viewModeState;
   // Color mode is controlled by the host when `colorMode` is supplied
   // (URL-synced); otherwise the component tracks it locally, seeded by
   // `initialColorMode`. The wrapped setter routes through the host callback in
@@ -224,8 +208,9 @@ export function GraphFlow(props: GraphFlowProps) {
 
   // The dependency graph follows the global app theme rather than a separate
   // local toggle. Sigma needs a concrete "light"/"dark" (never "system"), so
-  // resolve it; the in-graph Sun/Moon control flips the global theme below.
-  const { resolvedTheme, setTheme } = useTheme();
+  // resolve it. The toolbar used to carry its own Sun/Moon that just called
+  // `setTheme` — a duplicate of the app's header toggle — and it is gone.
+  const { resolvedTheme } = useTheme();
   const graphTheme: GraphTheme = resolvedTheme === "dark" ? "dark" : "light";
 
   const [egoDepth, setEgoDepth] = useState(0);
@@ -244,42 +229,6 @@ export function GraphFlow(props: GraphFlowProps) {
   });
   const hideTests = activeSignals.has("hideTests");
 
-  // Expand/collapse modules (replaces drill-down for most use cases)
-  const { expandedModules, toggleModule, collapseAll } = useExpandedModules();
-  const hasExpandedModules = expandedModules.size > 0;
-
-  // External `external:*` dependency modules are hidden by default — they
-  // outnumber the repo's own modules and drown the layout. Toggle in toolbar.
-  const [showExternals, setShowExternals] = useState(false);
-  const externalCount = useMemo(
-    () =>
-      moduleGraph
-        ? moduleGraph.nodes.reduce(
-            (n, mod) => n + (isExternalModuleId(mod.module_id) ? 1 : 0),
-            0,
-          )
-        : 0,
-    [moduleGraph],
-  );
-
-  // One-time "double-click a module to expand it" hint (persists dismissal).
-  const [moduleHintDismissed, setModuleHintDismissed] = useState<boolean>(() => {
-    if (typeof window === "undefined") return true;
-    try {
-      return window.localStorage.getItem(MODULE_HINT_KEY) === "1";
-    } catch {
-      return true;
-    }
-  });
-  const dismissModuleHint = useCallback(() => {
-    setModuleHintDismissed(true);
-    try {
-      window.localStorage.setItem(MODULE_HINT_KEY, "1");
-    } catch {
-      /* private mode — session-only dismissal */
-    }
-  }, []);
-
   // Expand/collapse constellation hubs (radial blossom). Esc collapses the most
   // recently expanded hub; multiple hubs may be open at once.
   const { expandedHubs, toggleHub, collapseLast, collapseAll: collapseAllHubs } =
@@ -289,19 +238,6 @@ export function GraphFlow(props: GraphFlowProps) {
     onExpandedHubsChange?.(expandedHubs);
   }, [expandedHubs, onExpandedHubsChange]);
 
-  // Legacy drill-down (breadcrumb nav, kept for deep-dive via context menu)
-  const [modulePath, setModulePath] = useState<string[]>([]);
-  const currentPrefix = modulePath.length > 0 ? (modulePath[modulePath.length - 1] ?? "") : "";
-  const isDrilledDown = modulePath.length > 0;
-
-  useEffect(() => {
-    onModulePathChange?.(modulePath);
-  }, [modulePath, onModulePathChange]);
-
-  useEffect(() => {
-    onExpandedModulesChange?.(expandedModules);
-  }, [expandedModules, onExpandedModulesChange]);
-
   // Context menu (state + dismiss-on-click/Escape lifecycle)
   const { ctxMenu, setCtxMenu } = useGraphContextMenu();
 
@@ -309,13 +245,23 @@ export function GraphFlow(props: GraphFlowProps) {
   const [pathFrom, setPathFrom] = useState("");
   const [pathTo, setPathTo] = useState("");
 
-  // Hover & selection
-  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  // Selection. There is deliberately no hover state: Sigma draws its own hover
+  // highlight on the canvas, so mirroring it into React only re-rendered this
+  // whole shell on every hover transition for nothing.
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
   // Execution flows
   const [activeFlowIdx, setActiveFlowIdx] = useState<number | null>(null);
   const [showFlows, setShowFlows] = useState(false);
+  // Stable, so the memoised panel does not re-render with the canvas.
+  const handleFlowSelect = useCallback(
+    (idx: number) => setActiveFlowIdx((cur) => (cur === idx ? null : idx)),
+    [],
+  );
+  const handleFlowsClose = useCallback(() => {
+    setShowFlows(false);
+    setActiveFlowIdx(null);
+  }, []);
 
   // Community detail panel (the filter state itself lives in useCommunityFilter)
   const [communityPanelId, setCommunityPanelId] = useState<number | null>(null);
@@ -361,7 +307,6 @@ export function GraphFlow(props: GraphFlowProps) {
   );
 
   // ---- Derived state ----
-  const isModuleView = viewMode === "module";
   const isUnified = viewMode === "unified";
   // The "architecture" scope renders the radial community constellation.
   const isConstellation = viewMode === "architecture";
@@ -432,13 +377,7 @@ export function GraphFlow(props: GraphFlowProps) {
       }));
   }, [constellationGraph]);
 
-  // Drill-down data
-  const drillDownData = useMemo(() => {
-    if (!isDrilledDown || !fullGraph) return null;
-    return groupNodesAsModules(fullGraph.nodes, fullGraph.links, currentPrefix);
-  }, [isDrilledDown, fullGraph, currentPrefix]);
-
-  // File-level graph data for non-module views
+  // File-level graph data for each scope
   const fileGraphData = useMemo(() => {
     switch (viewMode) {
       case "full":
@@ -460,8 +399,6 @@ export function GraphFlow(props: GraphFlowProps) {
 
   // Loading state
   const isLoading =
-    (isModuleView && !isDrilledDown) ? isLoadingModuleGraph :
-    isDrilledDown ? isLoadingFullGraph :
     viewMode === "full" || viewMode === "unified" ? isLoadingFullGraph :
     viewMode === "architecture" ? !!isLoadingConstellationGraph :
     viewMode === "dead" ? isLoadingDeadCodeGraph :
@@ -488,167 +425,13 @@ export function GraphFlow(props: GraphFlowProps) {
     deadCodeGraph?.dead_total ?? fullGraph?.dead_total ?? null;
   const hotTotal = hotFilesGraph?.hot_total ?? fullGraph?.hot_total ?? null;
 
-  // Pre-build indexes for O(1) module expansion lookups (Fix 1.1)
-  const fullGraphIndexes = useMemo(() => {
-    if (!fullGraph) return null;
-    const moduleChildIndex = new Map<string, typeof fullGraph.nodes>();
-    const nodeEdgeIndex = new Map<string, typeof fullGraph.links>();
-
-    for (const node of fullGraph.nodes) {
-      const parts = node.node_id.split("/");
-      for (let depth = 1; depth < parts.length; depth++) {
-        const prefix = parts.slice(0, depth).join("/");
-        let children = moduleChildIndex.get(prefix);
-        if (!children) { children = []; moduleChildIndex.set(prefix, children); }
-        children.push(node);
-      }
-    }
-    for (const link of fullGraph.links) {
-      let srcEdges = nodeEdgeIndex.get(link.source);
-      if (!srcEdges) { srcEdges = []; nodeEdgeIndex.set(link.source, srcEdges); }
-      srcEdges.push(link);
-      let tgtEdges = nodeEdgeIndex.get(link.target);
-      if (!tgtEdges) { tgtEdges = []; nodeEdgeIndex.set(link.target, tgtEdges); }
-      tgtEdges.push(link);
-    }
-    return { moduleChildIndex, nodeEdgeIndex };
-  }, [fullGraph]);
-
   // Build Graphology graph for Sigma rendering.
   //
-  // Module / drill-down / small file graphs build synchronously here. Large
-  // file graphs (>= ASYNC_BUILD_THRESHOLD) are deferred off the critical path:
-  // this memo returns null and the effect below constructs them in chunks,
-  // keeping the loading state up until the first frame is ready.
+  // Small file graphs build synchronously here. Large ones
+  // (>= ASYNC_BUILD_THRESHOLD) are deferred off the critical path: this memo
+  // returns null and the effect below constructs them in chunks, keeping the
+  // loading state up until the first frame is ready.
   const syncSigmaGraph = useMemo(() => {
-    if (isModuleView) {
-      if (isDrilledDown && fullGraph) {
-        return settleGraph(groupFilesAsModules(fullGraph, { prefix: currentPrefix }));
-      }
-
-      if (!moduleGraph) return null;
-
-      const moduleOpts = {
-        hideExternals: !showExternals,
-        ...(communities ? { communities } : {}),
-      };
-
-      if (expandedModules.size === 0 || !fullGraph || !fullGraphIndexes) {
-        // Settle synchronously so the first painted frame is the final layout
-        // (no FA2 convergence animation collapsing the graph into a blob).
-        return settleGraph(moduleGraphToGraphology(moduleGraph, moduleOpts));
-      }
-
-      const graph = moduleGraphToGraphology(moduleGraph, moduleOpts);
-
-      for (const moduleId of expandedModules) {
-        if (!graph.hasNode(moduleId)) continue;
-
-        const childNodes = fullGraphIndexes.moduleChildIndex.get(moduleId) ?? [];
-        // No file-level children in the loaded graph (e.g. a docs-only module
-        // under a capped node set): keep the module node instead of silently
-        // vanishing it.
-        if (childNodes.length === 0) continue;
-
-        const modAttrs = graph.getNodeAttributes(moduleId);
-        const modX = modAttrs.x;
-        const modY = modAttrs.y;
-
-        graph.dropNode(moduleId);
-
-        const nodeCount = fullGraph.nodes.length;
-        const jitter = 30;
-
-        for (const node of childNodes) {
-          if (graph.hasNode(node.node_id)) continue;
-          const baseSize = node.is_entry_point
-            ? NODE_BASE_SIZES.entryPoint
-            : node.is_test ? NODE_BASE_SIZES.test : NODE_BASE_SIZES.file;
-          let size = getScaledNodeSize(baseSize, nodeCount);
-          size *= Math.min(1 + node.pagerank * 2, 2);
-          const color = sigmaLanguageColor(node.language);
-
-          graph.addNode(node.node_id, {
-            // Deterministic per-node jitter (id hash) so expanding a module
-            // always blossoms its files into the same positions.
-            x: modX + (hashUnit(node.node_id) - 0.5) * jitter,
-            y: modY + (hashUnit(node.node_id + "y") - 0.5) * jitter,
-            size,
-            color,
-            label: node.node_id.split("/").pop() ?? node.node_id,
-            nodeType: "file",
-            fullPath: node.node_id,
-            language: node.language,
-            communityId: node.community_id,
-            pagerank: node.pagerank,
-            betweenness: node.betweenness,
-            isTest: node.is_test,
-            isEntryPoint: node.is_entry_point,
-            hasDoc: node.has_doc,
-            symbolCount: node.symbol_count,
-            mass: getNodeMass("file", nodeCount),
-            originalColor: color,
-          });
-        }
-
-        const childIds = new Set(childNodes.map((n) => n.node_id));
-        const seenEdges = new Set<string>();
-        for (const childId of childIds) {
-          const edges = fullGraphIndexes.nodeEdgeIndex.get(childId) ?? [];
-          for (const link of edges) {
-            const edgeKey = link.source + "→" + link.target;
-            if (seenEdges.has(edgeKey)) continue;
-            seenEdges.add(edgeKey);
-
-            const srcInModule = childIds.has(link.source);
-            const tgtInModule = childIds.has(link.target);
-
-          if (srcInModule && tgtInModule) {
-            if (!graph.hasEdge(edgeKey) && graph.hasNode(link.source) && graph.hasNode(link.target)) {
-              graph.addEdgeWithKey(edgeKey, link.source, link.target, {
-                size: 0.4,
-                color: EDGE_COLORS.internal,
-                type: "curved",
-                curvature: 0.15,
-                edgeKind: "internal",
-                importedNames: link.imported_names,
-                edgeCount: 1,
-              });
-            }
-          } else if (srcInModule && graph.hasNode(link.target)) {
-            if (!graph.hasEdge(edgeKey)) {
-              graph.addEdgeWithKey(edgeKey, link.source, link.target, {
-                size: 0.5,
-                color: EDGE_COLORS.import,
-                type: "curved",
-                curvature: 0.15,
-                edgeKind: "import",
-                importedNames: link.imported_names,
-                edgeCount: 1,
-              });
-            }
-          } else if (tgtInModule && graph.hasNode(link.source)) {
-            if (!graph.hasEdge(edgeKey)) {
-              graph.addEdgeWithKey(edgeKey, link.source, link.target, {
-                size: 0.5,
-                color: EDGE_COLORS.import,
-                type: "curved",
-                curvature: 0.15,
-                edgeKind: "import",
-                importedNames: link.imported_names,
-                edgeCount: 1,
-              });
-            }
-          }
-          }
-        }
-      }
-
-      // Re-settle from the warm module positions so expanded files land in a
-      // readable blossom immediately (no worker restart, no wobble).
-      return settleGraph(graph);
-    }
-
     const graphData = fileGraphData;
     if (!graphData) return null;
 
@@ -663,7 +446,7 @@ export function GraphFlow(props: GraphFlowProps) {
       { nodes: graphData.nodes, links: graphData.links },
       { signals },
     );
-  }, [isModuleView, isDrilledDown, fullGraph, currentPrefix, moduleGraph, communities, expandedModules, showExternals, fileGraphData, hasHotSignal, hasDeadSignal, isUnified, hotNodeIds, deadNodeIds, fullGraphIndexes]);
+  }, [fileGraphData, hasHotSignal, hasDeadSignal, isUnified, hotNodeIds, deadNodeIds]);
 
   // Async-built file graph for large graphs (built in chunks off the main
   // thread critical path). Null while building / when the sync path applies.
@@ -674,9 +457,16 @@ export function GraphFlow(props: GraphFlowProps) {
   const [isBuildingGraph, setIsBuildingGraph] = useState(false);
 
   const needsAsyncBuild =
-    !isModuleView &&
-    !!fileGraphData &&
-    fileGraphData.nodes.length >= ASYNC_BUILD_THRESHOLD;
+    !!fileGraphData && fileGraphData.nodes.length >= ASYNC_BUILD_THRESHOLD;
+
+  // `isBuildingGraph` is only raised *inside* the effect below, which React
+  // runs after it has already painted. So on the commit where an async build
+  // first becomes necessary — the fetch has landed, the build has not started
+  // — every loading flag reads false while `sigmaGraph` is still null, and the
+  // canvas paints its "No graph data" empty state for a frame. Deriving the
+  // wait during render closes the gap: any repo above ASYNC_BUILD_THRESHOLD
+  // (1,000 nodes) hit this on every full / dead / hot load.
+  const isAwaitingAsyncBuild = needsAsyncBuild && !asyncSigmaGraph;
 
   useEffect(() => {
     if (!needsAsyncBuild || !fileGraphData) {
@@ -787,7 +577,7 @@ export function GraphFlow(props: GraphFlowProps) {
     if (activeFlowIdx === null || !executionFlows || !sigmaGraph) return 0;
     const flow = executionFlows.flows[activeFlowIdx];
     if (!flow) return 0;
-    return flow.trace.filter((id) => !sigmaGraph.hasNode(id)).length;
+    return traceToFileTrace(flow.trace).filter((id) => !sigmaGraph.hasNode(id)).length;
   }, [activeFlowIdx, executionFlows, sigmaGraph]);
 
   // Empty-state copy for a dead/hot view that resolved to zero nodes. Two
@@ -832,16 +622,28 @@ export function GraphFlow(props: GraphFlowProps) {
   const { activeCommunities, communityDimmedNodes, handleCommunityToggle, handleToggleAllCommunities } =
     useCommunityFilter(sigmaGraph);
 
-  // Switch from the module overview into the flat file view. Shared by the
-  // execution-flow highlighter and the path-finder result handler, which both
-  // need a file-level graph before they can highlight a trace.
-  const enterFullViewFromModule = useCallback(() => {
-    if (viewMode === "module") {
-      setViewMode("full");
-      setModulePath([]);
-      onViewModeChange?.("full");
-    }
-  }, [viewMode, onViewModeChange]);
+  // Module filter (path-prefix dimming). Replaces the old Modules *scope*: the
+  // control lives in the section header and the host owns the selection, so
+  // only the dimming derivation happens here.
+  const { moduleGroups, moduleDimmedNodes, handleModuleChange } = useModuleFilter(sigmaGraph);
+  useEffect(() => {
+    handleModuleChange(controlledActiveModule ?? null);
+  }, [controlledActiveModule, handleModuleChange]);
+  useEffect(() => {
+    onModuleGroupsChange?.(moduleGroups);
+  }, [moduleGroups, onModuleGroupsChange]);
+
+  // The module filter and the community filter answer the same question — "is
+  // this node outside what I asked for?" — so they share the one dim channel
+  // and compose as an AND. Two independent dim levels would just muddy the
+  // canvas with three shades of "not this".
+  const filterDimmedNodes = useMemo(() => {
+    if (!communityDimmedNodes) return moduleDimmedNodes;
+    if (!moduleDimmedNodes) return communityDimmedNodes;
+    const union = new Set(communityDimmedNodes);
+    for (const id of moduleDimmedNodes) union.add(id);
+    return union;
+  }, [communityDimmedNodes, moduleDimmedNodes]);
 
   // Flow index whose trace head has already been focused, so the deferred
   // re-focus below fires at most once per selection and never re-steers the
@@ -863,15 +665,14 @@ export function GraphFlow(props: GraphFlowProps) {
     }
     const flow = executionFlows.flows[activeFlowIdx];
     if (!flow) return;
-    setHighlightedPath(new Set(flow.trace));
-    setHighlightedEdges(traceToEdgeKeys(flow.trace));
-
-    enterFullViewFromModule();
+    const fileTrace = traceToFileTrace(flow.trace);
+    setHighlightedPath(new Set(fileTrace));
+    setHighlightedEdges(traceToEdgeKeys(fileTrace));
 
     clearTimeout(focusTimerRef.current);
     focusTimerRef.current = setTimeout(() => {
       focusTimerRef.current = undefined;
-      const firstNode = flow.trace[0];
+      const firstNode = fileTrace[0];
       if (!firstNode) return;
       if (sigmaGraphRef.current?.hasNode(firstNode)) {
         flowFocusedRef.current = activeFlowIdx;
@@ -895,41 +696,16 @@ export function GraphFlow(props: GraphFlowProps) {
     }
     if (flowFocusedRef.current === activeFlowIdx) return;
     if (focusTimerRef.current !== undefined) return;
-    const firstNode = executionFlows?.flows[activeFlowIdx]?.trace[0];
+    const trace = executionFlows?.flows[activeFlowIdx]?.trace;
+    const firstNode = trace ? traceToFileTrace(trace)[0] : undefined;
     if (!firstNode || !sigmaGraph?.hasNode(firstNode)) return;
     flowFocusedRef.current = activeFlowIdx;
     sigmaRef.current?.focusNode(firstNode);
   }, [activeFlowIdx, executionFlows, sigmaGraph]);
 
-  // Context value (hover fields use static empty sets — highlighting handled by Sigma reducers)
-  const ctxValue = useMemo<GraphContextValue>(
-    () => ({
-      highlightedPath,
-      highlightedEdges,
-      colorMode,
-      viewMode,
-      hoveredNodeId,
-      connectedNodeIds: EMPTY_STRING_SET,
-      connectedEdgeIds: EMPTY_STRING_SET,
-      selectedNodeId,
-      searchDimmedNodes,
-      communityDimmedNodes,
-      layoutMode,
-      graphTheme,
-      maxPagerank: 0,
-      medianPagerank: 0,
-      expandedModules,
-      activeSignals,
-      egoDepth,
-      visibleEdgeTypes,
-    }),
-    [highlightedPath, highlightedEdges, colorMode, viewMode, hoveredNodeId, selectedNodeId, searchDimmedNodes, communityDimmedNodes, layoutMode, graphTheme, expandedModules, activeSignals, egoDepth, visibleEdgeTypes],
-  );
-
   // ---- Handlers ----
 
   // Unified grammar — DOUBLE CLICK = drill deeper (all views):
-  //   module    → expand/collapse the module's children
   //   hub       → toggle the radial blossom (expand eases the camera onto it)
   //   file/sat. → open the doc panel
   //   core      → no-op (Sigma's default camera zoom is allowed)
@@ -937,11 +713,6 @@ export function GraphFlow(props: GraphFlowProps) {
   // double-click zoom; core returns void so the zoom-jump is kept.
   const handleSigmaDoubleClick = useCallback(
     (nodeId: string, nodeType: string): boolean | void => {
-      if (nodeType === "module") {
-        toggleModule(nodeId);
-        dismissModuleHint();
-        return true;
-      }
       if (nodeType === "hub" && sigmaGraph?.hasNode(nodeId)) {
         const cid = sigmaGraph.getNodeAttribute(nodeId, "communityId");
         if (typeof cid === "number" && cid >= 0) {
@@ -954,7 +725,7 @@ export function GraphFlow(props: GraphFlowProps) {
       onNodeViewDocs?.(nodeId);
       return true;
     },
-    [onNodeViewDocs, toggleModule, dismissModuleHint, sigmaGraph, handleConstellationHubToggle],
+    [onNodeViewDocs, sigmaGraph, handleConstellationHubToggle],
   );
 
   // Unified grammar — SINGLE CLICK = select + inspect (never structural):
@@ -1044,7 +815,6 @@ export function GraphFlow(props: GraphFlowProps) {
     (pathNodes: string[]) => {
       setHighlightedPath(new Set(pathNodes));
       setHighlightedEdges(traceToEdgeKeys(pathNodes));
-      enterFullViewFromModule();
       clearTimeout(focusTimerRef.current);
       focusTimerRef.current = setTimeout(() => {
         if (pathNodes.length > 0) {
@@ -1052,7 +822,7 @@ export function GraphFlow(props: GraphFlowProps) {
         }
       }, 800);
     },
-    [enterFullViewFromModule],
+    [],
   );
 
   const handlePathClear = useCallback(() => {
@@ -1065,18 +835,29 @@ export function GraphFlow(props: GraphFlowProps) {
   }, []);
 
   const handleViewChange = useCallback((v: ViewMode) => {
-    setViewMode(v);
+    setViewModeState(v);
+    onViewModeChange?.(v);
+  }, [onViewModeChange]);
+
+  // Everything a scope change has to clear, in one place. Scope can now arrive
+  // from the host (the section-header switcher, URL-synced) as well as from the
+  // toolbar's overlay buttons, so this reacts to the resolved value rather than
+  // hanging off one of the two call sites — hooking it to the click handler
+  // alone would leave a stale selection and a stale layout mode behind whenever
+  // the host drove the change.
+  const appliedViewModeRef = useRef(viewMode);
+  useEffect(() => {
+    if (appliedViewModeRef.current === viewMode) return;
+    appliedViewModeRef.current = viewMode;
     // Constellation is fixed-radial; other scopes default back to FA2.
-    setLayoutMode(v === "architecture" ? "radial" : "force");
+    setLayoutMode(viewMode === "architecture" ? "radial" : "force");
     setLayoutNotice(null);
-    setModulePath([]);
     setHighlightedPath(new Set());
     setHighlightedEdges(new Set());
     setSelectedNodeId(null);
     // Leaving the constellation collapses any open blossoms.
-    if (v !== "architecture") collapseAllHubs();
-    onViewModeChange?.(v);
-  }, [onViewModeChange, collapseAllHubs]);
+    if (viewMode !== "architecture") collapseAllHubs();
+  }, [viewMode, collapseAllHubs]);
 
   const handleLayoutModeChange = useCallback((mode: LayoutMode) => {
     // Refuse right at the click when ELK can't run: switching the mode anyway
@@ -1090,14 +871,6 @@ export function GraphFlow(props: GraphFlowProps) {
     setLayoutMode(mode);
     setLayoutNotice(null);
   }, [sigmaGraph]);
-
-  const handleGraphThemeChange = useCallback(
-    (theme: GraphTheme) => {
-      // Drive the global theme; the graph re-reads it via resolvedTheme.
-      setTheme(theme);
-    },
-    [setTheme],
-  );
 
   const handleSignalToggle = useCallback((signal: Signal) => {
     setActiveSignals((prev) => {
@@ -1152,22 +925,6 @@ export function GraphFlow(props: GraphFlowProps) {
     }
   }, [selectedNodeId]);
 
-  const handleInspectExpandModule = useCallback(() => {
-    if (selectedNodeId) {
-      toggleModule(selectedNodeId);
-      dismissModuleHint();
-    }
-  }, [selectedNodeId, toggleModule, dismissModuleHint]);
-
-  // Breadcrumb
-  const handleBreadcrumbClick = useCallback((index: number) => {
-    if (index < 0) {
-      setModulePath([]);
-    } else {
-      setModulePath((prev) => prev.slice(0, index + 1));
-    }
-  }, []);
-
   // Context menu actions
   const handleCtxViewDocs = useCallback(() => {
     if (ctxMenu) onNodeViewDocs?.(ctxMenu.nodeId);
@@ -1175,15 +932,9 @@ export function GraphFlow(props: GraphFlowProps) {
   }, [ctxMenu, onNodeViewDocs, setCtxMenu]);
 
   const handleCtxExplore = useCallback(() => {
-    if (ctxMenu) {
-      if (ctxMenu.nodeType === "moduleGroup" && isModuleView) {
-        setModulePath((prev) => [...prev, ctxMenu.nodeId]);
-      } else {
-        onNodeClick?.(ctxMenu.nodeId, ctxMenu.nodeType);
-      }
-    }
+    if (ctxMenu) onNodeClick?.(ctxMenu.nodeId, ctxMenu.nodeType);
     setCtxMenu(null);
-  }, [ctxMenu, isModuleView, onNodeClick, setCtxMenu]);
+  }, [ctxMenu, onNodeClick, setCtxMenu]);
 
   const handleCtxPathFrom = useCallback(() => {
     if (ctxMenu) {
@@ -1205,394 +956,299 @@ export function GraphFlow(props: GraphFlowProps) {
     setCtxMenu(null);
   }, [ctxMenu, setCtxMenu]);
 
-  if (isLoading || (isBuildingGraph && !sigmaGraph))
+  if (isLoading || isAwaitingAsyncBuild || (isBuildingGraph && !sigmaGraph))
     return <Skeleton className="h-full w-full rounded-lg" />;
 
+  // What the top-left status panel has to say, if anything. It is one bordered
+  // panel now, so it must not render when every row inside it is empty — an
+  // empty box is worse than the four separate chips it replaced.
+  const showOverlayCounts =
+    !!sigmaGraph && sigmaGraph.order > 0 && (isDeadView || isHotView);
+  const hasCanvasStatus =
+    (isEgoActive && !!selectedNodeId) || (showOverlayCounts && !!overlayStats);
+
+  // The canvas is what the reader came for, so it sits on the page plane
+  // rather than below it (rule 8). Dark mode used to paint
+  // `--color-bg-inset`, which the July ramp move took a full step darker than
+  // the `--color-bg-root` page around it, so the graph read as a hole cut in
+  // the app. Light mode never painted anything and has always looked right;
+  // this makes dark do what light already did. Same call the knowledge-graph
+  // canvas made in `zoom/theme.ts`.
   return (
-    <GraphProvider value={ctxValue}>
-      <div className="relative w-full h-full" style={{ touchAction: "none", ...(graphTheme === "dark" ? { background: "var(--color-bg-inset)" } : {}) }} aria-label="Dependency graph">
-        {sigmaGraph && sigmaGraph.order > 0 ? (
-          <SigmaCanvas
-            ref={sigmaRef}
-            graph={sigmaGraph}
-            layoutMode={layoutMode}
-            viewMode={viewMode}
-            selectedNodeId={selectedNodeId}
-            hoveredNodeId={hoveredNodeId}
-            highlightedPath={highlightedPath}
-            highlightedEdges={highlightedEdges}
-            searchDimmedNodes={searchDimmedNodes}
-            communityDimmedNodes={communityDimmedNodes}
-            expandDimmedNodes={isConstellation ? expandDimmedNodes : null}
-            colorMode={colorMode}
-            activeSignals={activeSignals}
-            graphTheme={graphTheme}
-            fileNodes={fileGraphData?.nodes}
-            fileEdges={fileGraphData?.links}
-            moduleNodes={isModuleView ? moduleGraph?.nodes : undefined}
-            moduleEdges={isModuleView ? moduleGraph?.edges : undefined}
-            onNodeClick={handleSigmaNodeClick}
-            onNodeDoubleClick={handleSigmaDoubleClick}
-            onNodeHover={setHoveredNodeId}
-            onNodeContextMenu={handleSigmaNodeContextMenu}
-            onStageClick={() => setSelectedNodeId(null)}
-            onLayoutSkipped={setLayoutNotice}
-            hiddenNodes={isEgoActive ? hiddenNodes : undefined}
-            visibleEdgeTypes={visibleEdgeTypes}
-            depthRingRadii={isConstellation ? constellationRingRadii : null}
+    <div className="relative w-full h-full" style={{ touchAction: "none", ...(graphTheme === "dark" ? { background: "var(--color-bg-root)" } : {}) }} aria-label="Dependency graph">
+      {sigmaGraph && sigmaGraph.order > 0 ? (
+        <SigmaCanvas
+          ref={sigmaRef}
+          graph={sigmaGraph}
+          layoutMode={layoutMode}
+          viewMode={viewMode}
+          selectedNodeId={selectedNodeId}
+          highlightedPath={highlightedPath}
+          highlightedEdges={highlightedEdges}
+          searchDimmedNodes={searchDimmedNodes}
+          communityDimmedNodes={filterDimmedNodes}
+          expandDimmedNodes={isConstellation ? expandDimmedNodes : null}
+          colorMode={colorMode}
+          activeSignals={activeSignals}
+          graphTheme={graphTheme}
+          fileNodes={fileGraphData?.nodes}
+          fileEdges={fileGraphData?.links}
+          onNodeClick={handleSigmaNodeClick}
+          onNodeDoubleClick={handleSigmaDoubleClick}
+          onNodeContextMenu={handleSigmaNodeContextMenu}
+          onStageClick={() => setSelectedNodeId(null)}
+          onLayoutSkipped={setLayoutNotice}
+          hiddenNodes={isEgoActive ? hiddenNodes : undefined}
+          visibleEdgeTypes={visibleEdgeTypes}
+          depthRingRadii={isConstellation ? constellationRingRadii : null}
+        />
+      ) : !isLoading ? (
+        <div className="flex items-center justify-center h-full">
+          <EmptyState
+            title={overlayEmptyState?.title ?? "No graph data"}
+            description={
+              overlayEmptyState?.description ??
+              "This scope came back with nothing to draw. Try another scope, or re-index the repo if it was added recently."
+            }
           />
-        ) : !isLoading ? (
-          <div className="flex items-center justify-center h-full">
-            <EmptyState
-              title={overlayEmptyState?.title ?? "No graph data"}
-              description={
-                overlayEmptyState?.description ??
-                "Check that the backend is running and this repo has been indexed."
-              }
-            />
-          </div>
-        ) : null}
+        </div>
+      ) : null}
 
-        {/* Ego indicator / breadcrumb / overlay counts (stacked top-left) */}
-        <div className="absolute top-3 left-3 z-10 flex flex-col items-start gap-1.5">
-        {isEgoActive && selectedNodeId ? (
-          <div>
-            <div className="flex items-center gap-2 rounded-lg border border-[var(--color-accent-graph)]/30 bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-lg shadow-black/20">
-              <span className="text-[10px] text-[var(--color-accent-graph)]">
-                Showing {egoVisibleCount} nodes within {egoDepth} hop{egoDepth === 1 ? "" : "s"} of{" "}
-                <span className="font-mono font-medium">{selectedNodeId.split("/").pop()}</span>
-              </span>
-              <button
-                onClick={() => setEgoDepth(0)}
-                className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] text-[10px]"
-              >
-                Clear
-              </button>
-            </div>
-          </div>
-        ) : isModuleView && isDrilledDown ? (
-          <div>
-            <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-lg shadow-black/20">
-              <button
-                onClick={() => handleBreadcrumbClick(-1)}
-                className="flex items-center gap-1 text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-graph)] transition-colors"
-              >
-                <Home className="w-3 h-3" />
-                <span>Root</span>
-              </button>
-              {modulePath.map((fullPrefix, i) => {
-                const prevPrefix = i > 0 ? modulePath[i - 1] + "/" : "";
-                const label = fullPrefix.slice(prevPrefix.length);
-                const isLast = i === modulePath.length - 1;
-                return (
-                  <span key={i} className="flex items-center gap-1">
-                    <ChevronRight className="w-3 h-3 text-[var(--color-text-tertiary)]" />
-                    <button
-                      onClick={() => !isLast && handleBreadcrumbClick(i)}
-                      className={`text-xs font-mono transition-colors ${
-                        isLast
-                          ? "text-[var(--color-text-primary)] font-medium cursor-default"
-                          : "text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-graph)]"
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  </span>
-                );
-              })}
-            </div>
-          </div>
-        ) : null}
-
-        {/* Expanded-modules chip: count + collapse-all. */}
-        {isModuleView && !isDrilledDown && hasExpandedModules && (
-          <div className="flex items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-sm">
-            <span className="text-[10px] text-[var(--color-text-secondary)]">
-              {expandedModules.size} module{expandedModules.size === 1 ? "" : "s"} expanded
+      {/* Canvas status, top-left. One panel with hairline rows, matching the
+          toolbar, the legend and the zoom controls — this corner could
+          otherwise stack four independently-bordered, independently-shadowed
+          chips (breadcrumb, expanded-modules, loading, tip, overlay counts)
+          over the diagram at once. Rendered only when it has something to
+          say, so an idle canvas carries no chrome here at all (rule 10). */}
+      {hasCanvasStatus && (
+      <div className={`absolute top-3 left-3 z-10 flex flex-col items-stretch overflow-hidden ${canvasPanelClass}`}>
+      {isEgoActive && selectedNodeId ? (
+        <div>
+          <div className={canvasRowClass}>
+            <span className="text-[10px] text-[var(--color-accent-primary)]">
+              Showing {egoVisibleCount} nodes within {egoDepth} hop{egoDepth === 1 ? "" : "s"} of{" "}
+              <span className="font-mono font-medium">{selectedNodeId.split("/").pop()}</span>
             </span>
             <button
-              onClick={collapseAll}
-              className="text-[10px] font-medium text-[var(--color-accent-graph)] hover:underline"
+              onClick={() => setEgoDepth(0)}
+              className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] text-[10px]"
             >
-              Collapse all
+              Clear
             </button>
           </div>
-        )}
-
-        {/* Expansion needs the file-level graph — surface the fetch instead of
-            letting the double-click look like it silently did nothing. */}
-        {isModuleView && hasExpandedModules && !fullGraph && isLoadingFullGraph && (
-          <div
-            role="status"
-            aria-live="polite"
-            className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-sm text-[10px] text-[var(--color-text-secondary)]"
-          >
-            Loading files for expanded module…
-          </div>
-        )}
-
-        {/* One-time interaction hint for the modules scope. */}
-        {isModuleView && !isDrilledDown && !hasExpandedModules && !moduleHintDismissed && (
-          <div className="flex items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-sm">
-            <span className="text-[10px] text-[var(--color-text-secondary)]">
-              Tip: double-click a module to see its files
-            </span>
-            <button
-              onClick={dismissModuleHint}
-              aria-label="Dismiss hint"
-              className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        )}
-
-        {/* Overlay coverage: how many flagged files are actually in view. The
-            totals come from the backend when it provides them; without totals
-            we still report the in-view count so the overlay never reads as
-            silently doing nothing. */}
-        {sigmaGraph && sigmaGraph.order > 0 && overlayStats && (isDeadView || isHotView) && (
-          <div className="flex flex-col items-start gap-1">
-            {isDeadView && (
-              <OverlayCountChip
-                kind="dead"
-                inView={overlayStats.deadInView}
-                total={deadTotal}
-              />
-            )}
-            {isHotView && (
-              <OverlayCountChip
-                kind="hot"
-                inView={overlayStats.hotInView}
-                total={hotTotal}
-              />
-            )}
-          </div>
-        )}
         </div>
+      ) : null}
 
-        {/* Layout-skipped notice: the hierarchical toggle must never look
-            active while silently doing nothing. */}
-        {layoutNotice && (
-          <div
-            role="status"
-            aria-live="polite"
-            className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex max-w-[min(28rem,calc(100vw-6rem))] items-center gap-2 rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-bg-elevated)]/95 backdrop-blur-sm px-3 py-1.5 shadow-sm"
-          >
-            <span className="text-[11px] text-[var(--color-text-primary)]">{layoutNotice}</span>
-            <button
-              onClick={() => setLayoutNotice(null)}
-              aria-label="Dismiss layout notice"
-              className="shrink-0 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        )}
-
-        {/* Toolbar */}
-        <div className="absolute top-3 right-3 z-10">
-          <GraphToolbar
-            viewMode={viewMode}
-            onViewChange={handleViewChange}
-            colorMode={colorMode}
-            onColorModeChange={setColorMode}
-            hideTests={hideTests}
-            onHideTestsChange={(v) => {
-              setActiveSignals(prev => {
-                const next = new Set(prev);
-                v ? next.add("hideTests") : next.delete("hideTests");
-                return next;
-              });
-            }}
-            onFitView={handleFitView}
-            showPathFinder={showPathFinder}
-            pathFinderAvailable={Boolean(renderPathFinder)}
-            onTogglePathFinder={() => {
-              // Path finder and flows share the same overlay slot — opening
-              // one always closes the other.
-              setShowPathFinder((s) => !s);
-              setShowFlows(false);
-              setActiveFlowIdx(null);
-            }}
-            showFlows={showFlows}
-            onToggleFlows={() => {
-              setShowFlows((s) => !s);
-              setActiveFlowIdx(null);
-              setShowPathFinder(false);
-            }}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-            searchMatchCount={searchResults.length}
-            searchTotalCount={sigmaGraph?.order ?? 0}
-            onSearchKeyDown={handleSearchKeyDown}
-            layoutMode={layoutMode}
-            onLayoutModeChange={handleLayoutModeChange}
-            graphTheme={graphTheme}
-            onGraphThemeChange={handleGraphThemeChange}
-            onToggleHelp={handleToggleShortcutHelp}
-            availableScopes={availableScopes}
-            showExternals={showExternals}
-            onShowExternalsChange={setShowExternals}
-            externalCount={externalCount}
-          />
-        </div>
-
-        {/* Path Finder */}
-        {showPathFinder && renderPathFinder && (
-          <div className="absolute top-14 right-3 z-10">
-            {renderPathFinder({
-              initialFrom: pathFrom,
-              initialTo: pathTo,
-              onPathFound: handlePathFound,
-              onClear: handlePathClear,
-              onClose: () => setShowPathFinder(false),
-            })}
-          </div>
-        )}
-
-        {/* Execution Flows Panel */}
-        {showFlows && executionFlows && executionFlows.flows.length > 0 && (
-          <div className="absolute top-14 right-3 z-10 w-[min(16rem,calc(100vw-1.5rem))]">
-            <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/95 backdrop-blur-sm shadow-lg shadow-black/20 p-3">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-medium text-[var(--color-text-primary)]">
-                  Execution Flows
-                </span>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] text-[var(--color-text-tertiary)]">
-                    {executionFlows.flows.length} entry points
-                  </span>
-                  {/* Same close affordance as the Path Finder panel above. */}
-                  <button
-                    onClick={() => {
-                      setShowFlows(false);
-                      setActiveFlowIdx(null);
-                    }}
-                    aria-label="Close"
-                    title="Close"
-                    className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </div>
-              </div>
-              <div className="space-y-1 max-h-60 overflow-y-auto">
-                {executionFlows.flows.map((flow, idx) => (
-                  <button
-                    key={flow.entry_point}
-                    onClick={() => setActiveFlowIdx(activeFlowIdx === idx ? null : idx)}
-                    className={`w-full text-left px-2 py-1.5 rounded-md text-xs transition-colors ${
-                      activeFlowIdx === idx
-                        ? "bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]"
-                        : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)] hover:text-[var(--color-text-primary)]"
-                    }`}
-                  >
-                    <div className="font-mono truncate">{flow.entry_point_name}</div>
-                    <div className="flex items-center gap-2 mt-0.5 text-[10px] text-[var(--color-text-tertiary)]">
-                      <span>depth {flow.depth}</span>
-                      <span>{flow.trace.length} nodes</span>
-                      {flow.crosses_community && (
-                        <span className="text-yellow-500">cross-community</span>
-                      )}
-                    </div>
-                  </button>
-                ))}
-              </div>
-              {activeFlowMissingCount > 0 && (
-                <p className="mt-2 text-[10px] leading-snug text-[var(--color-warning)]">
-                  This flow includes {activeFlowMissingCount} node
-                  {activeFlowMissingCount === 1 ? "" : "s"} not in the loaded
-                  view — load more nodes to see the full trace.
-                </p>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Legend — on phones the inspection bottom sheet covers this corner,
-            so yield to it instead of stacking underneath. */}
-        <div className={`absolute bottom-3 left-3 z-10 ${selectedNodeId ? "hidden sm:block" : ""}`}>
-          <GraphLegend
-            nodeCount={sigmaGraph?.order ?? 0}
-            edgeCount={sigmaGraph?.size ?? 0}
-            colorMode={colorMode}
-            viewMode={viewMode}
-            {...(communityLabels ? { communityLabels } : {})}
-            onCommunityClick={openCommunityPanel}
-            activeCommunities={activeCommunities ?? undefined}
-            onCommunityToggle={handleCommunityToggle}
-            onToggleAllCommunities={handleToggleAllCommunities}
-            visibleEdgeTypes={isConstellation ? undefined : visibleEdgeTypes}
-            onEdgeTypeToggle={isConstellation ? undefined : handleEdgeTypeToggle}
-            graphTheme={graphTheme}
-            constellationEntries={isConstellation ? constellationLegend : undefined}
-            onConstellationHubClick={handleConstellationHubClick}
-          />
-        </div>
-
-        {/* Keyboard shortcut help (toggled with ?) */}
-        {showShortcutHelp && (
-          <GraphShortcutHelp onClose={() => setShowShortcutHelp(false)} />
-        )}
-
-        {/* Context menu */}
-        {ctxMenu && (
-          <GraphContextMenu
-            x={ctxMenu.x}
-            y={ctxMenu.y}
-            nodeId={ctxMenu.nodeId}
-            isModule={ctxMenu.nodeType === "moduleGroup"}
-            onViewDocs={handleCtxViewDocs}
-            onExplore={handleCtxExplore}
-            onPathFrom={handleCtxPathFrom}
-            onPathTo={handleCtxPathTo}
-          />
-        )}
-
-        {/* Community detail panel */}
-        {communityPanelId !== null && renderCommunityPanel &&
-          renderCommunityPanel({
-            communityId: communityPanelId,
-            onClose: () => setCommunityPanelId(null),
-            onExpandOnCanvas: () => handleConstellationHubToggle(communityPanelId),
-          })}
-
-        {/* Inspection panel — works for both file and module nodes */}
-        {selectedNodeId && (() => {
-          const fileNd = effectiveNodeDataMap.get(selectedNodeId);
-          const modNd = effectiveModuleDataMap.get(selectedNodeId);
-          const nd = fileNd ?? modNd;
-          if (!nd) return null;
-          return (
-            <GraphInspectionPanel
-              nodeId={selectedNodeId}
-              data={nd}
-              graph={sigmaGraph}
-              allNodes={effectiveNodeDataMap}
-              communityLabel={fileNd ? communityLabels?.get(fileNd.communityId) : undefined}
-              onClose={() => { setSelectedNodeId(null); }}
-              onNavigateToNode={handleInspectNavigate}
-              onViewDocs={() => { onNodeViewDocs?.(selectedNodeId); }}
-              onViewSymbols={
-                fileNd && onNodeViewSymbols
-                  ? () => { onNodeViewSymbols(selectedNodeId); }
-                  : undefined
-              }
-              filePageHref={fileNd ? fileHrefFor?.(selectedNodeId) : undefined}
-              onFindPath={handleInspectFindPath}
-              onExpandModule={modNd ? handleInspectExpandModule : undefined}
-              isModuleExpanded={modNd ? expandedModules.has(selectedNodeId) : false}
-              egoDepth={egoDepth}
-              onEgoDepthChange={setEgoDepth}
-              egoVisibleCount={egoVisibleCount}
+      {/* Overlay coverage: how many flagged files are actually in view. The
+          totals come from the backend when it provides them; without totals
+          we still report the in-view count so the overlay never reads as
+          silently doing nothing. */}
+      {showOverlayCounts && overlayStats && (
+        <>
+          {isDeadView && (
+            <OverlayCountChip
+              kind="dead"
+              inView={overlayStats.deadInView}
+              total={deadTotal}
             />
-          );
-        })()}
+          )}
+          {isHotView && (
+            <OverlayCountChip
+              kind="hot"
+              inView={overlayStats.hotInView}
+              total={hotTotal}
+            />
+          )}
+        </>
+      )}
       </div>
-    </GraphProvider>
+      )}
+
+      {/* Layout-skipped notice: the hierarchical toggle must never look
+          active while silently doing nothing. */}
+      {layoutNotice && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex max-w-[min(28rem,calc(100vw-6rem))] items-center gap-2 rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-bg-elevated)]/95 backdrop-blur-sm px-3 py-1.5 shadow-sm"
+        >
+          <span className="text-[11px] text-[var(--color-text-primary)]">{layoutNotice}</span>
+          <button
+            onClick={() => setLayoutNotice(null)}
+            aria-label="Dismiss layout notice"
+            className="shrink-0 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+
+      {/* Toolbar */}
+      <div className="absolute top-3 right-3 z-10">
+        <GraphToolbar
+          viewMode={viewMode}
+          onViewChange={handleViewChange}
+          colorMode={colorMode}
+          onColorModeChange={setColorMode}
+          hideTests={hideTests}
+          onHideTestsChange={(v) => {
+            setActiveSignals(prev => {
+              const next = new Set(prev);
+              v ? next.add("hideTests") : next.delete("hideTests");
+              return next;
+            });
+          }}
+          onFitView={handleFitView}
+          showPathFinder={showPathFinder}
+          pathFinderAvailable={Boolean(renderPathFinder)}
+          onTogglePathFinder={() => {
+            // Path finder and flows share the same overlay slot — opening
+            // one always closes the other.
+            setShowPathFinder((s) => !s);
+            setShowFlows(false);
+            setActiveFlowIdx(null);
+          }}
+          showFlows={showFlows}
+          onToggleFlows={() => {
+            setShowFlows((s) => !s);
+            setActiveFlowIdx(null);
+            setShowPathFinder(false);
+          }}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          searchMatchCount={searchResults.length}
+          searchTotalCount={sigmaGraph?.order ?? 0}
+          onSearchKeyDown={handleSearchKeyDown}
+          layoutMode={layoutMode}
+          onLayoutModeChange={handleLayoutModeChange}
+          onToggleHelp={handleToggleShortcutHelp}
+          hierarchicalDisabledReason={
+            sigmaGraph && sigmaGraph.order > ELK_MAX_NODES
+              ? elkSkipReason(sigmaGraph.order)
+              : undefined
+          }
+        />
+      </div>
+
+      {/* Path Finder */}
+      {showPathFinder && renderPathFinder && (
+        <div className="absolute top-14 right-3 z-10">
+          {renderPathFinder({
+            initialFrom: pathFrom,
+            initialTo: pathTo,
+            onPathFound: handlePathFound,
+            onClear: handlePathClear,
+            onClose: () => setShowPathFinder(false),
+          })}
+        </div>
+      )}
+
+      {/* Execution Flows Panel */}
+      {showFlows && executionFlows && executionFlows.flows.length > 0 && (
+        <div className="absolute top-14 right-3 z-10 w-[min(16rem,calc(100vw-1.5rem))]">
+          <GraphFlowPanel
+            flows={executionFlows}
+            activeFlowIdx={activeFlowIdx}
+            onSelect={handleFlowSelect}
+            onClose={handleFlowsClose}
+            missingCount={activeFlowMissingCount}
+          />
+        </div>
+      )}
+
+      {/* Legend — on phones the inspection bottom sheet covers this corner,
+          so yield to it instead of stacking underneath. */}
+      <div className={`absolute bottom-3 left-3 z-10 ${selectedNodeId ? "hidden sm:block" : ""}`}>
+        <GraphLegend
+          nodeCount={sigmaGraph?.order ?? 0}
+          edgeCount={sigmaGraph?.size ?? 0}
+          colorMode={colorMode}
+          viewMode={viewMode}
+          {...(communityLabels ? { communityLabels } : {})}
+          onCommunityClick={openCommunityPanel}
+          activeCommunities={activeCommunities ?? undefined}
+          onCommunityToggle={handleCommunityToggle}
+          onToggleAllCommunities={handleToggleAllCommunities}
+          visibleEdgeTypes={isConstellation ? undefined : visibleEdgeTypes}
+          onEdgeTypeToggle={isConstellation ? undefined : handleEdgeTypeToggle}
+          graphTheme={graphTheme}
+          constellationEntries={isConstellation ? constellationLegend : undefined}
+          onConstellationHubClick={handleConstellationHubClick}
+        />
+      </div>
+
+      {/* Keyboard shortcut help (toggled with ?) */}
+      {showShortcutHelp && (
+        <GraphShortcutHelp onClose={() => setShowShortcutHelp(false)} />
+      )}
+
+      {/* Context menu */}
+      {ctxMenu && (
+        <GraphContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          nodeId={ctxMenu.nodeId}
+          isModule={ctxMenu.nodeType === "moduleGroup"}
+          onViewDocs={handleCtxViewDocs}
+          onExplore={handleCtxExplore}
+          onPathFrom={handleCtxPathFrom}
+          onPathTo={handleCtxPathTo}
+        />
+      )}
+
+      {/* Community detail panel */}
+      {communityPanelId !== null && renderCommunityPanel &&
+        renderCommunityPanel({
+          communityId: communityPanelId,
+          onClose: () => setCommunityPanelId(null),
+          onExpandOnCanvas: () => handleConstellationHubToggle(communityPanelId),
+        })}
+
+      {/* Inspection panel — works for both file and module nodes */}
+      {selectedNodeId && (() => {
+        const fileNd = effectiveNodeDataMap.get(selectedNodeId);
+        const modNd = effectiveModuleDataMap.get(selectedNodeId);
+        const nd = fileNd ?? modNd;
+        if (!nd) return null;
+        return (
+          <GraphInspectionPanel
+            nodeId={selectedNodeId}
+            data={nd}
+            graph={sigmaGraph}
+            allNodes={effectiveNodeDataMap}
+            communityLabel={fileNd ? communityLabels?.get(fileNd.communityId) : undefined}
+            onClose={() => { setSelectedNodeId(null); }}
+            onNavigateToNode={handleInspectNavigate}
+            onViewDocs={() => { onNodeViewDocs?.(selectedNodeId); }}
+            onViewSymbols={
+              fileNd && onNodeViewSymbols
+                ? () => { onNodeViewSymbols(selectedNodeId); }
+                : undefined
+            }
+            filePageHref={fileNd ? fileHrefFor?.(selectedNodeId) : undefined}
+            onFindPath={handleInspectFindPath}
+            isModuleExpanded={false}
+            egoDepth={egoDepth}
+            onEgoDepthChange={setEgoDepth}
+            egoVisibleCount={egoVisibleCount}
+          />
+        );
+      })()}
+    </div>
   );
 }
+
+/**
+ * Chrome for the top-left status panel. Shares the toolbar / legend / zoom
+ * treatment so every corner of the canvas reads as one system: one border, one
+ * shadow, one blur, and hairline dividers instead of gaps between boxes.
+ */
+const canvasPanelClass =
+  "rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/85 shadow-sm backdrop-blur-sm";
+
+/** One row inside that panel. `first:border-t-0` keeps the top edge clean. */
+const canvasRowClass =
+  "flex items-center gap-2 border-t border-[var(--color-border-default)] px-2.5 py-1.5 first:border-t-0";
 
 /** Small status chip captioning a dead/hot view: "12 of 37 dead files in
  *  view" when the backend supplies repo-wide totals, or just the in-view
@@ -1616,11 +1272,8 @@ function OverlayCountChip({
     text = `${inView} ${noun} in view`;
   }
   return (
-    <div
-      role="status"
-      className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2.5 py-1.5 shadow-sm text-[10px] text-[var(--color-text-secondary)]"
-    >
-      {text}
+    <div role="status" className={canvasRowClass}>
+      <span className="text-[10px] text-[var(--color-text-secondary)]">{text}</span>
     </div>
   );
 }

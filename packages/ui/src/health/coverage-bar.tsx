@@ -13,7 +13,7 @@ export function CoverageBar({ value, label, size = "md" }: CoverageBarProps) {
   return (
     <div className="flex items-center gap-2">
       <div
-        className={`relative flex-1 ${h} rounded-full bg-[var(--color-bg-muted)] overflow-hidden`}
+        className={`relative flex-1 ${h} rounded-full bg-[var(--color-bg-inset)] overflow-hidden`}
       >
         {has && (
           <div

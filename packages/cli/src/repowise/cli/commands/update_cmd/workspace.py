@@ -11,23 +11,79 @@ import click
 from repowise.cli.helpers import CommandTarget, console, run_async
 
 
+def _print_repo_result(result: Any) -> None:
+    """Print one repo's outcome. Shared by both workspace passes.
+
+    The index-only pass and the docs pass report identically, and keeping two
+    copies of this is what let the deferral line drift into saying only that
+    something else was running, without saying for how long.
+    """
+    from repowise.core.update_lock import UPDATE_LOCK_SUSPECT_AFTER_SECONDS, format_lock_age
+
+    if result.error:
+        console.print(f"    [red]✗ {result.alias}: {result.error}[/red]")
+    elif result.skipped_reason == "in_flight":
+        # Surface skipped-because-in-flight as a yellow note rather than a
+        # silent skip. Single-flight is the noise-fix path, so the user
+        # benefits from seeing it actually trigger — and the age is what tells
+        # a normal overlap apart from an update that has stopped progressing.
+        age = result.lock_age_seconds
+        held = format_lock_age(age)
+        note = (
+            ""
+            if age is None or age <= UPDATE_LOCK_SUSPECT_AFTER_SECONDS
+            else " That is long enough to be worth checking on."
+        )
+        console.print(
+            f"    [yellow]↻ {result.alias}: another update has held the lock "
+            f"{held}; this commit was queued for it to pick up.{note}[/yellow]"
+        )
+    elif result.updated:
+        console.print(
+            f"    [green]✓[/green] {result.alias}: "
+            f"{result.file_count} files, {result.symbol_count:,} symbols"
+        )
+
+
 def _workspace_update(
     target: CommandTarget,
     *,
     dry_run: bool = False,
     agents_md: bool | None = None,
     verbose: bool = False,
+    docs_flag: bool | None = None,
+    index_only: bool = False,
+    since: str | None = None,
+    provider_name: str | None = None,
+    model: str | None = None,
+    reasoning: str | None = None,
+    cascade_budget: int | None = None,
+    concurrency: int = 10,
+    no_cost_tracking: bool = False,
+    progress: str = "rich",
 ) -> None:
     """Update stale repos in a workspace.
 
     Takes a resolved :class:`CommandTarget` so the caller has full control
     over how the workspace was located (auto-detected vs explicit flag).
+
+    Each stale repo resolves its own docs-vs-index-only mode the same way a
+    single-repo update does, from its persisted docs mode plus any
+    ``--docs`` / ``--no-docs`` / ``--index-only`` override passed here. Repos
+    that want docs are updated through the full single-repo docs path (so
+    their wiki pages, diagrams, and decisions stay as current as they would
+    under ``repowise update`` run inside the repo); the rest take the fast
+    parallel index-only path. See :func:`_workspace_docs_update`.
     """
+    from repowise.cli.helpers import load_state
+    from repowise.core.docs_mode import resolve_docs_mode
     from repowise.core.workspace import (
         check_repo_staleness,
         reconcile_repo_head_commit,
         update_workspace,
     )
+
+    from .mode import _resolve_index_only_mode
 
     start = time.monotonic()
     ws_root = target.ws_root
@@ -45,6 +101,11 @@ def _workspace_update(
     stale_count = 0
     up_to_date_count = 0
     up_to_date_repos: list[tuple[Path, str]] = []
+    # Aliases of stale repos whose effective mode is docs (indexed + docs
+    # wanted). Everything else stale takes the fast index-only path, including
+    # never-indexed repos, which can only be first-time indexed index-only, and
+    # a follow-up ``--docs`` run generates their pages once they have an index.
+    docs_aliases: set[str] = set()
     for entry in ws_config.repos:
         if repo_alias and entry.alias != repo_alias:
             continue
@@ -62,6 +123,20 @@ def _workspace_update(
         # collapse into a single count line unless -v lists everything.
         if is_stale:
             stale_count += 1
+            if indexed:
+                repo_state = load_state(abs_path)
+                if not _resolve_index_only_mode(
+                    index_only=index_only, docs_flag=docs_flag, state=repo_state
+                ):
+                    # LLM docs wanted: full single-repo docs regen.
+                    docs_aliases.add(entry.alias)
+                elif resolve_docs_mode(repo_state) == "deterministic":
+                    # A template wiki has pages too. The single-repo update path
+                    # re-renders the changed files' template pages for free
+                    # (file_pages_only), so route it there rather than the core
+                    # index-only path, which would freeze the wiki. Model-written
+                    # pages a user upgraded stay put; only the templates refresh.
+                    docs_aliases.add(entry.alias)
         if indexed and not is_stale:
             up_to_date_count += 1
             if head:
@@ -105,28 +180,37 @@ def _workspace_update(
         console.print(f"[yellow]Dry run \u2014 {stale_count} repo(s) would be updated.[/yellow]")
         return
 
+    # Repos that want docs go through the full single-repo docs path so their
+    # wiki (pages, diagrams, decisions) stays as fresh as a single-repo update
+    # would keep it; everything else stale takes the fast parallel index-only
+    # path below. Branching here keeps the common all-index-only workspace
+    # update byte-for-byte on its original path with no behavior change.
+    if docs_aliases:
+        _workspace_docs_update(
+            ws_root=ws_root,
+            ws_config=ws_config,
+            repo_filter=repo_alias,
+            docs_aliases=docs_aliases,
+            start=start,
+            agents_md=agents_md,
+            verbose=verbose,
+            docs_flag=docs_flag,
+            index_only=index_only,
+            since=since,
+            provider_name=provider_name,
+            model=model,
+            reasoning=reasoning,
+            cascade_budget=cascade_budget,
+            concurrency=concurrency,
+            no_cost_tracking=no_cost_tracking,
+            progress=progress,
+        )
+        return
+
     # Run the updates
     def _on_start(alias: str) -> None:
         console.print(f"  Updating [bold]{alias}[/bold]...")
 
-    def _on_done(result: RepoUpdateResult) -> None:
-        if result.error:
-            console.print(f"    [red]\u2717 {result.alias}: {result.error}[/red]")
-        elif result.skipped_reason == "in_flight":
-            # Surface skipped-because-in-flight as a yellow note rather than
-            # a silent skip. Single-flight is the noise-fix path, so the
-            # user benefits from seeing it actually trigger.
-            console.print(
-                f"    [yellow]\u21bb {result.alias}: another update is already "
-                "in flight; this commit was queued for it to pick up.[/yellow]"
-            )
-        elif result.updated:
-            console.print(
-                f"    [green]\u2713[/green] {result.alias}: "
-                f"{result.file_count} files, {result.symbol_count:,} symbols"
-            )
-
-    from repowise.core.workspace import RepoUpdateResult
 
     results = run_async(
         update_workspace(
@@ -135,7 +219,7 @@ def _workspace_update(
             repo_filter=repo_alias,
             dry_run=False,
             on_repo_start=_on_start,
-            on_repo_done=_on_done,
+            on_repo_done=_print_repo_result,
         )
     )
 
@@ -174,6 +258,214 @@ def _workspace_update(
         total_symbols=total_symbols,
         elapsed=time.monotonic() - start,
     )
+
+
+def _workspace_docs_update(
+    *,
+    ws_root: Path,
+    ws_config: Any,
+    repo_filter: str | None,
+    docs_aliases: set[str],
+    start: float,
+    agents_md: bool | None,
+    verbose: bool,
+    docs_flag: bool | None,
+    index_only: bool,
+    since: str | None,
+    provider_name: str | None,
+    model: str | None,
+    reasoning: str | None,
+    cascade_budget: int | None,
+    concurrency: int,
+    no_cost_tracking: bool,
+    progress: str,
+) -> None:
+    """Update a workspace where at least one stale repo wants docs.
+
+    Docs repos (``docs_aliases``) run through the full single-repo update
+    (:func:`run_update`) so their pages, diagrams, and decisions regenerate
+    exactly as they would with ``repowise update`` run inside the repo. The
+    remaining stale members (index-only + never-indexed first-timers) take the
+    fast parallel core path. Cross-repo hooks are suppressed on both and run
+    once at the end over every repo that actually changed, so the cross-repo
+    layer is never rebuilt from a half-updated set.
+    """
+    from contextlib import suppress
+
+    from repowise.cli.commands.workspace_cmd import inherit_workspace_distill_verdict
+    from repowise.core.workspace import RepoUpdateResult, update_workspace
+    from repowise.core.workspace.update import (
+        run_cross_repo_hooks,
+        sync_workspace_state_from_disk,
+    )
+
+    from .command import UpdateOutcome, run_update
+
+    changed_aliases: list[str] = []
+    docs_updated = 0
+    docs_failed = 0
+    docs_deferred = 0  # bailed on another update's single-flight lock
+    docs_noop = 0  # already current / nothing to regenerate
+
+    # --- Index-only + first-time members: fast parallel core path ----------
+    # only_aliases bounds the candidate set; update_workspace still re-checks
+    # staleness, so any up-to-date member in the set simply no-ops.
+    core_aliases = {
+        entry.alias
+        for entry in ws_config.repos
+        if (repo_filter is None or entry.alias == repo_filter) and entry.alias not in docs_aliases
+    }
+    core_results: list[RepoUpdateResult] = []
+    if core_aliases:
+
+        def _on_start(alias: str) -> None:
+            console.print(f"  Updating [bold]{alias}[/bold]...")
+
+        core_results = run_async(
+            update_workspace(
+                ws_root,
+                ws_config,
+                only_aliases=core_aliases,
+                run_hooks=False,
+                dry_run=False,
+                on_repo_start=_on_start,
+                on_repo_done=_print_repo_result,
+            )
+        )
+        changed_aliases.extend(r.alias for r in core_results if r.updated)
+
+    # --- Docs members: full single-repo docs update, one at a time ---------
+    for entry in ws_config.repos:
+        if entry.alias not in docs_aliases:
+            continue
+        repo_path = (ws_root / entry.path).resolve()
+        console.print(f"  Updating [bold]{entry.alias}[/bold] (docs)...")
+        try:
+            outcome = run_update(
+                path=str(repo_path),
+                provider_name=provider_name,
+                model=model,
+                since=since,
+                reasoning=reasoning,
+                cascade_budget=cascade_budget,
+                dry_run=False,
+                workspace=False,
+                no_workspace=True,
+                repo_alias=None,
+                index_only=index_only,
+                docs_flag=docs_flag,
+                full=False,
+                agents_md=agents_md,
+                concurrency=concurrency,
+                no_cost_tracking=no_cost_tracking,
+                verbose=verbose,
+                # rich even when the outer run is --progress json: the parent
+                # already redirected the console to stderr and owns the single
+                # stdout JSON event stream, so a nested json emitter would
+                # corrupt it. The per-repo rich output goes to stderr there.
+                progress="rich",
+                skip_cross_repo_hooks=True,
+            )
+        except Exception as exc:
+            docs_failed += 1
+            console.print(f"    [red]✗ {entry.alias}: {exc}[/red]")
+            continue
+        # Count what actually happened. A run that bailed on another update's
+        # single-flight lock (DEFERRED) regenerated nothing — folding it into
+        # ``docs_updated`` was the "N with docs regenerated" lie the user saw
+        # while a background post-commit-hook update was still in flight.
+        # run_update already printed the "another update is in flight" note for
+        # the deferred case, so don't re-announce it here.
+        if outcome == UpdateOutcome.DEFERRED:
+            docs_deferred += 1
+        elif outcome == UpdateOutcome.REGENERATED:
+            docs_updated += 1
+            # Only a real regeneration feeds the cross-repo pass; a no-op or a
+            # deferral leaves the cross-repo layer untouched.
+            changed_aliases.append(entry.alias)
+        else:  # NOOP / DRY_RUN
+            docs_noop += 1
+
+    # The single-repo path only writes each repo's state.json, not the
+    # workspace config, so re-sync it: the docs repos' advanced last_sync_commit
+    # then lands in last_commit_at_index and the next run sees them up to date.
+    with suppress(Exception):
+        sync_workspace_state_from_disk(ws_root, ws_config)
+
+    # Backfill the distill rewrite-hook verdict for any first-time member the
+    # core path just indexed (matches the index-only workspace path).
+    for entry in ws_config.repos:
+        if repo_filter and entry.alias != repo_filter:
+            continue
+        with suppress(Exception):
+            inherit_workspace_distill_verdict((ws_root / entry.path).resolve())
+
+    # Cross-repo hooks once, over the union of index-only and docs repos.
+    if changed_aliases and len(ws_config.repos) >= 2:
+        console.print("Running cross-repo analysis...")
+        with suppress(Exception):
+            run_async(run_cross_repo_hooks(ws_config, ws_root, changed_aliases))
+        console.print("[green]Cross-repo analysis updated.[/green]")
+
+    # Editor files: re-stamp every member. Docs repos were already stamped by
+    # their single-repo run; the core repos need it here. Idempotent.
+    _refresh_workspace_editor_project_files(
+        ws_root=ws_root,
+        ws_config=ws_config,
+        repo_filter=repo_filter,
+        agents_md=agents_md,
+    )
+
+    core_updated = sum(1 for r in core_results if r.updated)
+    core_deferred = sum(1 for r in core_results if r.skipped_reason == "in_flight")
+    deferred = docs_deferred + core_deferred
+    parts: list[str] = []
+    if docs_updated:
+        parts.append(f"{docs_updated} with docs regenerated")
+    if core_updated:
+        parts.append(f"{core_updated} re-indexed")
+    if deferred:
+        parts.append(f"{deferred} deferred to an in-flight update")
+    if docs_noop:
+        parts.append(f"{docs_noop} already current")
+    if docs_failed:
+        parts.append(f"[red]{docs_failed} failed[/red]")
+    summary = ", ".join(parts) if parts else "nothing to update"
+    console.print()
+    # When every stale repo only deferred (a background update already owns the
+    # work), "complete" would overclaim — the real regeneration is still
+    # running elsewhere. Say so, and point at the log the hook writes.
+    if deferred and not (docs_updated or core_updated):
+        from repowise.core.update_lock import UPDATE_LOCK_SUSPECT_AFTER_SECONDS, format_lock_age
+
+        # The oldest lock is the one worth naming: it is the run most likely to
+        # have stopped progressing, and "still running" with no age attached is
+        # exactly the message that leaves a wedged update looking healthy.
+        ages = [r.lock_age_seconds for r in core_results if r.lock_age_seconds is not None]
+        oldest = max(ages) if ages else None
+        if oldest is not None and oldest > UPDATE_LOCK_SUSPECT_AFTER_SECONDS:
+            tail = (
+                f"An update has held the lock {format_lock_age(oldest)}, which is "
+                "longer than an update normally takes. Check "
+                "[bold].repowise/.update.log[/bold]: if it has not been written to "
+                "in that time, that update is stuck and can be stopped."
+            )
+        elif oldest is not None:
+            tail = (
+                f"A background update has been running {format_lock_age(oldest)}; "
+                "watch [bold].repowise/.update.log[/bold]."
+            )
+        else:
+            tail = "A background update is still running; watch [bold].repowise/.update.log[/bold]."
+        console.print(
+            f"[yellow]Workspace update deferred[/yellow]: {summary}. {tail} "
+            f"[dim]({time.monotonic() - start:.1f}s)[/dim]"
+        )
+    else:
+        console.print(
+            f"[green]Workspace update complete[/green]: {summary} "
+            f"[dim]({time.monotonic() - start:.1f}s)[/dim]"
+        )
 
 
 def _refresh_workspace_editor_project_files(

@@ -215,6 +215,15 @@ def truncate_to_budget(
                 "dropped_symbol_counts": {k: len(v) for k, v in result["dropped_symbols"].items()},
             },
         )
+    else:
+        # Nothing was dropped, so say nothing. ``truncated: false`` +
+        # ``dropped_targets: []`` + ``dropped_symbols: {}`` is 60 characters of
+        # "nothing happened" on every untruncated response — and every response
+        # is untruncated in the common case. Absent reads the same as empty to
+        # a ``.get()``, which is how both projections already test them.
+        for key in ("truncated", "dropped_targets", "dropped_symbols"):
+            if not result.get(key):
+                result.pop(key, None)
     return result
 
 

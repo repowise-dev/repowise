@@ -52,8 +52,8 @@ export function ConversationHistory({
           "hover:bg-[var(--color-bg-elevated)] transition-colors",
         )}
       >
-        <History className="h-3.5 w-3.5" />
-        History
+        <History className="h-3.5 w-3.5 shrink-0" />
+        <span className="sr-only sm:not-sr-only">History</span>
       </button>
 
       {open && (
@@ -117,10 +117,13 @@ export function ConversationHistory({
                   }}
                 >
                   <div className="flex-1 min-w-0">
-                    <div className="text-xs text-[var(--color-text-primary)] truncate">
+                    {/* Two lines rather than an ellipsis: a conversation is
+                        identified by its title, so cutting it mid-word reports
+                        a width decision as missing content. */}
+                    <div className="text-xs text-[var(--color-text-primary)] line-clamp-2">
                       {conv.title}
                     </div>
-                    <div className="text-[10px] text-[var(--color-text-tertiary)]">
+                    <div className="font-mono text-[10px] text-[var(--color-text-tertiary)] tabular-nums mt-0.5">
                       {formatRelativeTime(conv.updated_at)} ·{" "}
                       {conv.message_count} msgs
                     </div>
@@ -130,7 +133,7 @@ export function ConversationHistory({
                       e.stopPropagation();
                       void onDelete(conv.id);
                     }}
-                    className="opacity-0 group-hover:opacity-100 p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-error)] transition-all"
+                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 shrink-0 self-start text-[var(--color-text-tertiary)] hover:text-[var(--color-error)] transition-all"
                     aria-label="Delete conversation"
                   >
                     <Trash2 className="h-3 w-3" />

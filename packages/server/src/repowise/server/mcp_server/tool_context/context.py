@@ -2,10 +2,12 @@
 
 Workhorse for "what is this and what touches it" questions. Returns a triage
 card by default (title, summary, signatures, hotspot bit, top callers, pointers
-to risk / why / symbol). NOT a source-body tool — for raw bytes call
-``get_symbol("path::Name")`` instead. The split keeps the cached prompt prefix
-small on multi-turn agent sessions: ``get_context`` stays under ~2k tokens for
-common targets, while ``get_symbol`` returns bounded bytes for one symbol.
+to risk / why / symbol). **NOT a source-body tool.** For source, ask for it in
+one call — ``include=["skeleton"]`` returns the whole file body-elided and
+line-verified — or just Read the file. Reaching for ``get_symbol`` once per
+signature in the card is the expensive path and the card does not recommend it.
+The split keeps the cached prompt prefix small on multi-turn agent sessions:
+``get_context`` stays under ~2k tokens for common targets.
 
 Optional ``include`` parameter widens the response:
   - include=["full_doc"]  → full wiki markdown content
@@ -17,6 +19,11 @@ Optional ``include`` parameter widens the response:
   - include=["community"] → community membership + neighbors
   - include=["decisions"] → full decision records (default returns titles only)
   - include=["skeleton"]  → body-elided file rendering (signatures + top-PageRank bodies)
+  - include=["health"]    → code-health scores and biomarkers for the target
+
+An unrecognised key is dropped and named in ``ignored_arguments`` rather than
+silently ignored: an unknown key otherwise produces exactly the response the
+caller would have got without it, so a typo reads as a real answer (#1496).
 
 This module is the orchestrator; single-target resolution lives in
 ``targets`` and the budget cap in ``truncation``.
@@ -32,17 +39,42 @@ from repowise.core.persistence.database import get_session
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector, truncate_to_budget
+from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
     _unsupported_repo_all,
+    attach_ignored_arguments,
+    resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import context_hint as _context_hint
 from repowise.server.mcp_server.tool_context.targets import _resolve_one_target
 
 _log = logging.getLogger("repowise.mcp.context")
+
+# Every value ``include_set`` is tested against downstream, in ``targets.py``.
+# ``docs`` and ``freshness`` are always on but remain legal to pass explicitly.
+# ``source`` is tested in ``_meta.context_hint`` and left out deliberately: both
+# branches there return None, so accepting it would promise a block that does
+# nothing.
+_INCLUDE_BLOCKS = frozenset(
+    {
+        "docs",
+        "freshness",
+        "full_doc",
+        "callers",
+        "callees",
+        "ownership",
+        "last_change",
+        "metrics",
+        "community",
+        "decisions",
+        "skeleton",
+        "health",
+    }
+)
 
 
 @mcp.tool()
@@ -54,17 +86,22 @@ async def get_context(
 ) -> dict:
     """Triage card for files / modules / symbols — relationships, not source bytes.
 
-    Returns title, summary, signatures, hotspot bit, decision_record titles,
-    and symbol_ids to pipe into get_symbol (cheaper than Read for bodies).
-    Batch targets in one call. File targets above ~80 lines default to a
-    skeleton (every signature + top-PageRank bodies, with a verified flag —
-    a fraction of Read cost); ``mostly_full`` marks files where a direct
-    Read costs little more.
+    Returns title, summary, signatures with line numbers, hotspot bit, and
+    decision_record titles. fix_history appears only on files with counted bug
+    fixes (count, age, bug_magnet); hotspot is churn. Either one is a cue to
+    call get_risk. episodes counts the dated records bound to a target — what
+    happened here and why — and appears only when there is at least one;
+    get_why serves the bodies. A symbol target is counted as its file, and a
+    module aggregates everything beneath it.
+    Batch targets in one call. No source bytes by default: pass
+    include=["skeleton"] for the whole file body-elided and line-verified in
+    ONE call, or Read it. Do not call get_symbol per signature.
 
     Args:
         targets: file paths, module paths, or "path::Symbol" ids.
         include: opt-in blocks: full_doc | ownership | last_change | callers
-            | callees | metrics | community | decisions | skeleton.
+            | callees | metrics | community | decisions | skeleton | health.
+            An unrecognised key is named in ignored_arguments.
         compact: default True; False adds structure+imports+docstrings.
         repo: usually omitted.
     """
@@ -80,7 +117,16 @@ async def get_context(
     # want them must pass include explicitly. Building the set this way
     # also fixes include=["skeleton"] silently dropping the file summary
     # and freshness card that every other call shape carries.
-    include_set = {"docs", "freshness"} | (set(include) if include else set())
+    # An unknown key adds no block, so without this the response is identical
+    # to one that never asked — and for callers/callees a genuine empty list is
+    # a *present* key, which makes the typo the quieter of the two (#1496).
+    ignored: list[dict[str, Any]] = []
+    known = [
+        k
+        for k in (include or [])
+        if resolve_enum_argument(k, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
+    ]
+    include_set = {"docs", "freshness"} | set(known)
 
     exclude_spec = _get_exclude_spec(ctx.path)
 
@@ -128,6 +174,11 @@ async def get_context(
             )
         else:
             results.append(r)
+
+    # One integer per target: how many dated episodes are bound here. A number
+    # invites a follow-up get_why; a paragraph would spend the budget of every
+    # caller that only wanted the triage card. Absent rather than zero.
+    await asyncio.to_thread(_enrich_episodes, results, ctx.path)
 
     response: dict[str, Any] = {
         "targets": {r["target"]: r for r in results},
@@ -187,4 +238,8 @@ async def get_context(
     # collector so a truncated response always carries expandable
     # ``[repowise#<ref>]`` markers instead of silently losing content.
     collector = OmissionCollector("get_context", repo_root=ctx.path)
-    return truncate_to_budget(response, collector=collector)
+    truncated = truncate_to_budget(response, collector=collector)
+    # After the cap, never before: a note about a dropped argument that the
+    # budget can itself drop is no note at all.
+    attach_ignored_arguments(truncated, ignored)
+    return truncated

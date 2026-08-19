@@ -1,95 +1,124 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Search, Wrench } from "lucide-react";
+/**
+ * The Refactoring surface.
+ *
+ * Lede, then the structural plans as a field with the top few ranked under it,
+ * then every plan as hairline rows. What used to be here was a priority-by-
+ * effort quadrant over a grid of cards; both were replaced for reasons recorded
+ * in `structural-map.tsx` and `plan-rows.tsx`.
+ *
+ * The list controls survive largely intact — search, sort, effort — with one
+ * removal: the confidence filter no longer offers "low", because no detector
+ * has ever emitted a low-confidence plan and the chip filtered to zero every
+ * time it was clicked. It is built from the confidences actually present rather
+ * than from the type, so it disappears entirely on a repo whose plans are all
+ * one confidence.
+ */
+
+import * as React from "react";
+import { Search } from "lucide-react";
+
 import { Input } from "../ui/input";
-import { RefactoringPlanCard } from "./refactoring-plan-card";
-import { RefactoringQuadrant } from "./refactoring-quadrant";
-import { RefactoringModal } from "./refactoring-modal";
-import { typeAccent, typeMeta, CONFIDENCE_LABEL, TYPE_ORDER } from "./meta";
+import { PlanRows } from "./plan-rows";
+import { RefactoringLede } from "./refactoring-lede";
+import { StartHere } from "./start-here";
+import { CONFIDENCE_LABEL } from "./meta";
 import {
   blastCount,
+  isStructural,
   type Confidence,
   type EffortBucket,
-  type GeneratedCode,
   type RefactoringPlan,
-  type RefactoringSummary,
 } from "./types";
 
 const PAGE_SIZE = 60;
 
 const EFFORTS: EffortBucket[] = ["S", "M", "L", "XL"];
 const EFFORT_RANK: Record<EffortBucket, number> = { S: 0, M: 1, L: 2, XL: 3 };
-const CONFIDENCES: Confidence[] = ["high", "medium", "low"];
+const EFFORT_LABEL_LONG: Record<EffortBucket, string> = {
+  S: "Small",
+  M: "Medium",
+  L: "Large",
+  XL: "Extra large",
+};
+const CONFIDENCE_ORDER: Confidence[] = ["high", "medium", "low"];
 
-type SortKey = "priority" | "health" | "effort" | "blast" | "file";
+type SortKey = "leverage" | "health" | "effort" | "blast" | "file";
 
 const SORT_OPTIONS: { value: SortKey; label: string }[] = [
-  { value: "priority", label: "Priority" },
+  // "Leverage" names what the backend rank actually blends: recovered health,
+  // how depended-upon the file is, and how much rides along. It used to be
+  // labelled "Priority", which named nothing.
+  { value: "leverage", label: "Leverage" },
   { value: "health", label: "Health recovered" },
-  { value: "effort", label: "Effort (low first)" },
-  { value: "blast", label: "Blast radius" },
-  { value: "file", label: "File (A–Z)" },
+  { value: "effort", label: "Effort, small first" },
+  { value: "blast", label: "Files touched" },
+  { value: "file", label: "File, A to Z" },
 ];
 
 export interface RefactoringBoardProps {
+  /** Plans for the active type filter. */
   plans: RefactoringPlan[];
-  summary?: RefactoringSummary;
-  /** Open the AI-prompt modal for a plan (host owns the modal + flavor). */
+  /** Every plan, unfiltered — the lede and Start here describe the whole repo,
+   *  not the tab you happen to be on. This is also where the per-type counts
+   *  come from, which is why the board no longer takes a `summary`: the
+   *  endpoint's summary and the plan list could disagree under a filter, and
+   *  two sources for one number is how a tab badge starts lying. */
+  allPlans?: RefactoringPlan[] | undefined;
+  indexedFileCount?: number | undefined;
+  onOpen?: ((plan: RefactoringPlan) => void) | undefined;
   onAiPrompt?: ((plan: RefactoringPlan) => void) | undefined;
-  /** Opt-in LLM code generation for a plan (host owns the API call). Passed
-   *  through to the inspector modal; omit to hide the action. */
-  onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
-  /** Link to repo settings (provider/model), shown beside the Generate action. */
-  settingsHref?: string | undefined;
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
-  /** Show the priority×effort quadrant centerpiece (default true). */
-  showQuadrant?: boolean;
+  /** Jump the type filter to the structural set. */
+  onSeeStructural?: (() => void) | undefined;
+  /** Hide the lede and Start here — for hosts that render their own header. */
+  showLede?: boolean;
   emptyTitle?: string;
   emptyHint?: string;
 }
 
-/**
- * The Refactoring surface. The priority×effort quadrant is the full-width
- * centerpiece; a searchable, sortable, filterable grid of compact plan cards
- * sits below it. Clicking the quadrant or a card opens the visual modal for
- * that one plan. No table.
- */
 export function RefactoringBoard({
   plans,
-  summary,
+  allPlans,
+  indexedFileCount,
+  onOpen,
   onAiPrompt,
-  onGenerateCode,
-  settingsHref,
   fileHref,
-  showQuadrant = true,
+  onSeeStructural,
+  showLede = true,
   emptyTitle = "No refactoring plans",
-  emptyHint = "Nothing crosses the precision bar for this repo yet. Plans appear here when a class is worth splitting, a clone worth extracting, a method worth moving, a cycle worth cutting, or a file worth decomposing.",
+  emptyHint = "Plans appear here when a file is worth splitting, a cycle worth cutting, a class worth extracting, or a repeated block worth sharing.",
 }: RefactoringBoardProps) {
-  const [highlighted, setHighlighted] = useState<string | null>(null);
-  const [selected, setSelected] = useState<RefactoringPlan | null>(null);
-  const [modalOpen, setModalOpen] = useState(false);
+  const [query, setQuery] = React.useState("");
+  const [sortKey, setSortKey] = React.useState<SortKey>("leverage");
+  const [effortSel, setEffortSel] = React.useState<Set<EffortBucket>>(new Set());
+  const [confSel, setConfSel] = React.useState<Set<Confidence>>(new Set());
+  const [visibleCount, setVisibleCount] = React.useState(PAGE_SIZE);
 
-  // List controls — make hundreds of plans browsable.
-  const [query, setQuery] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("priority");
-  const [effortSel, setEffortSel] = useState<Set<EffortBucket>>(new Set());
-  const [confSel, setConfSel] = useState<Set<Confidence>>(new Set());
+  const every = allPlans ?? plans;
+  const structural = React.useMemo(() => every.filter(isStructural), [every]);
 
-  // Render the top-ranked cards first and grow on demand — a repo can surface
-  // hundreds of plans and mounting them all at once would jank the grid.
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  // Only offer confidences that occur. A filter is worth building where there
+  // is something to subtract from.
+  const confidencesPresent = React.useMemo(() => {
+    const present = new Set(every.map((p) => p.confidence || "medium"));
+    return CONFIDENCE_ORDER.filter((c) => present.has(c));
+  }, [every]);
 
-  const toggle = useCallback(<T,>(setter: React.Dispatch<React.SetStateAction<Set<T>>>, value: T) => {
-    setter((cur) => {
-      const next = new Set(cur);
-      if (next.has(value)) next.delete(value);
-      else next.add(value);
-      return next;
-    });
-  }, []);
+  const toggle = React.useCallback(
+    <T,>(setter: React.Dispatch<React.SetStateAction<Set<T>>>, value: T) => {
+      setter((cur) => {
+        const next = new Set(cur);
+        if (next.has(value)) next.delete(value);
+        else next.add(value);
+        return next;
+      });
+    },
+    [],
+  );
 
-  const processed = useMemo(() => {
+  const processed = React.useMemo(() => {
     const q = query.trim().toLowerCase();
     let out = plans.filter((p) => {
       if (q && !`${p.file_path} ${p.target_symbol}`.toLowerCase().includes(q)) return false;
@@ -97,8 +126,8 @@ export function RefactoringBoard({
       if (confSel.size && !confSel.has((p.confidence || "medium") as Confidence)) return false;
       return true;
     });
-    // `priority` keeps the backend's rank order; the rest sort a copy.
-    if (sortKey !== "priority") {
+    // `leverage` keeps the backend's rank order; the rest sort a copy.
+    if (sortKey !== "leverage") {
       out = [...out].sort((a, b) => {
         switch (sortKey) {
           case "health":
@@ -120,91 +149,58 @@ export function RefactoringBoard({
     return out;
   }, [plans, query, sortKey, effortSel, confSel]);
 
-  // Reset the window whenever the visible set changes (filter/sort/search/type).
-  useEffect(() => {
+  React.useEffect(() => {
     setVisibleCount(PAGE_SIZE);
   }, [processed]);
 
-  const openPlan = useCallback((plan: RefactoringPlan) => {
-    setSelected(plan);
-    setModalOpen(true);
-  }, []);
-
-  const pickFromQuadrant = useCallback(
-    (plan: RefactoringPlan) => {
-      setHighlighted(plan.id);
-      openPlan(plan);
-      window.setTimeout(() => setHighlighted((cur) => (cur === plan.id ? null : cur)), 2200);
-    },
-    [openPlan],
-  );
-
-  if (plans.length === 0) {
+  if (every.length === 0) {
     return (
-      <div className="mx-auto flex max-w-md flex-col items-center justify-center rounded-2xl border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-8 py-16 text-center">
-        <span className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--color-bg-elevated)] text-[var(--color-text-tertiary)]">
-          <Wrench className="h-6 w-6" />
-        </span>
+      <div className="border-t border-[var(--color-border-default)] pt-10 text-center">
         <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">{emptyTitle}</h3>
-        <p className="mt-1.5 text-sm leading-relaxed text-[var(--color-text-tertiary)]">{emptyHint}</p>
+        <p className="mx-auto mt-1.5 max-w-[56ch] text-sm text-[var(--color-text-tertiary)]">
+          {emptyHint}
+        </p>
       </div>
     );
   }
 
-  const counts = new Map((summary?.by_type ?? []).map((c) => [c.type, c.count]));
   const filtersActive = query.trim() !== "" || effortSel.size > 0 || confSel.size > 0;
 
   return (
-    <div className="space-y-8">
-      {showQuadrant ? (
-        <section className="space-y-3">
-          <div className="flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
-                Priority × effort
-              </h2>
-              <p className="mt-0.5 max-w-2xl text-sm text-[var(--color-text-secondary)]">
-                Ranked by leverage — how depended-upon the file is, how much rides along, and the
-                health recovered. The top-left is where to start.
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {TYPE_ORDER.filter((t) => (counts.get(t) ?? 0) > 0).map((t) => {
-                const meta = typeMeta(t);
-                const { Icon } = meta;
-                return (
-                  <span
-                    key={t}
-                    className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)]"
-                  >
-                    <Icon className="h-3.5 w-3.5" style={{ color: typeAccent(t) }} />
-                    {meta.label}
-                    <span className="tabular-nums text-[var(--color-text-tertiary)]">{counts.get(t)}</span>
-                  </span>
-                );
-              })}
-            </div>
-          </div>
-          <RefactoringQuadrant plans={plans} onSelect={pickFromQuadrant} height={400} />
-        </section>
+    <div className="space-y-10">
+      {showLede ? (
+        <RefactoringLede plans={every} indexedFileCount={indexedFileCount} />
       ) : null}
 
-      <section className="space-y-4">
-        {/* control bar */}
+      {showLede && structural.length > 0 ? (
+        <StartHere plans={structural} onOpen={onOpen} onSeeAll={onSeeStructural} />
+      ) : null}
+
+      <section className="space-y-4 border-t border-[var(--color-border-default)] pt-8">
+        <div>
+          <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">All plans</h2>
+          <p className="mt-1 max-w-[68ch] text-sm text-[var(--color-text-secondary)]">
+            Ordered by leverage. Every plan opens the same inspector: what changes, why it was
+            flagged, and what else it touches.
+          </p>
+        </div>
+
         <div className="flex flex-wrap items-center gap-3">
           <div className="relative min-w-[220px] flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
             <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search file or symbol…"
+              placeholder="Search file or symbol"
               className="pl-9"
               aria-label="Search plans"
             />
           </div>
-
-          <div className="flex items-center gap-1.5">
-            <label htmlFor="refactoring-sort" className="text-xs text-[var(--color-text-tertiary)]">
+          <div className="flex items-center gap-2">
+            <label
+              htmlFor="refactoring-sort"
+              className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]"
+            >
               Sort
             </label>
             <select
@@ -222,10 +218,9 @@ export function RefactoringBoard({
           </div>
         </div>
 
-        {/* quick filters */}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <div className="flex items-center gap-1.5">
-            <span className="text-[11px] uppercase tracking-wide text-[var(--color-text-tertiary)]">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
               Effort
             </span>
             {EFFORTS.map((e) => (
@@ -233,31 +228,35 @@ export function RefactoringBoard({
                 key={e}
                 active={effortSel.has(e)}
                 onClick={() => toggle(setEffortSel, e)}
-                label={e}
+                label={EFFORT_LABEL_LONG[e]}
               />
             ))}
           </div>
-          <div className="flex items-center gap-1.5">
-            <span className="text-[11px] uppercase tracking-wide text-[var(--color-text-tertiary)]">
-              Confidence
-            </span>
-            {CONFIDENCES.map((c) => (
-              <FilterChip
-                key={c}
-                active={confSel.has(c)}
-                onClick={() => toggle(setConfSel, c)}
-                label={CONFIDENCE_LABEL[c]}
-              />
-            ))}
-          </div>
+          {confidencesPresent.length > 1 ? (
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+                Confidence
+              </span>
+              {confidencesPresent.map((c) => (
+                <FilterChip
+                  key={c}
+                  active={confSel.has(c)}
+                  onClick={() => toggle(setConfSel, c)}
+                  label={CONFIDENCE_LABEL[c]}
+                />
+              ))}
+            </div>
+          ) : null}
         </div>
 
-        {/* count + reset */}
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
-            {processed.length} plan{processed.length === 1 ? "" : "s"}
+          <h3 className="text-sm font-semibold tabular-nums text-[var(--color-text-primary)]">
+            {processed.length.toLocaleString()} plan{processed.length === 1 ? "" : "s"}
             {filtersActive ? (
-              <span className="font-normal text-[var(--color-text-tertiary)]"> of {plans.length}</span>
+              <span className="font-normal text-[var(--color-text-tertiary)]">
+                {" "}
+                of {plans.length.toLocaleString()}
+              </span>
             ) : null}
           </h3>
           {filtersActive ? (
@@ -276,32 +275,27 @@ export function RefactoringBoard({
         </div>
 
         {processed.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-6 py-12 text-center text-sm text-[var(--color-text-tertiary)]">
+          <p className="border-t border-[var(--color-border-default)] py-10 text-center text-sm text-[var(--color-text-tertiary)]">
             No plans match these filters.
-          </div>
+          </p>
         ) : (
           <>
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {processed.slice(0, visibleCount).map((plan) => (
-                <RefactoringPlanCard
-                  key={plan.id}
-                  plan={plan}
-                  onOpen={openPlan}
-                  onAiPrompt={onAiPrompt}
-                  highlighted={highlighted === plan.id}
-                />
-              ))}
-            </div>
+            <PlanRows
+              plans={processed.slice(0, visibleCount)}
+              onOpen={onOpen}
+              onAiPrompt={onAiPrompt}
+              fileHref={fileHref}
+            />
             {processed.length > visibleCount ? (
-              <div className="flex justify-center pt-1">
+              <div className="flex justify-center border-t border-[var(--color-border-default)] pt-5">
                 <button
                   type="button"
                   onClick={() => setVisibleCount((n) => n + PAGE_SIZE)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] px-4 py-2 text-sm font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text-primary)]"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] px-4 py-2 text-sm font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)]"
                 >
                   Show {Math.min(PAGE_SIZE, processed.length - visibleCount)} more
-                  <span className="text-[var(--color-text-tertiary)]">
-                    · {processed.length - visibleCount} left
+                  <span className="tabular-nums text-[var(--color-text-tertiary)]">
+                    · {(processed.length - visibleCount).toLocaleString()} left
                   </span>
                 </button>
               </div>
@@ -309,16 +303,6 @@ export function RefactoringBoard({
           </>
         )}
       </section>
-
-      <RefactoringModal
-        plan={selected}
-        open={modalOpen}
-        onOpenChange={setModalOpen}
-        onAiPrompt={onAiPrompt}
-        onGenerateCode={onGenerateCode}
-        settingsHref={settingsHref}
-        fileHref={fileHref}
-      />
     </div>
   );
 }
@@ -340,7 +324,7 @@ function FilterChip({
       className={`rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors ${
         active
           ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
-          : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-strong)] hover:text-[var(--color-text-primary)]"
+          : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)]"
       }`}
     >
       {label}

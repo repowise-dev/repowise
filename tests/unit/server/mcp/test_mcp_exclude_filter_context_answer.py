@@ -253,8 +253,17 @@ async def test_search_single_repo_attaches_and_filters_target_path(setup_mcp, mo
 
     monkeypatch.setattr(search_mod, "_get_exclude_spec", lambda _p: SPEC)
 
+    # Fusion queries FTS alongside vector; a real FTS handle on the shared
+    # in-memory engine would shadow the seeded rows for the follow-up
+    # target_path lookup. This test drives ranking through the vector-seeded
+    # hits and asserts target_path attachment + exclude honouring.
+    async def _empty_fts(_ctx, _query, _limit):
+        return []
+
+    monkeypatch.setattr(search_mod, "_safe_fts", _empty_fts)
+
     ctx = await _resolve_repo_context(None)
-    results, _method = await _search_single_repo(ctx, "models service", limit=10, page_type=None)
+    results = await _search_single_repo(ctx, "models service", limit=10, page_type=None)
 
     paths = [r.get("target_path") for r in results]
     assert paths, "expected at least one hit"

@@ -14,6 +14,9 @@ from typing import Any
 
 import structlog
 
+from repowise.core.generation.entry_points import orientation_entry_points
+from repowise.core.ids import file_path_of, kg_file_path_of
+
 logger = structlog.get_logger(__name__)
 
 
@@ -52,7 +55,40 @@ async def enrich_knowledge_graph(
     progress: Any | None = None,
     reasoning: str = "auto",
 ) -> Any:
-    """Enrich deterministic KG with LLM-generated layer names and tour."""
+    """Enrich deterministic KG with LLM-generated layer names and tour.
+
+    Thin serial wrapper: runs the page-independent structural enrichment
+    (layer naming + tour), then the page-dependent finalize (summary backfill,
+    floor, review). The init orchestrator drives the two halves separately so
+    the structural half overlaps page generation; other callers (update path,
+    init CLI) keep this simple serial entry point.
+    """
+    enriched_layers, tour = await enrich_knowledge_graph_structural(
+        kg_skeleton,
+        llm_client,
+        graph_builder,
+        repo_structure,
+        tech_stack,
+        reasoning=reasoning,
+    )
+    return finalize_knowledge_graph(kg_skeleton, enriched_layers, tour, generated_pages)
+
+
+async def enrich_knowledge_graph_structural(
+    kg_skeleton: Any,
+    llm_client: Any,
+    graph_builder: Any,
+    repo_structure: Any,
+    tech_stack: list[dict],
+    reasoning: str = "auto",
+) -> tuple[list[dict], list[dict]]:
+    """Page-independent KG enrichment: LLM layer naming + guided tour.
+
+    Reads only the skeleton, warmed graph metrics, and tech stack — never the
+    generated wiki pages — so it is safe to run concurrently with page
+    generation. Returns ``(enriched_layers, tour)``; the caller applies them to
+    the skeleton via :func:`finalize_knowledge_graph` once pages are ready.
+    """
     enriched_layers = await _enrich_layers(
         kg_skeleton.layers, llm_client, graph_builder, repo_structure, tech_stack,
         reasoning=reasoning,
@@ -72,6 +108,21 @@ async def enrich_knowledge_graph(
             reasoning=reasoning,
         )
 
+    return enriched_layers, tour
+
+
+def finalize_knowledge_graph(
+    kg_skeleton: Any,
+    enriched_layers: list[dict],
+    tour: list[dict],
+    generated_pages: list[Any] | None = None,
+) -> Any:
+    """Apply structural enrichment + page-derived summaries to the skeleton.
+
+    Runs after both structural enrichment and page generation complete. Order
+    matches the original serial path: page backfill, then the deterministic
+    summary floor, then the layer/tour assignment, then the review gate.
+    """
     if generated_pages:
         _backfill_summaries(kg_skeleton, generated_pages)
 
@@ -79,6 +130,8 @@ async def enrich_knowledge_graph(
     # page summaries always win and only never-paged files fall back. Gated by
     # the curation flag (the seam already floored FAST-mode output; this covers
     # the generate-mode path where the seam deferred to let backfill run first).
+    from repowise.core.analysis.kg_curation import curation_enabled
+
     if curation_enabled():
         from repowise.core.analysis.kg_curation import apply_summary_floor
 
@@ -135,7 +188,7 @@ async def _enrich_layers(
         batch_context = []
         for layer in batch:
             node_ids = layer.get("nodeIds", [])
-            file_paths = [nid.removeprefix("file:") for nid in node_ids if nid.startswith("file:")]
+            file_paths = [p for p in (kg_file_path_of(nid) for nid in node_ids) if p]
             top_files = sorted(file_paths, key=lambda p: pagerank.get(p, 0.0), reverse=True)[:20]
 
             batch_context.append({
@@ -184,7 +237,7 @@ def _build_layer_naming_prompt(
     repo_structure: Any,
 ) -> str:
     tech_names = [t.get("name", "") for t in tech_stack[:10] if t.get("name")]
-    entry_points = list(repo_structure.entry_points)[:5] if repo_structure else []
+    entry_points = orientation_entry_points(repo_structure, limit=5)
 
     lines = [
         "Assign a concise semantic name (2-4 words) and a one-sentence description "
@@ -230,13 +283,13 @@ async def _generate_tour(
 ) -> list[dict]:
     """Generate guided tour from enriched layers + entry points."""
     pagerank = graph_builder.pagerank()
-    entry_points = list(repo_structure.entry_points)[:10] if repo_structure else []
+    entry_points = orientation_entry_points(repo_structure, limit=10)
     top_files = sorted(pagerank.keys(), key=lambda p: pagerank.get(p, 0.0), reverse=True)[:15]
 
     layer_summaries = []
     for layer in layers:
         node_ids = layer.get("nodeIds", [])
-        file_paths = [nid.removeprefix("file:") for nid in node_ids if nid.startswith("file:")]
+        file_paths = [p for p in (kg_file_path_of(nid) for nid in node_ids) if p]
         top_in_layer = sorted(file_paths, key=lambda p: pagerank.get(p, 0.0), reverse=True)[:5]
         layer_summaries.append({
             "name": layer["name"],
@@ -339,13 +392,13 @@ def build_deterministic_tour(
     # Steps 2-N: one step per layer, ordered by size descending
     sorted_layers = sorted(
         layers,
-        key=lambda l: len(l.get("nodeIds", [])),
+        key=lambda layer: len(layer.get("nodeIds", [])),
         reverse=True,
     )
 
     for layer in sorted_layers[:10]:
         node_ids = layer.get("nodeIds", [])
-        file_paths = [nid.removeprefix("file:") for nid in node_ids if nid.startswith("file:")]
+        file_paths = [p for p in (kg_file_path_of(nid) for nid in node_ids) if p]
         top_file = max(
             (f for f in file_paths if f not in used_files),
             key=lambda p: pagerank.get(p, 0.0),
@@ -385,7 +438,7 @@ def _backfill_summaries(kg_result: Any, generated_pages: list[Any]) -> None:
         # *after* this backfill so it never blocks a real page summary.
         if not str(node.get("id", "")).startswith("file:"):
             continue
-        path = node.get("filePath", node["id"].removeprefix("file:"))
+        path = node.get("filePath") or file_path_of(node["id"]) or node["id"]
         if path in page_summaries and not node.get("summary"):
             node["summary"] = page_summaries[path]
 
@@ -400,7 +453,7 @@ def _parse_json_response(content: str) -> dict | None:
     content = content.strip()
     if content.startswith("```"):
         lines = content.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
+        lines = [line for line in lines if not line.strip().startswith("```")]
         content = "\n".join(lines)
     try:
         return json.loads(content)

@@ -1,30 +1,69 @@
-You are documenting the circular dependency cycle identified as SCC `{{ ctx.scc_id }}`.
+{#- Deterministic (no-LLM) circular-dependency page.
 
-## Cycle Description
-{{ ctx.cycle_description }}
+    The context here is entirely structural, so this page loses almost
+    nothing against its LLM counterpart. The one thing a model adds is
+    advice on breaking the cycle; the decouple ranking below is the
+    structural stand-in for it.
+-#}
+{#- ``default(..., true)`` so an absent *or* empty title both fall back: the
+    caller names the whole set at once and a caller that does not is still
+    entitled to a page. #}
+# {{ page_title | default(labels.circular_dependency ~ ": " ~ ctx.scc_id, true) }}
 
-## Files Involved ({{ ctx.files | length }})
-{% for f in ctx.files %}
+{{ labels.cycle_overview.format(count=ctx.files | length) }}
+
+{#- The id is no longer in the heading, and it is what logs, links and the
+    dependency tooling call this cycle, so it is stated once rather than being
+    findable only in the URL. #}
+
+**{{ labels.cycle_id }}:** `{{ ctx.scc_id }}`
+
+## {{ labels.files_in_cycle }}
+{# Capped, here and in the two listings below: a test-suite cycle routed
+   through a shared conftest can run to 80+ files and 200+ edges, and a page
+   that dumps all of them is 50KB of noise. The decouple ranking is the part
+   worth acting on. #}
+{% for f in ctx.files[:30] %}
 - `{{ f }}`
 {% endfor %}
+{%- if ctx.files | length > 30 %}
+- ...{{ labels.and_more.format(count=ctx.files | length - 30) }}
+{% endif %}
 
-## Import Dependencies Creating the Cycle
-{% for ci in ctx.cross_imports %}
-- `{{ ci.from }}` imports from `{{ ci.to }}`
+{% if ctx.cross_imports %}
+## {{ labels.the_loop }}
+{% for edge in ctx.cross_imports[:40] %}
+- `{{ edge.from }}` → `{{ edge.to }}`
 {% endfor %}
+{%- if ctx.cross_imports | length > 40 %}
+- ...{{ labels.and_more_edges.format(count=ctx.cross_imports | length - 40) }}
+{% endif %}
+{% endif %}
 
-## Key Symbols in Cycle
-{% for member in ctx.member_symbols %}
-{% if member.symbols %}
-**`{{ member.file_path }}`**
-{% for sym in member.symbols %}
-- `{{ sym.signature }}`{% if sym.docstring %} — {{ sym.docstring }}{% endif %}
+{% if decouple_ranking %}
+## {{ labels.where_to_break }}
 
+{{ labels.decouple_ranking_description }}
+
+| {{ labels.file }} | {{ labels.imports_in_cycle }} | {{ labels.imported_by }} | {{ labels.total }} |
+| --- | --- | --- | --- |
+{% for r in decouple_ranking -%}
+| `{{ r.path }}` | {{ r.out }} | {{ r["in"] }} | {{ r.total }} |
 {% endfor %}
 {% endif %}
+
+{% if ctx.member_symbols %}
+## {{ labels.symbols_defined_in_cycle }}
+{% for m in ctx.member_symbols[:20] %}
+### `{{ m.file_path }}`
+{% for s in m.symbols[:15] %}
+- `{{ s.name }}`{% if s.signature %}: `{{ s.signature | signature(120) }}`{% endif %}
 {% endfor %}
+{% endfor %}
+{% if ctx.member_symbols | length > 20 %}
+*{{ labels.remaining_symbols.format(count=ctx.member_symbols | length - 20) }}*
+{% endif %}
+{% endif %}
 
-## Total Symbols in Cycle
-{{ ctx.total_symbols }}
-
-Generate a complete wiki page following the sections above.
+**{{ labels.total_symbols_in_cycle }}:** {{ ctx.total_symbols }}
+{% include "_footer.j2" %}

@@ -25,24 +25,19 @@ from sqlalchemy import case, func, or_, select
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode, Page, WikiSymbol
+from repowise.core.test_paths import is_test_path, is_test_related_path
 from repowise.server.mcp_server._helpers import (
+    LIKE_ESCAPE,
     _get_exclude_spec,
     _get_repo,
+    escape_like,
     is_excluded,
 )
-
-# Path tokens that mark a symbol's file as a test (mirrors tool_search's set).
-_TEST_PATH_TOKENS = ("/test/", "/tests/", "/__tests__/", "test_", "_test.", ".spec.", ".test.")
 
 # Candidate ceiling: scoring/sorting happens in Python, so the SQL pre-filter
 # caps how many rows we pull. Generous enough that the true top-`limit` is
 # always inside the window, bounded so a pathological LIKE can't load the table.
 _MAX_CANDIDATES = 400
-
-
-def _is_test_path(path: str | None) -> bool:
-    tp = (path or "").lower()
-    return any(tok in tp for tok in _TEST_PATH_TOKENS)
 
 
 def _tokens(text: str | None) -> set[str]:
@@ -75,9 +70,7 @@ def _qual_norm(name: str | None) -> str:
     return s.lower()
 
 
-def _score_symbol(
-    row: WikiSymbol, gnode: GraphNode | None, qtokens: set[str], qnorm: str
-) -> float:
+def _score_symbol(row: WikiSymbol, gnode: GraphNode | None, qtokens: set[str], qnorm: str) -> float:
     """Rank a candidate symbol against the query (higher = better).
 
     Tiers, in priority order: exact name / qualified-name match, the query's
@@ -114,7 +107,12 @@ def _score_symbol(
         if gnode.is_entry_point:
             score += 3.0
 
-    if (gnode is not None and gnode.is_test) or _is_test_path(row.file_path):
+    # Tests only, not test support: a fixture or a conftest helper is often what
+    # the query was after, so it keeps its score. The flag is read first for the
+    # same reason everywhere else does, but note it decides nothing here today —
+    # it is stamped on file nodes and these are symbol nodes, so the path rules
+    # are what answer in practice.
+    if (gnode is not None and gnode.is_test) or is_test_path(row.file_path or "", row.language):
         score -= 5.0
     return score
 
@@ -147,10 +145,13 @@ def _candidate_filter(qtokens: set[str], qnorm: str):
         # Case-insensitive equality — WikiSymbol.name keeps original casing and
         # SQLite "=" is case-sensitive, so a lowercased qnorm would never match.
         clauses.append(func.lower(WikiSymbol.name) == qnorm)
-        clauses.append(WikiSymbol.qualified_name.ilike(f"%{qnorm}%"))
+        clauses.append(
+            WikiSymbol.qualified_name.ilike(f"%{escape_like(qnorm)}%", escape=LIKE_ESCAPE)
+        )
     for tok in qtokens:
-        clauses.append(WikiSymbol.name.ilike(f"%{tok}%"))
-        clauses.append(WikiSymbol.qualified_name.ilike(f"%{tok}%"))
+        esc = escape_like(tok)
+        clauses.append(WikiSymbol.name.ilike(f"%{esc}%", escape=LIKE_ESCAPE))
+        clauses.append(WikiSymbol.qualified_name.ilike(f"%{esc}%", escape=LIKE_ESCAPE))
     return or_(*clauses) if clauses else None
 
 
@@ -238,7 +239,11 @@ async def search_symbols_single(
         if is_excluded(row.file_path, spec) or row.file_path in tombstoned:
             continue
         g = gmap.get(row.symbol_id)
-        is_test = (g is not None and g.is_test) or _is_test_path(row.file_path)
+        # The union here, unlike the ranking penalty above: ``kind`` splits the
+        # repo in two, and a fixture belongs on the test side of that line.
+        is_test = (g is not None and g.is_test) or is_test_related_path(
+            row.file_path or "", row.language
+        )
         if not _symbol_kind_for_request_kind(kind, is_test):
             continue
         scored.append((_score_symbol(row, g, qtokens, qnorm), row))
@@ -276,7 +281,7 @@ async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
             select(Page.id, Page.title, Page.target_path, Page.freshness_status).where(
                 Page.repository_id == repository.id,
                 Page.page_type == "file_page",
-                Page.target_path.ilike(f"%{qnorm}%"),
+                Page.target_path.ilike(f"%{escape_like(qnorm)}%", escape=LIKE_ESCAPE),
             )
         )
         rows = res.all()

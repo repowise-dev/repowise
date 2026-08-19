@@ -42,7 +42,11 @@ export function PageShell({
             {title}
           </h1>
           {description && (
-            <p className="text-sm text-[var(--color-text-secondary)]">{description}</p>
+            // Capped at a readable measure. Unbounded, this ran the full
+            // 1280 on a wide viewport, which is roughly 160 characters.
+            <p className="max-w-[68ch] text-sm text-[var(--color-text-secondary)] [text-wrap:pretty]">
+              {description}
+            </p>
           )}
         </div>
         {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}

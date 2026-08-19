@@ -48,8 +48,12 @@ def parse_source(
         return None
 
     try:
+        from repowise.core.ingestion.sfc_source import prepare_source
+
         parser = Parser(grammar)
-        tree = parser.parse(source)
+        # Markup-blanked TS buffer for SFCs, identical offsets; Pascal's
+        # project-file sanitizer for that language. No-op else.
+        tree = parser.parse(prepare_source(language, source, path=abs_path))
     except Exception as exc:
         log.debug("dataflow_parse_failed", path=abs_path, error=str(exc))
         return None

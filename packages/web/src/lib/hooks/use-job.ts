@@ -23,7 +23,11 @@ export function useJob(jobId: string | null) {
   );
 
   const isActive = job?.status === "running" || job?.status === "pending";
-  const streamUrl = jobId && isActive ? getJobStreamUrl(jobId) : null;
+  // The job (fetched over the authenticated REST path) carries a fresh
+  // stream_token; pass it so the EventSource authenticates even when the
+  // server has REPOWISE_API_KEY set. This also covers reconnect after a
+  // reload, where we never saw the original launch response.
+  const streamUrl = jobId && isActive ? getJobStreamUrl(jobId, job?.stream_token) : null;
 
   const sse = useSSE<JobProgressEvent>(streamUrl, { enabled: !!streamUrl });
 

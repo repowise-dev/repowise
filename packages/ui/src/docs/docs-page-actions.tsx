@@ -35,7 +35,7 @@ export function DocsPageActions({
 }) {
   return (
     <>
-      <ConfidenceBadge score={confidence} status={freshnessStatus} />
+      <ConfidenceBadge score={confidence} status={freshnessStatus} compact />
       {personaHasEffect && (
         <div
           className="inline-flex items-center rounded-md border border-[var(--color-border-default)] p-0.5 shrink-0"

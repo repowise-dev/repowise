@@ -129,3 +129,23 @@ def test_changed_file_count_real_git(tmp_path) -> None:
     assert session_start._changed_file_count(tmp_path, sha1, sha2) == 2
     # An unresolvable SHA degrades to None (count omitted), never raises.
     assert session_start._changed_file_count(tmp_path, "f" * 40, sha2) is None
+
+
+def test_temp_root_repowise_is_ignored(tmp_path, monkeypatch) -> None:
+    """A stray .repowise at the system temp ROOT is not a repo opt-in, so a
+    cwd below it stays silent; a repo created UNDER the temp root works."""
+    from repowise.cli.commands.augment_cmd import _shared
+
+    fake_tmp = tmp_path / "faketmp"
+    (fake_tmp / ".repowise").mkdir(parents=True)
+    cwd = fake_tmp / "work"
+    cwd.mkdir()
+    monkeypatch.setattr(_shared.tempfile, "gettempdir", lambda: str(fake_tmp))
+    # Ancestors of tmp_path on the host may legitimately match, so pin only
+    # the guard: the walk must never return the temp root itself.
+    found = _shared._find_repo_root(cwd)
+    assert found != fake_tmp.resolve()
+
+    repo = fake_tmp / "checkout"
+    (repo / ".repowise").mkdir(parents=True)
+    assert _shared._find_repo_root(repo) == repo.resolve()

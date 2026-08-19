@@ -8,6 +8,7 @@ import click
 from rich.panel import Panel
 from rich.table import Table
 
+from repowise.cli.commands import _tool_adapters as _ta
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
@@ -15,9 +16,18 @@ from repowise.cli.helpers import (
     resolve_command_target,
     run_async,
 )
+from repowise.cli.output import emit_json, format_option, notice_console
+from repowise.core.analysis.decisions.provenance import LISTABLE_SOURCES
+from repowise.core.precedent.currency import describe_decision_currency
+
+#: The ladder's real sources plus the no-filter sentinel. Derived, because the
+#: hand-written copy had drifted: it offered ``readme_mining`` (since retired)
+#: while omitting ``session``, the source carrying a user's own words and the
+#: one you would most want to filter for.
+_SOURCE_CHOICES: tuple[str, ...] = (*LISTABLE_SOURCES, "all")
 
 
-def _resolve_decision_repo(path: str | None):
+def _resolve_decision_repo(path: str | None, fmt: str = "table"):
     """Resolve the repo path for decision subcommands.
 
     Honors workspace auto-detection: in workspace mode without an explicit
@@ -25,7 +35,7 @@ def _resolve_decision_repo(path: str | None):
     """
 
     target = resolve_command_target(path=path)
-    target.notice(console, command="decision")
+    target.notice(notice_console(fmt), command="decision")
     if target.is_workspace:
         primary = target.primary_path()
         if primary is None:
@@ -50,9 +60,12 @@ async def _resolve_decision_id(session, decision_id: str) -> str | None:
     from sqlalchemy import select
 
     from repowise.core.persistence.models import DecisionRecord
+    from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
 
     result = await session.execute(
-        select(DecisionRecord.id).where(DecisionRecord.id.like(f"{decision_id}%")).limit(2)
+        select(DecisionRecord.id)
+        .where(DecisionRecord.id.like(f"{escape_like(decision_id)}%", escape=LIKE_ESCAPE))
+        .limit(2)
     )
     ids = [row[0] for row in result.all()]
     if len(ids) > 1:
@@ -69,34 +82,99 @@ async def _resolve_decision_id(session, decision_id: str) -> str | None:
 
 @decision_group.command("add")
 @click.argument("path", required=False, default=None)
-def decision_add(path: str | None) -> None:
-    """Interactively add a new architectural decision."""
-    repo_path = _resolve_decision_repo(path)
+@click.option("--title", default=None, help="Decision title (short).")
+@click.option("--context", default=None, help="What forced this decision?")
+@click.option("--decision", "decision_text", default=None, help="What was chosen?")
+@click.option("--rationale", default=None, help="Why it was chosen.")
+@click.option(
+    "--alternative", "alternatives", multiple=True, help="A rejected alternative. Repeatable."
+)
+@click.option(
+    "--consequence", "consequences", multiple=True, help="A tradeoff accepted. Repeatable."
+)
+@click.option(
+    "--affects", "affected", multiple=True, help="A file or module this governs. Repeatable."
+)
+@click.option("--tag", "tags", multiple=True, help="A tag. Repeatable.")
+@format_option()
+def decision_add(
+    path: str | None,
+    title: str | None,
+    context: str | None,
+    decision_text: str | None,
+    rationale: str | None,
+    alternatives: tuple[str, ...],
+    consequences: tuple[str, ...],
+    affected: tuple[str, ...],
+    tags: tuple[str, ...],
+    fmt: str,
+) -> None:
+    """Add an architectural decision, interactively or from flags.
+
+    With both --title and --decision, records without prompting and prints the
+    new id, so a script or an agent can call it. Everything else is optional.
+
+    A flag-driven record lands as `proposed`, where the prompts record `active`.
+    A person answering eight questions has reviewed the decision; a caller
+    inferring one from a diff has not, and the store should be able to tell
+    them apart. Promote with `repowise decision confirm <id>`.
+    """
+    # Flags and prompts are the two paths, and a half-filled command line is
+    # neither: falling through to the prompts would hang a caller that has no
+    # stdin, which is the failure this command exists to stop having.
+    non_interactive = bool(title and decision_text)
+    if not non_interactive:
+        flagged = any((title, context, decision_text, rationale)) or any(
+            (alternatives, consequences, affected, tags)
+        )
+        if flagged or fmt == "json":
+            _ta.emit_error(
+                {
+                    "error": "--title and --decision are both required to add a "
+                    "decision without prompting.",
+                    "guidance": "Run `repowise decision add` with no flags to be "
+                    "prompted for each field instead.",
+                },
+                fmt,
+            )
+
+    repo_path = _resolve_decision_repo(path, fmt)
     ensure_repowise_dir(repo_path)
 
-    console.print("[bold]Add Architectural Decision[/bold]\n")
+    status = "proposed" if non_interactive else "active"
+    alternatives_list = list(alternatives)
+    consequences_list = list(consequences)
+    affected_files = list(affected)
+    tags_list = list(tags)
 
-    title = click.prompt("Decision title (short)")
-    context = click.prompt("Context (what forced this decision?)", default="")
-    decision_text = click.prompt("Decision (what was chosen?)")
-    rationale = click.prompt("Rationale (why?)", default="")
+    if not non_interactive:
+        console.print("[bold]Add Architectural Decision[/bold]\n")
 
-    alternatives_raw = click.prompt("Rejected alternatives (comma-separated, optional)", default="")
-    alternatives = [a.strip() for a in alternatives_raw.split(",") if a.strip()]
+        title = click.prompt("Decision title (short)")
+        context = click.prompt("Context (what forced this decision?)", default="")
+        decision_text = click.prompt("Decision (what was chosen?)")
+        rationale = click.prompt("Rationale (why?)", default="")
 
-    consequences_raw = click.prompt(
-        "Tradeoffs/consequences (comma-separated, optional)", default=""
-    )
-    consequences = [c.strip() for c in consequences_raw.split(",") if c.strip()]
+        alternatives_raw = click.prompt(
+            "Rejected alternatives (comma-separated, optional)", default=""
+        )
+        alternatives_list = [a.strip() for a in alternatives_raw.split(",") if a.strip()]
 
-    affected_raw = click.prompt("Affected files/modules (comma-separated, optional)", default="")
-    affected_files = [f.strip() for f in affected_raw.split(",") if f.strip()]
+        consequences_raw = click.prompt(
+            "Tradeoffs/consequences (comma-separated, optional)", default=""
+        )
+        consequences_list = [c.strip() for c in consequences_raw.split(",") if c.strip()]
 
-    tags_raw = click.prompt(
-        "Tags (comma-separated: auth, database, api, performance, security, infra, testing)",
-        default="",
-    )
-    tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
+        affected_raw = click.prompt(
+            "Affected files/modules (comma-separated, optional)", default=""
+        )
+        affected_files = [f.strip() for f in affected_raw.split(",") if f.strip()]
+
+        tags_raw = click.prompt(
+            "Tags (comma-separated: auth, database, api, performance, security, infra, testing)",
+            default="",
+        )
+        tags_list = [t.strip() for t in tags_raw.split(",") if t.strip()]
 
     async def _persist() -> str:
         from repowise.core.persistence import (
@@ -119,15 +197,15 @@ def decision_add(path: str | None) -> None:
                 session,
                 repository_id=repo.id,
                 title=title,
-                status="active",
-                context=context,
+                status=status,
+                context=context or "",
                 decision=decision_text,
-                rationale=rationale,
-                alternatives=alternatives,
-                consequences=consequences,
+                rationale=rationale or "",
+                alternatives=alternatives_list,
+                consequences=consequences_list,
                 affected_files=affected_files,
                 affected_modules=[],
-                tags=tags,
+                tags=tags_list,
                 source="cli",
                 confidence=1.0,
             )
@@ -137,7 +215,21 @@ def decision_add(path: str | None) -> None:
         return decision_id
 
     decision_id = run_async(_persist())
-    console.print(f"\n[green]Decision recorded[/green] — ID: [bold]{decision_id[:8]}[/bold]")
+
+    if fmt == "json":
+        # The full id, not the table's 8-char prefix — a caller that parses
+        # this is about to pass it back to `confirm` or `show`.
+        emit_json(
+            {
+                "repo": str(repo_path),
+                "decision": {"id": decision_id, "title": title, "status": status},
+            }
+        )
+        return
+    console.print(
+        f"\n[green]Decision recorded[/green] [dim]({status})[/dim] — "
+        f"ID: [bold]{decision_id[:8]}[/bold]"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -154,20 +246,22 @@ def decision_add(path: str | None) -> None:
 )
 @click.option(
     "--source",
-    type=click.Choice(["git_archaeology", "inline_marker", "readme_mining", "cli", "all"]),
+    type=click.Choice(_SOURCE_CHOICES),
     default="all",
 )
 @click.option("--proposed", is_flag=True, default=False, help="Show only proposed decisions.")
 @click.option("--stale-only", is_flag=True, default=False, help="Show only stale decisions.")
+@format_option()
 def decision_list(
     path: str | None,
     status: str,
     source: str,
     proposed: bool,
     stale_only: bool,
+    fmt: str,
 ) -> None:
     """List architectural decision records."""
-    repo_path = _resolve_decision_repo(path)
+    repo_path = _resolve_decision_repo(path, fmt)
 
     async def _query() -> list:
         from repowise.core.persistence import (
@@ -204,6 +298,29 @@ def decision_list(
         decisions = [d for d in decisions if d.status == "proposed"]
     if stale_only:
         decisions = [d for d in decisions if d.staleness_score >= 0.5]
+
+    if fmt == "json":
+        emit_json(
+            {
+                "repo": str(repo_path),
+                "decisions": [
+                    {
+                        # Full id, not the table's 8-char prefix: the prefix
+                        # exists to fit a column, and every id-taking
+                        # subcommand accepts either.
+                        "id": d.id,
+                        "title": d.title,
+                        "status": d.status,
+                        "source": d.source,
+                        "confidence": d.confidence,
+                        "staleness_score": d.staleness_score,
+                        "created_at": d.created_at.isoformat() if d.created_at else None,
+                    }
+                    for d in decisions
+                ],
+            }
+        )
+        return
 
     if not decisions:
         console.print("[dim]No decisions found.[/dim]")
@@ -251,9 +368,10 @@ def decision_list(
 @decision_group.command("show")
 @click.argument("decision_id")
 @click.argument("path", required=False, default=None)
-def decision_show(decision_id: str, path: str | None) -> None:
+@format_option()
+def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
     """Show full details of a decision record."""
-    repo_path = _resolve_decision_repo(path)
+    repo_path = _resolve_decision_repo(path, fmt)
 
     async def _query():
         from repowise.core.persistence import (
@@ -278,15 +396,62 @@ def decision_show(decision_id: str, path: str | None) -> None:
 
     rec = run_async(_query())
     if rec is None:
-        console.print(f"[red]Decision not found: {decision_id}[/red]")
+        notice_console(fmt).print(f"[red]Decision not found: {decision_id}[/red]")
+        if fmt == "json":
+            emit_json({"query": decision_id, "decision": None})
+        return
+
+    if fmt == "json":
+        emit_json(
+            {
+                "query": decision_id,
+                "decision": {
+                    "id": rec.id,
+                    "title": rec.title,
+                    "status": rec.status,
+                    "source": rec.source,
+                    "confidence": rec.confidence,
+                    "staleness_score": rec.staleness_score,
+                    "created_at": rec.created_at.isoformat() if rec.created_at else None,
+                    "currency": describe_decision_currency(
+                        repo_path,
+                        created_at=rec.created_at,
+                        nodes=json.loads(rec.affected_files_json or "[]"),
+                    ),
+                    "context": rec.context,
+                    "decision": rec.decision,
+                    "rationale": rec.rationale,
+                    "alternatives": json.loads(rec.alternatives_json),
+                    "consequences": json.loads(rec.consequences_json),
+                    # Not clipped to 10 the way the panel clips it: the panel
+                    # clips to stay readable, and a caller asking for json is
+                    # asking for the record, not a summary of it.
+                    "affected_files": json.loads(rec.affected_files_json),
+                    "tags": json.loads(rec.tags_json),
+                    "evidence_file": rec.evidence_file,
+                    "evidence_line": rec.evidence_line,
+                },
+            }
+        )
         return
 
     lines = [
         f"[bold]{rec.title}[/bold]",
         f"Status: {rec.status}  |  Source: {rec.source}  |  Confidence: {rec.confidence:.0%}",
         f"Staleness: {rec.staleness_score:.2f}",
-        "",
     ]
+    # The stored score is a proportion; this is the fact behind it, asked of
+    # git at read time. `show` is one record on demand, which is exactly where
+    # a subprocess is affordable — nothing on the hook or update path may do
+    # this. None means git could not decide, and then we say nothing.
+    currency = describe_decision_currency(
+        repo_path,
+        created_at=rec.created_at,
+        nodes=json.loads(rec.affected_files_json or "[]"),
+    )
+    if currency:
+        lines.append(f"[dim]{currency}[/dim]")
+    lines.append("")
     if rec.context:
         lines.append(f"[cyan]Context:[/cyan] {rec.context}")
     if rec.decision:
@@ -464,9 +629,10 @@ def decision_deprecate(decision_id: str, path: str | None, superseded_by: str | 
 
 @decision_group.command("health")
 @click.argument("path", required=False, default=None)
-def decision_health(path: str | None) -> None:
+@format_option()
+def decision_health(path: str | None, fmt: str) -> None:
     """Show decision health: stale decisions, proposed, ungoverned hotspots."""
-    repo_path = _resolve_decision_repo(path)
+    repo_path = _resolve_decision_repo(path, fmt)
 
     async def _query():
         from repowise.core.persistence import (
@@ -493,6 +659,26 @@ def decision_health(path: str | None) -> None:
     health = run_async(_query())
     summary = health["summary"]
 
+    if fmt == "json":
+        # The table caps each list (5 stale, 10 hotspots, 5 proposed) to keep
+        # the report short; json carries them whole.
+        emit_json(
+            {
+                "repo": str(repo_path),
+                "summary": summary,
+                "stale_decisions": [
+                    {"id": d.id, "title": d.title, "staleness_score": d.staleness_score}
+                    for d in health["stale_decisions"]
+                ],
+                "ungoverned_hotspots": list(health["ungoverned_hotspots"]),
+                "proposed_awaiting_review": [
+                    {"id": d.id, "title": d.title, "source": d.source}
+                    for d in health["proposed_awaiting_review"]
+                ],
+            }
+        )
+        return
+
     console.print("[bold]Decision Health[/bold]\n")
 
     # Summary stats
@@ -502,6 +688,11 @@ def decision_health(path: str | None) -> None:
     stats_table.add_row("Active decisions", str(summary.get("active", 0)))
     stats_table.add_row("Proposed (needs review)", f"[yellow]{summary.get('proposed', 0)}[/yellow]")
     stats_table.add_row("Stale decisions", f"[red]{summary.get('stale', 0)}[/red]")
+    unscoped = summary.get("unscoped", 0)
+    if unscoped:
+        # Not folded into "stale": these were never checked, which is a
+        # different thing from checked and found to have drifted.
+        stats_table.add_row("Unscoped (cannot be checked)", f"[yellow]{unscoped}[/yellow]")
     stats_table.add_row("Deprecated", str(summary.get("deprecated", 0)))
     console.print(stats_table)
 

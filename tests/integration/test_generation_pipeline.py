@@ -16,7 +16,7 @@ import pytest
 
 from repowise.core.generation.context_assembler import ContextAssembler
 from repowise.core.generation.job_system import JobSystem
-from repowise.core.generation.models import GenerationConfig
+from repowise.core.generation.models import GenerationConfig, compute_page_id
 from repowise.core.generation.page_generator import PageGenerator
 from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.models import (
@@ -51,7 +51,7 @@ class _TrackingProvider(MockProvider):
         reasoning: ReasoningMode = "auto",
         cache_hints: Any = None,
     ) -> GeneratedResponse:
-        if "Required sections: ## Overview, ## Public API" in system_prompt:
+        if "Required sections: ## Overview, ## Public API," in system_prompt:
             self.file_page_starts.append(time.perf_counter())
         await asyncio.sleep(self.delay)
         return await super().generate(
@@ -255,10 +255,13 @@ async def test_embedding_latency_does_not_gate_llm_concurrency():
         token_budget=1000,
         max_concurrency=2,
         embed_concurrency=1,
-        file_page_top_percentile=1.0,
+        # 0 is the explicit "every eligible file" answer, which is what this test
+        # wants: the point is concurrency, so no page should be missing because a
+        # size policy trimmed the bucket.
+        max_file_pages=0,
         top_symbol_percentile=0.01,
-        # The selection layer drives off coverage_pct; max_pages_pct is
-        # the deprecated alias kept for backwards compatibility.
+        # coverage_pct / max_pages_pct are inert: selection no longer rations by
+        # coverage. Set here only to exercise the config round-trip.
         coverage_pct=1.0,
         max_pages_pct=1.0,
         cache_enabled=False,
@@ -277,14 +280,103 @@ async def test_embedding_latency_does_not_gate_llm_concurrency():
     )
 
     file_pages = [page for page in pages if page.page_type == "file_page"]
-    # The selection layer may allocate one slot to symbol_spotlight on
-    # this tiny fixture; the test exists to observe LLM/embed interleave,
-    # so any count >= 3 is enough to assert ordering at index 2.
     assert len(file_pages) >= 3
-    assert len(provider.file_page_starts) >= 3
+    # File pages are rendered rather than written, so there are no provider
+    # calls left to interleave with the embeds. What still matters, and what
+    # this fixture's slow store exercises, is that the embed semaphore is
+    # honoured and never becomes the thing that serialises the run.
+    assert provider.file_page_starts == []
     assert vector_store.file_page_embed_finishes
     assert vector_store.max_active_embeds == 1
-    assert provider.file_page_starts[2] < vector_store.file_page_embed_finishes[0]
+
+
+async def test_scoped_pipeline_adds_configured_repo_overview_evidence() -> None:
+    parsed_files, source_map, repo_structure = _make_concurrency_fixture()
+    builder = GraphBuilder()
+    for parsed in parsed_files:
+        builder.add_file(parsed)
+    builder.build()
+    config = GenerationConfig.from_repo_config(
+        {
+            "generation_context": {
+                "token_budget": 300,
+                "files": {"repo_overview": ["pkg/module_3.py"]},
+            }
+        },
+        max_tokens=256,
+        token_budget=1000,
+        cache_enabled=False,
+    )
+    provider = MockProvider()
+    generator = PageGenerator(provider, ContextAssembler(config), config)
+    page_id = compute_page_id("repo_overview", "sample_repo")
+
+    pages = await generator.generate_all(
+        parsed_files,
+        source_map,
+        builder,
+        repo_structure,
+        "sample_repo",
+        only_page_ids={page_id},
+    )
+
+    assert [page.page_id for page in pages] == [page_id]
+    prompt = provider.calls[0]["user_prompt"]
+    assert '<repository-file path="pkg/module_3.py">' in prompt
+    assert "def function_3() -> int" in prompt
+    assert pages[0].metadata["source_evidence"]["included"] == [
+        {"path": "pkg/module_3.py", "truncated": False}
+    ]
+
+
+async def test_resume_reports_the_pages_it_skipped(tmp_path):
+    """The preserved-id set survives every hand-off down to the generator.
+
+    Issue #1089: persistence deletes structurally-keyed pages a run did not
+    produce, and a resumed run does not produce the pages it skipped. It now
+    reports them instead, but only if the set actually reaches ``_emit`` —
+    ``run_generation`` -> ``generate_all`` -> ``run_generate_all`` is three
+    keyword hand-offs, two of them through ``**kwargs``, where a dropped or
+    misspelled argument fails silently and takes the fix with it.
+    """
+    from repowise.core.pipeline.phases.generation import run_generation
+
+    parsed_files, source_map, repo_structure = _make_concurrency_fixture()
+    builder = GraphBuilder()
+    for parsed in parsed_files:
+        builder.add_file(parsed)
+    builder.build()
+
+    already_written = "file_page:pkg/module_0.py"
+
+    class _StoreWithPriorRun(_SlowVectorStore):
+        async def list_page_ids(self) -> set[str]:
+            return {already_written}
+
+    preserved: set[str] = set()
+    pages = await run_generation(
+        repo_path=tmp_path,
+        parsed_files=parsed_files,
+        source_map=source_map,
+        graph_builder=builder,
+        repo_structure=repo_structure,
+        git_meta_map={},
+        llm_client=MockProvider(),
+        embedder=None,
+        vector_store=_StoreWithPriorRun(delay=0),
+        concurrency=2,
+        progress=None,
+        resume=True,
+        generation_config=GenerationConfig(max_file_pages=0, cache_enabled=False),
+        preserved_page_ids=preserved,
+    )
+
+    # Reported as kept, and genuinely not regenerated.
+    assert already_written in preserved
+    assert already_written not in {page.page_id for page in pages}
+    # The rest of the wiki was still produced, so this is a skip and not a
+    # collapsed run that would look identical from the assertion above.
+    assert "file_page:pkg/module_1.py" in {page.page_id for page in pages}
 
 
 # ---------------------------------------------------------------------------
@@ -325,30 +417,31 @@ class TestGenerationPipeline:
         for page in pipeline_result["pages"]:
             assert page.provider_name in ("mock", "template")
 
-    def test_deterministic_tail_pages_emitted(self, pipeline_result):
-        """Files outside the LLM budget get zero-LLM deterministic file pages.
-
-        With the default config (tier1_top_n=None) the only template pages are
-        the Phase G coverage tail, tagged doc_tier=3.
-        """
-        tail = [
-            p
-            for p in pipeline_result["pages"]
-            if p.provider_name == "template" and p.metadata.get("doc_tier") == 3
-        ]
-        assert tail, "expected deterministic coverage-tail pages"
-        for p in tail:
-            assert p.page_type == "file_page"
+    def test_every_file_page_is_free(self, pipeline_result):
+        """There is no budget and no tier split: every code file gets a page,
+        and not one of them costs a token."""
+        file_pages = [p for p in pipeline_result["pages"] if p.page_type == "file_page"]
+        assert file_pages
+        for p in file_pages:
+            assert p.provider_name == "template"
             assert p.input_tokens == 0 and p.output_tokens == 0
-            assert p.metadata.get("deterministic") is True
+            assert p.metadata.get("render_key"), p.page_id
 
     def test_generates_repo_overview(self, pipeline_result):
         types = [p.page_type for p in pipeline_result["pages"]]
         assert types.count("repo_overview") == 1
 
-    def test_generates_architecture_diagram(self, pipeline_result):
-        types = [p.page_type for p in pipeline_result["pages"]]
-        assert types.count("architecture_diagram") == 1
+    def test_architecture_map_lives_on_the_overview(self, pipeline_result):
+        """The diagram no longer gets a page of its own.
+
+        It described the same repository at the same altitude as the overview
+        and in the same words, so the map moved onto the overview and the page
+        retired. A run that still emits one has regressed.
+        """
+        pages = pipeline_result["pages"]
+        types = [p.page_type for p in pages]
+        assert types.count("architecture_diagram") == 0
+        assert types.count("repo_overview") == 1
 
     def test_generates_file_page_for_py_files(self, pipeline_result):
         """There should be at least one file_page for Python files."""

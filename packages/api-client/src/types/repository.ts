@@ -41,8 +41,14 @@ export interface RepoResponse {
   workspace_alias?: string | null;
   workspace_status?: "indexed" | "needs_index" | "missing_dir" | null;
   is_primary?: boolean | null;
+  /** Whether any pages exist. `docs_mode` says who wrote them: "deterministic"
+   * pages are rendered from templates and can be upgraded to model-written
+   * ones. */
   docs_enabled?: boolean | null;
+  docs_mode?: "none" | "deterministic" | "llm" | null;
   docs_skip_reason?: string | null;
+  run_mode?: string | null;
+  git_tier?: string | null;
   /** Set on POST /api/repos responses when the create enqueued the first
    * index; attach to /api/jobs/{id}/stream with it. */
   initial_job_id?: string | null;

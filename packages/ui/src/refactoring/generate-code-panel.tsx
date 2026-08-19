@@ -150,7 +150,7 @@ function GeneratedResult({
           <button
             type="button"
             onClick={onRegenerate}
-            className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2 py-1 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text-primary)]"
+            className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2 py-1 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)]"
             title="Generate again (bypasses the cache on the server only if the plan changed)"
           >
             <RotateCw className="h-3.5 w-3.5" />
@@ -192,7 +192,7 @@ function CopyButton({ text }: { text: string }) {
       type="button"
       onClick={copy}
       disabled={!text}
-      className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2 py-1 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-strong)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
+      className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2 py-1 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
     >
       {copied ? <Check className="h-3.5 w-3.5 text-[var(--color-success)]" /> : <Copy className="h-3.5 w-3.5" />}
       {copied ? "Copied" : "Copy diff"}

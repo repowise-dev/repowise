@@ -1,11 +1,15 @@
 import { Activity, Bug, FileSymlink, History } from "lucide-react";
 import { ChurnBar } from "./churn-bar";
+import { formatRelativeTimeOrNull } from "../lib/format";
 
 export interface ChangeHistoryCardProps {
   /** Repo-wide percentile rank of change entropy, 0–100. */
   changeEntropyPct?: number | null;
   /** Bug-fix commits touching this file in the trailing defect window. */
   priorDefectCount?: number | null;
+  /** When the most recent counted fix landed. A count without an age reads the
+   *  same at two weeks and two years, so it is shown wherever it is known. */
+  lastFixAt?: string | null;
   /** The file's path before its most recent rename, if any. */
   originalPath?: string | null;
   /** True when the per-file commit-history cap was hit during indexing. */
@@ -22,6 +26,7 @@ export interface ChangeHistoryCardProps {
 export function ChangeHistoryCard({
   changeEntropyPct,
   priorDefectCount,
+  lastFixAt,
   originalPath,
   commitCountCapped,
   className,
@@ -29,6 +34,8 @@ export function ChangeHistoryCard({
   const hasEntropy = changeEntropyPct != null && changeEntropyPct > 0;
   const hasDefects = priorDefectCount != null && priorDefectCount > 0;
   const hasRename = !!originalPath;
+  // Empty when unknown, so the count degrades to standing on its own.
+  const fixAge = hasDefects ? formatRelativeTimeOrNull(lastFixAt ?? null, "") : "";
 
   // Nothing meaningful to show — let the caller omit the section entirely.
   if (!hasEntropy && !hasDefects && !hasRename && !commitCountCapped) return null;
@@ -70,6 +77,7 @@ export function ChangeHistoryCard({
               title="Bug-fix commits that touched this file in the trailing defect window."
             >
               {priorDefectCount} {priorDefectCount === 1 ? "fix" : "fixes"}
+              {fixAge ? ` · last ${fixAge}` : ""}
             </span>
           </div>
         )}

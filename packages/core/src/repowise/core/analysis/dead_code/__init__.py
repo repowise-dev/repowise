@@ -15,8 +15,12 @@ Internal layout (Phase 1 refactor):
 
 - ``analyzer.py``         — ``DeadCodeAnalyzer`` class + four detection methods.
 - ``models.py``           — public dataclasses + ``DeadCodeKind`` enum.
-- ``constants.py``        — never-flag globs, framework decorators, fixture
-                            path segments, non-code languages.
+- ``constants.py``        — never-flag globs and ``never_flag_match`` over
+                            them, framework decorators, fixture path segments,
+                            non-code languages.
+- ``file_reachability.py`` — ``is_file_reachable``, the one answer to "can
+                            anything reach this file", shared with the
+                            repo-overview assembler.
 - ``dynamic_markers.py``  — ``_DYNAMIC_IMPORT_MARKERS`` source-text dict
                             + ``find_dynamic_import_files()`` scanner.
                             Phase 2 (A1/A2) work lands here.

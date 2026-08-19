@@ -12,11 +12,10 @@
  */
 
 import * as React from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import useSWR from "swr";
 import { toast } from "sonner";
 import {
+  AlertTriangle,
   ChevronLeft,
   ChevronRight,
   FileSearch,
@@ -28,9 +27,9 @@ import type {
   DecisionStatus,
 } from "@repowise-dev/types/decisions";
 
-import { Badge } from "../ui/badge";
+import { Markdown } from "../shared/markdown";
 import { ConfirmDialog } from "../ui/confirm-dialog";
-import { stripMarkdown } from "../lib/format";
+import { formatDate, stripMarkdown } from "../lib/format";
 import { AiPromptButton } from "../health/ai-prompt-button";
 import { AiPromptModal } from "../health/ai-prompt-modal";
 import {
@@ -40,23 +39,30 @@ import {
 
 import { ModuleLinkEditor } from "./module-link-editor";
 import { VerificationBadge } from "./verification-badge";
+import { DecisionStatusMark } from "./decision-status-mark";
 import { DecisionEvidenceDrawer } from "./decision-evidence-drawer";
 import { DecisionLineage } from "./decision-lineage";
+import { describeRecordStaleness } from "./decision-staleness";
 import type {
   DecisionDetailAdapter,
   DecisionLinkComponent,
 } from "./decision-detail-adapter";
 import { toFriendlyMessage } from "../lib/errors";
 
-const STATUS_VARIANT: Record<
-  string,
-  "default" | "fresh" | "stale" | "outdated" | "outline" | "accent"
-> = {
-  active: "fresh",
-  proposed: "accent",
-  deprecated: "outdated",
-  superseded: "outline",
+const SOURCE_LABEL: Record<string, string> = {
+  inline_marker: "Marker",
+  git_archaeology: "Git history",
+  readme_mining: "Docs",
+  cli: "Manual",
+  comment: "Comment",
+  pr: "Pull request",
+  adr: "ADR",
+  changelog: "Changelog",
+  session: "Session",
 };
+
+const MICRO_LABEL =
+  "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
 const CONFIRM_COPY: Record<
   string,
@@ -73,6 +79,13 @@ const CONFIRM_COPY: Record<
     description:
       "This will mark the decision as deprecated. Existing references remain but it will no longer be considered current.",
     confirmLabel: "Deprecate",
+    destructive: true,
+  },
+  dismissed: {
+    title: "Dismiss decision?",
+    description:
+      "This proposal will be hidden from the list and indexing will not raise it again. Nothing in your code changes.",
+    confirmLabel: "Dismiss",
     destructive: true,
   },
 };
@@ -95,6 +108,16 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
   // Which AI-prompt flavor the modal shows: verification ("is this decision
   // still true?") or enforcement ("make the code conform to it").
   const [promptMode, setPromptMode] = React.useState<"verify" | "enforce" | null>(null);
+
+  // Read from `decision.affected_files` and not from `linkedFiles`, which the
+  // editor below mutates locally. `staleness_score` is a proportion the server
+  // computed against the *stored* scope, so pairing it with an unsaved scope
+  // would print a count derived from one file set over a fraction derived from
+  // another, and the sentence would drift the moment somebody typed.
+  const staleness = React.useMemo(
+    () => describeRecordStaleness(decision),
+    [decision],
+  );
 
   // Lineage: cheap, load eagerly so the Evolution timeline renders when present.
   const { data: lineage } = useSWR(
@@ -251,20 +274,37 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           </PrevNextLink>
         </div>
       </div>
-      {/* Header */}
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">
+      {/* Header. The title is the subject, so it gets the size; status and
+          trust are marks beside it, and the verbs sit in one row underneath
+          rather than crowding the heading line. */}
+      <div className="space-y-4">
+        <div className="space-y-2.5">
+          <h1 className="text-[26px] font-semibold leading-tight text-[var(--color-text-primary)]">
             {stripMarkdown(decision.title)}
           </h1>
-          <Badge variant={STATUS_VARIANT[status] ?? "outline"}>{status}</Badge>
-          {decision.verification && (
-            <VerificationBadge verification={decision.verification} />
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <DecisionStatusMark status={status} />
+            {decision.verification && (
+              <VerificationBadge verification={decision.verification} />
+            )}
+          </div>
+        </div>
+
+        {/* One mono ribbon, tabular, instead of four sans sentences.
+            Staleness left the ribbon: a proportion has no reading at a glance,
+            and the thing a reader wants from it is a sentence, which is now
+            below. Confidence left with it, being source rank times
+            verification, so it restated the Source cell beside it as a
+            percentage and every record from one source carried one number. */}
+        <dl className="flex flex-wrap gap-x-8 gap-y-2">
+          <MetaItem label="Source" value={SOURCE_LABEL[decision.source] ?? decision.source} />
+          <MetaItem label="Recorded" value={formatDateOrDash(decision.created_at)} />
+        </dl>
+
+        <div className="flex flex-wrap items-center gap-2">
           <AiPromptButton
             label={status === "proposed" ? "Verify & confirm with AI" : "Verify with AI"}
             onClick={() => setPromptMode("verify")}
-            className="ml-auto"
           />
           {status === "active" && (
             <AiPromptButton
@@ -279,26 +319,48 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           >
             <FileSearch className="h-3.5 w-3.5" />
             Evidence
+            {(decision.evidence_count ?? 0) > 0 && (
+              <span className="tabular-nums text-[var(--color-text-tertiary)]">
+                {decision.evidence_count}
+              </span>
+            )}
           </button>
-        </div>
-        <div className="flex gap-4 text-sm text-[var(--color-text-tertiary)]">
-          <span>Source: {decision.source}</span>
-          <span>Confidence: {Math.round(decision.confidence * 100)}%</span>
-          {decision.staleness_score > 0 && (
-            <span className={decision.staleness_score > 0.5 ? "text-[var(--color-error)]" : ""}>
-              Staleness: {decision.staleness_score.toFixed(2)}
-            </span>
-          )}
-          <span>Created: {formatDateOrDash(decision.created_at)}</span>
         </div>
       </div>
 
-      {/* Stale warning */}
-      {decision.staleness_score > 0.5 && (
-        <div className="rounded-md border border-[var(--color-warning)]/30 bg-[var(--color-warning)]/10 px-4 py-3 text-sm text-[var(--color-warning)]">
-          This decision may be stale — affected files have changed significantly since it was recorded.
-        </div>
-      )}
+      {/* What has happened to the code underneath this record, as a fact.
+          A line, not a filled panel: a tinted ground plus a border plus
+          coloured text says the same thing three times, and it outweighed the
+          record it was warning about.
+
+          It renders in all three states rather than only above a threshold,
+          because the two quiet states are not the same state. A record naming
+          no files scored 0.0 and rendered exactly like a record whose code had
+          not moved, so the reader who correctly read one was taught a rule
+          that made them wrong about the other. Only the moved case is marked,
+          and it is marked in warning rather than error: the arithmetic says
+          the files changed, which is a reason to re-read a record, not a
+          verdict that it expired. Three confirmed working rules on a live
+          index sat at a red 100% while being true. */}
+      {/* No band colour. The table cell on the list page is deliberately
+          uncoloured because a file-change count is not a health reading, and
+          amber here is the same category error one hue down. It would also
+          make this the third mark on one record drawing from one colour
+          vocabulary with no key: the status mark paints `active` green and
+          `deprecated` red, and the verification badge paints `fuzzy` amber.
+          The icon carries "look at this"; the sentence carries what it is. */}
+      <p
+        className={`flex items-start gap-2 text-sm ${
+          staleness.kind === "moved"
+            ? "text-[var(--color-text-secondary)]"
+            : "text-[var(--color-text-tertiary)]"
+        }`}
+      >
+        {staleness.kind === "moved" && (
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+        )}
+        <span>{staleness.sentence}</span>
+      </p>
 
       {/* Evolution / lineage chain */}
       {lineage && lineage.length > 1 && (
@@ -310,8 +372,8 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
         />
       )}
 
-      {/* Content sections */}
-      <div className="space-y-4">
+      {/* Content sections. This is the part someone came to read. */}
+      <div className="space-y-7 border-t border-[var(--color-border-default)] pt-7">
         {decision.context && <Section title="Context" text={decision.context} />}
         {decision.decision && <Section title="Decision" text={decision.decision} />}
         {decision.rationale && <Section title="Rationale" text={decision.rationale} />}
@@ -323,8 +385,10 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
         )}
       </div>
 
-      {/* Governance linkage — writable editor + evidence card */}
-      <div className="grid gap-4 sm:grid-cols-2">
+      {/* Governance linkage. Was two bordered cards side by side; a hairline
+          and vertical rhythm group them at a fraction of the ink, and neither
+          is a discrete object you act on repeatedly. */}
+      <div className="space-y-7 border-t border-[var(--color-border-default)] pt-7">
         <ModuleLinkEditor
           modules={linkedModules}
           files={linkedFiles}
@@ -334,11 +398,9 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
         />
 
         {/* The full evidence rows live in the drawer (Evidence button); this
-            card answers "what happened to the governed code since?". */}
-        <div className="rounded-lg border border-[var(--color-border-default)] p-4">
-          <h3 className="mb-2 text-sm font-medium text-[var(--color-text-secondary)]">
-            Since this decision
-          </h3>
+            block answers "what happened to the governed code since?". */}
+        <div>
+          <h2 className={MICRO_LABEL + " mb-2"}>Since this decision</h2>
           <div className="space-y-2 text-sm">
             {decision.last_code_change && (
               <p className="text-xs text-[var(--color-text-tertiary)]">
@@ -386,11 +448,12 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
 
       {/* Tags */}
       {decision.tags.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <span className={MICRO_LABEL}>Tags</span>
           {decision.tags.map((tag) => (
             <span
               key={tag}
-              className="inline-block rounded-full bg-[var(--color-bg-elevated)] px-2.5 py-0.5 text-xs font-medium text-[var(--color-text-secondary)]"
+              className="font-mono text-xs text-[var(--color-text-secondary)]"
             >
               {tag}
             </span>
@@ -406,12 +469,22 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               <button
                 onClick={() => handleStatusChange("active")}
                 disabled={loading}
-                className="rounded-md bg-[var(--color-success)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-inverse)] hover:opacity-90 disabled:opacity-50"
+                // Accent, not a filled green: green/amber/red are reserved for
+                // health readouts where they carry a band. This is the page's
+                // one primary action, which is what the accent is for.
+                className="rounded-md bg-[var(--color-accent-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-on-accent)] hover:opacity-90 disabled:opacity-50"
               >
                 Confirm
               </button>
+              {/* Dismissing a proposal and deprecating a decision are not the
+                  same act, and this button used to send `deprecated` for both.
+                  A dismissal says the proposal was never right, so the engine
+                  never raises it again; deprecation says a real decision has
+                  been retired, and the record keeps being re-derived and keeps
+                  its row. Sending the wrong one meant a dismissed proposal came
+                  back on the next index. */}
               <button
-                onClick={() => handleStatusChange("deprecated")}
+                onClick={() => handleStatusChange("dismissed")}
                 disabled={loading}
                 className="rounded-md border border-[var(--color-border-default)] px-3 py-1.5 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] disabled:opacity-50"
               >
@@ -432,8 +505,8 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
         {status === "proposed" && (
           <p className="text-xs text-[var(--color-text-tertiary)]">
             Confirm marks this as an accurate, current decision for your team.
-            Dismiss hides it from the active list as inaccurate or no longer
-            relevant. Neither changes any code.
+            Dismiss hides it and stops indexing from raising it again, for a
+            proposal that was never right. Neither changes any code.
           </p>
         )}
         {status === "active" && (
@@ -505,12 +578,32 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
   );
 }
 
+function MetaItem({ label, value }: { label: string; value: string }) {
+  // `valueClassName` went with the Staleness item, its only caller: it existed
+  // to paint that percentage red above 0.5, which is the thing this change
+  // removed. Module-private, so nothing outside can be relying on it.
+  return (
+    <div>
+      <dt className={MICRO_LABEL}>{label}</dt>
+      <dd className="mt-0.5 font-mono text-xs tabular-nums text-[var(--color-text-secondary)]">
+        {value}
+      </dd>
+    </div>
+  );
+}
+
 /** Older/hosted backends can omit decision timestamps — render "—" instead of
- *  "Invalid Date" for a missing or unparseable value. */
+ *  "Invalid Date" for a missing or unparseable value.
+ *
+ *  Uses `formatDate`, which pins the locale, rather than
+ *  `toLocaleDateString()`. The latter formats against the *runtime's* locale,
+ *  so the server rendered "23/06/2026" and the browser "23/6/2026" — a
+ *  hydration mismatch that made React throw away and re-render the tree on
+ *  every visit to a decision. */
 function formatDateOrDash(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString();
+  return Number.isNaN(d.getTime()) ? "—" : formatDate(d);
 }
 
 function PrevNextLink({
@@ -545,10 +638,12 @@ function PrevNextLink({
 function Section({ title, text }: { title: string; text: string }) {
   return (
     <div>
-      <h3 className="mb-1 text-sm font-medium text-[var(--color-text-secondary)]">{title}</h3>
-      <div className="text-sm text-[var(--color-text-primary)] leading-relaxed prose prose-sm prose-invert max-w-none [&>p]:mb-2 [&>p:last-child]:mb-0">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
-      </div>
+      <h2 className={MICRO_LABEL + " mb-2"}>{title}</h2>
+      {/* Not `prose`: Tailwind Typography is banned on our markdown. It printed
+          literal backticks through `code::before`, and `prose-invert` is a
+          static class that cannot follow the theme, so this block was locked to
+          dark styling in light mode. `Markdown` is themed through our tokens. */}
+      <Markdown content={text} />
     </div>
   );
 }
@@ -556,8 +651,8 @@ function Section({ title, text }: { title: string; text: string }) {
 function ListSection({ title, items }: { title: string; items: string[] }) {
   return (
     <div>
-      <h3 className="mb-1 text-sm font-medium text-[var(--color-text-secondary)]">{title}</h3>
-      <ul className="list-disc space-y-0.5 pl-5 text-sm text-[var(--color-text-primary)]">
+      <h2 className={MICRO_LABEL + " mb-2"}>{title}</h2>
+      <ul className="list-disc space-y-1.5 pl-5 text-[15.5px] leading-relaxed text-[var(--color-text-primary)]">
         {items.map((item, i) => (
           <li key={i}>{item}</li>
         ))}

@@ -155,15 +155,6 @@ async def resolve_repo_vector_store(
         return store
 
 
-async def resolve_workspace_vector_store(app, repo_id: str) -> Any | None:
-    """Backward-compatible app wrapper for repo vector-store resolution.
-
-    Search callers do not create a new index, so ``None`` is returned when the
-    repository has no persisted LanceDB directory yet.
-    """
-    return await resolve_repo_vector_store(app.state, repo_id)
-
-
 def _resolve_embedder_from_state(app_state):
     """Pull the same embedder the primary vector store was built with.
 
@@ -175,9 +166,9 @@ def _resolve_embedder_from_state(app_state):
     primary_vs = getattr(app_state, "vector_store", None)
     embedder = getattr(primary_vs, "_embedder", None) if primary_vs else None
     if embedder is None:
-        from repowise.core.providers.embedding.base import MockEmbedder
+        from repowise.core.providers.embedding.base import KeylessEmbedder
 
-        embedder = MockEmbedder()
+        embedder = KeylessEmbedder()
     return embedder
 
 

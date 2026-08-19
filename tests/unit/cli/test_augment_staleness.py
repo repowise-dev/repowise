@@ -175,9 +175,12 @@ class TestUpdateLockSuppression:
         _state(repo_path, last_sync_commit=head, docs_enabled=True)
         _commit(repo_path)
 
-        # Lock from 2 hours ago — beyond the 30-min stale window
+        # Lock from 2 hours ago, beyond the 30-min stale window, and carrying no
+        # PID so the wall clock is what decides. No `pid` deliberately: since the
+        # lock rework a live owner outranks the clock, so naming a PID that
+        # happens to exist would make this assert the opposite of the contract.
         (repo_path / ".repowise" / ".update.lock").write_text(
-            json.dumps({"pid": 1, "target_commit": "x", "started_at": 0}),
+            json.dumps({"target_commit": "x", "started_at": 0}),
             encoding="utf-8",
         )
 
@@ -295,9 +298,11 @@ class TestPowerShellDispatch:
             str(repo_path),
             session_id="s",
         )
-        assert msg is not None
-        assert "Wiki is stale" in msg
-        assert new_head[:8] in msg
+        assert msg.context is not None
+        assert "Wiki is stale" in msg.context
+        assert new_head[:8] in msg.context
+        # Only the Read surface ever replaces a tool result.
+        assert msg.replacement is None
 
     def test_powershell_failed_command_is_silent(self, repo):
         from repowise.cli.commands.augment_cmd import _handle_post_tool_use
@@ -318,7 +323,7 @@ class TestPowerShellDispatch:
             str(repo_path),
             session_id="s",
         )
-        assert msg is None
+        assert not msg
 
 
 class TestDocsEnabledWording:
@@ -340,11 +345,20 @@ class TestDocsEnabledWording:
         msg = _post(repo_path)
         assert "Wiki is stale" in msg
 
-    def test_defaults_to_wiki_when_field_missing(self, repo):
-        # Backward compat: pre-existing state.json files without
-        # docs_enabled should keep the old wording.
+    def test_says_index_when_no_docs_fields_and_no_provider(self, repo):
+        # A state file with neither docs field and no provider was written by
+        # a pre-migration index-only run, which really did leave no pages.
         repo_path, head = repo
         _state(repo_path, last_sync_commit=head)
+        _commit(repo_path)
+
+        msg = _post(repo_path)
+        assert "Index is stale" in msg
+
+    def test_says_wiki_when_no_docs_fields_but_provider_recorded(self, repo):
+        # Pre-migration full inits recorded provider/model and nothing else.
+        repo_path, head = repo
+        _state(repo_path, last_sync_commit=head, provider="openai")
         _commit(repo_path)
 
         msg = _post(repo_path)

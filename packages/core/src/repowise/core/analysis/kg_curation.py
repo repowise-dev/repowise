@@ -32,11 +32,11 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from repowise.core.analysis.knowledge_graph import KnowledgeGraphResult, _slugify
-from repowise.core.generation.entry_points import (
-    GLUE_STEMS,
-    is_glue_leaf,
-    rank_entry_points,
+from repowise.core.entry_candidacy import (
+    conventional_entry_stems,
+    not_an_execution_start,
 )
+from repowise.core.generation.entry_points import rank_entry_points
 from repowise.core.generation.layers import (
     ADJACENT_LAYERS,
     compute_layer_order,
@@ -51,6 +51,7 @@ from repowise.core.generation.tour import (
     select_hotspot_stop,
 )
 from repowise.core.generation.well_known_files import well_known_role
+from repowise.core.ids import is_external
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
 # Closing-stop anchors (conftest, spec_helper, test_helper, …) and
@@ -63,15 +64,6 @@ _FIXTURE_CAMEL_RES = _LANG_REGISTRY.camel_fixture_res_by_extension()
 # Test-project dir suffixes (.Tests/.Specs) — when present, the suite's
 # face must come from inside one.
 _TEST_PROJECT_DIR_SUFFIXES: tuple[str, ...] = _LANG_REGISTRY.test_dir_suffixes()
-# Config/markup/data + infra languages — a server.json or a Dockerfile
-# describes or wires the system, it is never where execution starts, so it
-# never belongs on the orientation entry-point list.
-_NON_CODE_ENTRY_LANGUAGES: frozenset[str] = (
-    _LANG_REGISTRY.config_languages() | _LANG_REGISTRY.infra_languages()
-)
-# Conventional execution-start filename stems (main/app/cli/manage/…) minus
-# the dispatch-glue stems (index/mod) — drives the entry-point name ranking.
-_CONVENTIONAL_ENTRY_STEMS: frozenset[str] = _LANG_REGISTRY.entry_filename_stems() - GLUE_STEMS
 
 # Honest-degradation thresholds. Density = (imports + tested_by)
 # edges per dominant-language file — the same definition the validation
@@ -118,9 +110,11 @@ def _graph_mode(dominant_lang: str, lang_by_path: dict[str, str], graph_builder:
     external_targets = 0
     try:
         for src, dst, data in graph_builder.graph().edges(data=True):
-            if (data or {}).get("edge_type") in ("imports", "tested_by") and src in dom_files:
+            # "tested_by" was a second member here; it is a knowledge-graph
+            # export label, never a raw edge type, so it never matched.
+            if (data or {}).get("edge_type") == "imports" and src in dom_files:
                 edge_count += 1
-                if isinstance(dst, str) and dst.startswith("external:"):
+                if isinstance(dst, str) and is_external(dst):
                     external_targets += 1
                 else:
                     internal_targets += 1
@@ -181,6 +175,10 @@ _MAX_LAYERS = 15
 # teaches a reader nothing, so it is demoted in the presentation view. Runtime
 # entries that survive are ranked by ``pagerank + betweenness`` and the surfaced
 # set is capped — the full ranked list is kept as ``entry_candidates``.
+# Only *shallow* barrels reach here now: ingestion's candidacy rule drops the
+# deep ones before the flag is set. Demotion still earns its keep, because a
+# package-root ``index.ts`` is a legal entry by candidacy and still a poor
+# thing to lead a reader with.
 _BARREL_STEMS = frozenset({"index"})
 _SUBSTANTIVE_KINDS = frozenset(
     {"function", "method", "class", "struct", "interface", "enum", "trait", "impl", "macro"}
@@ -871,13 +869,6 @@ def _curate_entry_points(
     except Exception:  # pragma: no cover - defensive
         betweenness = {}
 
-    def _not_an_execution_start(path: str, language: str) -> bool:
-        # Config/data files (server.json) describe the system and deep
-        # generic-glue leaves (a resolver's index.py) dispatch within it —
-        # neither is where a reader enters. Barrel demotion is handled
-        # separately (it mutates tags), so this covers only candidacy.
-        return language in _NON_CODE_ENTRY_LANGUAGES or is_glue_leaf(path)
-
     candidates: list[tuple[str, float, float]] = []
     for node in kg.nodes:
         nid = node.get("id", "")
@@ -900,7 +891,7 @@ def _curate_entry_points(
                 new_tags.append("barrel")
             node["tags"] = new_tags
             continue
-        if _not_an_execution_start(path, language):
+        if not_an_execution_start(path, language):
             continue
         candidates.append((path, pagerank.get(path, 0.0), betweenness.get(path, 0.0)))
 
@@ -917,11 +908,11 @@ def _curate_entry_points(
             pf = pf_by_path.get(path)
             if pf is not None and _is_barrel(pf):
                 continue
-            if _not_an_execution_start(path, language):
+            if not_an_execution_start(path, language):
                 continue
             candidates.append((path, pagerank.get(path, 0.0), betweenness.get(path, 0.0)))
 
-    ranked = rank_entry_points(candidates, _CONVENTIONAL_ENTRY_STEMS)
+    ranked = rank_entry_points(candidates, conventional_entry_stems())
     kg.project["entry_points"] = ranked[:_MAX_ENTRY_POINTS]
     kg.project["entry_candidates"] = ranked
 
@@ -1072,7 +1063,7 @@ def _import_groups(
                 continue
             # Stdlib/external imports say nothing about where a walk can
             # go — only repo-internal relationships count.
-            if src.startswith("external:") or dst.startswith("external:"):
+            if is_external(src) or is_external(dst):
                 continue
             names = tuple(sorted(data.get("imported_names") or ())) or (dst,)
             keyed[(src, names)].append(dst)
@@ -1087,7 +1078,10 @@ def _import_groups(
 # The harness signal is "this test file *depends on* that one" — type
 # references and inheritance (a base test class) are exactly that evidence;
 # raw-graph type_use/heritage edges surface as plain imports in the export.
-_DEPENDENCY_EDGE_TYPES = frozenset({"imports", "type_use", "heritage"})
+# Deliberately narrower than FILE_DEPENDENCY_EDGE_TYPES: framework and dynamic
+# wiring is not harness evidence. "heritage" used to be a third member and was
+# never an edge type — inheritance reaches the graph as extends/implements.
+_DEPENDENCY_EDGE_TYPES = frozenset({"imports", "type_use"})
 
 
 def _import_pairs_excluding_fanout(graph_builder: Any) -> list[tuple[str, str]]:
@@ -1863,7 +1857,8 @@ def build_portable_kg(kg: KnowledgeGraphResult) -> tuple[dict, KGValidation]:
     data = kg.to_dict()
     validation = validate_kg(kg)
     data["meta"] = {
-        "schema_version": data.get("version", "1.0.0"),
+        # The integer the loader gates on, not the "1.0.0" display label.
+        "schema_version": data.get("schema_version", 1),
         "generator": "repowise-kg-curation",
         "fingerprint": getattr(kg, "fingerprint", ""),
         "file_count": validation.metrics.get("file_count", 0),

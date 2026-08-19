@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+# Deferred deliberately: this module is the one submodule the package imports
+# eagerly (every other module reads its globals), and pulling sqlalchemy in for
+# an annotation alone accounted for ~340ms of the ~345ms it used to cost. The
+# annotations are strings under `from __future__ import annotations` and are
+# never evaluated at runtime.
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 _vector_store: Any = None
 _decision_store: Any = None
@@ -15,6 +21,14 @@ _repo_path: str | None = None
 # Set to an asyncio.Event by _lifespan; signals that vector stores are loaded.
 # tool_search awaits this before searching to avoid racing a background load.
 _vector_store_ready: asyncio.Event | None = None
+
+# Set to an asyncio.Event by _lifespan; signals that the deferred `import
+# lancedb` has finished (successfully or not). Tool dispatch waits on this
+# before running any handler body, because that import runs on a worker thread
+# and holds import locks: a handler that lazily imports while it is in flight
+# deadlocks the event loop, and no asyncio timeout can recover a loop that is
+# itself blocked. ``None`` when no background import was started.
+_lancedb_ready: asyncio.Event | None = None
 
 # Workspace mode — set by _lifespan when a workspace is detected.
 _registry: Any = None          # RepoRegistry | None

@@ -50,7 +50,10 @@ def _evaluate(severity_overrides):
         pytest.skip("python tree-sitter pack missing")
     pf = SimpleNamespace(
         file_info=SimpleNamespace(
-            path="src/tangled.py", language="python", abs_path="/tmp/tangled.py"
+            path="src/tangled.py",
+            language="python",
+            abs_path="/tmp/tangled.py",
+            is_test=False,
         ),
         symbols=[],
     )
@@ -58,6 +61,7 @@ def _evaluate(severity_overrides):
         pf,
         fcx,
         path_basenames=set(),
+        package_roots=set(),
         disabled=[],
         dup_report=DuplicationReport(),
         severity_overrides=severity_overrides,

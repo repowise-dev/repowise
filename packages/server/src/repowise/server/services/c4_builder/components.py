@@ -23,16 +23,20 @@ to component->component edges.
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from collections.abc import Iterable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ids import ComponentId, InvalidNodeIdError, render
 from repowise.core.persistence import GraphNode
 
 from .containers import container_id
-from .models import Component
+from .models import Component, Container
+
+logger = logging.getLogger(__name__)
 
 # Source-root directories that carry no architectural meaning — skipped so a
 # component reflects the real feature directory beneath them. Deliberately only
@@ -40,15 +44,14 @@ from .models import Component
 # to surface as their own component if indexed).
 _PASS_THROUGH_DIRS = frozenset({"src", "lib", "app", "source"})
 
-# Display label + id sentinel for the bucket of files that sit at the container
-# root. Chosen so neither ever serializes the old "_root" token.
+# Display label for the bucket of files that sit at the container root.
+# Chosen so it never serializes the old "_root" token.
 ROOT_BUCKET_LABEL = "(root)"
-_ROOT_BUCKET_SUFFIX = "::root"
 
 
-def component_id(component_path: str) -> str:
+def component_id(component_path: str, *, is_root_bucket: bool = False) -> str:
     """Stable id for a component, keyed on its repo-relative directory."""
-    return f"cmp:{component_path or '.'}"
+    return render(ComponentId(component_path or ".", is_root_bucket=is_root_bucket))
 
 
 def _relative(file_path: str, container_path: str) -> str:
@@ -59,11 +62,15 @@ def _relative(file_path: str, container_path: str) -> str:
 
 def _component_for(
     file_path: str, container_path: str, root_label: str
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str] | None:
     """Return ``(component_id, name, path)`` for a file's owning component.
 
     Skips leading pass-through directories; files with no meaningful directory
     fall into the ``(root)`` bucket.
+
+    ``None`` when the directory name has no unambiguous id — a directory
+    ending in the reserved root marker. One odd directory costs its own
+    component, not the whole view.
     """
     rel = _relative(file_path, container_path)
     dirs = rel.split("/")[:-1]  # directory segments only (drop the filename)
@@ -74,12 +81,16 @@ def _component_for(
 
     if i >= len(dirs):
         base = container_path or "."
-        return f"cmp:{base}{_ROOT_BUCKET_SUFFIX}", root_label, container_path or "."
+        return component_id(base, is_root_bucket=True), root_label, base
 
     name = dirs[i]
     rel_dir = "/".join(dirs[: i + 1])
     path = f"{container_path}/{rel_dir}" if container_path else rel_dir
-    return component_id(path), name, path
+    try:
+        return component_id(path), name, path
+    except InvalidNodeIdError:
+        logger.warning("c4_component_path_unrenderable path=%s", path)
+        return None
 
 
 async def detect_components(
@@ -101,13 +112,85 @@ async def detect_components(
     file_nodes = await _files_in(
         session, repository_id, container_path, sibling_roots=sibling_roots
     )
+    return _bucket_into_components(file_nodes, container_path, root_label)
 
+
+async def detect_components_for_all(
+    session: AsyncSession,
+    repository_id: str,
+    containers: Iterable[Container],
+    *,
+    root_label: str = ROOT_BUCKET_LABEL,
+) -> dict[str, tuple[list[Component], dict[str, str]]]:
+    """Same as :func:`detect_components`, for every container, in one query.
+
+    :func:`detect_components` re-reads the file table per call and throws away
+    everything outside its container, which is right for the dashboard (one
+    container at a time) and wasteful for anything walking the whole model.
+    This reads once and slices in Python; the ownership rules are shared, so
+    the two agree by construction.
+
+    Returns ``{container_id: (components, file_index)}``.
+    """
+    containers = list(containers)
+    all_files = await _files_in(session, repository_id, "")
+    roots = [c.path for c in containers if c.path]
+
+    # One pass over the files rather than one per container. Walking every
+    # container per file made a large monorepo do millions of prefix checks in
+    # the function whose whole point is being the cheap path.
+    by_root = {c.path: c for c in containers}
+    owned: dict[str, list[GraphNode]] = defaultdict(list)
+    catch_all = next((c for c in containers if not c.path), None)
+    for node in all_files:
+        matches = _matching_roots(node.node_id, roots)
+        if len(matches) == 1:
+            owned[by_root[matches[0]].id].append(node)
+        elif not matches and catch_all is not None:
+            owned[catch_all.id].append(node)
+        # Two roots claiming one file means a container nested inside another,
+        # where the sibling-prefix rule leaves the file unowned. Kept exactly
+        # as the per-container path resolves it: this function's contract is
+        # to agree with it element for element, so the nesting gap is one
+        # decision to take in one place, not a difference between the two.
+
+    out: dict[str, tuple[list[Component], dict[str, str]]] = {}
+    for container in containers:
+        out[container.id] = _bucket_into_components(
+            owned.get(container.id, []), container.path, root_label
+        )
+    return out
+
+
+def _matching_roots(node_id: str, roots: list[str]) -> list[str]:
+    """Every container path that prefixes *node_id*."""
+    return [
+        root for root in roots if node_id == root or node_id.startswith(root + "/")
+    ]
+
+
+def _owned_by(node_id: str, container_path: str, sibling_prefixes: tuple[str, ...]) -> bool:
+    """Whether *node_id* belongs to a container — the rule :func:`_files_in` applies."""
+    if container_path and not (
+        node_id == container_path or node_id.startswith(container_path + "/")
+    ):
+        return False
+    return not node_id.startswith(sibling_prefixes) if sibling_prefixes else True
+
+
+def _bucket_into_components(
+    file_nodes: list[GraphNode], container_path: str, root_label: str
+) -> tuple[list[Component], dict[str, str]]:
+    """Group a container's files into components. Pure — no session."""
     bucket: dict[str, list[GraphNode]] = defaultdict(list)
     meta: dict[str, tuple[str, str]] = {}  # comp_id -> (name, path)
     file_owner: dict[str, str] = {}
     cid = container_id(container_path)
     for node in file_nodes:
-        comp_id, name, path = _component_for(node.node_id, container_path, root_label)
+        resolved = _component_for(node.node_id, container_path, root_label)
+        if resolved is None:
+            continue
+        comp_id, name, path = resolved
         bucket[comp_id].append(node)
         meta[comp_id] = (name, path)
         file_owner[node.node_id] = comp_id
@@ -166,4 +249,9 @@ async def _files_in(
     return nodes
 
 
-__all__ = ["ROOT_BUCKET_LABEL", "component_id", "detect_components"]
+__all__ = [
+    "ROOT_BUCKET_LABEL",
+    "component_id",
+    "detect_components",
+    "detect_components_for_all",
+]

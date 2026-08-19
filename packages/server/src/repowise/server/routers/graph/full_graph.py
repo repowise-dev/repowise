@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
-from fastapi import APIRouter, Depends, Query
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import GraphEdge, GraphNode
+from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
 from repowise.server.deps import get_db_session
 from repowise.server.mcp_server._graph_utils import _node_id_is_excluded
-from repowise.server.routers.graph._common import _escape_like, with_repo
+from repowise.server.routers.graph._common import with_repo
 from repowise.server.schemas import GraphExportResponse, NodeSearchResult
 from repowise.server.services.graph_views import edge_response
 from repowise.server.services.node_signals import (
@@ -45,12 +47,17 @@ def _flow_member_ids(
     entry_ids: list[str],
     max_depth: int = _FLOW_MAX_DEPTH,
 ) -> set[str]:
-    """Node ids on the primary execution path from each entry point.
+    """Files on the primary execution path from each entry point.
 
     In-memory mirror of ``mcp_server._graph_utils.bfs_trace`` (same rules:
     ``calls`` edges only, highest-confidence unvisited successor, confidence
     >= 0.5, test/demo paths excluded) over the already-fetched edge list, so
     the export doesn't re-query edges per hop.
+
+    ``calls`` edges only ever join symbol nodes, so the trace itself is a list
+    of ``path/to/file.py::symbol`` ids. The export carries files, so each step
+    is reduced to its containing file — the reservation is for "the files this
+    flow runs through", which is what the canvas can actually highlight.
     """
     adjacency: dict[str, list[GraphEdge]] = {}
     for e in edges:
@@ -77,7 +84,7 @@ def _flow_member_ids(
             visited.add(best_id)
             current = best_id
         members |= visited
-    return members
+    return {node_id.split("::")[0] for node_id in members}
 
 
 @router.get("/{repo_id}/nodes/search", response_model=list[NodeSearchResult])
@@ -85,7 +92,7 @@ async def search_nodes(
     repo_id: str,
     q: str = Query(..., description="Search query"),
     limit: int = Query(10, ge=1, le=50),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> list[NodeSearchResult]:
     """Full-text search over node_id values."""
@@ -93,7 +100,7 @@ async def search_nodes(
         select(GraphNode)
         .where(
             GraphNode.repository_id == repo_id,
-            GraphNode.node_id.ilike(f"%{_escape_like(q)}%"),
+            GraphNode.node_id.ilike(f"%{escape_like(q)}%", escape=LIKE_ESCAPE),
         )
         .order_by(GraphNode.symbol_count.desc(), GraphNode.pagerank.desc())
         .limit(limit)
@@ -114,10 +121,19 @@ async def export_graph(
         le=6000,
         description="Maximum nodes to return. Stepped up by the client.",
     ),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> GraphExportResponse:
     """Export the full dependency graph in D3 force-directed format.
+
+    File nodes only. ``graph_nodes`` also holds a symbol node per extracted
+    symbol — on this repo 28,205 of 31,397 rows — and PageRank ranks the two
+    kinds together, so 450 of the top 1,500 used to be symbols drawn as file
+    circles, labelled ``path/file.py::Symbol`` and carrying a ``fullPath`` that
+    is not a path. Nothing downstream reads ``node_type`` (checked: packages/ui
+    and the VS Code webview), so the client cannot tell them apart. Excluding
+    them buys back those 1,500 slots for real files and makes
+    ``total_node_count`` a count of files, which is what every caller labels it.
 
     Large repos are capped with ``truncated=True``. Selection reserves slots
     for dead-code files, hotspots, and execution-flow members (up to
@@ -126,9 +142,36 @@ async def export_graph(
     view. ``dead_total``/``hot_total`` vs ``*_in_view`` let clients say
     "showing 12 of 37" instead of rendering silently-empty overlays.
     """
+    # Load only the columns this endpoint actually serializes. The row carries
+    # several large text columns (signature, qualified_name, file_path,
+    # community_meta_json) that nothing here reads, and this query hydrates
+    # EVERY node in the repo before capping — on a 31k-node repo that is several
+    # MB of text fetched and discarded per request. The list below must stay a
+    # superset of what `node_to_response` reads plus `node_id`: a deferred
+    # column accessed under asyncio raises MissingGreenlet rather than lazily
+    # loading, so adding a field there means adding it here.
+    #
+    # Caveat worth knowing before trusting the saving: on the truncated path
+    # `crud.get_top_entry_points` runs its own unnarrowed query over every
+    # symbol node to read `community_meta_json`. Those rows are already in the
+    # identity map, so SQLAlchemy back-fills their deferred columns and the
+    # saving applies only to file nodes there. Correctness is unaffected.
     node_result = await session.execute(
         select(GraphNode)
-        .where(GraphNode.repository_id == repo_id)
+        .options(
+            load_only(
+                GraphNode.node_id,
+                GraphNode.node_type,
+                GraphNode.language,
+                GraphNode.symbol_count,
+                GraphNode.is_test,
+                GraphNode.is_entry_point,
+                GraphNode.pagerank,
+                GraphNode.betweenness,
+                GraphNode.community_id,
+            )
+        )
+        .where(GraphNode.repository_id == repo_id, GraphNode.node_type == "file")
         .order_by(GraphNode.pagerank.desc())
     )
     all_nodes = node_result.scalars().all()

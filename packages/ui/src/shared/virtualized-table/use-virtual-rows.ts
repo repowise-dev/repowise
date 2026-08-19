@@ -107,7 +107,12 @@ export function useVirtualRows<E extends HTMLElement = HTMLDivElement>({
   const first = items[0];
   const last = items[items.length - 1];
   const paddingTop = first ? first.start : 0;
-  const paddingBottom = last ? totalSize - last.end : 0;
+  // With no window yet (first paint, before the container is measured) the whole
+  // list is still "below", so the spacer has to carry the full height. Returning
+  // 0 here deadlocks any scroll container whose only content is these rows: no
+  // rows means no height, and a zero-height viewport makes the virtualizer
+  // refuse to compute a range, so no rows ever appear.
+  const paddingBottom = last ? totalSize - last.end : totalSize;
 
   return {
     scrollRef,

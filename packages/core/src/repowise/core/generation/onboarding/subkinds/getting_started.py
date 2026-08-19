@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from ...entry_points import orientation_entry_points
 from ..registry import SubkindSpec, register
 from ..signals import OnboardingSignals
 from ..slots import SLOT_GETTING_STARTED, SLOT_TITLES
@@ -110,9 +111,7 @@ def _extract_setup_sections(readme: bytes) -> list[ReadmeSection]:
             j += 1
         body = "\n".join(body_lines).strip()
         if body:
-            sections.append(
-                ReadmeSection(heading=canonical, body=body[:_MAX_README_SECTION_CHARS])
-            )
+            sections.append(ReadmeSection(heading=canonical, body=body[:_MAX_README_SECTION_CHARS]))
         i = j
     return sections
 
@@ -122,8 +121,16 @@ def _partition_dependencies(
 ) -> tuple[list[str], list[dict], list[dict]]:
     """Split external_systems into (package_managers, runtime_deps, dev_deps).
 
-    The manifest parsers already record ``ecosystem`` (npm/pypi/cargo/…)
-    and ``is_dev``. Anything we can't classify falls into runtime.
+    The manifest parsers already record ``ecosystem`` (npm/pypi/cargo/…),
+    ``version`` and ``is_dev_dep``. Anything we can't classify falls into
+    runtime.
+
+    Key names must match what the orchestrator actually emits (see
+    ``pipeline/orchestrator.py``, which builds these dicts straight off
+    ``ExternalSystemRecord``). Reading ``is_dev`` instead of ``is_dev_dep``
+    silently sorted every dev dependency into runtime, and omitting
+    ``version`` made the template's ``{% if d.version %}`` raise under
+    StrictUndefined, which lost the whole getting-started page.
     """
     package_managers: list[str] = []
     runtime: list[dict] = []
@@ -139,8 +146,12 @@ def _partition_dependencies(
             "name": sys.get("name", ""),
             "ecosystem": eco,
             "category": sys.get("category", "library"),
+            # Always present, so the template can test it without tripping
+            # StrictUndefined. Normalized to "" because the record's version is
+            # Optional and a None would render as "None".
+            "version": str(sys.get("version") or "").strip(),
         }
-        if sys.get("is_dev"):
+        if sys.get("is_dev_dep"):
             dev.append(entry)
         else:
             runtime.append(entry)
@@ -166,7 +177,7 @@ def _build(signals: OnboardingSignals) -> GettingStartedContext | None:
         runtime_dependencies=runtime,
         dev_dependencies=dev,
         readme_sections=readme_sections,
-        entry_points=list(getattr(signals.repo_structure, "entry_points", []))[:6],
+        entry_points=orientation_entry_points(signals.repo_structure, limit=6),
     )
 
 

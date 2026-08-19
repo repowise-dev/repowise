@@ -39,6 +39,19 @@ SPEC = LanguageSpec(
         "nuget.config",
         "NuGet.Config",
     ),
+    # None of these declare a package — the .csproj does. They are MSBuild /
+    # NuGet settings that sit at a solution root and are re-declared under
+    # tests/, templates/ and misc/, so treating them as package roots would
+    # fragment a .NET repo's module rollup (135 such directories measured
+    # across the repos censused when this field landed).
+    build_config_manifests=(
+        "Directory.Build.props",
+        "Directory.Build.targets",
+        "Directory.Packages.props",
+        "global.json",
+        "nuget.config",
+        "NuGet.Config",
+    ),
     lock_files=("packages.lock.json",),
     generated_suffixes=(
         ".g.cs",
@@ -81,6 +94,49 @@ SPEC = LanguageSpec(
             "IComparable",
             "ICloneable",
             "IEquatable",
+        }
+    ),
+    # Type expressions that never resolve to a user-defined .NET type. Skipping
+    # these avoids polluting the resolver with hopeless lookups. Generic args
+    # inside `IList<T>` are stripped before this check is applied.
+    builtin_types=frozenset(
+        {
+            "void",
+            "bool",
+            "byte",
+            "sbyte",
+            "char",
+            "short",
+            "ushort",
+            "int",
+            "uint",
+            "long",
+            "ulong",
+            "float",
+            "double",
+            "decimal",
+            "string",
+            "object",
+            "nint",
+            "nuint",
+            "dynamic",
+            "var",
+            # Frequently appearing BCL types that are always external — listing
+            # them here is purely a performance optimisation (one dict miss
+            # avoided per occurrence).
+            "Task",
+            "ValueTask",
+            "CancellationToken",
+            "Action",
+            "Func",
+            "Type",
+            "Exception",
+            "DateTime",
+            "DateTimeOffset",
+            "TimeSpan",
+            "Guid",
+            "Uri",
+            "Stream",
         }
     ),
     color_hex="#178600",

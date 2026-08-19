@@ -8,6 +8,7 @@ docs and call sites reference them.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,18 +27,31 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _extract_summary(content: str, max_chars: int = 320) -> str:
+def _extract_summary(content: str, max_chars: int = 320, skip_metadata: bool = False) -> str:
     """Extract a 1-3 sentence purpose blurb from rendered wiki markdown.
 
     Strategy: walk lines top-to-bottom, skip blanks/headings/list-markers/HTML
     comments, and take the first prose paragraph. Truncate at sentence boundary
     near max_chars. Fully deterministic — no extra LLM call.
+
+    *skip_metadata* skips what several deterministic templates put between the
+    H1 and the prose: a bold field line (``**Language:** Python | **Files:**
+    412``) and a fenced signature block. Both would otherwise become the
+    summary, and the summary is what the wiki list, search results and
+    ``get_context`` display. Off by default: a model that opens with
+    ``**Purpose:** …`` means it as prose.
     """
     if not content:
         return ""
     para_lines: list[str] = []
+    in_lead_fence = False
     for raw in content.splitlines():
         line = raw.strip()
+        if in_lead_fence:
+            # Inside a fenced block that preceded any prose: the fence's
+            # contents are code, and its closing marker ends the skip.
+            in_lead_fence = not line.startswith("```")
+            continue
         if not line:
             if para_lines:
                 break
@@ -45,6 +59,10 @@ def _extract_summary(content: str, max_chars: int = 320) -> str:
         if line.startswith(("#", ">", "```", "---", "<!--", "|", "- ", "* ", "1.")):
             if para_lines:
                 break
+            if skip_metadata and line.startswith("```"):
+                in_lead_fence = True
+            continue
+        if skip_metadata and not para_lines and line.startswith("**") and ":**" in line:
             continue
         para_lines.append(line)
     if not para_lines:
@@ -72,6 +90,31 @@ def overview_summary(content: str) -> str:
         end = content.find("\n##", start)
         return content[start : end if end > 0 else start + 1600].strip()[:400]
     return content[:400]
+
+
+_EMPTY_DUPLICATE_HEADING = re.compile(
+    r"^(?P<hashes>\#{2,6})[ \t]*(?P<text>\S.*?)[ \t]*\r?\n"  # a heading …
+    r"(?:[ \t]*\r?\n)*"  # … whose section is empty …
+    r"(?=(?P=hashes)[ \t]*(?P=text)[ \t]*(?:\r?\n|$))",  # … and repeats verbatim
+    re.MULTILINE,
+)
+
+
+def collapse_empty_duplicate_headings(content: str) -> str:
+    """Drop a heading that is immediately repeated with nothing in between.
+
+    Models emit this when a required section is asked for emphatically: the
+    heading lands once bare and once with the body under it, which renders as an
+    empty section followed by the real one. A prompt change makes it rarer but
+    cannot make it impossible, so the heading is deduplicated here as well,
+    where the outcome does not depend on the model. Only the empty copy goes;
+    two headings with content between them are two real sections.
+    """
+    prior = None
+    while prior != content:
+        prior = content
+        content = _EMPTY_DUPLICATE_HEADING.sub("", content)
+    return content
 
 
 def _is_infra_file(parsed: ParsedFile) -> bool:
@@ -173,7 +216,10 @@ def _select_clone_representatives(
     for members in clusters.values():
         if len(members) < min_cluster_size:
             continue
-        members.sort(key=lambda p: pagerank.get(p.file_info.path, 0.0), reverse=True)
+        # Near-clones usually share a PageRank (often 0.0), so the path breaks
+        # the tie. Without it the survivor of each cluster changes between
+        # runs, and with it which file gets a page at all.
+        members.sort(key=lambda p: (-pagerank.get(p.file_info.path, 0.0), p.file_info.path))
         for loser in members[1:]:
             drop.add(loser.file_info.path)
     return drop

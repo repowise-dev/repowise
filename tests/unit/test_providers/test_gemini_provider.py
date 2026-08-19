@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 pytest.importorskip("google.genai", reason="google-genai SDK not installed")
+from google.genai import types as genai_types
 
 from repowise.core.providers.llm import gemini as gemini_module
 from repowise.core.providers.llm.base import GeneratedResponse, ProviderError, RateLimitError
@@ -47,7 +48,7 @@ def test_provider_name():
 
 def test_model_name_default():
     p = GeminiProvider(api_key="k")
-    assert p.model_name == "gemini-3.1-flash-lite-preview"
+    assert p.model_name == "gemini-3.5-flash-lite"
 
 
 def test_model_name_custom():
@@ -81,7 +82,7 @@ def test_available_model_options_lists_generate_content_models(monkeypatch):
             {
                 "models": [
                     {
-                        "name": "models/gemini-3.1-flash-lite-preview",
+                        "name": "models/gemini-3.5-flash-lite",
                         "displayName": "Gemini Flash Lite",
                         "supportedGenerationMethods": ["generateContent"],
                         "thinking": True,
@@ -101,9 +102,9 @@ def test_available_model_options_lists_generate_content_models(monkeypatch):
     assert calls[0]["url"] == "https://generativelanguage.googleapis.com/v1beta/models"
     assert calls[0]["headers"] == {"x-goog-api-key": "k"}
     models = [option.model for option in options]
-    assert "gemini-3.1-flash-lite-preview" in models
+    assert "gemini-3.5-flash-lite" in models
     assert "gemini-embed" not in models
-    option = next(option for option in options if option.model == "gemini-3.1-flash-lite-preview")
+    option = next(option for option in options if option.model == "gemini-3.5-flash-lite")
     assert option.label == "Gemini Flash Lite"
     assert option.reasoning_modes == ("auto", "minimal", "low", "medium", "high")
     assert GeminiProvider(api_key="k").supported_reasoning_modes() == (
@@ -120,7 +121,11 @@ def test_available_model_options_lists_generate_content_models(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_response(text: str = "# Doc\nContent here.") -> MagicMock:
+def _make_mock_response(
+    text: str = "# Doc\nContent here.",
+    *,
+    finish_reason=None,
+) -> MagicMock:
     usage = MagicMock()
     usage.prompt_token_count = 100
     usage.candidates_token_count = 50
@@ -130,6 +135,9 @@ def _make_mock_response(text: str = "# Doc\nContent here.") -> MagicMock:
     response = MagicMock()
     response.text = text
     response.usage_metadata = usage
+    candidate = MagicMock()
+    candidate.finish_reason = finish_reason or genai_types.FinishReason.STOP
+    response.candidates = [candidate]
     return response
 
 
@@ -143,6 +151,20 @@ async def test_generate_returns_generated_response():
 
     assert isinstance(result, GeneratedResponse)
     assert result.content == "Hello world"
+    assert result.stop_reason == "end_turn"
+    assert result.provider_stop_reason == "STOP"
+
+
+async def test_generate_maps_max_tokens_finish_reason():
+    provider = GeminiProvider(api_key="fake-key")
+    mock_response = _make_mock_response(finish_reason=genai_types.FinishReason.MAX_TOKENS)
+
+    with patch("google.genai.Client") as mock_client:
+        mock_client.return_value.models.generate_content.return_value = mock_response
+        result = await provider.generate("sys", "user")
+
+    assert result.stop_reason == "max_tokens"
+    assert result.provider_stop_reason == "MAX_TOKENS"
 
 
 async def test_generate_token_counts():
@@ -159,9 +181,7 @@ async def test_generate_token_counts():
 
 
 async def test_generate_passes_max_tokens():
-    """max_output_tokens is intentionally omitted in the Gemini config
-    (flash models default to 65k which is better for doc generation).
-    Verify the config is created but max_output_tokens is not set."""
+    """The shared documentation output limit reaches Gemini's request config."""
     provider = GeminiProvider(api_key="fake-key")
     mock_response = _make_mock_response()
     captured: list = []
@@ -174,13 +194,12 @@ async def test_generate_passes_max_tokens():
         mock_client.return_value.models.generate_content.side_effect = fake_generate_content
         await provider.generate("sys", "user", max_tokens=1234)
 
-    # max_output_tokens intentionally omitted — Gemini flash models default to 65k
-    assert captured[0].max_output_tokens is None
+    assert captured[0].max_output_tokens == 1234
 
 
 async def test_generate_forwards_thinking_level():
     gemini_module._GEMINI_THINKING_MODELS_BY_BASE[gemini_module._gemini_cache_key(None)] = {
-        "gemini-3.1-flash-lite-preview"
+        "gemini-3.5-flash-lite"
     }
     provider = GeminiProvider(api_key="fake-key")
     mock_response = _make_mock_response()

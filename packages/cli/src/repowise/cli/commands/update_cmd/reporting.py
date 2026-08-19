@@ -131,11 +131,17 @@ class JsonProgressEmitter:
         cost_usd: float,
         duration_s: float,
         degraded: list[str] | None = None,
+        outcome: str | None = None,
     ) -> None:
+        # ``outcome`` lets a supervising agent tell a real regeneration apart
+        # from a run that only deferred to an in-flight update or found nothing
+        # to do — all three otherwise emit ``ok=True, pages_generated=0``.
+        # Mirrors the ``UpdateOutcome`` values in ``command.py``.
         self._emit(
             {
                 "event": "done",
                 "ok": ok,
+                "outcome": outcome,
                 "pages_generated": pages_generated,
                 "cost_usd": cost_usd,
                 "duration_s": duration_s,
@@ -172,9 +178,21 @@ def render_degraded(degraded: list[str] | None) -> None:
         console.print(f"  [yellow]-[/yellow] {entry}")
 
 
-def _dead_code_counts(dead_code_report: Any) -> tuple[int, int]:
-    """Return ``(unreachable_files, unused_exports)`` from a dead-code report."""
+def _dead_code_counts(
+    dead_code_report: Any, changed_paths: list[str] | None = None
+) -> tuple[int, int]:
+    """Return ``(unreachable_files, unused_exports)`` from a dead-code report.
+
+    The report is repo-wide, but this panel is a summary of the update that
+    just ran, so the counts stay scoped to the files it touched. Reporting the
+    repo-wide totals here would turn a one-file update on a large repo into
+    "Dead code  759 unreachable" where it previously said 0, which reads as
+    the update having caused it.
+    """
     findings = dead_code_report.findings if dead_code_report else []
+    if changed_paths is not None:
+        scope = set(changed_paths)
+        findings = [f for f in findings if f.file_path in scope]
     unreachable = sum(1 for f in findings if f.kind.value == "unreachable_file")
     unused = sum(1 for f in findings if f.kind.value == "unused_export")
     return unreachable, unused
@@ -213,7 +231,9 @@ def show_full_completion(
         ("repowise search <query>", "search the wiki"),
     ]
     console.print()
-    console.print(build_completion_panel("repowise update complete", metrics, next_steps=next_steps))
+    console.print(
+        build_completion_panel("repowise update complete", metrics, next_steps=next_steps)
+    )
     console.print()
 
 
@@ -225,17 +245,27 @@ def show_index_only_completion(
     git_files: int,
     elapsed: float,
     degraded: list[str] | None = None,
+    pages_rendered: int = 0,
+    template_wiki: bool = False,
+    changed_paths: list[str] | None = None,
 ) -> None:
-    """Render the completion panel for an index-only update (no LLM regen)."""
+    """Render the completion panel for an index-only update (no LLM regen).
+
+    *pages_rendered* is non-zero on a repo whose wiki was rendered from
+    templates: those pages are re-rendered here for free, so the panel says so
+    rather than leaving the user to assume the wiki went stale.
+    """
     render_degraded(degraded)
     graph = graph_builder.graph()
-    unreachable, unused = _dead_code_counts(dead_code_report)
+    unreachable, unused = _dead_code_counts(dead_code_report, changed_paths)
 
     metrics: list[tuple[str, str]] = [
         ("Files changed", str(changed_count)),
         ("Graph", f"{graph.number_of_nodes():,} nodes · {graph.number_of_edges():,} edges"),
         ("Dead code", f"{unreachable} unreachable · {unused} unused exports"),
     ]
+    if pages_rendered:
+        metrics.append(("Wiki pages", f"{pages_rendered} re-rendered from structure"))
     if degraded:
         metrics.append(("Degraded", f"{len(degraded)} step(s)"))
     if git_files:
@@ -244,11 +274,20 @@ def show_index_only_completion(
 
     next_steps = [
         ("repowise serve", "browse the index at localhost:3000"),
-        ("repowise update --docs", "regenerate docs for the changed files"),
     ]
+    if template_wiki:
+        # The scoped, cost-gated upgrade path — a coverage, a directory or one
+        # page at a time — not the all-or-nothing `update --full`.
+        next_steps.append(
+            ("repowise generate", "upgrade the wiki to model-written prose (needs a key)")
+        )
+    else:
+        next_steps.append(("repowise update --docs", "regenerate docs for the changed files"))
     console.print()
     console.print(
-        build_completion_panel("repowise index-only update complete", metrics, next_steps=next_steps)
+        build_completion_panel(
+            "repowise index-only update complete", metrics, next_steps=next_steps
+        )
     )
     console.print()
 
@@ -299,10 +338,22 @@ def _render_update_report(
     affected: Any,
     new_decision_markers: list,
     elapsed: float,
+    detail: bool = False,
 ) -> None:
-    """Render the detailed generation report table (verbose mode / fallback)."""
+    """Render the generation report.
+
+    The quality checks print on every run; ``detail`` adds the page, token and
+    cost statistics on top. Checks used to render only under ``-v``, and since
+    ``repowise.core`` logging is silenced outside verbose mode, that left a
+    flagged page pair with no channel at all — it was measured, reported to
+    nobody, and read as a clean run.
+    """
     try:
-        from repowise.core.generation.report import GenerationReport, render_report
+        from repowise.core.generation.report import (
+            GenerationReport,
+            render_generation_checks,
+            render_report,
+        )
 
         report = GenerationReport.from_pages(
             generated_pages,
@@ -310,9 +361,14 @@ def _render_update_report(
             decisions_count=len(new_decision_markers),
             elapsed=elapsed,
         )
-        render_report(report, console)
-    except Exception:
-        # Fallback to simple message if report fails
+        if detail:
+            render_report(report, console)
+        else:
+            render_generation_checks(report, console)
+    except Exception as exc:
+        # Never fail a completed index over its own summary, but never let the
+        # failure pass for a clean run either. This message is the only signal
+        # that the checks below it are missing rather than empty.
         console.print(
-            f"[bold green]Updated {len(generated_pages)} pages in {elapsed:.1f}s[/bold green]"
+            f"[bold red]Generation checks did not run:[/bold red] {type(exc).__name__}: {exc}"
         )

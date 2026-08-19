@@ -18,7 +18,7 @@ import click
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from repowise.cli._setup import setup_logging_silence
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.editor_integrations.defaults import (
     get_default_disabled_project_files,
     get_default_integration_overrides,
@@ -27,6 +27,7 @@ from repowise.cli.editor_integrations.defaults import (
 from repowise.cli.editor_setup import (
     register_editor_clients,
     resolve_editor_setup_options,
+    select_agents_interactively,
     write_editor_project_files,
 )
 from repowise.cli.helpers import (
@@ -34,8 +35,10 @@ from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
     get_head_commit,
+    head_commit_ts,
     load_config,
     load_state,
+    resolve_max_file_pages,
     resolve_provider,
     resolve_reasoning,
     resolve_repo_path,
@@ -43,12 +46,17 @@ from repowise.cli.helpers import (
     save_config_partial,
     save_state,
 )
+from repowise.cli.platform import telemetry
 from repowise.cli.providers import resolve_embedder
+from repowise.cli.providers.embedders import embedder_was_requested as _embedder_was_requested
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.cli.ui import (
     BRAND,
     BRAND_STYLE,
+    OK,
     OWL_SPINNER,
+    VALUE,
+    WARN,
     MaybeCountColumn,
     RichProgressCallback,
     interactive_advanced_config,
@@ -66,12 +74,22 @@ from repowise.cli.ui import (
     quick_repo_scan,
     should_offer_fast_mode,
 )
+from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import DEFAULT_STYLE, list_styles, resolve_style
 from repowise.core.reasoning import REASONING_MODES
 
 from ._interactive import offer_distill_rewrite_hook, offer_hook_install
-from .generation import cost_gate_declined, format_cost, run_repo_generation, select_coverage
+from .generation import (
+    concept_page_count,
+    cost_gate_declined,
+    estimate_generation,
+    format_cost,
+    page_type_label,
+    run_repo_generation,
+    structural_page_summary,
+)
 from .persistence import (
     build_resume_controller,
     effective_run_mode_for_resume,
@@ -114,16 +132,20 @@ def _record_init_outcome(
         if isinstance(lang_dist, dict) and lang_dist:
             outcome["top_language"] = max(lang_dist.items(), key=lambda kv: kv[1])[0]
 
+        # docs_mode carries the same three values as the state field of that
+        # name. It used to be a bool, which collapsed "template wiki" and "no
+        # wiki" into one number, and template runs are the ones worth counting.
+        pages = getattr(result, "generated_pages", None) or []
+        det = sum(1 for p in pages if getattr(p, "provider_name", "") == "template")
         if not effective_index_only and provider is not None:
-            outcome["docs_mode"] = True
+            outcome["docs_mode"] = "llm"
             outcome["provider"] = getattr(provider, "provider_name", None)
             outcome["model"] = getattr(provider, "model_name", None)
-            pages = getattr(result, "generated_pages", None) or []
-            outcome["pages_bucket"] = telemetry.bucket_count(len(pages))
-            det = sum(1 for p in pages if getattr(p, "provider_name", "") == "template")
-            outcome["deterministic_pages_bucket"] = telemetry.bucket_count(det)
         else:
-            outcome["docs_mode"] = False
+            outcome["docs_mode"] = "deterministic" if pages else "none"
+        if pages:
+            outcome["pages_bucket"] = telemetry.bucket_count(len(pages))
+            outcome["deterministic_pages_bucket"] = telemetry.bucket_count(det)
 
         if embedder_name_resolved:
             outcome["embedder"] = embedder_name_resolved
@@ -131,6 +153,98 @@ def _record_init_outcome(
         telemetry.add_command_outcome(**{k: v for k, v in outcome.items() if v is not None})
     except Exception:
         return
+
+
+def _run_deterministic_generation_phase(
+    *,
+    repo_path: Path,
+    result: Any,
+    total_phases: int,
+    concurrency: int,
+    language: str,
+    onboarding: bool,
+    wiki_style: str,
+    max_file_pages: int | None,
+    embedder_name_resolved: str,
+    embedder_was_requested: bool,
+    resume: bool,
+) -> str:
+    """Render the whole wiki from templates, for ``init --index-only``.
+
+    Every page type has a deterministic renderer, so an index-only run is no
+    longer a wiki-less index: it is a complete wiki whose pages are derived
+    from structure rather than written by a model. There is nothing to
+    estimate and nothing to gate, since no provider is involved and the run
+    costs nothing, so this skips the coverage chooser the LLM phase runs.
+
+    Returns the embedder actually used, which the caller persists so a later
+    ``repowise update`` embeds the same way rather than re-deciding.
+    """
+    from repowise.core.generation import GenerationConfig
+    from repowise.core.providers.llm.template import TemplateProvider
+
+    # This mode is sold as "no key, no spend", and embedding 2000+ pages
+    # through a hosted embedder is a real bill. ``resolve_embedder`` infers one
+    # from any LLM key it finds in the environment, which is the right default
+    # for a run that is already paying a model and the wrong one here: nobody
+    # who typed --index-only asked to be charged. So a hosted embedder is used
+    # only when the user named it, through --embedder or REPOWISE_EMBEDDER.
+    # Anything else falls back to the mock, which keeps full-text search
+    # working and leaves semantic search to be built later with
+    # ``repowise reindex``.
+    hosted = embedder_name_resolved not in ("mock", "ollama")
+    embedder = "mock" if hosted and not embedder_was_requested else embedder_name_resolved
+
+    print_phase_header(
+        console,
+        3,
+        total_phases,
+        "Generation",
+        "Building wiki pages from the code's structure (no model, no cost)",
+    )
+    # Both knobs only reach a model. Templates carry their own English prose
+    # and render without the style directive, so saying so beats letting the
+    # user find out from the output (and beats recording a style the pages do
+    # not have, which would leave `restyle` thinking there is nothing to do).
+    if language != "en":
+        console.print(
+            f"  [dim]Templates are written in English, so [bold]--language "
+            f"{language}[/bold] has no effect here. Run [bold]repowise update "
+            "--full[/bold] to write the wiki with a model in that language.[/dim]"
+        )
+    if wiki_style != DEFAULT_STYLE:
+        console.print(
+            f"  [dim]Wiki styles shape how a model writes, so [bold]--wiki-style "
+            f"{wiki_style}[/bold] has no effect here.[/dim]"
+        )
+    if embedder != embedder_name_resolved:
+        console.print(
+            f"  [dim]Not embedding with [bold]{embedder_name_resolved}[/bold]: it was "
+            "inferred from a key in your environment, and this run is meant to cost "
+            "nothing. Pass [bold]--embedder "
+            f"{embedder_name_resolved}[/bold] if you want it.[/dim]"
+        )
+
+    gen_config = GenerationConfig.from_repo_config(
+        load_config(repo_path),
+        deterministic=True,
+        max_concurrency=concurrency,
+        language=language,
+        enable_onboarding=onboarding,
+        wiki_style=wiki_style,
+        max_file_pages=max_file_pages,
+    )
+    run_repo_generation(
+        repo_path=repo_path,
+        result=result,
+        provider=TemplateProvider(),
+        gen_config=gen_config,
+        concurrency=concurrency,
+        embedder_name_resolved=embedder,
+        resume=resume,
+        verbose=True,
+    )
+    return embedder
 
 
 def _run_generation_phase(
@@ -143,17 +257,15 @@ def _run_generation_phase(
     language: str,
     resolved_reasoning: str,
     onboarding: bool,
-    tier1_top_n: int | None,
-    tier2_tail_enabled: bool,
-    harvest_decisions: bool,
     wiki_style: str,
-    coverage_pct: float | None,
+    max_file_pages: int | None,
     yes: bool,
     dry_run: bool,
     skip_tests: bool,
     skip_infra: bool,
     embedder_name_resolved: str,
     resume: bool,
+    test_run: bool,
 ) -> tuple[bool, bool]:
     """Run the LLM generation phase for a single-repo init.
 
@@ -162,6 +274,7 @@ def _run_generation_phase(
     user declined the cost gate (generation skipped, index still saved). Mutates
     ``result`` in place with the generated pages, vector store, and enriched KG.
     """
+    from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
     from repowise.core.generation import GenerationConfig
 
     print_phase_header(
@@ -172,35 +285,46 @@ def _run_generation_phase(
         f"Generating wiki pages with {provider.provider_name} / {provider.model_name}",
     )
 
-    gen_config = GenerationConfig(
+    gen_config = GenerationConfig.from_repo_config(
+        load_config(repo_path),
         max_concurrency=concurrency,
         language=language,
         reasoning=resolved_reasoning,
         enable_onboarding=onboarding,
-        tier1_top_n=tier1_top_n,
-        tier2_tail_enabled=tier2_tail_enabled,
-        harvest_decisions=harvest_decisions,
         wiki_style=wiki_style,
+        max_file_pages=max_file_pages,
     )
-    chosen_pct, _plans, est, gen_config = select_coverage(
+    plans, est = estimate_generation(
         result=result,
         gen_config=gen_config,
         provider=provider,
         repo_path=repo_path,
         skip_tests=skip_tests,
         skip_infra=skip_infra,
-        coverage_pct=coverage_pct,
-        yes=yes,
     )
 
+    # "Written by" replaces the old Level column (an internal generation-tier
+    # integer nobody could act on) and answers the question the price below
+    # raises: most of this total is free.
     table = Table(title="Generation Plan", border_style=BRAND)
-    table.add_column("Page Type", style="cyan")
+    table.add_column("Pages", style="cyan")
     table.add_column("Count", justify="right")
-    table.add_column("Level", justify="right")
+    table.add_column("Written by")
+    model_pages = 0
     for plan in est.plans:
-        table.add_row(plan.page_type, str(plan.count), str(plan.level))
+        from_model = plan.page_type not in STRUCTURAL_PAGE_TYPES
+        model_pages += plan.count if from_model else 0
+        table.add_row(
+            page_type_label(plan.page_type),
+            f"{plan.count:,}",
+            "model" if from_model else "[dim]structure[/dim]",
+        )
     table.add_section()
-    table.add_row("[bold]Total[/bold]", f"[bold]{est.total_pages}[/bold]", "")
+    table.add_row(
+        "[bold]Total[/bold]",
+        f"[bold]{est.total_pages:,}[/bold]",
+        f"[bold]{model_pages:,} by model, {est.total_pages - model_pages:,} from structure[/bold]",
+    )
     console.print(table)
 
     # Language breakdown
@@ -210,46 +334,55 @@ def _run_generation_phase(
         lang_parts = [f"{lang} {pct:.0%}" for lang, pct in lang_items]
         console.print(f"  Languages: {', '.join(lang_parts)}")
 
-    console.print(
-        f"  Coverage: {int(chosen_pct * 100)}% / "
-        f"~{est.estimated_input_tokens + est.estimated_output_tokens:,} tokens "
-        f"({format_cost(est)})"
-    )
-    if onboarding:
+    # Warn when a local provider runs with default concurrency
+    if provider.provider_name in ("ollama", "codex_cli", "opencode") and concurrency > 4:
         console.print(
-            "  [cyan]Onboarding collection:[/cyan] "
-            "[dim]up to 8 curated pages — Project Overview, Architecture Guide, "
-            "Getting Started, Codebase Map, Key Concepts, How It Works, "
-            "Development Guide, Active Landscape "
-            "(slots without enough signal are skipped).[/dim]"
+            f"  [{WARN}]Warning:[/] {provider.provider_name} is a local provider "
+            f"running with concurrency={concurrency}. "
+            f"If you see timeout errors, try [bold]--concurrency 1[/bold]."
+        )
+
+    if onboarding:
+        # Eight proper nouns in a wrapped dim block sat directly above the
+        # price and competed with it; none of them is actionable here.
+        console.print(
+            "  [dim]Plus up to 8 curated onboarding pages (overview, architecture, "
+            "getting started, and so on). Slots without enough signal are skipped.[/dim]"
         )
     else:
         console.print("  [dim]Onboarding collection: disabled (--no-onboarding).[/dim]")
     console.print()
 
     if dry_run:
-        console.print("[yellow]Dry run — no pages generated.[/yellow]")
+        console.print("  Dry run: no pages generated.")
         return True, False
 
-    if cost_gate_declined(est, yes=yes, message="  Estimated cost exceeds $2.00. Continue?"):
+    # The single cost question. Every structural page is free; the spend is the
+    # concept tree and the repo-wide synthesis pages, stated as one number.
+    #
+    # This gate declines rather than raises when it cannot ask (no terminal, over
+    # the gate, no --yes): init's index is built but not yet persisted, so
+    # raising here would discard the whole run. Declining hands control to the
+    # caller's fallback, which renders the free structural wiki and saves the
+    # index. `generate` and `update --full` raise instead, because their index
+    # already exists and re-running with --yes costs nothing.
+    concept_n = concept_page_count(plans)
+    console.print(
+        f"  Writing [bold]{concept_n:,}[/bold] subsystem pages with "
+        f"[{VALUE}]{provider.model_name}[/]. Estimated [bold]{format_cost(est)}[/bold]."
+    )
+    structural = structural_page_summary(plans)
+    if structural:
+        console.print(f"  [dim]{structural}[/dim]")
+    if cost_gate_declined(est, yes=yes, message="  Continue?"):
+        console.print("  Skipping the model. [dim]Building the wiki from structure instead.[/dim]")
         console.print(
-            "[yellow]Skipped LLM generation.[/yellow] "
-            "[dim]Index/graph/git/dead-code will be saved; future "
-            "`repowise update` runs default to index-only so the "
-            "post-commit hook won't trigger LLM regen.[/dim]"
+            "  [dim]Run [bold]repowise generate[/bold] any time to write the subsystem "
+            "pages, or re-run init with [bold]--yes[/bold] to accept the cost now.\n"
+            "  Post-commit updates stay index-only, so no hook will start a model run "
+            "on its own.[/dim]"
         )
         return False, True
-
-    # Persist the tiering knobs so `repowise update` regenerates with the same
-    # coverage settings (save_config later round-trips and preserves these).
-    # save_config_partial skips None, so a no-cap tier1 stays unwritten.
-    from repowise.cli.helpers import save_config_partial
-
-    save_config_partial(
-        repo_path,
-        tier1_top_n=tier1_top_n,
-        tier2_tail_enabled=tier2_tail_enabled,
-    )
 
     run_repo_generation(
         repo_path=repo_path,
@@ -260,6 +393,7 @@ def _run_generation_phase(
         embedder_name_resolved=embedder_name_resolved,
         resume=resume,
         verbose=True,
+        test_run=test_run,
     )
     return False, False
 
@@ -315,10 +449,30 @@ def _run_generation_phase(
     help="Limit generation to top 10 files by PageRank for quick validation.",
 )
 @click.option(
+    "--prose/--no-prose",
+    "prose",
+    default=None,
+    help=(
+        "Write the subsystem (concept) pages as model prose (needs a key), or "
+        "render the whole wiki from structure with no model and no spend. Every "
+        "other page is structural either way. Default: prose when a key is "
+        "available. Use --mode fast for no wiki at all."
+    ),
+)
+@click.option(
     "--index-only",
     is_flag=True,
     default=False,
-    help="Index files, git history, graph, and dead code — skip LLM page generation.",
+    hidden=True,
+    help="Deprecated alias for --no-prose.",
+)
+@click.option(
+    "--docs",
+    "docs_opt",
+    type=click.Choice(["llm", "deterministic"]),
+    default=None,
+    hidden=True,
+    help="Deprecated: use --prose / --no-prose. 'llm' == --prose, 'deterministic' == --no-prose.",
 )
 @click.option(
     "--mode",
@@ -374,10 +528,46 @@ def _run_generation_phase(
     "distill_hook",
     default=None,
     help=(
-        "Install the Claude Code command-rewrite hook that routes noisy "
-        "commands (tests, builds, git, searches) through `repowise distill` "
-        "for compact output. Default: ask when interactive; skip otherwise. "
-        "In workspace mode the verdict applies to every selected repo."
+        "Let repowise's hooks compact what your agent sees. Noisy commands "
+        "(tests, builds, git, searches) run through `repowise distill`; a "
+        "whole-file Read comes back as a skeleton (`hooks.read_skeleton`); a "
+        "grep matching many files comes back as a per-file digest "
+        "(`hooks.search_digest`); re-reading an unchanged, unedited file comes "
+        "back as a pointer to the earlier read (`hooks.read_reread`). One "
+        "consent, and this flag decides all four without a prompt. Default: "
+        "ask when interactive, skip otherwise. In workspace mode the verdict "
+        "applies to every selected repo."
+    ),
+)
+@click.option(
+    "--editor-setup/--no-editor-setup",
+    "editor_setup",
+    default=True,
+    help=(
+        "Wire repowise into your editors. Covers both halves: the machine-wide "
+        "config (the Claude Code / Claude Desktop MCP entry, the Claude Code "
+        "hooks, the distill rewrite-hook offer) and the project-local files "
+        "(.mcp.json, .claude/CLAUDE.md, .vscode/mcp.json, "
+        ".vscode/extensions.json). Default: on. Use --no-editor-setup to index "
+        "a repo without writing anything into it or outside it; only "
+        ".repowise/ is touched, and 'repowise mcp .' still prints the config "
+        "to connect a client by hand. REPOWISE_SKIP_EDITOR_SETUP=1 does the "
+        "same thing for CI and sandboxes, and wins: with it set, --editor-setup "
+        "does not turn setup back on."
+    ),
+)
+@click.option(
+    "--save-key/--no-save-key",
+    "save_key",
+    default=True,
+    help=(
+        "Save the provider API key this run authenticated with into "
+        ".repowise/.env (gitignored, owner-only). Default: on, because a scripted "
+        "init that succeeds must leave a repo whose MCP server can answer, "
+        "and the key would otherwise be lost with the shell that set it. Use "
+        "--no-save-key when the key is injected per-process (CI secrets, a "
+        "shared machine) and must not be written to disk. "
+        "REPOWISE_NO_SAVE_KEY=1 does the same for CI and sandboxes."
     ),
 )
 @click.option(
@@ -415,15 +605,16 @@ def _run_generation_phase(
     ),
 )
 @click.option(
-    "--coverage",
-    "coverage_pct",
-    type=float,
+    "--max-file-pages",
+    "max_file_pages_opt",
+    type=int,
     default=None,
-    metavar="PCT",
+    metavar="N",
     help=(
-        "Documentation coverage as a fraction of repo files (e.g. 0.10, 0.20, "
-        "0.50). Bypasses the interactive coverage chooser. Default when "
-        "interactive: prompt; otherwise 0.20."
+        "Most file pages to emit, highest importance first. Omit to let the size "
+        "policy decide: untouched on a normal repo, held to a ceiling on a very "
+        "large one. Pass 0 for one page per eligible file however many that is. "
+        "Saved to config.yaml so later runs keep it."
     ),
 )
 @click.option(
@@ -435,19 +626,8 @@ def _run_generation_phase(
     help=(
         "Test-coverage report(s) to ingest (lcov / Cobertura / Clover). "
         "Repeatable. When omitted, common locations (coverage/lcov.info, "
-        "**/cobertura.xml, ...) are auto-discovered. Distinct from --coverage, "
-        "which controls documentation breadth."
-    ),
-)
-@click.option(
-    "--harvest-decisions/--no-harvest-decisions",
-    "harvest_decisions",
-    default=True,
-    help=(
-        "Harvest candidate architectural decisions from LLM page generation "
-        "(file pages). Each harvested decision is verified against the file's "
-        "source before storage. The model emits a decision only on a genuine "
-        "hit, so the token cost lands only on files that carry one. Default: on."
+        "**/cobertura.xml, ...) are auto-discovered. This is test coverage for "
+        "code-health, not a documentation-breadth knob."
     ),
 )
 @click.option(
@@ -500,7 +680,10 @@ def _run_generation_phase(
     "-v",
     is_flag=True,
     default=False,
-    help="Show the full changed-file list and per-phase internals.",
+    help=(
+        "Show per-phase internals plus debug logs. Without it, debug/info "
+        "logging is suppressed so the progress bar is the only output."
+    ),
 )
 @click.option(
     "--progress",
@@ -522,7 +705,9 @@ def init_command(
     concurrency: int,
     reasoning: str | None,
     test_run: bool,
+    prose: bool | None,
     index_only: bool,
+    docs_opt: str | None,
     run_mode: str,
     exclude: tuple[str, ...],
     commit_limit: int | None,
@@ -533,13 +718,14 @@ def init_command(
     agents_md: bool | None,
     codex_setup: bool | None,
     distill_hook: bool | None,
+    editor_setup: bool,
+    save_key: bool,
     include_submodules: bool,
     no_workspace: bool,
     init_all: bool,
     onboarding: bool,
-    coverage_pct: float | None,
+    max_file_pages_opt: int | None,
     coverage_report: tuple[str, ...],
-    harvest_decisions: bool,
     wiki_style: str | None,
     language_opt: str | None,
     no_cost_tracking: bool,
@@ -549,9 +735,40 @@ def init_command(
     """Generate wiki documentation for a codebase.
 
     PATH defaults to the current directory.
-    Use --index-only to run ingestion (AST, graph, git, dead code) without LLM generation.
+    Use --no-prose to render the whole wiki from structure with no model and no
+    key; --prose writes the subsystem pages with a model. Every other page is
+    structural either way.
     Use --mode fast for a quick graph + essential-git index of a very large repo.
     """
+    # ``--prose / --no-prose`` is the one switch: prose on the concept pages, or
+    # the whole wiki from structure. ``--index-only`` and ``--docs`` are the
+    # previous spellings, kept working for one release as deprecated aliases so a
+    # scripted ``--index-only`` does not break. ``index_only`` stays the internal
+    # variable every downstream branch reads.
+    if index_only or docs_opt is not None:
+        console.print(
+            "[dim]--index-only and --docs are deprecated; use --no-prose "
+            "(structural, no key) or --prose (model-written). They still work "
+            "this release.[/dim]"
+        )
+    # Each of the three sources votes for "structural" (True) or "prose" (False).
+    # --index-only always means structural; --docs maps deterministic->structural,
+    # llm->prose; --prose/--no-prose is the direct switch. Two votes that disagree
+    # is a contradiction rather than a silent last-one-wins.
+    _structural_votes = []
+    if index_only:
+        _structural_votes.append(True)
+    if docs_opt is not None:
+        _structural_votes.append(docs_opt == "deterministic")
+    if prose is not None:
+        _structural_votes.append(not prose)
+    if len(set(_structural_votes)) > 1:
+        raise click.UsageError(
+            "This mix of --prose / --no-prose, --index-only and --docs contradicts "
+            "itself. Pass one."
+        )
+    if _structural_votes:
+        index_only = _structural_votes[0]
     # --mode fast is a graph + essential-git index with no LLM work, so it
     # implies index-only on the CLI side; the orchestrator mode below switches
     # the git tier to ESSENTIAL.
@@ -561,6 +778,7 @@ def init_command(
     repo_path = resolve_repo_path(path)
 
     if not repo_path.is_dir():
+        telemetry.add_command_outcome(failure_reason="invalid_path")
         raise click.ClickException(f"Not a directory: {repo_path}")
 
     # ---- Workspace detection ----
@@ -586,6 +804,7 @@ def init_command(
     if seed_from:
         seed_base = Path(seed_from).resolve()
         if seed_base == repo_path.resolve():
+            telemetry.add_command_outcome(failure_reason="seed_from_is_target")
             raise click.ClickException("--seed-from cannot be the same as the target directory.")
     elif not no_seed and not (repo_path / ".repowise" / "state.json").exists():
         detected = detect_worktree_base(repo_path)
@@ -606,7 +825,7 @@ def init_command(
         )
         if seeded:
             console.print(
-                "[green]Worktree index seeded successfully. Delegating to update...[/green]"
+                f"[{OK}]Worktree index seeded successfully. Delegating to update...[/]"
             )
             from repowise.cli.commands.update_cmd.command import run_update
 
@@ -645,6 +864,8 @@ def init_command(
             agents_md=agents_md,
             codex_setup=codex_setup,
             distill_hook=distill_hook,
+            editor_setup=editor_setup,
+            save_key=save_key,
             include_submodules=include_submodules,
             provider_name=provider_name,
             model=model,
@@ -660,8 +881,6 @@ def init_command(
             resume=resume,
             force=force,
             onboarding=onboarding,
-            coverage_pct=coverage_pct,
-            harvest_decisions=harvest_decisions,
             # Apply the chosen style uniformly across the workspace's repos
             # (no per-repo interactive prompt in the multi-repo flow).
             wiki_style=resolve_style(wiki_style).name,
@@ -678,8 +897,9 @@ def init_command(
     ensure_repowise_dir(repo_path)
     load_dotenv(repo_path)
 
-    # Suppress library/structlog output — progress bars are the only output needed.
-    setup_logging_silence()
+    # Quiet library/structlog output so the progress bars are the only output;
+    # `-v` lets repowise's debug lines through for troubleshooting.
+    configure_cli_logging(verbose=verbose)
 
     # On --resume, continue the prior run's git tier so a resumed fast index
     # doesn't silently fall back to the expensive FULL tier (issue #341). Done
@@ -693,18 +913,14 @@ def init_command(
     # so a scripted `init -y` never blocks on the mode-selection menu.
     is_interactive = sys.stdin.isatty() and provider_name is None and not index_only and not yes
 
-    # Tiered doc generation cap (set in advanced mode); None = every selected
-    # file page is a full-LLM tier-1 page (unchanged behaviour).
-    tier1_top_n: int | None = None
-
-    # Deterministic coverage tail (Phase G): document every remaining source
-    # file with a free, no-LLM page. On by default; only the advanced menu
-    # can turn it off.
-    tier2_tail_enabled: bool = True
-
     # Output language picked in the advanced-mode generation section; None
     # until chosen. Resolved below: flag > this > config.yaml > English.
     language_choice: str | None = None
+
+    # File-page cap picked in the advanced-mode page-volume question; None until
+    # chosen. Resolved below: --max-file-pages > advanced-mode answer >
+    # config.yaml > unset, and unset leaves the size policy in charge.
+    max_file_pages_choice: int | None = None
 
     # The two orthogonal axes the interactive menu resolves: whether docs are
     # generated and whether we entered the advanced-config prompts. Initialized
@@ -720,7 +936,26 @@ def init_command(
         with console.status("  Scanning repository…", spinner=OWL_SPINNER):
             scan_info = quick_repo_scan(repo_path)
         print_scan_summary(console, scan_info)
-        mode = interactive_mode_select(console)
+
+        # ``sys.stdin.isatty()`` is not a reliable answer to "can I read from
+        # stdin". On Windows under Git Bash, ``repowise init < /dev/null``
+        # reports a TTY and then reads EOF on the first question; the same goes
+        # for some pty wrappers and ``docker run -t`` without -i. Agents drive
+        # init through exactly those shapes, so the first prompt is treated as
+        # the probe: if it cannot be answered, drop to the non-interactive path
+        # and carry on rather than dying on a question nobody can hear. Only
+        # EOFError is caught. A real Ctrl-C raises KeyboardInterrupt/Abort and
+        # must still stop the run.
+        mode = None
+        try:
+            mode = interactive_mode_select(console)
+        except EOFError:
+            is_interactive = False
+            console.print(
+                f"\n[{WARN}]No answer available on stdin[/] "
+                "[dim]- continuing with defaults. Pass --yes to skip the "
+                "questions, or --prose / --no-prose to choose directly.[/dim]"
+            )
 
         # Map the menu onto the two axes (docs on/off, customize yes/no):
         #   full       -> docs on,  optional customize
@@ -732,14 +967,17 @@ def init_command(
         elif mode == "advanced":
             generate_docs = interactive_generate_docs_toggle(console)
             customize = True
-        else:  # full
+        elif mode is not None:  # full
             generate_docs = True
             customize = interactive_customize_offer(console, generate_docs=True)
-        index_only = not generate_docs
+        if mode is not None:
+            index_only = not generate_docs
 
         # Provider selection only when docs will be generated. Index-only runs
         # auto-detect a decision-extraction provider later without prompting.
-        if generate_docs:
+        # ``is_interactive`` can have been cleared just above by an unanswerable
+        # menu, in which case every remaining question here is unanswerable too.
+        if generate_docs and is_interactive:
             selection = interactive_provider_config_select(
                 console,
                 model,
@@ -768,16 +1006,20 @@ def init_command(
             exclude = adv["exclude"]
             include_submodules = adv.get("include_submodules", include_submodules)
             run_mode = adv.get("run_mode", run_mode)
+            # Asked in both branches for the same reason the embedder is: an
+            # index-only run renders file pages too.
+            max_file_pages_choice = adv.get("max_file_pages")
+            # Asked in both branches: an index-only run renders a wiki too,
+            # and those pages embed like any other, so the answer applies
+            # either way. Read outside the docs-only block or the index-only
+            # run would show the user their choice and then ignore it.
+            embedder_name = adv.get("embedder") or embedder_name
             # Generation knobs (only gathered when docs are on).
             if generate_docs:
                 concurrency = adv["concurrency"]
                 reasoning = adv.get("reasoning") or reasoning
-                embedder_name = adv.get("embedder") or embedder_name
                 test_run = adv["test_run"]
-                tier1_top_n = adv.get("tier1_top_n")
-                tier2_tail_enabled = adv.get("tier2_tail_enabled", True)
                 onboarding = adv.get("onboarding", onboarding)
-                harvest_decisions = adv.get("harvest_decisions", harvest_decisions)
                 if adv.get("wiki_style"):
                     wiki_style = adv["wiki_style"]
                 if adv.get("language"):
@@ -787,7 +1029,7 @@ def init_command(
             if run_mode == "fast":
                 index_only = True
                 generate_docs = False
-        else:
+        elif is_interactive:
             # No customization: still offer the fast first-index on large repos.
             # Default yes for an index-only run (docs already opted out), no for a
             # full run (the user explicitly asked for docs).
@@ -803,7 +1045,7 @@ def init_command(
         # Wiki style: prompt for a docs run when not already chosen (via the
         # --wiki-style flag or the advanced generation section). Index-only runs
         # generate no pages, so the question is skipped. --yes uses the default.
-        if generate_docs and wiki_style is None and not yes:
+        if generate_docs and wiki_style is None and not yes and is_interactive:
             wiki_style = prompt_wiki_style(console)
 
     # Resolve the effective style (CLI flag > interactive prompt > default) and
@@ -811,7 +1053,6 @@ def init_command(
     wiki_style = resolve_style(wiki_style).name
 
     editor_options = resolve_editor_setup_options(
-        console,
         disabled_project_files=get_default_disabled_project_files(
             no_claude_md=no_claude_md,
         ),
@@ -821,16 +1062,26 @@ def init_command(
         integration_overrides=get_default_integration_overrides(
             codex_setup=codex_setup,
         ),
-        # Prompt for CLAUDE.md / AGENTS.md / Codex setup whenever the user is
-        # engaging interactively — either generating docs or customizing an
-        # index-only run (the latter previously got no say).
-        prompt_for_project_files=is_interactive and (generate_docs or customize),
     )
+    # Ask which agents to wire up whenever the user is engaging interactively —
+    # either generating docs or customizing an index-only run (the latter
+    # previously got no say). One checklist, pre-ticked from detection, in
+    # place of the three sequential yes/no prompts each integration used to own.
+    # Not asked when editor setup is off: every answer would be discarded by
+    # `write_editor_project_files`, and a checklist whose result cannot act is
+    # worse than no checklist.
+    if editor_setup and is_interactive and (generate_docs or customize):
+        editor_options = select_agents_interactively(console, repo_path, editor_options)
 
     # Merge exclude_patterns from config.yaml and --exclude/-x flags
     config = load_config(repo_path)
     # Output language: CLI flag > advanced-mode choice > config.yaml > English.
     language = language_opt or language_choice or config.get("language", "en")
+    # File-page cap: flag > advanced-mode answer > config.yaml > unset (policy).
+    max_file_pages = resolve_max_file_pages(
+        max_file_pages_opt if max_file_pages_opt is not None else max_file_pages_choice,
+        config,
+    )
     resolved_reasoning = resolve_reasoning(reasoning, config)
     exclude_patterns: list[str] = list(config.get("exclude_patterns") or []) + list(exclude)
 
@@ -846,10 +1097,44 @@ def init_command(
         config["follow_renames"] = True
 
     embedder_name_resolved = resolve_embedder(embedder_name)
+    embedder_was_requested = _embedder_was_requested(embedder_name, config.get("embedder"))
+
+    # A template wiki overwrites a model-written one page for page: the upsert
+    # replaces content and stamps provider_name="template", keeping the old
+    # text only as a version snapshot. That is a fine outcome when it is what
+    # the user meant and a bad surprise when they were reaching for a re-index,
+    # so ask. Non-interactive runs refuse rather than guess.
+    # ``--yes`` and ``--force`` both mean "do not ask me", which is the answer
+    # here as much as at the cost gate.
+    _prior_state = load_state(repo_path)
+    # Whether this repo has ever been indexed, captured before the run writes
+    # its own state. Drives the completion panel's MCP note (a first index tells
+    # the user to restart Claude Code to load the tools; a re-index does not).
+    _first_index = not _prior_state.get("last_sync_commit")
+    _prior_docs_mode = resolve_docs_mode(_prior_state)
+    if index_only and _prior_docs_mode == "llm" and not (force or yes):
+        console.print(
+            f"\n[{WARN}]This repo already has a model-written wiki.[/] "
+            "Indexing without a model\nrewrites every page from templates; the "
+            "written versions stay in page history."
+        )
+        if not sys.stdin.isatty():
+            telemetry.add_command_outcome(failure_reason="wiki_overwrite_unconfirmed")
+            raise click.ClickException(
+                "Refusing to replace a model-written wiki with template pages. "
+                "Re-run with --yes to confirm, or drop --index-only."
+            )
+        if not click.confirm("  Replace the written wiki with template pages?", default=False):
+            console.print("[dim]Nothing changed.[/dim]")
+            return
 
     # ---- Resolve provider ----
     provider = None
     decision_provider = None
+    # Set when a full run found no provider at all and fell back to the
+    # template renderer. Treated exactly like ``--index-only`` from the
+    # generation phase onward.
+    no_provider = False
 
     if index_only:
         try:
@@ -875,60 +1160,92 @@ def init_command(
             print_index_only_intro(console, has_provider=has_provider)
         else:
             console.print(f"[bold]repowise index-only[/bold] — {repo_path}")
-            console.print("[yellow]Skipping LLM page generation (--index-only)[/yellow]")
+            console.print("Building the wiki from structure [dim]— no model, no spend.[/dim]")
             if decision_provider:
                 console.print(
-                    f"Decision extraction provider: [cyan]{decision_provider.provider_name}[/cyan]"
+                    f"Decision extraction provider: [{VALUE}]{decision_provider.provider_name}[/]"
                 )
     else:
-        if not is_interactive and provider_name is None and sys.stdin.isatty():
-            from repowise.cli.ui import interactive_provider_config_select as _ipcs
-
-            selection = _ipcs(console, model, reasoning, repo_path=repo_path)
-            provider_name = selection.provider_name
-            model = selection.model
-            reasoning = selection.reasoning
-
-        provider = resolve_provider(provider_name, model, repo_path)
+        # No prompt here. ``is_interactive`` (line ~800) is already false only
+        # when the user passed --provider, --index-only or --yes, or stdin is
+        # not a terminal — so the old fallback picker in this branch fired
+        # exactly on ``--yes``, which means "do not ask me". On shells where
+        # isatty() claims a terminal it cannot actually read from (Windows
+        # mintty, ``docker run -t`` without -i) that prompt hit EOF and killed
+        # the run instead. A --yes run with no key now lands in the template
+        # wiki below rather than in a question or a crash.
+        try:
+            provider = resolve_provider(provider_name, model, repo_path)
+        except click.ClickException as exc:
+            # Nothing configured anywhere. Workspace init, workspace update
+            # and the OSS server all render a template wiki in this exact
+            # situation rather than refusing to run (#999); single-repo init
+            # was the last path that still died on it. An explicitly named
+            # --provider is a different question: the user asked for that
+            # provider by name, so the resolution failure is the real answer.
+            if provider_name is not None:
+                raise
+            no_provider = True
+            if not is_interactive:
+                console.print(f"[bold]repowise init[/bold] — {repo_path}")
+            console.print(
+                f"[{WARN}]No model configured.[/] Building the wiki from "
+                "structure instead — no key, no spend.\n"
+                "[dim]Set a key (or pass --provider) and run [bold]repowise "
+                "update --full[/bold] to have a model write it.[/dim]"
+            )
+            # A provider that was configured but could not be built is a
+            # different problem from none being configured at all, and the
+            # message above would otherwise send the user to set a key they
+            # have already set.
+            if "Could not set up" in str(exc):
+                console.print(f"  [dim]{exc}[/dim]")
         # resolve_provider / interactive provider selection may have just set
         # the API key in os.environ. Re-resolve the embedder so the
         # display (and the embed path below) honors the key the user just
         # pasted, rather than the pre-prompt "mock" fallback.
         embedder_name_resolved = resolve_embedder(embedder_name)
-        if not is_interactive:
+        if not is_interactive and not no_provider:
             console.print(f"[bold]repowise init[/bold] — {repo_path}")
-        console.print(
-            f"  Provider: [cyan]{provider.provider_name}[/cyan] / Model: [cyan]{provider.model_name}[/cyan]"
-        )
-        console.print(f"  Embedder: [cyan]{embedder_name_resolved}[/cyan]")
+        if provider is not None:
+            console.print(
+                f"  Provider: [{VALUE}]{provider.provider_name}[/] / Model: [{VALUE}]{provider.model_name}[/]"
+            )
+        console.print(f"  Embedder: [{VALUE}]{embedder_name_resolved}[/]")
         if language != "en":
-            console.print(f"  Language: [cyan]{language}[/cyan]")
+            console.print(f"  Language: [{VALUE}]{language}[/]")
         if resolved_reasoning != "auto":
-            console.print(f"  Reasoning: [cyan]{resolved_reasoning}[/cyan]")
+            console.print(f"  Reasoning: [{VALUE}]{resolved_reasoning}[/]")
 
-        # Validate provider connection
-        from repowise.core.providers.llm.base import ProviderError
+        # Validate provider connection. Nothing to verify when there is no
+        # provider: this run renders from templates and never calls a model.
+        if provider is not None:
+            from repowise.core.providers.llm.base import ProviderError
 
-        with console.status("  Verifying provider connection…", spinner=OWL_SPINNER):
-            try:
-                run_async(
-                    provider.generate(
-                        "You are a test.",
-                        "Reply with OK.",
-                        max_tokens=50,
-                        reasoning=resolved_reasoning,
+            with console.status("  Verifying provider connection…", spinner=OWL_SPINNER):
+                try:
+                    run_async(
+                        provider.generate(
+                            "You are a test.",
+                            "Reply with OK.",
+                            max_tokens=50,
+                            reasoning=resolved_reasoning,
+                        )
                     )
-                )
-            except ProviderError as exc:
-                raise click.ClickException(f"Provider validation failed: {exc}") from exc
-        console.print("  [green]✓[/green] Provider connection verified")
+                except ProviderError as exc:
+                    telemetry.add_command_outcome(failure_reason="provider_validation_failed")
+                    raise click.ClickException(f"Provider validation failed: {exc}") from exc
+            console.print(f"  [{OK}]✓[/] Provider connection verified")
 
     # ---- Phase 1 & 2: Ingestion + Analysis (always) ----
-    total_phases = 3 if index_only else 4
+    # Index-only generates too, it just renders templates instead of prompting
+    # a model, so it is four phases like a full run. Fast mode is the one that
+    # still stops at three: see the generation phase below for why.
+    total_phases = 3 if run_mode == "fast" else 4
     # Tracks whether the user declined the LLM cost gate. When True we
     # skip generation but still persist the index/graph/git/dead-code so
-    # the run isn't wasted, and propagate the choice to state.docs_enabled
-    # so subsequent updates default to index-only.
+    # the run isn't wasted, and propagate the choice to the persisted docs
+    # mode so subsequent updates default to index-only.
     cost_declined = False
     llm_client = provider if not index_only else decision_provider
 
@@ -937,16 +1254,22 @@ def init_command(
 
     orchestrator_mode = OrchestratorMode.FAST if run_mode == "fast" else OrchestratorMode.STANDARD
 
-    with Progress(
+    index_columns: list[Any] = [
         SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         MaybeCountColumn(),
         TimeElapsedColumn(),
-        TextColumn("[green]${task.fields[cost]:.3f}[/green]"),
-        console=console,
-    ) as progress_bar:
-        rich_callback = RichProgressCallback(progress_bar, console)
+    ]
+    # Only when a model can actually be called. On a --no-prose run the column
+    # would sit at $0.000 for the whole multi-minute index, which reads as an
+    # unanswered question rather than an answer (same call generation.py makes
+    # for the generation bar).
+    if llm_client is not None:
+        index_columns.append(TextColumn("[" + OK + "]${task.fields[cost]:.3f}[/]"))
+
+    with Progress(*index_columns, console=console) as progress_bar:
+        rich_callback = RichProgressCallback(progress_bar, console, total_phases=total_phases)
         # Wrap the Rich callback so we can record per-phase wall-clock
         # durations without changing the pipeline API. Timings get
         # persisted to state.json below.
@@ -990,6 +1313,9 @@ def init_command(
                     coverage_report_paths=(
                         [Path(p) for p in coverage_report] if coverage_report else None
                     ),
+                    # Local `init` is the one place a fact about this machine's
+                    # environment is a fact about the user's environment.
+                    derive_environment_facts=True,
                 )
             finally:
                 if engine is not None:
@@ -1007,7 +1333,7 @@ def init_command(
             from repowise.cli.ui.mascot import EYES_SLEEPY, mini
 
             console.print(
-                f"\n{mini(EYES_SLEEPY)} [yellow]Interrupted.[/] Indexed work so far has been "
+                f"\n{mini(EYES_SLEEPY)} [{WARN}]Interrupted.[/] Indexed work so far has been "
                 "saved — run [bold]repowise init --resume[/] to continue where it stopped."
             )
             return
@@ -1016,12 +1342,50 @@ def init_command(
     # state.json persistence below and for any future "profile" tooling
     # that wants to introspect a run.
     phase_timings: dict[str, float] = callback.timings
+    # Same idea, for the failures rather than the durations: what the run
+    # degraded on, in a place an agent can read after the terminal is gone.
+    run_warnings: list[str] = list(rich_callback.warnings)
 
     # ---- Analysis summary (shown between analysis and generation) ----
     show_analysis_summary(result)
 
-    # ---- Phase 3: Generation (full mode only) ----
-    if not index_only:
+    # ---- Phase 3: Generation ----
+    # The embedder the template wiki was actually built with, persisted below
+    # so `repowise update` reuses it. None means no template wiki was rendered.
+    _index_only_embedder: str | None = None
+    # Both modes generate. Index-only renders from templates; full mode picks
+    # a coverage level, estimates the spend and prompts a model.
+    #
+    # Fast mode is the exception. It exists to get a very large repo indexed
+    # quickly, and it is offered precisely because the repo is large, so
+    # rendering and embedding a page per file is the cost it was chosen to
+    # avoid. It also runs ESSENTIAL git, which would leave the git-derived
+    # sections of those pages thinner than the pages claim. Fast stays a
+    # graph-and-git index; `repowise update --full` is the way out of it.
+    if index_only and run_mode == "fast":
+        console.print(
+            "  [dim]Skipping wiki generation in fast mode. Run "
+            "[bold]repowise init[/bold] without [bold]--mode fast[/bold] to "
+            "render it from structure, or [bold]repowise update --full[/bold] "
+            "to write it with a model.[/dim]"
+        )
+    elif index_only or no_provider:
+        # ``no_provider`` reaches here the same way ``--index-only`` does: a
+        # full run that found no key still gets the whole template wiki.
+        _index_only_embedder = _run_deterministic_generation_phase(
+            repo_path=repo_path,
+            result=result,
+            total_phases=total_phases,
+            concurrency=concurrency,
+            language=language,
+            onboarding=onboarding,
+            wiki_style=wiki_style,
+            max_file_pages=max_file_pages,
+            embedder_name_resolved=embedder_name_resolved,
+            embedder_was_requested=embedder_was_requested,
+            resume=resume,
+        )
+    else:
         gen_stop, cost_declined = _run_generation_phase(
             repo_path=repo_path,
             result=result,
@@ -1031,35 +1395,92 @@ def init_command(
             language=language,
             resolved_reasoning=resolved_reasoning,
             onboarding=onboarding,
-            tier1_top_n=tier1_top_n,
-            tier2_tail_enabled=tier2_tail_enabled,
-            harvest_decisions=harvest_decisions,
             wiki_style=wiki_style,
-            coverage_pct=coverage_pct,
+            max_file_pages=max_file_pages,
             yes=yes,
             dry_run=dry_run,
             skip_tests=skip_tests,
             skip_infra=skip_infra,
             embedder_name_resolved=embedder_name_resolved,
-            resume=resume,
+            # Resume seeds "already done" from the page ids in the vector
+            # store, and a completed template wiki put one there for every
+            # file. Resuming against it would skip the entire model run and
+            # say nothing, so a template wiki is never a run to continue.
+            resume=resume and _prior_docs_mode != "deterministic",
+            test_run=test_run,
         )
         if gen_stop:
             return
+        if cost_declined and _prior_docs_mode == "llm":
+            # The repo already has written pages. Declining the price of new
+            # ones is not a request to replace the old ones with templates,
+            # which is what the fallback below would do.
+            cost_declined = False
+            console.print(
+                "  [dim]Keeping the wiki this repo already has. Nothing was "
+                "generated and nothing was replaced.[/dim]"
+            )
+        elif cost_declined:
+            # Declining the gate used to mean leaving with no wiki at all.
+            # It only ever meant "not at that price", so fall back to the
+            # free renderer rather than to nothing.
+            console.print(
+                "  [dim]Building the wiki from structure instead. Run "
+                "[bold]repowise update --full[/bold] to write it with a "
+                "model later.[/dim]"
+            )
+            _index_only_embedder = _run_deterministic_generation_phase(
+                repo_path=repo_path,
+                result=result,
+                total_phases=total_phases,
+                concurrency=concurrency,
+                language=language,
+                onboarding=onboarding,
+                wiki_style=wiki_style,
+                max_file_pages=max_file_pages,
+                # The user has a provider and just declined a bill, not the
+                # embedder they configured, so honour it either way.
+                embedder_was_requested=True,
+                embedder_name_resolved=embedder_name_resolved,
+                resume=resume,
+            )
 
     # ---- Persistence ----
     # `cost_declined` short-circuits any further LLM work for the rest of
-    # this run, so persistence/state below treat it as index-only.
-    effective_index_only = index_only or cost_declined
-    if effective_index_only:
-        print_phase_header(console, 3, total_phases, "Persistence", "Saving to database")
-    else:
-        print_phase_header(
-            console, 4, total_phases, "Persistence", "Saving to database and building search index"
-        )
+    # this run, so persistence/state below treat it as index-only. So does
+    # `no_provider`: there is no model to do the work either way.
+    effective_index_only = index_only or cost_declined or no_provider
+    print_phase_header(
+        console,
+        total_phases,
+        total_phases,
+        "Persistence",
+        "Saving to database and building search index",
+    )
 
-    with console.status("  Persisting to database…", spinner=OWL_SPINNER):
-        run_async(persist_result(result, repo_path))
-    console.print("  [green]✓[/green] Database updated")
+    # A bar rather than the old indeterminate spinner: full-text indexing walks
+    # every generated page one await at a time, so on a few thousand pages this
+    # stage ran for minutes with nothing on screen but a spinner, immediately
+    # after a generation bar that had just claimed to be finished. The columns
+    # are the index run's, minus the cost one — nothing here spends tokens.
+    with Progress(
+        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MaybeCountColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as persist_bar:
+        persist_callback = RichProgressCallback(persist_bar, console)
+        # Announced before the work starts and re-announced with a real total
+        # once the page loop knows one, so the stage is never silent.
+        persist_callback.on_phase_start("persist", None)
+        run_async(persist_result(result, repo_path, persist_callback))
+        persist_callback.on_phase_done("persist")
+    # Persistence has its own callback, so its warnings need folding into the
+    # run record explicitly — the state write below is the last chance.
+    run_warnings.extend(persist_callback.warnings)
+    console.print(f"  [{OK}]✓[/] Database updated")
 
     # Persist the onboarding choice so subsequent `repowise update` runs
     # honor it without re-passing the flag. Default True is omitted to keep
@@ -1067,29 +1488,48 @@ def init_command(
     if not onboarding:
         save_config_partial(repo_path, enable_onboarding=False)
 
+    # Persist the file-page decision so `repowise update --full` and `repowise
+    # generate` keep the wiki the size that was asked for instead of re-deciding.
+    # Recorded whether or not a model wrote the pages, since the cap applies to the
+    # template wiki just the same. A refusal (0) is recorded like any other answer:
+    # leaving it unrecorded would hand the next run back to the size policy the
+    # user just declined. Only an unset value stays unwritten.
+    if max_file_pages is not None and max_file_pages != config.get("max_file_pages"):
+        # save_config_partial drops None values, and 0 is not None, so an explicit
+        # refusal reaches the file.
+        save_config_partial(repo_path, max_file_pages=max_file_pages)
+
     # Persist the wiki style so `repowise update` / `restyle` honor it without
     # re-passing the flag. Written before any config_fingerprint is computed
     # below so the first update doesn't false-positive on a config change. The
     # default is omitted to keep config files tidy — only an override is recorded.
-    if wiki_style != DEFAULT_STYLE:
+    #
+    # A template wiki records neither style nor language: it has neither, and
+    # recording them would make `restyle` believe the pages are already in that
+    # style and refuse the very run that would put them there.
+    if wiki_style != DEFAULT_STYLE and not effective_index_only:
         save_config_partial(repo_path, wiki_style=wiki_style)
 
     # Persist the output language so `repowise update` regenerates changed
     # pages in the same language. Written only when the run's language differs
     # from what config.yaml already holds; the default stays unrecorded.
-    if language != config.get("language", "en"):
+    if language != config.get("language", "en") and not effective_index_only:
         save_config_partial(repo_path, language=language)
 
     # ---- Post-run: config, state, MCP, editor project files ----
     if commit_limit is not None:
         save_config_partial(repo_path, commit_limit=resolved_commit_limit)
 
-    write_editor_project_files(
+    # One flag, one meaning: --no-editor-setup now suppresses the project-local
+    # writes as well as the global registration. The paths come back so the
+    # completion panel can name what landed in the working tree.
+    files_written = write_editor_project_files(
         console,
         repo_path,
         options=editor_options,
+        no_editor_setup=not editor_setup,
     )
-    register_editor_clients(console, repo_path)
+    register_editor_clients(console, repo_path, no_editor_setup=not editor_setup)
 
     # Inherit the workspace's distill rewrite-hook verdict NOW, before the
     # config fingerprint below is computed. `repowise update` runs the same
@@ -1108,7 +1548,21 @@ def init_command(
     head = get_head_commit(repo_path)
     base_state = load_state(repo_path)
     base_state["last_sync_commit"] = head
-    base_state["docs_enabled"] = not effective_index_only and provider is not None
+    # A full run wrote its pages with a model. An index-only run (or one where
+    # the cost gate was declined) fell back to the template renderer. Fast mode
+    # is the one path that reaches here with no pages at all.
+    if run_mode == "fast":
+        _docs_mode = "none"
+    elif not effective_index_only and provider is not None:
+        _docs_mode = "llm"
+    else:
+        _docs_mode = "deterministic"
+    base_state.update(docs_mode_state_fields(_docs_mode))
+    # Only the full-mode path went through save_full_state_and_config, which
+    # counts the pages in the database. An index-only run now produces pages
+    # too, so it has to record its own count or `status` reports a wiki of
+    # zero pages next to a docs mode that says there is one.
+    base_state["total_pages"] = len(getattr(result, "generated_pages", None) or [])
     # Record the git tier this run indexed so a later --resume continues the
     # same tier instead of silently upgrading ESSENTIAL → FULL (issue #341).
     base_state["run_mode"] = run_mode
@@ -1119,20 +1573,62 @@ def init_command(
     base_state["include_submodules"] = include_submodules
     if phase_timings:
         base_state["phase_timings"] = phase_timings
+    # Cleared before it is set: ``base_state`` came from the previous run's
+    # state.json, and a fixed re-run must not inherit its predecessor's
+    # degradation report (see save_full_state_and_config for the same rule).
+    base_state.pop("degraded", None)
+    if run_warnings:
+        base_state["degraded"] = run_warnings
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
         base_state["knowledge_graph"] = build_kg_state(kg)
         save_knowledge_graph_json(repo_path, kg)
     if effective_index_only or provider is None:
         # Index-only mode skips save_config(); persist exclude_patterns/commit_limit here.
+        # The embedder rides along now that this mode produces pages: without
+        # it `repowise update` would re-resolve from the environment and could
+        # start embedding, at a different width, a store this run deliberately
+        # built with the mock.
+        # ``embedding_model`` rides with it, the way save_config() writes the
+        # pair: `serve` pins the model from it, and the store-format upgrade
+        # check reads it to notice an embedder change. Half the pair is not
+        # enough for either.
+        from repowise.cli.providers.embedders import resolve_embedding_model
+
         save_config_partial(
             repo_path,
             exclude_patterns=exclude_patterns if exclude_patterns else None,
             commit_limit=resolved_commit_limit if commit_limit is not None else None,
+            embedder=_index_only_embedder,
+            embedding_model=(
+                resolve_embedding_model(_index_only_embedder) if _index_only_embedder else None
+            ),
         )
         # Fingerprint after config writes so the first update doesn't false-positive.
         base_state["config_fingerprint"] = config_fingerprint(repo_path)
-        save_state(repo_path, base_state)
+        # Index-only is the keyless default, so this is where most installs get
+        # their stamp. Without it `health_analyzer_changed` reads absent-as-
+        # unchanged and the version trigger never fires for them.
+        base_state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+        # This run just scored every file, so the periodic re-score cadence
+        # starts now. Without the stamp the gate reads "never re-scored" and the
+        # very next update re-scores the whole repo init had only just scored.
+        #
+        # Only when there really is a report. The health phase swallows its own
+        # failures and returns None, and nothing is persisted for a None report,
+        # so stamping there would suppress the first update's re-score - the
+        # only thing that would have repopulated the missing rows. Same rule the
+        # two update-side writers follow: they stamp only on a re-score that
+        # returned True. None (no git) is left unstamped too: the gate cannot
+        # fire without a head_ts either, so there is nothing to suppress.
+        _head_ts = head_commit_ts(repo_path) if getattr(result, "health_report", None) else None
+        if _head_ts is not None:
+            base_state["last_full_rescore_at"] = _head_ts
+        # Index-only still renders the full concept tree (deterministically, from
+        # templates), so the store has the current capability — stamp the terminal
+        # version rather than clamping it below the reindex gate and falsely
+        # recommending a re-index of a store this run just built.
+        save_state(repo_path, base_state, full_index=True)
 
     # ---- State + config (full mode only) ----
     if not effective_index_only and provider:
@@ -1141,23 +1637,15 @@ def init_command(
             result=result,
             provider=provider,
             phase_timings=phase_timings,
+            degraded=run_warnings,
             embedder_name_resolved=embedder_name_resolved,
             exclude_patterns=exclude_patterns,
             commit_limit=commit_limit,
             resolved_commit_limit=resolved_commit_limit,
             resolved_reasoning=resolved_reasoning,
             include_submodules=include_submodules,
+            save_key=save_key,
         )
-
-    # ---- Completion panel ----
-    show_completion(
-        repo_path=repo_path,
-        result=result,
-        start=start,
-        effective_index_only=effective_index_only,
-        run_mode=run_mode,
-        provider=provider,
-    )
 
     _record_init_outcome(
         result=result,
@@ -1172,4 +1660,34 @@ def init_command(
 
     # Opt-in distill command-rewrite hook for Claude Code. The workspace flow
     # runs its own offer across all selected repos inside _workspace_init.
-    offer_distill_rewrite_hook(console, [repo_path], distill_hook, yes=yes)
+    offer_distill_rewrite_hook(
+        console,
+        [repo_path],
+        distill_hook,
+        yes=yes,
+        no_editor_setup=not editor_setup,
+    )
+
+    # ---- Completion panel (last, so it reflects what setup actually did) ----
+    # Snapshot the editor-setup state now that client registration and the two
+    # hook offers above have run, so the "what's next" panel and MCP note react
+    # to reality. `interactive` mirrors the offers' own gate: when False they
+    # were skipped, so the panel is the only place their hooks surface.
+    from repowise.cli.editor_setup import detect_editor_setup_outcome
+
+    _setup_outcome = detect_editor_setup_outcome(
+        repo_path,
+        interactive=(sys.stdin.isatty() and not yes),
+        first_index=_first_index,
+        no_editor_setup=not editor_setup,
+    )
+    show_completion(
+        repo_path=repo_path,
+        result=result,
+        start=start,
+        effective_index_only=effective_index_only,
+        run_mode=run_mode,
+        provider=provider,
+        setup=_setup_outcome,
+        files_written=files_written,
+    )

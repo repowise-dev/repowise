@@ -3,6 +3,7 @@ import type {
   DecisionCreate,
   DecisionEvidence,
   DecisionEvidenceResponse,
+  DecisionCounts,
   DecisionGraph,
   DecisionLineageEntry,
   DecisionLineageResponse,
@@ -19,9 +20,31 @@ export async function listDecisions(
     module?: string;
     include_proposed?: boolean;
     limit?: number;
+    offset?: number;
+    /**
+     * `priority` (server default) leads with confirmed rules, then the
+     * highest-confidence proposals. `recent` is newest-first.
+     */
+    sort?: "priority" | "recent";
   },
 ): Promise<DecisionRecordResponse[]> {
   return apiGet<DecisionRecordResponse[]>(`/api/repos/${repoId}/decisions`, opts);
+}
+
+/**
+ * Counts by status. A grouped COUNT, so the total is measured rather than
+ * inferred from however many rows a page happened to fetch.
+ */
+export async function getDecisionCounts(
+  repoId: string,
+  opts?: {
+    source?: string;
+    tag?: string;
+    module?: string;
+    include_proposed?: boolean;
+  },
+): Promise<DecisionCounts> {
+  return apiGet<DecisionCounts>(`/api/repos/${repoId}/decisions/counts`, opts);
 }
 
 export async function getDecision(

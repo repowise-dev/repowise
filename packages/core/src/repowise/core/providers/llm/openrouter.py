@@ -6,18 +6,20 @@ through a single API key via an OpenAI-compatible endpoint.
 No additional pip install required — uses the ``openai`` package.
 
 Popular models:
-    - anthropic/claude-sonnet-4.6  — Anthropic Claude Sonnet
-    - google/gemini-3.1-flash-lite-preview      — Google Gemini Flash
-    - meta-llama/llama-4-maverick  — Meta Llama open model
+    - google/gemini-3.5-flash-lite  — fast + cheap (default)
+    - openai/gpt-5.6-luna           — OpenAI budget tier
+    - anthropic/claude-haiku-4-5    — Anthropic budget tier
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 import structlog
+from openai import APIError as _OpenAIAPIError
 from openai import APIStatusError as _OpenAIAPIStatusError
 from openai import AsyncOpenAI
 from openai import RateLimitError as _OpenAIRateLimitError
@@ -33,10 +35,14 @@ from repowise.core.providers.llm.base import (
     RateLimitError,
     ensure_reasoning_supported,
     fallback_model_option,
+    is_temperature_rejection,
+    normalize_stop_reason,
     parse_retry_after,
     provider_retry_stop,
     provider_retry_wait,
     provider_should_retry,
+    remember_temperature_rejection,
+    temperature_kwargs,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
@@ -186,7 +192,7 @@ class OpenRouterProvider(BaseProvider):
 
     Args:
         api_key:      OpenRouter API key. Falls back to OPENROUTER_API_KEY env var.
-        model:        Model identifier (vendor/model format). Defaults to anthropic/claude-sonnet-4.6.
+        model:        Model identifier (vendor/model format). Defaults to google/gemini-3.5-flash-lite.
         base_url:     Override the OpenRouter API URL (rarely needed).
         rate_limiter: Optional RateLimiter instance.
         http_referer: Optional site URL for OpenRouter rankings/leaderboards.
@@ -199,7 +205,7 @@ class OpenRouterProvider(BaseProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "anthropic/claude-sonnet-4.6",
+        model: str = "google/gemini-3.5-flash-lite",
         base_url: str = "https://openrouter.ai/api/v1",
         rate_limiter: RateLimiter | None = None,
         http_referer: str | None = None,
@@ -278,7 +284,7 @@ class OpenRouterProvider(BaseProvider):
         )
 
         try:
-            return await self._generate_with_retry(
+            result = await self._generate_with_retry(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 max_tokens=max_tokens,
@@ -291,6 +297,23 @@ class OpenRouterProvider(BaseProvider):
                 "openrouter",
                 f"All retries exhausted: {exc}",
             ) from exc
+
+        # Persist spend like the other providers do — without this, any repo
+        # generating docs through OpenRouter records zero cost and the Costs
+        # page shows $0. The tracker is attached externally by the orchestrator,
+        # so it may be absent (guard with getattr); record() swallows its own
+        # persistence errors, so generation is unaffected.
+        tracker = getattr(self, "_cost_tracker", None)
+        if tracker is not None:
+            with contextlib.suppress(Exception):
+                await tracker.record(
+                    model=self._model,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    operation=tracker.operation,
+                    file_path=None,
+                )
+        return result
 
     @retry(
         retry=provider_should_retry,
@@ -307,18 +330,30 @@ class OpenRouterProvider(BaseProvider):
         request_id: str | None,
         reasoning: ReasoningMode,
     ) -> GeneratedResponse:
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            **temperature_kwargs(self._model, temperature),
+        }
+        kwargs.update(_openrouter_reasoning_kwargs(reasoning))
         try:
-            kwargs: dict[str, Any] = {
-                "model": self._model,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            }
-            kwargs.update(_openrouter_reasoning_kwargs(reasoning))
-            response = await self._client.chat.completions.create(**kwargs)
+            try:
+                response = await self._client.chat.completions.create(**kwargs)
+            except _OpenAIAPIStatusError as exc:
+                # OpenRouter fronts every vendor, so the set of models that
+                # reject `temperature` is not knowable ahead of time. Drop the
+                # parameter and retry once; the model is remembered so the rest
+                # of the run skips it.
+                if "temperature" not in kwargs or not is_temperature_rejection(exc):
+                    raise
+                remember_temperature_rejection(self._model)
+                log.debug("openrouter.temperature.unsupported", model=self._model)
+                kwargs.pop("temperature")
+                response = await self._client.chat.completions.create(**kwargs)
         except _OpenAIRateLimitError as exc:
             raise RateLimitError(
                 "openrouter",
@@ -330,13 +365,21 @@ class OpenRouterProvider(BaseProvider):
             ) from exc
         except _OpenAIAPIStatusError as exc:
             raise ProviderError("openrouter", str(exc), status_code=exc.status_code) from exc
+        except _OpenAIAPIError as exc:
+            raise ProviderError(
+                "openrouter", str(exc), status_code=getattr(exc, "status_code", None)
+            ) from exc
 
         usage = response.usage
+        choice = response.choices[0]
+        stop_reason, provider_stop_reason = normalize_stop_reason(choice.finish_reason)
         result = GeneratedResponse(
-            content=response.choices[0].message.content or "",
+            content=choice.message.content or "",
             input_tokens=usage.prompt_tokens if usage else 0,
             output_tokens=usage.completion_tokens if usage else 0,
             cached_tokens=0,
+            stop_reason=stop_reason,
+            provider_stop_reason=provider_stop_reason,
             usage={
                 "prompt_tokens": usage.prompt_tokens if usage else 0,
                 "completion_tokens": usage.completion_tokens if usage else 0,
@@ -370,9 +413,9 @@ class OpenRouterProvider(BaseProvider):
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "messages": full_messages,
             "stream": True,
+            **temperature_kwargs(self._model, temperature),
         }
         if tools:
             kwargs["tools"] = tools
@@ -390,6 +433,10 @@ class OpenRouterProvider(BaseProvider):
             ) from exc
         except _OpenAIAPIStatusError as exc:
             raise ProviderError("openrouter", str(exc), status_code=exc.status_code) from exc
+        except _OpenAIAPIError as exc:
+            raise ProviderError(
+                "openrouter", str(exc), status_code=getattr(exc, "status_code", None)
+            ) from exc
 
         # Track in-progress tool calls (OpenAI-compatible streaming)
         tool_calls_acc: dict[int, dict[str, Any]] = {}
@@ -463,3 +510,7 @@ class OpenRouterProvider(BaseProvider):
             ) from exc
         except _OpenAIAPIStatusError as exc:
             raise ProviderError("openrouter", str(exc), status_code=exc.status_code) from exc
+        except _OpenAIAPIError as exc:
+            raise ProviderError(
+                "openrouter", str(exc), status_code=getattr(exc, "status_code", None)
+            ) from exc

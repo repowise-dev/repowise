@@ -27,6 +27,7 @@ whether the index and stores are consistent with the repo.
 - **repowise not installed / not on PATH** → suggest `pip install repowise` (or
   `python -m pip install repowise` on Windows), then `/repowise:init`.
 - **No API key for the configured provider** → show the exact `export` for the
-  provider in `.repowise/config.yaml`.
+  provider in `.repowise/config.yaml`. This is not fatal for `init`, which falls
+  back to the template wiki. Only an explicitly named `--provider` errors out.
 - **Index drift (HEAD ahead of last sync)** → run `/repowise:update`.
 - **Missing embeddings / store drift** → `/repowise:reindex`.

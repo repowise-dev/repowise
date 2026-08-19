@@ -12,6 +12,7 @@ import { Badge } from "../ui/badge";
 import { ScrollArea } from "../ui/scroll-area";
 import { Separator } from "../ui/separator";
 import type { SymbolDetailData } from "@repowise-dev/types/symbols";
+import { FixHistoryBadge, SYMBOL_FIX_TITLE } from "../git/fix-history-badge";
 import { SymbolDetailBody } from "./symbol-detail-body";
 
 interface SymbolDrawerProps {
@@ -72,6 +73,11 @@ export function SymbolDrawer({
                     <Flame className="h-2.5 w-2.5" /> hot file
                   </Badge>
                 )}
+                <FixHistoryBadge
+                  count={data.fix_count ?? null}
+                  lastFixAt={data.fix_last_at ?? null}
+                  title={SYMBOL_FIX_TITLE}
+                />
               </div>
             </div>
 

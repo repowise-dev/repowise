@@ -14,11 +14,14 @@ no groundable shape must fall through (return None), never a fabricated field.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
+from repowise.core.exclusion import build_exclude_spec
 from repowise.server.mcp_server.tool_answer.data_shape import (
+    _grep_identifier_files,
     _is_data_shape_question,
     mine_data_shape,
 )
@@ -54,6 +57,71 @@ def _write(root: Path, rel: str, body: str) -> None:
 )
 def test_detection(question, ids, expected):
     assert _is_data_shape_question(question, ids) is expected
+
+
+# --- Where the cue is allowed to sit --------------------------------------
+#
+# The cue is a cheap gate and the miner is the precision gate, which holds for a
+# question someone typed and fails for a body someone pasted. A bug report or a
+# stack trace mentions `field` or `key` in passing, the identifier extractor
+# always finds something to ground on, and the caller who wanted files gets a
+# field list back before retrieval has run at all. So the cue has to sit in the
+# question's own interrogative clause.
+
+_TICKET = (
+    "AuthenticationForm's username field doesn't set maxlength HTML attribute.\n"
+    "Description\n"
+    "AuthenticationForm's username field doesn't render with maxlength anymore.\n"
+    "Regression introduced in #27515 and 5ceaf14686ce626404afb6a5fbd3d8286410bf13.\n"
+    "The widget_attrs() call no longer passes the max_length through, so the\n"
+    "rendered input element is missing the attribute it used to carry, and every\n"
+    "template that relied on it now renders an unbounded text box instead.\n"
+)
+
+
+@pytest.mark.parametrize(
+    "question,ids,expected",
+    [
+        # A long report whose shape noun is incidental. The old cue fired here.
+        (_TICKET, {"AuthenticationForm", "widget_attrs"}, False),
+        # Same report, with a real data-shape question appended. The question is
+        # the question, however much prose precedes it.
+        (
+            _TICKET + "\nWhat fields does each entry in widget_attrs contain?",
+            {"AuthenticationForm", "widget_attrs"},
+            True,
+        ),
+        # Same report, with a question that is not about shape. The shape nouns
+        # in the body must not be borrowed by an unrelated interrogative.
+        (
+            _TICKET + "\nWas this deliberate?",
+            {"AuthenticationForm", "widget_attrs"},
+            False,
+        ),
+        # A short unpunctuated body IS the question: people type this way, and
+        # demanding a `?` of them would break the case the fast path is for.
+        ("what keys does session_payload carry", {"session_payload"}, True),
+    ],
+)
+def test_cue_must_sit_in_an_interrogative_clause(question, ids, expected):
+    assert _is_data_shape_question(question, ids) is expected
+
+
+def test_long_pasted_body_with_no_question_never_fires():
+    """The product argument, independent of any benchmark.
+
+    An agent pasting a stack trace into `get_answer` wants the files. Gate 2
+    returns before the cache and before retrieval, so firing here is the
+    thinnest possible answer to the broadest possible ask.
+    """
+    trace = (
+        'Traceback (most recent call last):\n'
+        '  File "app/models.py", line 88, in save\n'
+        '    self.full_clean()\n'
+        'ValidationError: {"schema": ["This field is required."]}\n'
+    ) * 8
+    assert len(trace) > 400
+    assert _is_data_shape_question(trace, {"full_clean", "ValidationError"}) is False
 
 
 # --- Documented shape (authoritative -> high) -----------------------------
@@ -337,3 +405,68 @@ def enrich(rows_json, meta, src):
 
 def test_none_repo_root_is_safe():
     assert mine_data_shape(None, {"anything_json"}) is None
+
+
+# --- Gitignore / exclude_patterns are honoured (live-grep fallback) --------
+
+
+def test_grep_skips_gitignored_file(tmp_path):
+    """The ``--no-index`` filesystem grep must not return a gitignored path.
+
+    ``tmp_path`` is not a git checkout, so ``_grep_identifier_files`` retries
+    with ``git grep --no-index`` (which ignores ``.gitignore``). The compiled
+    exclude spec must drop the ignored hit while keeping the tracked one.
+    """
+    _write(tmp_path, ".gitignore", "ignored/\n")
+    _write(tmp_path, "ignored/leak.py", "x = leak_record_json\n")
+    _write(tmp_path, "pkg/real.py", "y = leak_record_json\n")
+    spec = build_exclude_spec(tmp_path)
+    files = _grep_identifier_files(tmp_path, "leak_record_json", spec)
+    assert "pkg/real.py" in files
+    assert "ignored/leak.py" not in files
+
+
+def test_grep_paths_ignore_user_color_config(tmp_path):
+    """Parsed ``git grep -l`` paths must stay stable under color.ui=always."""
+    _write(tmp_path, "pkg/models.py", "value = clean_rows_json\n")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "color.ui", "always"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "pkg/models.py"], cwd=tmp_path, check=True)
+
+    files = _grep_identifier_files(tmp_path, "clean_rows_json")
+
+    assert files == ["pkg/models.py"]
+
+
+def test_mine_data_shape_ignores_gitignored_leak(tmp_path):
+    """A gitignored stale copy must never be the shape source served."""
+    _write(tmp_path, ".gitignore", "ignored/\n")
+    # The gitignored copy documents a stale/wrong shape.
+    _write(
+        tmp_path,
+        "ignored/leak.py",
+        '''\
+class Stale:
+    """``leak_record_json`` is a JSON list of
+    ``{"stale_one", "stale_two", "stale_three"}`` records."""
+
+    leak_record_json: str
+''',
+    )
+    # The tracked file documents the real shape.
+    _write(
+        tmp_path,
+        "pkg/models.py",
+        '''\
+class Real:
+    """``leak_record_json`` is a JSON list of
+    ``{"author", "commit_sha", "line_count"}`` records."""
+
+    leak_record_json: str
+''',
+    )
+    out = mine_data_shape(tmp_path, {"leak_record_json"})
+    assert out is not None
+    assert out["fields"] == ["author", "commit_sha", "line_count"]
+    # No served source may point at the gitignored copy.
+    assert all(s["file"] != "ignored/leak.py" for s in out["sources"])

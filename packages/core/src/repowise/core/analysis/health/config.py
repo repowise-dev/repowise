@@ -6,8 +6,14 @@ detector list. Decisions deliberately kept narrow in v1:
 
 - Repo-wide ``disabled_biomarkers``: detectors that never fire.
 - Per-path ``rules``: a list of glob → ``disabled_biomarkers`` entries.
-  First matching glob wins. Patterns use ``fnmatch`` semantics over the
-  repo-relative POSIX path (``src/legacy/**.py``).
+  **Every** matching glob applies — the disabled sets union, so a path
+  matched by three rules is silenced for the union of their biomarkers
+  (severity remaps merge the same way, last matching rule winning per
+  biomarker). Patterns use **gitignore semantics** over the repo-relative
+  POSIX path (``src/legacy/**``), the same matching as ``exclude_patterns``
+  and ``.gitignore``, so one glob means one thing everywhere. Note that a
+  single ``*`` stops at a path segment: write ``src/legacy/**`` rather than
+  ``src/legacy/*`` to cover a whole subtree.
 - Repo-wide and per-path ``severity_overrides``: remap a biomarker's
   severity (typically a *demotion*, e.g. ``complex_method`` → ``low``) so a
   team can soften a signal it considers advisory without disabling it
@@ -35,10 +41,11 @@ Schema (validated on load, errors logged but never raised):
 
 from __future__ import annotations
 
-import fnmatch
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -79,6 +86,22 @@ _PROFILES: dict[str, dict[str, Severity]] = {
 }
 
 
+def _string_list(raw: object, *, field: str) -> list[str]:
+    """Parse a list-of-names field, dropping anything that is not one.
+
+    A string is deliberately rejected rather than iterated: ``"complex_method"``
+    is the natural thing to write instead of a one-element list, and iterating
+    it would silence biomarkers called ``c``, ``o``, ``m``… — a config that
+    looks like it worked.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list | tuple):
+        log.warning("health_rules_field_not_a_list", field=field, got=type(raw).__name__)
+        return []
+    return [str(item) for item in raw if isinstance(item, str)]
+
+
 def _coerce_severity_map(raw: object) -> dict[str, Severity]:
     """Parse a ``{biomarker: "severity"}`` dict, dropping invalid entries."""
     if not isinstance(raw, dict):
@@ -95,13 +118,101 @@ def _coerce_severity_map(raw: object) -> dict[str, Severity]:
     return out
 
 
+#: A ``*`` that is not part of ``**``. Under the old ``fnmatch`` matching this
+#: crossed directory separators, so ``src/*`` also matched ``src/a/b.py``.
+#: Under gitignore matching it stops at one segment, which narrows any such
+#: rule — worth telling the user about rather than silently changing what
+#: their file means.
+_LONE_STAR = re.compile(r"(?<!\*)\*(?!\*)")
+
+
+def glob_narrowed_by_gitignore_semantics(pattern: str) -> bool:
+    """True if *pattern* covers less than it did under the old matching.
+
+    Split out from the logging call so the rule itself is testable.
+
+    Three things make a pattern safe:
+
+    * **No path separator.** ``*.generated.ts`` matches at any depth under
+      both engines.
+    * **A ``**`` earlier in the pattern.** Once ``**`` has taken care of the
+      directories, a later single ``*`` cannot narrow the match — which is
+      what makes the common ``**/*.spec.ts`` idiom fine.
+    * **A trailing ``*``.** ``src/legacy/*`` names the directory's entries,
+      and gitignore excludes everything under an excluded directory, so it
+      still covers the whole subtree. Both engines agree, and warning about
+      it told people to rewrite a rule that was never broken — the commonest
+      shape there is.
+
+    What does narrow is a lone ``*`` with pattern text after it: ``src/*.py``
+    stops matching ``src/a/b.py``, and ``src/*/x.py`` stops matching
+    ``src/a/b/x.py``.
+    """
+    if "/" not in pattern:
+        return False
+    head = pattern.split("**", 1)[0]
+    return any(match.end() != len(pattern) for match in _LONE_STAR.finditer(head))
+
+
+def _compile_glob(pattern: str) -> Any:
+    """Compile one path glob to a matcher, using gitignore semantics.
+
+    One engine for every glob a user writes — the same one the exclusion
+    rules and the traverser already use — so a pattern means the same thing
+    wherever it appears.
+
+    An unparseable pattern yields a matcher that matches nothing, rather than
+    raising. ``git`` itself accepts lines ``pathspec`` rejects (a trailing
+    backslash, say), and this file is hand-written: one stray rule must not
+    take down the whole config, which is documented as never raising.
+    """
+    import pathspec
+    from pathspec.patterns.gitwildmatch import (
+        GitWildMatchPattern,
+        GitWildMatchPatternError,
+    )
+
+    if pattern.startswith("!"):
+        # In a .gitignore a leading "!" re-includes something an earlier line
+        # excluded, so it only means anything relative to other lines. Each
+        # rule here compiles to its own single-pattern spec, so a negation
+        # matches nothing at all — the rule silently never applies. Say so.
+        log.warning(
+            "health_rules_negated_glob",
+            pattern=pattern,
+            hint=(
+                "a leading '!' has nothing to negate in a per-rule glob and "
+                "matches nothing — write the paths you do want instead"
+            ),
+        )
+        return pathspec.PathSpec([])
+
+    try:
+        return pathspec.PathSpec([GitWildMatchPattern(pattern)])
+    except GitWildMatchPatternError:
+        log.warning("health_rules_bad_glob", pattern=pattern)
+        return pathspec.PathSpec([])
+
+
 @dataclass
 class HealthRule:
-    """One per-path override entry."""
+    """One per-path override entry.
+
+    ``matcher`` is compiled once at load and reused for every file, so a big
+    repo does not recompile the same pattern thousands of times.
+    """
 
     path_glob: str
     disabled_biomarkers: list[str] = field(default_factory=list)
     severity_overrides: dict[str, Severity] = field(default_factory=dict)
+    matcher: Any = None
+
+    def __post_init__(self) -> None:
+        if self.matcher is None:
+            self.matcher = _compile_glob(self.path_glob)
+
+    def matches(self, path: str) -> bool:
+        return bool(self.matcher.match_file(path))
 
 
 @dataclass
@@ -176,7 +287,7 @@ class HealthConfig:
         enabled = block.get("enabled")
         detectors = block.get("detectors")
         disabled_raw = detectors.get("disabled") if isinstance(detectors, dict) else None
-        disabled = [str(d) for d in disabled_raw or [] if isinstance(d, str)]
+        disabled = _string_list(disabled_raw, field="refactoring.detectors.disabled")
         floor_raw = block.get("min_confidence")
         floor = None
         if isinstance(floor_raw, str) and floor_raw.strip().lower() in _CONFIDENCE_LEVELS:
@@ -210,11 +321,13 @@ class HealthConfig:
     def from_dict(cls, raw: object) -> HealthConfig:
         if not isinstance(raw, dict):
             return cls()
-        disabled: list[str] = [
-            str(b) for b in (raw.get("disabled_biomarkers") or []) if isinstance(b, str)
-        ]
+        disabled = _string_list(raw.get("disabled_biomarkers"), field="disabled_biomarkers")
         rules: list[HealthRule] = []
-        for entry in raw.get("rules") or []:
+        raw_rules = raw.get("rules")
+        if raw_rules is not None and not isinstance(raw_rules, list | tuple):
+            log.warning("health_rules_field_not_a_list", field="rules", got=type(raw_rules).__name__)
+            raw_rules = []
+        for entry in raw_rules or []:
             if not isinstance(entry, dict):
                 continue
             # ``path`` is canonical; ``path_glob`` and ``glob`` are accepted
@@ -223,9 +336,22 @@ class HealthConfig:
             glob = entry.get("path") or entry.get("path_glob") or entry.get("glob")
             if not isinstance(glob, str) or not glob:
                 continue
-            disabled_for = [
-                str(b) for b in (entry.get("disabled_biomarkers") or []) if isinstance(b, str)
-            ]
+            disabled_for = _string_list(
+                entry.get("disabled_biomarkers"), field="rules[].disabled_biomarkers"
+            )
+            # A rule written against the old matching may now cover less than
+            # its author meant, which would quietly un-silence biomarkers they
+            # had turned off. Say so instead of letting them discover it in a
+            # health report.
+            if glob_narrowed_by_gitignore_semantics(glob):
+                log.warning(
+                    "health_rules_glob_narrowed",
+                    pattern=glob,
+                    hint=(
+                        "'*' no longer crosses '/' — use '**' to match a whole "
+                        "subtree, e.g. 'src/legacy/**'"
+                    ),
+                )
             rules.append(
                 HealthRule(
                     path_glob=glob,
@@ -262,7 +388,7 @@ class HealthConfig:
             norm = path.replace("\\", "/")
             disabled: set[str] = set()
             for rule in self.rules:
-                if fnmatch.fnmatchcase(norm, rule.path_glob):
+                if rule.matches(norm):
                     disabled.update(rule.disabled_biomarkers)
             if disabled:
                 out[path] = disabled
@@ -284,7 +410,7 @@ class HealthConfig:
             norm = path.replace("\\", "/")
             overrides: dict[str, Severity] = {}
             for rule in rules_with_sev:
-                if fnmatch.fnmatchcase(norm, rule.path_glob):
+                if rule.matches(norm):
                     overrides.update(rule.severity_overrides)
             if overrides:
                 out[path] = overrides

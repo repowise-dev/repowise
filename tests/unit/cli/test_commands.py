@@ -2,16 +2,38 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import pytest
 from click.testing import CliRunner
 
 from repowise.cli import __version__
+from repowise.cli.commands.generate_cmd.command import _write_state
 from repowise.cli.main import cli
 
 
 @pytest.fixture
 def runner():
     return CliRunner()
+
+
+def test_generate_state_preserves_sync_commit_when_head_is_unavailable():
+    state = {"last_sync_commit": "known-good-commit"}
+    outcome = SimpleNamespace(total_pages=1, remaining_template_pages=0)
+    provider = SimpleNamespace(provider_name="mock", model_name="mock")
+
+    with (
+        patch(
+            "repowise.cli.commands.generate_cmd.command.get_head_commit",
+            return_value=None,
+        ),
+        patch("repowise.cli.commands.generate_cmd.command.save_state"),
+    ):
+        _write_state(Path("/tmp/not-a-git-repository"), state, provider, outcome)
+
+    assert state["last_sync_commit"] == "known-good-commit"
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +100,7 @@ class TestCliBasics:
         result = runner.invoke(cli, ["watch", "--help"])
         assert result.exit_code == 0
         assert "--debounce" in result.output
+        assert "--verbose" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -109,20 +132,56 @@ class TestErrorCases:
         result = runner.invoke(cli, ["init", bad_path])
         assert result.exit_code != 0
 
-    def test_init_no_provider(self, runner, tmp_path, monkeypatch):
-        """init with no provider configured should error."""
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-        monkeypatch.delenv("KIMI_API_KEY", raising=False)
-        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
-        monkeypatch.delenv("LITELLM_API_KEY", raising=False)
-        monkeypatch.delenv("REPOWISE_PROVIDER", raising=False)
+    @staticmethod
+    def _clear_provider_env_impl(monkeypatch):
+        for var in (
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENROUTER_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "KIMI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+            "OLLAMA_BASE_URL",
+            "LITELLM_API_KEY",
+            "REPOWISE_PROVIDER",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_init_no_provider_falls_back_to_templates(self, runner, tmp_path, monkeypatch):
+        """init with no provider renders the wiki from structure instead of dying.
+
+        Workspace init, workspace update and the OSS server have all degraded
+        this way since #999; single-repo init was the last path that refused to
+        run without a key. An explicitly named --provider still errors, which
+        the test below covers.
+        """
+        self._clear_provider_env_impl(monkeypatch)
         result = runner.invoke(cli, ["init", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "No model configured" in result.output
+
+    def test_init_explicit_provider_still_errors(self, runner, tmp_path, monkeypatch):
+        """A named --provider that cannot resolve is a real error, not a fallback.
+
+        The user asked for that provider by name, so silently rendering
+        templates instead would hide the thing they need to fix.
+        """
+        self._clear_provider_env_impl(monkeypatch)
+        result = runner.invoke(cli, ["init", str(tmp_path), "--provider", "anthropic"])
         assert result.exit_code != 0
+
+    def test_init_empty_provider_env_is_unset(self, runner, tmp_path, monkeypatch):
+        """``REPOWISE_PROVIDER=""`` means unset, not a provider named ''.
+
+        CI matrices and agent harnesses declare empty env vars routinely, and
+        this used to reach get_provider('') and raise a bare ValueError.
+        """
+        self._clear_provider_env_impl(monkeypatch)
+        monkeypatch.setenv("REPOWISE_PROVIDER", "")
+        result = runner.invoke(cli, ["init", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "Unknown provider" not in result.output
 
     def test_status_no_repowise_dir(self, runner, tmp_path):
         result = runner.invoke(cli, ["status", str(tmp_path)])
@@ -355,6 +414,7 @@ class TestGitMetadataToDict:
             merge_commit_count_90d=1,
             temporal_hotspot_score=0.8,
             prior_defect_count=5,
+            prior_defect_raw_count=9,
             change_entropy=0.42,
             change_entropy_pct=0.6,
         )
@@ -366,6 +426,7 @@ class TestGitMetadataToDict:
         assert d["bus_factor"] == 2
         # Columns added by the newer health biomarkers must flow through too.
         assert d["prior_defect_count"] == 5
+        assert d["prior_defect_raw_count"] == 9
         assert d["change_entropy"] == 0.42
         assert d["change_entropy_pct"] == 0.6
 

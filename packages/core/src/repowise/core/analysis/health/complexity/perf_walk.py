@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 from ..perf.dialects import PERF_DIALECTS
 from ..perf.dialects.base import BasePerfDialect as BasePerfDialectClass
 from ..perf.io_boundaries import collect_io_names
+from .ast_utils import _dart_signature_sibling, _find_name
 from .languages import LanguageNodeMap
 from .models import PerfFnFacts, PerfHit
 
@@ -113,8 +114,6 @@ def _is_awaited(node: Node) -> bool:
 def _perf_func_name(node: Node) -> str | None:
     if node.type == "function_body":
         # Dart: the name lives on the preceding signature sibling.
-        from .ast_utils import _dart_signature_sibling, _find_name
-
         sig = _dart_signature_sibling(node)
         if sig is not None:
             name = _find_name(sig)
@@ -122,7 +121,11 @@ def _perf_func_name(node: Node) -> str | None:
     nm = node.child_by_field_name("name")
     if nm is not None and nm.text:
         return nm.text.decode("utf-8", "replace")
-    return None
+    # C / C++: the name is nested in a ``declarator`` chain, not a ``name``
+    # field. Reuse the complexity walker's probe rather than re-deriving it —
+    # it already handles that chain (and every other irregular shape).
+    name = _find_name(node)
+    return name if name != "<anonymous>" else None
 
 
 def _enclosing_loop_iterables(
@@ -148,6 +151,33 @@ def _enclosing_loop_iterables(
                 names.add(nm)
         cur = cur.parent
     return names
+
+
+def _is_block_loop_body_scope(
+    node: Node, dialect: BasePerfDialect, call_kinds: frozenset[str]
+) -> bool:
+    """True when *node* is the lambda a block-iteration combinator passes as its
+    per-iteration body (``ids.forEach { … }``).
+
+    Such a lambda is NOT a deferred scope — it runs once per element, right
+    here — so the walker must not reset ``loop_depth`` at its boundary the way
+    it does for a genuinely nested function. Ruby needs no such exemption (its
+    ``do_block`` is deliberately not a lambda kind), but Kotlin's
+    ``lambda_literal`` IS one, and the grammar interposes an ``annotated_lambda``
+    between the call and it — hence the two-hop parent walk.
+    """
+    cur = node
+    for _ in range(2):
+        parent = cur.parent
+        if parent is None:
+            return False
+        if parent.type in call_kinds:
+            body = dialect.block_loop_body(parent)
+            # NB: tree-sitter Node wrappers are not singletons — compare with
+            # ``==`` (identity by tree + byte range), never ``is``.
+            return body is not None and body == cur
+        cur = parent
+    return False
 
 
 def _collect_perf_hits(
@@ -265,8 +295,13 @@ def _collect_perf_hits(
         # Go's ``func(){…}()`` IIFE) does run per-iteration, but we do not detect
         # inline invocation, so those are cleared too — accepted (favouring
         # precision), and the Go IIFE case is the idiomatic defer-in-loop fix.
-        next_loop_depth = 0 if entering_fn else loop_depth
-        next_lock_depth = 0 if entering_fn else lock_depth
+        # …except the lambda a block-iteration combinator passes as its body,
+        # which runs per element rather than later (Kotlin ``ids.forEach { … }``).
+        body_scope = (
+            entering_fn and do_block_loop and _is_block_loop_body_scope(node, dialect, call_kinds)
+        )
+        next_loop_depth = loop_depth if (body_scope or not entering_fn) else 0
+        next_lock_depth = lock_depth if (body_scope or not entering_fn) else 0
         next_func = func_name
         next_start = func_start
         if t in fn_kinds:
@@ -359,13 +394,17 @@ def _collect_perf_hits(
                         and not awaited
                         and misc[1] is None
                         and kind in _HOT_PATH_SINK_KINDS
+                        and method not in dialect.hot_path_excluded_methods
                     ):
                         # An inherently-blocking (non-awaited subprocess / fs /
                         # sync-network) sink outside any loop. Noisy everywhere,
                         # so record it as a fact; the engine emits
                         # ``hot_path_sync_io`` only for a hot, request-reachable
                         # function (centrality gate). ``db`` is excluded — see
-                        # ``_HOT_PATH_SINK_KINDS``.
+                        # ``_HOT_PATH_SINK_KINDS``; point-sized reads/writes are
+                        # excluded per-dialect — see ``hot_path_excluded_methods``
+                        # (outside a loop their cost is bounded, so they belong to
+                        # the loop markers only).
                         misc[1] = kind
                         misc[2] = line
                 if do_lock_io and lock_depth >= 1:
@@ -459,7 +498,7 @@ def _collect_perf_hits(
             # iteration loop the body is the dialect-returned block node.
             body = block_loop_body
             if body is None:
-                body = node.child_by_field_name("body")
+                body = dialect.loop_body(node)
             if body is not None:
                 # NB: tree-sitter Node wrappers are not singletons, so compare
                 # with ``==`` (identity by tree + byte range), never ``is``.

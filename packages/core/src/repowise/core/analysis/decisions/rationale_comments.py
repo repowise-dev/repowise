@@ -24,20 +24,20 @@ import re
 from dataclasses import dataclass, field
 
 __all__ = [
-    "RATIONALE_MARKERS",
     "CAUSAL_MARKERS",
-    "LINE_PREFIXES",
-    "C_BLOCK_EXTS",
     "CODE_EXTENSIONS",
+    "C_BLOCK_EXTS",
+    "LINE_PREFIXES",
+    "RATIONALE_MARKERS",
     "CommentBlock",
     "HarvestedComment",
     "extract_comment_blocks",
-    "has_rationale_marker",
+    "harvest_file_rationale",
     "has_causal_marker",
-    "marker_strength",
+    "has_rationale_marker",
     "is_license_or_boilerplate",
     "looks_like_commented_out_code",
-    "harvest_file_rationale",
+    "marker_strength",
 ]
 
 # ---------------------------------------------------------------------------
@@ -215,7 +215,7 @@ C_BLOCK_EXTS: frozenset[str] = frozenset(
 # The set of extensions this module can mine — anything we know a comment
 # syntax for. Markdown / RST / plain text are deliberately excluded: their
 # prose is full of causal words ("because") that are not code rationale, and
-# README / docs already feed the readme_mining source.
+# README / docs are not mined for decisions any more (readme_mining retired).
 CODE_EXTENSIONS: frozenset[str] = frozenset(LINE_PREFIXES) | C_BLOCK_EXTS
 
 # ---------------------------------------------------------------------------

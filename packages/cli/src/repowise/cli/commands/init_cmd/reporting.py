@@ -8,14 +8,20 @@ happens here.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any
 
 from repowise.cli.helpers import console
 from repowise.cli.ui import (
-    build_analysis_summary_panel,
+    ERR,
+    OK,
+    WARN,
     build_completion_panel,
     build_contextual_next_steps,
+    build_status_notes,
     format_elapsed,
+    print_analysis_summary,
+    print_files_written,
 )
 
 
@@ -53,23 +59,22 @@ def show_analysis_summary(result: Any) -> None:
         pass
 
     console.print()
-    console.print(
-        build_analysis_summary_panel(
-            file_count=result.file_count,
-            symbol_count=result.symbol_count,
-            graph_nodes=_graph.number_of_nodes(),
-            graph_edges=_graph.number_of_edges(),
-            dead_unreachable=_dc_unreachable_pre,
-            dead_unused=_dc_unused_pre,
-            dead_lines=_dc_lines_pre,
-            decision_count=_n_decisions_pre,
-            git_files=result.git_summary.files_indexed if result.git_summary else 0,
-            hotspot_count=result.git_summary.hotspots
-            if result.git_summary and hasattr(result.git_summary, "hotspots")
-            else 0,
-            community_count=_community_count,
-            lang_summary=_lang_summary,
-        )
+    print_analysis_summary(
+        console,
+        file_count=result.file_count,
+        symbol_count=result.symbol_count,
+        graph_nodes=_graph.number_of_nodes(),
+        graph_edges=_graph.number_of_edges(),
+        dead_unreachable=_dc_unreachable_pre,
+        dead_unused=_dc_unused_pre,
+        dead_lines=_dc_lines_pre,
+        decision_count=_n_decisions_pre,
+        git_files=result.git_summary.files_indexed if result.git_summary else 0,
+        hotspot_count=result.git_summary.hotspots
+        if result.git_summary and hasattr(result.git_summary, "hotspots")
+        else 0,
+        community_count=_community_count,
+        lang_summary=_lang_summary,
     )
 
 
@@ -116,8 +121,19 @@ def show_completion(
     effective_index_only: bool,
     run_mode: str,
     provider: Any,
+    setup: Any = None,
+    files_written: list[Path] | None = None,
 ) -> None:
-    """Render the final completion panel (index-only or full mode)."""
+    """Render the final completion panel (index-only or full mode).
+
+    *setup* is the :class:`~repowise.cli.editor_setup.EditorSetupOutcome`
+    snapshot, so the next-step panel and the MCP status note reflect what setup
+    actually did. Passed as ``None`` only by callers with nothing to report.
+
+    *files_written* is what editor setup put in the working tree, straight from
+    the writers. Printed below the panel and dim: it is a receipt, and the run's
+    result is the panel above it.
+    """
     elapsed = time.monotonic() - start
 
     _graph_final = result.graph_builder.graph()
@@ -162,27 +178,40 @@ def show_completion(
     else:
         _lang_summary_final = str(len(result.languages))
 
+    # What the run found, in both modes. A full run — the recommended path —
+    # used to report none of this in its closing panel: file count, symbols,
+    # languages and graph size appeared once in the "Analysis Complete"
+    # interstitial, minutes and one cost prompt earlier.
+    _index_rows: list[tuple[str, str]] = [
+        ("Files indexed", f"{result.file_count:,}"),
+        ("Symbols", f"{result.symbol_count:,}"),
+        ("Languages", _lang_summary_final),
+    ]
+    _structure_rows: list[tuple[str, str]] = [
+        (
+            "Graph",
+            f"{_graph_final.number_of_nodes():,} nodes · {_graph_final.number_of_edges():,} edges",
+        ),
+        ("Dead code", f"{_dc_unreachable} unreachable · {_dc_unused} unused exports"),
+        ("Decisions", str(_n_decisions)),
+    ]
+    if result.git_summary:
+        _structure_rows.append(
+            (
+                "Git history",
+                f"{result.git_summary.files_indexed:,} files · {_hotspot_count_final} hotspots",
+            )
+        )
+
     if effective_index_only:
+        _template_pages = len(result.generated_pages or [])
         metrics: list[tuple[str, str]] = [
-            ("Files indexed", str(result.file_count)),
-            ("Symbols", f"{result.symbol_count:,}"),
-            ("Languages", _lang_summary_final),
+            *_index_rows,
+            ("Wiki pages", f"{_template_pages:,} rendered from structure"),
             ("Elapsed", format_elapsed(elapsed)),
             ("", ""),
-            (
-                "Graph",
-                f"{_graph_final.number_of_nodes()} nodes · {_graph_final.number_of_edges()} edges",
-            ),
-            ("Dead code", f"{_dc_unreachable} unreachable · {_dc_unused} unused exports"),
-            ("Decisions", str(_n_decisions)),
+            *_structure_rows,
         ]
-        if result.git_summary:
-            metrics.append(
-                (
-                    "Git history",
-                    f"{result.git_summary.files_indexed} files · {_hotspot_count_final} hotspots",
-                )
-            )
 
         next_steps = build_contextual_next_steps(
             index_only=True,
@@ -192,39 +221,69 @@ def show_completion(
             hotspot_count=_hotspot_count_final,
             decision_count=_n_decisions,
             top_hotspot=_top_hotspot,
+            setup=setup,
         )
         console.print()
         console.print(
             build_completion_panel("repowise index complete", metrics, next_steps=next_steps)
         )
         console.print()
+        # Fast mode reaches this branch too, and it generates nothing, so the
+        # note has to check rather than assume.
+        if result.generated_pages:
+            console.print(
+                "  [dim]Every page is derived from structure and says so in its footer. "
+                "Full-text\n  search works now; semantic search needs an embedder "
+                "(Ollama is the keyless one).[/dim]"
+            )
+        else:
+            console.print(
+                "  [dim]No wiki pages: fast mode indexes the graph and git history only.\n"
+                "  Re-run without [bold]--mode fast[/bold] to render the wiki from "
+                "structure.[/dim]"
+            )
+        for _line in build_status_notes(setup):
+            console.print(_line)
+        console.print()
         _render_defect_accuracy(result)
     else:
         _pages = result.generated_pages or []
+        _failed_ids = getattr(result, "failed_page_ids", []) or []
         total_tokens = sum(p.total_tokens for p in _pages)
-        # Split AI-written from the zero-LLM deterministic coverage tail so broad
-        # coverage reads as thoroughness, not padding.
+        # Split model-written from the zero-LLM deterministic coverage tail so
+        # broad coverage reads as thoroughness, not padding.
+        # A stub standing in for a failed provider call is in ``_pages`` like
+        # any other page, so counting the list here reported it as generated
+        # while the same run reported it as failed one line down.
+        from repowise.core.generation.models import count_stub_fallbacks
+
+        _stubs = count_stub_fallbacks(_pages)
+        _written = len(_pages) - _stubs
         _det = sum(1 for p in _pages if getattr(p, "provider_name", "") == "template")
         _ai = len(_pages) - _det
-        _pages_label = str(len(_pages))
-        if _det:
-            _pages_label = f"{len(_pages)} ({_ai} AI-written · {_det} deterministic)"
+        _pages_label = str(_written)
+        if _failed_ids:
+            _pages_label = f"{_written} ({len(_failed_ids)} failed)"
+        elif _det:
+            _pages_label = f"{_written} ({_ai} model-written · {_det} from structure)"
+        # The ledger has the real figure; before this the panel reported
+        # millions of tokens and no dollars, on a run the user had just
+        # approved a dollar estimate for.
+        _cost_usd = getattr(result, "llm_cost_usd", None)
+        _spend_row = (
+            ("Cost", f"${_cost_usd:.2f}  [dim]({total_tokens:,} tokens)[/dim]")
+            if _cost_usd is not None
+            else ("Total tokens", f"{total_tokens:,}")
+        )
         metrics = [
+            *_index_rows,
             ("Pages generated", _pages_label),
-            ("Total tokens", f"{total_tokens:,}"),
+            _spend_row,
             ("Provider", f"{provider.provider_name} / {provider.model_name}"),
             ("Elapsed", format_elapsed(elapsed)),
             ("", ""),
-            ("Dead code", f"{_dc_unreachable} unreachable · {_dc_unused} unused exports"),
-            ("Decisions", str(_n_decisions)),
+            *_structure_rows,
         ]
-        if result.git_summary:
-            metrics.append(
-                (
-                    "Git history",
-                    f"{result.git_summary.files_indexed} files · {_hotspot_count_final} hotspots",
-                )
-            )
 
         next_steps = build_contextual_next_steps(
             index_only=False,
@@ -233,9 +292,8 @@ def show_completion(
             hotspot_count=_hotspot_count_final,
             decision_count=_n_decisions,
             top_hotspot=_top_hotspot,
+            setup=setup,
         )
-
-        from repowise.cli.mcp_config import format_setup_instructions
 
         console.print()
         console.print(
@@ -243,8 +301,38 @@ def show_completion(
         )
         console.print()
         _render_defect_accuracy(result)
-        console.print(format_setup_instructions(repo_path))
+        # A concise, dynamic MCP note (who is connected, how others connect)
+        # replaces the old wall of manual per-client config: init already wrote
+        # the Claude Code / VS Code registrations and repo `.mcp.json`.
+        for _line in build_status_notes(setup):
+            console.print(_line)
         console.print()
+
+    print_files_written(console, Path(repo_path), files_written or [])
+
+    _show_generation_checks(result)
+
+
+def _show_generation_checks(result: Any) -> None:
+    """Report the generation quality checks on the pages this run wrote.
+
+    ``init`` built no report at all, so the checks ran on a later ``update``
+    and never on the first index — which is the run that creates a repository's
+    pages, and so the run where duplication first appears.
+
+    Only the checks are shown, not the statistics table: the completion panel
+    above already carries the page count, cost and token totals.
+    """
+    try:
+        from repowise.core.generation.report import GenerationReport, render_generation_checks
+
+        render_generation_checks(GenerationReport.from_pages(result.generated_pages or []), console)
+    except Exception as exc:
+        # A first index that could not check itself must not read like one that
+        # checked itself clean. The run still exits 0; the wiki is written.
+        console.print(
+            f"[{ERR}]Generation checks did not run:[/] {type(exc).__name__}: {exc}"
+        )
 
 
 def show_workspace_completion(
@@ -263,26 +351,26 @@ def show_workspace_completion(
     """Render the workspace completion panel + per-repo docs status."""
     metrics: list[tuple[str, str]] = [
         ("Repositories", f"{len(selected) - len(errors)} indexed"),
-        ("Total files", str(total_files)),
+        ("Total files", f"{total_files:,}"),
         ("Total symbols", f"{total_symbols:,}"),
         ("Primary repo", primary_alias),
         ("Elapsed", format_elapsed(elapsed)),
     ]
     if not index_only and provider is not None:
-        metrics.insert(3, ("Pages generated", str(total_pages)))
+        metrics.insert(3, ("Pages generated", f"{total_pages:,}"))
         metrics.insert(4, ("Provider", f"{provider.provider_name} / {provider.model_name}"))
     if errors:
         metrics.append(("Errors", f"{len(errors)} repos failed"))
 
     if index_only or provider is None:
         next_steps = [
-            ("repowise mcp <repo-path>", "start MCP server for a repo"),
+            ("repowise serve", "open the workspace dashboard at http://localhost:3000"),
             ("repowise status --workspace", "show workspace status"),
-            ("repowise init <repo> --provider gemini", "generate full docs for a repo"),
+            ("repowise generate <repo>", "upgrade a repo's wiki to model-written prose"),
         ]
     else:
         next_steps = [
-            ("repowise mcp <repo-path>", "start MCP server for a repo"),
+            ("repowise serve", "open the workspace dashboard at http://localhost:3000"),
             ("repowise status --workspace", "show workspace status"),
             ("repowise search <query>", "search across all indexed repos"),
         ]
@@ -302,10 +390,10 @@ def show_workspace_completion(
         for alias, (count, reason) in docs_outcomes.items():
             if reason:
                 console.print(
-                    f"  [yellow]✗[/yellow] {alias:<20} [yellow]skipped[/yellow]  [dim]({reason})[/dim]"
+                    f"  [{WARN}]✗[/] {alias:<20} [{WARN}]skipped[/]  [dim]({reason})[/dim]"
                 )
             else:
-                console.print(f"  [green]✓[/green] {alias:<20} [green]{count} pages[/green]")
+                console.print(f"  [{OK}]✓[/] {alias:<20} [{OK}]{count} pages[/]")
         if docs_skipped:
             first = docs_skipped[0][0]
             console.print()

@@ -75,7 +75,7 @@ export function useC4SelectionContext(
 
   const { data: page, isLoading: pageLoading } = useSWR<PageResponse>(
     pageId ? `c4-page:${pageId}` : null,
-    () => getPageById(pageId!),
+    () => getPageById(pageId!, repoId ?? undefined),
     SWR_OPTS,
   );
 

@@ -24,8 +24,12 @@ Two jobs that make ingested coverage *actually line up* with the repo:
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from itertools import chain
 from pathlib import Path
+
+from repowise.core.fs_walk import PRUNED_DIRS, WalkSnapshot
 
 from .detector import parse as parse_coverage
 from .model import ContextCoverageReport, CoverageReport, FileCoverage, TestCoverage
@@ -51,22 +55,11 @@ DEFAULT_DISCOVERY_GLOBS: tuple[str, ...] = (
 )
 
 # Directories we never descend into when expanding ``**`` patterns — heavy,
-# vendored, or irrelevant. Keeps discovery bounded on large repos.
-_PRUNE_DIRS = frozenset(
-    {
-        ".git",
-        "node_modules",
-        ".venv",
-        "venv",
-        "dist",
-        "build",
-        "__pycache__",
-        ".next",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".tox",
-    }
-)
+# vendored, or irrelevant. The shared junk set plus derived-output names;
+# NOT ``coverage``/``target`` (that is where the reports live). Applied at
+# traversal time via the shared pruned walk, and post-hoc as a safety net
+# for the non-recursive glob paths.
+_PRUNE_DIRS = PRUNED_DIRS | frozenset({"dist", "build"})
 
 # Hard cap on discovered artifacts — a sane upper bound that still covers
 # polyglot monorepos with several per-package reports.
@@ -154,14 +147,45 @@ def discover_artifacts(
     """Return coverage report files under *repo_root*, de-duplicated.
 
     Globs the filesystem directly (the report dirs are excluded from the
-    indexed file set). Results are pruned of vendored dirs, de-duplicated
-    by resolved path, and capped at :data:`_MAX_ARTIFACTS`.
+    indexed file set). Recursive ``**`` patterns are expanded through the
+    shared pruned walk — ONE filesystem pass answers all of them, and the
+    walk never descends into junk trees or nested git repos (recursive
+    ``Path.glob`` did, and was filtered only post-hoc). Literal patterns
+    stay direct file checks and single-level wildcards stay plain globs,
+    so each pattern keeps its original location scoping (``lcov.info``
+    matches at the root only, ``**/clover.xml`` anywhere). Results keep
+    pattern-priority order, are de-duplicated by resolved path, and are
+    capped at :data:`_MAX_ARTIFACTS`.
     """
     patterns = tuple(globs) if globs else DEFAULT_DISCOVERY_GLOBS
+    snapshot: WalkSnapshot | None = None
+
+    def _expand(pattern: str) -> Iterable[Path]:
+        nonlocal snapshot
+        if not any(ch in pattern for ch in "*?["):
+            direct = repo_root / pattern
+            return (direct,) if direct.is_file() else ()
+        if "**" not in pattern:
+            # Single-level wildcards cannot recurse; a plain glob is bounded.
+            return repo_root.glob(pattern)
+        # Recursive pattern: split at the first ``**`` into a fixed (or
+        # shallow-globbed) root and a tail served from the shared snapshot.
+        prefix, _, tail = pattern.partition("**")
+        prefix = prefix.rstrip("/")
+        tail = tail.lstrip("/") or "*"
+        if snapshot is None:
+            snapshot = WalkSnapshot(repo_root, prune_dirs=_PRUNE_DIRS)
+        snap = snapshot
+        if any(ch in prefix for ch in "*?["):
+            roots = [d for d in repo_root.glob(prefix) if d.is_dir()]
+        else:
+            roots = [repo_root / prefix]
+        return chain.from_iterable(snap.iter_glob(r, tail) for r in roots)
+
     seen: set[Path] = set()
     out: list[Path] = []
     for pattern in patterns:
-        for match in repo_root.glob(pattern):
+        for match in _expand(pattern):
             if not match.is_file():
                 continue
             try:

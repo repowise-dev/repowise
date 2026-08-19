@@ -74,3 +74,59 @@ describe("HotspotTable virtualization", () => {
     expect(screen.getByText("No hotspots found")).toBeInTheDocument();
   });
 });
+
+const daysAgo = (n: number) =>
+  new Date(Date.now() - n * 86_400_000).toISOString();
+
+describe("HotspotTable fix history", () => {
+  it("hides the Fixes column entirely when no row has counted fixes", () => {
+    render(<HotspotTable hotspots={rows} />);
+    expect(screen.queryByRole("button", { name: /^Fixes/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Bug magnet/ })).not.toBeInTheDocument();
+  });
+
+  it("shows the Fixes column once the index carries fix data", () => {
+    const withFixes = [
+      hotspot({ file_path: "src/a.ts", prior_defect_count: 7, last_fix_at: daysAgo(3) }),
+      hotspot({ file_path: "src/b.ts", prior_defect_count: 0 }),
+    ];
+    render(<HotspotTable hotspots={withFixes} />);
+    expect(screen.getByRole("button", { name: /^Fixes/ })).toBeInTheDocument();
+    expect(screen.getByText("7")).toBeInTheDocument();
+    // The file with no fixes shows a dash, not a misleading zero.
+    expect(screen.getByText("—")).toBeInTheDocument();
+  });
+
+  it("sorts on fix count, independently of churn", () => {
+    const withFixes = [
+      hotspot({ file_path: "src/low-fix.ts", commit_count_90d: 99, prior_defect_count: 1, last_fix_at: daysAgo(2) }),
+      hotspot({ file_path: "src/high-fix.ts", commit_count_90d: 1, prior_defect_count: 9, last_fix_at: daysAgo(2) }),
+    ];
+    render(<HotspotTable hotspots={withFixes} />);
+    fireEvent.click(screen.getByRole("button", { name: /^Fixes/ }));
+    const paths = screen
+      .getAllByTitle(/^src\//)
+      .map((el) => el.textContent);
+    expect(paths[0]).toBe("src/high-fix.ts");
+  });
+
+  it("offers a Bug magnet chip only for magnets that carry a timestamp", () => {
+    const anchored = hotspot({
+      file_path: "src/magnet.ts",
+      prior_defect_count: 5,
+      bug_magnet: true,
+      last_fix_at: daysAgo(4),
+    });
+    const unanchored = hotspot({
+      file_path: "src/unanchored.ts",
+      prior_defect_count: 5,
+      bug_magnet: true,
+      last_fix_at: null,
+    });
+    render(<HotspotTable hotspots={[anchored, unanchored]} />);
+    // One of the two claims a magnet; the timestamp-less one is not counted.
+    fireEvent.click(screen.getByRole("button", { name: /^Bug magnet \(1\)$/ }));
+    expect(screen.getByText("src/magnet.ts")).toBeInTheDocument();
+    expect(screen.queryByText("src/unanchored.ts")).not.toBeInTheDocument();
+  });
+});

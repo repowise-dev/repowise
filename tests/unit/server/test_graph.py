@@ -76,6 +76,90 @@ async def test_export_graph_with_data(client: AsyncClient, app) -> None:
     assert data["links"][0]["source"] == "src/main.py"
     assert data["links"][0]["target"] == "src/utils.py"
     assert data["links"][0]["imported_names"] == ["helper_func"]
+    # End-to-end test: verify nodes are fully populated from database through API
+    assert data["nodes"][0]["symbol_count"] == 3
+    assert data["nodes"][1]["symbol_count"] == 5
+
+
+@pytest.mark.asyncio
+async def test_export_graph_carries_edge_type(client: AsyncClient, app) -> None:
+    """Edges carry their semantic type, not just imported_names.
+
+    Without this the client can only infer edge kind from `imported_names`
+    being empty, which collapses every `defines`/`calls`/`co_changes` row into
+    one bucket. Both columns are populated on the row; they were simply never
+    serialized.
+    """
+    repo = await create_test_repo(client)
+    session_factory = app.state.session_factory
+    await _populate_graph(session_factory, repo["id"])
+    async with get_session(session_factory) as session:
+        await crud.batch_upsert_graph_edges(
+            session,
+            repo["id"],
+            [
+                {
+                    "source_node_id": "src/utils.py",
+                    "target_node_id": "src/main.py",
+                    "imported_names_json": "[]",
+                    "edge_type": "calls",
+                    "confidence": 0.5,
+                },
+            ],
+        )
+
+    resp = await client.get(f"/api/graph/{repo['id']}")
+    assert resp.status_code == 200
+    links = {(link["source"], link["target"]): link for link in resp.json()["links"]}
+
+    calls = links[("src/utils.py", "src/main.py")]
+    assert calls["edge_type"] == "calls"
+    assert calls["confidence"] == 0.5
+
+    # The default edge_type still round-trips, so a client can always branch on
+    # it rather than falling back to the empty-imported_names heuristic.
+    imports = links[("src/main.py", "src/utils.py")]
+    assert imports["edge_type"] == "imports"
+
+
+@pytest.mark.asyncio
+async def test_export_graph_excludes_symbol_nodes(client: AsyncClient, app) -> None:
+    """Symbol nodes never reach the export, and don't count toward the total.
+
+    `graph_nodes` holds a row per extracted symbol as well as per file, and
+    PageRank ranks both kinds together — so a symbol can outrank a real file and
+    take its slot under the node cap, then render as a file circle with a
+    `node_id` (`path::Symbol`) that is not a path. The client has no way to tell
+    them apart: `node_type` is not serialized.
+    """
+    repo = await create_test_repo(client)
+    session_factory = app.state.session_factory
+    await _populate_graph(session_factory, repo["id"])
+    async with get_session(session_factory) as session:
+        await crud.batch_upsert_graph_nodes(
+            session,
+            repo["id"],
+            [
+                {
+                    # Outranks both files, so a pagerank-ordered export without
+                    # the filter would put it first.
+                    "node_id": "src/main.py::main",
+                    "node_type": "symbol",
+                    "language": "python",
+                    "symbol_count": 1,
+                    "pagerank": 0.99,
+                    "betweenness": 0.9,
+                    "community_id": 0,
+                },
+            ],
+        )
+
+    resp = await client.get(f"/api/graph/{repo['id']}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert [n["node_id"] for n in data["nodes"]] == ["src/main.py", "src/utils.py"]
+    # The total is a file count too, so "1,500 of N" reads honestly.
+    assert data["total_node_count"] == 2
 
 
 @pytest.mark.asyncio
@@ -296,7 +380,12 @@ async def test_export_graph_truncation_reserves_dead_and_hot_nodes(
 
 @pytest.mark.asyncio
 async def test_export_graph_truncation_reserves_flow_members(client: AsyncClient, app) -> None:
-    """Execution-flow trace members must survive truncation."""
+    """The files an execution-flow trace runs through must survive truncation.
+
+    `calls` edges only join symbol nodes, so the trace is a list of
+    `file.py::symbol` ids while the export carries files — the reservation is
+    for the containing files, which is what the canvas can highlight.
+    """
     repo = await create_test_repo(client)
     async with get_session(app.state.session_factory) as session:
         await crud.batch_upsert_graph_nodes(
@@ -312,6 +401,19 @@ async def test_export_graph_truncation_reserves_flow_members(client: AsyncClient
                     "community_id": 0,
                 }
                 for i in range(3)
+            ]
+            + [
+                # The files the traced symbols live in. Low PageRank, so only
+                # the flow reservation can keep them under a limit of 3.
+                {
+                    "node_id": path,
+                    "node_type": "file",
+                    "language": "python",
+                    "symbol_count": 1,
+                    "pagerank": 0.001,
+                    "community_id": 0,
+                }
+                for path in ("src/api.py", "src/service.py")
             ]
             + [
                 {
@@ -358,9 +460,11 @@ async def test_export_graph_truncation_reserves_flow_members(client: AsyncClient
     assert data["truncated"] is True
 
     kept = {n["node_id"] for n in data["nodes"]}
-    # The entry point and its traced callee are reserved despite low PageRank.
-    assert "src/api.py::handler" in kept
-    assert "src/service.py::run" in kept
+    # The entry point's file and its traced callee's file are reserved despite
+    # low PageRank; the symbol nodes themselves never enter a file-only export.
+    assert "src/api.py" in kept
+    assert "src/service.py" in kept
+    assert "src/api.py::handler" not in kept
     assert "src/core_0.py" in kept
 
 

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import type { CouplingEdge, CouplingNode } from "@repowise-dev/types/coupling";
 import { CouplingGraph } from "../../src/coupling/coupling-graph.js";
@@ -27,22 +27,35 @@ describe("CouplingGraph", () => {
     expect(screen.getByText(/showing 2 of 9 couplings/i)).toBeInTheDocument();
   });
 
-  it("emphasizes a file's couplings on hover (focus changes)", () => {
+  it("peeks a file's couplings on hover (onHover fires)", () => {
     const nodes = [node("api/a.py"), node("core/b.py")];
     const edges = [edge("api/a.py", "core/b.py")];
-    let focus: string | null = null;
+    const onHover = vi.fn();
     const { container } = render(
-      <CouplingGraph
-        nodes={nodes}
-        edges={edges}
-        focusedPath={focus}
-        onFocusChange={(p) => (focus = p)}
-      />,
+      <CouplingGraph nodes={nodes} edges={edges} focusedPath={null} onHover={onHover} />,
     );
     const circle = container.querySelector("circle");
     expect(circle).not.toBeNull();
     fireEvent.mouseEnter(circle!.parentElement!);
-    expect(focus).not.toBeNull();
+    expect(onHover).toHaveBeenCalledWith(expect.any(String));
+  });
+
+  it("pins a file on click (onPinToggle fires with the path)", () => {
+    const nodes = [node("api/a.py"), node("core/b.py")];
+    const edges = [edge("api/a.py", "core/b.py")];
+    const onPinToggle = vi.fn();
+    const { container } = render(
+      <CouplingGraph
+        nodes={nodes}
+        edges={edges}
+        focusedPath={null}
+        pinnedPath={null}
+        onPinToggle={onPinToggle}
+      />,
+    );
+    const circle = container.querySelector("circle");
+    fireEvent.click(circle!.parentElement!);
+    expect(onPinToggle).toHaveBeenCalledWith(expect.any(String));
   });
 });
 
@@ -54,12 +67,11 @@ describe("CouplingTable", () => {
     expect(screen.getByText("↔ b.py")).toBeInTheDocument();
   });
 
-  it("toggles focus on row click", () => {
-    const edges = [edge("a.py", "b.py", 4)];
-    let focus: string | null = null;
-    render(<CouplingTable edges={edges} focusedPath={focus} onFocusChange={(p) => (focus = p)} />);
+  it("toggles the pin on row click", () => {
+    const onPinToggle = vi.fn();
+    render(<CouplingTable edges={[edge("a.py", "b.py", 4)]} pinnedPath={null} onPinToggle={onPinToggle} />);
     fireEvent.click(screen.getByText("a.py"));
-    expect(focus).toBe("a.py");
+    expect(onPinToggle).toHaveBeenCalledWith("a.py");
   });
 
   it("shows the empty state with no couplings", () => {

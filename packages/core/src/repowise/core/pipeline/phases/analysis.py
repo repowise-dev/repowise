@@ -23,11 +23,25 @@ logger = structlog.get_logger(__name__)
 # Large repos with tens of thousands of files can take arbitrarily long.
 DECISION_EXTRACTION_TIMEOUT_SECS = 300
 
+# Where a decision came from, in report order, spelled the way a reader who has
+# never seen the extractor would say it ("ADR" alone is unexplained jargon).
+_DECISION_SOURCE_LABELS: tuple[tuple[str, str], ...] = (
+    ("inline_marker", "from inline markers"),
+    ("adr", "from ADR files"),
+    ("pr", "from pull requests"),
+    ("git_archaeology", "from git history"),
+    ("comment", "from comments"),
+    ("session", "from agent sessions"),
+)
+
 
 async def _run_dead_code_analysis(
     graph_builder: Any,
     git_meta_map: dict[str, dict],
     *,
+    source_map: dict[str, bytes] | None = None,
+    repo_path: Any | None = None,
+    traversal_stats: Any | None = None,
     progress: ProgressCallback | None,
 ) -> Any | None:
     """Run dead code detection (pure graph traversal, no LLM)."""
@@ -40,8 +54,25 @@ async def _run_dead_code_analysis(
         if progress:
             progress.on_phase_start("dead_code", dead_code_steps)
 
+        # Files the traverser dropped on size, plus those it dropped for having
+        # no language spec. Without them the analyzer cannot tell "nothing
+        # imports this" from "the importer was never read", which is the
+        # cascade in #1237.
+        unindexed_source_files = [
+            (skipped.path, skipped.reason)
+            for skipped in (
+                *getattr(traversal_stats, "skipped_source_files", []),
+                *getattr(traversal_stats, "unknown_language_files", []),
+            )
+        ]
+
         analyzer = DeadCodeAnalyzer(
-            graph_builder.graph(), git_meta_map, parsed_files=graph_builder._parsed_files
+            graph_builder.graph(),
+            git_meta_map,
+            parsed_files=graph_builder._parsed_files,
+            source_map=source_map,
+            repo_root=repo_path,
+            unindexed_source_files=unindexed_source_files,
         )
 
         def _step(_stage: str) -> None:
@@ -195,6 +226,7 @@ async def _run_health_analysis(
             module_map=module_map,
             coverage_map=coverage_map,
             duplication_cache_dir=(repo_path / ".repowise") if repo_path is not None else None,
+            repo_root=repo_path,
         )
 
         # Load per-file override rules from `.repowise/health-rules.json`.
@@ -250,6 +282,7 @@ async def _run_decision_extraction(
     graph_builder: Any,
     git_meta_map: dict[str, dict],
     parsed_files: list[Any],
+    source_map: dict[str, bytes] | None = None,
     progress: ProgressCallback | None,
 ) -> Any | None:
     """Extract architectural decisions from source and git history."""
@@ -274,6 +307,7 @@ async def _run_decision_extraction(
             graph=graph_builder.graph(),
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
+            source_map=source_map,
         )
 
         def _decision_step(_source: str) -> None:
@@ -297,7 +331,11 @@ async def _run_decision_extraction(
                 session_mining_enabled,
             )
 
-            if llm_client is not None and session_mining_enabled(repo_cfg):
+            # Not gated on a provider: the same pass records transcript
+            # episodes, which need no model, and gating the read on a key
+            # would leave a keyless index with no transcript supply at all.
+            # The miner skips its own structuring pass when provider is None.
+            if session_mining_enabled(repo_cfg):
                 session_decisions = await asyncio.wait_for(
                     mine_session_decisions(repo_path, provider=llm_client),
                     timeout=DECISION_EXTRACTION_TIMEOUT_SECS,
@@ -311,20 +349,58 @@ async def _run_decision_extraction(
                 progress.on_message("warning", f"Session decision mining skipped: {exc}")
 
         if progress:
+            # Only the sources that actually found something. On a typical
+            # first index most of these are zero, and the line read as
+            # "0 ADR · 0 changelog · 0 PR ·" with the real numbers buried.
             bs = report.by_source
-            total_decisions = report.total_found
+            found = [
+                f"{bs[source]} {label}"
+                for source, label in _DECISION_SOURCE_LABELS
+                if bs.get(source)
+            ]
+            summary = ", ".join(found) if found else ""
             progress.on_message(
                 "info",
-                f"→ {total_decisions} decisions: "
-                f"{bs.get('inline_marker', 0)} inline · "
-                f"{bs.get('adr', 0)} ADR · "
-                f"{bs.get('changelog', 0)} changelog · "
-                f"{bs.get('pr', 0)} PR · "
-                f"{bs.get('git_archaeology', 0)} git · "
-                f"{bs.get('comment', 0)} comments · "
-                f"{bs.get('readme_mining', 0)} docs · "
-                f"{bs.get('session', 0)} session",
+                f"→ {report.total_found} architectural decisions found"
+                + (f": {summary}" if summary else ""),
             )
+            # And the sources that produced nothing. Hiding these was what made
+            # a source failing outright indistinguishable from a source with
+            # honestly nothing to find: every failure inside the extractor is
+            # swallowed and reported only through ``logger.warning``, which no
+            # default CLI run renders. A repo with no ADR files legitimately
+            # scores zero there, so this is not itself a failure report — it is
+            # the list you need to have before you can tell the two apart.
+            # The labels read "from git history" because they are normally
+            # rendered as "5 from git history"; strung together after one
+            # "No decisions" they would read "No decisions from inline
+            # markers, from ADR files". Drop the preposition and name the
+            # sources plainly.
+            #
+            # ``session`` is in the label table but is not one of the
+            # extractor's own sources, so ``source in enabled`` leaves it out
+            # of this list — correct, since it is mined separately below.
+            #
+            # A source that *failed* is listed separately and as a warning.
+            # It is not "nothing found": the repo may be full of decisions
+            # nobody could read. Same shape the update path already uses for
+            # its ``degraded`` list, so both runs report an outage the same
+            # way instead of one of them printing a reassuring zero.
+            failures = getattr(report, "failures", {}) or {}
+            empty = [
+                label.removeprefix("from ")
+                for source, label in _DECISION_SOURCE_LABELS
+                if source in enabled and not bs.get(source) and source not in failures
+            ]
+            if empty:
+                progress.on_message("info", f"→ Nothing found in: {', '.join(empty)}")
+            for source, label in _DECISION_SOURCE_LABELS:
+                if source in failures:
+                    progress.on_message(
+                        "warning",
+                        f"Decision source {label.removeprefix('from ')} failed, "
+                        f"so this run found none there: {failures[source]}",
+                    )
 
         _phase_done(progress, "decisions")
         return report

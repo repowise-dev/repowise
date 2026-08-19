@@ -93,3 +93,42 @@ class TestLanguageConfigs:
             assert result in ("public", "private", "protected", "internal"), (
                 f"{lang} visibility_fn returned unexpected: {result}"
             )
+
+
+class TestArgumentCount:
+    """``CallSite.argument_count`` counts arguments, not comment tokens."""
+
+    def _calls(self, source: bytes, path: str, language: str) -> dict[str, int | None]:
+        parser = ASTParser()
+        parsed = parser.parse_file(_make_file_info(path, language), source)
+        return {c.target_name: c.argument_count for c in parsed.calls}
+
+    def test_csharp_inline_comments_are_not_arguments(self) -> None:
+        source = b"""\
+public class C
+{
+    void Run()
+    {
+        Target(
+            first,  // Action<A, B> one,
+            second, // Action<C> two,
+            third);
+        Plain(a, b);
+        None();
+    }
+}
+"""
+        counts = self._calls(source, "C.cs", "csharp")
+        assert counts["Target"] == 3
+        assert counts["Plain"] == 2
+        assert counts["None"] == 0
+
+    def test_python_inline_comment_is_not_an_argument(self) -> None:
+        source = b"""\
+def run():
+    target(
+        first,  # one
+        second,
+    )
+"""
+        assert self._calls(source, "m.py", "python")["target"] == 2

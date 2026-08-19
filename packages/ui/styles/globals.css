@@ -94,6 +94,26 @@
   --color-accent-muted: rgba(245, 149, 32, 0.12);
   --color-accent-secondary: #58436c;
 
+  /* Accent ramp — the one sanctioned way to colour a proportion: ordered
+     shares of a whole (a stacked bar, a histogram, an area chart), stepped
+     from the accent toward the page ground. Sequential, so position in the
+     ramp means magnitude; NOT for unrelated categories, which want either the
+     accent/secondary pair or plain neutrals.
+
+     Defined per theme rather than as one set of color-mix percentages,
+     because the mix that recedes gracefully into near-black disappears
+     entirely into cream. Light also starts a step down from full #f59520,
+     which is louder than it needs to be on a warm paper ground. */
+  --color-ramp-1: #e08a12;
+  --color-ramp-2: color-mix(in srgb, var(--color-accent-fill) 76%, var(--color-bg-inset));
+  --color-ramp-3: color-mix(in srgb, var(--color-accent-fill) 56%, var(--color-bg-inset));
+  --color-ramp-4: color-mix(in srgb, var(--color-accent-fill) 40%, var(--color-bg-inset));
+  --color-ramp-5: color-mix(in srgb, var(--color-accent-fill) 26%, var(--color-bg-inset));
+  /* Supporting cast beside an accent series. Same idea, no hue. */
+  --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 62%, var(--color-bg-inset));
+  --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 40%, var(--color-bg-inset));
+  --color-neutral-3: color-mix(in srgb, var(--color-text-tertiary) 22%, var(--color-bg-inset));
+
   /* Confidence system */
   --color-confidence-fresh: #1d8155;
   --color-confidence-stale: #9a6614;
@@ -157,6 +177,29 @@
   --color-diagram-cluster-border: #826aa0; /* plum-400 */
   --color-diagram-grid: rgba(245, 149, 32, 0.10); /* faint orange grid */
 
+  /* Zoom canvas — premium "floating card" surfaces (Linear/Stripe idiom):
+     clean cards on a faint dot-grid, hairline borders + soft shadow for depth,
+     role shown as a small status dot (not a colored frame). Kept separate from
+     the kg-node "blueprint" tokens so the C4 view that consumes those is
+     untouched. LIGHT: white cards on warm paper; DARK overrides below. */
+  --color-zoom-card-fill: #ffffff; /* leaf (file) card */
+  --color-zoom-card-fill-2: #fbf4ee; /* container (folder/group/layer) card */
+  --color-zoom-card-text: #241b2c;
+  --color-zoom-card-border: rgba(88, 67, 108, 0.14); /* hairline */
+  --color-zoom-card-border-hover: rgba(88, 67, 108, 0.28);
+  --color-zoom-card-shadow: rgba(36, 27, 44, 0.10); /* soft elevation */
+  --color-zoom-edge: rgba(36, 27, 44, 0.20); /* neutral connector */
+  --color-zoom-edge-strong: rgba(36, 27, 44, 0.38); /* tight coupling */
+  --color-zoom-card-rule: rgba(36, 27, 44, 0.05); /* faint notebook ruled lines */
+  /* Wash painted over the shared /kg-card-paper.jpg photo on each card (canvas
+     equivalent of --kg-card-texture). Alpha = 1 - paper strength: at 0.82 the
+     ruled-paper grain shows through ~18%, matching the KG cards' feel. */
+  --color-zoom-card-paper-wash: rgba(255, 255, 255, 0.82);
+  /* Graph-paper backdrop for the canvas: faint minor lines with a slightly
+     firmer major line every few cells, for a premium "designed surface" feel. */
+  --color-zoom-grid: rgba(36, 27, 44, 0.045);
+  --color-zoom-grid-strong: rgba(36, 27, 44, 0.08);
+
   /* Language colors (canonical brand hues — theme-independent) */
   --color-lang-python: #3776ab;
   --color-lang-typescript: #3178c6;
@@ -193,6 +236,14 @@
      plum-alpha on paper, lavender-alpha on dark (same idiom as canvas-dot). */
   --color-bg-wash: rgba(36, 27, 44, 0.05);
   --color-bg-wash-hover: rgba(36, 27, 44, 0.1);
+  /* Faint grounds for a success/error quantity — a filled bar segment, not a
+     status pill (rule 9 killed those). Referenced lazily off the themed
+     --color-success / --color-error, like --color-table-divider, so one
+     definition covers both themes. The churn ledger used to inline these as
+     hardcoded rgba fallbacks behind undefined token names, which meant a
+     paper-theme green sitting on the dark ramp. */
+  --color-success-muted: color-mix(in srgb, var(--color-success) 12%, transparent);
+  --color-error-muted: color-mix(in srgb, var(--color-error) 14%, transparent);
   --color-border-subtle: var(--color-border-default);
   /* Faint hairline for table row dividers — half the weight of a normal
      border so rows whisper while the header rule still reads. References the
@@ -236,8 +287,11 @@
   --shadow-xl: 0 16px 48px rgba(36, 27, 44, 0.14), 0 4px 12px rgba(36, 27, 44, 0.08);
   --shadow-button: 0 1px 2px rgba(214, 127, 16, 0.22);
 
-  /* Card elevation dial: flat by default, flip to a shadow token to float. */
-  --card-shadow: none;
+  /* Card elevation dial: cards float on a hairline + soft shadow rather than
+     reading as flat outlined boxes. Kept at `sm` so the lift is felt, not
+     seen — anything heavier turns a dense dashboard into a pile of panels.
+     `.dark` inherits this via its own --shadow-sm override. */
+  --card-shadow: var(--shadow-sm);
 
   /* ================================================================== */
   /* Non-color tokens (theme-independent)                               */
@@ -312,26 +366,37 @@
 .dark {
   /* Neutral graphite base — a true dark gray (near-zero hue) so nothing reads
      blue, green, or plum. The surface ramp climbs root -> surface -> elevated
-     -> overlay with wide steps so the sidebar, breadcrumb bar, cards, tables,
-     and modals all read as distinct layers off the same tokens. Light mode is
-     unchanged. */
-  --color-bg-root: #1a1a1b;
-  --color-bg-surface: #232325;
-  --color-bg-elevated: #2b2c2e;
-  --color-bg-overlay: #343539;
-  --color-bg-inset: #141415;
+     -> overlay so the sidebar, breadcrumb bar, cards, tables and modals all
+     read as distinct layers off the same tokens. Light mode is unchanged.
 
-  /* Neutral hairlines so card / sidebar / table edges read on the gray base. */
-  --color-border-default: rgba(255, 255, 255, 0.1);
-  --color-border-hover: rgba(255, 255, 255, 0.18);
+     The whole ramp sits lower than it used to (root was #1a1a1b, surface
+     #232325). Two reasons. Reading surfaces are the base plane, and on the
+     docs page the old values made the reading column the *darkest* of the
+     three panels, recessed between two lighter ones — a trench, which is the
+     opposite of how a reading UI should stack. And near-black gives the accent
+     and the semantic colours somewhere to go: the same #f59520 that looked
+     muddy on graphite carries on this ground. */
+  --color-bg-root: #0e0e0f;
+  --color-bg-surface: #141416;
+  --color-bg-elevated: #1c1c1f;
+  --color-bg-overlay: #26262a;
+  --color-bg-inset: #0a0a0b;
+
+  /* Neutral hairlines so card / sidebar / table edges read on the gray base.
+     Lighter than before: the same alpha reads considerably louder against
+     near-black, and at 0.10 every border on the page started shouting. */
+  --color-border-default: rgba(255, 255, 255, 0.07);
+  --color-border-hover: rgba(255, 255, 255, 0.15);
   --color-border-active: rgba(245, 149, 32, 0.55);
 
-  /* Neutral gray text (no plum / blue cast) to match the graphite chrome. */
-  --color-text-primary: #ececed;
-  --color-text-secondary: #a2a2a6;
-  --color-text-tertiary: #717176;
-  --color-text-inverse: #1a1a1b;
-  --color-text-on-accent: #1a1a1b;
+  /* Neutral gray text (no plum / blue cast) to match the graphite chrome.
+     Secondary carries body copy and is lifted the most — on the old ground it
+     was grey-on-grey and read flat at any length. */
+  --color-text-primary: #f2f2f3;
+  --color-text-secondary: #b4b4b9;
+  --color-text-tertiary: #7c7c82;
+  --color-text-inverse: #0e0e0f;
+  --color-text-on-accent: #0e0e0f;
 
   --color-accent-primary: #f59520;
   --color-accent-fill: #f59520;
@@ -339,6 +404,17 @@
   --color-accent-hover: #f7a94d;
   --color-accent-muted: rgba(245, 149, 32, 0.16);
   --color-accent-secondary: #a98fc4;
+
+  /* Accent ramp — see the light block. Steeper here: mixing toward #0a0a0b
+     loses luminance fast, so the same percentages would bottom out invisible. */
+  --color-ramp-1: #f59520;
+  --color-ramp-2: color-mix(in srgb, var(--color-accent-fill) 64%, var(--color-bg-inset));
+  --color-ramp-3: color-mix(in srgb, var(--color-accent-fill) 42%, var(--color-bg-inset));
+  --color-ramp-4: color-mix(in srgb, var(--color-accent-fill) 27%, var(--color-bg-inset));
+  --color-ramp-5: color-mix(in srgb, var(--color-accent-fill) 16%, var(--color-bg-inset));
+  --color-neutral-1: color-mix(in srgb, var(--color-text-tertiary) 70%, var(--color-bg-inset));
+  --color-neutral-2: color-mix(in srgb, var(--color-text-tertiary) 45%, var(--color-bg-inset));
+  --color-neutral-3: color-mix(in srgb, var(--color-text-tertiary) 26%, var(--color-bg-inset));
 
   --color-confidence-fresh: #34d399;
   --color-confidence-stale: #f2a03d;
@@ -379,10 +455,34 @@
   --color-diagram-cluster-border: #a98fc4;
   --color-diagram-grid: rgba(222, 210, 235, 0.05);
 
+  /* Zoom canvas — dark: elevated graphite cards on the near-black canvas.
+     These are literals rather than var() references because the canvas
+     renderer reads them into WebGL, but they have to move with the surface
+     ramp or the cards float above a ground that has dropped beneath them. */
+  --color-zoom-card-fill: #1c1c1f; /* leaf card (bg-elevated) */
+  --color-zoom-card-fill-2: #141416; /* container card (bg-surface) */
+  --color-zoom-card-text: #f2f2f3;
+  --color-zoom-card-border: rgba(255, 255, 255, 0.10);
+  --color-zoom-card-border-hover: rgba(255, 255, 255, 0.20);
+  --color-zoom-card-shadow: rgba(0, 0, 0, 0.45);
+  --color-zoom-edge: rgba(255, 255, 255, 0.16);
+  --color-zoom-edge-strong: rgba(255, 255, 255, 0.30);
+  --color-zoom-card-rule: rgba(255, 255, 255, 0.06);
+  /* Heavier wash in dark (matches the KG dark texture): the light paper photo
+     only reads as ~10% relief so cards stay graphite instead of washing out. */
+  --color-zoom-card-paper-wash: rgba(43, 44, 46, 0.90);
+  --color-zoom-grid: rgba(255, 255, 255, 0.03);
+  --color-zoom-grid-strong: rgba(255, 255, 255, 0.055);
+
   /* C4 / graph canvas surfaces — dark variants (the var()-derived aliases
      flip on their own; only the explicit rgbas need a dark override). */
   --color-canvas-dot: rgba(255, 255, 255, 0.05);
-  --color-bg-glass: rgba(35, 35, 37, 0.72);
+  /* Tracks --color-bg-surface. It was rgba(35,35,37,.72) — the #232325 that
+     bg-surface used to be, left behind when the dark ramp moved in July 2026 —
+     so every glass chip on every canvas was painting a graphite that exists
+     nowhere else in the app, and read as a lighter plane floating over the new
+     near-black. Same alpha, current colour. */
+  --color-bg-glass: rgba(20, 20, 22, 0.72);
   --color-bg-wash: rgba(255, 255, 255, 0.04);
   --color-bg-wash-hover: rgba(255, 255, 255, 0.08);
 
@@ -411,8 +511,9 @@
   --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(255, 255, 255, 0.07);
   --shadow-button: 0 1px 2px rgba(0, 0, 0, 0.4);
 
-  /* Dark soft wash — neutral graphite with a faint lift at the end */
-  --gradient-warm-wash: linear-gradient(160deg, #1c1c1e 0%, #232325 55%, #2c2c2f 100%);
+  /* Dark soft wash — neutral graphite with a faint lift at the end. Tracks the
+     surface ramp: the wash reads as a lit panel only if it starts at the base. */
+  --gradient-warm-wash: linear-gradient(160deg, #101012 0%, #16161a 55%, #1f1f23 100%);
 }
 
 /* -------------------------------------------------------------------- */

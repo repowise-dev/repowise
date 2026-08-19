@@ -3,31 +3,41 @@
 import {
   Palette,
   Network,
-  Shield,
   EyeOff,
   Maximize,
   Route,
-  Boxes,
   GitFork,
   Skull,
   Flame,
-  LayoutGrid,
   Workflow,
   Search,
   X,
   GitBranch,
   Waypoints,
-  Sun,
-  Moon,
   SlidersHorizontal,
   HelpCircle,
-  Package,
 } from "lucide-react";
 import { memo, useState } from "react";
 import { Button } from "../ui/button";
 
-export type ColorMode = "language" | "community" | "risk";
-export type ViewMode = "module" | "full" | "architecture" | "dead" | "hotfiles" | "unified";
+/**
+ * No "risk" member. There was one, and it painted `pagerank * 3` through
+ * green/amber/red thresholds of 0.3 and 0.7 (`sigma/use-sigma.ts`). PageRank is
+ * a probability distribution summing to 1 across every node, so on any repo
+ * above roughly ten files nothing can reach 0.233 — the highest value in this
+ * codebase's own index is 0.036, which is 0.108 after the ×3. The lens was
+ * green by construction, on every repo, always.
+ *
+ * It was also spending the green/amber/red band vocabulary that rule 2
+ * reserves for real health readouts, on centrality — so a reader who learned
+ * those colours from Code Health was being taught the opposite thing here.
+ *
+ * The product does have a real defect-risk score, but `graph_nodes` carries no
+ * health column, so an honest lens needs the payload to gain one first. Until
+ * then this ships two lenses that both encode something true.
+ */
+export type ColorMode = "language" | "community";
+export type ViewMode = "full" | "architecture" | "dead" | "hotfiles" | "unified";
 export type LayoutMode = "hierarchical" | "force" | "radial";
 export type GraphTheme = "light" | "dark";
 
@@ -39,8 +49,15 @@ export type GraphTheme = "light" | "dark";
  * The legacy ViewMode is preserved as the wire/state format so existing
  * callers and query-param routing keep working. The helpers below convert
  * freely in both directions.
+ *
+ * There is no "modules" scope. It drew one circle per top-level directory,
+ * and on this repo `packages/` held 69% of the files — a list that skewed is a
+ * bad canvas. It is now a module *filter* over the file graph (see
+ * `use-module-filter`), which cost a scope, an endpoint, a breadcrumb trail,
+ * drill-down state and expand-on-double-click, and gained a control that
+ * partitions the repo instead of pretending to.
  */
-export type Scope = "architecture" | "modules" | "full";
+export type Scope = "architecture" | "full";
 export type Overlay = "dead" | "hot";
 
 export function scopeOverlaysToViewMode(scope: Scope, overlays: ReadonlySet<Overlay>): ViewMode {
@@ -49,14 +66,11 @@ export function scopeOverlaysToViewMode(scope: Scope, overlays: ReadonlySet<Over
   if (hasDead && hasHot) return "unified";
   if (hasDead) return "dead";
   if (hasHot) return "hotfiles";
-  if (scope === "modules") return "module";
   return scope; // "architecture" | "full"
 }
 
 export function viewModeToScopeOverlays(view: ViewMode): { scope: Scope; overlays: Set<Overlay> } {
   switch (view) {
-    case "module":
-      return { scope: "modules", overlays: new Set() };
     case "architecture":
       return { scope: "architecture", overlays: new Set() };
     case "dead":
@@ -92,28 +106,21 @@ interface GraphToolbarProps {
   onSearchKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   layoutMode: LayoutMode;
   onLayoutModeChange: (mode: LayoutMode) => void;
-  graphTheme: GraphTheme;
-  onGraphThemeChange: (theme: GraphTheme) => void;
   /** Opens the keyboard-shortcut help overlay (also bound to `?`). */
   onToggleHelp?: () => void;
-  /** Which scopes the scope cluster offers. Defaults to all three; the Explore
-   *  surface omits the constellation scope (it lives in the Knowledge Graph
-   *  view) so there is no cross-view jump back through the toolbar. */
-  availableScopes?: Scope[] | undefined;
-  /** Modules scope: whether `external:*` dependency modules are drawn.
-   *  Hidden by default because they usually outnumber the repo's own modules. */
-  showExternals?: boolean | undefined;
-  onShowExternalsChange?: ((v: boolean) => void) | undefined;
-  /** How many external modules the toggle controls (0 hides the toggle). */
-  externalCount?: number | undefined;
+  /** Why the hierarchical layout cannot run on this graph, if it cannot.
+   *  Renders the toggle disabled with the reason as its tooltip instead of
+   *  letting it look live and then refuse on click — ELK's 500-node cap sits
+   *  BELOW the graph loader's 1,500-node floor, so on any repo bigger than
+   *  that the button was unreachable by construction and said so only after
+   *  you pressed it. */
+  hierarchicalDisabledReason?: string | undefined;
 }
 
-// Scope = which subset of nodes are drawn. Mutually exclusive.
-const SCOPES: { id: Scope; icon: typeof Boxes; label: string; hint: string }[] = [
-  { id: "architecture", icon: GitFork, label: "Communities", hint: "Detected communities" },
-  { id: "modules", icon: Boxes, label: "Modules", hint: "Folder / package rollup" },
-  { id: "full", icon: LayoutGrid, label: "Full", hint: "All files and symbols" },
-];
+// No scope cluster here. Scope is one axis and it now has one control, in the
+// section header (`GraphScopeSwitcher`), following the Code Health precedent —
+// floating it over the diagram while the page tabs steered the same axis is
+// what made "Communities" appear twice on one screen.
 
 // Node filter = exclusive All / Hot / Dead segmented control. Hot and dead
 // files are near-disjoint sets, so the old pair of independent toggles read
@@ -128,7 +135,6 @@ const NODE_FILTERS: { id: Overlay | "all"; icon?: typeof Skull; label: string; h
 const COLOR_MODES: { id: ColorMode; icon: typeof Palette; label: string }[] = [
   { id: "language", icon: Palette, label: "Language" },
   { id: "community", icon: Network, label: "Community" },
-  { id: "risk", icon: Shield, label: "Risk" },
 ];
 
 const LAYOUT_MODES: { id: LayoutMode; icon: typeof GitBranch; label: string }[] = [
@@ -143,6 +149,31 @@ const RADIAL_LAYOUT: { id: LayoutMode; icon: typeof GitFork; label: string } = {
   icon: GitFork,
   label: "Radial",
 };
+
+/**
+ * One panel, not four.
+ *
+ * Scope, node filter, the layout/colour/action row and search each used to be
+ * their own rounded box with its own border, its own `shadow-sm` and its own
+ * `backdrop-blur-sm`, stacked down the same edge with 6px of canvas showing
+ * between them. Four frames and four shadows for one control surface, over a
+ * diagram the reader is trying to look past (rule 13). They are now one shell
+ * with hairline dividers, sharing the legend's chrome so the two corners of
+ * the canvas read as the same system.
+ */
+const panelClass =
+  "overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/85 shadow-sm backdrop-blur-sm";
+
+/** A divider row inside the panel. The first group omits the top hairline. */
+const groupClass =
+  "flex items-center gap-0.5 p-1 border-t border-[var(--color-border-default)] first:border-t-0";
+
+const itemActiveClass =
+  "bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]";
+const itemIdleClass =
+  "text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-secondary)]";
+const itemClass =
+  "flex items-center gap-1.5 rounded-md px-2 py-2 text-[10px] font-medium transition-colors sm:py-1";
 
 export const GraphToolbar = memo(function GraphToolbar({
   viewMode,
@@ -164,17 +195,9 @@ export const GraphToolbar = memo(function GraphToolbar({
   onSearchKeyDown,
   layoutMode,
   onLayoutModeChange,
-  graphTheme,
-  onGraphThemeChange,
   onToggleHelp,
-  availableScopes,
-  showExternals,
-  onShowExternalsChange,
-  externalCount,
+  hierarchicalDisabledReason,
 }: GraphToolbarProps) {
-  const scopes = availableScopes
-    ? SCOPES.filter((s) => availableScopes.includes(s.id))
-    : SCOPES;
   // Below sm the full control cluster is too much chrome over the canvas —
   // collapse it behind a single toggle, keeping search always reachable.
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -188,10 +211,6 @@ export const GraphToolbar = memo(function GraphToolbar({
   // overlays / FA2 / hierarchical layout don't apply, so those controls are
   // hidden here rather than shown in a half-working state.
   const isConstellation = activeScope === "architecture";
-
-  const setScope = (next: Scope) => {
-    onViewChange(scopeOverlaysToViewMode(next, activeOverlays));
-  };
 
   // Exclusive node filter. Legacy "unified" URLs parse to both overlays and
   // render as Dead here; any click normalizes back to a single filter.
@@ -223,40 +242,13 @@ export const GraphToolbar = memo(function GraphToolbar({
         Controls
       </button>
 
-      {/* Scope (mutually exclusive). Hidden when only one scope is offered —
-          the surface is locked (e.g. the Communities lens). */}
-      {scopes.length > 1 && (
-      <div className={`${clusterVisibility} gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-sm`}>
-        {scopes.map((m) => {
-          const Icon = m.icon;
-          const isActive = activeScope === m.id;
-          return (
-            <button
-              key={m.id}
-              onClick={() => setScope(m.id)}
-              className={`flex items-center gap-1.5 px-2 py-2 sm:py-1.5 rounded-md text-[10px] font-medium transition-all ${
-                isActive
-                  ? "bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]"
-                  : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)]"
-              }`}
-              title={m.hint}
-              aria-label={m.label}
-              aria-pressed={isActive}
-            >
-              <Icon className="w-3 h-3" />
-              <span className="hidden lg:inline">{m.label}</span>
-            </button>
-          );
-        })}
-      </div>
-      )}
-
+      <div className={panelClass}>
       {/* Node filter (exclusive All / Hot / Dead) — not applicable in the constellation */}
       {!isConstellation && (
       <div
         role="radiogroup"
         aria-label="Node filter"
-        className={`${clusterVisibility} gap-0.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-sm`}
+        className={`${clusterVisibility} ${groupClass}`}
       >
         {NODE_FILTERS.map((f) => {
           const Icon = f.icon;
@@ -265,11 +257,7 @@ export const GraphToolbar = memo(function GraphToolbar({
             <button
               key={f.id}
               onClick={() => setNodeFilter(f.id)}
-              className={`flex items-center gap-1 px-2 py-2 sm:py-1 rounded-md text-[10px] font-medium transition-all ${
-                isActive
-                  ? "bg-[var(--color-accent-graph)]/15 text-[var(--color-accent-graph)]"
-                  : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)]"
-              }`}
+              className={`${itemClass} ${isActive ? itemActiveClass : itemIdleClass}`}
               title={f.hint}
               aria-label={f.label}
               role="radio"
@@ -283,9 +271,8 @@ export const GraphToolbar = memo(function GraphToolbar({
       </div>
       )}
 
-      {/* Layout · color · actions collapse into one floating group so the
-          canvas isn't fenced in by a row of separate shadowed pills. */}
-      <div className={`${clusterVisibility} items-center gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm p-1 shadow-sm`}>
+      {/* Layout · colour · actions. */}
+      <div className={`${clusterVisibility} ${groupClass}`}>
         <div className="flex gap-0.5">
           {isConstellation ? (
             // Constellation is locked to the radial layout; show a single
@@ -293,7 +280,7 @@ export const GraphToolbar = memo(function GraphToolbar({
             <button
               key={RADIAL_LAYOUT.id}
               disabled
-              className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-[var(--color-accent-graph)]/15 text-[var(--color-accent-graph)] cursor-default"
+              className={`${itemClass} ${itemActiveClass} cursor-default`}
               title={`${RADIAL_LAYOUT.label} (fixed for Communities)`}
               aria-label={RADIAL_LAYOUT.label}
               aria-pressed
@@ -304,17 +291,19 @@ export const GraphToolbar = memo(function GraphToolbar({
             LAYOUT_MODES.map((m) => {
               const Icon = m.icon;
               const isActive = layoutMode === m.id;
+              const disabledReason =
+                m.id === "hierarchical" ? hierarchicalDisabledReason : undefined;
               return (
                 <button
                   key={m.id}
                   onClick={() => onLayoutModeChange(m.id)}
-                  className={`flex items-center gap-1 px-2 py-2 sm:py-1 rounded-md text-[10px] font-medium transition-all ${
-                    isActive
-                      ? "bg-[var(--color-accent-graph)]/15 text-[var(--color-accent-graph)]"
-                      : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)]"
+                  disabled={!!disabledReason}
+                  className={`${itemClass} ${isActive ? itemActiveClass : itemIdleClass} ${
+                    disabledReason ? "cursor-not-allowed opacity-40" : ""
                   }`}
-                  title={m.label}
+                  title={disabledReason ?? m.label}
                   aria-label={m.label}
+                  aria-disabled={!!disabledReason}
                   aria-pressed={isActive}
                 >
                   <Icon className="w-3 h-3" />
@@ -324,7 +313,18 @@ export const GraphToolbar = memo(function GraphToolbar({
           )}
         </div>
 
-        <div className="flex gap-0.5 border-l border-[var(--color-border-default)] pl-1">
+        {/* Colour-by. This control decides what every circle on the canvas
+            means, and it used to be three unlabelled icons — a palette, a
+            network and a shield — so there was no way to know whether you were
+            looking at languages, communities or risk without hovering each
+            one. Worse, Risk paints green/amber/red and Community paints
+            families that include green, amber and red: same marks, two
+            vocabularies, switched by a mystery glyph. The active mode now
+            always carries its word. */}
+        <div className="flex items-center gap-0.5 border-l border-[var(--color-border-default)] pl-1">
+          <span className="hidden pl-1 pr-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] lg:inline">
+            Colour
+          </span>
           {COLOR_MODES.map((m) => {
             const Icon = m.icon;
             const isActive = colorMode === m.id;
@@ -332,33 +332,23 @@ export const GraphToolbar = memo(function GraphToolbar({
               <button
                 key={m.id}
                 onClick={() => onColorModeChange(m.id)}
-                className={`flex items-center gap-1 px-2 py-2 sm:py-1 rounded-md text-[10px] font-medium transition-all ${
-                  isActive
-                    ? "bg-[var(--color-accent-graph)]/15 text-[var(--color-accent-graph)]"
-                    : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)]"
-                }`}
+                className={`${itemClass} ${isActive ? itemActiveClass : itemIdleClass}`}
                 title={m.label}
                 aria-label={m.label}
                 aria-pressed={isActive}
               >
                 <Icon className="w-3 h-3" />
+                {isActive && <span>{m.label}</span>}
               </button>
             );
           })}
         </div>
 
+        {/* No theme control here. It set the *global* theme, so it did exactly
+            what the app's own toggle in the header does, a few hundred pixels
+            away — two controls, one effect, and this one buried in a row of a
+            dozen unlabelled icons. */}
         <div className="flex gap-0.5 border-l border-[var(--color-border-default)] pl-1">
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => onGraphThemeChange(graphTheme === "light" ? "dark" : "light")}
-            className={`h-8 w-8 sm:h-7 sm:w-7 p-0 ${graphTheme === "dark" ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
-            title={graphTheme === "dark" ? "Light graph theme" : "Dark graph theme"}
-            aria-label={graphTheme === "dark" ? "Light graph theme" : "Dark graph theme"}
-            aria-pressed={graphTheme === "dark"}
-          >
-            {graphTheme === "dark" ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
-          </Button>
           {/* Path finder / execution flows operate on file-level nodes and
               don't apply to the community constellation — hidden there. */}
           {!isConstellation && pathFinderAvailable && (
@@ -366,7 +356,7 @@ export const GraphToolbar = memo(function GraphToolbar({
             size="sm"
             variant="ghost"
             onClick={onTogglePathFinder}
-            className={`h-8 w-8 sm:h-7 sm:w-7 p-0 ${showPathFinder ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
+            className={`h-8 w-8 sm:h-7 sm:w-7 p-0 ${showPathFinder ? "text-[var(--color-accent-primary)]" : "text-[var(--color-text-tertiary)]"}`}
             title="Find dependency path"
             aria-label="Find dependency path"
             aria-pressed={showPathFinder}
@@ -379,7 +369,7 @@ export const GraphToolbar = memo(function GraphToolbar({
             size="sm"
             variant="ghost"
             onClick={onToggleFlows}
-            className={`h-8 w-8 sm:h-7 sm:w-7 p-0 ${showFlows ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
+            className={`h-8 w-8 sm:h-7 sm:w-7 p-0 ${showFlows ? "text-[var(--color-accent-primary)]" : "text-[var(--color-text-tertiary)]"}`}
             title="Execution flows"
             aria-label="Execution flows"
             aria-pressed={showFlows}
@@ -387,33 +377,12 @@ export const GraphToolbar = memo(function GraphToolbar({
             <Workflow className="w-3.5 h-3.5" />
           </Button>
           )}
-          {activeScope === "modules" && onShowExternalsChange && (externalCount ?? 0) > 0 && (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => onShowExternalsChange(!showExternals)}
-            className={`h-8 w-8 sm:h-7 sm:w-7 p-0 ${showExternals ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
-            title={
-              showExternals
-                ? `Hide ${externalCount} external dependencies`
-                : `Show ${externalCount} external dependencies`
-            }
-            aria-label={
-              showExternals
-                ? "Hide external dependencies"
-                : "Show external dependencies"
-            }
-            aria-pressed={showExternals}
-          >
-            <Package className="w-3.5 h-3.5" />
-          </Button>
-          )}
           {!isConstellation && (
           <Button
             size="sm"
             variant="ghost"
             onClick={() => onHideTestsChange(!hideTests)}
-            className={`h-8 w-8 sm:h-7 sm:w-7 p-0 ${hideTests ? "text-[var(--color-accent-graph)]" : "text-[var(--color-text-tertiary)]"}`}
+            className={`h-8 w-8 sm:h-7 sm:w-7 p-0 ${hideTests ? "text-[var(--color-accent-primary)]" : "text-[var(--color-text-tertiary)]"}`}
             title={hideTests ? "Show test files" : "Hide test files"}
             aria-label={hideTests ? "Show test files" : "Hide test files"}
             aria-pressed={hideTests}
@@ -446,33 +415,34 @@ export const GraphToolbar = memo(function GraphToolbar({
         </div>
       </div>
 
-      <div className="relative">
-        <div className="flex items-center gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2 py-1 shadow-sm">
-          <Search className="w-3 h-3 text-[var(--color-text-tertiary)] shrink-0" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            onKeyDown={onSearchKeyDown}
-            placeholder="Search nodes…"
-            aria-label="Search graph nodes"
-            className="bg-transparent text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] outline-none w-28 lg:w-40"
-          />
-          {searchQuery && searchMatchCount != null && searchTotalCount != null && (
-            <span className="text-[10px] text-[var(--color-text-tertiary)] tabular-nums whitespace-nowrap">
-              {searchMatchCount} / {searchTotalCount}
-            </span>
-          )}
-          {searchQuery && (
-            <button
-              onClick={() => onSearchChange("")}
-              aria-label="Clear search"
-              className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          )}
-        </div>
+      {/* Search stays visible at every width — it is the one control that
+          still works when the rest of the cluster is collapsed on a phone. */}
+      <div className="flex items-center gap-1.5 border-t border-[var(--color-border-default)] px-2 py-1.5">
+        <Search className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)]" />
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => onSearchChange(e.target.value)}
+          onKeyDown={onSearchKeyDown}
+          placeholder="Search nodes…"
+          aria-label="Search graph nodes"
+          className="w-28 bg-transparent text-xs text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] lg:w-40"
+        />
+        {searchQuery && searchMatchCount != null && searchTotalCount != null && (
+          <span className="whitespace-nowrap font-mono text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
+            {searchMatchCount}/{searchTotalCount}
+          </span>
+        )}
+        {searchQuery && (
+          <button
+            onClick={() => onSearchChange("")}
+            aria-label="Clear search"
+            className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
+      </div>
       </div>
     </div>
   );

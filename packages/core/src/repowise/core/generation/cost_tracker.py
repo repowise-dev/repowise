@@ -6,6 +6,8 @@ the ``llm_costs`` table for historical reporting via ``repowise costs``.
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
 
@@ -18,14 +20,17 @@ log = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 _PRICING: dict[str, dict[str, float]] = {
-    # Anthropic — Opus tier $15/$75, Sonnet $3/$15, Haiku $0.8/$4 per 1M.
-    # 4-7/4-8 added for savings pricing: these are the models the session
-    # detector surfaces from current Claude Code transcripts.
-    "claude-opus-4-8": {"input": 15.0, "output": 75.0},
-    "claude-opus-4-7": {"input": 15.0, "output": 75.0},
-    "claude-opus-4-6": {"input": 15.0, "output": 75.0},
+    # Anthropic — Opus tier $5/$25, Sonnet $3/$15, Haiku $1/$5 per 1M. The 5 and
+    # 4-x entries are the models the session detector surfaces from current
+    # Claude Code transcripts. Opus used to be listed at $15/$75 here, which is
+    # the Opus 3 rate and overstated every Opus session by 3x.
+    "claude-opus-5": {"input": 5.0, "output": 25.0},
+    "claude-opus-4-8": {"input": 5.0, "output": 25.0},
+    "claude-opus-4-7": {"input": 5.0, "output": 25.0},
+    "claude-opus-4-6": {"input": 5.0, "output": 25.0},
+    "claude-sonnet-5": {"input": 3.0, "output": 15.0},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
-    "claude-haiku-4-5": {"input": 0.8, "output": 4.0},
+    "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
     "claude-3-5-sonnet-20241022": {"input": 3.0, "output": 15.0},
     # OpenAI — GPT-5 family (the models Codex sessions report). Rates per 1M
     # input/output; verify against current OpenAI pricing before relying on
@@ -35,9 +40,14 @@ _PRICING: dict[str, dict[str, float]] = {
     "gpt-5-mini": {"input": 0.25, "output": 2.0},
     # Nano tier — $0.05/$0.40 per 1M. Without these keys the model name falls
     # through to ``_FALLBACK_PRICING`` (Sonnet $3/$15) and overstates a nano
-    # indexing run ~40×.
+    # indexing run ~40x.
     "gpt-5-nano": {"input": 0.05, "output": 0.40},
-    "gpt-5.4-nano": {"input": 0.05, "output": 0.40},
+    "gpt-5.4-nano": {"input": 0.20, "output": 1.25},
+    # The default. Mandatory rather than cosmetic: `gpt-5.6-luna` contains
+    # neither "nano" nor "mini", so without this row ``_family_pricing``'s
+    # gpt-5 branch prices it at the flagship $2.50/$15 tier, 12.5x over on
+    # output, with no unknown-model warning to notice it by.
+    "gpt-5.6-luna": {"input": 0.20, "output": 1.20},
     "gpt-4o": {"input": 2.5, "output": 10.0},
     "gpt-4o-mini": {"input": 0.15, "output": 0.6},
     # Google Gemini
@@ -50,6 +60,7 @@ _PRICING: dict[str, dict[str, float]] = {
     # Gemini preview / experimental models
     "gemini-3.1-flash-lite-preview": {"input": 0.075, "output": 0.30},
     "gemini-3-flash-preview": {"input": 0.075, "output": 0.30},
+    "gemini-3.5-flash-lite": {"input": 0.25, "output": 1.50},
     # DeepSeek
     "deepseek-v4-flash": {"input": 0.14, "output": 0.28},
     "deepseek-v4-pro": {"input": 1.74, "output": 3.48},
@@ -57,18 +68,99 @@ _PRICING: dict[str, dict[str, float]] = {
 
 _FALLBACK_PRICING: dict[str, float] = {"input": 3.0, "output": 15.0}
 
+#: Model-name prefixes that identify a locally-served model (Ollama, LM Studio,
+#: llama.cpp, ...). Local inference has no per-token price, so anything under
+#: these prefixes is valued at $0 — for both indexing spend and agent-savings
+#: estimates. Prefix-based on purpose: a *hosted* ``meta-llama/*`` billed
+#: through OpenRouter must never be mistaken for a free local run.
+_LOCAL_MODEL_PREFIXES: tuple[str, ...] = (
+    "ollama/",
+    "ollama_chat/",
+    "local/",
+    "lmstudio/",
+    "llamacpp/",
+)
+
 # Track which unknown models we've already warned about (per-process)
 _warned_models: set[str] = set()
 
 
+def is_local_model(model: str) -> bool:
+    """True when *model* is served locally (or is the test ``mock`` model).
+
+    Both the cost ledger and the savings estimate price these at $0: no dollars
+    change hands per token. Covers Ollama/LM Studio/llama.cpp model strings and
+    the agent-CLI passthrough prefixes (``codex_cli/``, ``opencode/``).
+    """
+    return (
+        model == "mock"
+        or model.startswith(_LOCAL_MODEL_PREFIXES)
+        or model.startswith(("codex_cli/", "opencode/"))
+        # Bare Ollama tags carry no prefix — the default is plain `qwen3.5:4b`,
+        # and a `family:size` tag is not a shape any hosted vendor uses.
+        or (":" in model and "/" not in model)
+    )
+
+
+#: Family-tier fallback, tried before the flat ``_FALLBACK_PRICING`` when a
+#: model id isn't an exact ``_PRICING`` key. A dated or point-variant id — a
+#: session transcript reporting ``claude-opus-4-8-20260514`` or a future
+#: ``claude-opus-4-9`` — carries its *tier* unambiguously in the name prefix.
+#: Matching the tier here stops an Opus coding session from being mispriced at
+#: the Sonnet fallback rate, which would undercount the agent savings it earned
+#: by ~5x. Ordered longest/most-specific prefix first.
+_CLAUDE_FAMILY_PRICING: tuple[tuple[str, dict[str, float]], ...] = (
+    ("claude-opus", {"input": 5.0, "output": 25.0}),
+    ("claude-sonnet", {"input": 3.0, "output": 15.0}),
+    ("claude-haiku", {"input": 1.0, "output": 5.0}),
+)
+
+
+def _family_pricing(model: str) -> dict[str, float] | None:
+    """Tier pricing inferred from a model-name family prefix, or ``None``.
+
+    Covers the Anthropic tiers by prefix and the GPT-5 tiers by the ``nano`` /
+    ``mini`` qualifier, so a variant id the exact table misses still resolves to
+    the right tier instead of the flat Sonnet-priced fallback.
+    """
+    for prefix, pricing in _CLAUDE_FAMILY_PRICING:
+        if model.startswith(prefix):
+            return pricing
+    if model.startswith("gpt-5"):
+        # Current-generation tier rates, matching cost_estimator/pricing.py. The
+        # older gpt-5-nano / gpt-5-mini keep their own cheaper exact entries,
+        # which win before this runs.
+        if "nano" in model:
+            return {"input": 0.20, "output": 1.25}
+        if "mini" in model:
+            return {"input": 0.75, "output": 4.50}
+        return {"input": 2.50, "output": 15.0}
+    return None
+
+
+def _routed_model_leaf(model: str) -> str:
+    """Strip a router's vendor segment: ``google/gemini-3.5-flash-lite`` -> the id.
+
+    OpenRouter and LiteLLM address every model as ``vendor/model``, which matched
+    nothing below and billed those runs at the flat Sonnet fallback — around 12x
+    over for a flash-lite default. ``is_local_model`` is checked first, so the
+    passthrough prefixes it owns (``ollama/``, ``codex_cli/`` …) never reach here.
+    """
+    return model.rsplit("/", 1)[-1]
+
+
 def _get_pricing(model: str) -> dict[str, float]:
     """Return pricing for *model*, falling back and warning if unknown."""
-    if model.startswith("codex_cli/"):
-        return {"input": 0.0, "output": 0.0}
-    if model.startswith("opencode/"):
+    if is_local_model(model):
         return {"input": 0.0, "output": 0.0}
     if model in _PRICING:
         return _PRICING[model]
+    leaf = _routed_model_leaf(model)
+    if leaf in _PRICING:
+        return _PRICING[leaf]
+    family = _family_pricing(model) or _family_pricing(leaf)
+    if family is not None:
+        return family
     if model not in _warned_models:
         log.warning("cost_tracker.unknown_model", model=model, fallback=_FALLBACK_PRICING)
         _warned_models.add(model)
@@ -128,6 +220,11 @@ class CostTracker:
         self._buffered = buffered
         # Pending rows when buffered; flushed in one transaction by ``flush``.
         self._pending: list[dict[str, Any]] = []
+        # Operation label attached to rows recorded right now. Providers read
+        # this at ``record()`` time instead of hardcoding ``"doc_generation"``,
+        # so a caller can scope a distinct phase (e.g. decision extraction) via
+        # ``record_as`` and have it show up as its own bucket on the Costs page.
+        self._operation = "doc_generation"
 
     # ------------------------------------------------------------------
     # Properties
@@ -142,6 +239,31 @@ class CostTracker:
     def session_tokens(self) -> int:
         """Cumulative tokens (input + output) for this tracker instance."""
         return self._session_tokens
+
+    @property
+    def operation(self) -> str:
+        """Operation label rows are currently recorded under.
+
+        Defaults to ``"doc_generation"``; a caller narrows it for a bounded
+        window with :meth:`record_as`.
+        """
+        return self._operation
+
+    @contextlib.contextmanager
+    def record_as(self, operation: str) -> Iterator[None]:
+        """Label every LLM call recorded inside this block as *operation*.
+
+        Restores the previous label on exit. Relies on the pipeline running
+        distinct LLM phases sequentially (decision extraction then page
+        regeneration, not interleaved on one tracker), so the label read at
+        ``record()`` time is the intended one.
+        """
+        prev = self._operation
+        self._operation = operation
+        try:
+            yield
+        finally:
+            self._operation = prev
 
     # ------------------------------------------------------------------
     # Recording

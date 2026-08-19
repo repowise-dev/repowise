@@ -15,6 +15,7 @@ Callers:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,10 +24,16 @@ from typing import Any
 import structlog
 
 from repowise.core.pipeline.modes import OrchestratorMode
-from repowise.core.pipeline.progress import ProgressCallback
+from repowise.core.pipeline.progress import (
+    STAGE_ANALYSIS,
+    STAGE_INGESTION,
+    ProgressCallback,
+    emit_stage,
+    emit_warning,
+)
 from repowise.core.registry import HookProgressCallback
 
-from .phases._common import _phase_done
+from .phases._common import TEST_RUN_FILE_LIMIT, _phase_done, limit_to_top_pagerank
 from .phases.analysis import (
     _run_dead_code_analysis,
     _run_decision_extraction,
@@ -146,6 +153,20 @@ class PipelineResult:
     on incremental no-KG paths, which preserves degradation honesty (a fallback
     run never wipes curated pages it could not reproduce)."""
 
+    preserved_page_ids: set[str] = field(default_factory=set)
+    """Page ids a ``--resume`` run skipped because a prior run already wrote
+    them. They are absent from ``generated_pages`` by design, so the stale-page
+    sweep would read them as gone and delete the very pages the resume existed
+    to keep (issue #1089). Empty on every non-resume run.
+
+    Filled here for symmetry, but the live route is the other one: ``--resume``
+    only exists on ``init``, which calls ``run_pipeline(generate_docs=False)``
+    and generates separately, so the init flows set this on the result
+    themselves the same way they set ``generated_pages``. No caller currently
+    reaches the assignment below (it needs ``resume`` and ``generate_docs``
+    together), so treat this field's value on a ``run_pipeline`` result as
+    untested until one does."""
+
 
 # ---------------------------------------------------------------------------
 # Pipeline
@@ -179,6 +200,7 @@ async def run_pipeline(
     on_page_ready: Any | None = None,
     resume_controller: ResumeController | None = None,
     coverage_report_paths: list[Path] | None = None,
+    derive_environment_facts: bool = False,
 ) -> PipelineResult:
     """Run the repowise indexing/analysis/generation pipeline.
 
@@ -218,6 +240,14 @@ async def run_pipeline(
         generation uses repo-local config such as ``reasoning`` from
         ``.repowise/config.yaml`` and ``REPOWISE_REASONING``.
 
+    derive_environment_facts:
+        Derive the structural facts that describe the *machine* this index runs
+        on (currently whether the tree is formatter-clean, which costs one
+        subprocess). Off by default and set only by the local ``init`` command:
+        a hosted or CI indexer would otherwise measure its own container and
+        store the answer as a fact about the user's repository. The facts read
+        off the walk itself are unconditional and unaffected by this flag.
+
     Returns
     -------
     PipelineResult
@@ -229,9 +259,11 @@ async def run_pipeline(
     commit_depth = max(1, min(commit_depth, 10000))
 
     # Mode policy: FAST forces ESSENTIAL git indexing and disables doc
-    # generation (and therefore all LLM calls). STANDARD preserves the
-    # caller's flags exactly. This is the single switch point — the rest of
-    # the pipeline reads ``generate_docs`` / the git tier, not ``mode``.
+    # generation (and therefore all LLM calls). DETERMINISTIC generates every
+    # page from a template and supplies its own null provider, so a caller
+    # with no API key still gets a wiki. STANDARD preserves the caller's flags
+    # exactly. This is the single switch point: the rest of the pipeline
+    # reads ``generate_docs`` / the git tier, not ``mode``.
     git_tier = mode.git_tier
     generate_docs = generate_docs and mode.allows_doc_generation
 
@@ -255,8 +287,7 @@ async def run_pipeline(
         llm_client._cost_tracker = cost_tracker
 
     # ---- Phase 1: Ingestion ------------------------------------------------
-    if progress:
-        progress.on_message("info", "Phase 1: Ingestion")
+    emit_stage(progress, STAGE_INGESTION)
 
     # Launch git indexing as a background task immediately — it is independent
     # of parsing and graph-build, so the two stages can run concurrently.
@@ -282,6 +313,7 @@ async def run_pipeline(
             skip_tests=skip_tests,
             skip_infra=skip_infra,
             progress=progress,
+            derive_environment_facts=derive_environment_facts,
         )
 
     # Resume fast-path: when a prior run already persisted the INDEX phase
@@ -295,9 +327,7 @@ async def run_pipeline(
         try:
             graph_builder, git_meta_map = await resume_controller.rehydrate_index(repo_path)
             if progress:
-                progress.on_message(
-                    "info", "  ↳ Resuming — reusing persisted graph + git index"
-                )
+                progress.on_message("info", "  ↳ Resuming — reusing persisted graph + git index")
             (
                 parsed_files,
                 file_infos,
@@ -312,6 +342,7 @@ async def run_pipeline(
                 skip_tests=skip_tests,
                 skip_infra=skip_infra,
                 progress=progress,
+                derive_environment_facts=derive_environment_facts,
             )
             traversal_stats = None
             git_metadata_list = list(git_meta_map.values())
@@ -371,6 +402,11 @@ async def run_pipeline(
             )
     except Exception as _ext_err:
         logger.warning("external_systems_extraction_failed", error=str(_ext_err))
+        emit_warning(
+            progress,
+            f"External dependency manifests not parsed ({_ext_err}); "
+            "pages will not name this repo's third-party systems.",
+        )
     _phase_done(progress, "external_systems")
 
     # ---- Checkpoint: INDEX -------------------------------------------------
@@ -384,6 +420,8 @@ async def run_pipeline(
             git_metadata_list=git_metadata_list,
             git_summary=git_summary,
             external_systems=external_systems,
+            source_map=source_map,
+            progress=progress,
         )
 
     # Emit rich insight summary for the ingestion phase
@@ -409,25 +447,17 @@ async def run_pipeline(
                 f"→ Git: {git_summary.files_indexed:,} files indexed{_hotspot_msg}",
             )
 
-    # Test-run: limit to top 10 files by PageRank
+    # Test-run: limit to top 10 files by PageRank (shared helper with
+    # ``run_generation`` so the two paths cannot drift).
     if test_run and generate_docs:
-        try:
-            import networkx as nx
-
-            ranks = nx.pagerank(graph_builder.graph())
-        except Exception:
-            ranks = {}
-        parsed_files = sorted(
-            parsed_files,
-            key=lambda pf: ranks.get(pf.file_info.path, 0),
-            reverse=True,
-        )[:10]
+        parsed_files = limit_to_top_pagerank(
+            parsed_files, graph_builder, n=TEST_RUN_FILE_LIMIT
+        )
         if progress:
             progress.on_message("warning", f"Test run: limiting to {len(parsed_files)} files")
 
     # ---- Phase 2: Analysis --------------------------------------------------
-    if progress:
-        progress.on_message("info", "Phase 2: Analysis")
+    emit_stage(progress, STAGE_ANALYSIS)
 
     # Resume fast-path: when a prior run already completed (and persisted) the
     # ANALYSIS phase, skip recomputing dead code / health / decisions — the
@@ -459,33 +489,46 @@ async def run_pipeline(
             skip_analysis = False
 
     if not skip_analysis:
-        dead_code_report = await _run_dead_code_analysis(
-            graph_builder, git_meta_map, progress=progress
-        )
-
-        health_report = await _run_health_analysis(
-            graph_builder,
-            git_meta_map,
-            parsed_files,
-            repo_path=repo_path,
-            coverage_report_paths=coverage_report_paths,
-            progress=progress,
+        # The three analyses share read-only inputs (graph, git_meta_map,
+        # parsed_files; the lazy metric caches were warmed during ingestion)
+        # and have no data dependency on each other, so run them concurrently:
+        # decision extraction is I/O/LLM-bound and its wall clock hides
+        # entirely behind the CPU-bound dead-code + health work.
+        dead_code_report, health_report, decision_report = await asyncio.gather(
+            _run_dead_code_analysis(
+                graph_builder,
+                git_meta_map,
+                source_map=source_map,
+                repo_path=repo_path,
+                traversal_stats=traversal_stats,
+                progress=progress,
+            ),
+            _run_health_analysis(
+                graph_builder,
+                git_meta_map,
+                parsed_files,
+                repo_path=repo_path,
+                coverage_report_paths=coverage_report_paths,
+                progress=progress,
+            ),
+            _run_decision_extraction(
+                repo_path,
+                llm_client=llm_client,
+                graph_builder=graph_builder,
+                git_meta_map=git_meta_map,
+                parsed_files=parsed_files,
+                source_map=source_map,
+                progress=progress,
+            ),
         )
 
         # Drop the in-memory-only ``BlameIndex`` now that the health biomarkers
         # have consumed it — before it can leak into ``PipelineResult`` and the
         # downstream JSON artifact writers / DB persistence. ``git_meta_map``
-        # shares these dict objects, so this cleans both views.
+        # shares these dict objects, so this cleans both views. Must stay after
+        # the gather: health reads the blame index while it runs (decision
+        # extraction never does).
         drop_transient_git_signals(git_metadata_list)
-
-        decision_report = await _run_decision_extraction(
-            repo_path,
-            llm_client=llm_client,
-            graph_builder=graph_builder,
-            git_meta_map=git_meta_map,
-            parsed_files=parsed_files,
-            progress=progress,
-        )
         gen_dead_code_report = dead_code_report
         gen_decision_report = decision_report
 
@@ -515,6 +558,22 @@ async def run_pipeline(
                     progress.on_message(
                         "info",
                         f"  ↳ KG unchanged (fingerprint {new_fingerprint[:8]}…), reusing",
+                    )
+            else:
+                # The fingerprint said the file was reusable but the reader
+                # refused it — unreadable, or written by an older schema. The
+                # rebuild below is correct either way, but it used to happen
+                # in total silence, so a user whose hand-edited file was
+                # rejected got no signal at all.
+                logger.info(
+                    "knowledge_graph.reuse_failed",
+                    reason="artifact_unreadable_or_outdated",
+                    path=str(kg_json_path),
+                )
+                if progress:
+                    progress.on_message(
+                        "info",
+                        "  ↳ knowledge-graph.json could not be reused, rebuilding it",
                     )
 
         tech_stack_dicts = [
@@ -557,7 +616,7 @@ async def run_pipeline(
 
             try:
                 # In generate mode the summary floor is deferred to run after
-                # the wiki-page backfill (in ``enrich_knowledge_graph``), so
+                # the wiki-page backfill (in ``finalize_knowledge_graph``), so
                 # rich page summaries win; FAST mode floors here.
                 will_generate = generate_docs and llm_client is not None
                 knowledge_graph_result = curate_knowledge_graph(
@@ -586,15 +645,30 @@ async def run_pipeline(
             health_report=health_report,
             decision_report=decision_report,
             git_metadata_list=git_metadata_list,
+            progress=progress,
         )
 
     # ---- Phase 3: Generation (optional) ------------------------------------
     generated_pages: list[Any] | None = None
     # Structural page types this run was authoritative for (see
-    # PipelineResult.authoritative_page_types). Stays empty unless curated
-    # generation engaged below.
+    # PipelineResult.authoritative_page_types). Stays empty unless generation
+    # runs below, because a run that generated nothing decided nothing.
     authoritative_page_types: set[str] = set()
-    if generate_docs and llm_client is not None:
+    # Filled by generation when resuming; see PipelineResult.preserved_page_ids.
+    preserved_page_ids: set[str] = set()
+    # DETERMINISTIC supplies its own null provider so a caller with no key can
+    # still get a wiki. Scoped to this phase rather than assigned over
+    # ``llm_client``: the analysis phase above shares that client, and its
+    # decision extractor branches on truthiness, so a non-None provider that
+    # raises on every call would cost it the heuristic fallbacks it would
+    # otherwise have taken with no provider at all.
+    generation_client = llm_client
+    if generate_docs and mode.deterministic_docs and generation_client is None:
+        from repowise.core.providers.llm.template import TemplateProvider
+
+        generation_client = TemplateProvider()
+
+    if generate_docs and generation_client is not None:
         if progress:
             progress.on_message("info", "Phase 3: Generation")
 
@@ -608,12 +682,20 @@ async def run_pipeline(
             # Wiki style precedence: explicit param (server passes the DB-settings
             # value) > repo-local config.yaml (CLI/init) > default.
             _style = wiki_style or _cfg.get("wiki_style", "comprehensive")
-            resolved_generation_config = GenerationConfig(
+            resolved_generation_config = GenerationConfig.from_repo_config(
+                _cfg,
                 max_concurrency=concurrency,
                 reasoning=resolve_reasoning(config=_cfg),
                 wiki_style=_style,
                 language=_cfg.get("language", "en"),
             )
+
+        # The mode decides how pages are rendered, not the caller's config.
+        # A DETERMINISTIC run with an LLM-shaped config would still prompt.
+        if mode.deterministic_docs and not resolved_generation_config.deterministic:
+            from dataclasses import replace as _dc_replace
+
+            resolved_generation_config = _dc_replace(resolved_generation_config, deterministic=True)
 
         # Phase 2 enrichment: flag framework-defined HTTP surfaces (FastAPI,
         # ASP.NET controllers, …) as api_contract so they route through the
@@ -628,89 +710,165 @@ async def run_pipeline(
                 progress.on_message("info", f"→ Detected {flipped} additional API contract file(s)")
         except Exception as _api_err:
             logger.warning("api_contract_detection_failed", error=str(_api_err))
+            emit_warning(
+                progress,
+                f"API contract detection skipped ({_api_err}); endpoint pages may be missing.",
+            )
 
-        generated_pages = await run_generation(
-            repo_path=repo_path,
-            parsed_files=parsed_files,
-            source_map=source_map,
-            graph_builder=graph_builder,
-            repo_structure=repo_structure,
-            git_meta_map=git_meta_map,
-            llm_client=llm_client,
-            embedder=embedder,
-            vector_store=vector_store,
-            concurrency=concurrency,
-            progress=progress,
-            resume=resume,
-            generation_config=resolved_generation_config,
-            dead_code_report=gen_dead_code_report,
-            decision_report=gen_decision_report,
-            external_systems=external_systems,
-            on_page_ready=on_page_ready,
-            # In-memory KG — the artifact file is written after generation,
-            # so it cannot carry layers/tour/modules on a fresh init.
-            kg_modules=(
-                knowledge_graph_result.modules or None
-                if knowledge_graph_result is not None
-                else None
-            ),
-            kg_data=(
-                knowledge_graph_result.to_dict()
-                if knowledge_graph_result is not None
-                else None
-            ),
-        )
+        # Launch the page-independent half of KG enrichment (LLM layer naming +
+        # tour) so it overlaps page generation instead of running strictly
+        # after it. The two do not read each other's live output: run_generation
+        # receives a to_dict() snapshot of the skeleton (kg_data/kg_modules
+        # below), and structural enrichment reads only the skeleton layers plus
+        # the warmed graph metrics. Layer/tour results are applied to the
+        # skeleton only in finalize_knowledge_graph (after generation), so the
+        # in-place layer-name mutation inside enrichment can never reach the
+        # snapshot generation is already holding. The page-dependent finalize
+        # (summary backfill) runs after both complete.
+        kg_structural_task = None
+        # Skipped in DETERMINISTIC mode: layer naming and the tour are pure
+        # prompting, and the null provider raises rather than stubbing. The
+        # skeleton's structural layers stand on their own.
+        if knowledge_graph_result is not None and not mode.deterministic_docs:
+            from repowise.core.generation.knowledge_graph import (
+                enrich_knowledge_graph_structural,
+            )
 
-        # Record which structural page types this run authoritatively decided,
-        # so the sweep can retire prior rows of a type even when this run
-        # legitimately emitted zero pages of it. Mirrors the selector's curated
-        # engagement test (_build_curated_module_groups returns None — i.e.
-        # falls back to community — only when kg_modules is empty) so the signal
-        # is set iff the curated grouping actually engaged. On the degraded
-        # community fallback both stay unset, preserving degradation honesty.
-        kg_modules_present = bool(
-            knowledge_graph_result is not None and knowledge_graph_result.modules
-        )
-        kg_layers_present = bool(
-            knowledge_graph_result is not None and knowledge_graph_result.layers
-        )
-        module_grouping = getattr(resolved_generation_config, "module_grouping", "community")
-        if module_grouping == "curated" and kg_modules_present:
-            authoritative_page_types.add("module_page")
-        if kg_layers_present:
-            authoritative_page_types.add("layer_page")
-
-    # ---- Knowledge Graph LLM enrichment (layer naming + tour) -----------------
-    if knowledge_graph_result is not None and generate_docs and llm_client is not None:
-        try:
-            from repowise.core.generation.knowledge_graph import enrich_knowledge_graph
-
-            if progress:
-                progress.on_phase_start("knowledge_graph.enrich", None)
             _kg_reasoning = (
                 getattr(resolved_generation_config, "reasoning", "auto")
                 if resolved_generation_config
                 else "auto"
             )
-            knowledge_graph_result = await enrich_knowledge_graph(
-                kg_skeleton=knowledge_graph_result,
-                llm_client=llm_client,
+            # Warm the pagerank cache on this thread before the concurrent
+            # launch so both the structural task and generation only ever read
+            # it. It is already populated during ingestion; this makes the
+            # no-race invariant explicit rather than incidental.
+            graph_builder.pagerank()
+            kg_structural_task = asyncio.create_task(
+                enrich_knowledge_graph_structural(
+                    kg_skeleton=knowledge_graph_result,
+                    llm_client=llm_client,
+                    graph_builder=graph_builder,
+                    repo_structure=repo_structure,
+                    tech_stack=tech_stack_dicts,
+                    reasoning=_kg_reasoning,
+                )
+            )
+
+        try:
+            generated_pages = await run_generation(
+                repo_path=repo_path,
+                parsed_files=parsed_files,
+                source_map=source_map,
                 graph_builder=graph_builder,
                 repo_structure=repo_structure,
-                tech_stack=tech_stack_dicts,
-                generated_pages=generated_pages,
+                git_meta_map=git_meta_map,
+                llm_client=generation_client,
+                embedder=embedder,
+                vector_store=vector_store,
+                concurrency=concurrency,
                 progress=progress,
-                reasoning=_kg_reasoning,
+                resume=resume,
+                generation_config=resolved_generation_config,
+                dead_code_report=gen_dead_code_report,
+                decision_report=gen_decision_report,
+                external_systems=external_systems,
+                on_page_ready=on_page_ready,
+                preserved_page_ids=preserved_page_ids,
+                # In-memory KG — the artifact file is written after generation,
+                # so it cannot carry layers/tour/modules on a fresh init.
+                kg_modules=(
+                    knowledge_graph_result.modules or None
+                    if knowledge_graph_result is not None
+                    else None
+                ),
+                kg_data=(
+                    knowledge_graph_result.to_dict() if knowledge_graph_result is not None else None
+                ),
             )
+        except BaseException:
+            # Generation aborted the run: cancel the concurrent enrichment task
+            # so it stops issuing LLM calls and never surfaces as a stray
+            # "Task exception was never retrieved" during teardown.
+            if kg_structural_task is not None:
+                kg_structural_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await kg_structural_task
+            raise
+
+        # Record which structural page types this run authoritatively decided,
+        # so the sweep can retire prior rows of a type even when this run
+        # legitimately emitted zero pages of it.
+        #
+        # ``module_page`` needs no KG and no budget: the concept grouping
+        # partitions every production file, so a run that produced any concept
+        # page produced all of them and prior rows should go. The condition
+        # that used to stand here tested whether a curated KG artifact had
+        # engaged a grouping mode that no longer exists, which stranded the
+        # superseded pages on exactly the repositories the KG failed on.
+        #
+        # It is still not unconditional, because "emitted zero" has causes
+        # other than "there is nothing to document": ``file_pages_only``
+        # returns before the concept level runs at all, and a provider error
+        # on that level is logged per page rather than raised. Claiming
+        # authority there would delete every concept page over a 429. So the
+        # claim is made on evidence — at least one page produced — with the
+        # genuinely empty repository as the one exception, since it has no
+        # page to show and its stale rows are exactly what wants sweeping.
+        produced_module_page = any(
+            getattr(page, "page_type", "") == "module_page" for page in (generated_pages or [])
+        )
+        has_code_to_group = any(
+            not getattr(p.file_info, "is_test", False) for p in (parsed_files or [])
+        )
+        if produced_module_page or not has_code_to_group:
+            authoritative_page_types.add("module_page")
+        # Layer pages are retired: no run emits one and no failure mode can
+        # make a run emit one, so every completed run is authoritative for the
+        # type and the sweep retires the rows a pre-retirement index left
+        # behind. Unconditional, unlike the types above, because "emitted
+        # zero" here has exactly one cause. Their ids keep resolving through
+        # the redirect table, so retiring the rows breaks no inbound link.
+        authoritative_page_types.add("layer_page")
+        # An SCC page missing from a full run's output means the cycle is gone,
+        # so the run is authoritative for the type and the sweep may clear the
+        # pages of cycles that no longer exist. This used to be claimed only for
+        # a deterministic run, on the premise that a budgeted run's zero might
+        # mean "the allocation was zero" rather than "there are no cycles" —
+        # but selection applies no budget to scc_groups (selection/selector.py
+        # _build_scc_candidates, unlike the file-page path), so zero produced
+        # really does mean zero cycles on every full run. Holding the narrower
+        # rule left a keyed index of a repo whose cycles all disappeared unable
+        # to ever retire them.
+        authoritative_page_types.add("scc_page")
+
+        # ---- Knowledge Graph enrichment: join + finalize ----------------------
+        # The structural half (layer naming + tour) ran concurrently with
+        # generation above; join it now and apply the page-derived summary
+        # backfill. Same try/except envelope as before: a KG failure logs and
+        # leaves the skeleton in place, never aborting the run.
+        if kg_structural_task is not None:
+            from repowise.core.generation.knowledge_graph import finalize_knowledge_graph
+
             if progress:
-                progress.on_message(
-                    "info",
-                    f"  ↳ KG enriched: {len(knowledge_graph_result.layers)} layers, "
-                    f"{len(knowledge_graph_result.tour)} tour steps",
+                progress.on_phase_start("knowledge_graph.enrich", None)
+            try:
+                enriched_layers, tour = await kg_structural_task
+                knowledge_graph_result = finalize_knowledge_graph(
+                    kg_skeleton=knowledge_graph_result,
+                    enriched_layers=enriched_layers,
+                    tour=tour,
+                    generated_pages=generated_pages,
                 )
-            _phase_done(progress, "knowledge_graph.enrich")
-        except (ValueError, KeyError, OSError, RuntimeError) as exc:
-            logger.error("knowledge_graph_enrichment_failed", error=str(exc), exc_info=True)
+                if progress:
+                    progress.on_message(
+                        "info",
+                        f"  ↳ KG enriched: {len(knowledge_graph_result.layers)} layers, "
+                        f"{len(knowledge_graph_result.tour)} tour steps",
+                    )
+                _phase_done(progress, "knowledge_graph.enrich")
+            except (ValueError, KeyError, OSError, RuntimeError) as exc:
+                logger.error("knowledge_graph_enrichment_failed", error=str(exc), exc_info=True)
 
     # ---- Execution flow tracing -----------------------------------------------
     execution_flow_report = None
@@ -720,6 +878,11 @@ async def run_pipeline(
         execution_flow_report = await asyncio.to_thread(graph_builder.execution_flows)
     except Exception as _flow_err:
         logger.warning("execution_flow_tracing_skipped", error=str(_flow_err))
+        emit_warning(
+            progress,
+            f"Execution flow tracing skipped ({_flow_err}); "
+            "entry-point scores and flow-based pages will be absent.",
+        )
     _phase_done(progress, "graph.flows")
 
     # ---- Build result -------------------------------------------------------
@@ -763,6 +926,7 @@ async def run_pipeline(
             resume_controller.index_persisted if resume_controller is not None else False
         ),
         authoritative_page_types=authoritative_page_types,
+        preserved_page_ids=preserved_page_ids,
     )
 
 

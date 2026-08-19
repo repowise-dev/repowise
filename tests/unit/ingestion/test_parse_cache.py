@@ -15,8 +15,12 @@ import networkx as nx
 import pytest
 
 from repowise.cli.commands.update_cmd import _build_repo_graph
+from repowise.core.cache_seal import seal, unseal
 from repowise.core.ingestion import compute_content_hash
 from repowise.core.ingestion.parse_cache import ParseCache, parser_fingerprint
+
+_CACHE_DOMAIN = "parse_cache.pkl"
+
 
 
 def _write_fixture(repo) -> None:
@@ -130,10 +134,10 @@ def test_corrupt_cache_falls_back_to_full_parse(repo):
 def test_fingerprint_mismatch_invalidates(repo, tmp_path):
     _build(repo)
     cache_file = _cache_path(repo)
-    payload = pickle.loads(cache_file.read_bytes())
+    payload = pickle.loads(unseal(cache_file.read_bytes(), domain=_CACHE_DOMAIN))
     assert payload["fingerprint"] == parser_fingerprint()
     payload["fingerprint"] = "stale-fingerprint"
-    cache_file.write_bytes(pickle.dumps(payload))
+    cache_file.write_bytes(seal(pickle.dumps(payload), domain=_CACHE_DOMAIN))
 
     cache = ParseCache(repo / ".repowise")
     cache.load()
@@ -157,7 +161,10 @@ def test_dataclass_schema_change_invalidates_cache(repo, monkeypatch):
 
     _build(repo)  # populate the cache under the current fingerprint
     cache_file = _cache_path(repo)
-    assert pickle.loads(cache_file.read_bytes())["fingerprint"] == parser_fingerprint()
+    assert (
+        pickle.loads(unseal(cache_file.read_bytes(), domain=_CACHE_DOMAIN))["fingerprint"]
+        == parser_fingerprint()
+    )
 
     # Simulate a release that adds a field to ParsedFile.
     @dataclasses.dataclass
@@ -168,7 +175,12 @@ def test_dataclass_schema_change_invalidates_cache(repo, monkeypatch):
     monkeypatch.setattr(models, "ParsedFile", _Evolved)
     parse_cache.parser_fingerprint.cache_clear()
     try:
-        assert parser_fingerprint() != pickle.loads(cache_file.read_bytes())["fingerprint"]
+        assert (
+            parser_fingerprint()
+            != pickle.loads(unseal(cache_file.read_bytes(), domain=_CACHE_DOMAIN))[
+                "fingerprint"
+            ]
+        )
 
         cache = ParseCache(repo / ".repowise")
         cache.load()
@@ -228,10 +240,56 @@ def test_deleted_files_age_out_of_cache(repo):
     _build(repo)
     (repo / "other.py").unlink()
     _build(repo)  # rewrite keeps only entries touched this run
-    payload = pickle.loads(_cache_path(repo).read_bytes())
+    payload = pickle.loads(unseal(_cache_path(repo).read_bytes(), domain=_CACHE_DOMAIN))
     cached_paths = {path for path, _hash in payload["files"]}
     assert "other.py" not in cached_paths
     assert "main.py" in cached_paths
+
+
+def test_unsigned_legacy_pickle_is_ignored(repo, tmp_path):
+    """Unsigned pickle (the #1390 attack shape) must not be loaded.
+
+    Version / fingerprint checks used to run *after* pickle.load, so a
+    crafted ``__reduce__`` payload already executed. We now refuse anything
+    that is not HMAC-sealed with the machine-local key.
+    """
+    marker = tmp_path / "PWNED"
+
+    class Evil:
+        def __reduce__(self):
+            return (marker.write_text, ("pwned",))
+
+    # Legacy unsigned format — exactly what an attacker would ``git add -f``.
+    _cache_path(repo).write_bytes(
+        pickle.dumps(
+            {
+                "version": 1,
+                "fingerprint": parser_fingerprint(),
+                "files": {("main.py", "HASH"): Evil()},
+            }
+        )
+    )
+
+    cache = ParseCache(repo / ".repowise")
+    cache.load()
+    assert cache._entries == {}
+    assert not marker.exists()
+
+
+def test_forged_hmac_is_rejected(repo, monkeypatch, tmp_path):
+    """A sealed envelope with a MAC under a different key is a miss."""
+    from repowise.core import cache_seal
+
+    monkeypatch.setenv("REPOWISE_CACHE_HMAC_KEY", "aa" * 32)
+    cache_seal.reset_key_cache_for_tests()
+    _build(repo)  # write under key A
+
+    monkeypatch.setenv("REPOWISE_CACHE_HMAC_KEY", "bb" * 32)
+    cache_seal.reset_key_cache_for_tests()
+    cache = ParseCache(repo / ".repowise")
+    cache.load()
+    assert cache._entries == {}
+    cache_seal.reset_key_cache_for_tests()
 
 
 def test_cache_hit_stamps_content_hash(repo):

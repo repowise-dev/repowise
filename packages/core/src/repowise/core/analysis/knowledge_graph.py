@@ -10,10 +10,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from repowise.core.generation.entry_points import orientation_entry_points
+
+_log = logging.getLogger(__name__)
+
+#: Schema version of the ``knowledge-graph.json`` artifact. Bump whenever a
+#: change makes an older file unsafe to load — readers reject anything below
+#: this and callers rebuild from scratch, which is cheaper and safer than
+#: migrating a file the user may have hand-edited. Files written before the
+#: field existed read as 1, matching the shape they actually have.
+#:
+#: Kept separate from the ``"version": "1.0.0"`` string, which is a
+#: human-facing label consumers already read and must not change meaning.
+_KG_SCHEMA_VERSION = 1
 
 
 @dataclass
@@ -60,6 +75,7 @@ class KnowledgeGraphResult:
         layers = [_canonical_layer(layer) for layer in self.layers]
         out = {
             "version": "1.0.0",
+            "schema_version": _KG_SCHEMA_VERSION,
             "project": self.project,
             "nodes": nodes,
             "edges": edges,
@@ -76,10 +92,46 @@ class KnowledgeGraphResult:
 
     @classmethod
     def from_file(cls, path: Path) -> KnowledgeGraphResult | None:
-        """Load a previously-persisted KG from JSON, or None on failure."""
+        """Load a previously-persisted KG from JSON, or None on failure.
+
+        ``None`` also covers an artifact written by an older schema: callers
+        treat it as absent and rebuild, so a stale file can never be read as
+        if it had the current shape.
+
+        A version *above* the current one is deliberately accepted. The gate
+        protects a new reader from an old file, which is the direction that
+        actually happens on upgrade; refusing to read a newer file would only
+        help a downgrade, and would strand the user on a rebuild loop until
+        they deleted the artifact by hand.
+
+        Never raises: this runs inside an index, and a hand-edited file must
+        cost a rebuild rather than the whole run.
+        """
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            _log.warning("knowledge-graph.json at %s is unreadable", path, exc_info=True)
+            return None
+        if not isinstance(data, dict):
+            # ``[]``, ``"x"`` and ``5`` are all valid JSON and all reachable
+            # from a hand edit; reading on would raise AttributeError out of
+            # an index run.
+            _log.warning(
+                "Ignoring knowledge-graph.json at %s (expected an object, found %s); rebuilding",
+                path,
+                type(data).__name__,
+            )
+            return None
+        found = data.get("schema_version", 1)
+        # ``bool`` is an ``int`` in Python, and ``True < 1`` is False, so a
+        # version of ``true`` would otherwise sail through the gate.
+        if not isinstance(found, int) or isinstance(found, bool) or found < _KG_SCHEMA_VERSION:
+            _log.info(
+                "Ignoring knowledge-graph.json at %s (schema_version %s < %s); rebuilding",
+                path,
+                found,
+                _KG_SCHEMA_VERSION,
+            )
             return None
         return cls(
             project=data.get("project", {}),
@@ -153,14 +205,48 @@ def _slugify(text: str) -> str:
 # Edge type mapping
 # ---------------------------------------------------------------------------
 
+# Bump when the builder or the curation pass changes what it emits from an
+# unchanged graph — a wider `_EDGE_TYPE_MAP`, a different entry-point ranking,
+# a new node field. Folded into `compute_kg_fingerprint`, which otherwise only
+# measures the input graph and would let an existing store serve the old
+# artifact indefinitely. See that function for why one bump is one rebuild.
+#
+# "2": `_EDGE_TYPE_MAP` gained six types and `_curate_entry_points` changed its
+# ranking, neither of which moves a node or edge count.
+# "3": `references` joined the map, so C/C++ dispatch tables and registration
+# macros reach the export instead of being dropped.
+# "4": `framework_binds` joined the map, so a container-wired symbol pair
+# reaches the export instead of being dropped.
+KG_BUILDER_VERSION = "4"
+
+# An unmapped type is dropped from the export entirely (see the
+# `if not kg_type: continue` below), which is silent. Six real types used to be
+# missing — framework, the three dynamic_* kinds, reads and method_implements —
+# so framework-wired and dynamically-dispatched relations never reached the
+# knowledge graph at all. `test_edge_type_map_covers_the_vocabulary` keeps this
+# total over every dependency type.
+#
+# `co_changes` is the one deliberate omission: it is git history, not a code
+# reference, and the export has no relation kind that would keep that
+# distinction downstream. Admitting it here is how a co-change partner starts
+# looking like an import.
 _EDGE_TYPE_MAP: dict[str, str] = {
     "imports": "imports",
     "type_use": "imports",
+    "framework": "imports",
+    "dynamic_imports": "imports",
+    "dynamic_uses": "depends_on",
+    "dynamic_url_route": "depends_on",
     "defines": "contains",
     "has_method": "contains",
     "calls": "depends_on",
     "extends": "depends_on",
     "implements": "depends_on",
+    "method_implements": "depends_on",
+    "dispatches_to": "depends_on",
+    "framework_binds": "depends_on",
+    "reads": "depends_on",
+    "references": "depends_on",
 }
 
 
@@ -193,7 +279,7 @@ def build_knowledge_graph_skeleton(
         "name": repo_path.name if repo_path else "",
         "is_monorepo": repo_structure.is_monorepo if repo_structure else False,
         "total_files": repo_structure.total_files if repo_structure else len(parsed_files),
-        "entry_points": list(repo_structure.entry_points) if repo_structure else [],
+        "entry_points": orientation_entry_points(repo_structure),
         "tech_stack": tech_stack[:20],
     }
 
@@ -341,10 +427,41 @@ def build_knowledge_graph_skeleton(
 
 
 def compute_kg_fingerprint(graph_builder: Any) -> str:
-    """Compute a fingerprint from the graph state for incremental skip logic."""
+    """Compute a fingerprint from the graph state for incremental skip logic.
+
+    The four graph measures describe the *input* graph. They cannot see a
+    change in how this module turns that graph into an export, and the export
+    is not total: :data:`_EDGE_TYPE_MAP` drops every unmapped edge type. So
+    widening that map — six types in 0.43.0 — changes what the knowledge graph
+    contains while all four measures hold still, and the stored artifact would
+    keep the narrower edge set until some unrelated commit happened to move a
+    node or edge count. Same for the ordering the curation pass applies to
+    ``project.entry_points``, which every orientation surface reads.
+
+    :data:`KG_BUILDER_VERSION` closes that: bump it in the same commit as a
+    change to what the builder or the curation pass emits, and every existing
+    store rebuilds its knowledge graph once, on its next ``repowise update``
+    that has work to do. Two limits on that sentence, both deliberate:
+
+    * An update with nothing to do returns ``NOOP`` before the refresh is
+      reached, so a repo with no new commits stays on its old artifact until
+      something changes. That is the right trade — the alternative is making
+      every quiet repo in the world re-curate on a version bump — but it does
+      mean this is not a hard guarantee of "everyone, once".
+    * The rebuild itself is deterministic and model-free (skeleton plus
+      curation over a graph the run already holds, betweenness served from its
+      disk cache). On a **docs** update the non-``None`` result then also
+      triggers one KG layer-enrichment LLM call per five layers, which is real
+      spend the caller pays for a graph whose shape did not change. Index-only
+      and keyless runs never reach it.
+
+    One rebuild and not a loop: the new value is stored as the artifact's
+    fingerprint, so the next run matches and skips.
+    """
     g = graph_builder.graph()
     cd = graph_builder.community_detection()
     parts = [
+        KG_BUILDER_VERSION,
         str(g.number_of_nodes()),
         str(g.number_of_edges()),
         str(len(set(cd.values()))),

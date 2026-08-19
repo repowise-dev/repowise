@@ -121,9 +121,13 @@ def _add_gtest_edges(
                     continue
                 seen.add(fixture)
                 target = class_to_file.get(fixture)
-                if target and target != path and target in path_set:
-                    if _add_edge_if_new(graph, path, target):
-                        count += 1
+                if (
+                    target
+                    and target != path
+                    and target in path_set
+                    and _add_edge_if_new(graph, path, target)
+                ):
+                    count += 1
 
     return count
 

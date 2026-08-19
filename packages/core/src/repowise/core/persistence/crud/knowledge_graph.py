@@ -11,6 +11,8 @@ import json
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ids import file_path_of
+
 from ..models import (
     KnowledgeGraphLayer,
     KnowledgeGraphNodeMeta,
@@ -126,7 +128,7 @@ def file_node_meta_from_kg_nodes(nodes: list[dict]) -> list[dict]:
     """
     return [
         {
-            "node_id": node["id"].removeprefix("file:"),
+            "node_id": file_path_of(node["id"]) or node["id"],
             "node_type": node.get("type", "file"),
             "summary": node.get("summary", ""),
             "tags": node.get("tags", []),

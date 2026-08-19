@@ -11,12 +11,27 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 #: Claude Code injects this text into the conversation when the user
 #: interrupts a running turn; it is the strongest pushback signal a
 #: transcript carries.
 INTERRUPT_MARKER = "[Request interrupted by user"
+
+
+def parse_timestamp(value: Any) -> float | None:
+    """Epoch seconds from an ISO-8601 transcript timestamp, or None.
+
+    Lives here rather than in an adapter because ISO-8601 is not a property
+    of any one harness; adapters and consumers both read it.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
 
 @dataclass(slots=True)
@@ -82,6 +97,64 @@ class Event:
     def interrupted(self) -> bool:
         """True when this line records a user interrupt."""
         return INTERRUPT_MARKER in self.text
+
+
+#: Tool-input keys that name a file. Inputs only: this is what a call said it
+#: would operate on, which is why the paths it yields are what a session
+#: *reached for* rather than what exists.
+FILE_INPUT_KEYS = ("file_path", "path", "notebook_path")
+
+
+def event_files(event: Event) -> list[str]:
+    """File paths named by this event's tool inputs.
+
+    Deliberately blind to prose and to shell commands: a path argued about in
+    a paragraph, or passed to ``git`` inside a command string, is a mention
+    rather than a touch, and binding a record to mentions is how a scope stops
+    meaning anything. Lives here rather than in a miner because more than one
+    consumer folds the same stream and they must agree on what "touched" is.
+    """
+    files: list[str] = []
+    for use in event.tool_uses:
+        for key in FILE_INPUT_KEYS:
+            value = use.input.get(key)
+            if isinstance(value, str) and value.strip():
+                files.append(value)
+                break
+    return files
+
+
+def is_prose_user_text(event: Event) -> bool:
+    """A message the user actually typed, not harness plumbing.
+
+    Shared because more than one consumer needs the same answer and the cost of
+    them disagreeing is silent: a slash-command wrapper or an injected reminder
+    block reads as a user turn to anything that only checks ``kind``, and it
+    opens the majority of transcripts.
+    """
+    if event.kind != "user" or event.sidechain or event.is_meta or event.is_compact_summary:
+        return False
+    if event.tool_results:
+        return False
+    text = event.text.strip()
+    # Command output wrappers, system reminders, and pasted XML-ish blocks
+    # start with a tag; none of them are the user speaking.
+    return bool(text) and not text.startswith("<")
+
+
+def relative_files(files: Iterable[str], repo_root: Any) -> list[str]:
+    """Repo-relative POSIX paths, in first-seen order; outsiders dropped."""
+    import os.path
+
+    out: list[str] = []
+    for f in files:
+        try:
+            rel = os.path.relpath(f, str(repo_root))
+        except (ValueError, OSError):
+            continue
+        if not rel.startswith(".."):
+            out.append(rel.replace("\\", "/"))
+    return list(dict.fromkeys(out))
 
 
 def iter_deduped_usage(events: Iterable[Event]) -> Iterator[Event]:

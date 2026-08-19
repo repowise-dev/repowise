@@ -45,12 +45,79 @@ def _option_name(token: str) -> str:
 
 
 class InstrumentedGroup(click.Group):
-    """Root group that emits one telemetry event per invocation."""
+    """Root group that emits one telemetry event per invocation.
+
+    Also the lazy half of the CLI registry: a command can be registered
+    as a ``"module:attr"`` string and is imported only when it is the one
+    being run. Dispatching ``repowise status`` used to import all ~35
+    command modules; now it imports one.
+
+    ``--help`` still resolves everything, because Click needs each
+    command's ``short_help`` to render the listing. That is deliberate:
+    the alternative is a duplicated static help map that drifts, and
+    ``--help`` is human-interactive while hooks, MCP and scripts never
+    call it.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        #: name -> "module:attr", for commands not yet imported.
+        self._lazy_commands: dict[str, str] = {}
+
+    def add_lazy_command(self, name: str, target: str) -> None:
+        """Register *name* without importing the module that defines it."""
+        # Last registration wins, which is what ``click.Group.add_command``
+        # does and therefore what plugin overrides have always relied on.
+        # Without this drop, an already-resolved (or eagerly registered)
+        # command of the same name would keep winning in ``get_command``,
+        # silently inverting precedence between a plugin and the OSS CLI.
+        self.commands.pop(name, None)
+        self._lazy_commands[name] = target
+
+    def add_command(self, cmd: click.Command, name: str | None = None) -> None:
+        """Attach *cmd*, superseding any lazy registration of the same name."""
+        super().add_command(cmd, name)
+        self._lazy_commands.pop(name or cmd.name or "", None)
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        """Every command name, resolved and unresolved, importing nothing."""
+        return sorted({*super().list_commands(ctx), *self._lazy_commands})
+
+    def get_command(self, ctx: click.Context, name: str) -> click.Command | None:
+        """Resolve one command, importing its module on first use."""
+        resolved = super().get_command(ctx, name)
+        if resolved is not None:
+            return resolved
+        target = self._lazy_commands.get(name)
+        if target is None:
+            return None
+        from repowise.core.registry import LazyCommand
+
+        command = LazyCommand(name, target).load()
+        # Cached on the group, so a second lookup in the same process
+        # (``--help`` after dispatch, telemetry's tail match) is free.
+        self.add_command(command, name)
+        return command
 
     def invoke(self, ctx: click.Context):
         from repowise.cli.platform import telemetry
 
-        telemetry.maybe_show_notice()
+        # Not for ``uninstall``. Reading the consent state resolves
+        # ``~/.repowise/``, and that resolution creates the directory even on a
+        # pure read, so this ran before any command code and put back the
+        # directory the previous ``uninstall --all`` had deleted. The command
+        # then reported machine-wide state ``removed`` on every run, forever.
+        #
+        # Two other writes to the same directory had to be stopped for the same
+        # reason (the spool on the way out, the self-heal stamp in ``main``).
+        # This is the earliest of the three, which is why it survived them.
+        # Read from the unparsed args, not from ``ctx.invoked_subcommand``:
+        # Click sets that inside ``MultiCommand.invoke``, which is the call we
+        # are wrapping, so up here it is still None for every command and the
+        # guard silently never fired.
+        pending = getattr(ctx, "protected_args", None) or ctx.args
+        if not pending or pending[0] != "uninstall":
+            telemetry.maybe_show_notice()
 
         # The unparsed tail (subcommand + its args) is captured now, before
         # ``super().invoke`` may consume it.
@@ -80,12 +147,34 @@ class InstrumentedGroup(click.Group):
                 status = "interrupted"
             else:
                 status = "error"
+                # Mirror the ``Exit`` branch above and name the class, or this
+                # bucket records a failure with no error type at all. Commands
+                # that raise ``SystemExit`` directly rather than via
+                # ``ctx.exit()`` all land here, so leaving it unset loses the
+                # only diagnostic the event carries. Prefer the chained cause
+                # when there is one: a bare ``SystemExit(1)`` says nothing on
+                # its own, whereas the exception that forced the exit does.
+                # ``from None`` is honoured — a suppressed context is the
+                # author saying it is not the explanation.
+                cause = exc.__cause__
+                if cause is None and not exc.__suppress_context__:
+                    cause = exc.__context__
+                error_type = type(cause).__name__ if cause else "SystemExit"
             raise
         except (KeyboardInterrupt, click.exceptions.Abort):
             # User cancelled (Ctrl-C / declined a prompt). Not a failure — long-
             # running commands (serve/watch/init) are routinely Ctrl-C'd, and
             # counting that as "error" made success rates uninterpretable.
             status = "interrupted"
+            raise
+        except click.UsageError as exc:
+            # Bad/unknown option, missing or malformed argument: the user
+            # mis-invoked the command (a typo, a wrong flag), not a product
+            # failure. Kept out of the ``error`` bucket so the real crash rate
+            # is readable — a UsageError subclasses ClickException, so this
+            # branch must sit *before* the ClickException one below.
+            status = "usage_error"
+            error_type = type(exc).__name__  # class name only, never the message
             raise
         except click.ClickException as exc:
             status = "error"

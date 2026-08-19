@@ -53,6 +53,10 @@ class LeafInfo:
     is_dead: bool = False
     is_test: bool = False
     on_flow: bool = False
+    # Code-health score (0..10, higher = healthier) and the loc weight used when
+    # rolling the score up into containers. None score = this file was unscored.
+    health_score: float | None = None
+    loc: int = 1
 
 
 SYSTEM_ID = "zm:sys"
@@ -162,6 +166,8 @@ class _Builder:
                 is_dead=info.is_dead,
                 is_test=info.is_test,
                 on_flow=info.on_flow,
+                health_score=info.health_score,
+                loc=info.loc,
             )
         )
 

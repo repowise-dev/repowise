@@ -31,13 +31,10 @@ cannot derail the pipeline.
 
 from __future__ import annotations
 
+import contextlib
 import enum
 from collections.abc import Callable
 from typing import Any
-
-import structlog
-
-log = structlog.get_logger(__name__)
 
 HookCallback = Callable[[str], None]
 
@@ -76,13 +73,25 @@ class PipelineHookRegistry:
             try:
                 cb(phase)
             except Exception as exc:  # pragma: no cover - safety net
-                log.warning(
-                    "pipeline_hook_failed",
-                    phase=phase,
-                    when=when.value,
-                    callback=getattr(cb, "__qualname__", repr(cb)),
-                    error=str(exc),
-                )
+                # Deferred: ``structlog`` costs ~190ms to import (it pulls
+                # rich and asyncio), and this package's ``__init__`` is what
+                # the CLI entry point imports to reach the command registry.
+                # Only a broken plugin hook ever reaches this line.
+                #
+                # Suppressed as a whole because this handler's contract is
+                # that one broken plugin never derails the pipeline — a
+                # failure to import the logger must not become the thing
+                # that does, chained onto the exception it was reporting.
+                with contextlib.suppress(Exception):
+                    import structlog
+
+                    structlog.get_logger(__name__).warning(
+                        "pipeline_hook_failed",
+                        phase=phase,
+                        when=when.value,
+                        callback=getattr(cb, "__qualname__", repr(cb)),
+                        error=str(exc),
+                    )
 
     def reset(self) -> None:
         """Drop every registered hook. Used by tests."""

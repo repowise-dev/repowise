@@ -112,7 +112,9 @@ class TestCrossRepoCoChanges:
             return []
 
         with patch("repowise.core.workspace.cross_repo._parse_git_log", side_effect=fake_parse):
-            return detect_cross_repo_co_changes(repo_paths, **kwargs)
+            # [0] is the capped list; the pre-cap total is asserted separately
+            # in TestCoChangeTruncationTotals.
+            return detect_cross_repo_co_changes(repo_paths, **kwargs)[0]
 
     def test_same_author_within_window(self) -> None:
         """Two repos, same author, commits <24h apart → edges found."""
@@ -408,6 +410,67 @@ class TestCrossRepoCoChanges:
         assert len(ac_edges) == 1, "weaker pair still present"
 
 
+class TestCoChangeTruncationTotals:
+    """The caps must report what they dropped, not just drop it."""
+
+    def _detect(self, repo_commits, **kwargs):
+        repo_paths = {alias: Path(f"/fake/{alias}") for alias in repo_commits}
+
+        def fake_parse(repo_path, commit_limit=500):
+            for alias, path in repo_paths.items():
+                if str(repo_path) == str(path):
+                    return repo_commits[alias]
+            return []
+
+        with patch("repowise.core.workspace.cross_repo._parse_git_log", side_effect=fake_parse):
+            return detect_cross_repo_co_changes(repo_paths, **kwargs)
+
+    def test_total_exceeds_returned_list_when_capped(self) -> None:
+        """The pre-cap count survives the per-pair cap that dropped the rest."""
+        now = int(time.time())
+        day = 86400
+        commits_a = [
+            ("x@co.com", now - (i * 2) * day, [f"a{i}.py", f"b{i}.py", f"c{i}.py"])
+            for i in range(6)
+        ]
+        commits_b = [
+            ("x@co.com", now - (i * 2) * day + 60, [f"p{i}.ts", f"q{i}.ts", f"r{i}.ts"])
+            for i in range(6)
+        ]
+        import repowise.core.workspace.cross_repo as cr
+
+        with patch.object(cr, "_MAX_EDGES_PER_REPO_PAIR", 3):
+            results, total = self._detect(
+                {"a": _make_commits("a", commits_a), "b": _make_commits("b", commits_b)},
+                min_score=0.0,
+                min_sessions=1,
+            )
+        assert len(results) == 3, "list is capped"
+        assert total > 3, "the true count survived the cap"
+
+    def test_total_equals_list_when_nothing_dropped(self) -> None:
+        """An uncapped run must not inflate its own total."""
+        now = int(time.time())
+        results, total = self._detect(
+            {
+                "backend": _make_commits(
+                    "backend", [("alice@co.com", now - 3600, ["src/api.py"])]
+                ),
+                "frontend": _make_commits(
+                    "frontend", [("alice@co.com", now - 7200, ["src/client.ts"])]
+                ),
+            },
+            min_score=0.0,
+            min_sessions=1,
+        )
+        assert total == len(results)
+
+    def test_single_repo_returns_a_pair_not_a_bare_list(self) -> None:
+        """Every exit returns (list, total) — an early return that forgot the
+        total would raise on unpack, which is how one was found."""
+        assert self._detect({"solo": _make_commits("solo", [])}) == ([], 0)
+
+
 # ---------------------------------------------------------------------------
 # Noise-file filtering
 # ---------------------------------------------------------------------------
@@ -475,7 +538,9 @@ class TestCrossRepoNoiseFiltering:
             return []
 
         with patch("repowise.core.workspace.cross_repo._parse_git_log", side_effect=fake_parse):
-            return detect_cross_repo_co_changes(repo_paths, **kwargs)
+            # [0] is the capped list; the pre-cap total is asserted separately
+            # in TestCoChangeTruncationTotals.
+            return detect_cross_repo_co_changes(repo_paths, **kwargs)[0]
 
     def test_noise_files_excluded_from_pairs(self) -> None:
         """Workflow/lockfile noise never appears in co-change results."""

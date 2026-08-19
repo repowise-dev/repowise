@@ -7,6 +7,7 @@ port instead of crashing with EADDRINUSE.
 
 from __future__ import annotations
 
+import os
 import socket
 
 import pytest
@@ -68,3 +69,27 @@ def test_find_free_port_handles_contiguous_busy_block(
     chosen = serve_cmd._find_free_port("127.0.0.1", 3000, "web UI", max_attempts=5)
     assert isinstance(chosen, int)
     assert 1024 <= chosen <= 65535
+
+
+@pytest.mark.skipif(os.name == "nt", reason="SO_REUSEADDR probe fix is POSIX-only (issue #840)")
+def test_is_port_free_ignores_time_wait() -> None:
+    """Regression test for issue #840: TIME_WAIT sockets shouldn't block the probe."""
+    host = "127.0.0.1"
+    lis = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if os.name != "nt":
+        lis.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    lis.bind((host, 0))
+    port = lis.getsockname()[1]
+    lis.listen(1)
+    
+    cli = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    cli.connect((host, port))
+    conn, _ = lis.accept()
+    
+    # Active close from the server side pushes the listener's port into TIME_WAIT
+    lis.close()
+    conn.close()
+    cli.close()
+    
+    # The probe should report it as free because it uses SO_REUSEADDR too
+    assert serve_cmd._is_port_free(host, port) is True

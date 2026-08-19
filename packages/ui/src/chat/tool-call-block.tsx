@@ -1,33 +1,59 @@
 "use client";
 
+/**
+ * One step of the model's work, as a hairline row.
+ *
+ * It used to be a bordered `bg-elevated` box that `ToolCallGroup` then nested
+ * inside another bordered `bg-elevated` box — the same plane twice, with two
+ * borders around it. The group owns the container now; a step is a row.
+ *
+ * A finished step carries no success badge. A green check on every completed
+ * row says nothing, because success is the default and the failure case is what
+ * needs marking. Only a *running* step shows a marker, and only while it runs.
+ */
+
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Loader2, CheckCircle2, ExternalLink } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, ArrowUpRight } from "lucide-react";
+import { cn } from "../lib/cn";
 import type { ChatUIToolCall } from "@repowise-dev/types/chat";
 
 const TOOL_LABELS: Record<string, string> = {
   get_overview: "Getting codebase overview",
   get_context: "Looking up context",
   get_risk: "Assessing risk",
+  get_change_risk: "Scoring change risk",
   get_why: "Querying decisions",
   search_codebase: "Searching codebase",
-  get_dependency_path: "Tracing dependency path",
   get_dead_code: "Checking dead code",
-  get_architecture_diagram: "Generating architecture diagram",
 };
+
+const MICRO_LABEL =
+  "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
 interface ToolCallBlockProps {
   toolCall: ChatUIToolCall;
   onViewArtifact?: () => void;
+  /** Renders the top hairline. Omitted on the first row of a group. */
+  divided?: boolean;
 }
 
-export function ToolCallBlock({ toolCall, onViewArtifact }: ToolCallBlockProps) {
+export function ToolCallBlock({
+  toolCall,
+  onViewArtifact,
+  divided = false,
+}: ToolCallBlockProps) {
   const [expanded, setExpanded] = useState(false);
   const label = TOOL_LABELS[toolCall.name] ?? toolCall.name;
   const isRunning = toolCall.status === "running";
 
   return (
-    <div className="my-1.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] text-xs overflow-hidden">
-      <div className="flex items-center gap-2 px-3 py-2 hover:bg-[var(--color-bg-overlay)] transition-colors">
+    <div
+      className={cn(
+        "text-xs",
+        divided && "border-t border-[var(--color-border-default)]",
+      )}
+    >
+      <div className="flex items-center gap-2 px-3 py-2">
         <button
           type="button"
           className="flex flex-1 min-w-0 items-center gap-2 text-left"
@@ -35,26 +61,26 @@ export function ToolCallBlock({ toolCall, onViewArtifact }: ToolCallBlockProps) 
           disabled={isRunning}
           aria-expanded={expanded}
         >
-          {isRunning ? (
+          {isRunning && (
             <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--color-accent-primary)] shrink-0" />
-          ) : (
-            <CheckCircle2 className="h-3.5 w-3.5 text-[var(--color-success)] shrink-0" />
           )}
-          <span className="font-medium text-[var(--color-text-secondary)]">{label}</span>
+          <span className="font-medium text-[var(--color-text-secondary)]">
+            {label}
+          </span>
           {toolCall.summary && !isRunning && (
             <span className="text-[var(--color-text-tertiary)] truncate ml-1">
               — {toolCall.summary}
             </span>
           )}
         </button>
-        <span className="ml-auto flex items-center gap-1 shrink-0">
+        <span className="ml-auto flex items-center gap-2 shrink-0">
           {toolCall.artifact && onViewArtifact && !isRunning && (
             <button
               type="button"
               onClick={onViewArtifact}
               className="text-[var(--color-accent-primary)] hover:underline flex items-center gap-0.5"
             >
-              View <ExternalLink className="h-3 w-3" />
+              View <ArrowUpRight className="h-3 w-3" />
             </button>
           )}
           {!isRunning &&
@@ -67,20 +93,16 @@ export function ToolCallBlock({ toolCall, onViewArtifact }: ToolCallBlockProps) 
       </div>
 
       {expanded && (
-        <div className="border-t border-[var(--color-border-default)] px-3 py-2 space-y-2">
+        <div className="px-3 pb-2.5 space-y-2.5">
           <div>
-            <span className="text-[10px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium">
-              Input
-            </span>
+            <span className={MICRO_LABEL}>Input</span>
             <pre className="mt-1 text-[10px] font-mono text-[var(--color-text-secondary)] overflow-x-auto max-h-32 overflow-y-auto">
               {JSON.stringify(toolCall.arguments, null, 2)}
             </pre>
           </div>
           {toolCall.result && (
             <div>
-              <span className="text-[10px] text-[var(--color-text-tertiary)] uppercase tracking-wider font-medium">
-                Result
-              </span>
+              <span className={MICRO_LABEL}>Result</span>
               <pre className="mt-1 text-[10px] font-mono text-[var(--color-text-secondary)] overflow-x-auto max-h-48 overflow-y-auto">
                 {JSON.stringify(toolCall.result, null, 2).slice(0, 2000)}
                 {JSON.stringify(toolCall.result).length > 2000 ? "\n..." : ""}

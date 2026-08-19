@@ -114,6 +114,89 @@ class C4L3:
     relations: list[Relation]
 
 
+@dataclass(frozen=True)
+class BoxSignals:
+    """What we know about a container or component beyond its shape.
+
+    C4 has no vocabulary for any of this — which is the point. Carried
+    per-box so an exporter can attach it without going back to the database,
+    and every field is optional because health data is sparse: ``None`` means
+    "not known", which must not be rendered as a real score of zero.
+    """
+
+    #: ``None`` when churn was never measured for this repo at all — a
+    #: different statement from "measured, found none", and the one a reader
+    #: would otherwise take as a clean bill of health.
+    #:
+    #: ``dead_count`` has no such distinction available: an empty findings
+    #: table means either the pass did not run or it found nothing, and
+    #: nothing in the schema separates them, so zero is reported as zero.
+    hotspot_count: int | None = 0
+    dead_count: int = 0
+    #: Names of the curated layers this box's files belong to. A box can span
+    #: several, so this is a list rather than one label.
+    layers: tuple[str, ...] = ()
+    #: The person owning the most files in this box, and their share of them.
+    primary_owner: str | None = None
+    primary_owner_pct: float | None = None
+    #: Lowest bus factor among the box's files — the worst case, not the mean,
+    #: because one unowned file is the risk a reader cares about.
+    min_bus_factor: int | None = None
+
+
+@dataclass(frozen=True)
+class TourStep:
+    """One step of the curated reading order.
+
+    Structurizr has no concept of a guided tour, so this rides along as a
+    comment. Kept as data rather than a formatted string so the emitter
+    decides how it reads.
+    """
+
+    order: int
+    title: str
+    description: str = ""
+    reason: str = ""
+    target_path: str | None = None
+    layer_name: str | None = None
+
+
+@dataclass(frozen=True)
+class C4Model:
+    """Every C4 level at once, built from one pass over the graph.
+
+    The dashboard views (``C4L1``/``C4L2``/``C4L3``) each answer one question
+    about one level. Anything that has to walk the whole model — an export,
+    say — would otherwise call ``build_l3`` per container and re-read the
+    graph each time. This carries all of it, and nothing below it touches a
+    session, so an emitter is a pure function of this value.
+
+    ``components_by_container`` is empty when components were not requested.
+    ``component_relations`` roll edges up to component granularity across
+    every container, so a cross-container edge names the real component on
+    both ends rather than collapsing into its container.
+    """
+
+    system: System
+    people: list[Person]
+    containers: list[Container]
+    components_by_container: dict[str, list[Component]]
+    external_systems: list[ExternalSystemView]
+    container_relations: list[Relation]
+    component_relations: list[Relation]
+    #: Actor→system edges. Their own field rather than part of
+    #: ``container_relations`` because they belong to no level's box graph and
+    #: must survive every include/exclude flag — a person with no edge to the
+    #: system is not drawn at all in a context view.
+    actor_relations: list[Relation] = field(default_factory=list)
+    #: Health, ownership and layer membership, keyed by container/component id.
+    #: Empty when the repo has none of it — an export must degrade to plain C4
+    #: rather than emitting placeholders.
+    box_signals: dict[str, BoxSignals] = field(default_factory=dict)
+    #: The curated reading order, in step order. Empty when there is no tour.
+    tour: list[TourStep] = field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Architecture view (unified model)
 # ---------------------------------------------------------------------------

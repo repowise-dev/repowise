@@ -11,16 +11,26 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import structlog
+
 from repowise.cli._repo_session import open_repo_db
 from repowise.cli.helpers import (
     config_fingerprint,
     get_head_commit,
+    head_commit_ts,
+    load_config,
     load_state,
     run_async,
     save_config,
     save_state,
+    stamp_offered_slots,
 )
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
+from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+from repowise.core.docs_mode import docs_mode_state_fields
+from repowise.core.generation.models import count_stub_fallbacks
+
+logger = structlog.get_logger(__name__)
 
 
 async def build_resume_controller(repo_path: Path, *, resume: bool) -> tuple[Any, Any]:
@@ -38,10 +48,74 @@ async def build_resume_controller(repo_path: Path, *, resume: bool) -> tuple[Any
     return ResumeController(sf, repo_id, resume=resume), engine
 
 
-async def persist_result(result: Any, repo_path: Path) -> None:
+# Chunk size for the preserved-page FTS backfill — keeps the IN (...) below
+# under SQLite's host-parameter limit and bounds how much page content is held
+# in memory at once.
+_FTS_BACKFILL_CHUNK = 200
+
+
+async def _index_preserved_pages(sf: Any, fts: Any, preserved_page_ids: set[str] | None) -> None:
+    """Full-text index the pages a resumed run kept rather than regenerated.
+
+    ``page_fts`` is a standalone FTS5 table with no triggers: a row appears
+    only when something calls :meth:`FullTextSearch.index`. The incremental
+    flush during generation writes SQL and nothing else, so a run killed before
+    its final persist leaves pages that exist in ``wiki_pages`` and are absent
+    from search. Those are exactly the pages a resume preserves, which would
+    make "your pages were kept" true in the database and false in every search
+    that goes looking for them.
+
+    Reads title + content back from SQL because a preserved page was never in
+    this run's memory. ``index`` is delete-then-insert, so re-indexing a page
+    that already had a row is a no-op in effect. Best-effort: search being
+    stale must never fail a run whose pages are already committed.
+    """
+    if fts is None or not preserved_page_ids:
+        return
+
+    from sqlalchemy import select
+
+    from repowise.core.persistence import get_session
+    from repowise.core.persistence.models import Page
+
+    ids = sorted(preserved_page_ids)
+    try:
+        for i in range(0, len(ids), _FTS_BACKFILL_CHUNK):
+            batch = ids[i : i + _FTS_BACKFILL_CHUNK]
+            async with get_session(sf) as session:
+                rows = (
+                    await session.execute(
+                        select(
+                            Page.id,
+                            Page.title,
+                            Page.content,
+                            Page.summary,
+                            Page.target_path,
+                        ).where(Page.id.in_(batch))
+                    )
+                ).all()
+            for page_id, title, content, summary, target_path in rows:
+                await fts.index(
+                    page_id,
+                    title or "",
+                    content or "",
+                    summary=summary or "",
+                    target_path=target_path or "",
+                )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("persist.preserved_fts_backfill_failed", error=str(exc))
+
+
+async def persist_result(result: Any, repo_path: Path, progress: Any | None = None) -> None:
     """Persist a PipelineResult to the local SQLite database.
 
     Handles both index-only (no pages) and full (with pages + FTS) modes.
+
+    *progress* is optional and reports the full-text indexing loop below, the
+    one part of persistence whose length is known in advance and proportional
+    to the wiki. Everything after "Generated N pages" used to happen under a
+    single indeterminate spinner, so on a repo of a few thousand pages the run
+    sat silent for minutes with no way to tell work from a hang.
     """
     from datetime import UTC, datetime
 
@@ -52,6 +126,7 @@ async def persist_result(result: Any, repo_path: Path) -> None:
         persist_generation,
         persist_pipeline_result,
         sweep_stale_generated_pages,
+        tombstone_absent_file_pages,
     )
 
     engine, sf, _repo_id = await open_repo_db(repo_path, repo_name=result.repo_name)
@@ -100,20 +175,43 @@ async def persist_result(result: Any, repo_path: Path) -> None:
             # forever. A type is swept when the run produced pages of it OR
             # declared authority over it (curated runs are authoritative for
             # module/layer pages even when every module page was skipped as
-            # 1:1 with a layer); types that are neither stay protected.
+            # 1:1 with a layer); types that are neither stay protected. Pages a
+            # resumed run skipped count as reproduced — they are absent from
+            # ``generated_pages`` precisely because they already exist.
             swept_page_ids = await sweep_stale_generated_pages(
                 session,
                 repo.id,
                 result.generated_pages,
                 getattr(result, "authoritative_page_types", None),
+                getattr(result, "preserved_page_ids", None),
             )
         else:
             swept_page_ids = await persist_pipeline_result(result, session, repo.id)
 
+        # Tombstone pages whose file is simply gone. The other tombstone path
+        # reads a diff, and an init compares nothing, so until here a page
+        # written before its file was deleted stayed ``fresh`` through every
+        # later index. Outside the branch above because both branches need it.
+        # Its ids join the swept ones so they leave the vector store and the
+        # full-text index together, below, after this session closes.
+        try:
+            swept_page_ids = [
+                *swept_page_ids,
+                *await tombstone_absent_file_pages(session, repo.id, repo_path),
+            ]
+        except Exception as exc:  # one stale page must not fail a whole index
+            logger.warning("tombstone_absent_sweep_failed", error=str(exc))
+
         # Record a completed GenerationJob so the web UI can show
         # "last synced" / "last re-indexed" timestamps.
         now = datetime.now(UTC)
-        page_count = len(result.generated_pages) if result.generated_pages else 0
+        _pages = result.generated_pages or []
+        page_count = len(_pages)
+        # A page that fell back to its stub has a row, so it counts towards the
+        # total, but the model never wrote it. Counting it as completed is what
+        # would let a run that lost half its pages report a clean sweep to the
+        # web UI, which reads this row rather than the job checkpoint.
+        stub_fallbacks = count_stub_fallbacks(_pages)
         job = await upsert_generation_job(
             session,
             repository_id=repo.id,
@@ -121,7 +219,8 @@ async def persist_result(result: Any, repo_path: Path) -> None:
             total_pages=page_count,
             config={"mode": "full_resync", "source": "cli_init"},
         )
-        job.completed_pages = page_count
+        job.completed_pages = page_count - stub_fallbacks
+        job.failed_pages = stub_fallbacks
         job.started_at = now
         job.finished_at = now
 
@@ -144,8 +243,21 @@ async def persist_result(result: Any, repo_path: Path) -> None:
     if fts is not None and swept_page_ids:
         await fts.delete_many(swept_page_ids)
     if fts is not None and result.generated_pages:
+        if progress is not None:
+            progress.on_phase_start("persist", len(result.generated_pages))
         for page in result.generated_pages:
-            await fts.index(page.page_id, page.title, page.content)
+            await fts.index(
+                page.page_id,
+                page.title,
+                page.content,
+                summary=page.summary,
+                target_path=page.target_path,
+            )
+            if progress is not None:
+                progress.on_item_done("persist")
+        if progress is not None:
+            progress.on_phase_done("persist")
+    await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
 
     # Stamp the analysis (+ generation) phases in the resume ledger now that
     # they're persisted, so a future resume can skip them too.
@@ -205,12 +317,14 @@ def save_full_state_and_config(
     result: Any,
     provider: Any,
     phase_timings: dict[str, float],
+    degraded: list[str] | None = None,
     embedder_name_resolved: str,
     exclude_patterns: list[str],
     commit_limit: int | None,
     resolved_commit_limit: int,
     resolved_reasoning: str,
     include_submodules: bool = False,
+    save_key: bool = True,
 ) -> None:
     """Persist state.json + config for a completed full-mode (docs) init run."""
 
@@ -246,7 +360,7 @@ def save_full_state_and_config(
     state["total_pages"] = run_async(_count_db_pages())
     state["provider"] = provider.provider_name
     state["model"] = provider.model_name
-    state["docs_enabled"] = True
+    state.update(docs_mode_state_fields("llm"))
     # Full-mode docs runs always index the FULL git tier.
     state["run_mode"] = "standard"
     state["git_tier"] = "full"
@@ -257,10 +371,33 @@ def save_full_state_and_config(
     state["total_tokens"] = total_tokens
     if phase_timings:
         state["phase_timings"] = phase_timings
+    # What this run degraded on. A scripted run exits 0 either way, so without
+    # this an agent records a clean index for a run that skipped, say, execution
+    # flow tracing entirely.
+    #
+    # Cleared first, because ``state`` is the *previous* run's dict read back
+    # from disk. Only setting it would let one bad run mark a repo degraded
+    # forever: the re-run that fixed the problem writes no key, the stale list
+    # is re-serialised verbatim, and every later ``update`` carries it on. The
+    # key describes this run or it is absent.
+    state.pop("degraded", None)
+    if degraded:
+        state["degraded"] = list(degraded)
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
         state["knowledge_graph"] = build_kg_state(kg)
-    save_state(repo_path, state)
+    # A full init/index genuinely brings the store to the current store format
+    # (its pages are the concept tree), so stamp the terminal version rather
+    # than clamping at the reindex gate a routine persist would stop below.
+    #
+    # The same run offered every registered onboarding slot its signals, so
+    # record which ones. A slot absent from a fresh index was refused by its
+    # gate, not missed, and the missing-slot notice must not report it.
+    # Read back rather than passed in: init writes ``enable_onboarding: false``
+    # to config.yaml before it reaches here, and only when it is false, so the
+    # file is the run's own answer by the time this runs.
+    stamp_offered_slots(state, enabled=bool(load_config(repo_path).get("enable_onboarding", True)))
+    save_state(repo_path, state, full_index=True)
 
     if kg is not None:
         save_knowledge_graph_json(repo_path, kg)
@@ -276,8 +413,27 @@ def save_full_state_and_config(
         exclude_patterns=exclude_patterns if exclude_patterns else None,
         commit_limit=resolved_commit_limit if commit_limit is not None else None,
         reasoning=resolved_reasoning,
+        save_key=save_key,
     )
 
     # Re-save state with the fingerprint now that config.yaml is written.
     state["config_fingerprint"] = config_fingerprint(repo_path)
-    save_state(repo_path, state)
+    # This index's health rows were written by the current analyzer, so start
+    # tracking it here — otherwise a fresh install carries no stamp and the
+    # first analyzer change after it cannot tell it needs a re-score.
+    state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+    # This run just scored every file, so the periodic re-score cadence starts
+    # now. Without the stamp the gate reads "never re-scored" and the very next
+    # update re-scores the whole repo that init had only just finished scoring.
+    #
+    # Only when there really is a report. The health phase swallows its own
+    # failures and returns None, and nothing is persisted for a None report, so
+    # stamping there would suppress the first update's re-score - the only thing
+    # that would have repopulated the missing rows. Same rule the two
+    # update-side writers follow: they stamp only on a re-score that returned
+    # True. None (no git) is left unstamped too: the gate cannot fire without a
+    # head_ts either, so there is nothing to suppress.
+    _head_ts = head_commit_ts(repo_path) if getattr(result, "health_report", None) else None
+    if _head_ts is not None:
+        state["last_full_rescore_at"] = _head_ts
+    save_state(repo_path, state, full_index=True)

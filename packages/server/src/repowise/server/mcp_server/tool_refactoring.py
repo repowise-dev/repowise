@@ -57,7 +57,7 @@ def _row_to_suggestion(row: Any) -> Any:
     return sug
 
 
-@mcp.tool()
+@mcp.tool(default=False)
 async def generate_refactoring_code(suggestion_id: str, repo: str | None = None) -> dict:
     """Generate refactored code + a unified diff for one refactoring plan.
 
@@ -96,7 +96,7 @@ async def generate_refactoring_code(suggestion_id: str, repo: str | None = None)
         }
 
     async with get_session(ctx.session_factory) as session:
-        repository = await _get_repo(session, repo)
+        repository = await _get_repo(session)
         row = await get_refactoring_suggestion(session, repository.id, suggestion_id)
         if row is None:
             return {

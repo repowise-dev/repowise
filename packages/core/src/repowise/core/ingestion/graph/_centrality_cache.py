@@ -21,19 +21,21 @@ values — deterministic where the status quo was not.
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
-import os
-import pickle
-import tempfile
 import threading
 from pathlib import Path
 
 import structlog
 
+from repowise.core.cache_seal import dump_sealed_pickle, load_sealed_pickle
+
 log = structlog.get_logger(__name__)
 
-_CACHE_VERSION = 1
+# Bumped to 2 when betweenness was made order-independent: the signature keys
+# on graph structure only, so a warm cache would keep serving the old,
+# insertion-order-dependent values and two installs at the same commit would
+# still disagree.
+_CACHE_VERSION = 2
 _CACHE_FILENAME = "centrality_cache.pkl"
 
 __all__ = ["CentralityCache", "subgraph_signature"]
@@ -86,14 +88,13 @@ class CentralityCache:
             return
         self._loaded = True
         try:
-            with self._path.open("rb") as fh:
-                payload = pickle.load(fh)
+            payload = load_sealed_pickle(self._path, domain=_CACHE_FILENAME)
             if payload.get("version") != _CACHE_VERSION:
                 return
             self._entries = payload.get("entries", {})
         except FileNotFoundError:
             return
-        except Exception as exc:  # corrupt / unreadable cache -> recompute
+        except Exception as exc:  # corrupt / unsigned / unreadable -> recompute
             log.debug("centrality_cache_load_failed", error=str(exc))
 
     def get(self, kind: str, signature: str) -> dict[str, float] | None:
@@ -110,18 +111,7 @@ class CentralityCache:
             self._ensure_loaded()
             self._entries[kind] = (signature, dict(values))
             try:
-                self._path.parent.mkdir(parents=True, exist_ok=True)
                 payload = {"version": _CACHE_VERSION, "entries": self._entries}
-                fd, tmp_name = tempfile.mkstemp(
-                    dir=str(self._path.parent), prefix=_CACHE_FILENAME, suffix=".tmp"
-                )
-                try:
-                    with os.fdopen(fd, "wb") as fh:
-                        pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
-                    os.replace(tmp_name, self._path)
-                except BaseException:
-                    with contextlib.suppress(OSError):
-                        os.unlink(tmp_name)
-                    raise
+                dump_sealed_pickle(self._path, payload, domain=_CACHE_FILENAME)
             except Exception as exc:
                 log.debug("centrality_cache_save_failed", error=str(exc))

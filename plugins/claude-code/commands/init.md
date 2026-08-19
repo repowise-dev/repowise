@@ -14,8 +14,7 @@ Run: `repowise --version`
 If the command fails or is not found, ask the user:
 
 "Repowise isn't installed yet. I can install it for you. Which do you prefer?"
-- `pip install repowise` (recommended)
-- `pip install "repowise[all]"` (includes all LLM provider dependencies)
+- `pip install repowise` (recommended, includes every LLM provider SDK)
 - "I'll install it myself"
 
 If they want you to install it, run `pip install repowise`. If that fails, try `python -m pip install repowise`.
@@ -35,28 +34,34 @@ Then stop — do not continue to Step 3 unless the user asks to re-index.
 
 If `.repowise/` doesn't exist, move to Step 3.
 
-## Step 3: Ask about mode
+## Step 3: Offer the mode, but do not block on it
 
-Ask the user ONE question:
+Repowise needs **no API key at all**. Never make a key a precondition for
+setting it up, and never stop and wait if you cannot get an answer.
 
-"How would you like to set up Repowise?
+Tell the user:
 
-1. **Index-only mode** — no LLM needed. Builds the dependency graph, mines git history, scores code health, and detects dead code. Fast. You get graph intelligence, git ownership, hotspots, the 1–10 code-health score, and dead-code detection — but no generated documentation or semantic search.
-2. **Full mode** — everything in index-only **plus** an LLM-generated wiki, semantic search, and architectural-decision mining. Requires an API key (Anthropic, OpenAI, Google Gemini, or Ollama for local). The graph/git/health layers are ready in minutes; the documentation layer runs after and can continue in the background.
-3. **I'll configure it myself** — just show me the available flags."
+"Repowise indexes your repo and writes a complete wiki with no API key. I'll run
+`repowise init --yes` unless you'd rather pick:
 
-### If Index-only mode:
+1. **Default (no key)** — full index plus a wiki rendered from your code's structure. Free, fast, nothing to configure.
+2. **Model-written wiki** — everything above, but an LLM writes the wiki prose instead of rendering it from structure, which also enables decision mining. Needs a provider key (Anthropic, OpenAI, Gemini, or Ollama locally). You can start keyless and upgrade any page later with `repowise generate`.
+3. **Show me the flags.**"
 
-Skip provider selection. Construct:
+If the user does not answer, or you are running unattended, take option 1.
+
+### If Default (no key):
+
+Skip provider selection entirely. Construct:
 ```
-repowise init --index-only
+repowise init --no-prose --yes
 ```
 
-Jump to Step 5.
+Jump to Step 3b.
 
 ### If Full mode:
 
-Move to Step 4.
+Move to Step 3b, then Step 4.
 
 ### If "show me flags":
 
@@ -67,13 +72,18 @@ repowise init [PATH]
 Core flags:
   --provider NAME        LLM provider: anthropic, openai, gemini, ollama, litellm
   --model NAME           Model identifier override
-  --index-only           Analysis-only mode. No docs generation, no API key needed.
+  --prose / --no-prose   Write the subsystem (concept) pages as model prose
+                         (--prose, needs a key), or render the whole wiki from
+                         structure with no model and no spend (--no-prose).
+                         Every other page is structural either way.
+                         Default: prose when a key is available.
+  --mode fast            Quick first pass on very large repos: no wiki at all.
 
 Embeddings:
   --embedder NAME        Embedding provider: gemini, openai, mock (default: auto-detect)
 
 Cost control:
-  --concurrency N        Max parallel LLM calls (default: 5)
+  --concurrency N        Max parallel LLM calls (default: 10)
   --test-run             Limit to top 10 files by PageRank for quick validation
 
 Exclusions:
@@ -86,9 +96,28 @@ Git:
   --commit-limit N       Max commits to analyze per file (default: 500, max: 10000)
   --follow-renames       Track files across renames (slower but more accurate history)
 
+Editor integration:
+  --editor-setup /       Wire repowise into your editors (default), or skip it
+  --no-editor-setup      entirely. Covers both halves: the machine-wide config
+                         (~/.claude/settings.json, Claude Desktop's config, the
+                         Claude Code hooks, the distill rewrite-hook offer) and
+                         the project-local files (.mcp.json, .claude/CLAUDE.md,
+                         .vscode/mcp.json, .vscode/extensions.json). With
+                         --no-editor-setup only .repowise/ is touched. There is
+                         one 'repowise' MCP entry per machine-wide config, so a
+                         later init from another repo repoints it. See Step 3b.
+
+Keys:
+  --save-key /           Save the provider key this run authenticated with to
+  --no-save-key          .repowise/.env (gitignored, owner-only). Default: on,
+                         so the MCP server can answer later without the shell
+                         that set it. Use --no-save-key in CI or on a shared
+                         machine.
+
 Output:
   --no-claude-md         Don't generate/update CLAUDE.md
   -y, --yes              Skip cost confirmation prompt
+  -v, --verbose          Show per-phase internals plus debug logs (quiet by default)
 
 Recovery:
   --resume               Resume a previously interrupted init
@@ -100,7 +129,49 @@ Dry run:
 
 Then ask if they want you to construct a command or if they'll handle it.
 
-## Step 4: Provider selection (full mode only)
+## Step 3b: Is this repo a keeper?
+
+Every path reaches this step. It is about the repo, not the provider.
+
+By default `init` registers repowise as the user's global MCP server, in
+`~/.claude/settings.json` and Claude Desktop's config, and writes four
+project-local files into the repo (`.mcp.json`, `.claude/CLAUDE.md`,
+`.vscode/mcp.json`, `.vscode/extensions.json`). There is **one** `repowise` key
+in each machine-wide config, so this repo replaces whatever repo is registered
+now. That is the right default for the repo someone actually works in, and the
+wrong one for a checkout that is about to disappear.
+
+Add `--no-editor-setup` when either of these holds:
+
+- the path is a scratch clone, a fixture, a sample, a vendored copy, or sits
+  under a temp directory
+- it is a linked git worktree rather than the main checkout. Check with
+  `git rev-parse --git-common-dir`: a value other than `.git` means a worktree
+
+Also add it if the user says they don't want their editor or MCP setup touched.
+Do **not** infer that from "just index it" or "don't ask me questions" — those
+are about prompts, not config.
+
+The index and the wiki are identical either way. What the flag skips is both
+the machine-wide registration and the four project-local files, so with it only
+`.repowise/` is touched. (`.repowise/mcp.json` is still written: it is what
+`repowise mcp .` prints, and it is how you opt back in.) Either half can be
+done later by re-running `repowise init` in that repo without the flag.
+
+Whichever you pick, say which in one line so the user can correct you.
+
+If `init` prints "Replacing the existing repowise MCP …", relay it. The global
+entry just moved to this repo, and the user may want it pointed back.
+
+Then continue to Step 4 for the model-written wiki, or Step 5 otherwise.
+
+## Step 4: Provider selection (model-written wiki only)
+
+**Skip this entire step unless the user chose the model-written wiki.** A
+missing key is not a blocker: `init` renders the template wiki and exits 0
+without one. If you cannot find a key, do not stop and do not ask again. Run
+`repowise init --yes` and tell the user their wiki is rendered from structure
+and can be upgraded per-page later with `repowise generate`.
 
 Check which API keys are already set by running:
 ```bash
@@ -127,11 +198,10 @@ Then ask them to set the required environment variable. Show the exact export co
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-Also check if the provider's Python package is installed. If using anthropic and it's not installed:
-```
-pip install "repowise[anthropic]"
-```
-Similarly for openai (`repowise[openai]`) and gemini (`repowise[gemini]`).
+Every provider SDK (anthropic, openai, google-genai, litellm) ships with `repowise`
+itself, so there is no per-provider package to install. If a provider import fails,
+the install is broken rather than incomplete: reinstall with
+`pip install --force-reinstall repowise` and run `repowise doctor`.
 
 ## Step 5: Exclusions
 
@@ -142,6 +212,14 @@ Before running the command, ask:
 Add any exclusions as `-x` flags.
 
 ## Step 6: Run it
+
+For an unattended or non-interactive run, the canonical command is
+`repowise init --yes`, plus `--no-prose` when you want to guarantee no spend.
+`--yes` suppresses every prompt including the cost gate. You do not need to guard
+against prompts beyond that: init treats an unanswerable question as a signal to
+continue with defaults rather than a reason to fail, and the cost gate declines
+by itself when stdin is not a terminal, keeping the finished index and landing on
+the structural wiki.
 
 Show the user the exact command you're about to run. Ask for confirmation.
 
@@ -155,6 +233,12 @@ After init completes successfully:
 2. Run `repowise status` to show the summary
 3. Tell the user:
    - "Repowise has indexed your codebase. The MCP tools are now active — I can answer questions about your architecture, ownership, dependencies, and more."
+     **Only if you did not pass `--no-editor-setup`.** With that flag nothing was
+     registered and nothing was written into the repo outside `.repowise/`, so
+     say instead: "The index is built. I did not register it as your global MCP
+     server and wrote no editor files into the repo (this looked like a
+     temporary checkout). The repowise plugin's tools still work here; to wire
+     it up properly, re-run `repowise init` without `--no-editor-setup`."
    - "Try asking me something like 'how does the auth module work?' or 'what depends on utils.py?'"
    - "Run `/repowise:status` anytime to check the health of your index."
    - "Run `/repowise:update` after making code changes to keep the wiki in sync."

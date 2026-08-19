@@ -125,7 +125,7 @@ export interface ContextArtifact {
   data: ContextArtifactData;
 }
 
-/** `get_risk` — modification risk report per target. */
+/** `get_risk` / `get_change_risk` — modification or commit-range risk report. */
 export interface RiskReportArtifactData {
   targets: Array<{
     file_path: string;
@@ -157,7 +157,11 @@ export interface SearchResultsArtifact {
   data: SearchResultsArtifactData;
 }
 
-/** `get_dependency_path` — short import-graph path. */
+/**
+ * Legacy wire shape from the removed chat tool `get_dependency_path`.
+ * Retained so stored conversations / SSE history still narrow; not emitted
+ * by the current 7-tool chat registry (MCP still offers it as opt-in).
+ */
 export interface GraphPathArtifactData {
   path: string[];
   distance: number;
@@ -168,19 +172,59 @@ export interface GraphPathArtifact {
   data: GraphPathArtifactData;
 }
 
-/** `get_why` — decision register search results / health dashboard. */
+/** `get_why` — decision register search / path lookup / health dashboard. */
 export interface DecisionsArtifactData {
-  mode: "health" | "search";
+  mode: "health" | "search" | "path";
   query?: string;
+  path?: string;
+  summary?: string;
+  /** Health mode: counters from `get_decision_health_summary`. */
+  counts?: Record<string, number>;
+  /** @deprecated Legacy chat fixture field; prefer `counts`. */
   total_decisions?: number;
+  /** @deprecated Legacy chat fixture field; unused by MCP wire format. */
   by_source?: Record<string, number>;
-  decisions?: Array<{ title: string; status?: string }>;
+  stale_decisions?: Array<{
+    title: string;
+    status?: string;
+    affected_files?: string[];
+    staleness_score?: number;
+  }>;
+  proposed_awaiting_review?: Array<{
+    title: string;
+    source?: string;
+    confidence?: number;
+  }>;
+  ungoverned_hotspots?: Array<string | { file_path?: string; path?: string }>;
+  /** Search/path mode: governing or matched decisions (MCP wire). */
+  decisions?: Array<{
+    title: string;
+    status?: string;
+    decision?: string;
+    rationale?: string;
+    affected_files?: string[];
+  }>;
+  /**
+   * @deprecated Legacy chat fixture shape. MCP search/path return `decisions`.
+   * Renderers still accept this for stored conversations.
+   */
   results?: Array<{
     title: string;
     decision: string;
     rationale?: string;
     affected_files?: string[];
   }>;
+  origin_story?: {
+    first_commit?: { date?: string; author?: string; message?: string };
+    primary_author?: string;
+    [k: string]: unknown;
+  };
+  alignment?: {
+    score?: number;
+    label?: string;
+    summary?: string;
+    [k: string]: unknown;
+  };
 }
 export interface DecisionsArtifact {
   type: "decisions";
@@ -213,7 +257,10 @@ export interface DeadCodeArtifact {
   data: DeadCodeArtifactData;
 }
 
-/** `get_architecture_diagram` — Mermaid flowchart. */
+/**
+ * Legacy wire shape from the removed chat tool `get_architecture_diagram`.
+ * Retained for historical SSE payloads; current chat does not emit `diagram`.
+ */
 export interface DiagramArtifactData {
   diagram_type: string;
   mermaid_syntax: string;

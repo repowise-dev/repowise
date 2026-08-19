@@ -4,18 +4,16 @@
 
 <a href="https://www.repowise.dev"><img src=".github/assets/banner.png" alt="repowise: the codebase intelligence layer for your AI coding agent" width="100%" /></a>
 
-<p align="center"><strong>Five intelligence layers · Nine MCP tools · 15 languages · Multi-repo workspaces · One <code>pip install</code></strong></p>
-
 <p align="center">
   <a href="https://www.repowise.dev"><img src="https://img.shields.io/badge/LIVE_DEMO-repowise.dev-F59520?style=for-the-badge&labelColor=0A0A0A" alt="Live demo: repowise.dev" /></a>
-  <a href="https://github.com/repowise-dev/repowise"><img src="https://img.shields.io/badge/Star_this_repo-1E293B?style=for-the-badge&logo=github&logoColor=white&labelColor=0A0A0A" alt="Star repowise on GitHub" /></a>
 </p>
 
 <p align="center">
+  <a href="https://repowise.dev/repo/repowise-dev/repowise"><img src="https://api.repowise.dev/badge/wiki/repowise-dev/repowise.svg?style=for-the-badge" alt="repowise: explore code" /></a>
+  <a href="https://repowise.dev/repo/repowise-dev/repowise/code-health"><img src="https://api.repowise.dev/badge/health/repowise-dev/repowise.svg?style=for-the-badge" alt="Code health" /></a>
+  <a href="https://github.com/repowise-dev/repowise/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/repowise-dev/repowise/ci.yml?branch=main&style=for-the-badge&label=CI&labelColor=0A0A0A" alt="CI status" /></a>
   <a href="https://pypi.org/project/repowise/"><img src="https://img.shields.io/pypi/v/repowise?style=for-the-badge&color=1E293B&labelColor=0A0A0A&logo=pypi&logoColor=white" alt="PyPI version" /></a>
   <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL--v3-059669?style=for-the-badge&labelColor=0A0A0A" alt="License: AGPL v3" /></a>
-  <a href="https://pypi.org/project/repowise/"><img src="https://img.shields.io/badge/Python-3.11%2B-1E293B?style=for-the-badge&labelColor=0A0A0A&logo=python&logoColor=white" alt="Python 3.11+" /></a>
-  <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-compatible-1E293B?style=for-the-badge&labelColor=0A0A0A" alt="MCP compatible" /></a>
   <a href="https://github.com/repowise-dev/repowise/stargazers"><img src="https://img.shields.io/github/stars/repowise-dev/repowise?style=for-the-badge&logo=github&color=1E293B&labelColor=0A0A0A&logoColor=white" alt="GitHub stars" /></a>
 </p>
 
@@ -27,341 +25,396 @@
 </p>
 
 <p align="center"><sub>
-  <a href="#the-five-layers">Layers</a> ·
-  <a href="#learns-from-how-you-actually-use-it">Learns from you</a> ·
-  <a href="#-code-health-the-layer-nobody-else-nails">Code Health</a> ·
-  <a href="#refactoring-intelligence">Refactoring</a> ·
-  <a href="#benchmarks">Benchmarks</a> ·
-  <a href="#supported-languages">Languages</a> ·
-  <a href="#quickstart">Quickstart</a> ·
-  <a href="#nine-mcp-tools">MCP tools</a> ·
-  <a href="#how-it-compares">Comparison</a> ·
-  <a href="#for-teams--enterprises">Hosted</a>
+  <a href="#your-agent-stops-guessing">For your agent</a> ·
+  <a href="#what-one-index-actually-builds">The five layers</a> ·
+  <a href="#stop-paying-for-output-nobody-reads">Distill</a> ·
+  <a href="#know-whats-dangerous-before-you-merge">Change risk</a> ·
+  <a href="#-know-exactly-what-to-fix">Code health</a> ·
+  <a href="#see-all-of-it">Dashboard</a> ·
+  <a href="#past-one-repo">Workspaces</a> ·
+  <a href="#quickstart-under-5-minutes-no-api-key">Quickstart</a> ·
+  <a href="#supported-agents">Agents</a> ·
+  <a href="#the-ten-mcp-tools">MCP tools</a> ·
+  <a href="#measured-against-the-field">Benchmarks</a> ·
+  <a href="#how-it-compares-on-capability">Comparison</a> ·
+  <a href="#for-teams--enterprises">Teams</a>
 </sub></p>
 
 ---
 
-<p align="center">
-  <strong>measure, locate, and fix what your AI ships</strong><br/>
-  <strong>code health that predicts real bugs</strong> &nbsp;·&nbsp; <strong>ROC AUC 0.74 across 21 repos</strong> &nbsp;·&nbsp; <strong>2.3×</strong> CodeScene's defects under a fixed review budget<br/>
-  <strong>graph-aware refactoring plans</strong> your agent can execute &nbsp;·&nbsp; <strong>up to −96% context tokens</strong> &nbsp;·&nbsp; <strong>−70% agent tool calls</strong> at answer-quality parity
-</p>
+### Your AI agent burns most of its budget rediscovering your codebase. Index it once, and it never has to again.
 
-<p align="center"><sub>Measured, reproducible, on public codebases. <a href="#benchmarks">See the benchmarks ↓</a></sub></p>
+<table align="center">
+<tr>
+<td align="center" width="250"><h2>#1 of 6</h2></td>
+<td align="center" width="250"><h2>−31.6%</h2></td>
+<td align="center" width="250"><h2>97%</h2></td>
+</tr>
+<tr>
+<td align="center" valign="top"><sub><strong>at finding the right files.</strong><br />0.876 file coverage against the<br />next tool's 0.610, on a <strong>sealed</strong><br />42-instance split. <em>p=0.00004</em></sub></td>
+<td align="center" valign="top"><sub><strong>of your agent's own output tokens,</strong><br />reached in 3.8 tool calls where a<br />bare agent needed 7.2. <em>n=43,<br />p&lt;0.0001, leaner on 37 of 44</em></sub></td>
+<td align="center" valign="top"><sub><strong>fewer tokens to load a commit.</strong><br />393 instead of 13,984 raw, counted<br />with deterministic tiktoken across<br />30 commits. <em>35.6x, pooled</em></sub></td>
+</tr>
+</table>
 
-<img src=".github/assets/demo.gif" alt="repowise demo: Claude Code querying the codebase through repowise's MCP tools, then a tour of the local dashboard" width="100%" />
+<sub>Measured head to head against the open-source agent-context field, on instances held out
+from every improvement round. Defect risk validated separately at <strong>ROC AUC 0.737</strong>
+across 21 repos and 9 languages, leakage-free. Every layer computed with <strong>zero LLM
+calls</strong>. <strong>We publish the rows we lose</strong>, and we are the slowest indexer here.
+<a href="docs/BENCHMARKS.md"><strong>All of it, including the losses →</strong></a><br />
+Free and self-hosted, runs on your machine, and the first index needs no API key.</sub>
 
----
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/one-index-dark.svg" />
+  <img src=".github/assets/one-index.svg" alt="One index producing code health, a dependency graph, git history, generated docs, architectural decisions, and ten MCP tools" width="100%" />
+</picture>
 
 </div>
 
-AI now writes a large and growing share of the code, and the humans accountable
-for it have to trust what ships. A score that says *"this file is risky"* isn't
-enough: you need to know **where** the risk concentrates and **how** to fix it.
+---
 
-repowise closes that loop. It indexes your codebase once and scores **every file
-for defect risk, maintainability, and performance** from 25 deterministic
-markers, calibrated against a real defect corpus, no LLM, in under 30 seconds
-([the proof ↓](#-code-health-the-layer-nobody-else-nails)). The same index then
-**locates** the risk through a real dependency graph and git history, and
-**generates the fix**: concrete, graph-aware refactoring plans (split this god
-class, move this method, break this dependency cycle, dedup this clone) that
-your coding agent can execute.
+Every question your agent asks about your repo has an answer that could have been
+computed ahead of time. *Who calls this function? What breaks if I change it? Why is
+it written this way? Which of these files is actually dangerous?* Instead, agents
+rediscover it from scratch on every task: grep, read, re-read, forget.
 
-And because it is all one index, your agent gets the rest for free: **five
-intelligence layers**: dependency graph, git history, auto-generated docs,
-architectural decisions, and code health, exposed to Claude Code, Codex, and any
-MCP-compatible agent through **nine task-shaped tools**. Your agent answers *"why
-does auth work this way?"* instead of *"here is what `auth.ts` contains"*, with
-fewer tool calls, fewer file reads, and lower cost per query, at comparable
-answer quality ([benchmarks ↓](#benchmarks)). One index: context your agent can
-use, signals your team can trust, and the fix it can apply.
+repowise computes those answers once and keeps them current on every commit. Your
+agent reads the answer instead of the codebase, and the same index gives your team a
+defect-validated health score, change-risk scoring on every PR, and a local dashboard
+for all of it. One `pip install`, no cloud, your code never leaves your machine.
 
 ---
 
-## The five layers
+## Your agent stops guessing
 
-repowise runs once, builds everything, then keeps it in sync on every commit.
-Each layer is queryable from the CLI, the MCP tools, and the local dashboard.
+repowise exposes **ten task-shaped MCP tools** to Claude Code, Codex, Cursor, VS Code
+and anything else that speaks MCP. Most tools are built around data entities (one
+file, one symbol), which forces agents into long chains of sequential calls. These are
+built around **tasks**: pass several targets in one call, get complete context back.
+
+<img src=".github/assets/demo.gif" alt="The repowise dashboard running locally on localhost:3000: health score, code health map, a break-cycle refactoring plan, the agent prompt it generates, change coupling, and the generated wiki" width="100%" />
+
+<sub>The same index those tools read from, browsable at `localhost:3000`. Recorded on this
+repository, no API key and nothing uploaded.</sub>
+
+Because the exploration work is already done, that phase mostly disappears. Loading
+one commit's context through `get_context` costs **393 tokens instead of 13,984**
+raw, 35.6x fewer. In a measured agent loop, across 43 questions on `django/django`,
+that is worth **-31.6% of the agent's own output tokens** (p&lt;0.0001), reached in
+**3.8 tool calls against a bare agent's 7.2**, roughly one answered question
+replacing six greps. The saving grows with how much of the codebase the task
+touches. CodeGraph is a genuine second here at -24.4%: we lead a field in which
+more than one tool works.
+
+**And it arrives without being asked.** Optional [hooks](docs/agent/HOOKS.md) push
+context into the session at the moment it matters: the governing architectural
+decision when your agent edits a file that decision covers, a warning when it touches
+a file with a run of recent bug fixes, a compact briefing at session start. repowise
+also generates your `CLAUDE.md` and `AGENTS.md` from the real index, so even an agent
+with no MCP support starts informed.
+
+**It learns from how you actually work.** repowise reads your own agent transcripts
+for the corrections you keep making ("use the shared HTTP client, not raw requests")
+and turns the durable ones into tracked decisions it delivers back later. The wiki
+generation budget tilts toward the modules you and your agent ask about most. All
+local, all deterministic, no extra LLM calls.
+
+---
+
+## What one index actually builds
+
+Five layers, built in a single pass and kept in sync on every commit. Each one is
+queryable from the CLI, the MCP tools, and the local dashboard.
 
 | Layer | What it gives you | Edge |
 |---|---|---|
-| **◈ Graph** | tree-sitter dependency graph across 15 languages · two-tier file + symbol nodes · 3-tier call resolution · Leiden communities · PageRank / centrality / execution flows · framework-aware route→handler edges | A real graph most tools never build |
-| **◈ Git** | hotspots (churn × complexity) · ownership % · co-change pairs (hidden coupling) · bus factor · contributor profiles · module health · reviewer suggestions | Behavioral signals static analysis can't see |
-| **◈ Docs** | LLM-generated wiki per module/file · incremental on every commit · freshness + confidence scoring · hybrid RAG search (FTS + vector via RRF) · selectable wiki styles (comprehensive / reference / tutorial / caveman) · 15 output languages (`init --language zh`) | Stays current, rebuilt every commit |
-| **◈ Decisions** | architectural decisions mined from **8 sources**, evidence-backed (verified / fuzzy / unverified), linked to graph nodes, connected by `supersedes`/`refines`/`conflicts_with` edges, tracked for staleness | **★ Captured nowhere else** |
-| **★ Code Health** | **25 deterministic markers**, 1–10 per file · **three signals: defect risk · maintainability · performance** · coverage ingestion · trend alerts · **concrete graph-aware refactoring plans** (Extract Class / Helper / Move Method / Break Cycle / Split File / Extract Method) · **zero LLM, <30s** | **★ Defect-validated, with the fix attached. Our edge** |
+| **◈ Graph** | Dependency graph across 19 languages · file + symbol nodes · confidence-scored call resolution · Leiden communities · PageRank and execution flows · route→handler edges across 22 frameworks | A real graph most tools never build |
+| **◈ Git** | Hotspots (decayed churn + activity floors) · ownership % · co-change pairs (hidden coupling) · bus factor · which files actually get bug-fixed, and how recently | Behavioural signals static analysis cannot see |
+| **◈ Docs** | A generated wiki page per module and file · rebuilt incrementally every commit · freshness and confidence scoring · hybrid search (full-text + vector) · selectable style and output language | Stays current instead of rotting |
+| **◈ Decisions** | Architectural decisions mined from five sources, evidence-backed, each traced to a verbatim source span and stamped exact / fuzzy / unverified | **★ Captured nowhere else** |
+| **★ Code health** | **49 deterministic detectors**, of which only 26 may move the number · 1 to 10 per file · three signals: defect risk · maintainability · performance · concrete refactoring plans (Extract Class / Method / Helper, Move Method, Break Cycle, Split File) · **zero LLM, under 30s** | **★ Defect-validated, with the fix attached** |
 
-Full deep-dive on every layer (graph, git, docs, decisions, hooks, auto-sync,
-dead code, CLAUDE.md generation): **[docs/INTELLIGENCE_LAYERS.md →](docs/INTELLIGENCE_LAYERS.md)**
+**The whole wiki is generated with no LLM, then upgraded to model-written prose on
+demand.** `repowise init --no-prose` builds the graph, git, decision and health
+layers and renders every wiki page from your code's structure, with no API key and
+no spend. Convert any part of it to LLM-written prose whenever you want, one page,
+one directory, or a ranked coverage slice at a time, and pay only for what you pick,
+from the CLI or right in the dashboard with the cost shown before you confirm.
+(Seven of the eight decision sources are deterministic too; only the one harvested
+during doc generation needs a provider.)
 
----
-
-## Learns from how you actually use it
-
-repowise doesn't just index once and go stale, it watches how you and your agent
-work in the repo and tilts itself toward that. All local, all deterministic, no
-extra LLM calls, and it feeds back through the [hooks](docs/HOOKS.md) at zero
-agent effort:
-
-- **Decisions mined from your own sessions.** repowise reads your Claude Code
-  transcripts for the corrections and conventions you actually enforce ("new
-  endpoints go through the auth middleware", "use the shared HTTP client, not
-  raw requests"), turns the durable ones into tracked decisions, then delivers
-  the relevant ones back: a compact block at session start, and a one-line
-  *"governed by"* notice the moment your agent edits a file that decision
-  governs. If a later session contradicts a decision, it stops being injected.
-- **Docs that follow your questions.** The wiki generation budget tilts toward
-  the modules you and your agent ask about most (from `get_answer` and
-  `search_codebase` history), so depth lands where you actually work instead of
-  spreading evenly. Silent and byte-identical on a fresh repo with no history.
-
-It is a flywheel: **use it → it mines what mattered → it delivers that back on
-the next session.** How the hooks carry it: **[docs/HOOKS.md →](docs/HOOKS.md)** ·
-decision layer: **[docs/INTELLIGENCE_LAYERS.md →](docs/INTELLIGENCE_LAYERS.md)**
+Full detail on every layer: **[docs/layers/INTELLIGENCE_LAYERS.md →](docs/layers/INTELLIGENCE_LAYERS.md)**
+How the graph resolves an edge, and how much to trust one:
+**[docs/layers/GRAPH.md →](docs/layers/GRAPH.md)**
 
 ---
 
-## ★ Code Health: the layer nobody else nails
+## Stop paying for output nobody reads
 
-Code health is repowise's deepest differentiator: the one layer with no real
-equivalent, and **the only one we can prove predicts real bugs**. It runs as a
-loop: **measure** every file across three signals, **locate** where the risk
-concentrates through the graph and git history, then **fix** it with a concrete
-refactoring plan your agent can execute.
-
-<div align="center">
-<img src=".github/assets/health-loop.svg" alt="repowise code-health loop: 25 deterministic markers fan into three signals (defect risk, maintainability, performance), the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans (Extract Class, Extract Helper, Move Method, Break Cycle, Split File, Extract Method) your agent executes" width="100%" />
-</div>
-
-repowise scores **every file 1–10** from **25 deterministic markers**, McCabe
-complexity, brain methods, class cohesion (LCOM4), god classes, native
-Rabin–Karp clone detection, untested hotspots, change entropy, prior-defect
-history, and more, split into **three signals**:
-
-- **Defect risk** is the headline 1–10: the defect-calibrated, bug-predictive
-  score in the table below.
-- **Maintainability** (cohesion, brain methods, DRY and god-class smells) flags
-  what raises change-cost without predicting bugs.
-- **Performance** (static N+1 / I/O-in-loop risk) is followed across files
-  through the call graph: file-local linters found 0 of those cross-function
-  cases on a 12k-file benchmark where repowise surfaced 557.
-
-The companion signals are separate lenses, never blended into the defect
-headline, so the bug-predictive number stays clean.
-
-> **Zero LLM calls, zero cloud, zero new runtime dependencies.** Pure Python
-> over tree-sitter + git data, **under 30 seconds** on a 3,000-file repo. The
-> marker weights are **calibrated against a real defect corpus, not hand-tuned**;
-> only the learned constants ship and the runtime stays fully deterministic.
+Most of what an agent reads back from a shell command is noise: 300 lines of passing
+tests wrapped around 4 failures, full commit bodies when it asked "what changed
+recently". `repowise distill <cmd>` compresses command output **before the agent reads
+it**, errors first, exit code preserved.
 
 ```bash
-repowise health                       # KPIs + lowest-scoring files
-repowise coverage add cov.lcov   # ingest LCOV/Cobertura/Clover → untested-hotspot
-repowise impacted-tests HEAD~1   # run only the tests a diff actually exercises
-repowise health --refactoring-targets # ranked by impact / effort
-repowise health --trend               # snapshots + declining / predicted-decline alerts
+repowise distill pytest          # 61% fewer tokens, all 11 failure lines kept
+repowise distill git log -50     # 89% fewer tokens
+repowise saved                   # what distillation saved you, in tokens and dollars
 ```
 
-And it proves itself on *your* repo, not just a benchmark: after every index,
-repowise checks its own flags against your git history and reports the hit rate
-in the terminal and on the dashboard: *"16/20 lowest-health files had a bug fix
-in the last 6 months, 3.3x the 24% baseline"*. See
-[Does the score find the bugs?](docs/CODE_HEALTH.md#does-the-score-find-the-bugs).
+Nothing is lost. Every omission leaves an inline `[repowise#<ref>]` marker that
+`repowise expand <ref>` reverses in full, so the agent can always pull the detail back
+without re-running the command. Small outputs pass through untouched. An opt-in hook
+rewrites noisy commands automatically, shown to you for approval first.
 
-**Does the score actually find bugs? Yes, and it out-ranks CodeScene**, the
-leading commercial code-health tool. On the **same 2,770 files across 9
-languages**, scored at the same leakage-free commit against the same defect
-labels:
+<div align="center">
+<img src=".github/assets/savings.png" alt="repowise Costs dashboard: tokens and dollars saved across distill and the MCP tools" width="100%" />
+<p align="center"><sub>The <strong>Costs</strong> dashboard tallies both savings surfaces, priced at your own agent's model. Example from a week of heavy local use.</sub></p>
+</div>
 
-| Axis (head-to-head, paired tests) | repowise | CodeScene |
-|---|---:|---:|
-| **Recall @ 20%-of-lines budget** | **0.173** | 0.074 |
-| **Effort-aware ranking (Popt)** | **0.607** | 0.462 |
-| **Defect density, size-normalized (defects/KLOC, Alert:Healthy)** | **2.18×** | 0.56× |
-| Discrimination (ROC AUC) | 0.731 | 0.705 |
+Full guide: **[docs/agent/DISTILL.md →](docs/agent/DISTILL.md)**
 
-Ranking by repowise health surfaces **2.3× the defects under a fixed review
-budget** (Popt Δ +0.144, recall Δ +0.098, density Δ all p = 0.003, paired and
-significant; the ROC AUC edge is marginal). [Full methodology & CIs →](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/COMPARISON_REPORT.md)
+---
 
-User guide & per-marker reference: **[docs/CODE_HEALTH.md](docs/CODE_HEALTH.md)**
+## Know what's dangerous before you merge
 
-### Refactoring intelligence
+Three deterministic signals, all computed from the graph and git history, no LLM:
 
-A health score tells you a file is in trouble; every other tool stops there, or
-prints the same static sentence for every god class. repowise names the
-**specific** fix, computed deterministically from the graph, the class model, and
-git co-change: **Extract Class**, **Extract Helper**, **Move Method**, **Break
-Cycle**, **Split File**, **Extract Method**. Each plan names the exact methods,
-edges, or symbols that move and carries its **blast radius** (the callers and
-co-changing files that must move with it), ranked **graph-aware** (`impact ×
-call-graph centrality × blast radius`) so a fix on a central hub outranks the
-same fix on a leaf. That is the wedge: CodeScene's AI refactoring stays inside a
-single function; repowise names the cross-file move and the dependents it ripples
-to. Extract Method goes deepest, an intra-procedural dataflow pass (CFG + def/use
-+ reaching definitions) lifts the exact line span and infers the helper's
-signature, behavior-preserving by construction.
+- **Change risk.** Score any commit or `base..HEAD` range **0-10** from the shape of
+  the diff, ranked against your repo's own recent commits. PR mode returns directives
+  rather than vibes: `will_break`, `missing_cochanges`, `missing_tests`, `tests_to_run`.
+  One command: `repowise risk main..HEAD`. ([reference →](docs/layers/CHANGE_RISK.md))
+- **Bug history.** Which files and symbols actually get bug-fixed, and how recently.
+  Doc, test and config commits are filtered out so the count means what it says, and a
+  file with a run of recent fixes gets flagged as a bug magnet while you edit it.
+  ([reference →](docs/layers/BUG_HISTORY.md))
+- **Test intelligence.** Ingest coverage, find untested hotspots, and run only the
+  tests a diff actually exercises with `repowise impacted-tests HEAD~1`.
+  ([reference →](docs/layers/TEST_INTELLIGENCE.md))
 
-The deterministic plan is the product; an optional LLM step (never in the
-indexing path, only on request) expands any plan into generated code plus a
-unified diff, fed the graph and co-change context a bare codegen tool throws away.
+Plus the free **[Repowise PR Bot](#the-pr-bot)**, which puts all of it on every pull
+request. Zero LLM calls.
+
+---
+
+## The PR bot
+
+Install the [GitHub App](https://github.com/apps/repowise-bot) and the index shows up
+where the decision actually gets made. One comment per pull request, edited in place on
+every push rather than reposted, and **a green PR gets no comment at all**.
+
+<sub>See a real comment on a real PR, not a mockup:
+[repowise-dev/repowise#1204](https://github.com/repowise-dev/repowise/pull/1204).</sub>
+
+What decides a review is inline. What is context sits behind one fold, so the comment
+stays about seventeen rows whatever it finds.
+
+- **Blast radius, at symbol level.** The contracts this PR changed and every caller of
+  them in a file the PR does not touch. Importing a module says nothing about whether
+  the function you changed is the one being called, so file-level impact is the wrong
+  altitude for the question a reviewer actually has.
+- **Before you merge.** The tests that import your changed files, and the files that
+  changed alongside them in past commits but are missing here.
+- **A Check Run that can gate the merge**, with annotations on the specific lines the
+  PR added. Advisory by default.
+- **Change risk**, scored against the repository's own commit distribution rather than
+  an absolute scale, so it stays meaningful on a repo whose typical commit is large.
+- **AI vs human authorship** of the changed files, with the average health of each.
+- Then hotspots, hidden coupling, declining health, dead code and the change map, one
+  fold down.
+
+### And a page the comment links to
+
+Markdown runs out. The comment shows three callers and says "+6 more"; the page shows
+all nine. Public, no sign-in, on a repository the reader has never seen.
+
+<img src=".github/assets/pr-bot/pr-page-blast-map.jpg" alt="The public per-PR analysis page: the whole repository drawn as a treemap with the pull request's files lit and their importers marked, and below it a focus frame zoomed into the directory the change landed in, with every filename legible" width="100%" />
+
+<sub>Every file in the repo, grouped by directory and sized by lines. The frame below
+zooms to where the change landed.
+[See it live →](https://repowise.dev/pr/repowise-dev/repowise/1204)</sub>
+
+**[Install the PR bot →](https://github.com/apps/repowise-bot)** ·
+[how it works →](https://www.repowise.dev/bot)
+
+---
+
+## ★ Know exactly what to fix
+
+A score that says *"this file is risky"* is where most tools stop. repowise scores
+every file, locates where the risk concentrates, and then names the specific fix.
+
+<div align="center">
+<img src=".github/assets/health-loop.svg" alt="repowise code-health loop: deterministic markers fan into three signals, the graph and git history locate where risk concentrates, and refactoring intelligence emits concrete plans your agent executes" width="100%" />
+</div>
+
+Every file is scored 1-10 by **49 deterministic detectors** (McCabe complexity, brain
+methods, LCOM4 cohesion, god classes, native Rabin-Karp clone detection, untested
+hotspots, change entropy, prior-defect history and more), split into three lenses:
+**defect risk**, **maintainability**, and **performance**: static N+1 and I/O-in-loop
+risk traced *across* files through the call graph, where file-local linters found **0**
+of the cross-function cases and repowise surfaced ~90. Only **26** of the 49 are
+permitted to move the defect number, because that is the number carrying published
+accuracy claims.
+
+> **Zero LLM calls, zero cloud, zero new runtime dependencies.** Pure Python over
+> tree-sitter and git data, **under 30 seconds** on a 3,000-file repo, a budget
+> enforced by a CI test, not an estimate. Marker weights are **calibrated against a
+> real defect corpus, not hand-tuned**: every file scored at a commit preceding the
+> bug window so nothing leaks backward, and an L2-logistic fit with file size as an
+> explicit control, so a marker only earns weight for defect lift *beyond* being big.
+> Only the learned constants ship.
+
+**It proves itself on your repo, not just on a benchmark.** After every index,
+repowise checks its own flags against your git history and reports what it found:
+*"16 of the 20 lowest-health files had a bug fix in the last 6 months, 3.3x the 24%
+baseline."* If that number is bad on your codebase, you will see it. (It is an
+association on your indexed history, not a forward prediction, the leakage-free
+version is [in the benchmarks](docs/BENCHMARKS.md#5-code-health-predicts-defects).)
+
+Then it names the fix. Not "this class is too big", but **Extract Class**, **Extract
+Helper**, **Move Method**, **Break Cycle**, **Split File**, or **Extract Method**, with
+the exact methods, edges and symbols that move, the **blast radius** of callers and
+co-changing files that have to move with them, and a graph-aware ranking so a fix on a
+central hub outranks the same fix on a leaf. Extract Method goes down to an
+intra-procedural dataflow pass that lifts the exact span and infers a
+behavior-preserving signature.
 
 ```bash
-repowise health --refactoring-targets    # ranked plans; get_health(include=["refactoring"]) over MCP
+repowise health                        # KPIs and lowest-scoring files
+repowise health --refactoring-targets  # ranked, concrete plans
+repowise health --trend                # snapshots plus declining-health alerts
 ```
 
-The web **Refactoring** tab renders each plan as a card with a **copy-to-agent**
-button and the opt-in **Generate code** diff view. Per-detector mechanics:
-**[docs/CODE_HEALTH.md](docs/CODE_HEALTH.md#refactoring-targets)** · full
-reference: **[docs/REFACTORING.md](docs/REFACTORING.md)**
+The dashboard renders each plan as a card with a copy-to-agent button. An optional LLM
+step, never in the indexing path and only on request, expands any plan into generated
+code and a unified diff.
+
+<sub>Validated on <strong>21 open-source repos across 9 languages</strong> (2,826 files,
+scored at a fixed point and checked against the following 6 months of bug fixes,
+keyword-labelled): <strong>ROC AUC 0.737</strong> [0.683, 0.787]. The signal is
+correlated with file size and weakens sharply within a fixed size band, which we report
+rather than bury. Independently recomputed from the raw data.</sub>
+
+<sub>Against <strong>CodeScene</strong>, the leading commercial code-health tool, on the
+same 2,770 files and the same defect labels, ranking by repowise health surfaces
+<strong>2.3x the defects under a fixed review budget</strong> (paired, p = 0.003).
+<a href="docs/BENCHMARKS.md">Full head-to-head, methodology and limitations →</a></sub>
+
+Guides: **[code health](docs/layers/CODE_HEALTH.md)** · **[refactoring](docs/layers/REFACTORING.md)**
 
 ---
 
-## Change risk & agent provenance
+## See all of it
 
-Two more deterministic signals, built on the same graph and git history, for the
-people who have to trust what ships:
+`repowise serve` starts the full web dashboard next to the MCP server. No separate
+setup, all local.
 
-- **★ Change risk:** score any commit or `base..HEAD` range **0–10** for defect
-  risk from the shape of the diff (Kamei-style just-in-time metrics), with
-  PR-mode directives (`will_break`, `missing_cochanges`, `missing_tests`). One
-  command: `repowise risk main..HEAD`. Reference: **[docs/CHANGE_RISK.md](docs/CHANGE_RISK.md)**.
-- **★ Agent provenance:** attribute commits to the AI agents that wrote them,
-  straight from git history, so you can see how much of your codebase an agent
-  produced and which of that code is a low-health hotspot owned by a single
-  person. Risk management for AI-era codebases, not developer surveillance.
+<table>
+<tr>
+<td width="50%"><img src=".github/assets/dashboard/architecture-page.png" alt="Architecture view: the dependency graph laid out and explorable, with a context drawer per node" width="100%" /><br/><sub><b>Architecture</b> · the dependency graph, laid out and explorable, with per-node context and change coupling</sub></td>
+<td width="50%"><img src=".github/assets/dashboard/code-health-map.png" alt="Code health map: every file as a bubble, hover to inspect score, coverage and tests" width="100%" /><br/><sub><b>Code Health</b> · every file as a bubble, hover any one to inspect its score, size, coverage and findings</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src=".github/assets/dashboard/chat-page.png" alt="Chat view: ask questions against the indexed repo, with answers that cite the files and pages they came from" width="100%" /><br/><sub><b>Chat</b> · ask the codebase a question, answers cite the files and pages they came from</sub></td>
+<td width="50%"><img src=".github/assets/dashboard/docs-page.png" alt="Docs view: auto-generated wiki pages with a tree, mermaid diagrams, and freshness badges" width="100%" /><br/><sub><b>Docs</b> · auto-generated wiki pages for the whole codebase, with confidence and freshness badges</sub></td>
+</tr>
+</table>
 
-Both are zero-LLM and reproducible. Deep dives on the hosted site:
-[change risk →](https://www.repowise.dev/features/change-risk) ·
-[agent provenance →](https://www.repowise.dev/features/agent-provenance).
+Also in there: **Chat** (ask the codebase in natural language) · **Docs** (the
+generated wiki, with Mermaid and a graph sidebar) · **Architecture** and **C4**
+(Context → Containers → Components) · **Knowledge Graph** plus a zoomable canvas map ·
+**Risk**, **Hotspots**, **Coupling** and **Blast radius** · **Contributors** ·
+**Decisions** (evidence drawer and evolution timeline) · **Symbols** · **Security** ·
+**Dead code** · **Stats** · **Costs** · **Workspace**.
 
----
-
-## Benchmarks
-
-Reproducible, on public codebases. **[repowise-bench →](https://github.com/repowise-dev/repowise-bench)**
-
-### 1 · Agent efficiency: repowise does the exploration once, offline
-
-Most of a coding agent's spend goes to *exploration*: greping for symbols,
-reading candidate files, re-reading them as context grows. repowise does that
-work once so the agent skips it on every query. Paired SWE-QA runs on real
-repositories (same model, same harness, with vs without repowise's MCP tools):
-
-<div align="center">
-
-**up to −96% tokens to load context&nbsp;&nbsp;·&nbsp;&nbsp;−89% file reads&nbsp;&nbsp;·&nbsp;&nbsp;−70% fewer tool calls&nbsp;&nbsp;·&nbsp;&nbsp;answer quality at parity**
-
-</div>
-
-The win is *context*: repowise hands the agent a curated answer instead of a
-pile of files to read. Loading a commit's context via `get_context` costs
-**2,391 tokens vs 64,039** raw, **~27× fewer (−96%)**. Across the two
-benchmarks, agents read **−69% to −89% fewer files** and make **−49% to −70%
-fewer tool calls** at answer quality on par with raw exploration; on a long,
-multi-step investigation that compounds to **−41% of the context re-read across
-the whole session**. Saved tokens are tokens you don't pay for, so dollar cost
-drops too, though agent-side prompt caching now mutes the cost delta. Reports: [flask48](https://github.com/repowise-dev/repowise-bench/blob/master/BENCHMARK_REPORT_FLASK48.md) · [flask v3](https://github.com/repowise-dev/repowise-bench/blob/master/BENCHMARK_REPORT_FLASK_V3.md) · [sklearn48](https://github.com/repowise-dev/repowise-bench/blob/master/BENCHMARK_REPORT_SKLEARN48.md)
-
-### 2 · Distill: index-aware output distillation
-
-Most of what an agent reads from a shell command is noise: 300 lines of
-passing tests around 4 failures, full commit bodies for "what changed
-recently". `repowise distill <cmd>` compresses command output **before the
-agent reads it**, errors-first, exit code preserved, and every omission
-reversible via an inline `[repowise#<ref>]` marker (`repowise expand <ref>`).
-Paired runs on a public OSS repo, per command:
-
-| Command | Raw → distilled tokens | Saved |
-|---|---|---:|
-| `pytest -q` (11 failures) | 3,374 → 1,317 | **61%**, all 11 failure lines preserved |
-| `git log -50` | 3,064 → 331 | **89%** |
-| `git diff` (30 commits) | 62,833 → 8,635 | **86%** |
-
-Small outputs pass through untouched (net-positive guard), and in an
-end-to-end spot-check the agent reached the identical root-cause diagnosis
-from distilled output as from raw. Opt-in Claude Code hook rewrites noisy
-commands automatically (shown for approval); `repowise saved` tracks tokens
-and dollars saved. Full guide: **[docs/DISTILL.md →](docs/DISTILL.md)**
-
-<div align="center">
-<img src=".github/assets/savings.png" alt="repowise Costs dashboard: tokens and dollars saved across distill and MCP tools" width="100%" />
-<p align="center"><sub>The <strong>Costs</strong> dashboard tallies both savings surfaces: <code>repowise distill</code> (command output) and the MCP tools (each curated answer replacing the raw file reads it stood in for), priced at your coding agent's own model. Example shown from a week of heavy local use.</sub></p>
-</div>
-
-### 3 · Code health predicts real defects
-
-Health scores are collected at a historical commit (T0); bug-fixing commits are
-counted over the following 6 months; the two are correlated, with strictly no
-leakage. Across **21 open-source repositories spanning all 9 Full-tier
-languages**:
-
-- **Cross-project mean ROC AUC 0.74** [95% CI 0.68–0.79] at identifying the files
-  that go on to receive bug-fixes, up to **0.90** on individual repos.
-- **Survives controlling for file size** (partial Spearman ρ = −0.16), so it is
-  not just "flag the big files."
-- **Significantly out-discriminates** recent churn (+0.10 AUC) and prior-defect
-  history (+0.12 AUC), DeLong p < 1e-9.
-- Holds up on an **external published dataset it has never seen** (PROMISE/jEdit
-  CK-metrics: AUC 0.76–0.78, within ~0.03 of the dataset's own tuned model).
-
-Full report: **[health-defect/BENCHMARK_REPORT.md →](https://github.com/repowise-dev/repowise-bench/blob/master/health-defect/BENCHMARK_REPORT.md)**
-
-<div align="center">
-<sub>⭐ <strong>Star the repo</strong> if repowise just saved your agent a few greps, it helps the next engineer find it and tells us to keep building.</sub>
-</div>
+Every view and what each one answers: **[docs/start/DASHBOARD.md →](docs/start/DASHBOARD.md)**
 
 ---
 
-## Local dashboard
+## Past one repo
 
-`repowise serve` starts a full web UI alongside the MCP server, no separate
-setup.
+Real systems are not one repository, and the interesting failures live in the gaps
+between them.
 
-<img src=".github/assets/webui.gif" alt="repowise local dashboard: Overview, Knowledge Graph, Code Health map, Commits, Chat, and By the Numbers" width="100%" />
-
-Highlights: **Chat** (natural-language Q&A) · **Docs** (wiki with Mermaid +
-graph sidebar) · **Graph** (interactive, 2,000+ nodes, community coloring, path
-finder) · **C4 Architecture** (Context → Containers → Components) · **Risk**
-(hotspots, ownership heatmap, module health, dead code, blast radius) ·
-**Contributors** (per-author profiles) · **Decisions** (evidence drawer,
-evolution timeline, decision-graph) · **Health** (three signals: defect,
-maintainability, performance; coverage, trends) · **Refactoring** (ranked plan
-cards, blast radius, copy-to-agent, opt-in code-gen diff) · **Security** (local
-pattern scan) · **Costs** · **Workspace**
-(cross-repo contracts & co-changes). Full view-by-view list in
-[docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+- **Workspaces.** Index many repos as one unit and get what only a cross-repo view can
+  show: **contracts** matched between a producer and its consumers, so a breaking API
+  change is caught before it ships, plus cross-repo **co-change** pairs, federated MCP
+  that answers across the whole estate, and conformance checks.
+  ([docs/scale/WORKSPACES.md →](docs/scale/WORKSPACES.md))
+- **Worktrees just work.** Run `repowise init` or `repowise update` inside a linked git
+  worktree and it detects the base checkout, seeds that worktree's index from it, and
+  catches up incrementally. No flags, no second full index.
+  ([docs/scale/WORKTREES.md →](docs/scale/WORKTREES.md))
+- **Auto-sync.** Keep the index current with a post-commit hook, a file watcher
+  (`repowise watch`), a webhook, or polling. An incremental update takes seconds.
+  ([docs/scale/AUTO_SYNC.md →](docs/scale/AUTO_SYNC.md))
 
 ---
 
-## VS Code extension
+## In your editor
 
-The **Repowise** extension puts the index where code gets written: know what
-your change breaks before you push (your riskiest files ranked, what is
-downstream, forgotten companion files, missing tests, suggested reviewers),
-health signals in the gutter and status bar, callers and ownership on hover,
-refactoring plans as CodeLens, and the full dashboards (health, architecture,
-knowledge graph, decisions, docs) inside the editor. One install also registers
-the Repowise MCP server with VS Code, so the same local index serves both you
-and your AI agent. Quiet by default, everything toggleable, nothing leaves your
-machine.
+The **Repowise** VS Code extension puts the index where code actually gets written:
+know what your change breaks before you push (riskiest files ranked, what is
+downstream, forgotten companion files, missing tests, suggested reviewers), health in
+the gutter and status bar, callers and ownership on hover, refactoring plans as
+CodeLens, and the full dashboards inside the editor. One install also registers the MCP
+server with VS Code, so the same local index serves both you and your agent, and
+exposes six tools to GitHub Copilot. Quiet by default, everything toggleable, nothing
+leaves your machine.
 
-Install from the Marketplace (search **Repowise**) or Open VSX, then run
-**Repowise: Set Up This Repository**. Full guide in
-[docs/VSCODE.md →](docs/VSCODE.md).
+Install from the Marketplace (search **Repowise**) or Open VSX, then run **Repowise:
+Set Up This Repository**. Guide: **[docs/agent/VSCODE.md →](docs/agent/VSCODE.md)**
+
+---
+
+## Supported agents
+
+**Six agents wired end to end · two at the Full tier · every other MCP host one
+paste away.**
+
+<p>
+  <strong>Full tier &nbsp;</strong>
+  <img src="https://img.shields.io/badge/Claude_Code-D97757?style=flat-square&logo=claude&logoColor=white" alt="Claude Code" />
+  <img src="https://img.shields.io/badge/Codex_CLI-000000?style=flat-square&logo=openai&logoColor=white" alt="Codex CLI" />
+</p>
+<p>
+  <strong>Good tier &nbsp;</strong>
+  <img src="https://img.shields.io/badge/VS_Code-007ACC?style=flat-square&logo=visualstudiocode&logoColor=white" alt="VS Code" />
+  <img src="https://img.shields.io/badge/Cursor-000000?style=flat-square&logo=cursor&logoColor=white" alt="Cursor" />
+  <img src="https://img.shields.io/badge/OpenCode-000000?style=flat-square&logo=opencode&logoColor=white" alt="OpenCode" />
+  <img src="https://img.shields.io/badge/Hermes-000000?style=flat-square&logoColor=white" alt="Hermes" />
+</p>
+
+**Full** is every surface repowise has: MCP tools, skills, slash commands, a managed
+instructions file, hook-level interception of tool calls, and transcript mining after
+the session. **Good** is the honest half of that: MCP tools and the config to reach
+them, but no hook-level interception and no transcript mining. A Good-tier agent can
+ask repowise anything; repowise never sees the tool calls in between. The tier is
+computed from what each integration actually wires, so this list cannot claim a depth
+the code does not have.
+
+Everything else that speaks MCP is one snippet away. `repowise agents print-config
+claude-code` prints a stdio server entry to paste into Cline, Windsurf, Zed, Gemini
+CLI or any other host that keys on `mcpServers`, and repowise writes nothing.
+
+Adding an agent takes **one descriptor file and one registry line**, with no changes to
+the orchestrators. Full matrix and the contributor recipe:
+**[docs/agent/INTEGRATIONS.md →](docs/agent/INTEGRATIONS.md)**
 
 ---
 
 ## Supported languages
 
-**15 languages parsed to AST · 11 at the Full tier · framework-aware across all of them.**
+**19 languages parsed to AST · 13 at the Full tier · framework-aware across all of them.**
 
 <p>
   <strong>Full tier &nbsp;</strong>
   <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript" />
   <img src="https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black" alt="JavaScript" />
+  <img src="https://img.shields.io/badge/Svelte-FF3E00?style=flat-square&logo=svelte&logoColor=white" alt="Svelte" />
+  <img src="https://img.shields.io/badge/Vue-42B883?style=flat-square&logo=vuedotjs&logoColor=white" alt="Vue" />
   <img src="https://img.shields.io/badge/Java-ED8B00?style=flat-square&logo=openjdk&logoColor=white" alt="Java" />
   <img src="https://img.shields.io/badge/Kotlin-7F52FF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin" />
   <img src="https://img.shields.io/badge/Go-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go" />
@@ -377,75 +430,116 @@ Install from the Marketplace (search **Repowise**) or Open VSX, then run
   <img src="https://img.shields.io/badge/Swift-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift" />
   <img src="https://img.shields.io/badge/PHP-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP" />
   <img src="https://img.shields.io/badge/Dart-0175C2?style=flat-square&logo=dart&logoColor=white" alt="Dart" />
+  <img src="https://img.shields.io/badge/Delphi-EE1F35?style=flat-square&logo=delphi&logoColor=white" alt="Object Pascal / Delphi" />
   &nbsp;<strong>· Partial &nbsp;</strong>
   <img src="https://img.shields.io/badge/Luau-00A2FF?style=flat-square&logo=lua&logoColor=white" alt="Luau" />
 </p>
 
-| Tier | Languages | What works |
-|------|-----------|------------|
-| **Full** | Python · TypeScript · JavaScript · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | AST parsing, import resolution, named bindings, call resolution, heritage extraction, docstrings; multi-project workspace resolvers; framework-aware edges; per-language dynamic-hint extractors; **code-health markers** |
-| **Good** | C · Swift · PHP · Dart | AST parsing, import resolution, named bindings, call resolution, heritage (mixins / derive / extensions / traits), docstrings; dedicated workspace-aware resolvers; Laravel / TYPO3 / Flutter framework edges; dynamic-hint extractors; Dart adds code-health + perf markers |
-| **SQL / dbt** | `.sql` via sqlglot (postgres, mysql, tsql, clickhouse, ...) | Tables / views / functions / procedures as symbols with wiki pages; dbt projects get real `ref()` / `source()` lineage edges: model-level DAG, hotspots, co-change, ownership |
-| **Shell** | `.sh` · `.bash` · `.zsh` | Functions as symbols, `source` / `.` import edges (`$SCRIPT_DIR` / `dirname` idioms), and function-level code-health complexity. No class metrics, heritage, or dead-code flagging |
-| **Config / data** | OpenAPI · Protobuf · GraphQL · Dockerfile · Makefile · YAML · JSON · TOML · Terraform · Markdown | Included in the file tree; special handlers extract endpoints / targets where applicable |
-| **Git-blame only** | Objective-C · Elixir · Erlang · Zig · Julia · Clojure · Haskell · OCaml · F# · … | Tracked in git history (blame, hotspots, co-change); no AST parsing yet |
+SQL and dbt projects get real `ref()` / `source()` lineage, shell scripts get
+function-level symbols, HTML pages contribute their `<script src>` / `<link href>`
+dependencies (including `index.html` → `src/main.ts`), and OpenAPI, Protobuf,
+GraphQL, Dockerfile, Terraform and friends get dedicated handlers. Anything else is
+still tracked through git history: blame, hotspots, co-change.
 
-Adding a language needs **one `.scm` query file and one config entry**, with no
-changes to the parser core. Full per-language matrix, code-health checklist, and
-the contributor recipe: **[docs/LANGUAGE_SUPPORT.md →](docs/LANGUAGE_SUPPORT.md)**
+Every call edge is stamped with **how it was resolved and how much to trust it**, from
+`same_file` at 0.95 down to a repo-wide name match at 0.50, labelled as the guess it is
+([how that works](docs/layers/GRAPH.md)).
+Adding a language takes five small steps and **no changes to the parser core**.
 
----
-
-## Who it's for
-
-| | Start here |
-|---|---|
-| **Individual developers** | `pip install repowise` → `repowise init` → query from Claude Code, Cursor, or any MCP agent. 100% local, BYO API key, free under AGPL-3.0. [For developers →](https://www.repowise.dev/for/developers) |
-| **Team leads** | Know which PRs to worry about before you merge: change-risk scoring plus the free [**Repowise PR Bot**](https://github.com/apps/repowise-bot) that posts one deterministic comment per PR (hotspots, hidden coupling, declining health), zero LLM. [For team leads →](https://www.repowise.dev/for/teams) |
-| **Engineering leaders** | See how much of your code AI wrote and whether it is healthy: agent provenance, code-health trends, and bus factor, from git history. [For engineering leaders →](https://www.repowise.dev/for/engineering-leaders) |
-| **Security & compliance** | Reachability-aware CVE triage, secret detection across full git history, and SBOM, on your real dependency graph. [For security →](https://www.repowise.dev/for/security) |
-| **Enterprises** | On-prem / air-gapped, SSO/SCIM, commercial licensing (no AGPL obligation), and IP indemnification. [For enterprise →](https://www.repowise.dev/for/enterprise) · [docs/COMMERCIAL.md](docs/COMMERCIAL.md) |
+Full matrix: **[docs/layers/LANGUAGE_SUPPORT.md →](docs/layers/LANGUAGE_SUPPORT.md)** ·
+The graph itself: **[docs/layers/GRAPH.md →](docs/layers/GRAPH.md)** ·
+Contributor recipe and internals:
+**[docs/architecture/language-support.md →](docs/architecture/language-support.md)**
 
 ---
 
 <a id="quickstart"></a>
 
-## Quick start (under 5 minutes, no API key)
-
-*Index once, and give your agent the dependency graph + git history + code-health
-— not 40 greps.*
+## Quickstart (under 5 minutes, no API key)
 
 **1. Install**
 
 ```bash
 pip install repowise          # Windows: python -m pip install repowise
-repowise --version            # -> repowise, version 0.27.x
+repowise --version
 ```
 
-**2. Index your repo — no LLM, no key**
+**2. Index your repo**
 
 ```bash
 cd /path/to/your/repo
-repowise init --index-only -y
+repowise init
 ```
 
-Builds the dependency graph, git history, code-health score, and dead-code findings
-in seconds. (Want the generated wiki + semantic search? Use
-`repowise init --provider gemini|anthropic|openai` with the matching key.)
+Bare `init` asks. It scans the repo first, then offers three ways to index it:
+everything (the wiki written by a model), no prose (the same wiki rendered from
+your code's structure, no key and no spend), or advanced, which walks through the
+indexing and generation knobs. Nothing is spent before you see an estimate and
+confirm it.
 
-**3. Connect your agent** — the MCP server is `repowise mcp`, served from the repo dir.
+If you would rather not answer questions, or you are scripting this, name the
+mode and add `-y`:
+
+```bash
+repowise init --no-prose -y    # free, no key, no questions
+repowise init --prose -y       # model-written subsystem pages, cost pre-approved
+```
+
+Either way you get the dependency graph, git history, code-health scores and
+dead-code findings in seconds, plus a complete wiki: file, module, layer and cycle
+pages, the architecture diagram, the repo overview, API and infra pages, and the
+onboarding collection. On the keyless path every page carries a footer saying it
+was derived from structure, and the repo overview describes composition, entry
+points, clusters and dependencies rather than what the project does end to end,
+because no template can derive that. Full-text search works on this index;
+semantic search needs an embedder configured (Ollama is the keyless option).
+
+Went keyless and want the wiki written by a model later? You do not have to decide
+now. Upgrade it whenever you like with `repowise generate`, a page, a directory,
+or the whole thing at a time, each behind a cost estimate:
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."   # or OPENAI_API_KEY / GEMINI_API_KEY
+repowise generate                       # write the unwritten subsystem pages, behind one cost estimate
+repowise generate --path src/api        # or just one area first
+repowise generate --all                 # or rewrite the prose on every subsystem page
+```
+
+Bare `repowise generate` prints the wiki's state and writes the unwritten
+subsystem (concept) pages behind a single cost estimate. Every other page was
+already rendered from structure at index time.
+
+Or pick the provider for the first index directly with `repowise init --provider
+gemini|anthropic|openai`.
+
+**3. Connect your agent.** Step 2 already did this for Claude Code: `init`
+writes a repo-root `.mcp.json` unconditionally and, unless you passed
+`--no-editor-setup`, also registers repowise with `~/.claude/settings.json`.
+Open a session in this repo and it is already wired; check with `repowise
+agents`.
 
 <details><summary><b>Claude Code</b></summary>
 
+Skipped editor setup, or setting up another machine?
+
 ```bash
-# Plugin (adds 9 tools + slash commands + skills):
+repowise agents add --target=claude-code
+```
+
+The plugin additionally adds slash commands and skills, which `init` does not
+install:
+
+```bash
 /plugin marketplace add repowise-dev/repowise
 /plugin install repowise@repowise
+```
 
-# …or wire the MCP server directly:
+Or wire the MCP server by hand:
+
+```bash
 claude mcp add repowise -- repowise mcp
 ```
-Or commit a project `.mcp.json`:
+Or edit the project `.mcp.json` `init` already wrote:
 ```json
 { "mcpServers": { "repowise": { "command": "repowise", "args": ["mcp"] } } }
 ```
@@ -463,131 +557,260 @@ Or: `codex mcp add repowise -- repowise mcp`
 </details>
 
 **4. First real call.** Ask your agent: *"Use repowise `get_overview` to summarize this
-repo,"* or *"`get_context` for `src/auth.py`."* You get graph-grounded architecture and
-per-file triage instead of a flurry of greps. ✅
+repo"*, or *"`get_context` for `src/auth.py`"*. You get graph-grounded architecture and
+per-file triage instead of a flurry of greps.
 
-> `get_overview` / `get_context` work in **index-only mode** (no key) — they synthesize
-> from the graph/git/health layers. `search_codebase` / `get_answer` / `get_why` need
-> full mode (the generated wiki).
+> `get_overview` and `get_context` work in index-only mode with no key, synthesized
+> from the graph, git and health layers. `search_codebase` and `get_answer` read the
+> wiki, which index-only mode does build, but they answer from pages rendered from
+> structure rather than model-written prose, and `search_codebase` is full-text only
+> until you configure an embedder.
 
-Ready for the full picture? Run `repowise init --provider …` for the generated wiki +
-semantic search, or skip key management entirely with the hosted tier at
-[repowise.dev](https://www.repowise.dev). Full walkthrough: [docs/QUICKSTART.md](docs/QUICKSTART.md).
-
-**Docs:** [Quickstart](docs/QUICKSTART.md) · [User Guide](docs/USER_GUIDE.md) · [CLI Reference](docs/CLI_REFERENCE.md) · [Codex](docs/CODEX.md) · [MCP Tools](docs/MCP_TOOLS.md) · [Hooks](docs/HOOKS.md) · [Distill](docs/DISTILL.md) · [Workspaces](docs/WORKSPACES.md) · [Auto-Sync](docs/AUTO_SYNC.md) · [Upgrading](docs/UPGRADING.md) · [Config](docs/CONFIG.md)
+Full walkthrough: **[docs/start/QUICKSTART.md →](docs/start/QUICKSTART.md)**
 
 ---
 
-## Nine MCP tools
+## The ten MCP tools
 
-Most tools are designed around data entities (one module, one file, one symbol),
-forcing agents into long chains of sequential calls. repowise tools are designed
-around **tasks**: pass multiple targets in one call, get complete context back.
-Every response carries an `_meta` envelope with `index_age_days`,
-`indexed_commit`, and a `stale_warning` that fires only when the indexed HEAD
-diverges from live `.git/HEAD`.
+Every response carries an `_meta` envelope with `index_age_days`, `indexed_commit`, and
+a `stale_warning` that fires only when the indexed HEAD diverges from live `.git/HEAD`,
+so your agent always knows how much to trust what it just read.
 
 | Tool | What only this tool answers |
 |---|---|
-| `get_overview()` | Architecture summary, module map, entry points, git health, community summary. First call on any unfamiliar codebase. |
-| `get_answer(question)` | Hybrid retrieval (FTS + vector via RRF) + PageRank bias + 1-hop graph expansion → a cited answer with calibrated `retrieval_quality`. Returns structured `best_guesses` on low confidence. Collapses search → read → reason into one round-trip. |
-| `get_context(targets, include?)` | Triage card for files / modules / symbols: title, summary, signatures, `hotspot` bit, `governing_decisions`, and `symbol_id`s. `include` opens callers/callees, ownership, metrics, decisions, full_doc. Batch many targets. |
-| `get_symbol("file.py::Name")` | Raw source bytes for one indexed symbol with exact line bounds, cheaper and safer than `Read` + offset math. |
-| `search_codebase(query, kind?)` | Semantic search over the wiki, filterable by `kind` (implementation / test / config / doc), tagging each result's `search_method`. |
-| `get_risk(targets, changed_files?)` | Hotspot scores, dependents, co-change partners, ownership, test gaps, security signals. Pass `changed_files` for PR mode → a `directive` block (`will_break`, `missing_cochanges`, `missing_tests`, `governance_risk`). |
-| `get_why(query?, targets?)` | Architectural decision records, status, evidence spans, and the supersession **lineage chain**. Falls back to git archaeology when no ADRs exist. |
-| `get_dead_code(...)` | Unreachable code by confidence tier with cleanup-impact estimates; cross-repo consumer detection in workspace mode. |
-| `get_health(targets?, include?)` | Marker scores per file across three signals (defect · maintainability · performance). Dashboard mode → KPIs + lowest-scoring files + module rollup; targeted mode → per-file findings. Self-check before a PR via `include`: `accuracy` (does the score find the bugs), `signals` (per-file churn / owners / prior defects), `churn_complexity`, a dimension name to filter findings, plus `coverage`, `trend`, and `refactoring` → **structured, graph-aware refactoring plans** (split groups, move target, cut edges + blast radius), not template strings. |
+| `get_overview()` | Architecture summary, module map, entry points, git health. The first call on any unfamiliar codebase. |
+| `get_answer(question)` | Hybrid retrieval (full-text plus vector via RRF), PageRank bias and 1-hop graph expansion into one cited answer with a calibrated `retrieval_quality`. Collapses search → read → reason into a single round-trip. |
+| `get_context(targets, include?)` | Triage card for files, modules or symbols: summary, signatures, `hotspot` bit, governing decisions, `symbol_id`s. `include` opens callers, callees, ownership and metrics. Batch many targets in one call. |
+| `get_symbol("file.py::Name")` | Source for one indexed symbol with exact line bounds. Cheaper and safer than `Read` plus offset math. |
+| `search_codebase(query, kind?)` | Semantic search over the wiki, filterable by kind (implementation / test / config / doc), tagging each result's `search_method`. |
+| `get_risk(targets, changed_files?)` | Hotspots, dependents, co-change partners, ownership, test gaps, bug history. Pass `changed_files` for PR mode and get a `directive` block back. |
+| `get_change_risk(revspec)` | Pre-merge defect score for a whole commit or range from the shape of the diff, ranked as a percentile against recent commits, plus the tests coverage proves it touches. |
+| `get_why(query?, targets?)` | Architectural decisions and their verbatim evidence spans, stamped exact / fuzzy / unverified. Falls back to git archaeology when no decisions exist. |
+| `get_dead_code(...)` | Unreachable code by confidence tier with cleanup-impact estimates, and cross-repo consumer detection in workspace mode. |
+| `get_health(targets?, include?)` | Per-file marker scores across all three signals. `include` opens coverage, trends, per-file signals, the accuracy self-check, and structured refactoring plans. |
 
-Worked example (*"Add rate limiting to all API endpoints"* in 5 calls instead of
-~30 greps+reads) and the full reference: **[docs/MCP_TOOLS.md →](docs/MCP_TOOLS.md)**
+Ten is a deliberate ceiling rather than a limit we ran into: a small, task-shaped
+surface is easier for an agent to choose from than a large one. Worked example (*"add
+rate limiting to all API endpoints"* in 5 calls instead of ~30 greps and reads), the
+opt-in tools, and the full reference: **[docs/agent/MCP_TOOLS.md →](docs/agent/MCP_TOOLS.md)**
 
 ---
 
-## How it compares
+## Measured against the field
 
-| | repowise | Google Code Wiki | DeepWiki | Swimm | CodeScene |
-|---|---|---|---|---|---|
-| Self-hostable, open source | ✅ AGPL-3.0 | ❌ cloud only | ❌ cloud only | ❌ Enterprise only | ✅ Docker |
-| Private repo, no cloud | ✅ | ❌ in development | ❌ OSS forks only | ✅ Enterprise tier | ✅ |
-| Auto-generated documentation | ✅ | ✅ Gemini | ✅ | ✅ PR2Doc | ❌ |
-| MCP server for AI agents | ✅ 9 tools | ❌ | ✅ 3 tools | ✅ | ✅ |
-| Proactive agent hooks | ✅ Claude + Codex hooks | ❌ | ❌ | ❌ | ❌ |
-| Auto-generated AI instructions (`CLAUDE.md`, `AGENTS.md`) | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Learns from your usage (session-mined decisions, demand-weighted docs) | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Code health score (1–10) | ✅ 25 markers | ❌ | ❌ | ❌ | ✅ 25–30 |
-| Brain Method / LCOM4 / god class | ✅ | ❌ | ❌ | ❌ | ✅ |
-| Test-coverage intelligence | ✅ LCOV/Cobertura/Clover | ❌ | ❌ | ❌ | ❌ |
-| Untested-hotspot detection | ✅ coverage × hotspot | ❌ | ❌ | ❌ | ❌ |
-| Health trend + declining alerts | ✅ rolling snapshots | ❌ | ❌ | ❌ | ✅ |
-| Refactoring recommendations | ✅ deterministic | ❌ | ❌ | ❌ | ✅ |
-| Concrete cross-file refactoring plans (Extract Class / Move Method / Break Cycle) | ✅ graph-aware + blast radius | ❌ | ❌ | ❌ | ⚠️ within-function only |
-| Dataflow-verified within-function plans (Extract Method with inferred signature) | ✅ CFG + reaching definitions | ❌ | ❌ | ❌ | ⚠️ LLM-generated, unverified |
-| Git intelligence (hotspots, ownership, co-change) | ✅ | ❌ | ❌ | ❌ | ✅ |
-| Bus factor analysis | ✅ | ❌ | ❌ | ❌ | ✅ |
-| Dead code detection | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Architectural decision records | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Multi-repo workspace intelligence | ✅ co-changes, contracts, federated MCP | ❌ | ❌ | ❌ | ❌ |
-| Local dashboard | ✅ | ❌ | ❌ | ❌ IDE only | ✅ |
+Six open-source agent-context tools, the same repositories, the same pinned
+commits, the same questions, each one given its own full advertised tool surface.
+The full page carries the rows we lose beside the rows we win.
 
-**repowise is the intersection:** behavioral git intelligence + a defect-validated
-code-health score *with the graph-aware fix attached* + auto-generated docs +
-agent-native MCP + architectural decisions + multi-repo workspace intelligence,
-self-hostable and open source.
-Full side-by-side comparisons (CodeScene, DeepWiki, Sourcegraph, Cursor, GitClear):
-**[repowise.dev/compare →](https://www.repowise.dev/compare)**.
+<div align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/bench/file-coverage-dark.svg" />
+  <img src=".github/assets/bench/file-coverage.svg" alt="File coverage on 42 sealed ContextBench instances: repowise get_answer 0.876, repowise search_codebase 0.742, CodeGraph 0.610, Graphify 0.546, code-review-graph 0.445, cocoindex 0.361" width="100%" />
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/bench/agent-output-tokens-dark.svg" />
+  <img src=".github/assets/bench/agent-output-tokens.svg" alt="Output tokens an agent writes to reach an answer across 43 django questions on Codex: repowise 1,250, CodeGraph 1,383, Serena 1,550, Graphify 1,658, code-review-graph 1,710, bare agent 1,828" width="100%" />
+</picture>
+</div>
+
+- **Finds the right files.** 0.876 file coverage against CodeGraph's 0.610 on a
+  **sealed** 42-instance split, held out from every improvement round. 19 wins,
+  1 loss per instance. Deterministic grading, no LLM judge. *n=42, sign test
+  p=0.00004.* CodeGraph scores the same on both halves to three decimals, so
+  neither half is the easy one.
+- **Less work in a real agent loop.** -31.6% output tokens against a bare agent,
+  leaner on 37 of 44 questions. *n=43, p&lt;0.0001.* CodeGraph is a genuine second
+  at -24.4%: more than one tool here works, and we lead the field rather than
+  being alone in it.
+- **Fewer steps to get there.** 3.8 tool calls where the bare agent needed 7.2,
+  and 3.0 files opened instead of 7.2, the mechanism behind the token saving,
+  visible directly rather than inferred.
+
+**[The full results, the methodology, and the rows we lose →](docs/BENCHMARKS.md)**
+
+---
+
+## How it compares on capability
+
+No single product competes with all of this, so there is no single table. Three
+axes, three sets of real peers. Rows marked *measured* are head-to-head numbers,
+and they link to **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)** where the sample
+sizes, the tests and the rows we lose all live.
+
+### As an agent context layer
+
+Against the tools doing the same job: index a repository, serve it to a coding
+agent over MCP.
+
+| | repowise | CodeGraph | Serena | DeepWiki |
+|---|---|---|---|---|
+| Self-hostable, open source | ✅ AGPL-3.0 | ✅ | ✅ | ❌ cloud only |
+| Private repo, no cloud | ✅ | ✅ | ✅ | ❌ OSS forks only |
+| MCP tools served | 11 | 1 | 29 | 3 |
+| **Finds the gold files** *([measured](docs/BENCHMARKS.md#1-finding-the-right-files), n=42 sealed)* | ✅ **0.876** | 0.610 | not in this run | not measured |
+| **Output tokens vs a bare agent** *([measured](docs/BENCHMARKS.md#2-what-changes-in-a-real-agent-loop), n=43)* | ✅ **-31.6%** | -24.4% | -14.8% | not measured |
+| **Index time, django** *([measured](docs/BENCHMARKS.md#6-indexing-time-the-row-we-lose))* | ⚠️ **366.8s**, slowest here | ✅ **16.4s** | not measured | n/a, cloud |
+| | *one-time; updates after it are incremental* | | | |
+| Generated documentation | ✅ | ❌ | ❌ | ✅ |
+| Proactive agent hooks | ✅ Claude + Codex | ❌ | ❌ | ❌ |
+| Auto-generated AI instructions (`CLAUDE.md`, `AGENTS.md`) | ✅ | ❌ | ❌ | ❌ |
+| Command-output distillation | ✅ reversible | ❌ | ❌ | ❌ |
+| Learns from your usage (session-mined decisions, demand-weighted docs) | ✅ | ❌ | ❌ | ❌ |
+| Architectural decision records | ✅ | ❌ | ❌ | ❌ |
+| Multi-repo workspace intelligence | ✅ contracts, co-change, federated MCP | ❌ | ❌ | ❌ |
+
+CodeGraph builds its index **22x faster than we do**, and if a call graph is all
+you need, that is the right trade. With prose generation on, which is what a
+default `repowise init` actually costs, it is **135x**. Graphify and
+code-review-graph were in the same measured field and are on the benchmarks page.
+
+<sub>Measured against CodeGraph 1.5.0, Graphify 0.9.31, Serena 1.6.2.dev0,
+code-review-graph 2.3.7, on repowise `081a59fa` (between v0.37.0 and v0.38.0),
+August 2026. Unmarked rows are capability presence, not measurements.</sub>
+
+### As a code health tool
+
+| | repowise | CodeScene |
+|---|---|---|
+| Self-hostable, open source | ✅ AGPL-3.0 | ⚠️ on-prem Docker, proprietary |
+| Code health score (1-10) | ✅ 49 detectors, 26 scoring | ✅ 25-30 |
+| Brain Method / LCOM4 / god class | ✅ | ✅ |
+| **Defects found at a 20% review budget** *([measured](docs/BENCHMARKS.md#5-code-health-predicts-defects), 2,770 files)* | ✅ **0.173** | 0.074 |
+| **Effort-aware ranking, Popt** *(measured, p=0.003)* | ✅ **0.607** | 0.462 |
+| **Precision at that budget** *(measured)* | 0.580 | ✅ **0.636**, a shorter list |
+| **Discrimination, ROC AUC** *(measured, paired)* | 0.731 | 0.705, *p=0.054, not significant* |
+| Defect-prediction AUC, published and reproducible | ✅ 0.737 over 21 repos, held-out 0.76-0.78 | ✅ Code Red study |
+| Business impact (resolution time) | ❌ *we could not replicate this on open data* | ✅ Code Red study |
+| Git intelligence (hotspots, ownership, co-change) | ✅ | ✅ |
+| Pre-merge change-risk scoring | ✅ 0-10 + directives | ✅ |
+| Health trend + declining alerts | ✅ rolling snapshots | ✅ |
+| Bus factor analysis | ✅ | ✅ |
+| Concrete cross-file refactoring plans | ✅ graph-aware + blast radius | ⚠️ within-function only |
+| Dataflow-verified within-function plans | ✅ CFG + reaching definitions | ⚠️ LLM-generated, unverified |
+| Test-coverage intelligence | ✅ LCOV/Cobertura/Clover | ❌ |
+| Untested-hotspot detection | ✅ coverage × hotspot | ❌ |
+| Dead code detection | ✅ | ❌ |
+| Serves it to an AI agent over MCP | ✅ | ✅ |
+| Local dashboard | ✅ | ✅ |
+
+CodeScene is the only other vendor in this category with a published empirical
+defect study, which is why it is the one we ran head to head against. It flags
+about 27 files where we flag 132, so if you want a short list to action rather
+than the ranking that catches the most defects, its threshold is the better fit.
+
+### Documentation generators
+
+DeepWiki, Google Code Wiki and Swimm generate documentation from a repository,
+which overlaps one of our five layers. **We have not measured against them**, so
+there is no table here rather than a table of checkmarks. DeepWiki appears above
+because it also serves an agent over MCP, which is a job we can be measured on.
+
+### The PR bot, against the LLM review bots
+
+| | Repowise PR Bot | CodeRabbit | Greptile |
+|---|---|---|---|
+| LLM calls per PR | ✅ **zero** | ❌ every review | ❌ every review |
+| Same diff, same review | ✅ deterministic | ❌ sampled output | ❌ sampled output |
+| Your code sent to a model provider | ✅ never | ❌ yes | ❌ yes |
+| Symbol-level blast radius (changed contracts → their callers) | ✅ call graph | ❌ | ⚠️ prose, from context |
+| Co-change partners missing from the PR | ✅ git history | ❌ | ❌ |
+| Change risk vs the repo's own distribution | ✅ 0-10 + percentile | ❌ | ❌ |
+| Public analysis page per PR, no sign-in | ✅ | ❌ | ❌ |
+| Silent on a clean PR | ✅ by default | ⚠️ configurable | ⚠️ configurable |
+| Cost on public repos | ✅ free, uncapped | ⚠️ free tier | ⚠️ free tier |
+| Self-hostable | ✅ AGPL-3.0 | ❌ | ❌ |
+
+The axis where this is not close is the first two rows. An LLM reviewer is a different
+product with a different failure mode: it can read intent, and it can also be wrong in a
+new way on every run. This one does set arithmetic over a call graph and a git history,
+so there is nothing to hallucinate and nothing to prompt-inject, and pushing the same
+diff twice produces the same review twice.
+
+**repowise is the intersection:** an agent-native context layer *and* behavioral git
+intelligence *and* a defect-validated health score with the fix attached, all out of
+one index, self-hostable and open source. Full side-by-side comparisons:
+**[repowise.dev/compare →](https://www.repowise.dev/compare)**
+
+---
+
+## Who it's for
+
+| | Start here |
+|---|---|
+| **Individual developers** | `pip install repowise` → `repowise init` → query from Claude Code, Cursor, or any MCP agent. Fully local, bring your own key, free under AGPL-3.0. [For developers →](https://www.repowise.dev/for/developers) |
+| **Team leads** | Know which PRs to worry about before you merge: change-risk scoring plus the free [Repowise PR Bot](https://github.com/apps/repowise-bot). [For team leads →](https://www.repowise.dev/for/teams) |
+| **Engineering leaders** | See how much of your code AI wrote and whether it is healthy: agent provenance, health trends and bus factor, straight from git history. [For engineering leaders →](https://www.repowise.dev/for/engineering-leaders) |
+| **Security & compliance** | Reachability-aware CVE triage, secret detection across full git history, and SBOM, on your real dependency graph. [For security →](https://www.repowise.dev/for/security) · [security review →](docs/business/SECURITY_COMPLIANCE.md) |
+| **Enterprises** | On-prem and air-gapped, SSO/SCIM, commercial licensing with no AGPL obligation, IP indemnification. [For enterprise →](https://www.repowise.dev/for/enterprise) · [docs/business/COMMERCIAL.md](docs/business/COMMERCIAL.md) |
 
 ---
 
 ## For teams & enterprises
 
-[**repowise.dev**](https://www.repowise.dev) is the same engine, fully managed,
-at feature parity with self-hosted: every CLI command, every MCP tool, the full
-dashboard. We dogfood it on our own codebase: [live snapshot →](https://www.repowise.dev/s/5a6b93fa9a69) · [explore public repos →](https://www.repowise.dev/explore).
+[**repowise.dev**](https://www.repowise.dev) is the same engine, fully managed, at
+feature parity with self-hosted: every CLI command, every MCP tool, the whole
+dashboard. We run it on our own codebase in the open:
+[live snapshot →](https://www.repowise.dev/s/5a6b93fa9a69) ·
+[explore public repos →](https://www.repowise.dev/explore).
 
-**On top of self-hosting:**
-- **Zero ops**: managed deploys & webhooks, auto re-index on every commit.
-- **Hosted MCP endpoint**: point any MCP client at one URL, no local server.
-- **Repowise PR Bot**: free GitHub App, one deterministic comment per PR
-  (hotspot touches, hidden coupling, declining health, dead code), zero LLM calls.
-  [Install →](https://github.com/apps/repowise-bot) · [Learn more →](https://www.repowise.dev/bot)
-- **CVE-aware security layer**, **cross-repo intelligence at scale**, and
-  **integrations** (Slack, Jira/Linear, Confluence/Notion, PagerDuty) *(rolling out)*.
+On top of self-hosting: managed deploys and webhooks with auto re-index on every
+commit, a hosted MCP endpoint so any client can point at one URL with no local server,
+a CVE-aware security layer, cross-repo intelligence at scale, and integrations (Slack,
+Jira/Linear, Confluence/Notion, PagerDuty) *(rolling out)*.
 
-What's GA / in development / planned, on-prem topology, SSO/SCIM/RBAC, and
-pricing: **[docs/COMMERCIAL.md](docs/COMMERCIAL.md)** · [Get in touch →](https://www.repowise.dev/#contact)
+What is GA versus in development, on-prem topology, SSO/SCIM/RBAC and pricing:
+**[docs/business/COMMERCIAL.md](docs/business/COMMERCIAL.md)** ·
+[Get in touch →](https://www.repowise.dev/#contact)
 
 ---
 
 ## Privacy
 
-- **Self-hosted:** your code never leaves your infrastructure, so no code, file paths, or repo names are ever sent. The CLI does report **anonymous, opt-out** usage telemetry (command names + coarse environment only) to help us prioritize; turn it off with `repowise telemetry disable`, `DO_NOT_TRACK=1`, or by running fully offline. [What's collected →](docs/TELEMETRY.md)
-- **BYOK:** bring your own Anthropic / OpenAI key. We never see your LLM calls. Zero data retention via Anthropic's API policy.
-- **What's stored:** the NetworkX graph, LanceDB embeddings (non-reversible vectors), generated wiki pages, git metadata. Raw source is processed transiently and never persisted.
-- **Fully offline:** Ollama + a local embedding model = zero external API calls.
+- **Self-hosted:** your code never leaves your infrastructure, so no code, file paths
+  or repo names are ever sent. The CLI does report **anonymous, opt-out** usage
+  telemetry (command names and coarse environment only) to help us prioritize; turn it
+  off with `repowise telemetry disable`, `DO_NOT_TRACK=1`, or by running fully offline.
+  [What's collected →](docs/reference/TELEMETRY.md)
+- **Bring your own key:** we never see your LLM calls. Zero data retention via
+  Anthropic's API policy.
+- **What's stored:** the graph, embeddings (non-reversible vectors), generated wiki
+  pages, git metadata. Raw source is processed transiently and never persisted.
+- **Fully offline:** Ollama plus a local embedding model means zero external calls.
+
+Doing a security review? **[docs/business/SECURITY_COMPLIANCE.md →](docs/business/SECURITY_COMPLIANCE.md)**
 
 ---
 
-## CLI & configuration
+## CLI
 
 ```bash
-repowise init [PATH]      # index codebase (one-time; --index-only skips LLM)
+repowise init [PATH]      # index a codebase (one-time; asks, or --no-prose -y needs no LLM)
+repowise generate [PATH]  # write wiki pages with a model, on demand (upgrade a keyless wiki)
 repowise serve [PATH]     # MCP server + local dashboard
-repowise update [PATH]    # incremental update (<30s; --workspace for all repos)
-                          # git worktrees auto-seed from the base checkout (docs/WORKTREES.md)
-repowise search "<q>"     # search the wiki (fulltext / semantic / symbol)
-repowise health           # code-health KPIs + lowest-scoring files
-repowise risk main..HEAD  # score a branch / PR range for defect risk
+repowise update [PATH]    # incremental update (seconds; --workspace for every repo)
+repowise watch            # auto-sync daemon, re-index on file change
+repowise search "<q>"     # hybrid search (fulltext / semantic / symbol / path)
+repowise ask "<q>"        # a synthesized answer with citations
+repowise context <files>  # triage card: layer, hotspot, fix history, freshness
+repowise symbol <id>      # one symbol's body, with verified line bounds
+repowise why <q|path>     # decisions, rationale, git archaeology
+repowise health           # code-health KPIs and lowest-scoring files
+repowise risk main..HEAD  # score a branch or PR range for defect risk
+repowise risk -t <file>   # what history says about touching a file
+repowise impacted-tests   # only the tests a diff actually exercises
 repowise dead-code        # unreachable-code report
-repowise distill pytest   # compact errors-first output (reversible), saves 60–90% tokens
-repowise saved            # tokens & dollars saved by distillation
-repowise doctor           # check setup, API keys, store drift
+repowise decision list    # architectural decisions
+repowise export --format structurizr  # the architecture as Structurizr DSL, no LLM
+repowise distill pytest   # compact, errors-first, reversible command output
+repowise saved            # tokens and dollars saved by distillation
+repowise workspace add    # multi-repo workspace management
+repowise doctor           # check setup, API keys, index drift
+repowise uninstall        # remove what repowise wrote, and say what it left
 ```
 
-`repowise init` generates `.repowise/config.yaml` (provider, model, embedder,
-reasoning mode, exclude patterns, git commit depth). Full command set:
-**[docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md)** · config reference:
-**[docs/CONFIG.md](docs/CONFIG.md)**.
+Every command and flag: **[docs/reference/CLI_REFERENCE.md](docs/reference/CLI_REFERENCE.md)** ·
+config: **[docs/reference/CONFIG.md](docs/reference/CONFIG.md)** ·
+examples: **[examples/](examples/)**
 
 ---
 
@@ -601,19 +824,28 @@ uv run repowise --version
 uv run pytest tests/unit/
 ```
 
+New here? You do not have to read 3,000 files to start. We keep a public index of this
+repo built by repowise itself, re-indexed on every push:
+[**explore repowise with repowise →**](https://repowise.dev/repo/repowise-dev/repowise)
+(architecture, hotspots, ownership, decisions, and a ranked
+[refactoring backlog](https://repowise.dev/repo/repowise-dev/repowise/refactoring) you
+are welcome to pick from).
+
 Full guide, including how to add languages and LLM providers:
-[CONTRIBUTING.md](.github/CONTRIBUTING.md).
+[CONTRIBUTING.md](.github/CONTRIBUTING.md) · architecture:
+[docs/architecture/](docs/architecture/README.md)
 
 ---
 
 ## License
 
-AGPL-3.0. Free for individuals, teams, and companies using repowise internally.
+AGPL-3.0. Free for individuals, teams and companies using repowise internally.
 
-For commercial licensing (the enterprise security & compliance layer, SSO/SCIM,
-RBAC, workflow integrations, priority support and SLA, or embedding repowise in a
-product without AGPL obligations), see **[docs/COMMERCIAL.md](docs/COMMERCIAL.md)**
-or contact [hello@repowise.dev](mailto:hello@repowise.dev).
+For commercial licensing (the enterprise security and compliance layer, SSO/SCIM, RBAC,
+workflow integrations, priority support and SLA, or embedding repowise in a product
+without AGPL obligations), see
+**[docs/business/COMMERCIAL.md](docs/business/COMMERCIAL.md)** or contact
+[hello@repowise.dev](mailto:hello@repowise.dev).
 
 ---
 

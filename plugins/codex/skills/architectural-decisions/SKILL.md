@@ -3,28 +3,51 @@ name: architectural-decisions
 description: Use when a task asks why code is built a certain way, proposes architectural changes, compares implementation approaches, or mentions decision markers such as WHY, DECISION, TRADEOFF, or ADR in a Repowise-indexed repository.
 ---
 
-# Architectural Decisions With Repowise
+# Architectural Decisions with Repowise
 
-Repowise captures architectural decisions: the rationale behind how code is built.
+Repowise captures architectural decisions — the *why* behind how code is built.
 
-## When The User Asks Why Something Exists
+`get_why` has four modes — pick by what you pass:
 
-Call `get_why(query="specific area or decision")` to search captured decisions. This covers inline decision markers, git-derived rationale, and decisions mined from documentation.
+1. `get_why(query="why is auth using JWT?")` — keyword + semantic decision search.
+2. `get_why(query="src/auth/service.py")` — decisions governing that file, plus
+   its origin story and an alignment score (does the file still follow its own ADRs?).
+3. `get_why(query="why was caching added?", targets=["src/auth/cache.py"])` —
+   target-anchored search; decisions touching the targets get boosted.
+4. `get_why()` — the decision-health dashboard.
 
-## Before Architectural Changes
+Decisions are mined from five sources (ADR files, PR and squash-commit bodies,
+inline markers, git archaeology, and centrality-bounded code comments). Each
+rationale traces to a verbatim source span, stamped exact / fuzzy / unverified.
+When no decision exists for a path, `get_why` falls back to git archaeology so
+the call is never empty.
 
-1. Call `get_why(query="the area being changed")` before introducing new patterns, restructuring modules, replacing infrastructure, or choosing between approaches.
-2. If decisions are found, summarize the relevant rationale and tradeoffs before editing.
-3. If no decision is found, state that no recorded decision governs the area and continue with normal source inspection.
+## When the user asks "why is X built this way?"
 
-## When No Specific Query Exists
+Call `get_why(query="X")`.
 
-Call `get_why()` to inspect decision health: stale decisions, conflicts, and ungoverned hotspots.
+## When about to make an architectural change
 
-## When Decision Markers Appear In Code
+1. Call `get_why(query="the specific area you're changing")` to find existing decisions that govern that area.
+2. If decisions are found, present them to the user before proceeding — they may not want to contradict an existing architectural choice.
+3. If no decisions are found, proceed but note that no recorded decision governs this area.
 
-If a file contains `WHY:`, `DECISION:`, `TRADEOFF:`, or `ADR:`, call `get_context(targets=["path/to/file"])` to retrieve the full file context and related decisions.
+## When called with no specific query
 
-## Recording New Decisions
+Call `get_why()` with no arguments to get the decision-health dashboard:
+- Stale decisions that may no longer apply
+- Proposed decisions awaiting confirmation
+- Ungoverned hotspots (high-churn files with no recorded decisions)
 
-When the user makes a new architectural decision, suggest recording it with a `DECISION:` comment in the relevant code or with `repowise decision add`.
+The same signals surface in the CLI via `repowise decision health` /
+`/prompts:repowise-decision`, and you can query *why* mid-task with `repowise why` /
+`/prompts:repowise-why` (the `get_why` adapter). Review auto-proposed decisions with
+`repowise decision confirm`.
+
+## When a file has decision markers
+
+If you see `# WHY:`, `# DECISION:`, `# TRADEOFF:`, or `# ADR:` comments in code, call `get_context(targets=["that_file.py"])` to see the full decision record with context and affected modules.
+
+## Recording new decisions
+
+If the user makes an architectural decision during the conversation, suggest: "Want to record this decision? Add a `# DECISION:` comment in the relevant code, or run `repowise decision add` to capture it formally."

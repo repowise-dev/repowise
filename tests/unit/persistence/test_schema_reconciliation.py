@@ -250,6 +250,157 @@ async def test_init_db_is_idempotent(tmp_path: Path) -> None:
     assert len(rows) == len(cols), "duplicate column names after re-running init_db"
 
 
+def _backfillable_column(table: Any) -> Any:
+    """The first non-PK column on *table* the reconciler can safely back-fill."""
+    for column in table.columns:
+        if column.primary_key:
+            continue
+        if (
+            column.nullable
+            or column.server_default is not None
+            or (
+                column.default is not None
+                and getattr(column.default, "arg", None) is not None
+                and not callable(getattr(column.default, "arg", None))
+            )
+        ):
+            return column
+    return None
+
+
+def _two_drop_targets() -> tuple[str, str, str, str]:
+    """Two (table, column) pairs, the second ordered after the first.
+
+    ``Base.metadata.tables`` preserves model-definition order, which is the
+    order ``_reconcile_schema`` walks. Picking a victim and a target after it
+    is what makes "a failure on the victim did not strand the rest" testable.
+    """
+    found: list[tuple[str, str]] = []
+    for table in Base.metadata.tables.values():
+        column = _backfillable_column(table)
+        if column is not None:
+            found.append((table.name, column.name))
+        if len(found) == 2:
+            break
+    assert len(found) == 2, "metadata has fewer than two back-fillable tables"
+    return found[0][0], found[0][1], found[1][0], found[1][1]
+
+
+@pytest.mark.asyncio
+async def test_failed_statement_does_not_strand_later_tables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A statement that fails mid-loop must not abort the whole reconcile.
+
+    SQLite DDL autocommits statement by statement, so an abort leaves the
+    store half-migrated permanently: every table ordered after the victim is
+    unreachable on that call and on every later one. The reconciler therefore
+    continues past a failure and reports it at the end, which is what lets a
+    repeated call converge.
+    """
+    from repowise.core.persistence import database as db_module
+
+    victim_table, victim_column, later_table, later_column = _two_drop_targets()
+
+    db_path = tmp_path / "wiki.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        await init_db(engine)
+    finally:
+        await engine.dispose()
+
+    try:
+        _execute(db_path, f'ALTER TABLE "{victim_table}" DROP COLUMN "{victim_column}"')
+        _execute(db_path, f'ALTER TABLE "{later_table}" DROP COLUMN "{later_column}"')
+    except sqlite3.OperationalError as exc:
+        pytest.skip(f"SQLite build doesn't support DROP COLUMN: {exc}")
+
+    real_add_column_ddl = db_module._add_column_ddl
+
+    def _poisoned(column: Any, dialect: Any) -> str:
+        if column.name == victim_column and column.table.name == victim_table:
+            # Deliberately unparseable, so the ALTER fails the way a real
+            # unsupported type or a locked table would.
+            return f'"{column.name}" NOT_A_REAL_TYPE DEFAULT'
+        return real_add_column_ddl(column, dialect)
+
+    monkeypatch.setattr(db_module, "_add_column_ddl", _poisoned)
+
+    # The failure is still reported: write paths must not silently succeed.
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    with pytest.raises(Exception):  # noqa: B017 - the driver's own error type
+        try:
+            await init_db(engine)
+        finally:
+            await engine.dispose()
+
+    assert victim_column not in _table_columns(db_path, victim_table)
+    assert later_column in _table_columns(db_path, later_table), (
+        "a failure on an earlier table stranded every table after it"
+    )
+
+
+@pytest.mark.asyncio
+async def test_second_reconcile_finishes_what_the_first_could_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeated calls converge, even while the failing statement keeps failing.
+
+    The failure that strands a reconcile is usually not transient, so "call it
+    again" has to make progress on its own. Only once the cause clears does the
+    victim itself get picked up.
+    """
+    from repowise.core.persistence import database as db_module
+
+    victim_table, victim_column, later_table, later_column = _two_drop_targets()
+
+    db_path = tmp_path / "wiki.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        await init_db(engine)
+    finally:
+        await engine.dispose()
+
+    try:
+        _execute(db_path, f'ALTER TABLE "{victim_table}" DROP COLUMN "{victim_column}"')
+        _execute(db_path, f'ALTER TABLE "{later_table}" DROP COLUMN "{later_column}"')
+    except sqlite3.OperationalError as exc:
+        pytest.skip(f"SQLite build doesn't support DROP COLUMN: {exc}")
+
+    real_add_column_ddl = db_module._add_column_ddl
+
+    def _poisoned(column: Any, dialect: Any) -> str:
+        if column.name == victim_column and column.table.name == victim_table:
+            return f'"{column.name}" NOT_A_REAL_TYPE DEFAULT'
+        return real_add_column_ddl(column, dialect)
+
+    monkeypatch.setattr(db_module, "_add_column_ddl", _poisoned)
+    for _ in range(2):
+        engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+        with pytest.raises(Exception):  # noqa: B017
+            try:
+                await init_db(engine)
+            finally:
+                await engine.dispose()
+
+    # This is the D7 measurement verbatim: "after a SECOND reconcile, later
+    # table fixed?" used to be False forever.
+    assert later_column in _table_columns(db_path, later_table)
+    assert victim_column not in _table_columns(db_path, victim_table)
+
+    # Whatever made the statement fail is gone (a lock released, a driver
+    # upgraded); the next call must pick the victim back up.
+    monkeypatch.setattr(db_module, "_add_column_ddl", real_add_column_ddl)
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        await init_db(engine)
+    finally:
+        await engine.dispose()
+
+    assert victim_column in _table_columns(db_path, victim_table)
+    assert later_column in _table_columns(db_path, later_table)
+
+
 @pytest.mark.asyncio
 async def test_reconciler_handles_arbitrary_new_column(tmp_path: Path) -> None:
     """Forward-compat contract: simulate a *future* migration by dropping any

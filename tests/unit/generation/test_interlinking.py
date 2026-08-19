@@ -122,6 +122,46 @@ def test_index_resolves_basename_when_unique():
     )
 
 
+def test_prior_page_ids_widen_forward_resolution():
+    """On an incremental update, refs to pages outside the run's subset
+    resolve via the persisted prior ids; backlinks stay run-local."""
+    pages = [
+        _make_page(
+            "file_page",
+            "src/app/main.py",
+            content="Delegates to `src/lib/utils.py` and reuses `helpers.py`.",
+        ),
+    ]
+
+    attach_wiki_links_and_backlinks(
+        pages,
+        prior_page_ids=[
+            "file_page:src/lib/utils.py",
+            "file_page:src/lib/helpers.py",
+            "module_page:community-3",  # not path-shaped, ignored
+        ],
+    )
+
+    targets = {link["target_page_id"] for link in pages[0].metadata["wiki_links"]}
+    assert targets == {"file_page:src/lib/utils.py", "file_page:src/lib/helpers.py"}
+
+
+def test_current_run_pages_win_over_prior_ids():
+    """A page regenerated this run resolves to itself, not a stale prior id."""
+    pages = [
+        _make_page("file_page", "a.py", content="Uses `b.py`."),
+        _make_page("file_page", "b.py", content=""),
+    ]
+
+    attach_wiki_links_and_backlinks(pages, prior_page_ids=["file_page:b.py"])
+
+    assert pages[0].metadata["wiki_links"] == [
+        {"anchor": "b.py", "target_page_id": "file_page:b.py", "kind": "file"}
+    ]
+    # b.py is in the run, so its backlink from a.py is materialized.
+    assert pages[1].metadata["backlinks"][0]["source_page_id"] == "file_page:a.py"
+
+
 def test_link_index_build_returns_expected_keys():
     pages = [
         _make_page("file_page", "src/x.py"),

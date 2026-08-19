@@ -7,11 +7,11 @@ This example shows the expected Codex setup for an initialized Repowise reposito
 ```bash
 cd /path/to/your-repo
 codex login status
-repowise init --codex --index-only --yes   # fast smoke: index only, no LLM wiki generation
+repowise init --codex --no-prose --yes    # fast smoke: no LLM wiki prose, no key needed
 repowise init --codex --provider codex_cli --yes
 ```
 
-`repowise init --codex --index-only` is the quick setup smoke path. Drop `--index-only` when you want the full LLM-generated wiki. `repowise init --codex` writes project-local Codex files:
+`repowise init --codex --no-prose` is the quick setup smoke path. Drop `--no-prose` when you want the full LLM-generated wiki, or drop `--yes` too and let `init` ask. `repowise init --codex` writes project-local Codex files:
 
 ```text
 .codex/config.toml
@@ -47,3 +47,5 @@ codex
 ```
 
 Install the Repowise plugin from the local marketplace. The plugin bundles Repowise MCP, hooks, and Codex-neutral skills; it does not add slash commands. Plugin-bundled hooks require `[features] plugin_hooks = true` in current Codex releases.
+
+Full integration notes: [docs/agent/CODEX.md](../../docs/agent/CODEX.md).

@@ -36,8 +36,8 @@ def _build_parsed(repo: Path) -> dict[str, ParsedFile]:
         fi = _file_info(rel, str(src.resolve()), "xml")
         # Build a minimal ParsedFile by reusing parser on empty Java syntax
         # — but we only need file_info, so synthesize directly.
-        from repowise.core.ingestion.models import ParsedFile as _PF
-        out[rel] = _PF(file_info=fi, symbols=[], imports=[], exports=[])
+        from repowise.core.ingestion.models import ParsedFile as _ParsedFileT
+        out[rel] = _ParsedFileT(file_info=fi, symbols=[], imports=[], exports=[])
     return out
 
 

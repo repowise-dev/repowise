@@ -73,18 +73,31 @@ def _render_badge_svg(label: str, message: str, color_name: str) -> str:
 
 
 async def _badge_average_health(session: AsyncSession, repo_id: str) -> float | None:
+    """The one number these endpoints render.
+
+    These are README-embedded and public, so they get hit by anyone loading the
+    README — and they were reading the entire health dataset to print ``7.5/10``.
+    ``get_health_summary`` hydrates every per-file metric row, runs the grouped
+    deduction aggregate for a ranking no badge shows, scans the whole findings
+    table for per-dimension counts, and loads the graph's language map, all to
+    have one float taken off the result. ``get_average_health`` computes that
+    float and nothing else, from the same rows with the same weighting.
+    """
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
-    summary = await crud.get_health_summary(session, repo_id)
-    avg = summary.get("average_health")
-    return float(avg) if avg is not None else None
+    avg = await crud.get_average_health(session, repo_id)
+    # A repo with no metrics has always badged as a perfect 10.0 here, because
+    # ``get_health_summary`` returns 10.0 for an empty table. Preserved rather
+    # than quietly corrected: the crud helper reports "unmeasured" honestly as
+    # ``None``, and mapping that to 10.0 is this endpoint's existing contract.
+    return 10.0 if avg is None else avg
 
 
 @router.get("/api/repos/{repo_id}/health/badge.json")
 async def health_badge_json(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Shields.io endpoint-badge payload (color + ``N.N/10`` score, no letter).
 
@@ -104,7 +117,7 @@ async def health_badge_json(
 @router.get("/api/repos/{repo_id}/health/badge.svg")
 async def health_badge_svg(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> Response:
     """Self-rendered flat SVG health badge (no external service round-trip)."""
     avg = await _badge_average_health(session, repo_id)

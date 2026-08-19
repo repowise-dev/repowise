@@ -13,9 +13,11 @@ from pathlib import Path
 import click
 from rich.table import Table
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
     console,
     err_console,
+    load_config,
     load_state,
     resolve_command_target,
     run_async,
@@ -48,12 +50,6 @@ from .trends import _render_trend
     default="table",
     type=click.Choice(["table", "json", "md"]),
     help="Output format.",
-)
-@click.option(
-    "--safe-only",
-    is_flag=True,
-    default=False,
-    help="Phase-3 placeholder — currently a no-op for v1 markers.",
 )
 @click.option(
     "--repo",
@@ -105,11 +101,17 @@ from .trends import _render_trend
     default=False,
     help="Print a ready-to-paste health badge (Markdown) for this repo's README.",
 )
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show debug logs from the pipeline.",
+)
 def health_command(
     path: str | None,
     file_filter: str | None,
     fmt: str,
-    safe_only: bool,
     repo_alias: str | None,
     no_workspace: bool,
     refactoring_targets: bool,
@@ -117,12 +119,15 @@ def health_command(
     module_filter: str | None,
     trend_view: bool,
     badge_view: bool,
+    verbose: bool,
 ) -> None:
     """Compute code-health scores from markers (CCN, nesting, brain-method).
 
     Runs in-process — no LLM, no network. Re-uses the repowise ingestion
     parser, graph builder, and git indexer.
     """
+    configure_cli_logging(verbose=verbose)
+
     from pathlib import Path as PathlibPath
 
     from repowise.core.analysis.health import HealthAnalyzer
@@ -171,11 +176,18 @@ def health_command(
     state = load_state(repo_path)
     include_submodules = bool(state.get("include_submodules", False))
     include_nested_repos = bool(state.get("include_nested_repos", False))
+    # `repowise health` persists metrics into the same rows the indexer writes,
+    # so it has to analyze the same file set. Without the config's exclude
+    # patterns it scored — and overwrote rows for — files the index had
+    # deliberately dropped, and on a repo excluding a manifest directory it
+    # could write a different `module` than the index did.
+    exclude_patterns: list[str] = list(load_config(repo_path).get("exclude_patterns") or [])
 
     traverser = FileTraverser(
         repo_path,
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
+        extra_exclude_patterns=exclude_patterns or None,
     )
     file_infos = list(traverser.traverse())
     parser = ASTParser()
@@ -194,6 +206,15 @@ def health_command(
             parsed_files.append(parsed)
         except Exception:
             continue
+
+    from repowise.core.ingestion import wire_tsconfig_resolver
+
+    wire_tsconfig_resolver(
+        graph_builder,
+        repo_path,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
     graph_builder.build()
 
     git_meta_map: dict = {}
@@ -217,6 +238,7 @@ def health_command(
         parsed_files=parsed_files,
         coverage_map=coverage_map,
         duplication_cache_dir=Path(repo_path) / ".repowise",
+        repo_root=repo_path,
     )
     # Load any .repowise/health-rules.json the user keeps in the repo.
     from repowise.core.analysis.health.config import HealthConfig

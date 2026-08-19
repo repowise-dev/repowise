@@ -8,11 +8,12 @@ import os
 import networkx as nx
 import pytest
 
-from repowise.core.analysis.dead_code.analyzer import (
-    DeadCodeAnalyzer,
+from repowise.core.analysis.dead_code.analyzer import DeadCodeAnalyzer
+from repowise.core.analysis.dead_code.constants import (
+    _NEVER_FLAG_PATTERNS,
     _never_flag_regex,
+    never_flag_match,
 )
-from repowise.core.analysis.dead_code.constants import _NEVER_FLAG_PATTERNS
 
 # Positives derived from the glob list plus negatives that brush close to it.
 _PROBE_PATHS = [
@@ -83,12 +84,10 @@ class TestMemoizedMatch:
         [*_PROBE_PATHS, "pkg/a.go::Handler", "cmd/main_test.go::TestX", "app/page.tsx::Page"],
     )
     def test_memoized_equals_direct(self, path):
-        from repowise.core.analysis.dead_code.analyzer import _never_flag_regex_match
-
         direct = bool(_never_flag_regex(_NEVER_FLAG_PATTERNS).match(os.path.normcase(path)))
-        assert _never_flag_regex_match(path) == direct, path
+        assert never_flag_match(path) == direct, path
         # Second call exercises the cached branch.
-        assert _never_flag_regex_match(path) == direct, path
+        assert never_flag_match(path) == direct, path
 
 
 class TestShouldNeverFlag:
@@ -112,3 +111,66 @@ class TestShouldNeverFlag:
 
     def test_init_py_barrel(self):
         assert self._analyzer()._should_never_flag("pkg/sub/__init__.py", set())
+
+
+class TestSuffixIndexEquivalence:
+    r"""``never_flag_match`` buckets the patterns by the literal text
+    after their last ``*`` and only tests the buckets a path's tail can reach.
+    That is sound only because ``fnmatch.translate`` end-anchors every
+    alternative, so these pin both the equivalence and the assumption.
+    """
+
+    def test_no_pattern_uses_a_construct_the_split_cannot_see(self):
+        """The suffix is taken with ``rsplit("*", 1)``, which yields a literal
+        tail only while no pattern uses ``?``, a character class or a brace.
+        Adding one would silently make the prefilter drop real matches, so
+        fail here rather than there."""
+        offenders = [p for p in _NEVER_FLAG_PATTERNS if set("?[]{}") & set(p)]
+        assert offenders == [], offenders
+
+    def test_every_alternative_is_end_anchored(self):
+        r"""Each branch carries its own ``\Z``, which is what makes "the
+        pattern ends in literal S, so it can only match a path ending in S"
+        true. One shared trailing anchor would make the buckets wrong rather
+        than merely slow."""
+        for pat in ("*.sh", "*/apps/**/*.cc", "build.rs"):
+            assert fnmatch.translate(os.path.normcase(pat)).endswith(r"\Z")
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            # Repeated segments: fnmatch emits atomic groups for interior
+            # ``*literal`` runs, which commit to the FIRST occurrence and never
+            # retry a later one, so a matcher that backtracks would over-match.
+            "a/tests/b/tests/c/d.cpp",
+            "vendor/x/vendor/y.rs",
+            "src/generated/deep/generated/nested/file.ts",
+            "apps/x/apps/y.cc",
+            "build/a/build/b.rs",
+            # Tails that brush the bucket boundaries.
+            "a.sh",
+            "a.sh::Foo",
+            "A.SH",
+            "x/y/livereload/livereload.js",
+            "livereload/livereload.js",
+            "notbuild.rs",
+            "build.rs",
+            "deeply/nested/build.rs",
+            "",
+            "a",
+            "::",
+        ],
+    )
+    def test_matches_the_single_alternation(self, path):
+        expected = bool(_never_flag_regex(_NEVER_FLAG_PATTERNS).match(os.path.normcase(path)))
+        assert never_flag_match(path) == expected, path
+
+    def test_synthesized_probe_per_pattern_agrees(self):
+        """One concrete path per glob, plus near-miss variants around it, run
+        through the bucketed matcher rather than the raw regex."""
+        regex = _never_flag_regex(_NEVER_FLAG_PATTERNS)
+        for pat in _NEVER_FLAG_PATTERNS:
+            base = pat.replace("**", "x").replace("*", "x")
+            for probe in (base, base.upper(), f"prefix/{base}", f"{base}/trailing.py"):
+                expected = bool(regex.match(os.path.normcase(probe)))
+                assert never_flag_match(probe) == expected, (pat, probe)

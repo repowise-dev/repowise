@@ -39,12 +39,29 @@ export function AgentBadge({ agentName, tier, confidence, className }: AgentBadg
   );
 }
 
-/** "New contributor" marker — low cumulative prior-commit count at commit time. */
-export function NewContributorBadge({ experience }: { experience: number }) {
+/** At or below this many commits in the index, an author reads as new. */
+const NEW_CONTRIBUTOR_MAX_COMMITS = 2;
+
+/**
+ * Whether a commit's author is new to this repo.
+ *
+ * Keyed on the author's total commits in the index, not on `author_experience`
+ * (their running count at commit time). Experience necessarily starts near zero
+ * for everyone at the old edge of the indexed window, so gating on it labels the
+ * repo's most prolific author a newcomer on their oldest indexed commits. A
+ * total does not move with position in the window. Agent-authored commits are
+ * excluded by the callers, which show provenance instead.
+ */
+export function isNewContributor(commitCount: number | null | undefined): boolean {
+  return commitCount != null && commitCount <= NEW_CONTRIBUTOR_MAX_COMMITS;
+}
+
+/** "New contributor" marker — few commits by this author across the index. */
+export function NewContributorBadge({ commitCount }: { commitCount: number }) {
   return (
     <span
       className="inline-flex shrink-0 items-center rounded-md bg-[var(--color-caution)]/15 px-1.5 py-0.5 text-[10px] font-medium text-[var(--color-caution)]"
-      title={`Author had ${experience} prior commit${experience === 1 ? "" : "s"} in this repo at the time`}
+      title={`Author has ${commitCount} commit${commitCount === 1 ? "" : "s"} in the indexed history`}
     >
       new contributor
     </span>

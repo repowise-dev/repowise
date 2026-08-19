@@ -22,11 +22,15 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, replace
 
+from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
+
 from .models import ZoomNode
 
-# Edge types that represent "uses at runtime" for reachability. Symbol-level
-# containment edges are already excluded upstream (file-only architecture view).
-_FLOW_EDGE_TYPES = frozenset({"imports", "depends_on"})
+# Edge types that represent "uses at runtime" for reachability. This used to be
+# {"imports", "depends_on"}; "depends_on" is a knowledge-graph export label and
+# never a persisted edge_type, so only "imports" ever matched and framework and
+# dynamic wiring were invisible to reachability.
+_FLOW_EDGE_TYPES = FILE_DEPENDENCY_EDGE_TYPES
 
 _SIZE_WEIGHT = {"simple": 0.0, "moderate": 0.5, "complex": 1.0}
 

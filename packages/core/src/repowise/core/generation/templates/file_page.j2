@@ -1,237 +1,134 @@
-You are documenting the file `{{ ctx.file_path }}` (language: {{ ctx.language }}).
+{#- Deterministic (no-LLM) tier-2 file page.
 
-{% if ctx.file_category == "config" %}
-This is a **configuration** file. Document what it configures and which
-components read it, what each meaningful key/section controls, and the
-operational effect of changing values — not its syntax. Lead with the system
-it configures.
-{% elif ctx.file_category == "data" %}
-This is a **data / schema** file (model, migration, or schema definition).
-Document the entities, tables, columns, and relationships it defines, what the
-data means, and — for a migration — what it changes and why. Lead with the
-data model, and name the foreign keys / relationships that connect it to the
-rest of the system.
-{% elif ctx.file_category == "pipeline" %}
-This is a **pipeline / CI-CD** file. Document the stages it runs, their order,
-the triggers and conditions, and the artifacts or deployments it produces.
-Lead with what the pipeline accomplishes end-to-end.
-{% elif ctx.file_category == "doc" %}
-This is a **documentation** file. Summarise what it explains and who should
-read it; do not restate it verbatim.
-{% else %}
-This is a **code** file. Lead with its architectural role and what it produces
-or consumes (see the lead-with-role rule).
-{% endif %}
+    Rendered straight from the assembled FilePageContext for the long tail
+    of selected files on large repos. No model call, the content is a
+    structured, factual stub built entirely from parsed AST + graph signals,
+    and is embedded for search like any other page.
 
-## File Overview
+    Written for retrieval as much as for reading: the page names its own
+    symbols, its neighbours' file paths and its layer in full, because those
+    are the identifiers a question embeds near. Nobody reads a file page end
+    to end, so where readability and retrieval disagree, retrieval wins.
 
-**Path:** `{{ ctx.file_path }}` | **Language:** {{ ctx.language }}{% if ctx.is_test %} | test file{% endif %}{% if ctx.is_api_contract %} | API contract{% endif %}
+    Every section below the Overview is conditional. A heading with nothing
+    under it costs a reader a stop and puts the same stock sentence into the
+    search index on thousands of pages, where it matches every query and
+    distinguishes none of them. The Overview is the one exception: it is
+    generated rather than looked up, so it always has something to say, and
+    ``_extract_summary`` reads it back as the summary shown in search results
+    and the wiki list.
+-#}
+{%- set public_syms = ctx.symbols | selectattr("visibility", "equalto", "public") | list -%}
+# {{ ctx.file_path }}
 
-{% if ctx.docstring %}**Module docstring:** {{ ctx.docstring }}
+## {{ labels.overview }}
 
-{% endif %}
-{# Surface architectural signals in plain prose so the LLM weaves them into the
-   opening sentence. Raw numeric metrics (pagerank=0.0234) carry no semantic
-   weight in the generated page — embeddings see digits, not meaning. Stating
-   the same fact in role vocabulary ("entry point", "central in dependency
-   graph", "bridge between modules") puts retrieval-relevant terms into the
-   page text where both FTS and vector search can anchor on them. #}
-{%- set _signals = [] -%}
-{%- if ctx.is_entry_point -%}{%- set _ = _signals.append("entry point into this subsystem") -%}{%- endif -%}
-{%- if ctx.pagerank_score is defined and ctx.pagerank_score >= 0.01 -%}{%- set _ = _signals.append("central in the dependency graph (high PageRank)") -%}{%- endif -%}
-{%- if ctx.betweenness_score is defined and ctx.betweenness_score >= 0.005 -%}{%- set _ = _signals.append("frequent bridge between modules (high betweenness)") -%}{%- endif -%}
-{%- if ctx.community_label -%}{%- set _ = _signals.append("part of the " ~ ctx.community_label ~ " community") -%}{%- endif -%}
-{%- if ctx.kg_layer_name -%}{%- set _ = _signals.append("part of the " ~ ctx.kg_layer_name ~ " layer") -%}{%- endif -%}
-{%- if ctx.kg_layer_role == "edge_connector" -%}{%- set _ = _signals.append("edge connector (imported cross-layer)") -%}{%- endif -%}
-{% if _signals %}
-**Architectural signals:** {{ _signals | join("; ") }}.
+{% if ctx.docstring %}{{ ctx.docstring | as_markdown }}{% else %}`{{ ctx.file_path }}` {{ labels.is_a }} {{ ctx.language }} {% if ctx.is_entry_point %}{{ labels.entry_point }} {% endif %}{% if ctx.is_test %}{{ labels.test }} {% endif %}{{ labels.source_file }}{% if ctx.kg_layer_name %} {{ labels.in_layer.format(layer=ctx.kg_layer_name) }}{% endif %}{% if ctx.community_label %}, {{ labels.part_of_module_cluster_intro.format(community=ctx.community_label) }}{% endif %}.{% endif %}
+{%- if public_syms %}
+{%- set symbol_word = labels.public_symbol_plural if public_syms | length != 1 else labels.public_symbol_singular %}
 
-Weave these into the role-leading first sentence of ## Overview. They are the
-shape of the file's job, not decoration.
-{% endif %}
+{% if ctx.dependencies %}{{ labels.exposes_symbols_and_depends.format(symbol_count=public_syms | length, symbol_word=symbol_word, file_count=ctx.dependencies | length, file_word=labels.other_file_plural if ctx.dependencies | length != 1 else labels.other_file_singular) }}{% else %}{{ labels.exposes_symbols.format(symbol_count=public_syms | length, symbol_word=symbol_word) }}{% endif %}
 
-**Raw metrics** (for reference, do NOT recite verbatim in the page):
-PageRank {{ "%.4f"|format(ctx.pagerank_score) }} · betweenness {{ "%.4f"|format(ctx.betweenness_score) }} · community {{ ctx.community_id }}
+## {{ labels.public_api }}
 
-## Symbols ({{ ctx.symbols | length }})
-{% for sym in ctx.symbols %}
-- **{{ sym.name }}** ({{ sym.kind }}): `{{ sym.signature }}`{% if sym.docstring %} — {{ sym.docstring }}{% endif %}
+| {{ labels.symbol }} | {{ labels.kind }} | {{ labels.signature }} |
+| --- | --- | --- |
+{%- for s in public_syms %}
+| `{{ s.name }}` | {{ s.kind }} | {{ (s.signature or "") | signature | replace("|", "\\|") }} |
+{%- endfor %}
+{%- endif %}
+{%- if ctx.dependencies %}
 
-{% endfor %}
-
-## Imports ({{ ctx.imports | length }})
-{% for imp in ctx.imports %}
-- `{{ imp }}`
-{% endfor %}
-
-## Exports
-{% for exp in ctx.exports %}
-- `{{ exp }}`
-{% endfor %}
-
-## Dependencies (files this imports)
-{% for dep in ctx.dependencies %}
-{% set summary = ctx.dependency_summaries.get(dep, '') %}
-{% if summary %}
-- `{{ dep }}` — {{ summary }}
-{% else %}
+## {{ labels.depends_on }}
+{% for dep in ctx.dependencies[:25] %}
 - `{{ dep }}`
-{% endif %}
-{% endfor %}
+{%- endfor %}
+{%- if ctx.dependencies | length > 25 %}
 
-## Dependents (files that import this)
-{% for dep in ctx.dependents %}
+_{{ labels.and_more.format(count=ctx.dependencies | length - 25) }}_
+{%- endif %}
+{%- endif %}
+{%- if ctx.dependents %}
+
+## {{ labels.used_by }}
+
+{{ labels.imported_by_files.format(count=ctx.dependents | length, file_word=labels.file_plural if ctx.dependents | length != 1 else labels.file_singular) }}
+{% for dep in ctx.dependents[:25] %}
 - `{{ dep }}`
-{% endfor %}
+{%- endfor %}
+{%- if ctx.dependents | length > 25 %}
 
-{% if ctx.parse_errors %}
-## Parse Errors
-{% for err in ctx.parse_errors %}
-- {{ err }}
-{% endfor %}
-{% endif %}
+_{{ labels.and_more.format(count=ctx.dependents | length - 25) }}_
+{%- endif %}
+{%- endif %}
+{%- if ctx.community_label or ctx.kg_layer_name %}
 
-{% if ctx.dependency_summaries %}
-## Dependency Context
-The following are summaries of files that this file imports. Use these to understand how the imports are intended to be used:
-{% for dep_path, dep_summary in ctx.dependency_summaries.items() %}
-### `{{ dep_path }}`
-{{ dep_summary }}
-{% endfor %}
-{% endif %}
-
-{% if ctx.file_source_snippet %}
-## Source Snippet
-```{{ ctx.language }}
-{{ ctx.file_source_snippet }}
-```
-{% endif %}
-
-{% if ctx.rag_context %}
-## Related Context
-{% for rag in ctx.rag_context %}
-{{ rag }}
-{% endfor %}
-{% endif %}
-
-{# ── Git context block ────────────────────────────────────────── #}
-{% if ctx.git_metadata %}
-
-{% if ctx.git_metadata.primary_owner_name is defined and ctx.git_metadata.primary_owner_name %}
-## Ownership
-Primary maintainer: **{{ ctx.git_metadata.primary_owner_name }}**
-({{ (ctx.git_metadata.primary_owner_commit_pct * 100) | round | int }}% of lines)
-{% if ctx.git_metadata.top_authors is defined and ctx.git_metadata.top_authors | length > 1 %}
-Also contributed by: {% for a in ctx.git_metadata.top_authors[1:3] %}{{ a.name }}{% if not loop.last %}, {% endif %}{% endfor %}
-{% endif %}
-{% endif %}
-
-{% if ctx.git_metadata.significant_commit_messages is defined and ctx.git_metadata.significant_commit_messages %}
-## Evolution context
-This file has been shaped by {{ ctx.git_metadata.commit_count_total }} commits
-over {{ ctx.git_metadata.age_days }} days. Key changes:
-{% for commit in ctx.git_metadata.significant_commit_messages %}
-- **{{ commit.date[:10] }}** — {{ commit.message }} *({{ commit.author }})*
-{% endfor %}
-
-Use this history to explain *why* the code is structured as it is.
-{% endif %}
-
-{% if ctx.git_metadata.is_hotspot is defined and ctx.git_metadata.is_hotspot %}
-IMPORTANT: This file is a HOTSPOT — top 25% for both change frequency and
-complexity. Note this prominently. High-risk area for bugs.
-{% endif %}
-
-{% if ctx.git_metadata.is_stable is defined and ctx.git_metadata.is_stable %}
-NOTE: This file is STABLE — {{ ctx.git_metadata.commit_count_total }} commits
-but unchanged in 90+ days. Emphasize stability and reliability.
-{% endif %}
-
-{% if ctx.git_metadata.co_change_partners is defined and ctx.git_metadata.co_change_partners %}
-## Hidden coupling (co-change analysis)
-These files have no import relationship but frequently change together:
-{% for partner in ctx.git_metadata.co_change_partners[:3] %}
-- `{{ partner.file_path }}` (co-changed {{ partner.co_change_count }} times)
-{% endfor %}
-Mention this relationship explicitly.
-{% endif %}
-
-{% endif %}
-{# ── End git context block ────────────────────────────────────── #}
-
-{% if ctx.call_graph %}
-## Call Graph
-Key function calls involving this file's symbols:
-{% for cg in ctx.call_graph %}
-- `{{ cg.caller }}` → `{{ cg.callee }}`{% if cg.callee_file and cg.callee_file != ctx.file_path %} (in `{{ cg.callee_file }}`){% endif %}{% if cg.caller_file is defined and cg.caller_file and cg.caller_file != ctx.file_path %} (from `{{ cg.caller_file }}`){% endif %}
-
-{% endfor %}
-Use this to explain how the file's functions connect to callers and callees.
-{% endif %}
-
-{% if ctx.heritage %}
-## Class Hierarchy
-{% for h in ctx.heritage %}
-- `{{ h.child }}` {{ h.kind }} `{{ h.parent }}`{% if h.parent_file is defined and h.parent_file %} (in `{{ h.parent_file }}`){% endif %}{% if h.child_file is defined and h.child_file %} (from `{{ h.child_file }}`){% endif %}
-
-{% endfor %}
-{% endif %}
-
+## {{ labels.usage_notes }}
 {% if ctx.community_label %}
-## Architectural Community
-This file belongs to the **{{ ctx.community_label }}** community{% if ctx.community_cohesion > 0 %} (cohesion: {{ "%.2f"|format(ctx.community_cohesion) }}){% endif %}.
-Use this to explain the file's role within its architectural cluster.
-{% endif %}
+{{ labels.part_of_module_cluster.format(community=ctx.community_label) }}
+{%- endif %}
+{%- if ctx.kg_layer_name %}
+**{{ labels.layer }}:** {{ ctx.kg_layer_name }}{% if ctx.kg_layer_role %} | **{{ labels.role }}:** {{ ctx.kg_layer_role }}{% endif %}
+{%- endif %}
+{%- endif %}
+{#- Question-shaped text, built from structure rather than prose.
 
-{% if ctx.kg_layer_name %}
-## Architectural Layer
-This file belongs to the **{{ ctx.kg_layer_name }}** layer: {{ ctx.kg_layer_description[:300] }}
+    Every search query is a question and this page is a declarative reference,
+    so the two share almost no vocabulary. The identifiers are the whole point:
+    thousands of file pages asking the same question differ only in the file
+    and symbol they name, and without those they would be one sentence
+    repeated across the corpus, matching everything and distinguishing nothing.
 
-{% if ctx.kg_layer_role == "edge_connector" %}
-This file is an **edge connector** — imported by files outside its layer, making it part of the layer's public interface.
-{% elif ctx.kg_layer_role == "entry_point" %}
-This file is a **layer entry point** — not imported by other files, suggesting it is a top-level orchestrator.
-{% endif %}
-{% if ctx.kg_node_summary %}
-**Summary:** {{ ctx.kg_node_summary }}
-{% endif %}
-{% endif %}
+    A question is emitted only where the page can answer it. A question whose
+    answer is not below it puts the words of a promise into the index and then
+    breaks it, which is the failure this block exists to avoid. Last on the
+    page so it cannot become the summary ``_extract_summary`` reads back.
 
-{% if ctx.kg_neighbors %}
-## Architectural Neighbors
-{% for n in ctx.kg_neighbors %}
-- `{{ n.path }}` ({{ n.relationship }}{% if n.same_layer %}, same layer{% else %}, cross-layer{% endif %})
-{% endfor %}
-{% endif %}
+    Built as a list and capped, because a fully-connected file qualifies for
+    more of them than are worth carrying: past three the block stops being
+    question-shaped text and starts being padding on every page in the corpus.
+-#}
+{%- set questions = [] -%}
+{%- if public_syms -%}
+{%- set _ = questions.append(labels.question_exports.format(path=ctx.file_path)) -%}
+{%- set _ = questions.append(labels.question_where_defined.format(symbol=public_syms[0].name)) -%}
+{%- endif -%}
+{%- if ctx.dependents -%}
+{%- set _ = questions.append(labels.question_what_imports.format(path=ctx.file_path)) -%}
+{%- endif -%}
+{%- if ctx.dependencies -%}
+{%- set _ = questions.append(labels.question_depends_on.format(path=ctx.file_path)) -%}
+{%- endif -%}
+{%- if questions %}
 
-{% if ctx.kg_tour_step %}
-## Codebase Tour
-This file appears in **Step {{ ctx.kg_tour_step.order }}: {{ ctx.kg_tour_step.title }}**.
-{{ ctx.kg_tour_step.description }}
-{% endif %}
+## {{ labels.questions_heading }}
+{% for q in questions[:3] %}
+- {{ q }}
+{%- endfor %}
+{%- endif %}
+{#- The words the file itself uses.
 
-{% if ctx.decision_records %}
-## Architectural decisions affecting this file
-Use these as the source of truth for the "why" when explaining design choices below.
-{% for dr in ctx.decision_records[:5] %}
-- **{{ dr.title }}** — {{ dr.decision }}{% if dr.rationale %} *(Why: {{ dr.rationale }})*{% endif %}
-{% endfor %}
-{% endif %}
+    Everything above is a description of the file. This is the file's own
+    vocabulary: field names, string literals, help text, comment prose. The
+    page could describe a file accurately and still be unfindable by any
+    question about what it does, because a question is asked in the words of
+    the source and none of those words were on the page.
 
-{% if ctx.dead_code_findings %}
-## Potentially unused code
-{% for finding in ctx.dead_code_findings %}
-- `{{ finding.symbol_name }}` — {{ finding.reason }}
-  (confidence: {{ (finding.confidence * 100) | int }}%{% if finding.safe_to_delete %}, cleanup-ready{% endif %})
-{% endfor %}
-{% endif %}
+    Per-file, and that is the whole point. Repo-level vocabulary rendered here
+    would be byte-identical across every file page in the corpus, which is the
+    failure this template's own header warns about: it would match every query
+    and distinguish none of them.
 
-{% if ctx.depth == "thorough" %}
-IMPORTANT: This is a high-activity or hotspot file. Be extremely detailed. Explain
-implementation rationale, edge cases, potential pitfalls, and provide multi-step usage
-examples where helpful.
-{% elif ctx.depth == "minimal" %}
-This file is stable and low-centrality. Provide a concise overview focused on the
-public API only. Skip implementation details.
-{% endif %}
-Generate a complete wiki page following the sections above.
+    Last on the page, below the questions block, for the same reason that
+    block is low: ``_extract_summary`` reads back from the top, and a bag of
+    words is not a summary. Conditional, like every section below the
+    Overview, so a file that yields no vocabulary renders no heading.
+-#}
+{%- if ctx.file_vocabulary %}
+
+## {{ labels.in_the_code }}
+
+{{ ctx.file_vocabulary }}
+{%- endif %}
+
+{% include "_footer.j2" %}

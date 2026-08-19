@@ -19,9 +19,9 @@ not just *bigger*.
 
 ## Pick the mode by what you pass
 
-- **Dashboard** — `get_health()` (no targets): repo-level KPIs plus the
-  lowest-scoring files. Start here for "how healthy is this codebase?" or "what
-  should we clean up?".
+- **Dashboard** — `get_health()` (no targets): a `directive` naming what to fix
+  first, then repo-level KPIs and the lowest-scoring files. Start here for "how
+  healthy is this codebase?" or "what should we clean up?".
 - **Targeted** — `get_health(targets=["src/x.py", "src/y.py"])`: per-file score
   and the specific marker findings driving it. Use before/after a refactor,
   or to explain *why* a file is flagged.
@@ -34,16 +34,21 @@ not just *bigger*.
 - `"coverage"` — surface coverage data when it's been ingested.
 - `"trend"` — recent health snapshots + declining / predicted-decline signal.
 
+`include` adds blocks; `only=[...]` subtracts them.
+
 ## How to use the results
 
-1. For "what should I refactor?" → dashboard mode, then
+1. For "what should I refactor?" → dashboard mode, lead with `directive`, then
    `get_health(targets=[worst files], include=["refactoring"])` and present the
-   ranked suggestions, not just the scores.
-2. For a specific file → report the score, the top 2–3 marker findings, and
+   ranked plans, not just the scores.
+2. Rank by `weighted_deficit`, not `score` — the score floors at 1.0.
+3. For a specific file → report the score, the top 2–3 marker findings, and
    what each one means in plain language. Avoid dumping the raw payload.
-3. Before editing a flagged file → cross-check `get_risk(targets=[...])`; a file
+4. Check `unresolved` before calling a file clean: a target listed there matched
+   nothing, and `not_indexed` means run `repowise update`.
+5. Before editing a flagged file → cross-check `get_risk(targets=[...])`; a file
    that is both low-health *and* a churn hotspot deserves the most care.
-4. Untested-hotspot / coverage questions → tell the user coverage markers
+6. Untested-hotspot / coverage questions → tell the user coverage markers
    light up once they ingest a report: `repowise coverage add cov.lcov`
    (LCOV / Cobertura / Clover; a coverage.py `.coverage` also builds the
    per-test map), then re-run `repowise health`.
@@ -58,5 +63,5 @@ not just *bigger*.
 ## Error handling
 
 If `get_health` reports no repository, suggest `/repowise:init`. Code health is
-computed even in index-only mode (no LLM needed), so it should be available
+computed even with a template-rendered wiki (no LLM needed), so it should be available
 whenever the repo is indexed.

@@ -9,7 +9,7 @@ user-invocable: false
 
 # Dead Code Cleanup with Repowise
 
-Repowise detects dead code through graph analysis — no LLM needed, works even in index-only mode.
+Repowise detects dead code through graph analysis — no LLM needed, works even with a template-rendered wiki.
 
 ## When the user asks about dead/unused code
 

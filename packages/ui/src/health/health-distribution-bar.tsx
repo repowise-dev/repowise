@@ -46,7 +46,7 @@ export function HealthDistributionBar({
   return (
     <div className="space-y-1.5">
       <div
-        className={`flex w-full ${h} overflow-hidden rounded-full bg-[var(--color-bg-muted)]`}
+        className={`flex w-full ${h} overflow-hidden rounded-full bg-[var(--color-bg-inset)]`}
         title={ORDER.map(
           (b) => `${BAND_LABEL[b]} ${distribution.bands[b].pct}%`,
         ).join(" · ")}

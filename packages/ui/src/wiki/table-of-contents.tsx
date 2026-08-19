@@ -59,8 +59,11 @@ export function TableOfContents({ content }: { content: string }) {
       </p>
       {/* Left rail: a hairline the active item's accent bar sits on. */}
       <ul className="border-l border-[var(--color-border-default)]">
-        {headings.map(({ id, text, level }) => (
-          <li key={id}>
+        {/* A page can repeat a heading (two "Examples" sections, or a
+            duplicated section from generation), which slugifies to the same
+            id, so the list index keeps the React key unique. */}
+        {headings.map(({ id, text, level }, index) => (
+          <li key={`${id}-${index}`}>
             <a
               href={`#${id}`}
               className={cn(

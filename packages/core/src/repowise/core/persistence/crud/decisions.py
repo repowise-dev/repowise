@@ -11,10 +11,14 @@ from datetime import datetime
 from typing import Any
 
 import structlog
-from sqlalchemy import delete, or_, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.decision_provenance import compute_confidence, rank_for_source
+from repowise.core.analysis.decisions.provenance import (
+    SOURCE_RANK,
+    compute_confidence,
+    rank_for_source,
+)
 
 from ..decision_graph import sync_decision_node_links
 from ..models import (
@@ -169,11 +173,22 @@ async def list_decisions(
     include_proposed: bool = True,
     limit: int = 100,
     offset: int = 0,
+    sort: str = "priority",
 ) -> list[DecisionRecord]:
     """Return decision records with optional filters.
 
     Dismissed records are tombstones and only show up when explicitly asked
     for via ``status="dismissed"``.
+
+    ``sort`` controls ordering:
+
+    * ``"priority"`` (default) — what a reader needs first. Confirmed rules
+      lead, then the proposals most likely to be real (highest confidence),
+      then the records that have been retired. Newest breaks every tie.
+      Ordering by ``created_at`` alone buried all eleven active decisions on
+      this repo under 468 unreviewed proposals, so page one of the table was
+      entirely machine guesses.
+    * ``"recent"`` — the previous behaviour, newest first.
     """
     q = select(DecisionRecord).where(DecisionRecord.repository_id == repository_id)
     if status is not None:
@@ -191,9 +206,68 @@ async def list_decisions(
     if module is not None:
         # Match exact module path in JSON array
         q = q.where(DecisionRecord.affected_modules_json.contains(f'"{module}"'))
-    q = q.order_by(DecisionRecord.created_at.desc()).limit(limit).offset(offset)
+    q = q.order_by(*_decision_order(sort)).limit(limit).offset(offset)
     result = await session.execute(q)
     return list(result.scalars().all())
+
+
+# Lower sorts first. Active is a rule the team stands behind; proposed is a
+# candidate; superseded and deprecated are history.
+_STATUS_RANK = {"active": 0, "proposed": 1, "superseded": 2, "deprecated": 3}
+
+
+def _decision_order(sort: str) -> tuple[Any, ...]:
+    """ORDER BY terms for :func:`list_decisions`."""
+    if sort == "recent":
+        return (DecisionRecord.created_at.desc(),)
+    rank = case(_STATUS_RANK, value=DecisionRecord.status, else_=4)
+    return (
+        rank,
+        DecisionRecord.confidence.desc(),
+        DecisionRecord.created_at.desc(),
+    )
+
+
+async def count_decisions_by_status(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    source: str | None = None,
+    tag: str | None = None,
+    module: str | None = None,
+    include_proposed: bool = True,
+) -> dict[str, int]:
+    """Return ``{status: count}`` for a repository, plus a ``"total"`` key.
+
+    A grouped ``COUNT`` rather than a page of rows. The list endpoint caps at
+    500, so a caller that counted what it fetched reported "97 of 100" on a
+    repository holding several hundred records — a count nobody measured.
+    ``get_decision_health_summary`` still loads every row to tally them; this
+    is the aggregate version for callers that only need the numbers.
+
+    Statuses absent from the table are zero-filled, so the shape is stable.
+    """
+    q = select(DecisionRecord.status, func.count(DecisionRecord.id)).where(
+        DecisionRecord.repository_id == repository_id
+    )
+    q = q.where(DecisionRecord.status != "dismissed")
+    if not include_proposed:
+        q = q.where(DecisionRecord.status != "proposed")
+    if source is not None:
+        q = q.where(DecisionRecord.source == source)
+    if tag is not None:
+        q = q.where(DecisionRecord.tags_json.contains(f'"{tag}"'))
+    if module is not None:
+        q = q.where(DecisionRecord.affected_modules_json.contains(f'"{module}"'))
+    q = q.group_by(DecisionRecord.status)
+
+    counts = {status: 0 for status in _STATUS_RANK}
+    total = 0
+    for status, n in await session.execute(q):
+        counts[status] = n
+        total += n
+    counts["total"] = total
+    return counts
 
 
 async def update_decision_metadata(
@@ -392,6 +466,201 @@ def _best_verification(values: list[str]) -> str:
     return "unverified"
 
 
+def _rederive_headline(rec: DecisionRecord, evidence: list[DecisionEvidence]) -> None:
+    """Set a record's confidence + verification from its full evidence set.
+
+    The single definition of how a headline is scored. Both writers use it: the
+    upsert path after accreting a run's evidence, and ``reconcile_source_ranks``
+    after a ladder edit. Kept as one function because the two were briefly
+    copy-pasted and nothing would have forced the copies to stay equal.
+
+    Confidence rises with the best source rank and with the number of
+    *independent* corroborating sources, so it is derived from the whole set
+    rather than from whichever row happened to arrive last. No-op on empty
+    evidence: a record with nothing behind it keeps whatever it had.
+    """
+    if not evidence:
+        return
+    best_ver = _best_verification([e.verification for e in evidence])
+    rec.confidence = compute_confidence(
+        max(e.source_rank for e in evidence),
+        len({e.source for e in evidence}),
+        best_ver,
+    )
+    rec.verification = best_ver
+
+
+def _stale_rank_filter() -> Any:
+    """SQL matching evidence rows whose stored rank disagrees with the ladder.
+
+    Derived from ``SOURCE_RANK`` rather than hardcoded, so a future ladder edit
+    is picked up here automatically instead of needing a second place updated.
+    Bounded by the size of the ladder (a dozen terms), and it keeps the common
+    case — a store already on the current ladder — to an indexed match on
+    ``source`` that returns nothing, rather than hydrating the whole table.
+    """
+    return or_(
+        *[
+            (DecisionEvidence.source == name) & (DecisionEvidence.source_rank != rank)
+            for name, rank in SOURCE_RANK.items()
+        ]
+    )
+
+
+async def reconcile_source_ranks(session: AsyncSession) -> int:
+    """Re-stamp evidence rows whose stored rank predates a ``SOURCE_RANK`` edit.
+
+    ``DecisionEvidence.source_rank`` is written once at insert time, and two
+    ``ORDER BY`` clauses read it straight from the column, so it cannot simply be
+    derived on read. That makes the ladder a value copied into every row: editing
+    ``SOURCE_RANK`` leaves existing rows on the previous ladder, and because
+    headline confidence comes from ``max(source_rank)`` across a decision's
+    evidence, a store would end up scoring headlines off a mixture of two ladders
+    without anything looking wrong.
+
+    **This is the only repair path, deliberately.** An Alembic data migration was
+    written first and removed: hosted runs the same persist pipeline as a local
+    store, so the migration was redundant, and worse, it fixed the ranks *without*
+    re-deriving confidence — which made this function's own no-op check pass on
+    the next run and left hosted confidences on the old ladder permanently. One
+    path cannot disagree with itself.
+
+    Not repo-scoped, on purpose: the ladder is global, so in a workspace store
+    holding several repositories every one of them is on the same ladder and all
+    of them need the same repair.
+
+    Idempotent. Returns the number of evidence rows re-stamped (0 when already
+    reconciled, which is the steady state after the first run).
+    """
+    moved = (
+        (await session.execute(select(DecisionEvidence).where(_stale_rank_filter())))
+        .scalars()
+        .all()
+    )
+    if not moved:
+        return 0
+
+    for row in moved:
+        row.source_rank = rank_for_source(row.source)
+    await session.flush()
+
+    now = _now_utc()
+    for decision_id in {row.decision_id for row in moved}:
+        rec = await session.get(DecisionRecord, decision_id)
+        if rec is None:
+            continue
+        _rederive_headline(rec, await list_decision_evidence(session, decision_id))
+        rec.updated_at = now
+
+    # Flush the re-scored headlines too, not just the ranks. Without this the
+    # function returns with confidence still pending in the session, so whether
+    # the repair survives depends on what the caller does next.
+    await session.flush()
+
+    structlog.get_logger(__name__).info(
+        "decisions.source_ranks_reconciled", evidence_rows=len(moved)
+    )
+    return len(moved)
+
+
+#: Prefix ``detect_supersessions_and_conflicts`` stamps on every edge it writes
+#: (``auto-detected: <signal> (sim=0.81)``). It is the only marker that
+#: separates a machine retirement from a human one, so the repair below keys on
+#: it rather than on "has a supersedes edge".
+_AUTO_EDGE_EVIDENCE_PREFIX = "auto-detected:"
+
+
+async def unretire_auto_superseded(session: AsyncSession) -> int:
+    """Undo retirements made by the semantic supersession detector (3B).
+
+    That detector scoped a conflict by cosine similarity and matched unrelated
+    records; it is now off (``SEMANTIC_SUPERSESSION_ENABLED``). Turning it off
+    only stops the *next* bad retirement — the rows it already flipped stay
+    ``superseded``, which is a protected status, so re-extraction will never
+    walk one back and a store would go on reporting a quarter of its corpus as
+    retired-by-nothing. This is the other half of the same change.
+
+    A row is repaired only when all three hold: status ``superseded``,
+    ``superseded_by`` set, and an ``auto-detected:`` supersedes edge from that
+    same successor. ``run_update_evolution`` sets the status without the
+    pairing, the CLI's ``decision deprecate`` writes ``deprecated``, and
+    ``upsert_decision_edge`` has no caller outside 3B — so nothing else in the
+    codebase produces all three.
+
+    One case is knowingly in range: a human can set both fields through
+    ``PATCH /api/repos/{id}/decisions/{id}``, and if they did so by accepting
+    one of this detector's own proposals in the UI, the auto edge is still
+    there and the row is restored to ``proposed``. Accepted rather than
+    guarded: the retirement they confirmed rests on the same bad match as the
+    74, ``proposed`` keeps the record readable, and ``decision confirm`` or the
+    same PATCH puts it back in one step. The inverse — leaving a wrongly
+    retired record hidden because a human once clicked through — is not
+    recoverable at all.
+
+    Restored to ``proposed``, not ``active``: the flip overwrote the previous
+    status without recording it, and 3B fired on both. ``proposed`` is the
+    lower claim of the two and is recoverable by ``decision confirm``; guessing
+    ``active`` would mint governance a human never granted.
+
+    The edges go too — both kinds it wrote. They are the same artifact from the
+    same detector: ``supersedes`` is what ``build_lineage_chain`` walks, so
+    leaving those would hand ``get_why`` a lineage that still presents the
+    un-retired record as replaced, and ``conflicts_with`` is what the health
+    dashboard counts as a governance smell.
+
+    Not repo-scoped, like ``reconcile_source_ranks``: a workspace store holds
+    several repositories and the detector ran over all of them.
+
+    Idempotent — once repaired the edges are gone, so the next scan matches
+    nothing. Returns the number of records restored.
+    """
+    auto_edges = (
+        (
+            await session.execute(
+                select(DecisionEdge).where(
+                    DecisionEdge.kind.in_(("supersedes", "conflicts_with")),
+                    DecisionEdge.evidence.startswith(_AUTO_EDGE_EVIDENCE_PREFIX),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not auto_edges:
+        return 0
+
+    successors_by_target: dict[str, set[str]] = {}
+    for edge in auto_edges:
+        if edge.kind == "supersedes":
+            successors_by_target.setdefault(edge.dst_decision_id, set()).add(edge.src_decision_id)
+
+    now = _now_utc()
+    restored = 0
+    for target_id, successor_ids in successors_by_target.items():
+        rec = await session.get(DecisionRecord, target_id)
+        if rec is None or rec.status != "superseded" or rec.superseded_by is None:
+            continue
+        if rec.superseded_by not in successor_ids:
+            # Retired by something else. Leave the *status* alone — the edge
+            # still goes, below, because it is this detector's noise either way.
+            continue
+        rec.status = "proposed"
+        rec.superseded_by = None
+        rec.updated_at = now
+        restored += 1
+
+    for edge in auto_edges:
+        await session.delete(edge)
+    await session.flush()
+
+    structlog.get_logger(__name__).info(
+        "decisions.auto_supersessions_reverted",
+        records_restored=restored,
+        edges_deleted=len(auto_edges),
+    )
+    return restored
+
+
 async def list_decision_evidence(
     session: AsyncSession,
     decision_id: str,
@@ -506,6 +775,7 @@ async def bulk_upsert_decisions(
             upsert_decision_vectors,
         )
         from repowise.core.persistence.vector_store import VectorStore
+        from repowise.core.providers.embedding import store_has_semantic_vectors
 
         # Static capability check: the base-class search_by_vector is the
         # "unsupported" sentinel. A runtime probe would conflate a transient
@@ -513,7 +783,12 @@ async def bulk_upsert_decisions(
         # O(N)-round-trip path this branch exists to avoid.
         store_cls_search = getattr(type(vector_store), "search_by_vector", None)
         supports_vector_search = (
-            callable(store_cls_search) and store_cls_search is not VectorStore.search_by_vector
+            callable(store_cls_search)
+            and store_cls_search is not VectorStore.search_by_vector
+            # A keyless store supports the call and cannot answer it: every
+            # matcher below refuses on it. Without this the batch pays for a
+            # full embed round whose vectors are then never read.
+            and store_has_semantic_vectors(vector_store)
         )
 
         ordered = [
@@ -634,13 +909,7 @@ async def bulk_upsert_decisions(
 
         # Re-derive headline confidence + verification from the FULL evidence
         # set (existing + just-added), so corroboration accrues across runs.
-        evidence = await list_decision_evidence(session, rec.id)
-        if evidence:
-            distinct_sources = {e.source for e in evidence}
-            top_rank = max(e.source_rank for e in evidence)
-            best_ver = _best_verification([e.verification for e in evidence])
-            rec.confidence = compute_confidence(top_rank, len(distinct_sources), best_ver)
-            rec.verification = best_ver
+        _rederive_headline(rec, await list_decision_evidence(session, rec.id))
         rec.updated_at = _now_utc()
         touched_ids.append(rec.id)
 
@@ -750,12 +1019,62 @@ async def purge_proposed_decisions_by_source(
     return len(ids)
 
 
+async def _fill_git_meta_gaps(
+    session: AsyncSession,
+    repository_id: str,
+    git_meta_map: dict[str, dict],
+    wanted: set[str],
+) -> dict[str, dict]:
+    """``git_meta_map`` widened with persisted rows for the *wanted* paths.
+
+    The caller's map is one run's git metadata, and on an incremental update
+    that is only the files that changed in it. Staleness scoring reads a path
+    with no entry as a file that is gone and scores it 1.00, so every decision
+    over an untouched file went maximally stale for not having been touched.
+    The persisted rows cover every file the index has seen, which is the set
+    that answers "is this file still here"; a path missing from those too is
+    genuinely untracked and still scores 1.00. The run's own entries win —
+    they are this run's fresher numbers for the files it re-read.
+    """
+    missing = wanted - git_meta_map.keys()
+    if not missing:
+        return git_meta_map
+
+    filled: dict[str, dict] = {}
+    # Chunked so the IN clause stays under SQLite's bind-parameter ceiling.
+    batch = sorted(missing)
+    for start in range(0, len(batch), 500):
+        rows = await session.execute(
+            select(GitMetadata).where(
+                GitMetadata.repository_id == repository_id,
+                GitMetadata.file_path.in_(batch[start : start + 500]),
+            )
+        )
+        for row in rows.scalars().all():
+            filled[row.file_path] = {
+                col.name: getattr(row, col.name)
+                for col in row.__table__.columns
+                if col.name not in ("id", "repository_id")
+            }
+    filled.update(git_meta_map)
+    return filled
+
+
 async def recompute_decision_staleness(
     session: AsyncSession,
     repository_id: str,
     git_meta_map: dict[str, dict],
 ) -> int:
-    """Recompute staleness_score for all active decisions. Returns update count."""
+    """Recompute staleness_score for all active decisions. Returns update count.
+
+    Also re-derives ``affected_modules_json`` from the files each record names.
+    The two belong in one pass because they are one repair: a record's module
+    linkage used to be the first path segment, which in a ``packages/`` layout
+    made almost every record claim ``packages`` or ``tests``, and the rows that
+    predate the fix carry it. Deriving here rather than in a data migration
+    keeps the single-repair-path rule — the one this repo already learned when
+    an alembic migration and a runtime repair disagreed about confidence.
+    """
     result = await session.execute(
         select(DecisionRecord).where(
             DecisionRecord.repository_id == repository_id,
@@ -764,30 +1083,73 @@ async def recompute_decision_staleness(
     )
     decisions = list(result.scalars().all())
 
+    affected_by_id: dict[str, list[str]] = {}
+    for dec in decisions:
+        affected = json.loads(dec.affected_files_json)
+        if affected:
+            affected_by_id[dec.id] = affected
+
+    modules_updated = _backfill_module_nodes(decisions, affected_by_id)
+    if not affected_by_id:
+        if modules_updated:
+            await session.flush()
+        return 0
+
+    git_meta_map = await _fill_git_meta_gaps(
+        session,
+        repository_id,
+        git_meta_map,
+        {fp for paths in affected_by_id.values() for fp in paths},
+    )
+
     now = _now_utc()
     updated = 0
     for dec in decisions:
-        affected = json.loads(dec.affected_files_json)
+        affected = affected_by_id.get(dec.id)
         if not affected:
             continue
 
         from repowise.core.analysis.decision_extractor import DecisionExtractor
 
-        decision_text = f"{dec.title} {dec.decision} {dec.rationale}"
         new_score = DecisionExtractor.compute_staleness(
             dec.created_at,
             affected,
             git_meta_map,
-            decision_text=decision_text,
         )
         if abs(new_score - dec.staleness_score) > 0.01:
             dec.staleness_score = round(new_score, 3)
             dec.updated_at = now
             updated += 1
 
-    if updated:
+    if updated or modules_updated:
         await session.flush()
+    # Deliberately the staleness count alone. The callers print this as
+    # "N decisions rescored"; folding a silent module repair into it would
+    # report a rescore that did not happen.
     return updated
+
+
+def _backfill_module_nodes(
+    decisions: list[DecisionRecord],
+    affected_by_id: dict[str, list[str]],
+) -> int:
+    """Re-derive each record's module linkage from its files. Returns rows moved.
+
+    Records naming no file are left alone: there is nothing to derive from, and
+    an invented scope is worse than an absent one.
+    """
+    from repowise.core.analysis.decisions.scope import resolve_module_nodes
+
+    moved = 0
+    for dec in decisions:
+        affected = affected_by_id.get(dec.id)
+        if not affected:
+            continue
+        derived = resolve_module_nodes(affected)
+        if derived != json.loads(dec.affected_modules_json or "[]"):
+            dec.affected_modules_json = json.dumps(derived)
+            moved += 1
+    return moved
 
 
 async def get_stale_decisions(
@@ -810,7 +1172,13 @@ async def get_decision_health_summary(
     session: AsyncSession,
     repository_id: str,
 ) -> dict:
-    """Return decision health: counts by status, stale decisions, ungoverned hotspots."""
+    """Return decision health: counts by status, stale decisions, ungoverned hotspots.
+
+    The three list fields are returned ranked worst-first: stale by staleness,
+    proposed by confidence, ungoverned hotspots by temporal hotspot score. A
+    caller that shows only the first few shows the few that matter.
+    Callers may truncate; they must not re-order.
+    """
     result = await session.execute(
         select(DecisionRecord).where(
             DecisionRecord.repository_id == repository_id,
@@ -825,6 +1193,11 @@ async def get_decision_health_summary(
         "superseded": 0,
         "dismissed": 0,
         "stale": 0,
+        # Active records naming no file. They score 0.0 because the staleness
+        # question cannot be asked of them, which renders identically to a
+        # record whose code genuinely has not moved — so they are counted
+        # separately rather than banked as fresh.
+        "unscoped": 0,
     }
     stale_decisions: list[DecisionRecord] = []
     proposed_decisions: list[DecisionRecord] = []
@@ -837,20 +1210,52 @@ async def get_decision_health_summary(
             if d.staleness_score >= 0.5:
                 counts["stale"] += 1
                 stale_decisions.append(d)
-            for fp in json.loads(d.affected_files_json):
+            affected_files = json.loads(d.affected_files_json)
+            if not affected_files:
+                counts["unscoped"] += 1
+            for fp in affected_files:
                 governed_files.add(fp)
         elif d.status == "proposed":
             proposed_decisions.append(d)
 
-    # Find ungoverned hotspots
+    # Find ungoverned hotspots, hottest first. Sorting these by path put the file
+    # most in need of a decision behind whatever sorts alphabetically first,
+    # with the score that answers the question sitting unread one column over.
+    # The key is the one ``routers/overview.py`` already applies to these same
+    # rows in SQL (score descending with NULLs last, then churn) rather than a
+    # second answer to "which hotspot matters most". A NULL score is genuinely
+    # unknown and is not the same as a measured zero.
     hotspot_result = await session.execute(
-        select(GitMetadata.file_path).where(
+        select(
+            GitMetadata.file_path,
+            GitMetadata.temporal_hotspot_score,
+            GitMetadata.churn_percentile,
+        ).where(
             GitMetadata.repository_id == repository_id,
             GitMetadata.is_hotspot == True,  # noqa: E712
         )
     )
-    hotspot_files = {row[0] for row in hotspot_result.all()}
-    ungoverned = sorted(hotspot_files - governed_files)
+    hotspot_rows = {row[0]: (row[1], row[2]) for row in hotspot_result.all()}
+
+    def _hotspot_rank(file_path: str) -> tuple[bool, float, float, str]:
+        score, churn = hotspot_rows[file_path]
+        return (score is None, -(score or 0.0), -(churn or 0.0), file_path)
+
+    ungoverned = sorted(hotspot_rows.keys() - governed_files, key=_hotspot_rank)
+
+    # Rank here rather than at the five call sites, none of which does. The MCP
+    # health dashboard and ``repowise decision health`` cut all three lists; the
+    # overview attention panel cuts the hotspots and renders the other two in the
+    # order it is handed; the decisions route serves them whole in that order;
+    # and ``health/governance.py`` walks them to *write* one finding row per
+    # entry. So the callers that truncate were showing whichever rows the scan
+    # returned first, and the ones that do not were still listing them by it,
+    # while the score answering "which of these first" rides on every record,
+    # unread. The ``or 0.0`` guards match how every other reader of these two
+    # fields spells it rather than trusting a column default to have been
+    # back-filled; the id tiebreak makes the key total, so two runs agree.
+    stale_decisions.sort(key=lambda d: (-(d.staleness_score or 0.0), d.id))
+    proposed_decisions.sort(key=lambda d: (-(d.confidence or 0.0), d.id))
 
     # Phase 3B: surface contradictory active decisions (conflicts_with edges).
     from ..decision_graph import list_conflict_edges

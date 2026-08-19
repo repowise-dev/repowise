@@ -74,7 +74,20 @@ export default async function RootLayout({
                 <Sidebar repos={repos} workspace={workspace} />
                 <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
                   <MobileNav repos={repos} workspace={workspace} />
-                  <main id="main-content" className="flex-1 overflow-auto min-w-0">
+                  {/* A flex column, so anything a route layout stacks above
+                      the page (repo breadcrumb, reindex hint, active-job
+                      banner) is subtracted from the page's own height rather
+                      than added to it. `PageTransition` used to take `h-full`
+                      = 100% of this element, which ignored those bands: the
+                      page then overflowed by exactly their combined height and
+                      `main` scrolled. Invisible on a document page, but a
+                      full-bleed canvas pushed its bottom-anchored chrome — the
+                      graph legend, the zoom controls — below the fold, where
+                      it could not be clicked. */}
+                  <main
+                    id="main-content"
+                    className="flex flex-1 flex-col overflow-auto min-w-0"
+                  >
                     {children}
                   </main>
                 </div>

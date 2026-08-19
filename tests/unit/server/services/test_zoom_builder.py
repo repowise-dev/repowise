@@ -12,7 +12,7 @@ from repowise.server.services.c4_builder.models import (
 )
 from repowise.server.services.zoom_builder import assemble_zoom_map
 from repowise.server.services.zoom_builder.layout import lay_out
-from repowise.server.services.zoom_builder.metrics import rollup_metrics
+from repowise.server.services.zoom_builder.metrics import rollup_health, rollup_metrics
 from repowise.server.services.zoom_builder.models import ZoomNode
 from repowise.server.services.zoom_builder.relations import aggregate_relations
 from repowise.server.services.zoom_builder.scoring import (
@@ -242,6 +242,48 @@ def test_rollup_metrics_counts_subtree():
     assert root.metrics.on_flow_count == 1
 
 
+def test_rollup_health_loc_weighted_mean():
+    layers = [
+        LayerSpec(
+            id="layer:service",
+            name="Service",
+            display_order=0,
+            node_ids=["pkg/a.py", "pkg/b.py", "pkg/c.py"],
+        ),
+    ]
+    leaf_info = {
+        "pkg/a.py": LeafInfo(health_score=2.0, loc=100),
+        "pkg/b.py": LeafInfo(health_score=8.0, loc=300),
+        # c.py is unscored: it must drop out of the mean entirely (weight 0), the
+        # same way the /files treemap excludes files with no measured score.
+        "pkg/c.py": LeafInfo(health_score=None, loc=50),
+    }
+    root_id, nodes = build_tree("proj", layers, leaf_info)
+    nodes = rollup_health(root_id, nodes)
+
+    # A file keeps its own score; an unscored file stays None.
+    assert nodes[file_id("pkg/a.py")].health_score == 2.0
+    assert nodes[file_id("pkg/c.py")].health_score is None
+    # Container = loc-weighted mean over scored descendants only:
+    # (2*100 + 8*300) / (100 + 300) = 2600 / 400 = 6.5
+    assert nodes[root_id].health_score == 6.5
+
+
+def test_rollup_health_none_when_no_scored_descendant():
+    layers = [
+        LayerSpec(
+            id="layer:service",
+            name="Service",
+            display_order=0,
+            node_ids=["pkg/x.py", "pkg/y.py"],
+        ),
+    ]
+    leaf_info = {"pkg/x.py": LeafInfo(), "pkg/y.py": LeafInfo()}  # both unscored
+    root_id, nodes = build_tree("proj", layers, leaf_info)
+    nodes = rollup_health(root_id, nodes)
+    assert nodes[root_id].health_score is None
+
+
 # ---------------------------------------------------------------------------
 # layout
 # ---------------------------------------------------------------------------
@@ -439,6 +481,32 @@ def test_assemble_zoom_map_full():
     # layout assigned everywhere
     assert all(n.layout is not None for n in zoom.nodes.values())
     assert not zoom.truncated
+
+
+def test_assemble_zoom_map_health_rolls_up():
+    # Effective score keyed by path -> (score, loc); util.py is omitted, so it
+    # reads as unscored and drops out of every container mean.
+    health = {
+        "pkg/main.py": (9.0, 100),
+        "pkg/core/engine.py": (3.0, 300),
+    }
+    zoom = assemble_zoom_map(_view(), health=health)
+
+    assert zoom.nodes[file_id("pkg/main.py")].health_score == 9.0
+    assert zoom.nodes[file_id("pkg/core/util.py")].health_score is None
+    # The "core" group holds engine (scored) + util (unscored): only engine
+    # contributes, so the group mean is engine's score.
+    group = next(n for n in zoom.nodes.values() if n.kind == "group")
+    assert group.health_score == 3.0
+    # The system rolls both scored files: (9*100 + 3*300) / (100 + 300) = 4.5
+    assert zoom.nodes[zoom.root_id].health_score == 4.5
+
+
+def test_assemble_zoom_map_health_optional_defaults_to_unscored():
+    # No health argument: every node reads as unscored (None), so the pure
+    # assembly still works without a DB read.
+    zoom = assemble_zoom_map(_view())
+    assert all(n.health_score is None for n in zoom.nodes.values())
 
 
 def test_assemble_zoom_map_max_depth_prunes_and_flags_truncated():

@@ -30,7 +30,6 @@ import contextlib
 import json
 import re
 import sqlite3
-import time
 from pathlib import Path
 
 # --- SessionStart tunables -------------------------------------------------
@@ -96,7 +95,7 @@ _CLIP_RATIONALE = 160
 
 # ---------------------------------------------------------------------------
 # Shared SQLite plumbing (read-only wiki.db, stdlib sqlite3 — the hook path
-# must not pay the sqlalchemy import; same pattern as the skeleton nudge)
+# must not pay the sqlalchemy import; same pattern as fast_lookup)
 # ---------------------------------------------------------------------------
 
 
@@ -437,8 +436,13 @@ def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
             globals_shown += 1
     if not shown:
         return None
-    _record_injections(repo_path, session_id, [d["id"] for d in shown], node_id="")
-    return "\n".join(lines)
+    from repowise.cli.hook_ledger import _record_injections
+
+    block = "\n".join(lines)
+    _record_injections(
+        repo_path, session_id, [d["id"] for d in shown], node_id="", chars=len(block)
+    )
+    return block
 
 
 # ---------------------------------------------------------------------------
@@ -522,11 +526,11 @@ def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dic
         conn.close()
 
     shown.append(decision["id"])
-    if session_id:
-        claimed, session_total = _claim_injection(repo_path, session_id, decision["id"], rel)
-        if not claimed or session_total > _MAX_EDIT_NOTICES:
-            return None
 
+    # Built before the claim, not after: the claim records what this emission
+    # costs, and the cost model sums that column. A row claimed at zero chars
+    # is an injection the net reports as free. Building first is a handful of
+    # string operations on a path that has already done a database query.
     why = _clip(decision["rationale"] or decision["decision"], _CLIP_RATIONALE)
     if _echoes_title(decision["title"], why):
         why = ""  # legacy rows echo the title into decision/rationale
@@ -535,153 +539,157 @@ def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dic
         line += f" because {why}"
     if sessions_n >= 2:
         line += f" (confirmed across {sessions_n} sessions)"
-    return line + "."
+    line += "."
+
+    if session_id:
+        from repowise.cli.hook_ledger import _claim_injection
+
+        claimed, session_total = _claim_injection(
+            repo_path, session_id, decision["id"], rel, chars=len(line)
+        )
+        if not claimed or session_total > _MAX_EDIT_NOTICES:
+            return None
+    return line
 
 
 # ---------------------------------------------------------------------------
-# Injection recording (usage feedback v1)
+# Edit-time bug-history notice
 # ---------------------------------------------------------------------------
 
-_INJECTIONS_TABLE_SQL = (
-    "CREATE TABLE IF NOT EXISTS injections ("
-    "session_id TEXT NOT NULL, decision_id TEXT NOT NULL, "
-    "node_id TEXT NOT NULL DEFAULT '', shown_at REAL NOT NULL, "
-    "evaluated INTEGER NOT NULL DEFAULT 0, "
-    "surface TEXT NOT NULL DEFAULT '', "
-    "category TEXT NOT NULL DEFAULT '', "
-    "chars INTEGER NOT NULL DEFAULT 0, "
-    "PRIMARY KEY (session_id, decision_id))"
-)
-
-#: Mirror of core.sessions.staging.INJECTIONS_LEDGER_COLUMNS — the hook path
-#: must not import repowise.core, so the migration is duplicated verbatim.
-_LEDGER_COLUMNS = (
-    ("surface", "TEXT NOT NULL DEFAULT ''"),
-    ("category", "TEXT NOT NULL DEFAULT ''"),
-    ("chars", "INTEGER NOT NULL DEFAULT 0"),
-)
+#: Silence past this age, no matter how large the historical count. A file fixed
+#: four times two years ago is history; the notice exists to interrupt an edit,
+#: and only a recent run of fixes earns that. Mirrors the ``prior_defect``
+#: window the count itself is drawn from.
+_FIX_NOTICE_MAX_AGE_DAYS = 180
+#: Below this many counted fixes the notice is not worth an agent's attention.
+_FIX_NOTICE_MIN_COUNT = 3
 
 
-def _open_injections(repo_path: Path) -> sqlite3.Connection | None:
-    db_path = repo_path / ".repowise" / "sessions" / "sessions.db"
+def _humanize_age(days: int) -> str:
+    """Render an age as "2 weeks ago" / "3 months ago", never as a bare count.
+
+    Deliberately duplicated by ``editor_files/fetcher.py``, which renders the
+    same recency phrasing into CLAUDE.md. Sharing it would mean this hook
+    importing ``repowise.core``, and the cheapest module that could host it
+    costs ~660ms to import (``analysis.health.__init__`` builds the whole
+    HealthAnalyzer) against this module's sub-100ms budget. Ten lines of copy
+    is the cheaper trade; keep the two phrasings in step by hand.
+    """
+    if days <= 1:
+        return "today" if days <= 0 else "yesterday"
+    if days < 14:
+        return f"{days} days ago"
+    if days < 60:
+        weeks = round(days / 7)
+        return f"{weeks} week{'' if weeks == 1 else 's'} ago"
+    months = round(days / 30)
+    return f"{months} month{'' if months == 1 else 's'} ago"
+
+
+def _edit_fix_history_notice(repo_path: Path, rel: str, session_id: str) -> str | None:
+    """One-line bug-history heads-up for an edited file, or ``None`` for silence.
+
+    Fires on files with a real recent run of fixes and nothing else. Three gates,
+    all of which have to hold: at least :data:`_FIX_NOTICE_MIN_COUNT` counted
+    fixes, a last fix inside :data:`_FIX_NOTICE_MAX_AGE_DAYS`, and one claim per
+    file per session (the same atomic ``INSERT OR IGNORE`` ledger the decision
+    notice uses, so two racing hook processes cannot double-fire).
+
+    The age is mandatory in the copy. A two-week-old fix and a two-year-old fix
+    must never read the same, which is also why the age gate exists rather than
+    a count gate alone.
+    """
+    conn = _open_wiki_ro(repo_path)
+    if conn is None:
+        return None
     try:
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(db_path, timeout=1)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=1000")
-        conn.execute(_INJECTIONS_TABLE_SQL)
-        existing = {row[1] for row in conn.execute("PRAGMA table_info(injections)")}
-        for name, decl in _LEDGER_COLUMNS:
-            if name not in existing:
-                conn.execute(f"ALTER TABLE injections ADD COLUMN {name} {decl}")
-        return conn
-    except (sqlite3.Error, OSError):
+        row = conn.execute(
+            "SELECT prior_defect_count, bug_magnet, last_fix_at, fix_symbol_counts_json "
+            "FROM git_metadata WHERE file_path = ? LIMIT 1",
+            (rel,),
+        ).fetchone()
+    except sqlite3.Error:
+        # A pre-fix-events index has no such columns: silence, not an error.
+        return None
+    finally:
+        conn.close()
+    if row is None:
         return None
 
+    count = row[0] or 0
+    if count < _FIX_NOTICE_MIN_COUNT:
+        return None
+    days = _days_since(row[2])
+    if days is None or days > _FIX_NOTICE_MAX_AGE_DAYS:
+        return None
 
-def _record_injections(
-    repo_path: Path, session_id: str, decision_ids: list[str], *, node_id: str
-) -> None:
-    """Log shown decisions in the sessions.db sidecar; best-effort, never raises.
+    line = (
+        f"[repowise] {rel} has been bug-fixed {count}x in the last 6 months, "
+        f"last {_humanize_age(days)}"
+    )
+    if row[1]:
+        line += " (bug magnet)"
+    symbol = _top_fix_symbol(row[3])
+    if symbol:
+        # Hedged on purpose: symbol spans are current-tree and the fix ranges
+        # are from each fix's own parent, so this is "mostly", not "exactly".
+        line += f"; mostly in {symbol}"
+    line += "."
 
-    The update-time miner reads these rows to judge whether injected guidance
-    was followed or contradicted (usage feedback v1). Written with raw stdlib
-    sqlite3 so the hook path never imports repowise.core.
-    """
-    if not session_id or not decision_ids:
-        return
-    conn = _open_injections(repo_path)
-    if conn is None:
-        return
-    try:
-        now = time.time()
-        conn.executemany(
-            "INSERT OR IGNORE INTO injections "
-            "(session_id, decision_id, node_id, shown_at, surface, category) "
-            "VALUES (?, ?, ?, ?, 'decision', 'session_start')",
-            [(session_id, did, node_id, now) for did in decision_ids],
+    if session_id:
+        from repowise.cli.hook_ledger import _claim_ledger
+
+        from ._shared import _ledger_key
+
+        claimed, shown = _claim_ledger(
+            repo_path,
+            session_id,
+            _ledger_key("fix_history", "edit_notice", line),
+            node_id=rel,
+            surface="fix_history",
+            category="edit_notice",
+            chars=len(line),
         )
-        conn.commit()
-    except sqlite3.Error:
-        pass
-    finally:
-        conn.close()
+        if not claimed or shown > _MAX_EDIT_NOTICES:
+            return None
+    return line
 
 
-def _claim_ledger(
-    repo_path: Path,
-    session_id: str,
-    key: str,
-    *,
-    node_id: str,
-    surface: str,
-    category: str,
-    chars: int,
-) -> tuple[bool, int]:
-    """Atomically claim one non-decision ledger emission.
+def _days_since(raw: object) -> int | None:
+    """Whole days between a stored ``last_fix_at`` and now, or ``None``.
 
-    Generic twin of :func:`_claim_injection` for the read/search enrichment
-    surfaces: *key* replaces the decision id in the primary key, so INSERT OR
-    IGNORE is the once-per-session-per-key gate. Returns ``(claimed,
-    surface_injection_count)`` where the count covers only rows that actually
-    carried text (``chars > 0``) on *surface* — pure measurement rows must not
-    eat into an injection cap. Fail-closed: any error reports unclaimed.
+    The column round-trips through sqlite as a naive-UTC string (the ORM writes
+    naive UTC), so it is read here without a timezone and compared to a naive
+    UTC now. Anything unparseable is no signal.
     """
-    conn = _open_injections(repo_path)
-    if conn is None:
-        return False, 0
-    try:
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO injections "
-            "(session_id, decision_id, node_id, shown_at, surface, category, chars) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (session_id, key, node_id, time.time(), surface, category, chars),
-        )
-        claimed = cur.rowcount > 0
-        count = conn.execute(
-            "SELECT COUNT(*) FROM injections WHERE session_id = ? AND surface = ? AND chars > 0",
-            (session_id, surface),
-        ).fetchone()[0]
-        conn.commit()
-        return claimed, int(count)
-    except sqlite3.Error:
-        return False, 0
-    finally:
-        conn.close()
+    from datetime import UTC, datetime
+
+    if isinstance(raw, str):
+        try:
+            moment = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+    elif isinstance(raw, datetime):
+        moment = raw
+    else:
+        return None
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(UTC).replace(tzinfo=None)
+    return max(0, (datetime.now(UTC).replace(tzinfo=None) - moment).days)
 
 
-def _claim_injection(
-    repo_path: Path, session_id: str, decision_id: str, node_id: str
-) -> tuple[bool, int]:
-    """Atomically claim the right to show one decision this session.
+def _top_fix_symbol(raw: object) -> str | None:
+    """The most-fixed symbol's bare name, or ``None``.
 
-    Returns ``(claimed, edit_notice_count)``. The primary key makes the
-    INSERT OR IGNORE the once-per-session-per-decision gate, immune to the
-    state-file races two concurrent hook processes produce; the count backs
-    the strict per-session notice cap. Fail-closed: any error reports
-    unclaimed, so a sidecar glitch degrades to silence, never to spam.
+    The stored map is already in descending-count order, so the first key wins.
+    Keys are ``path/to/file.py::Name`` and the line already names the path.
     """
-    conn = _open_injections(repo_path)
-    if conn is None:
-        return False, 0
+    if not isinstance(raw, str) or not raw:
+        return None
     try:
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO injections "
-            "(session_id, decision_id, node_id, shown_at, surface, category) "
-            "VALUES (?, ?, ?, ?, 'decision', 'edit_notice')",
-            (session_id, decision_id, node_id, time.time()),
-        )
-        claimed = cur.rowcount > 0
-        # Surface-scoped: read/search enrichment rows also carry a node_id and
-        # must not eat into the edit-notice cap.
-        count = conn.execute(
-            "SELECT COUNT(*) FROM injections WHERE session_id = ? AND node_id != '' "
-            "AND surface IN ('', 'decision')",
-            (session_id,),
-        ).fetchone()[0]
-        conn.commit()
-        return claimed, int(count)
-    except sqlite3.Error:
-        return False, 0
-    finally:
-        conn.close()
+        counts = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(counts, dict) or not counts:
+        return None
+    return str(next(iter(counts))).rsplit("::", 1)[-1] or None

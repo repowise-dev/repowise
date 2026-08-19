@@ -48,6 +48,22 @@ export function SecurityPanel({ findings, isLoading }: SecurityPanelProps) {
             <span className="text-xs font-medium text-[var(--color-text-secondary)] truncate">
               {f.kind}
             </span>
+            {f.line_number != null ? (
+              <span
+                className="text-[10px] font-mono text-[var(--color-text-tertiary)] tabular-nums"
+                title={
+                  f.line_verified
+                    ? undefined
+                    : "line could not be confirmed against the current file"
+                }
+              >
+                line {f.line_verified ? "" : "~"}
+                {f.line_number}
+                {!f.line_verified && <span className="sr-only"> (unconfirmed)</span>}
+              </span>
+            ) : (
+              <span className="text-[10px] text-[var(--color-text-tertiary)]">line moved</span>
+            )}
           </div>
           {f.snippet && (
             <pre className="text-[10px] font-mono text-[var(--color-text-tertiary)] whitespace-pre-wrap break-all line-clamp-3 leading-relaxed">

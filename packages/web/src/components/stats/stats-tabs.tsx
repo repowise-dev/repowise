@@ -5,51 +5,54 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@repowise-dev/ui/ui/ta
 import { ErrorBoundary } from "@repowise-dev/ui/shared";
 import type { StatsHighlights } from "@repowise-dev/types/stats";
 import { ByTheNumbersTab } from "./by-the-numbers-tab";
-import { GrowthTab } from "./growth-tab";
+import { RhythmTab } from "./rhythm-tab";
 import { PeopleTab } from "./people-tab";
-import { QualityTab } from "./quality-tab";
-import { ArchitectureTab } from "./architecture-tab";
 
-const TAB_VALUES = ["numbers", "growth", "people", "quality", "architecture"] as const;
+/**
+ * Three tabs, down from five.
+ *
+ * "Code & Quality" and "Architecture" were removed outright: every figure on
+ * them had a richer counterpart on Code Health, Architecture or Knowledge
+ * Graph, and "Growth & Activity" was almost entirely the Commits page. The
+ * legacy tab values still resolve so an old bookmark lands somewhere sensible
+ * rather than on an empty page.
+ */
+const TAB_VALUES = ["numbers", "rhythm", "people"] as const;
+type TabValue = (typeof TAB_VALUES)[number];
 
-export function StatsTabs({ data }: { data: StatsHighlights }) {
-  const [tab, setTab] = useQueryState(
+const LEGACY_TABS: Record<string, TabValue> = {
+  growth: "rhythm",
+  quality: "numbers",
+  architecture: "numbers",
+};
+
+export function StatsTabs({ data, repoId }: { data: StatsHighlights; repoId: string }) {
+  const [raw, setTab] = useQueryState(
     "tab",
-    parseAsStringLiteral(TAB_VALUES).withDefault("numbers"),
+    parseAsStringLiteral([...TAB_VALUES, ...Object.keys(LEGACY_TABS)]).withDefault("numbers"),
   );
+  const tab = (LEGACY_TABS[raw] ?? raw) as TabValue;
 
   return (
-    <Tabs value={tab} onValueChange={(v) => setTab(v as (typeof TAB_VALUES)[number])}>
+    <Tabs value={tab} onValueChange={(v) => setTab(v as TabValue)}>
       <TabsList>
         <TabsTrigger value="numbers">By the Numbers</TabsTrigger>
-        <TabsTrigger value="growth">Growth &amp; Activity</TabsTrigger>
+        <TabsTrigger value="rhythm">Rhythm</TabsTrigger>
         <TabsTrigger value="people">People</TabsTrigger>
-        <TabsTrigger value="quality">Code &amp; Quality</TabsTrigger>
-        <TabsTrigger value="architecture">Architecture</TabsTrigger>
       </TabsList>
       <TabsContent value="numbers" className="mt-4">
         <ErrorBoundary title="Couldn't load stats">
           <ByTheNumbersTab data={data} />
         </ErrorBoundary>
       </TabsContent>
-      <TabsContent value="growth" className="mt-4">
-        <ErrorBoundary title="Couldn't load activity">
-          <GrowthTab data={data} />
+      <TabsContent value="rhythm" className="mt-4">
+        <ErrorBoundary title="Couldn't load rhythm">
+          <RhythmTab data={data} />
         </ErrorBoundary>
       </TabsContent>
       <TabsContent value="people" className="mt-4">
         <ErrorBoundary title="Couldn't load contributors">
-          <PeopleTab data={data} />
-        </ErrorBoundary>
-      </TabsContent>
-      <TabsContent value="quality" className="mt-4">
-        <ErrorBoundary title="Couldn't load quality">
-          <QualityTab data={data} />
-        </ErrorBoundary>
-      </TabsContent>
-      <TabsContent value="architecture" className="mt-4">
-        <ErrorBoundary title="Couldn't load architecture">
-          <ArchitectureTab data={data} />
+          <PeopleTab data={data} repoId={repoId} />
         </ErrorBoundary>
       </TabsContent>
     </Tabs>

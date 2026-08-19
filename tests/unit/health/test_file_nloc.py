@@ -82,13 +82,16 @@ def test_health_metric_nloc_uses_file_nloc():
         pytest.skip("javascript tree-sitter pack missing")
 
     pf = SimpleNamespace(
-        file_info=SimpleNamespace(path="src/route.js", language="javascript", abs_path=str(p)),
+        file_info=SimpleNamespace(
+            path="src/route.js", language="javascript", abs_path=str(p), is_test=False
+        ),
         symbols=[],
     )
     metric, _, _ = HealthAnalyzer(graph=None)._evaluate_file(
         pf,
         fcx,
         path_basenames={"route.js"},
+        package_roots=set(),
         disabled=[],
         dup_report=DuplicationReport(),
     )

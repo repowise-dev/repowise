@@ -7,14 +7,20 @@ promote question-matched symbols to the top of each hit's symbol list.
 
 from __future__ import annotations
 
+import re
+from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import select
 
 from repowise.core.persistence.models import WikiSymbol
+from repowise.server.mcp_server._page_paths import hit_file_path
+from repowise.server.mcp_server._query_terms import content_terms, split_humps
 from repowise.server.mcp_server._verify import verify_and_heal
 from repowise.server.mcp_server.tool_answer.config import (
+    _DEFINES_MAX_FILES,
+    _DEFINES_PER_CANDIDATE,
     _ENRICH_TOP_N_HITS,
     _HIGH_CONFIDENCE_SCORE_FLOOR,
     _HOMONYM_UNION_BODY_MAX_LINES,
@@ -24,11 +30,98 @@ from repowise.server.mcp_server.tool_answer.config import (
     _MAX_RICH_SIG_LINES,
     _MAX_SYMBOLS_PER_HIT,
     _MAX_SYMBOLS_TOP_HIT,
+    _RELEVANCE_DOC_CHARS,
+    _RELEVANCE_DOC_WEIGHT,
+    _RELEVANCE_NAME_WEIGHT,
+    _RELEVANCE_SIG_WEIGHT,
+    _RELEVANT_EXCERPT_MAX_SYMBOLS,
     _STOPWORDS,
     _SYNTH_FULL_BODY_MAX_SYMBOLS,
     _SYNTH_FULL_SOURCE_LINES,
 )
 from repowise.server.mcp_server.tool_search import _prose_dominates
+
+# Suffixes stripped so a question's word reaches the identifier that answers it
+# ("routing" -> the `route` symbol). Longest first; never stems below 4 chars.
+_STEM_SUFFIXES = ("tion", "ing", "ion", "es", "ed", "er", "s")
+
+
+def _stem(token: str) -> str:
+    for suffix in _STEM_SUFFIXES:
+        if token.endswith(suffix) and len(token) - len(suffix) >= 4:
+            return token[: -len(suffix)]
+    return token
+
+
+def _text_stems(text: str) -> set[str]:
+    """Stemmed content tokens of *text*, hump- and separator-split."""
+    return {
+        _stem(tok.lower())
+        for tok in re.split(r"[^A-Za-z0-9]+", split_humps(text))
+        if len(tok) >= 3 and tok.lower() not in _STOPWORDS
+    }
+
+
+def _stem_hit(term: str, tokens: set[str]) -> bool:
+    """Whether *term* names one of *tokens*, allowing a shared 4-char root."""
+    if term in tokens:
+        return True
+    return any(
+        min(len(term), len(tok)) >= 4 and (term.startswith(tok) or tok.startswith(term))
+        for tok in tokens
+    )
+
+
+def _question_names_symbol(row, qids_lower: set[str]) -> bool:
+    """Whether an identifier from the question names this symbol.
+
+    Substring-matching the whole qualified name marked every symbol in a package
+    whose path shares a word with the question, which flattened the promotion to
+    a no-op. Matching is against the symbol's own name, its full qualified name,
+    or its parent: asking about a class should still reach its methods.
+    """
+    if not qids_lower:
+        return False
+    name_lower = (row.name or "").lower()
+    parent_lower = (row.parent_name or "").lower()
+    return (
+        name_lower in qids_lower
+        or (row.qualified_name or "").lower() in qids_lower
+        or (bool(parent_lower) and parent_lower in qids_lower)
+        or any(
+            q in name_lower
+            for q in qids_lower
+            if len(q) >= 5  # avoid spurious substring matches on short tokens
+        )
+    )
+
+
+def _symbol_relevance(entry: dict, terms: set[str]) -> int:
+    """How strongly a symbol's own text answers the question's content terms.
+
+    Reads only what hydration already loaded, so it adds no I/O to the call.
+    """
+    if not terms:
+        return 0
+    name_tokens = _text_stems(entry.get("name") or "")
+    sig_tokens = _text_stems(entry.get("signature") or "")
+    # Docstrings are the bulk of the text to tokenize and the weakest signal, so
+    # they are only read once a term has missed the name and the signature.
+    doc_tokens: set[str] | None = None
+    score = 0
+    for term in terms:
+        if _stem_hit(term, name_tokens):
+            score += _RELEVANCE_NAME_WEIGHT
+        elif _stem_hit(term, sig_tokens):
+            score += _RELEVANCE_SIG_WEIGHT
+        else:
+            if doc_tokens is None:
+                doc_tokens = _text_stems(
+                    (entry.get("docstring") or "")[:_RELEVANCE_DOC_CHARS]
+                )
+            if _stem_hit(term, doc_tokens):
+                score += _RELEVANCE_DOC_WEIGHT
+    return score
 
 
 def _extract_question_identifiers(question: str) -> set[str]:
@@ -101,6 +194,35 @@ def union_defers_to_synthesis(
     return _prose_dominates(question, list(question_ids))
 
 
+def is_symbol_lookup_question(question: str, question_ids: set[str]) -> bool:
+    """True when the question IS the symbol names, not prose that mentions them.
+
+    ``ModelAdmin`` is a lookup; "how does ModelAdmin dispatch a request" is
+    prose that merely names one. The distinction matters wherever the question
+    is whether a served BODY is the answer: for a lookup it is, so truncating
+    it is a loss on its own; for prose the body is evidence for a claim, and
+    truncation alone says little (22% of truncations withhold nothing the
+    response leans on).
+
+    **Stricter than ``_prose_dominates``, deliberately.** That predicate counts
+    ``[A-Za-z0-9_]+`` tokens, so a question written in Cyrillic, Japanese or
+    Chinese tokenises to nothing but its identifiers and reads as a bare
+    lookup — and repowise ships an output-language feature, so those callers
+    exist. It also misreads dense English ("Why does ModelAdmin call
+    get_queryset, get_form and save_model?" is 4 identifiers in 7 tokens).
+    Removing the identifiers and asking whether any word character survives is
+    script-independent and says what "bare lookup" actually means.
+    """
+    if not question_ids:
+        return False
+    residual = question
+    for ident in sorted(question_ids, key=len, reverse=True):
+        residual = residual.replace(ident, " ")
+    if re.search(r"\w", residual, re.UNICODE):
+        return False
+    return not _prose_dominates(question, list(question_ids))
+
+
 def _read_repo_text(repo_root: Path | None, file_path: str) -> str | None:
     """Read a repo file's live text, refusing paths outside the root.
 
@@ -153,6 +275,12 @@ def _read_symbol_source(
     return body
 
 
+# Where a signature stops when it does not end in a Python colon: after the
+# closing paren of the parameter list (with an optional return annotation), at a
+# trailing brace, or at a semicolon (an abstract/interface member).
+_SIG_TERMINATOR_RE = re.compile(r"\)\s*(?:->[^:{]*)?\s*[:{]|\{\s*$|;\s*$")
+
+
 def _read_signature_from_source(
     repo_root: Path | None, file_path: str, start_line: int, *, text: str | None = None
 ) -> str | None:
@@ -182,7 +310,13 @@ def _read_signature_from_source(
         line = lines[i]
         sig_lines.append(line.strip())
         paren_depth += line.count("(") - line.count(")")
-        if line.rstrip().endswith(":") and paren_depth <= 0:
+        stripped = line.rstrip()
+        # "ends with a colon" alone leaves a one-line body (``def go(self): pass``)
+        # and every brace language (``func f() error {``, ``render() {``) with no
+        # terminator at all, so the signature absorbs the lines after it.
+        if paren_depth <= 0 and (
+            stripped.endswith(":") or _SIG_TERMINATOR_RE.search(stripped)
+        ):
             break
     if not sig_lines:
         return None
@@ -399,6 +533,49 @@ async def _anchor_symbol_hits(
     return hits, homonyms
 
 
+def attach_truncation_contract(
+    entry: dict, *, indexed_end: int, end_served: int, repo_root: Path | None
+) -> None:
+    """Mark an inlined body that was cut, and name what the cut withheld.
+
+    Every place that inlines a symbol body owes the consumer the same three
+    keys when the indexed body outruns what was served: ``truncated``, a
+    ``continuation`` naming the exact range holding the remainder, and the
+    ``withheld_symbols`` that range covers.
+
+    Say WHAT was withheld, not just that something was. A bare truncated flag
+    plus a get_symbol pointer was followed zero times across the agent runs
+    measured, so the consumer needs the names in hand to decide whether it is
+    missing anything it cares about, and to continue inside this tool rather
+    than falling back to Read.
+
+    Both callers need it for the same reason and one of them needs it more: the
+    homonym union payload returns BEFORE synthesis, so it is served in no-LLM
+    mode and never reaches any of the confidence gates. Held in one function
+    because two copies of this contract drifting apart is a live risk: the
+    truncation keys are read by the confidence cascade, and the two sites have
+    co-changed ten times.
+
+    ``indexed_end`` is the end line the index recorded, ``end_served`` the last
+    line actually inlined. A falsy ``indexed_end`` means the index recorded no
+    end at all, which is never a cut: it is tested explicitly rather than left
+    to ``indexed_end > end_served``, which would only agree with it while
+    ``end_served`` stays non-negative.
+
+    ``indexed_end`` is trusted to lie within the live file, which is
+    ``check_symbol_bounds``'s job rather than this one's: it now clamps to
+    ``len(lines)`` on every return, so a stored end that overshoots cannot reach
+    here and flag a body served WHOLE as truncated (D8). Clamping again here
+    would be a second owner and a second disk read.
+    """
+    if indexed_end and indexed_end > end_served:
+        entry["truncated"] = True
+        entry["continuation"] = f"{entry['path']}:{end_served + 1}-{indexed_end}"
+        withheld = withheld_definitions(repo_root, entry["continuation"])
+        if withheld:
+            entry["withheld_symbols"] = withheld
+
+
 def build_homonym_union_bodies(
     repo_root: Path | None,
     union_groups: dict[str, list[dict]],
@@ -414,8 +591,7 @@ def build_homonym_union_bodies(
       plus ``truncated`` / ``continuation`` when the body was line-capped)
       rendered greedily until ``char_budget`` is exhausted. The first def always
       renders even if it alone exceeds the budget (a homonym with one huge def
-      must still answer), matching the CodeGraph "first match always renders"
-      contract.
+      must still answer).
     * ``more_definitions``: the defs that did not fit, each ``{file, name,
       line, symbol_id, hint}`` with a "call get_symbol, do NOT Read" redirect so
       the agent never falls back to Read for the remainder.
@@ -457,9 +633,9 @@ def build_homonym_union_bodies(
                 "lines": [start, end_served],
                 "source": body,
             }
-            if end and end > end_served:
-                entry["truncated"] = True
-                entry["continuation"] = f"{path}:{end_served + 1}-{end}"
+            attach_truncation_contract(
+                entry, indexed_end=end, end_served=end_served, repo_root=repo_root
+            )
             symbol_bodies.append(entry)
             spent += len(body)
         else:
@@ -574,12 +750,118 @@ async def _concept_anchor_hits(
     return hits
 
 
+# Definition kinds worth naming in `defines`, best first. A file is
+# characterised by what it declares, so a class outranks a bare function and
+# both outrank a variable. Kinds absent from this map are not emitted at all:
+# imports and re-exports would fill the budget with names that answer nothing.
+_DEFINE_KIND_RANK = {
+    "class": 0,
+    "interface": 1,
+    "struct": 1,
+    "enum": 1,
+    "type": 2,
+    "function": 3,
+    "method": 4,
+    "constant": 5,
+}
+
+
+async def _hydrate_candidate_defines(
+    session,
+    repo_id: str,
+    hits: list[dict],
+    question_ids: set[str] | None = None,
+) -> None:
+    """Mutate *hits* in place: attach ``_defines`` to the candidate-pool files.
+
+    ``candidates`` names the files retrieval ranked and, before this, said
+    nothing about any of them. An agent handed ``django/shortcuts.py`` and
+    nothing else has exactly one move available, which is to go and Grep it; the
+    Layer B taxonomy judged 89% of post-answer searches to be that move. Naming
+    the definitions a file contains turns "search this file" into "read this
+    line", and often answers a where-is-it question outright.
+
+    Deliberately cheap and deliberately shallow:
+
+    * **One batched query**, on ``(repository_id, file_path)`` which the
+      ``uq_wiki_symbol`` index already covers, over at most
+      ``_DEFINES_MAX_FILES`` paths. No live file reads, no bounds verification.
+    * **Names and start lines only.** No signature, no docstring, no body. Those
+      already have homes (``retrieval[].key_symbols``, ``symbol_bodies``) and
+      this block must not compete with them for the payload's byte budget.
+    * **Line numbers are index-recorded, not verified.** Unlike ``get_symbol``,
+      nothing here checks the stored bounds against the live file. They are a
+      navigation hint; the serializer's field documentation says so.
+
+    Ordering within a file: question-named symbols first (they are what the
+    agent came for), then by declaration kind, then by position. Dunders and
+    private names are dropped unless the question named them.
+    """
+    qids = {q.lower() for q in (question_ids or set())}
+
+    paths: list[str] = []
+    seen: set[str] = set()
+    for h in hits:
+        p = hit_file_path(h)
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        paths.append(p)
+        if len(paths) >= _DEFINES_MAX_FILES:
+            break
+    if not paths:
+        return
+
+    res = await session.execute(
+        select(
+            WikiSymbol.file_path,
+            WikiSymbol.name,
+            WikiSymbol.kind,
+            WikiSymbol.start_line,
+        ).where(
+            WikiSymbol.repository_id == repo_id,
+            WikiSymbol.file_path.in_(paths),
+        )
+    )
+
+    by_file: dict[str, list[tuple[int, int, str, int]]] = {}
+    for file_path, name, kind, start_line in res.all():
+        rank = _DEFINE_KIND_RANK.get((kind or "").lower())
+        if rank is None or not name:
+            continue
+        matched = name.lower() in qids
+        if not matched and name.startswith("_"):
+            continue
+        by_file.setdefault(file_path, []).append(
+            (0 if matched else 1, rank, name, start_line or 0)
+        )
+
+    for path, rows in by_file.items():
+        rows.sort(key=lambda r: (r[0], r[1], r[3]))
+        picked: list[tuple[str, int]] = []
+        taken: set[str] = set()
+        for _m, _r, name, start in rows:
+            if name in taken:
+                continue
+            taken.add(name)
+            picked.append((name, start))
+            if len(picked) >= _DEFINES_PER_CANDIDATE:
+                break
+        by_file[path] = picked  # type: ignore[assignment]
+
+    for h in hits:
+        p = hit_file_path(h)
+        if p and by_file.get(p):
+            h["_defines"] = by_file[p]
+
+
 async def _hydrate_symbols_for_hits(
     session,
     repo_id: str,
     hits: list[dict],
     ctx: Any = None,
     question_ids: set[str] | None = None,
+    question: str = "",
 ) -> None:
     """Mutate `hits` in place: attach `symbols` list to top-N file_page hits.
 
@@ -594,10 +876,16 @@ async def _hydrate_symbols_for_hits(
     Top hit gets ``_MAX_SYMBOLS_TOP_HIT`` slots; secondaries get the smaller
     ``_MAX_SYMBOLS_PER_HIT``. Symbols not matching a question id carry the
     short 120-char docstring; matched symbols carry 400 chars + source body.
+
+    ``question`` decides which symbols fill those slots when the file holds more
+    than fit, and earns the leading few a source body: a question phrased in
+    prose names no identifier, so nothing matches and nothing would carry code.
     """
     question_ids = question_ids or set()
     # Case-folded copy for matching.
     qids_lower = {q.lower() for q in question_ids}
+    # Once per call: the question's terms, stemmed to match identifier roots.
+    term_stems = {_stem(t) for t in content_terms(question)}
 
     # Identify the top file_page hits in retrieval-rank order. `hits` is
     # already sorted by descending score upstream.
@@ -651,21 +939,7 @@ async def _hydrate_symbols_for_hits(
             rich_sig = _read_signature_from_source(
                 repo_root, row.file_path, start_line, text=text
             )
-        # Does the symbol name match any identifier from the question?
-        name_lower = (row.name or "").lower()
-        qname_lower = (row.qualified_name or "").lower()
-        matched = bool(
-            qids_lower
-            and (
-                name_lower in qids_lower
-                or qname_lower in qids_lower
-                or any(
-                    q in name_lower or q in qname_lower
-                    for q in qids_lower
-                    if len(q) >= 5  # avoid spurious substring matches on short tokens
-                )
-            )
-        )
+        matched = _question_names_symbol(row, qids_lower)
         entry: dict[str, Any] = {
             "name": row.name,
             "kind": row.kind,
@@ -674,7 +948,11 @@ async def _hydrate_symbols_for_hits(
             "start_line": start_line,
             "end_line": end_line,
             "_matched": matched,
+            "_verified": verified,
         }
+        # Scored once here, not in the sort key, so a dense file pays for it per
+        # symbol rather than per comparison.
+        entry["_relevance"] = _symbol_relevance(entry, term_stems)
         if matched and verified:
             src = _read_symbol_source(
                 repo_root, row.file_path, start_line, end_line, text=text
@@ -683,15 +961,16 @@ async def _hydrate_symbols_for_hits(
                 entry["source_excerpt"] = src
         by_file.setdefault(row.file_path, []).append(entry)
 
-    # Sort: matched symbols first (document order within the match group),
-    # then unmatched in start_line order. Cap per file — top hit gets more
-    # slots than secondary hits.
+    # Sort: matched symbols first, then by relevance to the question, then in
+    # start_line order. Cap per file — top hit gets more slots than secondary
+    # hits. This decides WHICH symbols are kept; the kept slice is put back into
+    # reading order below, so consumers still see document order.
     for i, h in enumerate(hits):
         path = h.get("target_path")
         if path not in by_file:
             continue
         syms = by_file[path]
-        syms.sort(key=lambda s: (not s["_matched"], s["start_line"]))
+        syms.sort(key=lambda s: (not s["_matched"], -s["_relevance"], s["start_line"]))
         cap = _MAX_SYMBOLS_TOP_HIT if i == 0 else _MAX_SYMBOLS_PER_HIT
         # Force-include the exact symbol the question named (via anchoring) so a
         # class-name flood — where every sibling method "matches" through the
@@ -709,6 +988,26 @@ async def _hydrate_symbols_for_hits(
             if len(kept) >= cap:
                 break
             kept.append(s)
+        # A prose question names no identifier, so nothing is `_matched` and the
+        # slate would carry signatures only. Give the leading few symbols the
+        # question scored against a body, so the excerpts hold the code the
+        # question is about. `kept` is still in priority order here.
+        bodied = 0
+        for s in kept:
+            if bodied >= _RELEVANT_EXCERPT_MAX_SYMBOLS:
+                break
+            if s.get("source_excerpt") or not s["_relevance"] or not s["_verified"]:
+                continue
+            src = _read_symbol_source(
+                repo_root,
+                path,
+                s["start_line"],
+                s.get("end_line") or 0,
+                text=text_cache.get(path),
+            )
+            if src:
+                s["source_excerpt"] = src
+                bodied += 1
         # Upgrade the top question-relevant symbols to the inline-body depth
         # BEFORE the reading-order sort, while `kept` is still in priority order
         # (anchors, then matched, then unmatched). The default 40-line excerpt
@@ -737,3 +1036,638 @@ async def _hydrate_symbols_for_hits(
         # Sort final slice by start_line for natural reading order.
         kept.sort(key=lambda s: s["start_line"])
         h["symbols"] = kept
+
+
+# ---------------------------------------------------------------------------
+# What a truncated body withheld
+# ---------------------------------------------------------------------------
+
+# Leading keywords that decorate a declaration without being one. Shared by the
+# keyword and brace-method shapes below.
+_DECL_MODIFIERS = (
+    r"pub|public|private|protected|internal|open|final|static|abstract|override|"
+    r"virtual|sealed|export|default|async|suspend|inline|readonly|declare|"
+    r"unsafe|extern|partial|data|operator|const"
+)
+
+# Definition-line shapes, tried in order; each yields ``indent`` / ``kind`` /
+# ``name``. A Python-only regex was the first cut and it made this whole feature
+# inert on TS/Go/Java — which, at a 120-line body cap, is exactly where
+# truncation bites hardest, since a TS class or a React component is the shape
+# that overruns the cap in the first place.
+_WITHHELD_DEF_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Python: def / async def / class.
+    re.compile(
+        r"^(?P<indent>[ \t]*)(?:async[ \t]+)?(?P<kind>def|class)[ \t]+"
+        r"(?P<name>[A-Za-z_]\w*)"
+    ),
+    # Go methods, whose name follows the receiver: ``func (s *Store) Write(``.
+    re.compile(
+        r"^(?P<indent>[ \t]*)(?P<kind>func)[ \t]+\([^)]*\)[ \t]*"
+        r"(?P<name>[A-Za-z_]\w*)"
+    ),
+    # Declaration keyword + name: Go func/type, Rust fn/struct/trait/impl/enum,
+    # Java/C#/Kotlin class/interface/record, TS class/interface/type/enum.
+    re.compile(
+        rf"^(?P<indent>[ \t]*)(?:(?:{_DECL_MODIFIERS})[ \t]+)*"
+        r"(?P<kind>func|fn|class|struct|interface|enum|trait|impl|record|type)"
+        r"[ \t]+(?P<name>[A-Za-z_$][\w$]*)"
+    ),
+    # JS/TS function declarations, including ``export default`` and generators.
+    # The separator after ``function`` is REQUIRED (or a generator star). With
+    # ``[ \t]*`` the keyword matched as a mere prefix of a longer identifier, so
+    # ``function_name: Mapped[str] = ...`` reported a symbol called ``_name``:
+    # measured at 507 fabricated entries across this repo, the single largest
+    # source of ids that resolve to nothing.
+    re.compile(
+        r"^(?P<indent>[ \t]*)(?:export[ \t]+)?(?:default[ \t]+)?(?:async[ \t]+)?"
+        r"(?P<kind>function)(?:[ \t]*\*[ \t]*|[ \t]+)(?P<name>[A-Za-z_$][\w$]*)"
+    ),
+    # JS/TS arrow bindings: ``export const Panel = (props) => {``. The arrow has
+    # to belong to the binding itself, with only an optional return annotation
+    # between: allowing slack before it turns every local initialised from a
+    # callback-taking call (``const pages = all.filter((p) => ...)``) into a
+    # "definition" with a symbol_id that resolves to nothing.
+    re.compile(
+        r"^(?P<indent>[ \t]*)(?:export[ \t]+)?(?P<kind>const|let|var)[ \t]+"
+        r"(?P<name>[A-Za-z_$][\w$]*)[^=]*=[ \t]*(?:async[ \t]+)?"
+        r"(?:\([^)]*\)(?:[ \t]*:[^=]*?)?|[A-Za-z_$][\w$]*)[ \t]*=>"
+    ),
+    # Brace-language members: ``  public void run(String a) {``, ``  render() {``.
+    # Between the parameter list and the brace only a return type or a throws
+    # clause may appear -- no parens, or an assertion call in a test file
+    # (``expect(x).toMatchObject({``) reads as a method declaration. The brace
+    # itself is optional so Allman style (``void Beta()`` with ``{`` on the next
+    # line, the C# default) is reachable; the caller supplies the next line.
+    re.compile(
+        rf"^(?P<indent>[ \t]*)(?:(?:{_DECL_MODIFIERS})[ \t]+)*"
+        r"(?:[A-Za-z_$][\w$<>,.\[\]]*[ \t]+)?(?P<name>[A-Za-z_$][\w$]*)[ \t]*"
+        r"\([^;{]*\)(?P<tail>[^;{()]*)(?P<brace>\{)?[ \t]*$"
+    ),
+)
+_BRACE_MEMBER = len(_WITHHELD_DEF_PATTERNS) - 1
+
+# The brace-member shape above also matches control flow (``if (x) {``), a
+# statement whose keyword the optional type group swallows (``raise
+# ValueError(f"... {x}")`` reports ``ValueError``), and any call taking a
+# callback (``describe("x", () => {``, ``it("x", function () {``). Both the
+# matched NAME and the line's own first word are checked, because the type group
+# hides the keyword from a name-only guard.
+_NOT_A_DEFINITION = frozenset(
+    {
+        "if", "for", "while", "switch", "catch", "else", "do", "try", "return",
+        "with", "using", "lock", "foreach", "case", "synchronized", "await",
+        "yield", "new", "typeof", "in", "of", "when", "unless", "match",
+        "raise", "throw", "assert", "del", "delete", "print", "elif", "except",
+        "finally", "import", "from", "global", "nonlocal", "pass", "break",
+        "continue", "go", "defer", "select", "range", "constructor",
+    }
+)
+
+_FIRST_WORD_RE = re.compile(r"[A-Za-z_$][\w$]*")
+
+# Words no language lets you NAME a definition, so a match producing one is a
+# parse accident whatever shape it came from: ``fn is not None`` reads as Rust's
+# ``fn <name>`` and reported a symbol called ``is``. Kept strictly to reserved
+# words -- ``match``, ``range`` and ``print`` are all real function names.
+_RESERVED_NAMES = frozenset(
+    {
+        "is", "not", "and", "or", "in", "if", "else", "elif", "for", "while",
+        "return", "none", "true", "false", "null", "undefined", "class", "def",
+        "import", "from", "as", "with", "pass", "lambda", "del", "global",
+        "raise", "try", "except", "finally", "yield", "await", "assert",
+        "break", "continue", "nonlocal", "var", "let", "const", "function",
+    }
+)
+
+
+def _match_definition(raw: str, next_raw: str = "") -> re.Match[str] | None:
+    """First definition shape *raw* matches, or None.
+
+    ``next_raw`` is the following source line, consulted only for Allman-style
+    braces where the declaration and its ``{`` sit on separate lines.
+    """
+    for i, pattern in enumerate(_WITHHELD_DEF_PATTERNS):
+        m = pattern.match(raw)
+        if not m:
+            continue
+        if m.group("name").lower() in _RESERVED_NAMES:
+            continue
+        if i == _BRACE_MEMBER:
+            head = _FIRST_WORD_RE.match(raw.strip())
+            if m.group("name").lower() in _NOT_A_DEFINITION:
+                continue
+            if head and head.group(0).lower() in _NOT_A_DEFINITION:
+                continue
+            # An anonymous function passed as an argument, in either syntax.
+            if "=>" in raw[: m.end()] or "function" in raw[: m.end()]:
+                continue
+            # Go's third spelling of the same thing: ``func(req *http.Request)
+            # (*http.Response, error) {``. There is no space after ``func``, so
+            # the optional return-type group matches empty and the name group
+            # takes the keyword itself, yielding an unresolvable ``path::func``.
+            # This cannot be handled by either general-purpose set above:
+            # ``_RESERVED_NAMES`` is tested for every pattern and ``def func():``
+            # is a real Python definition (41 of them in django alone), while
+            # ``_NOT_A_DEFINITION`` is also tested against the line's FIRST
+            # word, which is ``func`` on every named Go function too.
+            #
+            # Requiring ``func`` to open the line is what keeps it to the Go
+            # literal: ``int func(int a) {`` is a real definition named ``func``
+            # in C, C++, Java, C# and Kotlin, and a name-only test suppresses
+            # all five.
+            if m.group("name") == "func" and head and head.group(0) == "func":
+                continue
+            # Allman: the brace is on the next line. A declaration never ends in
+            # a comma, but an argument on its own line inside a multi-line call
+            # does -- and when the following argument is a dict literal, the
+            # next line really is ``{`` (``bool(matched_nums),`` then ``{``).
+            if not m.group("brace") and (
+                next_raw.strip() != "{" or raw.rstrip().endswith(",")
+            ):
+                continue
+        return m
+    return None
+
+
+# Anything that could open a string or a comment. A line with none of these
+# cannot change the scanner's state, so it skips the character walk.
+_QUOTEISH_RE = re.compile(r"""["'`#]|/[*/]""")
+
+
+def _skip_quoted(raw: str, i: int) -> int:
+    """Index just past the single- or double-quoted run starting at ``i``."""
+    quote, i = raw[i], i + 1
+    while i < len(raw):
+        if raw[i] == "\\":
+            i += 2
+            continue
+        if raw[i] == quote:
+            return i + 1
+        i += 1
+    return i
+
+
+# Extensions where a backtick actually opens a string: Go raw strings and the
+# JS/TS template-literal family. Everywhere else a backtick is punctuation --
+# Rust doc comments, Ruby heredocs and Python docstrings all carry markdown
+# fences and shell quotes -- so masking on it can only ever be a misfire.
+#
+# Not a style choice, a measured one. Before this gate, a markdown fence inside
+# an ordinary Rust string opened a phantom frame that a stray backtick 260 lines
+# later re-closed, and `goose/crates/goose-cli/src/session/export.rs` lost FIVE
+# real `pub fn` definitions from `withheld_symbols` with the containment below
+# provably inert. Three more files in the corpus did the same (two Ruby
+# heredocs, one Rust raw string).
+_BACKTICK_STRING_SUFFIXES = frozenset(
+    {".go", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"}
+)
+
+# Characters after which a ``/`` starts a REGEX rather than a division. Notably
+# excludes ``)``, ``]`` and anything alphanumeric, which are the positions where
+# a division's left operand ends -- so Go's and Python's ``a / b`` is never
+# mistaken for a regex.
+_REGEX_CAN_START_AFTER = frozenset("(,=:[!&|?{};+-*%~^<>\n")
+
+# ...and the keywords a regex can follow, which end in an alphanumeric and so
+# would otherwise read as a division's left operand. `return /[`]/.test(x)` is
+# the one that matters here: it opens a phantom frame exactly like the
+# character-class case `_skip_regex` exists for.
+_REGEX_CAN_START_AFTER_WORD = frozenset(
+    {
+        "return", "case", "typeof", "yield", "await", "throw", "in", "of",
+        "new", "delete", "instanceof", "do", "else", "void",
+    }
+)
+
+
+def _regex_position(raw: str, i: int, prev: str) -> bool:
+    """Whether the ``/`` at ``i`` starts a regex rather than a division."""
+    if prev in _REGEX_CAN_START_AFTER:
+        return True
+    if not (prev.isalnum() or prev == "_"):
+        return False
+    word = ""
+    j = i - 1
+    while j >= 0 and raw[j].isspace():
+        j -= 1
+    while j >= 0 and (raw[j].isalnum() or raw[j] == "_"):
+        word = raw[j] + word
+        j -= 1
+    return word in _REGEX_CAN_START_AFTER_WORD
+
+
+def _skip_regex(raw: str, i: int) -> int:
+    """Index past a regex literal starting at ``i``, or ``i`` if it is not one.
+
+    Only exists because a backtick inside a regex otherwise opens a phantom
+    template literal. When a later backtick closes that phantom again the walk
+    ends with an EMPTY stack, so the containment in ``_string_masked_lines``
+    never fires and the mask silently eats everything between.
+
+    Isolated on one real file: ``mui/packages/markdown/parseMarkdown.js:203``,
+    ``return matches[1].replace(/`/g, '');``. Without this branch that file
+    masks 61 lines instead of 52, stays balanced, and hides the real
+    ``function getDescription`` at line 206.
+
+    Regex literals cannot span lines, so a run with no closing ``/`` on the same
+    line is not one and is left alone.
+    """
+    j = i + 1
+    in_class = False
+    while j < len(raw):
+        c = raw[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c == "[":
+            in_class = True
+        elif c == "]":
+            in_class = False
+        elif c == "/" and not in_class:
+            return j + 1
+        j += 1
+    return i
+
+
+def _walk_string_state(
+    lines: tuple[str, ...], *, backticks: bool
+) -> tuple[set[int], set[int], bool]:
+    """(lines starting inside a string, inside a block comment, literal left open).
+
+    The two sets are kept apart because callers need to tell them apart and this
+    is a hot path: a string body proves the enclosing expression is still open,
+    a comment between two declarations proves nothing.
+
+    ``stack`` models template-literal nesting: a ``None`` frame is the string
+    part of a backtick literal, an ``int`` frame is the unclosed-brace depth
+    inside a ``${...}`` interpolation. An interpolation holds CODE, so its lines
+    are not masked and a backtick inside one opens its own nested literal rather
+    than closing the outer one.
+
+    That nesting is not optional sophistication, and the reason is not the one
+    it looks like. Nesting alone does NOT unbalance a flat open/close counter --
+    four synthetic nested fixtures all re-balance. What breaks is the
+    combination: a flat counter reads the nested literal's OPENING backtick as
+    closing the outer one, which puts the walk at code level inside what is
+    really string content, and a code-level rule then eats the rest of the line
+    along with the real closing backtick. On mui's
+    ``DisabledDefaultClasses.tsx`` that rule is ``#`` firing on the CSS colour
+    ``#fff``, and the outer literal then never closes.
+
+    The same shape has two other triggers, and those two are worse because they
+    leave the stack BALANCED, which the containment in ``_string_masked_lines``
+    cannot see: an escaped backtick (handled here) and a backtick inside a regex
+    (handled by ``_skip_regex``). The nesting case usually ends UNBALANCED and
+    so is caught by the fallback anyway -- interpolation tracking is here for
+    precision, measured as 1,926 fabrications against 60 on the 16 corpus files
+    where a flat walk and this one disagree.
+    """
+    strings: set[int] = set()
+    comments: set[int] = set()
+    delim: str | None = None
+    in_block = False
+    # Line the currently-open ``delim`` run or ``/* */`` block started on. The
+    # two are mutually exclusive (a frame is only ever opened at code level), so
+    # one variable serves both.
+    open_line = 0
+    stack: list[int | None] = []
+    for n, raw in enumerate(lines, 1):
+        # The three states are mutually exclusive: a frame is only ever pushed
+        # at code level, so an if/elif chain is faithful to the walk below.
+        if delim is not None or (stack and stack[-1] is None):
+            strings.add(n)
+        elif in_block:
+            comments.add(n)
+        elif not stack and not _QUOTEISH_RE.search(raw):
+            # Nothing on this line can open a string or comment, so the
+            # character walk below cannot change state. Most lines are this
+            # line, and skipping them is what keeps a whole-file scan cheap.
+            continue
+        i = 0
+        # Last non-space character seen at CODE level, for the regex test below.
+        prev = "\n"
+        while i < len(raw):
+            if stack:
+                if stack[-1] is None:
+                    if raw[i] == "\\":
+                        # An escaped backtick does not close the literal. Without
+                        # this, `` `x\`y` `` closes early and re-opens on the real
+                        # terminator, inverting the parity for the rest of the
+                        # file with a balanced stack the containment cannot see.
+                        i += 2
+                    elif raw.startswith("${", i):
+                        stack.append(1)
+                        i += 2
+                    elif raw[i] == "`":
+                        stack.pop()
+                        i += 1
+                    else:
+                        i += 1
+                    continue
+                # Inside ${...}, so the ordinary code tokens apply again --
+                # including the regex probe, without which a backtick in a
+                # character class here (``${s.replace(/[`]/g, "")}``) opens the
+                # same phantom frame _skip_regex exists to prevent.
+                if raw[i] == "{":
+                    stack[-1] += 1
+                elif raw[i] == "}":
+                    stack[-1] -= 1
+                    if stack[-1] <= 0:
+                        stack.pop()
+                elif raw[i] == "`":
+                    stack.append(None)
+                elif raw.startswith("//", i):
+                    break
+                elif raw[i] == "/" and _regex_position(raw, i, prev):
+                    j = _skip_regex(raw, i)
+                    if j > i:
+                        i, prev = j, "/"
+                        continue
+                elif raw[i] in ('"', "'"):
+                    i = _skip_quoted(raw, i)
+                    prev = '"'
+                    continue
+                if not raw[i].isspace():
+                    prev = raw[i]
+                i += 1
+                continue
+            if delim is not None:
+                if raw.startswith(delim, i):
+                    delim, open_line, i = None, 0, i + len(delim)
+                else:
+                    i += 1
+                continue
+            if in_block:
+                if raw.startswith("*/", i):
+                    in_block, open_line, i = False, 0, i + 2
+                else:
+                    i += 1
+                continue
+            if raw.startswith('"""', i) or raw.startswith("'''", i):
+                delim, open_line, i = raw[i : i + 3], n, i + 3
+                continue
+            if backticks and raw[i] == "`":
+                stack.append(None)
+                i += 1
+                continue
+            if raw.startswith("/*", i):
+                in_block, open_line, i = True, n, i + 2
+                continue
+            if raw[i] == "#" or raw.startswith("//", i):
+                break
+            if raw[i] == "/" and _regex_position(raw, i, prev):
+                j = _skip_regex(raw, i)
+                if j > i:
+                    i, prev = j, "/"
+                    continue
+            if raw[i] in ('"', "'"):
+                i = _skip_quoted(raw, i)
+                prev = '"'
+                continue
+            if not raw[i].isspace():
+                prev = raw[i]
+            i += 1
+    # A run still open at EOF is a walk that lost track, not a file with an
+    # unterminated construct, and masking to EOF hides every definition below
+    # it. The template-literal stack has had this containment since the backtick
+    # work; ``delim`` and ``/* */`` never did, and both fire on the same shape --
+    # a delimiter belonging to another language, sitting inside a string this
+    # walk cannot see. Measured on Rust: ``${0%/*}`` in a raw string masked 103
+    # lines and cost 6 real ``fn``; ``description = """#`` masked 3,002 and cost
+    # 10. Discarding the trailing run under-masks instead, which costs a
+    # spurious name in a list rather than an absent real one.
+    if delim is not None:
+        strings = {n for n in strings if n < open_line}
+    elif in_block:
+        comments = {n for n in comments if n < open_line}
+    return strings, comments, bool(stack)
+
+
+def _has_backtick_strings(file_path: str) -> bool:
+    """Whether a backtick opens a string in this file's language."""
+    dot = file_path.rfind(".")
+    return dot != -1 and file_path[dot:].lower() in _BACKTICK_STRING_SUFFIXES
+
+
+class _Masked(NamedTuple):
+    """1-based line numbers, split by what is hiding them.
+
+    ``all`` is precomputed rather than unioned per call: every caller wants it,
+    and this is a cached whole-file walk.
+    """
+
+    strings: frozenset[int]
+    comments: frozenset[int]
+    all: frozenset[int]
+
+
+@lru_cache(maxsize=8)
+def _string_masked_lines(lines: tuple[str, ...], backticks: bool = True) -> _Masked:
+    """1-based line numbers that START inside a multi-line string or comment.
+
+    Repowise's own docstrings are full of indented ``def``/``class`` examples,
+    and without this every one of them becomes a ``symbol_id`` the note tells the
+    agent to fetch and that resolves to nothing.
+
+    Deliberately a lexer-lite: it tracks Python triple quotes, backtick template
+    literals / Go raw strings, and C-style ``/* */`` blocks, and stops at ``#`` /
+    ``//``. Known ceilings, all measured rather than assumed:
+
+    * C# verbatim strings (``@"..."``) and Rust raw strings (``r#"..."#``) are
+      not tracked. C# because the exposure is 27 multi-line literals in 4,284
+      files; Rust because its 35,484 interior lines yielded 0 fabrications --
+      Go raw strings hold GraphQL, which matches the definition patterns, while
+      Rust raw strings hold TOML, which does not.
+    * Inside a ``${...}`` interpolation, ``/* */`` and ``#`` are not handled, so
+      a ``}`` inside a block comment there can close the frame early. Every
+      constructed case ended unbalanced and was caught by the fallback below.
+    * Markdown fenced blocks and inline code spans are now masked too, which is
+      wanted (a ``def`` inside a ```` ``` ```` fence is not a definition) but is
+      a behaviour change worth knowing about.
+
+    Cached on the line tuple: this is a per-character Python loop over the whole
+    file (68 ms on a 424 KB one), and the homonym-union path calls it once per
+    truncated body, re-masking the same file each time. The fallback below can
+    double that on a file whose literals do not balance, because the fast-path
+    line skip is disabled while a frame is open -- measured at 8x on a
+    synthetic 1.2 MB file with one stray backtick on line 1. Bounded at two
+    walks, and the cache means it is paid once per file.
+    """
+    strings, comments, template_left_open = _walk_string_state(
+        lines, backticks=backticks
+    )
+    if template_left_open:
+        # The lexer-lite lost track: a template literal opened and never closed,
+        # so every line below it is masked to EOF and every definition there is
+        # silently suppressed. That failure is invisible -- no error, just
+        # missing symbols -- so it must not be the one we ship. Fall back to the
+        # pre-backtick walk for this file, which under-masks instead: the cost is
+        # a spurious name in a list, not an absent real one.
+        strings, comments, _ = _walk_string_state(lines, backticks=False)
+    return _Masked(
+        frozenset(strings), frozenset(comments), frozenset(strings | comments)
+    )
+
+
+def _indent_width(raw: str) -> int:
+    return len(raw) - len(raw.lstrip())
+
+
+# Stand-in indent for "the cut is inside something still open", used when every
+# withheld line is a string body or a bracket tail and none carries a real one.
+_UNBOUNDED_INDENT = 1 << 30
+
+
+# Cap on how many withheld definitions are surfaced. This block exists to let
+# the agent CONTINUE inside the tool rather than fall back to Read, so it has to
+# stay small enough that it never competes with the answer for the window: names
+# and signatures only, never bodies.
+_WITHHELD_MAX_SYMBOLS: int = 8
+
+
+def withheld_definitions(
+    repo_root: Path | None, continuation: str | None
+) -> list[dict]:
+    """Definitions that live in the range a truncated body did NOT serve.
+
+    ``continuation`` is the ``path:first-last`` pointer already attached to a
+    truncated ``symbol_bodies`` entry, so this reads exactly the lines the
+    payload admits it withheld.
+
+    Why this exists rather than just flagging the truncation: measured on the
+    transcripts on disk, when a body is truncated the withheld range contains a
+    symbol the answer goes on to talk about **78% of the time**, and the
+    responses are at ``confidence: high`` in most of those. A flag alone does
+    not help the consumer, and the ``get_symbol`` pointer the payload already
+    carries was followed ZERO times across the runs measured. Names and
+    signatures are cheap and keep the agent inside the tool.
+
+    Returns ``[{name, kind, line, symbol_id, signature}]``, the boundary-cut
+    symbol first, empty on any failure (a probe that cannot read must not
+    manufacture doubt).
+    """
+    if not continuation:
+        return []
+    path, _, span = continuation.rpartition(":")
+    first, _, last = span.partition("-")
+    if not path or not first.isdigit() or not last.isdigit():
+        return []
+    lo, hi = int(first), int(last)
+    text = _read_repo_text(repo_root, path)
+    if text is None:
+        return []
+    lines = text.splitlines()
+    if lo < 1 or lo > len(lines):
+        return []
+    mask = _string_masked_lines(tuple(lines), _has_backtick_strings(path))
+    masked = mask.all
+
+    def _entry(line_no: int, m: re.Match[str], *, cut: bool = False) -> dict:
+        name = m.group("name")
+        # The brace-member shape has no keyword to report, so it is named for
+        # what it is rather than mislabelled as a Python `def`.
+        kind = m.groupdict().get("kind") or "member"
+        sig = _read_signature_from_source(repo_root, path, line_no, text=text)
+        e = {
+            "name": name,
+            "kind": kind,
+            "line": line_no,
+            "symbol_id": f"{path}::{name}",
+            "signature": (sig or f"{kind} {name}").strip(),
+        }
+        if cut:
+            e["body_continues"] = True
+        return e
+
+    out: list[dict] = []
+
+    # The symbol whose body is CUT BY the boundary, which is the case that
+    # motivated this whole helper and the one a naive implementation misses.
+    # In the reference defect the served range ended at 166 and `_validate`
+    # starts at 164: its `def` line was served, so it does not appear anywhere
+    # in the withheld range, while the line that actually causes the bug (176)
+    # sits inside it. Reporting only defs that START after the cut would say
+    # nothing about the symbol the answer is about.
+    #
+    # Taking the nearest preceding definition unconditionally is wrong, though:
+    # a symbol that ENDED before the cut was served whole, and reporting it as
+    # continuing puts a fully-served name at the head of the note and into the
+    # get_symbol pointer. A definition at indent I reaches line ``lo`` only if
+    # every non-blank line from it up to the first non-blank withheld line is
+    # indented deeper than I, so walking backwards while tracking the running
+    # minimum indent decides it exactly, in one pass and with no re-scan.
+    #
+    # The anchor obeys the same two exclusions as the walk. Taking the first
+    # non-blank withheld line flatly is what put the walk one line short of
+    # reality: when the cut lands ON a multi-line signature's own ``) -> dict:``
+    # (or on a flush-left docstring line), the anchor reads as column 0, the
+    # walk dies at once, and the payload ships truncated with NO withheld
+    # symbols -- gate 8 inert on exactly the long entry points that truncate.
+    _end = min(hi, len(lines))
+    _usable = [
+        n
+        for n in range(lo, _end + 1)
+        if lines[n - 1].strip()
+        and n not in masked
+        and lines[n - 1].strip()[0] not in ")]}{"
+    ]
+    if lo in mask.strings:
+        # The cut is INSIDE a multi-line string, so the expression holding that
+        # string -- and everything enclosing it -- is still open at ``lo``.
+        # Without this the anchor reads from the first line BELOW the string,
+        # usually a top-level declaration at column 0, and the walk dies at once
+        # (D9: 8 real definitions lost across cli/cli and mui). A block COMMENT
+        # cannot stand in for this: one sitting between two methods would report
+        # the preceding method as continuing when it has already ended.
+        anchor = _UNBOUNDED_INDENT
+    elif _usable:
+        anchor = _indent_width(lines[_usable[0] - 1])
+    elif any(lines[n - 1].strip() for n in range(lo, _end + 1)):
+        # Every withheld line is a string body or a bracket tail, so whatever
+        # encloses the cut is certainly still open: let any preceding
+        # definition qualify.
+        anchor = _UNBOUNDED_INDENT
+    else:
+        anchor = None
+    if anchor is not None:
+        min_indent = anchor
+        for back in range(lo - 1, 0, -1):
+            if min_indent <= 0:
+                break  # nothing can be shallower, so nothing can still be open
+            raw = lines[back - 1]
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            # A line opening with a closing bracket is the tail of a multi-line
+            # construct, not a statement at its own indent. Folding it is what
+            # made this miss the live reference case: ``get_answer``'s signature
+            # spans lines and ends ``) -> dict:`` at column 0, so the running
+            # minimum hit zero on the signature's own closing paren and the walk
+            # gave up two lines short of the ``async def`` it was looking for.
+            # An Allman brace (``{`` alone) is likewise part of the declaration
+            # above it, not a statement.
+            if stripped[0] in ")]}{":
+                continue
+            ind = _indent_width(raw)
+            nxt = lines[back] if back < len(lines) else ""
+            m = None if back in masked else _match_definition(raw, nxt)
+            if m is not None and ind < min_indent:
+                out.append(_entry(back, m, cut=True))
+                break
+            min_indent = min(min_indent, ind)
+
+    seen = {d["name"] for d in out}
+    for offset, raw in enumerate(lines[lo - 1 : _end]):
+        line_no = lo + offset
+        if line_no in masked:
+            continue
+        nxt = lines[line_no] if line_no < len(lines) else ""
+        m = _match_definition(raw, nxt)
+        if m is None or m.group("name") in seen:
+            continue
+        seen.add(m.group("name"))
+        out.append(_entry(line_no, m))
+        if len(out) >= _WITHHELD_MAX_SYMBOLS:
+            break
+    return out

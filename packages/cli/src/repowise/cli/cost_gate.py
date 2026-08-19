@@ -1,0 +1,144 @@
+"""Shared LLM-cost confirmation gate.
+
+Both ``repowise init`` and ``repowise generate`` put a spend estimate in front
+of the user and ask before running a model. The gate constant, the declined
+signal, and the confirm/format helpers used to live in ``init_cmd/generation``;
+they now live here so the two commands share one gate rather than one importing
+the other's internals.
+"""
+
+from __future__ import annotations
+
+import sys
+from typing import Any
+
+import click
+
+from repowise.cli.helpers import console
+
+# The LLM-cost confirmation threshold. A run whose estimate exceeds this asks
+# for confirmation (unless ``--yes``); below it generation proceeds silently.
+COST_GATE_USD = 2.00
+
+# The point where Enter-through stops meaning yes. Between COST_GATE_USD and
+# this, the gate is an FYI on a run the user just configured and the default
+# continues it. Past it, a mis-keyed Enter is an expensive mistake, so the
+# default flips and approval has to be typed.
+COST_GATE_HARD_USD = 25.00
+
+
+class CostGateDeclined(Exception):  # noqa: N818 — a control-flow signal, not an error
+    """Raised when the user answers No at the LLM-cost confirmation prompt.
+
+    Carries no payload — the caller just needs to know that generation was
+    declined so it can persist state in index-only shape (no docs) and
+    return cleanly. Using an exception (vs. a sentinel return value) lets
+    us bail out of nested generation flows without rethreading return
+    types through every helper.
+    """
+
+
+def confirm_cost_gate(message: str, *, estimated_usd: float | None = None) -> bool:
+    """Render the cost-gate prompt with visual padding. True means "spend it".
+
+    Click's plain ``confirm`` interleaves with the trailing line of any
+    prior Rich output (progress-bar frames, status spinners), making the
+    confirm glyphs hard to spot — users have walked past it and approved
+    a $14 bill thinking they were still in cost-estimate territory. A
+    blank line + horizontal rule cleanly separates the prompt from
+    whatever was printed above it.
+
+    Default is Yes: the user just picked a coverage tier with the cost
+    range printed next to it, so Enter-through should continue the run
+    they configured — the gate exists to make the spend visible, not to
+    interrupt it. Above :data:`COST_GATE_HARD_USD` that reverses, because
+    Enter-through approving a bill that size is the footgun the padding
+    above was added to prevent, and a default cannot be the safe answer
+    and the expensive one at the same time.
+
+    Declining is not a dead end and the prompt now says so: the caller
+    renders the wiki from structure instead, so No costs the user the written
+    prose on the subsystem pages, not their wiki.
+
+    Never prompts when stdin is not a terminal. There is nothing to read
+    there, and ``click.confirm`` would raise ``Abort``. Callers reach this
+    only after :func:`cost_gate_blocks` has already ruled out the no-terminal
+    case (it raises an actionable error there instead), so this branch is a
+    backstop for a direct caller rather than the main path.
+    """
+    console.line()
+    console.rule(style="yellow")
+    console.print(
+        "  [dim]No builds the same wiki from structure instead: no model, "
+        "no spend. Add a key and run [bold]repowise generate[/bold] to write "
+        "the subsystem pages later.[/dim]"
+    )
+    if not sys.stdin.isatty():
+        console.print(
+            "  [dim]Not a terminal, so nothing to ask: building from structure. "
+            "Re-run with --yes to accept the cost and write the subsystem pages "
+            "with a model.[/dim]"
+        )
+        return False
+    default = True
+    if estimated_usd is not None and estimated_usd > COST_GATE_HARD_USD:
+        console.print(
+            f"  [yellow]This is over ${COST_GATE_HARD_USD:.0f}.[/yellow] "
+            "[dim]Answer yes explicitly to approve it.[/dim]"
+        )
+        default = False
+    return click.confirm(message, default=default)
+
+
+def cost_gate_declined(est: Any, *, yes: bool, message: str) -> bool:
+    """Return ``True`` when the run should skip generation on cost grounds.
+
+    Only prompts when the estimate clears :data:`COST_GATE_USD` and ``--yes``
+    was not passed; a declined prompt yields ``True``. Prefer
+    :func:`cost_gate_blocks`, which additionally handles the no-terminal case.
+    """
+    if est.estimated_cost_usd <= COST_GATE_USD or yes:
+        return False
+    return not confirm_cost_gate(message, estimated_usd=est.estimated_cost_usd)
+
+
+def cost_gate_blocks(est: Any, *, yes: bool, message: str) -> bool:
+    """Return ``True`` when the run must not spend, ``False`` to proceed.
+
+    The single cost question, shared by ``init``, ``generate`` and
+    ``update --full``. Its non-interactive contract is the one an agent depends
+    on:
+
+    - ``--yes``, or an estimate at or under :data:`COST_GATE_USD`: never blocks.
+      A cheap run the user configured is not worth an interruption.
+    - Over the gate with no terminal to confirm on and no ``--yes``: raises an
+      actionable error naming ``--yes``, rather than hanging on a prompt nothing
+      will answer or silently spending money no one approved.
+    - Over the gate on a terminal: asks (default yes, flipping past
+      :data:`COST_GATE_HARD_USD`) and blocks when the user declines.
+    """
+    if est.estimated_cost_usd <= COST_GATE_USD or yes:
+        return False
+    if not sys.stdin.isatty():
+        raise click.ClickException(
+            f"This would spend about {format_cost(est)} and there is no terminal "
+            "to confirm on. Re-run with --yes to accept the cost, or with "
+            "--no-prose to build the wiki from structure for free."
+        )
+    return not confirm_cost_gate(message, estimated_usd=est.estimated_cost_usd)
+
+
+def format_cost(est: Any) -> str:
+    """Render an estimate as a human-readable USD string (range when known)."""
+    if est.cost_range is not None:
+        cost_str = (
+            f"${est.cost_range.low:.2f} - ${est.cost_range.high:.2f} USD "
+            f"(median ${est.estimated_cost_usd:.2f})"
+        )
+        if est.is_calibrated:
+            # Not "[calibrated]": the result is interpolated into Rich markup,
+            # which parses square brackets as a style tag and renders an
+            # unknown one as nothing at all.
+            cost_str += " (calibrated on this repo's history)"
+        return cost_str
+    return f"${est.estimated_cost_usd:.2f} USD"

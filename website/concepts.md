@@ -65,7 +65,7 @@ From this, repowise builds a **dependency graph** using NetworkX. Nodes are file
 
 **Why it matters for you:** The dependency graph powers risk analysis, cascade detection, and architecture diagrams. When you ask "what does this module affect?", the answer comes from this layer.
 
-**Supported languages:** Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Kotlin, Ruby, C#, Swift, Scala, PHP. 14 languages with full AST support.
+**Supported languages:** Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Kotlin, Ruby, C#, Swift, Scala, PHP, Dart, Shell. **16 languages** parsed to a full AST (11 at the Full tier with code-health markers). See [Language Support](https://github.com/repowise-dev/repowise/blob/main/docs/layers/LANGUAGE_SUPPORT.md).
 
 ---
 
@@ -121,7 +121,7 @@ Generation is the only layer that requires an LLM provider. repowise sends struc
 
 Each page is stored in the database and linked to the file it describes. Pages have a freshness score — if the underlying file changes, the page is marked stale and queued for regeneration.
 
-**Skipping generation:** You can skip this layer entirely with `repowise init --index-only`. You'll still get the full dependency graph, git intelligence, dead code, and decision data — just no narrative docs. You can add generation later by running `repowise init` on an existing index.
+**Skipping the prose:** Run `repowise init --no-prose` and every page is still rendered from structure, with no key and no spend. You get the full dependency graph, git intelligence, dead code, and decision data, and a complete wiki whose subsystem (concept) pages are structural stubs rather than model prose. Fill that prose in later with `repowise generate` (or `repowise init --prose`) on the existing index.
 
 **Cost:** For a 200-file codebase, generation typically uses 150,000–300,000 tokens. The `--dry-run` flag shows you the estimated cost before committing.
 
@@ -161,7 +161,7 @@ The dependency graph is loaded into memory at server startup for fast traversal.
 
 ## The MCP server
 
-The MCP server sits on top of the persistence layer and exposes everything to AI coding assistants via 13 tools (10 single-repo + 3 workspace-only). It's the primary interface between repowise and Claude Code, Codex, Cursor, Cline, or any other MCP-compatible editor.
+The MCP server sits on top of the persistence layer and exposes everything to AI coding assistants through 17 registered tools: 11 by default in a single repository, 13 by default in workspace mode, and four opt-in tools. It's the primary interface between repowise and Claude Code, Codex, Cursor, Cline, or any other MCP-compatible editor.
 
 When you run `repowise mcp`, the server starts in stdio mode and your editor can begin calling tools. The tools are designed to answer the questions an AI needs to make good decisions about your code — not just "what is this file" but "should I edit it", "why is it structured this way", and "what will break if I change it".
 

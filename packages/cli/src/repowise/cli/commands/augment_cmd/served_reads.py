@@ -19,6 +19,20 @@ Two hooks feed it:
 Same operational rules as the rest of augment: stdlib-only on the hook path,
 unknown tool-output shapes are skipped rather than guessed, and any failure
 degrades to silence.
+
+**A near-zero firing count is this surface working, not this surface failing.**
+Worth writing down, because in ``repowise hook stats`` it sits among rows that
+carry real action rates and so reads like a dead code path, and it has been
+proposed for deletion on exactly that basis. It cannot fire more often than the
+repowise MCP tools are called, and their share of an agent's tool calls is the
+low number this KPI exists to observe. The count therefore tracks adoption, and
+cutting the surface for having a low one would delete the instrument to make the
+reading go away. Keeping it costs nothing to weigh against that: ``chars=0``, no
+emission, no tokens, and the only work on the hook's critical path is a coverage
+check against the session state file.
+
+Retire it when there is a *better* measure of whether MCP answers land. Never
+because this one reads low.
 """
 
 from __future__ import annotations
@@ -27,7 +41,6 @@ import json
 from pathlib import Path
 
 from ._shared import _find_repo_root, _relativize
-from .decision_inject import _claim_ledger
 
 _SERVED_COVERAGE = 0.8  # served share of a Read window that counts as covered
 _MAX_SERVED_FILES = 50  # served-range bookkeeping caps (state-file hygiene)
@@ -65,6 +78,8 @@ def _log_read_after_served(
         return
     start, end = window
     if _served_covers(repo_path, session_id, rel, start, end):
+        from repowise.cli.hook_ledger import _claim_ledger
+
         _claim_ledger(
             repo_path,
             session_id,

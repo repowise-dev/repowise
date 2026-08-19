@@ -1,7 +1,23 @@
 """Provider configuration management — API keys, active provider, model selection.
 
-Stores configuration in a server-side JSON file. Environment variables take
-precedence over stored keys for each provider.
+Stores configuration in a server-side JSON file (``_config_path``). Two
+resolution chains run here, both most-specific-first:
+
+**API key** (:func:`_get_key_for_provider`):
+  1. process environment (``ANTHROPIC_API_KEY`` etc.)
+  2. the target repo's ``.repowise/.env`` (read into a dict, never applied to
+     ``os.environ``, so one repo's key can't leak into another in workspace
+     mode)
+  3. the server-global stored key set through :func:`set_api_key`
+
+**Active provider/model** (:func:`_resolve_active_for_repo`): per-repo UI
+selection > the repo's ``config.yaml`` > server-global active selection >
+``REPOWISE_PROVIDER`` / ``REPOWISE_MODEL`` env > auto-detect the first provider
+with a usable key. See that function's docstring for the full rationale.
+
+Because the CLI resolves keys from ``.repowise/.env`` (step 2) and never sees
+the server store, :func:`set_api_key` mirrors a UI-added key into that file so a
+later CLI run in the repo picks it up.
 """
 
 from __future__ import annotations
@@ -22,10 +38,10 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
     {
         "id": "gemini",
         "name": "Google Gemini",
-        "default_model": "gemini-3.1-flash-lite-preview",
+        "default_model": "gemini-3.5-flash-lite",
         "models": [
-            "gemini-3.1-flash-lite-preview",
-            "gemini-3-flash-preview",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
             "gemini-3.1-pro-preview",
         ],
         "env_keys": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
@@ -34,28 +50,28 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
     {
         "id": "anthropic",
         "name": "Anthropic",
-        "default_model": "claude-sonnet-4-6",
-        "models": ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
+        "default_model": "claude-haiku-4-5",
+        "models": ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"],
         "env_keys": ["ANTHROPIC_API_KEY"],
         "requires_key": True,
     },
     {
         "id": "openai",
         "name": "OpenAI",
-        "default_model": "gpt-5.4-nano",
-        "models": ["gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4"],
+        "default_model": "gpt-5.6-luna",
+        "models": ["gpt-5.6-luna", "gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4"],
         "env_keys": ["OPENAI_API_KEY"],
         "requires_key": True,
     },
     {
         "id": "openrouter",
         "name": "OpenRouter",
-        "default_model": "anthropic/claude-sonnet-4.6",
+        "default_model": "google/gemini-3.5-flash-lite",
         "models": [
-            "anthropic/claude-sonnet-4.6",
-            "google/gemini-3.1-flash-lite-preview",
-            "meta-llama/llama-4-maverick",
-            "openai/gpt-4o",
+            "google/gemini-3.5-flash-lite",
+            "openai/gpt-5.6-luna",
+            "anthropic/claude-haiku-4-5",
+            "anthropic/claude-sonnet-5",
         ],
         "env_keys": ["OPENROUTER_API_KEY"],
         "requires_key": True,
@@ -84,8 +100,8 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
     {
         "id": "ollama",
         "name": "Ollama (Local)",
-        "default_model": "llama3.2",
-        "models": ["llama3.2", "codellama", "deepseek-coder-v2", "qwen2.5-coder"],
+        "default_model": "qwen3.5:4b",
+        "models": ["qwen3.5:4b", "qwen3.5:2b", "llama3.2", "qwen2.5-coder"],
         "env_keys": [],
         "requires_key": False,
     },
@@ -94,7 +110,10 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "name": "LiteLLM",
         "default_model": "groq/llama-3.1-70b-versatile",
         "models": ["groq/llama-3.1-70b-versatile"],
-        "env_keys": [],
+        # Was [] while requires_key stayed True, so _get_key_for_provider had
+        # nothing to look at and litellm read as unconfigured no matter what
+        # the user had set. The name matches the CLI's own validation map.
+        "env_keys": ["LITELLM_API_KEY"],
         "requires_key": True,
     },
     {
@@ -120,10 +139,18 @@ _CATALOG_BY_ID = {p["id"]: p for p in PROVIDER_CATALOG}
 
 
 def _config_path() -> Path:
+    """Return the server's provider-config JSON path.
+
+    ``REPOWISE_CONFIG_DIR`` wins when set; otherwise the file lives in the
+    per-user ``~/.repowise`` config directory (the same home the CLI's global
+    store and the default database use). The previous CWD-relative fallback
+    meant a key was saved next to wherever the server happened to be launched
+    and then invisible from any other working directory.
+    """
     config_dir = os.environ.get("REPOWISE_CONFIG_DIR", "")
     if config_dir:
         return Path(config_dir) / "provider_config.json"
-    return Path("provider_config.json")
+    return Path.home() / ".repowise" / "provider_config.json"
 
 
 def _load_config() -> dict[str, Any]:
@@ -149,17 +176,6 @@ def _save_config(config: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-
-
-_BASE_URL_ENV_VARS = {
-    "anthropic": ["ANTHROPIC_BASE_URL"],
-    "openai": ["OPENAI_BASE_URL"],
-    "gemini": ["GEMINI_BASE_URL"],
-    "ollama": ["OLLAMA_BASE_URL"],
-    "deepseek": ["DEEPSEEK_BASE_URL"],
-    "kimi": ["KIMI_BASE_URL"],
-    "litellm": ["LITELLM_BASE_URL", "LITELLM_API_BASE"],
-}
 
 
 def _load_repo_context(repo_path: str | Path | None) -> tuple[dict[str, Any], dict[str, str]]:
@@ -223,8 +239,13 @@ def _get_base_url_for_provider(
     local LiteLLM/OpenAI-compatible endpoint configured at init is reused by
     chat. The repo ``config.yaml`` may carry it under a per-provider section,
     e.g. ``openai: {base_url: http://localhost:4000/v1}``.
+
+    The env-var names come from the provider registry, the same table the CLI
+    and MCP resolvers read, so this cannot drift out of step with them.
     """
-    env_vars = _BASE_URL_ENV_VARS.get(provider_id, [])
+    from repowise.core.providers.llm.registry import PROVIDER_BASE_URL_ENVS
+
+    env_vars = PROVIDER_BASE_URL_ENVS.get(provider_id, ())
     for env_var in env_vars:
         val = os.environ.get(env_var)
         if val:
@@ -371,10 +392,31 @@ def set_active_provider(
     _save_config(config)
 
 
-def set_api_key(provider_id: str, key: str | None) -> None:
-    """Store or remove an API key for a provider."""
+def set_api_key(
+    provider_id: str,
+    key: str | None,
+    repo_path: str | Path | None = None,
+) -> None:
+    """Store or remove an API key for a provider.
+
+    Always updates the server-global store. When ``repo_path`` is given, the
+    key is *also* mirrored into that repo's ``.repowise/.env`` under the
+    provider's canonical env var, so a later ``repowise`` CLI run in that repo
+    (which reads ``.env``, not the server store) picks up a key added from the
+    web UI. A ``None`` key removes it from both places.
+
+    Writing ``.env`` is a deliberately OSS-server-only step: a hosted
+    deployment resolves keys from its own vault, so it never passes
+    ``repo_path`` here. The low-level file write is the shared
+    ``core.repo_config.save_repo_env_key`` primitive (reused by the CLI), but
+    the decision to mirror a key to disk lives here in the server layer.
+    """
     if provider_id not in _CATALOG_BY_ID:
         raise ValueError(f"Unknown provider: {provider_id}")
+    if key is not None and ("\n" in key or "\r" in key):
+        # Reject before writing anything so a bad value can't inject extra env
+        # lines nor leave a partial store update. A real key has no newline.
+        raise ValueError("API key must not contain a newline")
     config = _load_config()
     keys = config.setdefault("keys", {})
     if key:
@@ -382,6 +424,32 @@ def set_api_key(provider_id: str, key: str | None) -> None:
     else:
         keys.pop(provider_id, None)
     _save_config(config)
+
+    if repo_path is not None:
+        _mirror_key_to_repo_env(provider_id, key, repo_path)
+
+
+def _mirror_key_to_repo_env(
+    provider_id: str,
+    key: str | None,
+    repo_path: str | Path,
+) -> None:
+    """Write (or clear) a provider key in a repo's ``.repowise/.env``.
+
+    Uses the provider's first catalog env var as the canonical name (e.g.
+    ``ANTHROPIC_API_KEY``). Providers that take no key (empty ``env_keys``,
+    e.g. Ollama) have nothing to mirror. Best-effort: a filesystem error here
+    must not fail the API call, since the server store was already updated.
+    """
+    env_keys = _CATALOG_BY_ID[provider_id].get("env_keys", [])
+    if not env_keys:
+        return
+    from repowise.core.repo_config import save_repo_env_key
+
+    try:
+        save_repo_env_key(repo_path, env_keys[0], key)
+    except OSError:
+        logger.warning("Failed to mirror %s key into %s/.repowise/.env", provider_id, repo_path)
 
 
 def get_chat_provider_instance(

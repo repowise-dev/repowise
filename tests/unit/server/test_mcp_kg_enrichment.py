@@ -17,7 +17,6 @@ from repowise.core.persistence.models import (
     KnowledgeGraphTourStep,
     Page,
     Repository,
-    WikiSymbol,
 )
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
@@ -207,8 +206,8 @@ async def populated_db_with_kg(session: AsyncSession, repo_id: str) -> str:
             display_order=1,
         ),
     ]
-    for l in kg_layers:
-        session.add(l)
+    for layer in kg_layers:
+        session.add(layer)
 
     kg_tour = [
         KnowledgeGraphTourStep(
@@ -350,8 +349,8 @@ async def test_overview_includes_architecture_when_kg_exists(setup_mcp_with_kg):
     arch = result["architecture"]
     assert "layers" in arch
     assert len(arch["layers"]) == 2
-    assert any(l["name"] == "Core Ingestion" for l in arch["layers"])
-    assert any(l["name"] == "Utilities" for l in arch["layers"])
+    assert any(layer["name"] == "Core Ingestion" for layer in arch["layers"])
+    assert any(layer["name"] == "Utilities" for layer in arch["layers"])
     assert arch["tour_available"] is True
     assert arch["tour_step_count"] == 2
 
@@ -369,7 +368,7 @@ async def test_overview_layer_file_count(setup_mcp_with_kg):
     from repowise.server.mcp_server import get_overview
 
     result = await get_overview()
-    core_layer = next(l for l in result["architecture"]["layers"] if l["name"] == "Core Ingestion")
+    core_layer = next(layer for layer in result["architecture"]["layers"] if layer["name"] == "Core Ingestion")
     assert core_layer["file_count"] == 1
 
 

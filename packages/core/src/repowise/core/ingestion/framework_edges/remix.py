@@ -27,8 +27,12 @@ if TYPE_CHECKING:
 
 
 _REMIX_ROUTE_RE = re.compile(r"(?:^|/)(?:app/)?routes/")
-_SVELTE_ROUTE_RE = re.compile(r"/\+(?:page|layout|server|error)\.(ts|tsx|js|mjs)$")
+_SVELTE_ROUTE_RE = re.compile(r"/\+(?:page|layout|server|error)[.\w]*\.(ts|tsx|js|mjs|svelte)$")
 _ASTRO_PAGE_RE = re.compile(r"(?:^|/)src/pages/")
+
+# SvelteKit's +page.svelte / +layout.svelte are convention routes in their own
+# right, so components count here alongside their .ts/.js siblings.
+_ROUTE_LANGUAGES = ("typescript", "javascript", "svelte")
 
 
 def _is_convention_route(path: str) -> bool:
@@ -38,9 +42,7 @@ def _is_convention_route(path: str) -> bool:
         path.endswith(ext) for ext in (".ts", ".tsx", ".js", ".jsx")
     ):
         return True
-    if _ASTRO_PAGE_RE.search(path):
-        return True
-    return False
+    return bool(_ASTRO_PAGE_RE.search(path))
 
 
 class _ConventionRouteHandler:
@@ -48,7 +50,7 @@ class _ConventionRouteHandler:
         if any(tok in dctx.stack_lower for tok in ("remix", "sveltekit", "astro")):
             return True
         for path, parsed in dctx.parsed_files.items():
-            if parsed.file_info.language not in ("typescript", "javascript"):
+            if parsed.file_info.language not in _ROUTE_LANGUAGES:
                 continue
             if _is_convention_route(path):
                 return True
@@ -63,7 +65,7 @@ class _ConventionRouteHandler:
     ) -> int:
         count = 0
         for path, parsed in parsed_files.items():
-            if parsed.file_info.language not in ("typescript", "javascript"):
+            if parsed.file_info.language not in _ROUTE_LANGUAGES:
                 continue
             if not _is_convention_route(path):
                 continue

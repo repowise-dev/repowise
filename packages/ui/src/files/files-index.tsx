@@ -3,10 +3,15 @@
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import type { FileLanguageCount, FileRow } from "@repowise-dev/types/files";
+import { bandForScore } from "@repowise-dev/types/health";
 import { cn } from "../lib/cn";
 import { formatLOC, formatNumber } from "../lib/format";
 import { FilesTreemap, type TreemapColor, type TreemapSize } from "./files-treemap";
 import { FilesTable, type SortKey } from "./files-table";
+// One `Fig`, shared with the file detail page. The two Files surfaces are meant
+// to emphasise a figure identically, and two identical local copies is how that
+// stops being true without anyone noticing.
+import { Fig } from "./file-section";
 
 interface FilesIndexProps {
   files: FileRow[];
@@ -17,8 +22,19 @@ interface FilesIndexProps {
 
 type TestFilter = "all" | "code" | "tests";
 
+/** How the active sort reads in the section's sentence. Named so the copy can
+ *  never claim an order the table is not in. */
+const SORT_LABEL: Record<SortKey, string> = {
+  dependents: "dependents",
+  health: "health",
+  churn: "churn",
+  loc: "lines",
+  coverage: "coverage",
+  name: "path",
+};
+
 const SORT_DEFAULT_DIR: Record<SortKey, "asc" | "desc"> = {
-  importance: "desc",
+  dependents: "desc",
   health: "asc", // lowest (worst) health first is the interesting end
   churn: "desc",
   loc: "desc",
@@ -26,16 +42,27 @@ const SORT_DEFAULT_DIR: Record<SortKey, "asc" | "desc"> = {
   name: "asc",
 };
 
+/**
+ * A segmented control, optionally named.
+ *
+ * The `label` is not decoration on the map's two controls. They steer different
+ * axes and sat unlabelled side by side, so `Importance | Size` next to
+ * `Health | Language` gave the reader four pills and no statement of which pair
+ * did what. One axis, one control, and the control says which axis. The
+ * toolbar's `All | Code | Tests` needs no such help and passes nothing.
+ */
 function Segmented<T extends string>({
+  label,
   options,
   value,
   onChange,
 }: {
+  label?: string;
   options: { value: T; label: string }[];
   value: T;
   onChange: (v: T) => void;
 }) {
-  return (
+  const control = (
     <div className="inline-flex rounded-md border border-[var(--color-border-default)] p-0.5">
       {options.map((o) => (
         <button
@@ -53,30 +80,28 @@ function Segmented<T extends string>({
       ))}
     </div>
   );
-}
-
-function Kpi({ label, value }: { label: string; value: string }) {
+  if (!label) return control;
   return (
-    <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2">
-      <p className="text-lg font-semibold tabular-nums text-[var(--color-text-primary)]">{value}</p>
-      <p className="text-[11px] uppercase tracking-wide text-[var(--color-text-tertiary)]">
+    <div className="inline-flex items-center gap-2">
+      <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
         {label}
-      </p>
+      </span>
+      {control}
     </div>
   );
 }
 
 export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
   const [query, setQuery] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("importance");
+  const [sortKey, setSortKey] = useState<SortKey>("dependents");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [langFilter, setLangFilter] = useState<string>("");
   const [testFilter, setTestFilter] = useState<TestFilter>("all");
-  const [sizeBy, setSizeBy] = useState<TreemapSize>("importance");
+  const [sizeBy, setSizeBy] = useState<TreemapSize>("dependents");
   const [colorBy, setColorBy] = useState<TreemapColor>("health");
   const [prefix, setPrefix] = useState<string[]>([]);
 
-  // KPI strip — cheap aggregate over the full set (memoized).
+  // The figures the lede sentence spends — one pass over the full set.
   const kpis = useMemo(() => {
     let loc = 0;
     let scored = 0;
@@ -85,13 +110,18 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
       loc += f.loc ?? 0;
       if (f.defect_score != null) {
         scored++;
-        if (f.defect_score >= 7) healthy++;
+        // `bandForScore`, not a local `>= 7`. The threshold here was 7 while
+        // every band this page paints starts Healthy at 8, so the strip was
+        // reporting a share of files as healthy that the map beside it was
+        // colouring amber.
+        if (bandForScore(f.defect_score) === "healthy") healthy++;
       }
     }
     return {
       total: files.length,
       loc,
       langCount: languages.length,
+      scored,
       healthyPct: scored > 0 ? Math.round((healthy / scored) * 100) : null,
     };
   }, [files, languages]);
@@ -124,7 +154,7 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
     filtered.sort((a, b) => {
       let cmp = 0;
       switch (sortKey) {
-        case "importance":
+        case "dependents":
           cmp = a.pagerank_pct - b.pagerank_pct;
           break;
         case "health":
@@ -150,31 +180,49 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
   }, [files, prefix, query, testFilter, langFilter, sortKey, sortDir]);
 
   return (
-    <div className="space-y-4">
-      {/* KPI strip */}
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <Kpi label="Files" value={formatNumber(kpis.total)} />
-        <Kpi label="Lines" value={formatLOC(kpis.loc)} />
-        <Kpi label="Languages" value={String(kpis.langCount)} />
-        <Kpi label="Healthy" value={kpis.healthyPct != null ? `${kpis.healthyPct}%` : "—"} />
-      </div>
-
-      {/* Treemap hero */}
-      <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3 sm:p-4">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">
-            Repository map
-          </h2>
-          <div className="flex flex-wrap items-center gap-2">
+    <div>
+      {/*
+        The map leads, and nothing figure-shaped sits above it.
+        `PageLede` is the house opening for a surface whose subject is a number
+        — code health, coverage, dead code — and it is the wrong shape here: a
+        52px figure at the top of a page whose subject is a canvas pushes the
+        canvas toward the fold to answer a question nobody arrived with. The
+        Knowledge Graph and Architecture ports settled this: where the canvas is
+        the page, it gets a header row, the base plane and a key row, and the
+        figures ride along in the sentence rather than in four boxes above it.
+      */}
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">
+              Repository map
+            </h2>
+            <p className="mt-1 max-w-prose text-sm text-[var(--color-text-secondary)]">
+              <Fig>{formatNumber(kpis.total)}</Fig> files across <Fig>{formatLOC(kpis.loc)}</Fig>{" "}
+              lines in <Fig>{kpis.langCount}</Fig> {kpis.langCount === 1 ? "language" : "languages"}
+              .{" "}
+              {kpis.healthyPct != null ? (
+                <>
+                  <Fig>{kpis.healthyPct}%</Fig> of the <Fig>{formatNumber(kpis.scored)}</Fig>{" "}
+                  carrying a health score are healthy.
+                </>
+              ) : (
+                "None carry a health score yet."
+              )}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
             <Segmented<TreemapSize>
+              label="Area"
               value={sizeBy}
               onChange={setSizeBy}
               options={[
-                { value: "importance", label: "Importance" },
-                { value: "loc", label: "Size" },
+                { value: "dependents", label: "Dependents" },
+                { value: "loc", label: "Lines" },
               ]}
             />
             <Segmented<TreemapColor>
+              label="Colour"
               value={colorBy}
               onChange={setColorBy}
               options={[
@@ -184,6 +232,9 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
             />
           </div>
         </div>
+        {/* No card. The thing you came for sits on the base plane, and chrome
+            goes around a canvas rather than on it — the header above and the
+            key row `FilesTreemap` renders underneath are that chrome. */}
         <FilesTreemap
           files={files}
           fileHref={fileHref}
@@ -192,57 +243,69 @@ export function FilesIndex({ files, languages, fileHref }: FilesIndexProps) {
           prefix={prefix}
           onPrefixChange={setPrefix}
         />
-      </div>
+      </section>
 
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="relative min-w-0 flex-1">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Filter files by path…"
-            className="h-9 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] pl-8 pr-3 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] focus:border-[var(--color-accent-primary)]"
-          />
+      {/* The table is a section, not a loose stack under the map: a hairline
+          and vertical rhythm are the grouping device, not a border box. */}
+      <section className="mt-12 space-y-3 border-t border-[var(--color-border-default)] pt-8">
+        <div className="min-w-0">
+          <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">Every file</h2>
+          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
+            <Fig>{formatNumber(tableFiles.length)}</Fig>{" "}
+            {tableFiles.length === 1 ? "file" : "files"}
+            {prefix.length > 0 && (
+              <>
+                {" "}
+                in <Fig>{prefix.join("/")}/</Fig>
+              </>
+            )}
+            , sorted by {SORT_LABEL[sortKey]}. Any column header re-sorts.
+          </p>
         </div>
-        <Segmented<TestFilter>
-          value={testFilter}
-          onChange={setTestFilter}
-          options={[
-            { value: "all", label: "All" },
-            { value: "code", label: "Code" },
-            { value: "tests", label: "Tests" },
-          ]}
+
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-0 flex-1">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Filter files by path…"
+              className="h-9 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] pl-8 pr-3 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] focus:border-[var(--color-accent-primary)]"
+            />
+          </div>
+          <Segmented<TestFilter>
+            value={testFilter}
+            onChange={setTestFilter}
+            options={[
+              { value: "all", label: "All" },
+              { value: "code", label: "Code" },
+              { value: "tests", label: "Tests" },
+            ]}
+          />
+          {languages.length > 1 && (
+            <select
+              value={langFilter}
+              onChange={(e) => setLangFilter(e.target.value)}
+              className="h-9 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 text-sm text-[var(--color-text-secondary)] outline-none focus:border-[var(--color-accent-primary)]"
+            >
+              <option value="">All languages</option>
+              {languages.map((l) => (
+                <option key={l.language} value={l.language}>
+                  {l.language} ({l.count})
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        <FilesTable
+          files={tableFiles}
+          fileHref={fileHref}
+          sortKey={sortKey}
+          sortDir={sortDir}
+          onSort={handleSort}
         />
-        {languages.length > 1 && (
-          <select
-            value={langFilter}
-            onChange={(e) => setLangFilter(e.target.value)}
-            className="h-9 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 text-sm text-[var(--color-text-secondary)] outline-none focus:border-[var(--color-accent-primary)]"
-          >
-            <option value="">All languages</option>
-            {languages.map((l) => (
-              <option key={l.language} value={l.language}>
-                {l.language} ({l.count})
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
-
-      <p className="text-xs text-[var(--color-text-tertiary)]">
-        {formatNumber(tableFiles.length)}
-        {tableFiles.length === 1 ? " file" : " files"}
-        {prefix.length > 0 && ` in ${prefix.join("/")}/`}
-      </p>
-
-      <FilesTable
-        files={tableFiles}
-        fileHref={fileHref}
-        sortKey={sortKey}
-        sortDir={sortDir}
-        onSort={handleSort}
-      />
+      </section>
     </div>
   );
 }

@@ -93,10 +93,10 @@ def _build(signals: OnboardingSignals) -> ActiveLandscapeContext | None:
         for path, meta in git_meta_map.items()
         if int(meta.get("commit_count_90d", 0) or 0) > 0
     ]
-    hot_files_all.sort(
-        key=lambda h: (h.commit_count_90d, -h.age_days),
-        reverse=True,
-    )
+    # Path last, so the key is total. Files tied on both churn and age fell
+    # back to ``git_meta_map`` insertion order, and this list is cut twice —
+    # at ``_TOP_HOT_FILES`` here and at 15 after the dead-code walk below.
+    hot_files_all.sort(key=lambda h: (-h.commit_count_90d, h.age_days, h.path))
     hot_files = hot_files_all[:_TOP_HOT_FILES]
 
     # Roll up to directories.
@@ -125,11 +125,16 @@ def _build(signals: OnboardingSignals) -> ActiveLandscapeContext | None:
 
     # Dead-code findings inside the top hot files only — keeps the prompt
     # focused on actionable, recent overlap rather than the full report.
-    hot_paths = {h.path for h in hot_files}
+    # Walked in ``hot_files`` order — the churn ranking computed above — because
+    # this list is cut to 15 below. Collecting through a ``set`` of the paths
+    # replaced that ranking with a hash order, so the fifteen findings the page
+    # kept were fifteen arbitrary ones of the hot set rather than the fifteen
+    # in the files moving most, and a second process could keep a different
+    # fifteen from identical data.
     dead_code_in_hot: list[dict] = []
-    for path in hot_paths:
-        for finding in signals.dead_code_by_file.get(path, []):
-            dead_code_in_hot.append({"file_path": path, **finding})
+    for hot in hot_files:
+        for finding in signals.dead_code_by_file.get(hot.path, []):
+            dead_code_in_hot.append({"file_path": hot.path, **finding})
 
     stable_file_count = sum(
         1 for meta in git_meta_map.values() if bool(meta.get("is_stable", False))

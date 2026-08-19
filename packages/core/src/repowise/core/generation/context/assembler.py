@@ -2,13 +2,24 @@
 
 from __future__ import annotations
 
+import re
+from collections import Counter
+from pathlib import PurePosixPath
 from typing import Any
 
 import structlog
 
+from repowise.core.analysis.dead_code.file_reachability import (
+    ReachabilityRescues,
+    build_package_file_map,
+    file_dependency_neighbors,
+    is_file_reachable,
+)
+from repowise.core.ids import file_path_of, is_external
 from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
 
 from ..categories import file_category
+from ..entry_points import orientation_entry_points, rank_entry_point_paths
 from ..models import GenerationConfig
 from .contexts import (
     ApiContractContext,
@@ -21,6 +32,7 @@ from .contexts import (
     SymbolSpotlightContext,
     _TopFile,
 )
+from .file_vocabulary import file_vocabulary
 from .graph_intelligence import (
     extract_call_graph,
     extract_community_meta,
@@ -35,10 +47,188 @@ from .token_budget import (
 
 log = structlog.get_logger(__name__)
 
+
 # Maximum imports to include before truncating
 _MAX_IMPORTS = 30
 # Maximum top-files to include in repo overview
 _MAX_TOP_FILES = 20
+
+# How many rows the concept index may carry. A module page groups directories,
+# so a wide one can reach several hundred public symbols and the table would
+# then be longer than the page it is attached to. Rows past this are counted
+# rather than dropped silently, so a truncated table cannot read as a complete
+# public surface.
+_MAX_CONCEPT_ROWS = 40
+
+# The module page's "Class hierarchy" section: how many classes it shows, and
+# how many any one file may contribute so a single dense file cannot fill it.
+_MAX_KEY_CLASSES = 10
+_MAX_CLASSES_PER_FILE = 5
+
+# Identifier word splits: a snake_case underscore, or the boundary before a
+# capital that starts a new word. The second pattern keeps acronym runs whole —
+# ``HTTPAdapter`` is two words, not nine — which matters because the acronym is
+# usually the word a reader would actually say.
+_IDENTIFIER_SPLIT = re.compile(r"_+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+# A language has to reach this share of a package's files to be named as one of
+# its languages. Below it the mention is noise: nearly every TypeScript package
+# holds a JSON fixture and a shell script, and listing them makes the column
+# longer without making it more true.
+_PACKAGE_LANGUAGE_FLOOR = 0.10
+
+
+def _package_stats(repo_structure: RepoStructure, parsed_files: list[ParsedFile]) -> list[dict]:
+    """Count files and observe languages per package, largest package first.
+
+    ``PackageInfo.language`` is a single tag chosen when the package was
+    detected, so it calls a package with a hundred TypeScript files and one
+    build script "typescript" and says nothing about the mix. These counts come
+    from the files the run actually parsed.
+
+    A package with no parsed files still gets a row: the walker skipping a
+    directory is a fact about the run, and dropping the row would shorten the
+    table with no way to tell that from the package not existing.
+    """
+    packages = getattr(repo_structure, "packages", None) or []
+    if not packages:
+        return []
+
+    # Longest path first so a nested package claims its files before its parent
+    # does — ``packages/ui/src/foo`` is not one of ``packages/ui``'s files if a
+    # package sits in between.
+    by_path = sorted(packages, key=lambda p: len(p.path), reverse=True)
+    counts: dict[str, int] = {p.path: 0 for p in packages}
+    langs: dict[str, Counter[str]] = {p.path: Counter() for p in packages}
+
+    for parsed in parsed_files:
+        path = getattr(getattr(parsed, "file_info", None), "path", "")
+        if not path:
+            continue
+        for pkg in by_path:
+            if path.startswith(f"{pkg.path}/"):
+                counts[pkg.path] += 1
+                language = getattr(parsed.file_info, "language", "") or ""
+                if language:
+                    langs[pkg.path][language] += 1
+                break
+
+    stats: list[dict] = []
+    for pkg in packages:
+        total = counts[pkg.path]
+        observed = [
+            lang
+            for lang, n in langs[pkg.path].most_common()
+            if total and n / total >= _PACKAGE_LANGUAGE_FLOOR
+        ]
+        stats.append(
+            {
+                "name": pkg.name,
+                "path": pkg.path,
+                "files": total,
+                # Falls back to the detected tag when nothing was parsed, so a
+                # skipped package still names a language rather than a dash.
+                "languages": observed or ([pkg.language] if not total and pkg.language else []),
+            }
+        )
+    # Biggest first: the table doubles as a reading order. Name breaks ties so
+    # a repository whose packages are all the same size does not reorder its
+    # own overview between runs.
+    stats.sort(key=lambda s: (-s["files"], s["name"]))
+    return stats
+
+
+def concept_wording(identifier: str) -> str:
+    """Spell an identifier the way prose would say it.
+
+    ``ResolverContext`` becomes "Resolver context" — the noun a reader who has
+    only read the page's prose would use, next to the token they have to type
+    to find it. Derived rather than written: a described column could name a
+    symbol that is not there, and the point of this table is that it cannot.
+    """
+    words = [w for w in _IDENTIFIER_SPLIT.split(identifier) if w]
+    if not words:
+        return identifier
+    # An acronym inside a camel-cased name keeps its case ("HTTPAdapter" →
+    # "HTTP adapter"), because the acronym is the word a reader would say. An
+    # underscore-separated name is lowered whole: ``EMBED_BATCH_MAX_ITEMS`` is a
+    # constant spelled in caps, not four acronyms.
+    keep_case = "_" not in identifier
+    spelled = [w if keep_case and w.isupper() and len(w) > 1 else w.lower() for w in words]
+    first = spelled[0]
+    return " ".join([first[:1].upper() + first[1:], *spelled[1:]])
+
+
+def build_concept_index(
+    file_contexts: list[FilePageContext],
+) -> tuple[list[dict[str, str]], int]:
+    """Rows pairing each public symbol's prose name with its identifier and file.
+
+    Returns the rows and how many were left off by the cap.
+
+    Module pages are written by the model and come out as prose: a real run
+    produced 89 of them carrying four fenced code blocks between them. So the
+    identifiers a reader needs to grep for, and an identifier-exact query needs
+    to match, are not on the page in any spelling. These rows put them there,
+    straight from the assembled symbol data, which is why the table can be
+    trusted where the surrounding prose has to be read as a summary.
+
+    Only top-level public symbols. Methods would multiply the table by the size
+    of the classes without adding a name a reader would search for on its own,
+    and a private symbol is not a route into the module.
+    """
+    ranked = sorted(file_contexts, key=lambda fc: fc.pagerank_score, reverse=True)
+    rows: list[dict[str, str]] = []
+    total = 0
+    for fc in ranked:
+        for symbol in sorted(fc.symbols, key=lambda s: s.get("start_line") or 0):
+            name = (symbol.get("name") or "").strip()
+            if not name or name.startswith("_"):
+                continue
+            if symbol.get("visibility") != "public":
+                continue
+            # A method's own name is rarely what a reader searches for, and
+            # including them turns a 40-row cap into 40 rows of one class.
+            if symbol.get("parent_name"):
+                continue
+            total += 1
+            if len(rows) < _MAX_CONCEPT_ROWS:
+                rows.append(
+                    {
+                        "concept": concept_wording(name),
+                        "symbol": name,
+                        "file": fc.file_path,
+                    }
+                )
+    return rows, total - len(rows)
+
+
+def _flow_entry_is_reachable(flow: Any, graph: Any, rescues: ReachabilityRescues) -> bool:
+    """Can anything actually get to this flow's entry point?
+
+    Execution-flow scoring treats zero inbound calls as its strongest positive
+    signal, because a symbol nothing calls looks like a front door. File-level
+    reachability reads the same evidence in the opposite direction: a file
+    nothing imports is ``unreachable_file``. So a file with no importers was
+    promoted to Primary Execution Flow #1 *and* reported as dead code, from
+    the same fact, on the same index.
+
+    Dead code is right in that argument and the flow is wrong, so drop the
+    flow. Which files that argument spares is not decided here: it is
+    :func:`is_file_reachable`, the same predicate the dead-code pass asks, so
+    the two cannot drift. This function only resolves a flow to a file path.
+
+    An unresolvable entry point stays. That is the one rescue local to this
+    caller, and it is the only forgiving-by-default limb left now that the
+    caller supplies the package map: a missed drop leaves one wrong flow on the
+    page, while an over-eager drop empties the section. Same asymmetry
+    ``ReachabilityRescues`` records for ``package_files``.
+    """
+    node = graph.nodes.get(flow.entry_point_id, {})
+    path = node.get("file_path") or file_path_of(flow.entry_point_id) or ""
+    if not path:
+        return True
+    return is_file_reachable(path, graph, rescues)
 
 
 # ---------------------------------------------------------------------------
@@ -135,23 +325,21 @@ class ContextAssembler:
         else:
             import_list = []
 
-        # Graph edges
-        in_edges = list(graph.predecessors(path)) if path in graph else []
-        out_edges = list(graph.successors(path)) if path in graph else []
-        # Filter out external nodes
-        in_edges = [e for e in in_edges if not e.startswith("external:")]
-        out_edges = [e for e in out_edges if not e.startswith("external:")]
+        # Structural file dependencies only. The full graph also contains
+        # file→symbol containment and historical co-change edges.
+        in_edges = file_dependency_neighbors(graph, path, incoming=True)
+        out_edges = file_dependency_neighbors(graph, path, incoming=False)
 
-        # Source snippet — use structural summary for large files
+        # Decoded to derive the vocabulary below, and deliberately not carried on
+        # the returned context. The context used to hold a ``file_source_snippet``
+        # trimmed to ``token_budget`` (48k tokens ≈ 190KB), which for most files
+        # is the entire file — and no template, prompt or caller ever read it.
+        # A generation run keeps one context per code file alive from level 2
+        # until it ends, so that field amounted to a second copy of the whole
+        # repository's source resident for the length of the run, which is what
+        # exhausted memory on large repositories (issue #1394). ``source_text``
+        # is local, so it is freed as soon as this function returns.
         source_text = source_bytes.decode("utf-8", errors="replace")
-        remaining = budget - used
-        source_tokens = self._estimate_tokens(source_text)
-        threshold = self._config.token_budget * self._config.large_file_source_pct
-        if source_tokens > remaining and source_tokens > threshold:
-            snippet = self._build_structural_summary(parsed, source_text, remaining)
-        else:
-            snippet = self._trim_to_budget(source_text, remaining)
-        used += self._estimate_tokens(snippet)
 
         # Dependency summaries from already-completed pages
         dep_summaries: dict[str, str] = {}
@@ -175,7 +363,6 @@ class ContextAssembler:
             symbols=sym_dicts,
             imports=import_list,
             exports=parsed.exports,
-            file_source_snippet=snippet,
             pagerank_score=pagerank.get(path, 0.0),
             betweenness_score=betweenness.get(path, 0.0),
             community_id=community.get(path, 0),
@@ -208,6 +395,12 @@ class ContextAssembler:
             kg_tour_step=kg_context.tour_step if kg_context else None,
             kg_tags=kg_context.tags if kg_context else [],
             kg_node_summary=kg_context.node_summary if kg_context else "",
+            # Computed from the whole decoded source rather than any trimmed
+            # excerpt, so the biggest files do not end up with the thinnest
+            # vocabulary. This section carries its own cap and is not charged
+            # against the prompt budget because it is page content rather than
+            # model input.
+            file_vocabulary=file_vocabulary(source_text),
         )
 
     # ------------------------------------------------------------------
@@ -226,7 +419,7 @@ class ContextAssembler:
         path = parsed.file_info.path
         # Callers = files that import the containing file (in-edges)
         if path in graph:
-            callers = [e for e in graph.predecessors(path) if not e.startswith("external:")]
+            callers = [e for e in graph.predecessors(path) if not is_external(e)]
         else:
             callers = []
 
@@ -260,7 +453,7 @@ class ContextAssembler:
 
     def assemble_module_page(
         self,
-        module_path: str,
+        title: str,
         language: str,
         file_contexts: list[FilePageContext],
         graph: Any,  # nx.DiGraph
@@ -271,13 +464,22 @@ class ContextAssembler:
         external_systems: list[dict] | None = None,
         community_label: str | None = None,
         community_cohesion: float | None = None,
+        scope: str = "",
+        is_rollup: bool = False,
+        child_pages: list[dict] | None = None,
     ) -> ModulePageContext:
         """Assemble context for the module_page template."""
         total_symbols = sum(len(fc.symbols) for fc in file_contexts)
         public_symbols = sum(
             sum(1 for s in fc.symbols if s.get("visibility") == "public") for fc in file_contexts
         )
-        entry_points = [fc.file_path for fc in file_contexts if fc.is_entry_point]
+        # ``module_page.j2`` renders these under a literal "Entry points"
+        # heading, so this is a displayed ordering and takes the shared rule.
+        # The input is ``file_contexts`` order, which is whatever the selector
+        # handed over.
+        entry_points = rank_entry_point_paths(
+            fc.file_path for fc in file_contexts if fc.is_entry_point
+        )
         files = [fc.file_path for fc in file_contexts]
 
         # Aggregate dependencies/dependents across all files in module
@@ -344,15 +546,49 @@ class ContextAssembler:
                 {"name": name, "file_count": count} for name, count in owner_counts.most_common(3)
             ]
 
-        # Key classes: collect classes with heritage info from file contexts
+        # Key classes: the classes with heritage info, most central file first.
+        # ``module_page.j2`` renders this under a "Class hierarchy" heading, so
+        # the ten it keeps are the ten a reader is told matter. Taking them in
+        # ``file_contexts`` order meant the first two files with classes filled
+        # the list and every later file contributed nothing, whatever was in
+        # it. The rank is the file's PageRank — the same key ``key_files`` uses
+        # a few lines up, so one module page cannot call two files its most
+        # important — with the path breaking ties, since leaf files share a
+        # PageRank in bulk. Each file's own entries arrive already ranked by
+        # ``extract_heritage``; the per-file cap stays so one dense file cannot
+        # take every slot.
         key_classes: list[dict] = []
-        for fc in file_contexts:
-            for h in fc.heritage[:5]:  # cap per file
+        for fc in sorted(file_contexts, key=lambda fc: (-fc.pagerank_score, fc.file_path)):
+            for h in fc.heritage[:_MAX_CLASSES_PER_FILE]:
                 key_classes.append(h)
-        key_classes = key_classes[:10]  # cap total
+        key_classes = key_classes[:_MAX_KEY_CLASSES]
+
+        # Where the page's files actually live: the directories that hold one
+        # directly, not every ancestor of every file, so the list reads as the
+        # set of places to go and look. Files at the repository root have
+        # ``"."`` for a parent and contribute no entry; a page that is only
+        # root files therefore has none, and the template says so rather than
+        # printing a dot.
+        directories = sorted(
+            {parent for f in files if (parent := str(PurePosixPath(f).parent)) != "."}
+        )
+
+        # Git-derived subsystem health, aggregated over the member files. These
+        # are what a reader cannot get from the code alone, and they degrade to
+        # nothing when a repository has no git history rather than inventing a
+        # number. Reuses the same per-file fields the repo overview reads.
+        (
+            hotspot_count,
+            stable_count,
+            single_owner_files,
+            coupled_modules,
+            bugfix_total,
+            most_fixed_file,
+        ) = self._module_git_enrichment(files, set(files), git_meta_map)
 
         return ModulePageContext(
-            module_path=module_path,
+            title=title,
+            directories=directories,
             language=language,
             total_symbols=total_symbols,
             public_symbols=public_symbols,
@@ -370,6 +606,85 @@ class ContextAssembler:
             external_systems=external_systems or [],
             key_files=key_files,
             top_owners=top_owners,
+            scope=scope,
+            is_rollup=is_rollup,
+            child_pages=child_pages or [],
+            hotspot_count=hotspot_count,
+            stable_count=stable_count,
+            single_owner_files=single_owner_files,
+            coupled_modules=coupled_modules,
+            bugfix_total=bugfix_total,
+            most_fixed_file=most_fixed_file,
+        )
+
+    @staticmethod
+    def _module_git_enrichment(
+        files: list[str],
+        member_set: set[str],
+        git_meta_map: dict[str, dict] | None,
+    ) -> tuple[int, int, int, list[dict], int, dict]:
+        """Aggregate the git signals a subsystem page can carry over its members.
+
+        Returns ``(hotspot_count, stable_count, single_owner_files,
+        coupled_modules, bugfix_total, most_fixed_file)``. Everything is zero or
+        empty when there is no git metadata, so a repository indexed without
+        history renders none of it rather than a fabricated health line.
+        """
+        import json as _json
+        from collections import Counter
+
+        if not git_meta_map:
+            return 0, 0, 0, [], 0, {}
+
+        metas = [git_meta_map[f] for f in files if f in git_meta_map]
+        if not metas:
+            return 0, 0, 0, [], 0, {}
+
+        hotspot_count = sum(1 for m in metas if m.get("is_hotspot"))
+        stable_count = sum(1 for m in metas if m.get("is_stable"))
+        # bus_factor is the number of authors covering the bulk of a file's
+        # history; 1 means one person carries it. 0 is "not computed" and does
+        # not count as a risk.
+        single_owner_files = sum(1 for m in metas if 0 < (m.get("bus_factor") or 0) <= 1)
+
+        # Files this subsystem changes together with in history but that live in
+        # another module. History coupling the import graph never shows.
+        coupled: Counter[str] = Counter()
+        for m in metas:
+            raw = m.get("co_change_partners_json") or "[]"
+            try:
+                partners = _json.loads(raw) if isinstance(raw, str) else raw
+            except Exception:
+                partners = []
+            for p in partners:
+                # Co-change entries are dicts keyed by ``file_path`` (see
+                # git_indexer/co_change.py); tolerate a bare string too.
+                partner_path = (p.get("file_path") or p.get("path")) if isinstance(p, dict) else p
+                if (
+                    isinstance(partner_path, str)
+                    and partner_path
+                    and partner_path not in member_set
+                ):
+                    module = partner_path.rsplit("/", 1)[0] if "/" in partner_path else partner_path
+                    coupled[module] += 1
+        coupled_modules = [{"path": path, "count": count} for path, count in coupled.most_common(5)]
+
+        bugfix_total = sum(int(m.get("prior_defect_count") or 0) for m in metas)
+        most = max(metas, key=lambda m: int(m.get("prior_defect_count") or 0))
+        most_fixed_file: dict = {}
+        if int(most.get("prior_defect_count") or 0) > 0:
+            most_fixed_file = {
+                "path": most.get("file_path", ""),
+                "fixes": int(most.get("prior_defect_count") or 0),
+            }
+
+        return (
+            hotspot_count,
+            stable_count,
+            single_owner_files,
+            coupled_modules,
+            bugfix_total,
+            most_fixed_file,
         )
 
     # ------------------------------------------------------------------
@@ -420,20 +735,25 @@ class ContextAssembler:
         sccs: list[Any],  # list[frozenset[str]]
         community: dict[str, int],
         graph_builder: Any | None = None,
+        repo_name: str | None = None,
         external_systems: list[dict] | None = None,
         decision_records: list[dict] | None = None,
+        parsed_files: list[ParsedFile] | None = None,
     ) -> RepoOverviewContext:
         """Assemble context for the repo_overview template."""
-        # Top files sorted by PageRank descending
-        sorted_pr = sorted(pagerank.items(), key=lambda x: x[1], reverse=True)
+        # Top files sorted by PageRank descending, path breaking ties. Leaf
+        # files share a PageRank in bulk, and dict order here is graph
+        # insertion order, so without the tiebreak the overview's top-file
+        # list is a different list on every run.
+        sorted_pr = sorted(pagerank.items(), key=lambda x: (-x[1], x[0]))
         top_files = [
-            _TopFile(path=p, score=s)
-            for p, s in sorted_pr[:_MAX_TOP_FILES]
-            if not p.startswith("external:")
+            _TopFile(path=p, score=s) for p, s in sorted_pr[:_MAX_TOP_FILES] if not is_external(p)
         ]
 
         # SCCs with len > 1 are true circular deps
         circular_count = sum(1 for scc in sccs if len(scc) > 1)
+
+        package_stats = _package_stats(repo_structure, parsed_files or [])
 
         # Community metadata from graph builder
         communities_list: list[dict] = []
@@ -449,39 +769,109 @@ class ContextAssembler:
                             "cohesion": round(ci.cohesion, 2),
                         }
                     )
-                communities_list.sort(key=lambda c: c["size"], reverse=True)
+                # Id, not label: two same-size communities can carry the same
+                # label, so the label is not a total order.
+                communities_list.sort(key=lambda c: (-c["size"], c["id"]))
                 communities_list = communities_list[:10]
-            except Exception:
-                pass
+            except Exception as exc:
+                # Same silent shape as the flow block below, which is how that
+                # one went a year unnoticed. Say something.
+                log.warning(
+                    "overview_communities_unavailable",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
 
             try:
                 flow_report = graph_builder.execution_flows()
                 if flow_report and hasattr(flow_report, "flows"):
-                    for flow in flow_report.flows[:5]:
+                    # Highest-scoring first: the templates render the first
+                    # five, so the order here is the selection.
+                    ranked = sorted(
+                        flow_report.flows,
+                        key=lambda f: (-f.entry_point_score, f.entry_point_id),
+                    )
+                    flow_graph = graph_builder.graph()
+                    # The package map is supplied, so a Go / JVM / C-C++ file
+                    # is answered for rather than assumed reachable. It used to
+                    # be withheld because the file-level cost looked large, but
+                    # the file-level cost is the wrong quantity: a flow's entry
+                    # point is a function in a file something imports, so the
+                    # flipped files are mostly not flow entries. Measured over
+                    # the indexed repositories by tracing flows for real, the
+                    # map costs **1 flow of 1,416 kept**, on one repository,
+                    # changes no rendered top five and empties no section.
+                    #
+                    # Residual risk this does not remove, and no test can: on a
+                    # repository where every traced flow starts in a package
+                    # with no live sibling, this empties the section rather
+                    # than showing wrong flows. The corpus holds no such
+                    # repository, but "measured on 42" is not "cannot happen",
+                    # which is what the log below is for.
+                    #
+                    # Built once, and only when there is something to filter:
+                    # three passes over the node ids of a graph that can reach
+                    # 175k nodes.
+                    flow_rescues = ReachabilityRescues(
+                        package_files=build_package_file_map(flow_graph) if ranked else None
+                    )
+                    kept = [
+                        f for f in ranked if _flow_entry_is_reachable(f, flow_graph, flow_rescues)
+                    ]
+                    if len(kept) != len(ranked):
+                        # The section disappears when this empties it, and a
+                        # silently empty section is the failure the comment
+                        # below was written to end. Say how many and why.
+                        log.info(
+                            "overview_flows_dropped_unreachable",
+                            dropped=len(ranked) - len(kept),
+                            kept=len(kept),
+                        )
+                    ranked = kept
+                    for flow in ranked[:5]:
                         execution_flows_list.append(
                             {
-                                "entry_point": flow.entry_point,
-                                "score": round(flow.score, 3),
+                                "entry_point": flow.entry_point_id,
+                                "entry_point_name": flow.entry_point_name,
+                                "score": round(flow.entry_point_score, 3),
                                 "trace_length": len(flow.trace) if hasattr(flow, "trace") else 0,
                             }
                         )
-            except Exception:
-                pass
+            except Exception as exc:
+                # This was a bare ``except: pass`` reading ``flow.entry_point``
+                # and ``flow.score`` off a dataclass whose fields are
+                # ``entry_point_id`` and ``entry_point_score``. The
+                # AttributeError was swallowed, the list stayed empty, and the
+                # template's ``{% if %}`` guard dropped the section — so no
+                # overview has ever carried an execution flow. An empty
+                # section is a fine outcome; a silent one is not.
+                log.warning(
+                    "overview_execution_flows_unavailable",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
 
         return RepoOverviewContext(
-            repo_name=getattr(repo_structure, "name", "repo"),
+            # RepoStructure carries no name, so the old getattr fallback made
+            # every overview call the project "repo". The caller knows it.
+            repo_name=repo_name or getattr(repo_structure, "name", None) or "this repository",
             is_monorepo=repo_structure.is_monorepo,
             packages=repo_structure.packages,
             language_distribution=repo_structure.root_language_distribution,
             total_files=repo_structure.total_files,
             total_loc=repo_structure.total_loc,
-            entry_points=repo_structure.entry_points,
+            # Ranked, not filtered, and ranked by the helper every other
+            # orientation surface now calls so they cannot name different
+            # front doors. Why it is ranked at all is on
+            # ``orientation_entry_points``.
+            entry_points=orientation_entry_points(repo_structure),
             top_files_by_pagerank=top_files,
             circular_dependency_count=circular_count,
             communities=communities_list,
             execution_flows=execution_flows_list,
             external_systems=external_systems or [],
             decision_records=decision_records or [],
+            package_stats=package_stats,
         )
 
     # ------------------------------------------------------------------
@@ -500,27 +890,41 @@ class ContextAssembler:
         max_diagram_nodes = 50
         max_diagram_edges = 200
 
-        # Top-N nodes by PageRank (exclude external nodes)
+        # Top-N nodes by PageRank (exclude external nodes). Path breaks the
+        # tie, otherwise which 50 nodes make the cut changes between runs and
+        # the diagram is not comparable to the one it replaces.
         top_nodes = set(
             p
-            for p, _ in sorted(pagerank.items(), key=lambda x: x[1], reverse=True)[
+            for p, _ in sorted(pagerank.items(), key=lambda x: (-x[1], str(x[0])))[
                 :max_diagram_nodes
             ]
-            if not str(p).startswith("external:")
+            if not is_external(str(p))
         )
         nodes = sorted(top_nodes)
 
-        # Only edges between selected nodes
-        edges = [(src, dst) for src, dst in graph.edges() if src in top_nodes and dst in top_nodes][
-            :max_diagram_edges
-        ]
+        # Only edges between selected nodes. Ranked by the endpoints' PageRank
+        # rather than alphabetically: the cap bites on dense repos, and a plain
+        # sort would fill all 200 slots from whichever package sorts first and
+        # draw nothing from the rest of the graph. Path breaks the tie.
+        edges = sorted(
+            ((src, dst) for src, dst in graph.edges() if src in top_nodes and dst in top_nodes),
+            key=lambda e: (
+                -pagerank.get(e[0], 0.0),
+                -pagerank.get(e[1], 0.0),
+                str(e[0]),
+                str(e[1]),
+            ),
+        )[:max_diagram_edges]
 
         # Community → members mapping (top-10 communities, cap members to 5)
         raw_communities: dict[int, list[str]] = {}
         for path, cid in community.items():
-            if not path.startswith("external:"):
+            if not is_external(path):
                 raw_communities.setdefault(cid, []).append(path)
-        comm_sorted = sorted(raw_communities.items(), key=lambda x: len(x[1]), reverse=True)[:10]
+        comm_sorted = sorted(
+            ((cid, sorted(members)) for cid, members in raw_communities.items()),
+            key=lambda x: (-len(x[1]), x[0]),
+        )[:10]
         communities: dict[int, list[str]] = {cid: members[:5] for cid, members in comm_sorted}
 
         # SCC groups (only non-singleton)
@@ -587,36 +991,6 @@ class ContextAssembler:
             raw_content=raw_content,
             targets=targets,
         )
-
-    # ------------------------------------------------------------------
-    # Structural summary for large files (Phase 9 C1)
-    # ------------------------------------------------------------------
-
-    def _build_structural_summary(self, parsed: ParsedFile, source_text: str, budget: int) -> str:
-        """Build a structural outline for large files instead of raw truncation.
-
-        Includes full body for the 3 most complex symbols; signature-only for rest.
-        """
-        lines = source_text.splitlines()
-        parts = ["[Large file — structural summary mode]"]
-        top3_complex = {
-            s.name
-            for s in sorted(parsed.symbols, key=lambda s: s.complexity_estimate, reverse=True)[:3]
-        }
-
-        for sym in parsed.symbols:
-            if sym.start_line and sym.end_line and sym.name in top3_complex:
-                body = "\n".join(lines[sym.start_line - 1 : sym.end_line])
-                parts.append(
-                    f"\n# {sym.name} (full body, complexity={sym.complexity_estimate})\n{body}"
-                )
-            else:
-                parts.append(f"# {sym.signature or sym.name}")
-            if self._estimate_tokens("\n".join(parts)) >= budget:
-                parts.append("...[remaining symbols omitted]")
-                break
-
-        return self._trim_to_budget("\n".join(parts), budget)
 
     # ------------------------------------------------------------------
     # Generation depth selection (Phase 5.5)

@@ -15,14 +15,44 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 # Raw edge-type token -> the verb a reader expects on a C4 arrow.
+#
+# Every token the extractors actually emit must appear here. A missing one is
+# silent: `relation_label` falls through to "depends on", which is the label
+# reserved for a *wholly unknown* set, so a real, nameable dependency gets
+# reported as the vaguest word we have. That is what happened to `framework`
+# and `dynamic_uses`, which between them covered 1,351 of the 13,165 file-level
+# edges on a live index (10%) and rendered as "depends on" for their whole life.
+# `extends` is the token the extractors emit; `inherits` never was one.
+# Total over EdgeType, and `test_edge_verb_covers_the_vocabulary` keeps it that
+# way — the fall-through this comment describes is silent, so the only reliable
+# fix is for a missing key to fail a test rather than render as "depends on".
+# Dropped: "inherits", "references" and "contains", none of which is an edge
+# type ("contains" and "tested_by" are knowledge-graph export labels).
 _EDGE_VERB: dict[str, str] = {
     "imports": "imports",
     "dynamic_imports": "imports",
     "calls": "calls",
-    "inherits": "inherits from",
+    "extends": "inherits from",
     "implements": "implements",
+    "method_implements": "implements",
+    "dispatches_to": "dispatches to",
+    # A lazy/registry import and a framework-convention link (a test file to its
+    # conftest) are both real dependencies that no static import expresses.
+    "dynamic_uses": "uses",
+    "dynamic_url_route": "uses",
+    "framework": "uses",
+    # Symbol-level wiring; same verb as its file-level sibling on purpose.
+    "framework_binds": "uses",
+    "reads": "uses",
+    # A type reference without an import: named, but not imported.
+    "type_use": "references",
+    # A function named without being called: a dispatch-table entry, a callback
+    # field, an argument to a registration macro. Same verb as ``type_use`` for
+    # the same reason — something holds a handle to it, nothing invokes it.
     "references": "references",
-    "contains": "contains",
+    # Containment. Only reachable when the view includes symbol nodes.
+    "defines": "contains",
+    "has_method": "contains",
     "co_changes": "co-changes",
 }
 
@@ -31,9 +61,17 @@ _EDGE_VERB: dict[str, str] = {
 # surface the single highest-priority verb rather than concatenating tokens.
 _VERB_PRIORITY: tuple[str, ...] = (
     "calls",
+    # Below "calls": a pair with both holds a direct invocation, which is the
+    # more precise claim. Above the heritage verbs, because where a pair has
+    # both, the dispatch says what actually runs and "implements" only says
+    # the types line up.
+    "dispatches to",
     "inherits from",
     "implements",
     "imports",
+    # Below "imports": where a pair has both, the static import is the more
+    # precise description of the same dependency.
+    "uses",
     "references",
     "contains",
     "co-changes",

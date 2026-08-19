@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .base import iter_source_files
+from .base import select_files
 from .http.paths import (
     extract_path_from_url,
     is_unusable_consumer_path,
@@ -22,9 +22,11 @@ from .http.paths import (
 from .langs import CSHARP, PYTHON
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from repowise.core.workspace.contracts import Contract
+
+    from .base import SourceFile
 
 _log = logging.getLogger("repowise.workspace.extractors.socket")
 
@@ -141,18 +143,26 @@ def _normalize_socket_identity(raw: str, prefix: str = "") -> str | None:
 class SocketExtractor:
     """Extract socket/websocket contracts from source files."""
 
+    @classmethod
+    def source_extensions(cls) -> frozenset[str]:
+        """Every extension this extractor scans."""
+        return _EXTENSIONS
+
     def extract(
         self,
         repo_path: Path,
         repo_alias: str = "",
         exclude: Callable[[str], bool] | None = None,
+        files: Sequence[SourceFile] | None = None,
     ) -> list[Contract]:
         from repowise.core.workspace.contracts import Contract
 
         contracts: list[Contract] = []
         seen: set[tuple[str, str, str]] = set()
 
-        for rel_path, _suffix, content in iter_source_files(repo_path, _EXTENSIONS, exclude):
+        for rel_path, _suffix, content in select_files(
+            repo_path, _EXTENSIONS, exclude, files
+        ):
             for pdef in _CLIENT_PATTERNS + _PROVIDER_PATTERNS:
                 if pdef.context_regex is not None and not pdef.context_regex.search(content):
                     continue

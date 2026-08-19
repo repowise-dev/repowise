@@ -11,12 +11,12 @@ import json
 import os
 from pathlib import Path
 
-from repowise.core.distill.missed import transcript_dir_for
 from repowise.core.distill.session_model import (
     DEFAULT_MODEL,
     normalize_model_id,
     resolve_session_model,
 )
+from repowise.core.sessions import transcript_dir_for
 
 
 def _write_claude(projects_root: Path, repo_root: Path, model: str, *, mtime: float) -> Path:

@@ -10,14 +10,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select
 
-from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import Page
+from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.server.deps import (
     get_fts,
     get_vector_store,
-    resolve_session_factory,
     verify_api_key,
 )
 from repowise.server.schemas import SearchResultResponse
@@ -29,7 +26,7 @@ router = APIRouter(
 )
 
 
-def _to_response(r, det_ids: set[str]) -> SearchResultResponse:
+def _to_response(r) -> SearchResultResponse:
     """Convert a SearchResult dataclass into the API schema."""
     return SearchResultResponse(
         page_id=r.page_id,
@@ -39,31 +36,7 @@ def _to_response(r, det_ids: set[str]) -> SearchResultResponse:
         score=r.score,
         snippet=r.snippet,
         search_type=r.search_type,
-        is_deterministic=r.page_id in det_ids,
     )
-
-
-async def _deterministic_page_ids(
-    request: Request, repo_id: str | None, page_ids: list[str]
-) -> set[str]:
-    """Page ids among ``page_ids`` that are deterministic template pages.
-
-    One batch lookup against the resolved repo's DB. Best-effort: workspace
-    fan-out results whose page lives in another repo's DB simply aren't
-    flagged (the badge is a hint, not load-bearing), so a lookup miss or
-    error yields an empty set rather than failing the search.
-    """
-    if not page_ids:
-        return set()
-    try:
-        factory = resolve_session_factory(request.app.state, repo_id)
-        async with get_session(factory) as session:
-            rows = await session.execute(
-                select(Page.id).where(Page.id.in_(page_ids), Page.provider_name == "template")
-            )
-            return {row[0] for row in rows.all()}
-    except Exception:
-        return set()
 
 
 @router.get("", response_model=list[SearchResultResponse])
@@ -80,8 +53,8 @@ async def search(
             "unindexed entry (returns empty)."
         ),
     ),
-    fts=Depends(get_fts),  # noqa: B008
-    vector_store=Depends(get_vector_store),  # noqa: B008
+    fts=Depends(get_fts),
+    vector_store=Depends(get_vector_store),
 ) -> list[SearchResultResponse]:
     """Search wiki pages by semantic similarity or full-text match.
 
@@ -92,13 +65,21 @@ async def search(
       - Workspace mode without ``repo_id``: fans out across every loaded
         repo's index and merges results by score.
     """
-    if search_type == "fulltext":
+    # A keyless index has no semantic vectors, so a semantic request is served
+    # lexically rather than refused. Returning nothing would read as "not in the
+    # codebase"; returning that store's nearest neighbours would be worse still,
+    # because on it they are noise. Full-text is what the mode actually offers,
+    # and what the docs already promise it offers.
+    if search_type == "fulltext" or not store_has_semantic_vectors(vector_store):
         results = await _fulltext(request, query, limit, repo_id=repo_id, primary_fts=fts)
     else:
         results = await _semantic(request, query, limit, repo_id=repo_id, primary_vs=vector_store)
+        if results is None:
+            # The scoped repo turned out to be keyless even though the primary
+            # store is not. Serve it lexically, same as the whole-index case.
+            results = await _fulltext(request, query, limit, repo_id=repo_id, primary_fts=fts)
 
-    det_ids = await _deterministic_page_ids(request, repo_id, [r.page_id for r in results])
-    return [_to_response(r, det_ids) for r in results]
+    return [_to_response(r) for r in results]
 
 
 # ---------------------------------------------------------------------------
@@ -156,9 +137,12 @@ async def _semantic(request: Request, query: str, limit: int, *, repo_id, primar
         if repo_id.startswith("ws:"):
             return []
         vs = await resolve_repo_vector_store(request.app.state, repo_id)
-        if vs is None:
-            return await primary_vs.search(query, limit=limit)
-        return await vs.search(query, limit=limit)
+        target = primary_vs if vs is None else vs
+        # None, not [], so the caller can serve this repo lexically. An empty
+        # list here would be indistinguishable from "nothing matched".
+        if not store_has_semantic_vectors(target):
+            return None
+        return await target.search(query, limit=limit)
 
     if ws_config is None:
         # Single-repo mode. Startup resolves the primary store from the same
@@ -199,7 +183,11 @@ async def _semantic(request: Request, query: str, limit: int, *, repo_id, primar
                 vs = await resolve_repo_vector_store(request.app.state, rid)
             except Exception:
                 vs = None
-        if vs is not None:
+        # A keyless repo is skipped here rather than searched, so it reaches the
+        # FTS fallback below. Its vector leg never returns empty (mock scores
+        # sit near 0.75 for anything), so without this the noise window would
+        # permanently suppress the fallback for that repo.
+        if vs is not None and store_has_semantic_vectors(vs):
             try:
                 per_repo = await vs.search(query, limit=limit)
             except Exception:

@@ -1,7 +1,9 @@
 "use client";
 
 import * as React from "react";
-import { Trash2, ArrowRight, Sparkles } from "lucide-react";
+import { ArrowRight } from "lucide-react";
+import { AiPromptButton } from "../health/ai-prompt-button";
+import { OverviewSection } from "../overview/section";
 import { cn } from "../lib/cn";
 
 export interface SafeToDeletePileFinding {
@@ -27,8 +29,16 @@ interface SafeToDeletePileProps {
 }
 
 /**
- * Big visual card highlighting the high-confidence "safe to delete" pile —
- * the demo's punchline for dead-code: "X lines, Y files, click to clean."
+ * The "what do I delete" list: files carrying high-confidence findings, biggest
+ * pile first.
+ *
+ * It used to be a red gradient card with a trash icon in a tinted tile and the
+ * reclaimable line count set at 3xl. The lede above now leads with that same
+ * figure, so repeating it here at near-hero size gave the page two headlines
+ * that agree, and the red ground made a list of file paths read as a warning
+ * about the files rather than an offer to remove them. Rule 9: the loudest
+ * thing on screen should be the thing that responds, and what responds here is
+ * the row and the prompt button.
  */
 export function SafeToDeletePile({
   findings,
@@ -73,66 +83,45 @@ export function SafeToDeletePile({
     }
     return [...byFile.values()].sort((a, b) => b.lines - a.lines);
   }, [findings]);
-  const top = groups.slice(0, 5);
+  const top = groups.slice(0, 6);
   const moreFiles = Math.max(0, groups.length - top.length);
 
   return (
-    <div
-      className={cn(
-        "rounded-xl border border-[var(--color-error)]/30 bg-gradient-to-br from-[var(--color-error)]/10 via-[var(--color-bg-elevated)] to-[var(--color-bg-elevated)]",
-        "p-5",
-        className,
-      )}
-    >
-      <div className="flex items-start gap-4">
-        <div className="rounded-lg bg-[var(--color-error)]/15 p-2.5 text-[var(--color-error)] shrink-0">
-          <Trash2 className="h-5 w-5" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <span className="text-3xl font-semibold tabular-nums text-[var(--color-text-primary)]">
-              {lines.toLocaleString()}
-            </span>
-            <span className="text-sm text-[var(--color-text-secondary)]">lines in cleanup candidates</span>
-          </div>
-          <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-            High-confidence candidates across <span className="font-medium">{files}</span> file
-            {files === 1 ? "" : "s"} ({findings.length} finding{findings.length === 1 ? "" : "s"}) —
-            {" "}review before deleting.
-          </p>
-        </div>
-        {onPropose && findings.length > 0 && (
-          <button
-            type="button"
+    <OverviewSection
+      title="Safe to delete"
+      description={`${lines.toLocaleString()} lines across ${files.toLocaleString()} file${files === 1 ? "" : "s"} (${findings.length.toLocaleString()} finding${findings.length === 1 ? "" : "s"}) come back high confidence, with no caller we can find. Read the diff before you delete, then hand the rest to an agent.`}
+      {...(className ? { className } : {})}
+      action={
+        onPropose && findings.length > 0 ? (
+          // The canonical AI affordance, not a bespoke red button: every other
+          // "hand this to an agent" action in the dashboard is this pill, and
+          // red read as destructive on a button that only writes a prompt.
+          <AiPromptButton
+            label="Propose cleanup"
             onClick={() => onPropose(findings.map((f) => f.id))}
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-md border border-[var(--color-error)]/40 bg-[var(--color-error)]/10 px-3 py-1.5",
-              "text-xs font-medium text-[var(--color-error)] transition hover:bg-[var(--color-error)]/20",
-            )}
-          >
-            <Sparkles className="h-3.5 w-3.5" />
-            Propose cleanup
-          </button>
-        )}
-      </div>
-
+          />
+        ) : undefined
+      }
+    >
       {top.length > 0 && (
-        <ul className="mt-4 grid gap-1.5">
+        <ul className="border-t border-[var(--color-border-default)]">
           {top.map((g) => {
             const Tag = onSelect ? "button" : "div";
             return (
-              <li key={g.file_path}>
+              <li
+                key={g.file_path}
+                className="border-b border-[var(--color-border-default)]"
+              >
                 <Tag
                   type={onSelect ? "button" : undefined}
                   onClick={onSelect ? () => onSelect(g.representative) : undefined}
                   className={cn(
-                    "flex w-full items-center justify-between gap-3 rounded-md border border-transparent px-2 py-1.5",
-                    "text-left text-xs transition",
-                    onSelect && "hover:border-[var(--color-border-default)] hover:bg-[var(--color-bg-surface)]",
+                    "flex w-full items-center justify-between gap-3 py-2.5 text-left text-xs",
+                    onSelect && "hover:bg-[var(--color-bg-elevated)]",
                   )}
                 >
                   <span
-                    className="font-mono text-xs text-[var(--color-text-secondary)] truncate"
+                    className="min-w-0 truncate font-mono text-xs text-[var(--color-text-primary)]"
                     title={g.file_path}
                   >
                     {g.file_path}
@@ -150,14 +139,14 @@ export function SafeToDeletePile({
               </li>
             );
           })}
-          {moreFiles > 0 && (
-            <li className="px-2 pt-0.5 text-xs text-[var(--color-text-tertiary)]">
-              +{moreFiles.toLocaleString()} more file{moreFiles === 1 ? "" : "s"} —
-              {" "}see findings table below.
-            </li>
-          )}
         </ul>
       )}
-    </div>
+      {moreFiles > 0 && (
+        <p className="text-xs text-[var(--color-text-tertiary)]">
+          {moreFiles.toLocaleString()} more file{moreFiles === 1 ? "" : "s"} in the
+          findings table below.
+        </p>
+      )}
+    </OverviewSection>
   );
 }

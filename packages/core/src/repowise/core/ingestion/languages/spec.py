@@ -53,13 +53,15 @@ class LanguageSpec:
 
     # Filename stems that mark an executable/wiring entry point *for this
     # language only* (cross-language stems like "main"/"index" live in the
-    # registry's generic set). Union feeds the tour's entry-stem bonus.
+    # registry's generic set). The union feeds the tour's entry-stem bonus
+    # and, minus the glue stems, the traverser's is_entry_point flag.
     entry_stems: tuple[str, ...] = ()
 
     # Stems this language contributes to the traverser's is_entry_point
-    # *flag* (strong evidence — python's wsgi/asgi). Distinct from
-    # entry_stems: the flag set is deliberately tighter than the tour's
-    # weak-bonus stem set.
+    # *flag* (python's wsgi/asgi). Distinct from entry_stems in origin, not
+    # in strength: the traverser flags on the union of the two, so a stem in
+    # either field is evidence. Kept apart because the wiki's ranking reads
+    # only entry_stems.
     entry_flag_stems: tuple[str, ...] = ()
 
     # Test-shaped filename rules this language contributes to layer
@@ -119,6 +121,17 @@ class LanguageSpec:
     # -- Ecosystem -------------------------------------------------------
     entry_point_patterns: tuple[str, ...] = ()  # ("main.py", "app.py")
     manifest_files: tuple[str, ...] = ()  # ("pyproject.toml",)
+    # The subset of ``manifest_files`` that configures a build rather than
+    # declaring a distributable unit. Every name in ``manifest_files`` and not
+    # here is a *package root*: it marks its directory as a package boundary
+    # for monorepo detection and for health's ``module`` attribution. See
+    # ``LanguageRegistry.package_manifest_filenames``.
+    #
+    # Empty by default on purpose — a new language's manifests grant monorepo
+    # bucketing without a second edit, and over-inclusion only makes the
+    # rollup finer, where omission makes the language invisible. Populate it
+    # for names measured to sit in directories that are not packages.
+    build_config_manifests: tuple[str, ...] = ()  # ("vite.config.js",)
     lock_files: tuple[str, ...] = ()  # ("poetry.lock",)
     generated_suffixes: tuple[str, ...] = ()  # ("_pb2.py",)
     shebang_tokens: tuple[str, ...] = ()  # ("python",)
@@ -128,6 +141,19 @@ class LanguageSpec:
     # -- Builtins --------------------------------------------------------
     builtin_calls: frozenset[str] = field(default_factory=frozenset)
     builtin_parents: frozenset[str] = field(default_factory=frozenset)
+    # Type names that never resolve to a symbol this repo declares, so a
+    # type-use lookup for one is waste. Distinct from ``builtin_parents``,
+    # which answers the narrower question of what may sit in an extends
+    # clause; a type may be ubiquitous in parameter position without ever
+    # being inherited from.
+    builtin_types: frozenset[str] = field(default_factory=frozenset)
+    # Method and constructor names the language's own standard library owns.
+    # Read *only* by the bare-name fallback in ``CallResolver``, to stop it
+    # answering ``Ok(..)`` or ``.unwrap()`` with whatever same-named symbol the
+    # repository happens to declare once. Deliberately not ``builtin_calls``:
+    # that set is matched receiver-blind in the parser and drops the call site
+    # outright, which would also delete a real ``obj.unwrap()`` edge.
+    builtin_methods: frozenset[str] = field(default_factory=frozenset)
 
     # -- Display ---------------------------------------------------------
     color_hex: str = "#8b5cf6"  # fallback purple ("other")

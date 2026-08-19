@@ -17,6 +17,7 @@ A few notes on identity:
 
 from __future__ import annotations
 
+import contextlib
 import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -30,7 +31,6 @@ from repowise.core.ingestion.git_indexer import (
     canonicalize_author_email,
 )
 from repowise.core.persistence.models import DeadCodeFinding, GitMetadata
-
 
 # ---------------------------------------------------------------------------
 # Identity
@@ -181,10 +181,8 @@ async def aggregate_owners(
         module = _module_of(m.file_path)
         module_totals[module] += 1
         categories: dict[str, int] = {}
-        try:
+        with contextlib.suppress(json.JSONDecodeError):
             categories = json.loads(m.commit_categories_json or "{}")
-        except json.JSONDecodeError:
-            pass
 
         total_file_commits = sum(int(a.get("commit_count", 0)) for a in authors) or 1
         added = m.lines_added_90d or 0

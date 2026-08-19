@@ -1,84 +1,79 @@
-import { Users, UserCheck, AlertTriangle, Truck } from "lucide-react";
-import type { StatsHighlights } from "@repowise-dev/types/stats";
-import { StatCallout } from "@repowise-dev/ui/stats";
-import { Card, CardContent, CardHeader, CardTitle } from "@repowise-dev/ui/ui/card";
-import { formatNumber } from "@repowise-dev/ui/lib/format";
+"use client";
 
-export function PeopleTab({ data }: { data: StatsHighlights }) {
-  const { people, activity } = data;
-  const maxFiles = people.top_owners[0]?.file_count ?? 0;
-  const truck = people.truck_factor;
+import Link from "next/link";
+import { AlertTriangle, Users } from "lucide-react";
+import type { StatsHighlights } from "@repowise-dev/types/stats";
+import { ArrivalsTimeline, ChronotypeList, StatCallout } from "@repowise-dev/ui/stats";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
+import { useWeekendDays } from "@/lib/hooks/use-weekend";
+
+/**
+ * Tab 3 — the human shape of the repo.
+ *
+ * Repo-level concentration and human-interest angles only. Per-person ownership
+ * share, hotspots owned and dead-code burden all belong to the Contributors
+ * page, which opens with a distribution bar and links straight into each
+ * profile — a "top owners" list here would just be a worse copy of it, so this
+ * tab points there instead.
+ */
+export function PeopleTab({ data, repoId }: { data: StatsHighlights; repoId: string }) {
+  const { people } = data;
+  const utcMode = data.rhythm.punch_card.timezone_mode === "utc";
+  // Same preset the punch card reads, so a person's "weekend warrior" and the
+  // repo's weekend share can never disagree about which days those are.
+  const weekendDays = useWeekendDays();
 
   return (
-    <div className="space-y-5">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        {truck != null && (
-          <StatCallout
-            label="Truck factor"
-            value={truck}
-            tone={truck <= 2 ? "warning" : "default"}
-            icon={<Truck className="h-4 w-4" />}
-            sub={
-              truck === 1
-                ? "one person owns most of the code"
-                : `lose ${truck} people and >50% of files lose their owner`
-            }
-          />
-        )}
+    <div className="flex flex-col gap-8">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatCallout
           label="Contributors"
-          value={formatNumber(activity.contributor_count)}
+          value={formatNumber(people.contributor_count)}
           icon={<Users className="h-4 w-4" />}
-          sub="distinct commit authors"
+          sub={`${formatNumber(people.owner_count)} own at least one file`}
+          href={`/repos/${repoId}/owners`}
+          LinkComponent={Link}
         />
-        <StatCallout
-          label="File owners"
-          value={formatNumber(people.owner_count)}
-          icon={<UserCheck className="h-4 w-4" />}
-          sub="hold primary ownership of ≥1 file"
-        />
+        {people.truck_factor != null && (
+          <StatCallout
+            label="Truck factor"
+            value={formatNumber(people.truck_factor)}
+            icon={<AlertTriangle className="h-4 w-4" />}
+            tone={people.truck_factor <= 2 ? "warning" : "default"}
+            sub="people who together own most of the code"
+            hint="The fewest primary owners who between them hold more than half the owned files. A factor of 1 means one person owns most of the codebase."
+          />
+        )}
         <StatCallout
           label="Single-owner files"
           value={formatNumber(people.single_owner_files)}
           tone="warning"
-          icon={<AlertTriangle className="h-4 w-4" />}
-          sub="bus factor of 1 — knowledge risk"
+          sub="only one person has ever really touched them"
         />
         <StatCallout
           label="Knowledge silos"
           value={formatNumber(people.silo_count)}
-          tone="warning"
-          sub="modules >80% owned by one person"
+          tone={people.silo_count > 0 ? "warning" : "default"}
+          sub="modules where one person owns over 80%"
         />
       </div>
 
-      {people.top_owners.length > 0 && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Top contributors by files owned</CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0">
-            <ul className="space-y-2.5">
-              {people.top_owners.map((o) => (
-                <li key={o.name} className="space-y-1">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="truncate text-[var(--color-text-primary)]">{o.name}</span>
-                    <span className="tabular-nums text-[var(--color-text-secondary)]">
-                      {formatNumber(o.file_count)} files · {Math.round(o.pct * 100)}%
-                    </span>
-                  </div>
-                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-bg-muted)]">
-                    <div
-                      className="h-full rounded-full bg-[var(--color-accent-primary)]"
-                      style={{ width: `${maxFiles ? (o.file_count / maxFiles) * 100 : 0}%` }}
-                    />
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </CardContent>
-        </Card>
+      {people.chronotypes.length > 0 ? (
+        <ChronotypeList people={people.chronotypes} weekendDays={weekendDays} />
+      ) : (
+        utcMode && (
+          <p className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4 text-sm text-[var(--color-text-secondary)]">
+            Commit-hour habits need each commit&apos;s local timezone, which this index was built
+            before repowise captured. Run{" "}
+            <code className="rounded bg-[var(--color-bg-inset)] px-1.5 py-0.5 font-mono text-xs">
+              repowise update
+            </code>{" "}
+            to backfill it, no re-index required.
+          </p>
+        )
       )}
+
+      <ArrivalsTimeline arrivals={people.arrivals} />
     </div>
   );
 }

@@ -13,12 +13,21 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
+from repowise.server import mcp_server as _mcp_server
 from repowise.server.deps import resolve_request_session_factory, verify_api_key
 from repowise.server.mcp_server._tool_selection import (
     describe_tool_surface,
     set_tool_override,
 )
 from repowise.server.schemas import McpToolSurfaceResponse, UpdateMcpToolsRequest
+
+# Both endpoints below are ``async def`` and call ``describe_tool_surface``
+# synchronously, and that call imports all 17 tool modules the first time it
+# runs. Pay it here, at app import, so it lands before uvicorn starts serving
+# rather than inside the event loop on whichever request happens to be first —
+# which is where it used to land, back when importing ``_tool_selection`` pulled
+# the whole tool surface in as a side effect.
+_mcp_server.ensure_full_surface()
 
 router = APIRouter(
     prefix="/api/mcp",

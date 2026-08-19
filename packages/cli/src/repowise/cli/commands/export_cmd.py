@@ -22,16 +22,18 @@ from repowise.cli.helpers import (
 @click.option(
     "--format",
     "fmt",
-    type=click.Choice(["markdown", "html", "json"]),
+    type=click.Choice(["markdown", "html", "json", "structurizr"]),
     default="markdown",
-    help="Output format.",
+    help="Output format. 'structurizr' writes one Structurizr DSL file "
+    "describing the architecture rather than a directory of wiki pages.",
 )
 @click.option(
     "--output",
     "-o",
     "output_dir",
     default=None,
-    help="Output directory (default: .repowise/export).",
+    help="Output directory (default: .repowise/export). For --format structurizr, "
+    "a path ending in .dsl names the file itself.",
 )
 @click.option(
     "--full",
@@ -40,15 +42,62 @@ from repowise.cli.helpers import (
     default=False,
     help="Include decisions, dead code, git metadata, and provenance in JSON export.",
 )
+@click.option(
+    "--standalone",
+    is_flag=True,
+    default=False,
+    help="structurizr only: emit a complete workspace with default views instead "
+    "of a model fragment to include from your own workspace.dsl.",
+)
+@click.option(
+    "--components",
+    "include_components",
+    is_flag=True,
+    default=False,
+    help="structurizr only: include the component level (one box per directory).",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="structurizr only: overwrite the output file even if Repowise did not "
+    "write it. --standalone targets workspace.dsl, which may be your own.",
+)
+@click.option(
+    "--no-externals",
+    "include_externals",
+    flag_value=False,
+    default=True,
+    help="structurizr only: leave third-party dependencies out of the model.",
+)
 def export_command(
     path: str | None,
     fmt: str,
     output_dir: str | None,
     full_export: bool = False,
+    standalone: bool = False,
+    include_components: bool = False,
+    include_externals: bool = True,
+    force: bool = False,
 ) -> None:
-    """Export wiki pages to files."""
+    """Export wiki pages, or the architecture model, to files."""
     repo_path = resolve_repo_path(path)
     ensure_repowise_dir(repo_path)
+
+    if fmt == "structurizr":
+        from repowise.cli.commands.export_structurizr import export_structurizr
+
+        code = export_structurizr(
+            repo_path,
+            output=output_dir,
+            standalone=standalone,
+            include_components=include_components,
+            include_externals=include_externals,
+            force=force,
+        )
+        if code:
+            raise SystemExit(code)
+        return
 
     out = repo_path / ".repowise" / "export" if output_dir is None else Path(output_dir).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -74,7 +123,12 @@ def export_command(
             if repo is None:
                 await engine.dispose()
                 return []
-            pages = await list_pages(session, repo.id, limit=10000)
+            # A reader-facing export drops tombstones so it does not write a
+            # page for a file that no longer exists. --full is the archival
+            # mode, so it keeps them for a complete record.
+            pages = await list_pages(
+                session, repo.id, include_tombstones=full_export, limit=10000
+            )
 
             if full_export and fmt == "json":
                 from sqlalchemy import select
@@ -116,7 +170,7 @@ def export_command(
                     {
                         "file_path": f.file_path,
                         "symbol_name": f.symbol_name,
-                        "finding_type": f.finding_type,
+                        "kind": f.kind,
                         "confidence": f.confidence,
                         "safe_to_delete": f.safe_to_delete,
                     }
@@ -226,6 +280,12 @@ def export_command(
                     "title": page.title,
                     "content": page.content,
                     "target_path": page.target_path,
+                    # Hierarchy columns, so a JSON consumer can rebuild the
+                    # stored tree instead of re-deriving one from path strings.
+                    "parent_page_id": page.parent_page_id,
+                    "display_order": page.display_order,
+                    "section_number": page.section_number,
+                    "structural_key": page.structural_key,
                 }
                 if full_export:
                     entry["confidence"] = page.confidence

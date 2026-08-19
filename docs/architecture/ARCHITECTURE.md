@@ -14,10 +14,10 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 
 | Package | README | What it covers |
 |---------|--------|----------------|
-| `packages/core` | [`packages/core/README.md`](../../packages/core/README.md) | Ingestion, generation, persistence, providers — all key classes with code examples |
-| `packages/cli` | [`packages/cli/README.md`](../../packages/cli/README.md) | All 10 CLI commands with every flag documented |
+| `packages/core` | [`packages/core/README.md`](../../packages/core/README.md) | Ingestion, generation, persistence, providers; all key classes with code examples |
+| `packages/cli` | [`packages/cli/README.md`](../../packages/cli/README.md) | CLI entrypoints and flags; full surface in [`CLI_REFERENCE.md`](../reference/CLI_REFERENCE.md) |
 | `packages/server` | [`packages/server/README.md`](../../packages/server/README.md) | All REST API endpoints, 11 MCP tools, webhook setup, scheduler jobs |
-| `packages/web` | [`packages/web/README.md`](../../packages/web/README.md) | Every frontend file with purpose — API client, hooks, components, pages |
+| `packages/web` | [`packages/web/README.md`](../../packages/web/README.md) | Every frontend file with purpose, API client, hooks, components, pages |
 
 ---
 
@@ -27,8 +27,8 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 2. [Repository Structure](#2-repository-structure)
 3. [The Three Stores](#3-the-three-stores)
 4. [Provider Abstraction Layer](#4-provider-abstraction-layer)
-5. [Init Path — First-Time Documentation](#5-init-path--first-time-documentation)
-6. [Maintenance Path — Keeping Docs in Sync](#6-maintenance-path--keeping-docs-in-sync)
+5. [Init Path: First-Time Documentation](#5-init-path-first-time-documentation)
+6. [Maintenance Path: Keeping Docs in Sync](#6-maintenance-path-keeping-docs-in-sync)
 7. [Git Intelligence](#7-git-intelligence)
 8. [Dead Code Detection](#8-dead-code-detection)
 9. [Decision Intelligence](#9-decision-intelligence)
@@ -78,7 +78,7 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 │      Three Stores     │   │              Consumers                  │
 │                      │   │                                         │
 │  SQL (wiki pages,    │   │  Web UI     MCP Server   GitHub Action  │
-│  jobs, symbols,      │   │  (Next.js)  (10 tools)   (CI/CD)        │
+│  jobs, symbols,      │   │  (Next.js)  (11 tools)   (CI/CD)        │
 │  versions)           │   │                                         │
 │                      │   │  repowise CLI                           │
 │  Vector (LanceDB /   │   │  (init, update, watch,                  │
@@ -94,9 +94,9 @@ For per-package detail (installation, full API reference, all CLI flags, file ma
 repowise has two operational modes that share the same core engine but follow
 different strategies:
 
-- **Init** — first-time documentation of an existing codebase. May take minutes
+- **Init**: first-time documentation of an existing codebase. May take minutes
   to hours on large repos. Resumable. Supports batch API for cheaper generation.
-- **Maintenance** — incremental updates triggered by git commits. Runs in seconds
+- **Maintenance**: incremental updates triggered by git commits. Runs in seconds
   to minutes. Uses change propagation through the dependency graph to only regenerate
   what actually changed.
 
@@ -111,10 +111,10 @@ repowise/
 │   │   ├── src/repowise/core/
 │   │   │   ├── ingestion/
 │   │   │   │   ├── traverser.py        # file tree walking + gitignore + per-dir .repowiseIgnore + extra exclude patterns
-│   │   │   │   ├── parser.py           # ASTParser — one class, all languages; _extract_calls(), _extract_import_bindings()
+│   │   │   │   ├── parser.py           # ASTParser: one class, all languages; _extract_calls(), _extract_import_bindings()
 │   │   │   │   ├── parsers/            # per-language parser helpers
 │   │   │   │   ├── graph.py            # NetworkX dep graph builder; add_file(), _resolve_calls(), file_subgraph()
-│   │   │   │   ├── call_resolver.py    # CallResolver — 3-tier call resolution engine (NEW)
+│   │   │   │   ├── call_resolver.py    # CallResolver: origin-stamped call resolution
 │   │   │   │   ├── change_detector.py  # git diff + change propagation
 │   │   │   │   ├── git_indexer.py      # git history mining → git_metadata table
 │   │   │   │   ├── special_handlers.py # OpenAPI, Protobuf, GraphQL, Dockerfile, CI YAML
@@ -135,7 +135,7 @@ repowise/
 │   │   │   │       └── claude_md.py    # ClaudeMdGenerator subclass
 │   │   │   ├── pipeline/
 │   │   │   │   ├── orchestrator.py     # run_pipeline(), PipelineResult
-│   │   │   │   ├── persist.py          # persist_pipeline_result() — shared by CLI + server
+│   │   │   │   ├── persist.py          # persist_pipeline_result(): shared by CLI + server
 │   │   │   │   └── progress.py         # ProgressCallback protocol + LoggingProgressCallback
 │   │   │   ├── persistence/
 │   │   │   │   ├── models.py           # SQLAlchemy ORM models
@@ -172,9 +172,9 @@ repowise/
 │   ├── server/                 # Python: FastAPI REST API + MCP server
 │   │   └── src/repowise/server/
 │   │       ├── routers/         # FastAPI routers (repos, pages, jobs, symbols, graph, git, dead-code, decisions, search, claude-md)
-│   │       ├── mcp_server/      # MCP server package (10 tools, split into focused modules)
+│   │       ├── mcp_server/      # MCP server package (11 default tools, split into focused modules)
 │   │       ├── webhooks/        # GitHub + GitLab handlers
-│   │       ├── job_executor.py  # Background pipeline executor — bridges REST endpoints to core pipeline
+│   │       ├── job_executor.py  # Background pipeline executor: bridges REST to core pipeline
 │   │       └── scheduler.py     # APScheduler background jobs
 │   │
 │   ├── cli/                    # Python: repowise CLI (click + rich)
@@ -208,7 +208,7 @@ repowise/
 
 ## 3. The Three Stores
 
-repowise uses three separate storage systems. They are not redundant — each answers
+repowise uses three separate storage systems. They are not redundant; each answers
 a fundamentally different kind of question that the other two cannot answer efficiently.
 
 ### 3.1 SQL Store (SQLAlchemy + SQLite / PostgreSQL)
@@ -217,7 +217,7 @@ a fundamentally different kind of question that the other two cannot answer effi
 
 The source of truth for all structured data. SQLite in development and single-server
 deployments; PostgreSQL for multi-worker production deployments. The schema is identical
-for both — SQLAlchemy abstracts the difference.
+for both, SQLAlchemy abstracts the difference.
 
 Key tables:
 
@@ -244,8 +244,8 @@ If you delete the SQL store, you lose everything and must re-run `repowise init`
 repowise uses a `VectorStore` abstraction with two backends, selected automatically
 based on the configured SQL backend:
 
-**LanceDB (default — SQLite mode)**
-LanceDB runs embedded as a library — no separate server process. Data is stored in
+**LanceDB (default: SQLite mode)**
+LanceDB runs embedded as a library, no separate server process. Data is stored in
 `.repowise/lancedb/` using the Lance columnar format. This makes self-hosting trivial
 and keeps the Docker setup simple. LanceDB is significantly faster than ChromaDB on
 both write throughput (batch embedding) and ANN query latency, and it requires no
@@ -254,7 +254,7 @@ C++ build tools to install.
 **pgvector (PostgreSQL mode)**
 When repowise is configured with a PostgreSQL database, the `wiki_pages` table gains
 an `embedding vector(N)` column via the `pgvector` PostgreSQL extension. Embeddings
-are stored directly in the same SQL database — no second storage system required.
+are stored directly in the same SQL database, no second storage system required.
 Vector similarity search uses `<=>` (cosine distance) with an HNSW index. This is
 the preferred backend for multi-worker production deployments.
 
@@ -264,7 +264,7 @@ The vector store is used in two distinct ways:
 **During generation (RAG context):** When generating a wiki page for file A, the
 `ContextAssembler` queries the vector store with A's exported symbol names to find
 pages for files that A imports from. These are included as context in the generation
-prompt. Each generated page is aware of what its dependencies actually *do* —
+prompt. Each generated page is aware of what its dependencies actually *do*,
 not just their names. See [Section 5.4](#54-context-assembly) for details.
 
 **During search and MCP queries:** The `search_codebase` MCP tool and the web UI
@@ -273,9 +273,9 @@ natural language query. This is better than full-text search for questions like
 "how does authentication work?" or "where is rate limiting handled?".
 
 If you delete the vector store (LanceDB directory or pgvector embeddings), search
-quality degrades and generation context becomes shallower — rebuild it by running
+quality degrades and generation context becomes shallower; rebuild it by running
 `repowise reindex` which re-embeds all existing SQL pages into LanceDB using
-the configured embedder (Gemini or OpenAI). No LLM calls — only embedding API calls.
+the configured embedder (Gemini or OpenAI). No LLM calls, only embedding API calls.
 
 ### 3.3 Graph Store (NetworkX / SQLite-backed)
 
@@ -295,22 +295,22 @@ table includes a `kind` column (file, symbol, package, external) and `confidence
 
 The graph is used for:
 
-- **Generation ordering** — topological sort determines what to generate first
+- **Generation ordering**: topological sort determines what to generate first
   (files with no dependents get generated before files that import them, so the
   richer context is available via RAG when the importing file is generated)
-- **Change propagation** — when a file changes, walk the graph to find all
+- **Change propagation**: when a file changes, walk the graph to find all
   pages that reference its symbols and mark them as stale
-- **PageRank** — runs on `file_subgraph()` (file + package nodes only) to identify
+- **PageRank**: runs on `file_subgraph()` (file + package nodes only) to identify
   the most central files; these get "spotlight" wiki pages and richer generation prompts
-- **SCC detection** — circular dependency clusters require a special generation
-  strategy (see [Section 5.3](#53-circular-dependencies))
-- **Co-change edges** — temporal coupling from git history. Files that frequently
+- **SCC detection**: circular dependency clusters require a special generation
+  strategy (see [Section 5.3](#53-dependency-graph-construction))
+- **Co-change edges**: temporal coupling from git history. Files that frequently
   change together (but may have no import relationship) get `co_changes` edges.
   These participate in change propagation and are shown in the graph visualization
   as dashed purple lines. They do NOT affect PageRank.
-- **Dead code detection** — files with `in_degree == 0` (no importers) are
+- **Dead code detection**: files with `in_degree == 0` (no importers) are
   candidates for unreachable file detection
-- **MCP `get_dependency_path` tool** — answers "how is module A connected to module B?"
+- **MCP `get_dependency_path` tool** *(opt-in)*: answers "how is module A connected to module B?"
 - **D3 graph visualization** in the web UI
 
 If you delete the graph, repowise loses change propagation and generation ordering.
@@ -354,32 +354,25 @@ reduces the refill rate. This is transparent to all callers.
 Default limits are configured per provider in `.repowise/config.yaml` and can be
 adjusted for users with higher API tiers.
 
-### 4.2 Batch Mode (Init Only)
-
-For `repowise init`, the Anthropic provider supports the Message Batches API:
-instead of firing concurrent streaming requests, all file-page generation requests
-for a given level are submitted as a single batch, which is ~50% cheaper and
-processes asynchronously (typically within 1 hour).
-
-Batch mode is enabled by default for `repowise init` when using the Anthropic
-provider. Pass `--no-batch` to use streaming instead (faster wall-clock time,
-higher cost).
-
-### 4.3 Prompt Caching
+### 4.2 Prompt Caching
 
 For Anthropic: the `ContextAssembler` marks the system prompt + shared repository
 context with cache-control breakpoints. Across the hundreds of file-page generation
 calls during a large init, this shared prefix is only billed once. Cost reduction
 on large repos is typically 60–90%.
 
-### 4.4 Adding a Provider
+> **Note:** An older Anthropic Message Batches / `--no-batch` init path is no
+> longer part of the product. Init uses concurrent streaming requests under the
+> rate limiter; there is no `batch_mode` config key and no `--no-batch` flag.
+
+### 4.3 Adding a Provider
 
 Implement `LLMProvider`, add an entry to `LANGUAGE_CONFIGS` in `providers/registry.py`,
-and add a section to `.repowise/config.yaml`. See [Section 12](#12-adding-a-new-llm-provider).
+and add a section to `.repowise/config.yaml`. See [Section 17](#17-adding-a-new-llm-provider).
 
 ---
 
-## 5. Init Path — First-Time Documentation
+## 5. Init Path: First-Time Documentation
 
 `repowise init` runs when documenting a codebase for the first time. It is the
 expensive, one-time operation that builds the full wiki from scratch.
@@ -392,12 +385,12 @@ priority order:
 
 1. `.gitignore` (parsed with `pathspec`, not simple glob matching)
 2. Root `.repowiseIgnore` (same syntax, user-defined at repo root)
-3. **Per-directory `.repowiseIgnore`** — loaded from each directory visited during
+3. **Per-directory `.repowiseIgnore`**: loaded from each directory visited during
    the `os.walk`. Patterns are relative to the directory containing the file (like
    git's per-directory `.gitignore`). A spec per directory is loaded once and cached
    for the traversal. Example: `generated/` in `src/.repowiseIgnore` skips
    `src/generated/` without affecting other directories with the same name.
-4. **`extra_exclude_patterns`** (constructor param) — additional gitignore-style
+4. **`extra_exclude_patterns`** (constructor param): additional gitignore-style
    patterns passed at runtime from `--exclude/-x` CLI flags or
    `repo.settings["exclude_patterns"]` (set via Web UI or REST API PATCH). Applied
    to both directory pruning (entire subtree skipped) and individual file filtering.
@@ -460,16 +453,16 @@ per-language subclasses.
 
 **The `.scm` query files** use standard tree-sitter S-expression syntax with
 consistent capture name conventions across all languages:
-- `@symbol.def` — the full symbol node
-- `@symbol.name` — the name identifier
-- `@symbol.params` — parameter list
-- `@symbol.return_type` — return type annotation
-- `@symbol.docstring` — existing docstring (expanded, not repeated, by the LLM)
-- `@import.statement` — full import node
-- `@import.module` — the module being imported
+- `@symbol.def`: the full symbol node
+- `@symbol.name`: the name identifier
+- `@symbol.params`: parameter list
+- `@symbol.return_type`: return type annotation
+- `@symbol.docstring`: existing docstring (expanded, not repeated, by the LLM)
+- `@import.statement`: full import node
+- `@import.module`: the module being imported
 
 **Adding a new language** = write one `.scm` file + add one entry to `LANGUAGE_CONFIGS`.
-No changes to `ASTParser` itself. See [Section 11](#11-adding-a-new-language).
+No changes to `ASTParser` itself. See [Section 16](#16-adding-a-new-language).
 
 **Special handlers** live in `core/special_handlers/` and are separate from `ASTParser`.
 They handle file types that are not programming languages (OpenAPI specs, Dockerfiles,
@@ -482,37 +475,60 @@ instead of tree-sitter.
 `GraphBuilder` takes all `ParsedFile` outputs and builds a `networkx.DiGraph`.
 
 **Node types:**
-- `file` — every source file
-- `symbol` — every function, class, method, interface, etc. (added via `add_file()`)
-- `package` — every package/module directory
-- `external` — third-party packages (lightweight node, not fully documented)
+- `file`: every source file
+- `symbol`: every function, class, method, interface, etc. (added via `add_file()`)
+- `package`: every package/module directory
+- `external`: third-party packages (lightweight node, not fully documented)
 
-**Edge types:**
-- `imports` — file A imports from file B
-- `DEFINES` — file A defines symbol B
-- `HAS_METHOD` — class A has method B
-- `CALLS` — symbol A calls symbol B (with confidence score 0.0–1.0)
-- `inherits` — class A extends class B
-- `implements` — class A implements interface B
-- `instantiates` — code in A creates an instance of B
-- `references` — looser reference (type annotation, generic, etc.)
-- `re-exports` — A re-exports symbols from B (barrel files)
-- `inter_package` — edge crossing package boundary (monorepos)
-- `co_changes` — A and B frequently change in the same commit (from git history,
+**Edge types.** User-facing walkthrough: [docs/layers/GRAPH.md](../layers/GRAPH.md).
+`EdgeType` in `ingestion/models.py` is the source of truth, a
+closed `Literal` of 17 values, with `EDGE_TYPE_VALUES` derived from it at runtime
+and pinned by `tests/unit/ingestion/test_edge_type_vocabulary.py`. The ones whose
+meaning is easy to get wrong:
+
+- `imports`: file A imports from file B
+- `defines` / `has_method`: file A defines symbol B; class A has method B
+- `calls`: symbol A calls symbol B. Carries a confidence and a
+  `ResolutionOrigin` naming how it was resolved
+- `extends` / `implements` / `method_implements`: heritage, implementor →
+  interface
+- `dispatches_to`: base method → an implementation that *could* answer for it.
+  Points the other way from `method_implements`, and compares no signature, so it
+  is a possible dispatch target rather than a proven override
+- `references`: something holds a handle to a function (dispatch table, callback
+  field, registration macro). Not a claim that it is ever invoked
+- `framework` / `framework_binds`: framework wiring, file-level and symbol-level.
+  Deliberately never `calls`: nothing here is source the parser could have seen
+- `reads`: a data reference, file → file (C# member access). File-level only
+- `type_use`: file → file, from a constructor / method / delegate / record
+  parameter type reference. Weighted below `imports`
+- `dynamic_uses` / `dynamic_imports` / `dynamic_url_route`: dynamic-dispatch
+  hints, prefixed by kind. A consumer matching bare `"dynamic"` matches none
+- `co_changes`: A and B frequently change in the same commit (from git history,
   added by `GitIndexer` after graph construction). Weight = co-change count.
   Filtered out of PageRank but included in change propagation and visualization.
 
 **Call resolution** is handled by the `CallResolver` module (`ingestion/call_resolver.py`),
-which runs after the static import graph is built. It operates in three tiers:
+which runs after the static import graph is built. Every edge it emits is stamped
+with a `ResolutionOrigin`, a closed vocabulary of 29 values in
+`ingestion/models.py`, each carrying exactly one confidence, so the origin
+distribution and the confidence histogram are two views of the same data. The
+span runs from `same_file` and `self_scope` at 0.95, through import- and
+package-scoped origins at 0.88–0.90, down to `global_unique` at 0.50, a
+repo-wide name match, which the source comments label as a guess.
 
-1. **Same-file resolution** (confidence 0.95) — call target defined in the same file
-2. **Import-scoped resolution** (confidence 0.85–0.93) — target matched via named bindings
-   from the file's import list
-3. **Global unique match** (confidence 0.50) — target is unique across the whole repo
+Twelve of the 29 are **receiver-typing** origins: they resolve a call on a
+variable by reading the variable's declaration (a local, a parameter, an
+enclosing class's field, or a type a framework decorator imposed), then resolving
+the method on that type. Registered for Java, C#, Python, Go, Kotlin and Swift.
+Language-specific tiers live behind the `_LANGUAGE_CALL_STRATEGIES` seam, so a
+package tier can claim `pkg.Func()` before a weaker shared tier reaches it.
 
-Call sites are extracted by tree-sitter for all 14 supported languages (Python, TypeScript,
-JavaScript, Go, Rust, Java, C++, C, Kotlin, Ruby, C#, Swift, Scala, PHP) using per-language `.scm` query files. Results are stored
-as `CallSite` dataclasses and become `CALLS` edges in the graph.
+Call sites are extracted by tree-sitter for every AST-parsed language using
+per-language `.scm` query files. Results are stored as `CallSite` dataclasses and
+become `calls` edges in the graph. See
+[language-support.md](language-support.md#call-resolution) for the full
+architecture.
 
 **Named binding resolution** (`NamedBinding` dataclass in `ingestion/models.py`) ensures
 that aliased imports, barrel re-exports, and namespace imports resolve to the correct
@@ -530,13 +546,13 @@ scores.
 
 After graph construction, the builder computes:
 
-- **PageRank** — nodes with high PageRank are central and well-connected.
+- **PageRank**: nodes with high PageRank are central and well-connected.
   Used to decide generation priority and which symbols get spotlight pages.
-- **Strongly Connected Components (SCCs)** — groups of files with circular imports.
+- **Strongly Connected Components (SCCs)**: groups of files with circular imports.
   Logged as warnings. Require special generation handling (see below).
-- **Betweenness centrality** — identifies "bridge" symbols whose removal would
+- **Betweenness centrality**: identifies "bridge" symbols whose removal would
   disconnect the graph. These are the most critical to document well.
-- **Community detection (Louvain)** — discovers logical modules even when the
+- **Community detection (Louvain)**: discovers logical modules even when the
   directory structure doesn't reflect them. These communities become module pages.
 
 **Circular dependency handling:**
@@ -556,44 +572,44 @@ For repos with fewer than 30K nodes, the graph lives in memory as a NetworkX
 For repos exceeding 30K nodes (configurable via `graph_backend: sqlite`), repowise
 switches to `networkit` with SQLite backing via the `graph_nodes` and `graph_edges`
 tables. Only the subgraph needed for each operation is loaded into memory. The
-API is identical — this is transparent to all callers.
+API is identical; this is transparent to all callers.
 
 ### 5.4 Context Assembly
 
 This is the most important quality driver in the system. The `ContextAssembler`
-builds the prompt context for each generation call — it does not just dump the
+builds the prompt context for each generation call; it does not just dump the
 raw source file.
 
 For a given file page, it assembles context in this priority order (dropping
 lower-priority items if the token budget is exceeded):
 
-1. **Source code** — full source (or chunked if file is large)
-2. **Symbol signatures** — all symbols extracted from this file with their
+1. **Source code**: full source (or chunked if file is large)
+2. **Symbol signatures**: all symbols extracted from this file with their
    signatures and existing docstrings
-3. **Graph context** — PageRank score, cluster membership, which module this
+3. **Graph context**: PageRank score, cluster membership, which module this
    belongs to, entry point status
-4. **Git context** — ownership, significant commit messages explaining *why* code
+4. **Git context**: ownership, significant commit messages explaining *why* code
    evolved, hotspot/stable classification, co-change partners. This transforms
    documentation from "here is what this code does" into "here is what it does
    and why it was written this way." Git context is the last thing dropped when
-   over budget — it is more valuable than import summaries.
-5. **Import summaries** — for each file this file imports from: the summary of
+   over budget; it is more valuable than import summaries.
+5. **Import summaries**: for each file this file imports from: the summary of
    that file's already-generated wiki page (if available), or just its public
    API signatures (if not yet generated)
-6. **RAG context** — vector store similarity search (LanceDB or pgvector) using this file's top exported
+6. **RAG context**: vector store similarity search (LanceDB or pgvector) using this file's top exported
    symbols as the query. Returns the top 3 most relevant already-generated pages.
    This propagates understanding upward: `AuthService`'s page will know what
    `UserRepository` actually does, not just that it imports from it.
-7. **Co-change context** — wiki pages for co-change partners (files that change
+7. **Co-change context**: wiki pages for co-change partners (files that change
    together without an import relationship). Reveals hidden coupling.
-8. **Dead code findings** — symbols in this file flagged as unused (if any).
+8. **Dead code findings**: symbols in this file flagged as unused (if any).
    Listed in the generation prompt so the LLM notes them as cleanup candidates.
-9. **Reverse import context** — which files import *this* file, and what they
+9. **Reverse import context**: which files import *this* file, and what they
    use from it. Helps the LLM understand how this file is used in practice.
 
 Token budget: the total assembled context targets 12K tokens, leaving room for
 the generation output. Items are dropped in reverse priority order when over budget.
-The source code is never dropped — it is chunked instead if too large.
+The source code is never dropped; it is chunked instead if too large.
 
 **Large file chunking:**
 
@@ -606,7 +622,7 @@ Pages generated from chunks are tagged `chunked: true` in metadata.
 
 ### 5.5 Hierarchical Generation Order
 
-Generation must follow a strict dependency-aware order. This is not optional —
+Generation must follow a strict dependency-aware order. This is not optional,
 generating a module page before its file pages means the module page has no
 content to draw from.
 
@@ -654,13 +670,20 @@ Init on a 50K-file repo can take 30–90 minutes. A crash or network interruptio
 should not require starting over.
 
 The `JobSystem` persists checkpoint state after every completed page:
-- `checkpoint_level` — which generation level is currently active
-- `checkpoint_file_index` — position within the current level
-- `completed_page_ids` — list of already-generated page IDs
-- `failed_page_ids` — pages that failed (retried on resume)
+- `checkpoint_level`: which generation level is currently active
+- `checkpoint_file_index`: position within the current level
+- `completed_page_ids`: list of already-generated page IDs
+- `failed_page_ids`: pages that failed (retried on resume)
 
-On `repowise init --resume`, the job is loaded from the database, completed pages
-are skipped, and generation continues from the last checkpoint.
+On `repowise init --resume`, the set of already-written pages is read from the
+vector store rather than from the checkpoint, because the store is the one
+record that survives a killed process. This needs a job system and a store; with
+neither, a resumed run falls back to regenerating everything. Those page ids are
+skipped before their
+coroutine is built, so a resumed run spends nothing on them, and the match is on
+page id alone: a run resumed under a different provider still keeps what the
+previous one wrote. Persistence is told which ids were skipped so the stale-page
+sweep does not mistake "deliberately kept" for "no longer produced".
 
 `repowise init` is fully idempotent. Running it twice produces the same result.
 Running it after a partial previous run completes only the remaining pages.
@@ -670,7 +693,7 @@ Running it after a partial previous run completes only the remaining pages.
 The persistence logic for storing a `PipelineResult` into the database (graph nodes,
 edges, symbols, pages, git metadata, dead code findings, decision records) was
 extracted from the CLI's `init_cmd.py` into `core/pipeline/persist.py`. Both the
-CLI and the server's background job executor call `persist_pipeline_result()` — zero
+CLI and the server's background job executor call `persist_pipeline_result()`, zero
 duplication.
 
 FTS indexing is intentionally excluded from this function. Callers must run it
@@ -707,7 +730,7 @@ The pipeline orchestrator now keeps the event loop responsive during CPU-bound w
 
 ---
 
-## 6. Maintenance Path — Keeping Docs in Sync
+## 6. Maintenance Path: Keeping Docs in Sync
 
 `repowise update` runs after a git push (triggered by webhook, GitHub Action, or
 polling fallback). It is fast, targeted, and avoids regenerating pages that
@@ -802,7 +825,7 @@ uses a two-layer sync strategy:
 
 **Layer 1 (real-time):** GitHub/GitLab webhook → `POST /api/webhooks/github` →
 signature verification → store in `webhook_events` → enqueue `GenerationJob`.
-Response is always `200 OK` immediately — processing is async.
+Response is always `200 OK` immediately; processing is async.
 
 **Layer 2 (polling fallback):** APScheduler job runs every 15 minutes (configurable).
 Compares `repos.last_sync_commit` against actual `HEAD` via GitHub API or GitPython.
@@ -840,25 +863,28 @@ On merge, the actual incremental update runs.
 repowise mines git history to make documentation significantly richer and more useful.
 The `GitIndexer` runs once during `repowise init` (after graph construction, before
 generation) and incrementally during `repowise update`. All git features degrade
-gracefully when git metadata is unavailable — they simply skip git-enriched context.
+gracefully when git metadata is unavailable; they simply skip git-enriched context.
 
 ### 7.1 GitIndexer (`packages/core/ingestion/git_indexer.py`)
 
 The `GitIndexer` class mines git history into the `git_metadata` SQL table. For each
 tracked file, it computes:
 
-- **Commit volume** — total, last 90 days, last 30 days (churn signals)
-- **Timeline** — first and last commit dates (file age)
-- **Ownership** — primary owner from `git blame` (who wrote the most lines),
+- **Commit volume**: total, last 90 days, last 30 days (churn signals)
+- **Timeline**: first and last commit dates (file age)
+- **Ownership**: primary owner from `git blame` (who wrote the most lines),
   top 3 contributors by commit count
-- **Significant commits** — last 10 meaningful commit messages (filtered: no merges,
+- **Significant commits**: up to 50 meaningful commit messages (filtered: no merges,
   no dependency bumps, no chore/ci, messages > 20 chars). These explain *why*
   the code evolved this way and are included in generation prompts.
-- **Co-change partners** — files that changed in the same commit >= 3 times, even
+- **Co-change partners**: files that changed in the same commit >= 3 times, even
   without an import relationship. Reveals hidden structural coupling.
-- **Derived signals** — `is_hotspot` (top-quartile decayed churn AND absolute
+- **Derived signals**: `is_hotspot` (top-quartile decayed churn AND absolute
   activity floors: >= 3 commits in 90d with real line movement), `is_stable`
-  (>10 commits, 0 in 90 days), `churn_percentile` (0.0–1.0)
+  (>10 commits, 0 in 90 days), `churn_percentile` (0.0–1.0 **as stored**;
+  normalized to 0–100 at the HTTP and MCP boundaries; see
+  `code-health.md` §5.1. The one exception is `get_risk.hotspot_score`, which
+  deliberately passes the stored 0–1 through under its own name.)
 
 **Performance targets:**
 - 3,000 files, 10K commits → < 3 minutes
@@ -911,7 +937,7 @@ hotspot count, stable file count, top churn files, oldest file.
 ## 8. Dead Code Detection
 
 repowise detects unreachable files, unused exports, and zombie packages using
-graph traversal and SQL queries. No LLM calls — the analysis completes in < 10
+graph traversal and SQL queries. No LLM calls; the analysis completes in < 10
 seconds for any repo size.
 
 ### 8.1 DeadCodeAnalyzer (`packages/core/analysis/dead_code.py`)
@@ -920,25 +946,32 @@ The analyzer runs after `GitIndexer` during init (Step 3.6) and optionally durin
 `repowise update`. It produces findings with confidence scores:
 
 **Finding types:**
-- `unreachable_file` — file with `in_degree == 0`, not an entry point, test, or config
-- `unused_export` — public symbol with no incoming edges (but file IS imported)
-- `unused_internal` — private symbol with no `calls` edges from same file
-- `zombie_package` — monorepo package with no incoming `inter_package` edges
+- `unreachable_file`: file with `in_degree == 0`, not an entry point, test, or config
+- `unused_export`: public symbol with no incoming edges (but file IS imported)
+- `unused_internal`: private symbol with no `calls` edges from same file
+- `zombie_package`: monorepo package with no incoming `inter_package` edges
 
-**Confidence scoring (conservative — when in doubt, do NOT flag):**
-- Unreachable + no commits in 90d + last commit > 6 months → 1.0
-- Unreachable + no commits in 90d → 0.7
+**Confidence scoring (conservative: when in doubt, do NOT flag):**
+- Unreachable + no commits in 90d + last commit > 1 year → 1.0
+- Unreachable + no commits in 90d + last commit > 6 months → 0.9
+- Unreachable + no commits in 90d + last commit > 90 days → 0.8
+- Unreachable + no commits in 90d + file under 30 days old → 0.55
+- Unreachable + no commits in 90d, no commit date to age it by → 0.7
 - Unreachable but recently touched → 0.4
-- `safe_to_delete` only set at confidence >= 0.7, and NOT for files matching
-  dynamic patterns (`*Plugin*`, `*Handler*`, `*Adapter*`, `*Middleware*`)
+- `safe_to_delete` only set at confidence >= `SAFE_CONFIDENCE_THRESHOLD` (0.7),
+  and NOT for files matching dynamic patterns (`*Plugin*`, `*Handler*`,
+  `*Adapter*`, `*Middleware*`), and NOT for paths carrying a runtime-load risk
+  factor. The rungs above are an evidence scale, not the tier boundaries; the
+  boundaries live in `core/analysis/dead_code/risk_factors.py`
 
 **Never flagged as dead:**
 - `__init__.py` public re-exports
-- `@pytest.fixture`, `@pytest.mark.*` symbols
+- `@pytest.fixture`: `@pytest.mark.*` symbols
 - Files matching `*migrations*`, `*schema*`, `*seed*`
 - TypeScript `.d.ts` files
 - Files where `is_api_contract == True`
-- Files in `.repowise/dead_code_whitelist.txt`
+- Files named in the `whitelist` key of the analyzer's config argument (an API
+  parameter; no CLI flag or config file populates it today)
 - Symbols matching `config.dead_code.dynamic_patterns`
 
 ### 8.2 Dead Code in Generation Prompts
@@ -975,7 +1008,7 @@ dashed borders to dead code nodes.
 
 ## 9. Decision Intelligence
 
-The Decision Intelligence layer captures **architectural decisions** — the *why* behind how
+The Decision Intelligence layer captures **architectural decisions**, the *why* behind how
 the system is built, what alternatives were rejected, and what constraints exist. While documentation
 describes *what*, decisions capture *why*.
 
@@ -1005,8 +1038,8 @@ are flagged as stale.
 
 ### MCP Tools
 
-- `get_why(query?)` — three modes: natural language search over decisions, path-based lookup for decisions governing a file, or no-arg for decision health dashboard (stale decisions, ungoverned hotspots, proposed decisions needing review)
-- `get_context(targets, include?)` — includes decisions governing each target in its response
+- `get_why(query?)`: natural language search over decisions, path-based lookup for decisions governing a file, or no-arg for decision health dashboard (stale decisions, ungoverned hotspots, proposed decisions needing review)
+- `get_context(targets, include?)`: includes decisions governing each target in its response
 
 ### CLI Commands
 
@@ -1045,28 +1078,38 @@ Instead of calling 5 tools one at a time, it calls `get_context(["src/auth/servi
 
 The server is implemented using the [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
 and supports two transports:
-- **stdio** — for Claude Code, Cursor, Cline (add to their MCP config)
-- **SSE** — for web-based MCP clients (served on port 7338)
+- **stdio**: for Claude Code, Cursor, Cline (add to their MCP config)
+- **SSE**: for web-based MCP clients (served on port 7338)
 
-### Tools (9 total)
+### Tools (11 default in single-repo mode)
+
+Canonical reference: [`docs/agent/MCP_TOOLS.md`](../agent/MCP_TOOLS.md).
+A single-repo server advertises **11** tools by default (ten flagship +
+`list_repos`). Workspace mode adds `get_architecture` and `get_blast_radius`.
+Four more are registered but opt-in (`get_dependency_path`,
+`get_execution_flows`, `generate_refactoring_code`, `get_conformance`).
 
 | Tool | What it answers | When to call |
 |------|----------------|-------------|
 | `get_overview` | Architecture summary, module map, entry points. | First call when exploring an unfamiliar codebase. |
-| `get_context(targets, include?)` | Docs, ownership, history, decisions, freshness for files/modules/symbols. Pass multiple targets in one call. | When you need to understand specific code before reading or modifying it. |
-| `get_risk(targets)` | Hotspot score, dependents, co-change partners, risk summary per target. Also returns top 5 global hotspots. | Before modifying files — assess what could break. |
-| `get_why(query?)` | Three modes: NL search over decisions, path-based decisions for a file, no-arg health dashboard. | Before making architectural changes — understand existing intent. |
-| `search_codebase(query)` | Semantic search over the full wiki. Natural language. | When you don't know where something lives. |
-| `get_dependency_path(from, to)` | Connection path between two files/modules in the dependency graph. | When you need to understand how two things are connected. |
-| `get_dead_code` | Dead/unused code findings sorted by confidence and cleanup impact. | Before cleanup tasks. |
-| `get_answer` | One-call RAG: confidence-gated synthesis with cited answers and question cache. | First call on any code question — collapses search → read → reason. |
+| `get_answer` | One-call RAG: confidence-gated synthesis with cited answers. | First call on any code question. |
+| `get_context(targets, include?)` | Docs, ownership, history, decisions, freshness for files/modules/symbols. | Before reading or modifying specific code. |
 | `get_symbol` | Resolve a qualified symbol id to source body, signature, and docstring. | When the question names a specific class, function, or method. |
+| `search_codebase(query)` | Hybrid symbol / path / wiki search. | When you don't know where something lives. |
+| `get_risk(targets)` | Hotspot score, dependents, co-change partners, risk summary per target. | Before modifying indexed files. |
+| `get_change_risk(revspec?)` | Live commit / range defect score from the diff itself. | Before merging a commit or PR range. |
+| `get_why(query?)` | Architectural decisions and git archaeology. | Before making architectural changes. |
+| `get_dead_code` | Dead/unused code findings sorted by confidence. | Before cleanup tasks. |
+| `get_health` | Code-health marker scores (defect / maintainability / performance). | Self-check before a PR or refactor. |
+| `list_repos` | Repo aliases this server is serving. | Discover `repo=` targets (especially in a workspace). |
 
 ### Auto-generated Config
 
-`repowise init` automatically generates `.repowise/mcp.json` with ready-to-paste
-config blocks for Claude Code (`~/.claude/claude.json`), Cursor (`.cursor/mcp.json`),
-and Cline. This config is printed at the end of `repowise init`.
+`repowise init` registers the MCP server directly where it can: Claude Code
+(`~/.claude/settings.json`), Claude Desktop (if installed), VS Code
+(`.vscode/mcp.json`), and the repo-shared `.mcp.json`. It also writes
+`.repowise/mcp.json` for clients configured by hand. The completion panel says
+which client was wired up and how Cursor or Codex connect (`repowise mcp .`).
 
 ---
 
@@ -1077,26 +1120,26 @@ and Cline. This config is printed at the end of `repowise init`.
 Served on port `7337` alongside the web UI. All endpoints are prefixed with `/api/`.
 
 Key routers:
-- `/api/repos` — register repos, trigger sync, full-resync (now launches background pipeline jobs with concurrent-run prevention)
-- `/api/pages` — read pages, version history, force-regenerate single page
-- `/api/search` — semantic (LanceDB or pgvector) and full-text (SQLite FTS5 / PostgreSQL tsvector) search
-- `/api/jobs` — job status, SSE stream for live progress updates
-- `/api/symbols` — symbol lookup, dependency path queries
-- `/api/graph` — graph export in D3-compatible JSON format
-- `/api/webhooks/github` — GitHub webhook handler with HMAC verification
-- `/api/webhooks/gitlab` — GitLab webhook handler
-- `/api/repos/{id}/git-metadata` — per-file git metadata
-- `/api/repos/{id}/hotspots` — high-churn + high-complexity files
-- `/api/repos/{id}/ownership` — ownership breakdown (file/module/package granularity)
-- `/api/repos/{id}/co-changes` — co-change partners for a file
-- `/api/repos/{id}/git-summary` — aggregate git health signals for dashboard
-- `/api/repos/{id}/dead-code` — dead code findings (GET list, POST trigger analysis)
-- `/api/repos/{id}/dead-code/summary` — aggregate dead code stats
-- `/api/dead-code/{finding_id}` — PATCH to resolve/acknowledge findings
-- `/api/repos/{id}/claude-md` — GET preview of generated CLAUDE.md section (JSON, no disk write)
-- `/api/repos/{id}/claude-md/generate` — POST to regenerate and write CLAUDE.md to disk
-- `/health` — liveness + readiness (checks DB + provider)
-- `/metrics` — Prometheus-compatible metrics (job counts, token totals, stale count)
+- `/api/repos`: register repos, trigger sync, full-resync (now launches background pipeline jobs with concurrent-run prevention)
+- `/api/pages`: read pages, version history, force-regenerate single page
+- `/api/search`: semantic (LanceDB or pgvector) and full-text (SQLite FTS5 / PostgreSQL tsvector) search
+- `/api/jobs`: job status, SSE stream for live progress updates
+- `/api/symbols`: symbol lookup, dependency path queries
+- `/api/graph`: graph export in D3-compatible JSON format
+- `/api/webhooks/github`: GitHub webhook handler with HMAC verification
+- `/api/webhooks/gitlab`: GitLab webhook handler
+- `/api/repos/{id}/git-metadata`: per-file git metadata
+- `/api/repos/{id}/hotspots`: high-churn + high-complexity files
+- `/api/repos/{id}/ownership`: ownership breakdown (file/module/package granularity)
+- `/api/repos/{id}/co-changes`: co-change partners for a file
+- `/api/repos/{id}/git-summary`: aggregate git health signals for dashboard
+- `/api/repos/{id}/dead-code`: dead code findings (GET list, POST trigger analysis)
+- `/api/repos/{id}/dead-code/summary`: aggregate dead code stats
+- `/api/dead-code/{finding_id}`: PATCH to resolve/acknowledge findings
+- `/api/repos/{id}/claude-md`: GET preview of generated CLAUDE.md section (JSON, no disk write)
+- `/api/repos/{id}/claude-md/generate`: POST to regenerate and write CLAUDE.md to disk
+- `/health`: liveness + readiness (checks DB + provider)
+- `/metrics`: Prometheus-compatible metrics (job counts, token totals, stale count)
 
 **Server lifecycle:**
 - On startup, any jobs left in `running` state from a previous server instance are
@@ -1115,15 +1158,15 @@ Served from the same port as the API. All routes under `/`:
 |-------|---------|
 | `/` | Dashboard: all repos, recent jobs, stale page counts, token usage |
 | `/repos/[id]` | Repo layout with file tree sidebar |
-| `/repos/[id]/overview` | **Overview dashboard** — health score ring, attention panel, language donut, ownership treemap, hotspots mini, decisions timeline, module minimap, quick actions, active job banner |
+| `/repos/[id]/overview` | **Overview dashboard**: health score ring, attention panel, language donut, ownership treemap, hotspots mini, decisions timeline, module minimap, quick actions, active job banner |
 | `/repos/[id]/wiki/[...slug]` | Individual wiki page with MDX rendering |
 | `/repos/[id]/search` | Semantic search results |
 | `/repos/[id]/graph` | D3 force-directed dependency graph |
 | `/repos/[id]/symbols` | Full symbol index, sortable by PageRank |
 | `/repos/[id]/coverage` | Documentation coverage metrics |
-| `/repos/[id]/ownership` | Ownership treemap — files colored by primary owner, sized by LOC |
-| `/repos/[id]/hotspots` | Hotspot list — top 20 files with churn + complexity bars |
-| `/repos/[id]/dead-code` | Dead code report — three tabs: Files, Exports, Internals |
+| `/repos/[id]/ownership` | Ownership treemap: files colored by primary owner, sized by LOC |
+| `/repos/[id]/hotspots` | Hotspot list: top 20 files with churn + complexity bars |
+| `/repos/[id]/dead-code` | Dead code report; three tabs: Files, Exports, Internals |
 | `/repos/[id]/decisions` | Architectural decision records |
 | `/repos/[id]/chat` | Codebase chat with streaming LLM responses |
 | `/settings` | Provider config, polling interval, cascade budget |
@@ -1152,26 +1195,27 @@ file, tokens used, estimated cost, estimated time remaining).
 repowise includes an interactive chat interface that lets users ask questions about
 their codebase and receive answers grounded in the wiki, dependency graph, git
 history, and architectural decisions. The chat agent uses whichever LLM provider
-the user has configured and has access to all 11 MCP tools.
+the user has configured and has access to **7 tools** from the MCP surface
+(see [`chat.md`](chat.md), not the full 11-tool MCP default).
 
-See [`docs/CHAT.md`](CHAT.md) for the full technical reference covering the
+See [`docs/architecture/chat.md`](chat.md) for the full technical reference covering the
 backend agentic loop, SSE streaming protocol, provider abstraction extensions,
 database schema, frontend component architecture, and artifact rendering system.
 
 **Key design points:**
 
-- **Provider-agnostic** — the chat agent goes through the same provider abstraction
+- **Provider-agnostic**: the chat agent goes through the same provider abstraction
   as documentation generation. A `ChatProvider` protocol extends `BaseProvider` with
   `stream_chat()` for streaming + tool use without breaking existing callers.
-- **Tool reuse** — the 11 MCP tools are called directly as Python functions (no
+- **Tool reuse**: the 7 chat tools are called directly as Python functions (no
   subprocess round-trip). Tool schemas are defined once in `chat_tools.py` and
   fed to both the LLM and the executor.
-- **SSE streaming** — `POST /api/repos/{repo_id}/chat/messages` runs the agentic
+- **SSE streaming**: `POST /api/repos/{repo_id}/chat/messages` runs the agentic
   loop and streams back Server-Sent Events (`text_delta`, `tool_start`,
   `tool_result`, `done`, `error`).
-- **Conversation persistence** — chat history is stored in `conversations` and
+- **Conversation persistence**: chat history is stored in `conversations` and
   `chat_messages` tables, allowing replay and continuation across page refreshes.
-- **Artifact panel** — tool results with rich content (wiki pages, Mermaid diagrams,
+- **Artifact panel**: tool results with rich content (wiki pages, Mermaid diagrams,
   search results, risk reports) open in a slide-in artifact panel that reuses
   existing frontend components.
 
@@ -1209,7 +1253,7 @@ GitIndexer (if git.enabled)
        ▼
 DeadCodeAnalyzer (if dead_code.enabled)
   graph traversal + SQL: unreachable files, unused exports, zombie packages
-  pure analysis — no LLM calls, < 10 seconds
+  pure analysis, no LLM calls, < 10 seconds
        │
        ▼
 JobSystem
@@ -1232,7 +1276,7 @@ JobSystem
        │                             ▼
        │                      WikiPage stored:
        │                        → SQL (content, metadata, confidence=1.0)
-       │                        → VectorStore (LanceDB or pgvector — embedding for RAG)
+       │                        → VectorStore (LanceDB or pgvector: embedding for RAG)
        │                        → Graph (node.page_id linked)
        │
        ├── Level 2: file pages (parallel, RAG pool growing with each completed page)
@@ -1362,36 +1406,36 @@ instead of reading 40 files
 repowise offers three complementary ways to skip paths during traversal, each solving
 a different problem:
 
-1. **Root `.repowiseIgnore`** — project-wide exclusions committed to the repo (like
+1. **Root `.repowiseIgnore`**: project-wide exclusions committed to the repo (like
    `.gitignore`). Shared across all users, version-controlled.
 
-2. **Per-directory `.repowiseIgnore`** — exclusions that only apply within a subtree.
+2. **Per-directory `.repowiseIgnore`**: exclusions that only apply within a subtree.
    Lets a monorepo package owner exclude its own generated output without polluting
    the root ignore file. Patterns are relative to the directory, matching git semantics.
    Specs are loaded once per directory during `os.walk` and cached by absolute path;
    the root spec is pre-seeded in the cache to avoid reading it twice.
 
-3. **`extra_exclude_patterns` (runtime)** — patterns injected without touching any
+3. **`extra_exclude_patterns` (runtime)**: patterns injected without touching any
    file on disk: from `--exclude/-x` CLI flags (dev workflow), from
    `config.yaml exclude_patterns` (persisted per repo), or from
    `repo.settings["exclude_patterns"]` (Web UI / REST API). This lets teams configure
    exclusions through the UI without git access to the target repo.
 
-All three layers use `pathspec` with `gitwildmatch` semantics — the same library used
-for `.gitignore` parsing — so the full gitignore syntax works everywhere.
+All three layers use `pathspec` with `gitwildmatch` semantics, the same library used
+for `.gitignore` parsing, so the full gitignore syntax works everywhere.
 
 ### `save_config()` round-trips YAML, not overwrites
 
 The original `save_config()` wrote a fixed three-key file (`provider`, `model`,
-`embedder`). This meant any other keys — such as `exclude_patterns` set via the Web UI
-— would be silently dropped the next time `repowise init` ran. The updated function
+`embedder`). This meant any other keys, such as `exclude_patterns` set via the Web UI
+,  would be silently dropped the next time `repowise init` ran. The updated function
 loads the existing config, merges in the new values, then writes the result back.
 This ensures all config sources (CLI, Web UI, REST API, manual edits) coexist safely.
 
 ### One `ASTParser` class, not one per language
 
 Per-language differences live in `.scm` query files and `LANGUAGE_CONFIGS` dict entries.
-This means adding a new language requires no changes to Python business logic — just
+This means adding a new language requires no changes to Python business logic, just
 a new `.scm` file and a config entry. The `ASTParser` class itself never has
 `if lang == "python"` branches.
 
@@ -1401,13 +1445,13 @@ ChromaDB was the original choice but has notable drawbacks: slow write throughpu
 large repos, heavy C++ build dependencies (`chroma-hnswlib`), and a bloated dependency
 tree. LanceDB replaces it as the default embedded vector store:
 
-- **No build step** — pure Python wheel, no C++ compiler required on Windows
-- **Faster writes** — Lance columnar format is optimised for batch appends; embedding
+- **No build step**: pure Python wheel, no C++ compiler required on Windows
+- **Faster writes**: Lance columnar format is optimised for batch appends; embedding
   50K pages during `repowise init` is measurably faster
-- **Faster queries** — IVF-PQ and HNSW index support with sub-millisecond ANN search
-- **Simpler data model** — tables are Arrow-native; filtering by `repo_id` or `page_type`
+- **Faster queries**: IVF-PQ and HNSW index support with sub-millisecond ANN search
+- **Simpler data model**: tables are Arrow-native; filtering by `repo_id` or `page_type`
   uses SQL-style predicates alongside the vector search, no separate metadata store needed
-- **Zero server process** — same embedded story as ChromaDB: data lives in
+- **Zero server process**: same embedded story as ChromaDB: data lives in
   `.repowise/lancedb/`, no container needed
 
 When PostgreSQL is already in use (multi-worker prod), **pgvector** is preferred because
@@ -1453,7 +1497,7 @@ catches everything the cascade budget missed.
 
 ### Git metadata in generation prompts, not just for display
 
-The highest-value use of git metadata is enriching the LLM's generation context —
+The highest-value use of git metadata is enriching the LLM's generation context,
 not just showing ownership in a sidebar. By including significant commit messages
 in the prompt, the LLM can explain *why* code is structured a certain way (e.g.,
 "this was refactored in March 2024 to separate auth concerns from the request
@@ -1461,7 +1505,7 @@ pipeline"). This context is unavailable from static analysis alone.
 
 ### Co-change edges as a separate graph layer
 
-Co-change relationships are temporal coupling — they cannot be detected by AST
+Co-change relationships are temporal coupling; they cannot be detected by AST
 parsing. repowise adds them as `co_changes` edges after `GitIndexer` runs, but
 deliberately filters them out of PageRank computation (they would skew it
 artificially toward files that are often edited together for process reasons, not
@@ -1472,7 +1516,7 @@ architectural ones). They participate in change propagation and visualization on
 repowise's dead code detector errs heavily toward false negatives. `safe_to_delete`
 is set to `True` only at confidence >= 0.7 and after excluding dynamically-loaded
 patterns. Dead code analysis is pure graph traversal + SQL (no LLM calls), so it
-completes in seconds and can be re-run cheaply. repowise surfaces candidates —
+completes in seconds and can be re-run cheaply. repowise surfaces candidates,
 humans decide before deleting anything.
 
 ### Async-first throughout
@@ -1490,7 +1534,7 @@ architecture, all data sources, how the marker-merge system works, and how to ad
 support for a new editor file (cursor.md, copilot-instructions.md, etc.).
 
 **Quick summary:** repowise can generate and maintain AI-editor configuration files
-(CLAUDE.md, cursor.md, etc.) from the already-indexed codebase data — no LLM calls.
+(CLAUDE.md, cursor.md, etc.) from the already-indexed codebase data, no LLM calls.
 The system uses HTML comment markers to split the file into a user-owned section and
 a Repowise-managed section. The user section is never touched.
 
@@ -1512,11 +1556,11 @@ Key files:
 
 | File | Purpose |
 |------|---------|
-| `core/generation/editor_files/base.py` | `BaseEditorFileGenerator` — marker-merge logic shared by all editor-file generators |
-| `core/generation/editor_files/data.py` | `EditorFileData` frozen dataclass — the data contract between fetcher and template |
-| `core/generation/editor_files/fetcher.py` | `EditorFileDataFetcher` — queries DB for architecture summary, modules, hotspots, decisions |
+| `core/generation/editor_files/base.py` | `BaseEditorFileGenerator`, marker-merge logic shared by all editor-file generators |
+| `core/generation/editor_files/data.py` | `EditorFileData` frozen dataclass, the data contract between fetcher and template |
+| `core/generation/editor_files/fetcher.py` | `EditorFileDataFetcher`, queries DB for architecture summary, modules, hotspots, decisions |
 | `core/generation/editor_files/tech_stack.py` | Filesystem scan for languages, frameworks, build commands |
-| `core/generation/editor_files/claude_md.py` | `ClaudeMdGenerator` — 30-line subclass that binds filename + template |
+| `core/generation/editor_files/claude_md.py` | `ClaudeMdGenerator`, 30-line subclass that binds filename + template |
 | `core/generation/templates/claude_md.j2` | Jinja2 template for the Repowise-managed section |
 | `cli/commands/claude_md_cmd.py` | `repowise generate-claude-md` CLI command |
 | `server/routers/claude_md.py` | `GET/POST /api/repos/{id}/claude-md` REST endpoints |
@@ -1525,51 +1569,21 @@ Key files:
 
 ## 16. Adding a New Language
 
-1. **Write `packages/core/queries/<language>.scm`**
+The full recipe lives in
+**[architecture/language-support.md](language-support.md#adding-a-new-language)**,
+five required steps, three optional extractors, and three call-resolution seams,
+each with the file it registers in and what you lose by skipping it.
 
-   Use tree-sitter S-expression syntax. Follow the capture name conventions:
-   `@symbol.def`, `@symbol.name`, `@symbol.params`, `@symbol.return_type`,
-   `@symbol.docstring`, `@import.statement`, `@import.module`, `@import.names`.
+Two things worth knowing before you start:
 
-   Check the tree-sitter playground for your language's node type names:
-   `https://tree-sitter.github.io/tree-sitter/playground`
-
-2. **Add a `LanguageConfig` entry to `LANGUAGE_CONFIGS` in `parser.py`**
-
-   ```python
-   "mylang": LanguageConfig(
-       symbol_node_types={
-           "function_definition": "function",
-           "class_definition": "class",
-       },
-       import_node_types=["import_statement"],
-       export_node_types=[],
-       visibility_fn=lambda name, mods: "private" if name.startswith("_") else "public",
-       entry_point_patterns=["main.ml", "app.ml"],
-   ),
-   ```
-
-3. **Add a `LanguageSpec` to `LanguageRegistry`** in `ingestion/languages/registry.py`
-
-   This registers the language's identity data (extensions, entry points, manifest files,
-   builtin calls, heritage node types, etc.) centrally.
-
-4. **Add the grammar dependency to `pyproject.toml`**
-
-   ```toml
-   "tree-sitter-mylang>=0.23,<1",
-   ```
-
-5. **Add test files to `tests/fixtures/sample_repo/`**
-
-   At minimum: one file with a function, one with a class, one with imports.
-
-6. **(Optional) Add per-language extractors** for bindings, heritage, visibility, docstrings,
-   and a dedicated import resolver in `resolvers/mylang.py`.
-
-7. **Run `pytest tests/unit/test_parser.py -k mylang`** to verify extraction.
-
-8. **Open a PR.** That's it — no other changes needed.
+- **You never edit `parser.py` or `registry.py`.** Language identity goes in
+  `ingestion/languages/specs/<lang>.py` and is slotted into `ALL_SPECS`; parser
+  configuration goes in `ingestion/language_configs.py`. The one unavoidable
+  core edit is adding your tag to the `LanguageTag` Literal in
+  `ingestion/models.py`, which cannot be derived from runtime data.
+- **Add fixtures to `tests/fixtures/sample_repo/`**: at minimum one file with a
+  function, one with a class, and one with imports, then run
+  `pytest tests/ -k "<lang> or sample_repo" -x`.
 
 ---
 
@@ -1620,7 +1634,6 @@ model: claude-sonnet-4-5    # passed through to the provider
 embedding_provider: anthropic
 embedding_model: voyage-3
 
-batch_mode: auto             # auto | always | never
 prompt_caching: true
 
 anthropic:
@@ -1658,7 +1671,7 @@ dead_code:
   enabled: true              # detect unreachable files, unused exports, zombie packages
   detect_unreachable_files: true
   detect_unused_exports: true
-  detect_unused_internals: false   # off by default — higher false positive rate
+  detect_unused_internals: false   # off by default, higher false positive rate
   detect_zombie_packages: true
   min_confidence: 0.4
   safe_to_delete_threshold: 0.7
@@ -1669,7 +1682,6 @@ dead_code:
     - "*Middleware"
     - "register_*"
     - "on_*"
-  whitelist_file: .repowise/dead_code_whitelist.txt
   analyze_on_update: true    # re-analyze dead code on incremental updates
 
 maintenance:

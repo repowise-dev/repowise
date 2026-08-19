@@ -23,12 +23,12 @@ from ._constants import (
     _COMMIT_CATEGORIES,
     _DECISION_SIGNAL_WORDS,
     _MAX_BLAME_SIZE_BYTES,
-    _MAX_COMMIT_BODY_BYTES,
     _MAX_SIGNIFICANT_COMMITS,
     _MAX_TOP_AUTHORS,
     _PR_BODY_MARKERS,
     _PR_NUMBER_RE,
     HOTSPOT_HALFLIFE_DAYS,
+    _truncate_body,
 )
 from .enrich import detect_original_path, is_significant_commit
 from .function_blame import (
@@ -62,19 +62,30 @@ def _body_carries_decision(subject: str, body: str) -> bool:
     return any(word in blob for word in _DECISION_SIGNAL_WORDS)
 
 
-def _truncate_body(body: str) -> str:
-    """Trim *body* to the byte ceiling, never splitting a UTF-8 sequence."""
-    if not body:
-        return ""
-    encoded = body.encode("utf-8")
-    if len(encoded) <= _MAX_COMMIT_BODY_BYTES:
-        return body
-    return encoded[:_MAX_COMMIT_BODY_BYTES].decode("utf-8", errors="ignore")
-
-
 logger = structlog.get_logger(__name__)
 
-__all__ = ["index_file", "new_meta"]
+__all__ = ["DECAY_REFRESH_KEYS", "index_file", "new_meta"]
+
+# The anchor-dependent window/decay fields — the only git-metadata columns that
+# *recover* as the repo's newest-commit anchor advances (see issue #728). An
+# incremental update recomputes just these for idle (unchanged) files off the
+# repo-wide walk and persists a decay-only partial row, leaving ownership / age
+# / authorship (which need full history and are only correct from the init
+# walk) untouched. ``co_change_partners_json`` / ``change_entropy`` /
+# ``prior_defect_*`` are merged onto the metadata after the per-file pass, so
+# they refresh together with the window churn fields ``index_file`` computes.
+DECAY_REFRESH_KEYS = (
+    "commit_count_90d",
+    "commit_count_30d",
+    "lines_added_90d",
+    "lines_deleted_90d",
+    "merge_commit_count_90d",
+    "temporal_hotspot_score",
+    "prior_defect_count",
+    "prior_defect_raw_count",
+    "change_entropy",
+    "co_change_partners_json",
+)
 
 
 def new_meta(file_path: str) -> dict[str, Any]:
@@ -113,14 +124,22 @@ def new_meta(file_path: str) -> dict[str, Any]:
         # the trailing PRIOR_DEFECT_WINDOW_DAYS window (anchored to as_of_ts when
         # set, so T0 benchmark scoring stays leakage-free). Consumed by the
         # ``prior_defect`` health biomarker; mirrors the benchmark's
-        # prior-defects baseline definition (product == benchmark).
+        # prior-defects baseline definition (product == benchmark). The raw
+        # variant is the same walk before fix-shape filtering (fix_shape.py).
         "prior_defect_count": 0,
+        "prior_defect_raw_count": 0,
         # Agent provenance rollup: how much of this file's indexed history is
         # agent-attributed (local channels only — see agent_provenance module).
         # agent_authored_pct stays None when the file has no commits at all.
         "agent_commit_count": 0,
         "agent_authored_pct": None,
         "agent_tier_counts_json": "{}",
+        # Line-level agent share (agent-trace ranges[]): distinct AI-written
+        # lines + {model_id: line_count}. Merged in by the orchestrator from the
+        # repo-wide trace index (path-keyed, like co-change/prior-defects), so
+        # these stay at the default unless the repo ships .agent-trace/.
+        "agent_line_count": 0,
+        "agent_line_model_json": "{}",
         # Temporal hotspot score (exponentially decayed churn)
         "temporal_hotspot_score": 0.0,
         # Change entropy (Hassan HCM) — populated repo-wide by the co-change

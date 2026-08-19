@@ -58,6 +58,11 @@ class LanguageConfig:
     # Node types that indicate a class context (used with "nesting" mode)
     parent_class_types: frozenset[str] = field(default_factory=frozenset)
 
+    # Node types whose symbols are bodiless declarations. C/C++ headers declare
+    # what a .cpp defines, so both sides land as same-named symbols; this is
+    # what tells them apart downstream (see ``Symbol.is_declaration``).
+    declaration_node_types: frozenset[str] = field(default_factory=frozenset)
+
 
 LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     "python": LanguageConfig(
@@ -184,6 +189,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=public_by_default,
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_specifier", "struct_specifier"}),
+        declaration_node_types=frozenset({"declaration"}),
     ),
     "c": LanguageConfig(
         symbol_node_types={
@@ -200,6 +206,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=public_by_default,
         parent_extraction="none",
         parent_class_types=frozenset(),
+        declaration_node_types=frozenset({"declaration"}),
     ),
     "kotlin": LanguageConfig(
         symbol_node_types={
@@ -344,6 +351,45 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             {"class_declaration", "interface_declaration", "trait_declaration", "enum_declaration"}
         ),
     ),
+    "pascal": LanguageConfig(
+        symbol_node_types={
+            # declType wraps class/record/interface/helper/enum/set/array/alias
+            # in one node shape (see spec docstring) -- "class" is the closest
+            # single bucket, same tradeoff Go makes for `type_spec`: "struct".
+            # A real kind refinement (peek at the `type` field to distinguish
+            # class/struct/interface/enum) would need a hook parser.py doesn't
+            # currently expose per-language the way it does for Go/Kotlin --
+            # flagged as a follow-up, not attempted here.
+            "declType": "class",
+            "declProc": "function",  # signature only (interface decl / forward decl)
+            "defProc": "function",   # full definition with body
+            # Matches C#'s choice for the same concept (property_declaration ->
+            # "variable"). Rust is the one language that keeps fields under a
+            # distinct "property" kind; everywhere else a field and a callable
+            # value share "variable", which is what stops the call resolver's
+            # non-callable refusal from extending beyond Rust.
+            "declProp": "variable",
+        },
+        import_node_types=["declUses"],
+        export_node_types=[],       # Pascal has no explicit re-export syntax
+        # No pascal_visibility exists yet. Pascal visibility is per-*section*
+        # (`strict private`/`protected`/`public`/`published` governs every
+        # declaration until the next section keyword, i.e. extractors/
+        # visibility.py's per-declaration-modifier shape doesn't fit Pascal
+        # without a declSection sibling-walk). public_by_default is the same
+        # placeholder C/C++/JS/Ruby/Luau/Shell already use for real, not a
+        # Pascal-specific hack -- but it is a placeholder, not a real answer.
+        visibility_fn=public_by_default,
+        parent_extraction="nesting",
+        # NOT {"declClass", "declIntf", "declHelper"} -- see the spec docstring.
+        # ASTParser._find_parent walks ancestors checking `ancestor.type in
+        # parent_class_types` then reads `ancestor.child_by_field_name("name")`;
+        # only declType carries a name field, so pointing this at the inner
+        # class/interface/helper node would silently return no parent for every
+        # method (found by tracing _find_parent's actual implementation, not
+        # guessed).
+        parent_class_types=frozenset({"declType"}),
+    ),
     "luau": LanguageConfig(
         symbol_node_types={
             "function_declaration": "function",
@@ -368,3 +414,9 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         parent_class_types=frozenset(),
     ),
 }
+
+# An SFC's <script> block IS TypeScript, and sfc_source hands the parser a TS
+# buffer, so the TypeScript config applies verbatim. Aliasing rather than
+# copying keeps them from drifting apart.
+LANGUAGE_CONFIGS["svelte"] = LANGUAGE_CONFIGS["typescript"]
+LANGUAGE_CONFIGS["vue"] = LANGUAGE_CONFIGS["typescript"]

@@ -23,6 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
 from repowise.core.analysis.health.refactoring.rank import rank_suggestions, score
+from repowise.core.persistence import crud
+from repowise.server.deps import get_db_session, verify_api_key
 
 
 def blast_files(sug: RefactoringSuggestion) -> list[str]:
@@ -31,9 +33,6 @@ def blast_files(sug: RefactoringSuggestion) -> list[str]:
     files = (sug.blast_radius or {}).get("files")
     return [f for f in files if isinstance(f, str)] if isinstance(files, list) else []
 
-
-from repowise.core.persistence import crud
-from repowise.server.deps import get_db_session, verify_api_key
 
 router = APIRouter(
     prefix="/api/repos",
@@ -67,6 +66,19 @@ class RefactoringPlanResponse(BaseModel):
     # The unified-rank score (higher = surface sooner). Carried so the tab can
     # plot/sort without recomputing the blend client-side.
     rank_score: float = 0.0
+    # Two plot-ready figures, served rather than derived client-side.
+    #
+    # `dependents` is the file's in-degree — the same centrality the rank reads,
+    # so every type reports it the same way. The blast-radius dict was the only
+    # other source and it carries the count under `file_count`, `dependents_count`
+    # or `callers` depending on which detector wrote it, which is how one file
+    # ended up reporting two different dependent counts from two of its plans.
+    #
+    # Both default to 0 rather than being optional: a repo with no graph metrics
+    # or no health pass yet is a real state, and 0 reads as "not measured" in the
+    # same place a missing field would have.
+    dependents: int = 0
+    file_nloc: int = 0
 
 
 class RefactoringTypeCount(BaseModel):
@@ -125,7 +137,9 @@ def _row_to_suggestion(row: Any) -> RefactoringSuggestion:
 
 
 def _to_response(
-    sug: RefactoringSuggestion, centrality: dict[str, float]
+    sug: RefactoringSuggestion,
+    centrality: dict[str, float],
+    nloc: dict[str, int] | None = None,
 ) -> RefactoringPlanResponse:
     return RefactoringPlanResponse(
         id=getattr(sug, "id", ""),
@@ -142,7 +156,16 @@ def _to_response(
         confidence=sug.confidence,
         source_biomarker=sug.source_biomarker,
         rank_score=round(score(sug, centrality), 4),
+        dependents=int(centrality.get(sug.file_path, 0.0)),
+        file_nloc=int((nloc or {}).get(sug.file_path, 0)),
     )
+
+
+async def _nloc_map(session: AsyncSession, repo_id: str) -> dict[str, int]:
+    """File-path → line count, from the health pass. Empty when no health
+    snapshot exists yet, which leaves every plan's ``file_nloc`` at 0."""
+    metrics = await crud.get_health_metrics(session, repo_id)
+    return {m.file_path: int(m.nloc or 0) for m in metrics}
 
 
 async def _centrality_map(session: AsyncSession, repo_id: str) -> dict[str, float]:
@@ -167,9 +190,7 @@ async def get_refactoring_targets(
         description="Filter to one type: extract_class | extract_helper | move_method | break_cycle",
     ),
     min_confidence: str | None = Query(None, description="low | medium | high"),
-    file_path: str | None = Query(
-        None, description="Filter plans to one repo-relative file path"
-    ),
+    file_path: str | None = Query(None, description="Filter plans to one repo-relative file path"),
     session: AsyncSession = Depends(get_db_session),
 ) -> RefactoringTargetsResponse:
     """Ranked refactoring plans for the repo, filterable by type, confidence,
@@ -181,6 +202,7 @@ async def get_refactoring_targets(
     under a confidence filter.
     """
     centrality = await _centrality_map(session, repo_id)
+    nloc = await _nloc_map(session, repo_id)
 
     # Summary is computed over the unfiltered-by-type set so the chips can show
     # every type's count even while one type is selected.
@@ -209,7 +231,7 @@ async def get_refactoring_targets(
     ranked = rank_suggestions(suggestions, centrality=centrality)
     return RefactoringTargetsResponse(
         summary=summary,
-        plans=[_to_response(s, centrality) for s in ranked],
+        plans=[_to_response(s, centrality, nloc) for s in ranked],
     )
 
 
@@ -332,10 +354,22 @@ async def get_refactoring_plan(
     for path in files:
         degrees = await crud.get_node_degree_counts(session, repo_id, path)
         centrality[path] = float(degrees.get("in_degree") or 0)
+    # The list endpoint reads in-degree from the materialized `graph_metrics`
+    # snapshot; the loop above counts live edges. The two can disagree, and a
+    # plan whose `dependents` changed between the row you clicked and the panel
+    # that opened is the bug this field exists to end. The snapshot wins for the
+    # plan's own file; edge counts still serve the blast-file caller rollup,
+    # which is a different question.
+    metrics = await crud.get_graph_metrics(session, repo_id)
+    snapshot = metrics.get(sug.file_path)
+    if snapshot is not None and snapshot.get("in_degree") is not None:
+        centrality[sug.file_path] = float(snapshot["in_degree"])
     # Enrich the blast radius the same way the ranking does, so the detail view
     # carries the caller rollup the list ranked on.
     rank_suggestions([sug], centrality=centrality)
-    return _to_response(sug, centrality)
+    metrics = await crud.get_health_metrics(session, repo_id, file_paths=[sug.file_path])
+    nloc = {m.file_path: int(m.nloc or 0) for m in metrics}
+    return _to_response(sug, centrality, nloc)
 
 
 # ---------------------------------------------------------------------------

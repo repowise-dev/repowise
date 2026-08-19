@@ -6,6 +6,7 @@ import type {
   HealthOverviewResponse,
   HealthTrendResponse,
 } from "@repowise-dev/types/health";
+import { OVERLAY_SPECS } from "@repowise-dev/ui/health/code-health-map";
 import type { WebviewHost } from "../../runtime/rpc";
 import { App } from "./App";
 
@@ -57,6 +58,18 @@ const files: HealthFilesResponse = {
       nloc: 320,
       has_test_file: false,
       line_coverage_pct: 12,
+      module: "core",
+    },
+    // 7.6 is the score the old local threshold got wrong: it called anything
+    // at or above 7.5 healthy-green while the map beside it painted amber.
+    {
+      file_path: "src/mid.py",
+      score: 7.6,
+      max_ccn: 9,
+      max_nesting: 2,
+      nloc: 140,
+      has_test_file: true,
+      line_coverage_pct: 71,
       module: "core",
     },
   ],
@@ -123,7 +136,7 @@ function makeHost(): { host: WebviewHost; openFile: ReturnType<typeof vi.fn> } {
 afterEach(cleanup);
 
 describe("Health dashboard", () => {
-  it("renders the KPI header and the map section from host data", async () => {
+  it("renders the lede, the map section and the trend from host data", async () => {
     const { host } = makeHost();
     render(
       <App
@@ -134,16 +147,41 @@ describe("Health dashboard", () => {
       />,
     );
 
-    // KPI header: the three co-equal signal tiles.
+    // The lede leads with the defect score, as the web code-health page does.
     expect(await screen.findByText("Defect risk")).toBeTruthy();
-    expect(screen.getByText("Maintainability")).toBeTruthy();
-    expect(screen.getByText("Performance")).toBeTruthy();
+    // The figure, and again inside the sentence that makes it mean something.
+    expect(screen.getAllByText("7.4").length).toBeGreaterThan(0);
 
-    // The map is the hero section.
+    // The map is the page spine; trend sits under it.
     expect(screen.getByText("Code health map")).toBeTruthy();
+    expect(screen.getByText("Trend")).toBeTruthy();
 
     // Repo identity is surfaced in the header.
     expect(screen.getByText("demo-repo")).toBeTruthy();
+  });
+
+  it("paints a focused file's score the colour the map paints the same file", async () => {
+    const { host } = makeHost();
+    render(
+      <App
+        host={host}
+        repo={{ id: "r1", name: "demo-repo", headCommit: null, defaultBranch: "main" }}
+        params={{ selectPath: "src/mid.py" }}
+        refreshToken={0}
+      />,
+    );
+
+    const figure = await screen.findByText("7.6");
+    const mapFill = OVERLAY_SPECS.health.fill(
+      files.files.find((f) => f.file_path === "src/mid.py")!,
+    );
+
+    // The contradiction this replaced: the panel called 7.6 green while the
+    // canvas beside it coloured the same node amber. A passing render test
+    // would not have caught that, so assert against the map's own fill table
+    // rather than against a colour written out here a third time.
+    expect(mapFill).toBe("var(--color-caution)");
+    expect(figure.className).toContain(mapFill);
   });
 
   it("shows an error panel when the host fails", async () => {

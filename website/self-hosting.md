@@ -100,6 +100,7 @@ ANTHROPIC_API_KEY=sk-ant-... docker compose up
 | `REPOWISE_PROVIDER` | auto | Override provider detection |
 | `REPOWISE_DB_URL` | SQLite (`.repowise/wiki.db`) | PostgreSQL connection string |
 | `REPOWISE_HOST` | `127.0.0.1` | API server bind host |
+| `REPOWISE_API_KEY` | — | Bearer token for the API. Required to serve callers on other hosts; without it requests from off-host are refused |
 | `REPOWISE_PORT` | `7337` | API server port |
 | `REPOWISE_MCP_PORT` | `7338` | MCP SSE server port |
 
@@ -126,14 +127,14 @@ repowise serve
 
 ## Running in CI
 
-Use `--index-only` for CI pipelines that don't need full LLM documentation — just analysis signals:
+Use `--no-prose` for CI pipelines that don't need model-written prose, just the analysis signals and a structural wiki:
 
 ```yaml
 # GitHub Actions example
 - name: Index codebase
   run: |
     pip install repowise
-    repowise init --index-only --yes
+    repowise init --no-prose --yes
 
 - name: Check dead code
   run: repowise dead-code --safe-only --format json > dead-code-report.json
@@ -243,4 +244,4 @@ alembic upgrade head
 | Node.js | 20+ (for web UI without Docker) |
 | Docker | Any version (alternative to Node.js) |
 | PostgreSQL | 14+ (optional, SQLite is the default) |
-| LLM API key | Anthropic, OpenAI, Gemini, or Ollama (not needed for `--index-only`) |
+| LLM API key | Anthropic, OpenAI, Gemini, or Ollama (not needed for `--no-prose`) |

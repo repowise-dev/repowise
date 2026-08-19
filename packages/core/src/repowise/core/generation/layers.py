@@ -20,11 +20,14 @@ strings and edge tuples, which keeps them trivially unit-testable.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from pathlib import PurePosixPath
 
+from repowise.core.ids import is_external
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from repowise.core.test_paths import is_test_related_path
 
 # ---------------------------------------------------------------------------
 # Directory → layer hint table. Each canonical layer maps to the
@@ -32,8 +35,6 @@ from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTR
 # file is assigned the layer of the first matching path segment, scanning
 # from the deepest segment outward (the closest directory wins).
 # ---------------------------------------------------------------------------
-
-_TEST_DIR_TOKENS = frozenset({"__tests__", "test", "tests", "spec", "specs", "e2e"})
 
 _LAYER_HINTS: tuple[tuple[str, frozenset[str]], ...] = (
     ("CLI", frozenset({"cli", "commands", "cmd", "cli_commands"})),
@@ -44,7 +45,6 @@ _LAYER_HINTS: tuple[tuple[str, frozenset[str]], ...] = (
     ("Middleware", frozenset({"middleware", "plugins", "interceptors", "guards"})),
     ("Utility", frozenset({"utils", "helpers", "common", "shared", "tools", "util"})),
     ("Config", frozenset({"config", "constants", "env", "settings", "conf"})),
-    ("Test", _TEST_DIR_TOKENS),
     ("Types", frozenset({"types", "interfaces", "schemas", "contracts", "dtos", "typings"})),
 )
 
@@ -55,89 +55,11 @@ _LAYER_HINTS: tuple[tuple[str, frozenset[str]], ...] = (
 # and pinned after the runtime layers instead.
 ADJACENT_LAYERS: frozenset[str] = frozenset({"Test"})
 
-# Test-dir tokens that also name non-test directories in the wild ("spec(s)" =
-# specifications, OpenAPI specs, language specs, …). These assign the Test
-# layer only when the *file* corroborates; otherwise the scan continues
-# outward to the next matching segment.
-_AMBIGUOUS_TEST_DIR_TOKENS: frozenset[str] = frozenset({"spec", "specs"})
-
-# Filename shapes that mark a test on their own (pytest, Go, Jest/Vitest,
-# RSpec/minitest fixtures, …). Derived from the language registry — each
-# language declares its own conventions on its spec; the union applies
-# globally here (parity with the historical hard-coded tuples is pinned by
-# tests/unit/ingestion/test_language_capabilities.py).
-_TEST_FILE_STEM_PREFIXES = _LANG_REGISTRY.test_stem_prefixes()
-_TEST_FILE_STEM_SUFFIXES = _LANG_REGISTRY.test_stem_suffixes()
-_TEST_FILE_INFIXES = _LANG_REGISTRY.test_infixes()
-_TEST_FIXTURE_STEMS = _LANG_REGISTRY.test_fixture_stems()
-
-# Case-sensitive camel-boundary suffix patterns (FooTest.java, BarSpec.scala),
-# keyed by extension so each language's convention applies only to its own
-# files (polyglot fairness). The lowercase-boundary lookbehind keeps
-# `latest.java`, `contest.cs`, and bare `Test.java` out — conventions match
-# with their own case sensitivity.
-_TEST_CAMEL_RES = _LANG_REGISTRY.camel_test_res_by_extension()
-
-# Multi-segment test roots (src/it/java) and case-sensitive test-project dir
-# suffixes (.NET sibling Foo.Tests/ projects). Both are unambiguous — like
-# tests/ and __tests__/, they mark any file beneath them.
-# A ``*``-segment form ("src/*Test") matches a Gradle source-set directory:
-# the literal segment(s) match lowercased, the ``*<Suffix>`` segment matches
-# the original-case dir name by proper suffix (src/jvmTest, src/commonTest,
-# src/integrationTest, …).
-_TEST_DIR_PATHS: tuple[tuple[str, ...], ...] = tuple(
-    tuple(p.split("/")) for p in _LANG_REGISTRY.test_dir_paths() if "*" not in p
-)
-_TEST_DIR_WILDCARDS: tuple[tuple[str, str], ...] = tuple(
-    (p.split("/")[0], p.split("/")[1].lstrip("*"))
-    for p in _LANG_REGISTRY.test_dir_paths()
-    if "*" in p
-)
-_TEST_DIR_SUFFIXES = _LANG_REGISTRY.test_dir_suffixes()
-# Per-language unambiguous test-dir tokens: ruby's spec/ needs no filename
-# corroboration — a Ruby file under spec/ is RSpec material whatever its
-# name (support helpers, vendored fixtures).
-_LANG_TEST_DIR_TOKENS = _LANG_REGISTRY.test_dir_tokens_by_language()
-
-
-def _is_test_file_name(filename: str) -> bool:
-    """Whether *filename* alone marks a test (test_x.py, x_test.go, x.spec.ts, …)."""
-    name = filename.lower()
-    stem = PurePosixPath(name).stem
-    if (
-        stem in _TEST_FIXTURE_STEMS
-        or stem.startswith(_TEST_FILE_STEM_PREFIXES)
-        or stem.endswith(_TEST_FILE_STEM_SUFFIXES)
-        or any(m in name for m in _TEST_FILE_INFIXES)
-    ):
-        return True
-    camel_re = _TEST_CAMEL_RES.get(PurePosixPath(filename).suffix.lower())
-    return camel_re is not None and camel_re.search(PurePosixPath(filename).stem) is not None
-
-
-def _is_test_dir_path(segments: list[str], original_segments: list[str]) -> bool:
-    """Whether the directory path itself is an unambiguous test root.
-
-    *segments* are lowercased dir names, *original_segments* preserve case
-    for the case-sensitive project-dir suffix rule (``Foo.Tests/``).
-    """
-    for needle in _TEST_DIR_PATHS:
-        span = len(needle)
-        if span <= len(segments) and any(
-            tuple(segments[i : i + span]) == needle
-            for i in range(len(segments) - span + 1)
-        ):
-            return True
-    for prefix_seg, camel_sfx in _TEST_DIR_WILDCARDS:
-        for i in range(len(segments) - 1):
-            nxt = original_segments[i + 1]
-            if (
-                segments[i] == prefix_seg
-                and nxt.endswith(camel_sfx)
-                and len(nxt) > len(camel_sfx)
-            ):
-                return True
-    return any(seg.endswith(_TEST_DIR_SUFFIXES) for seg in original_segments)
+# Every test convention this module used to carry - registry-derived filename
+# shapes, camel-boundary suffixes, multi-segment roots, the ambiguous `spec/`
+# rule - now lives in ``core.test_paths``, which answers the same question for
+# ingestion and for the MCP tools (#1103). The table above no longer carries a
+# Test row: the check runs ahead of it, so the row was unreachable.
 
 
 # Per-language layer hints (they fire only for files of the
@@ -259,6 +181,34 @@ _CANONICAL_RANK: dict[str, int] = {
 _PINNED_AFTER_RUNTIME: frozenset[str] = ADJACENT_LAYERS | {DOCS_TOOLING_LAYER}
 
 
+def layer_key(layer: str) -> str:
+    """Normalise a layer to its stable slug, from either spelling.
+
+    Callers hand us one of two things: a canonical heuristic name from
+    :func:`infer_layer` ("UI", "Docs & Tooling") or a curated layer id
+    ("layer:ui"). Both must rank identically, because the curated id *is*
+    ``layer:`` plus the slug of the heuristic name. See ``kg_curation`` where the
+    id is minted. Normalising at lookup lets ordering key on the stable id
+    without a second rank table, and keeps older callers passing names working.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", layer.lower().strip()).strip("-")
+    return slug.removeprefix("layer-") or "unknown"
+
+
+_PINNED_KEYS: frozenset[str] = frozenset(layer_key(la) for la in _PINNED_AFTER_RUNTIME)
+_CANONICAL_RANK_BY_KEY: dict[str, int] = {
+    layer_key(name): rank for name, rank in _CANONICAL_RANK.items()
+}
+
+
+def _is_pinned(layer: str) -> bool:
+    return layer_key(layer) in _PINNED_KEYS
+
+
+def _canonical_rank(layer: str) -> int:
+    return _CANONICAL_RANK_BY_KEY.get(layer_key(layer), len(_CANONICAL_RANK))
+
+
 def infer_layer(path: str, language: str | None = None) -> str:
     """Return the architectural layer name for *path*.
 
@@ -280,27 +230,12 @@ def infer_layer(path: str, language: str | None = None) -> str:
     """
     original_parts = list(PurePosixPath(path).parts)
     parts = [s.lower() for s in original_parts]
-    # Original case is preserved for the case-sensitive rules (camel-suffix
-    # filenames, .NET ``Foo.Tests/`` project dirs).
-    filename = original_parts[-1] if original_parts else ""
     segments = parts[:-1]  # drop filename
 
-    if _is_test_file_name(filename):
-        return "Test"
-
-    lang_test_tokens = _LANG_TEST_DIR_TOKENS.get((language or "").lower(), frozenset())
-    for seg in segments:
-        if seg not in _TEST_DIR_TOKENS:
-            continue
-        if (
-            seg in _AMBIGUOUS_TEST_DIR_TOKENS
-            and seg not in lang_test_tokens
-            and not _is_test_file_name(filename)
-        ):
-            continue  # "spec(s)/" without a test-shaped file: not a test root
-        return "Test"
-
-    if _is_test_dir_path(segments, original_parts[:-1]):
+    # Checked before the hint table below, and deliberately: that table scans
+    # deepest-segment-outward, so ``tests/utils/foo.py`` would answer "Utility".
+    # A test is a test wherever in the path the marker sits.
+    if is_test_related_path(path, language):
         return "Test"
 
     # Repo-root dot-directories (.github, .agents, .claude, .vscode, …) hold
@@ -329,8 +264,6 @@ def infer_layer(path: str, language: str | None = None) -> str:
     for i in range(len(segments) - 1, -1, -1):
         seg = segments[i]
         for layer_name, tokens in _LAYER_HINTS:
-            if layer_name == "Test":
-                continue  # handled above
             if seg in tokens:
                 return layer_name
         if token_hints and seg in token_hints:
@@ -365,13 +298,13 @@ def layer_order_basis(
     order — no edge supports it.
     """
     for src, dst in import_edges:
-        if src.startswith("external:") or dst.startswith("external:"):
+        if is_external(src) or is_external(dst):
             continue
         ls = file_layers.get(src)
         ld = file_layers.get(dst)
         if not ls or not ld or ls == ld:
             continue
-        if ls in _PINNED_AFTER_RUNTIME or ld in _PINNED_AFTER_RUNTIME:
+        if _is_pinned(ls) or _is_pinned(ld):
             continue
         return "imports"
     return "canonical"
@@ -408,19 +341,19 @@ def compute_layer_order(
     if len(layers) <= 1:
         return layers
 
-    runtime = [layer for layer in layers if layer not in _PINNED_AFTER_RUNTIME]
-    adjacent = [layer for layer in layers if layer in _PINNED_AFTER_RUNTIME]
+    runtime = [layer for layer in layers if not _is_pinned(layer)]
+    adjacent = [layer for layer in layers if _is_pinned(layer)]
 
     out_deg: dict[str, int] = defaultdict(int)  # edges leaving the layer
     in_deg: dict[str, int] = defaultdict(int)  # edges entering the layer
     for src, dst in import_edges:
-        if src.startswith("external:") or dst.startswith("external:"):
+        if is_external(src) or is_external(dst):
             continue
         ls = file_layers.get(src)
         ld = file_layers.get(dst)
         if not ls or not ld or ls == ld:
             continue
-        if ls in _PINNED_AFTER_RUNTIME or ld in _PINNED_AFTER_RUNTIME:
+        if _is_pinned(ls) or _is_pinned(ld):
             continue
         out_deg[ls] += 1
         in_deg[ld] += 1
@@ -429,8 +362,8 @@ def compute_layer_order(
         # Net "imported-ness": more incoming than outgoing → foundational →
         # sorts later (bottom). Negate out so consumers float to the top.
         net = in_deg[layer] - out_deg[layer]
-        return (net, _CANONICAL_RANK.get(layer, len(_CANONICAL_RANK)))
+        return (net, _canonical_rank(layer))
 
     ordered = sorted(runtime, key=sort_key)
-    ordered += sorted(adjacent, key=lambda la: _CANONICAL_RANK.get(la, len(_CANONICAL_RANK)))
+    ordered += sorted(adjacent, key=_canonical_rank)
     return ordered

@@ -58,7 +58,7 @@ Interactive React Flow graph with ELK layout engine. Supports five view modes:
 
 Three color modes: **Language** (per-language coloring), **Community** (Leiden community clusters with real labels from analysis), **Risk** (churn-based).
 
-Features pan/zoom, minimap, path finder for dependency chains, community detail panel (click any node in community mode to see members, cohesion, and neighboring communities with cross-edge counts), and URL param support for deep-linking color modes.
+Features pan/zoom, path finder for dependency chains, community detail panel (click any node in community mode to see members, cohesion, and neighboring communities with cross-edge counts), and URL param support for deep-linking color modes.
 
 ### Search (`/repos/[id]/search`)
 
@@ -149,7 +149,7 @@ Organized by domain — `repos.ts`, `pages.ts`, `graph.ts`, `search.ts`, `symbol
 
 | Hook | Purpose |
 |------|---------|
-| `useRepo`, `useRepos` | SWR wrappers for repository data with 30s refresh |
+| `useRepo` | SWR wrapper for repository data with 30s refresh |
 | `usePage`, `usePageVersions` | Page content and version history |
 | `useSearch` | Debounced search (300ms, min 2 chars) |
 | `useGraph` (+ variants) | Graph data with stable caching (no revalidate on focus) |

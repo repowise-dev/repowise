@@ -1,9 +1,16 @@
 """AI editor setup orchestration for repowise init.
 
 The indexing command should not know the details of each editor's config files,
-global settings, or managed instruction files.  This module keeps that product
-setup layer behind a small integration interface; concrete editor integrations
-live in ``repowise.cli.editor_integrations``.
+global settings, or managed instruction files. This module keeps that product
+setup layer behind an integration interface; concrete editor integrations live
+in ``repowise.cli.editor_integrations`` and the config writes they drive live in
+``repowise.cli.agent_targets``.
+
+The interface itself is no longer declared here. It is
+:class:`~repowise.cli.agent_targets.types.InstallLifecycle`, next to the
+:class:`~repowise.cli.agent_targets.types.AgentTarget` descriptor whose surface
+it is a subset of — one home for integration protocols rather than two that
+drift.
 """
 
 from __future__ import annotations
@@ -12,17 +19,34 @@ import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
+
+from repowise.cli.agent_targets.types import InstallLifecycle
 
 # When set (truthy), `repowise init` skips registering MCP servers / hooks in
 # the user's *global* editor config (~/.claude/settings.json, Claude Desktop).
 # Intended for headless / CI / benchmark indexing, where indexing many repos —
 # or transient git worktrees — must not mutate the developer's global config or
 # repoint the single global "repowise" MCP entry at a path that will be deleted.
+# `init --no-editor-setup` is the interactive spelling of the same switch.
 _SKIP_EDITOR_SETUP_ENV = "REPOWISE_SKIP_EDITOR_SETUP"
 
 
-def _editor_setup_disabled() -> bool:
+def is_editor_setup_disabled(no_editor_setup: bool = False) -> bool:
+    """Whether global editor registration should be skipped for this run.
+
+    Disabled when ``init --no-editor-setup`` was passed *or* the
+    ``REPOWISE_SKIP_EDITOR_SETUP`` env var is set to anything but an explicit
+    off value. The flag never re-enables what the env var turned off. It is
+    per-run and never persisted to config, so a later ``init`` without it
+    registers normally.
+
+    Named with the ``is_`` prefix to stay distinct from
+    :attr:`EditorSetupOutcome.editor_setup_disabled`, which records the same
+    fact for one finished run.
+    """
+    if no_editor_setup:
+        return True
     return os.environ.get(_SKIP_EDITOR_SETUP_ENV, "").strip().lower() not in (
         "",
         "0",
@@ -32,11 +56,87 @@ def _editor_setup_disabled() -> bool:
 
 
 @dataclass(frozen=True)
+class EditorSetupOutcome:
+    """What editor setup actually ended up doing, for the completion panel.
+
+    Snapshotted once at the authoritative moment — after client registration
+    and the interactive hook offers have run — so the "what's next" panel can
+    react to reality instead of guessing. Every field is a plain fact the panel
+    turns into a suggestion (or stays quiet about).
+    """
+
+    #: repowise registered a Claude Code MCP entry this run (init always does,
+    #: unless setup was skipped for a headless/CI run or by --no-editor-setup).
+    claude_code_connected: bool = False
+    #: the git post-commit auto-sync hook is present for this repo.
+    autosync_hook_installed: bool = False
+    #: the Claude Code distill command-rewrite hook is present (user-level).
+    rewrite_hook_installed: bool = False
+    #: the run could prompt (a TTY, not ``--yes``); when False the interactive
+    #: hook offers were skipped, so the panel is the only place to surface them.
+    interactive: bool = False
+    #: no prior index existed before this run (first-time onboarding).
+    first_index: bool = True
+    #: editor setup was turned off for this run — via --no-editor-setup or the
+    #: REPOWISE_SKIP_EDITOR_SETUP env var (CI/benchmark) — so nothing was wired up.
+    editor_setup_disabled: bool = False
+
+
+def detect_editor_setup_outcome(
+    repo_path: Path,
+    *,
+    interactive: bool,
+    first_index: bool,
+    no_editor_setup: bool = False,
+) -> EditorSetupOutcome:
+    """Read the ground-truth editor-setup state for the completion panel.
+
+    Called after registration and the hook offers, so what it reads is final.
+    Every probe is a cheap local file read and is defensive: a failure degrades
+    to "not set up" rather than crashing ``init``.
+    """
+    disabled = is_editor_setup_disabled(no_editor_setup)
+
+    autosync = False
+    try:
+        from repowise.cli.hooks import status as _hook_status
+
+        autosync = _hook_status(repo_path) == "installed"
+    except Exception:
+        pass
+
+    # The distill rewrite hook is per-agent. Treat it as present when any agent
+    # surface has it (Claude Code always, Codex only when detected), mirroring
+    # `repowise hook rewrite status`, so a Codex-only user who set it up on
+    # Codex is never nagged to install it again.
+    rewrite = False
+    try:
+        from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
+        from repowise.cli.agent_adapters.codex import CodexAdapter
+
+        surfaces = [ClaudeCodeAdapter()]
+        codex = CodexAdapter()
+        if codex.detect():
+            surfaces.append(codex)
+        rewrite = any(surface.rewrite_hook_installed() for surface in surfaces)
+    except Exception:
+        pass
+
+    return EditorSetupOutcome(
+        claude_code_connected=not disabled,
+        autosync_hook_installed=autosync,
+        rewrite_hook_installed=rewrite,
+        interactive=interactive,
+        first_index=first_index,
+        editor_setup_disabled=disabled,
+    )
+
+
+@dataclass(frozen=True)
 class EditorSetupOptions:
     """Options shared across editor setup integrations."""
 
     disabled_project_files: frozenset[str] = field(default_factory=frozenset)
-    prompt_for_project_files: bool = False
     project_file_overrides: dict[str, bool] = field(default_factory=dict)
     integration_overrides: dict[str, bool] = field(default_factory=dict)
 
@@ -45,22 +145,7 @@ class EditorSetupOptions:
 
         return EditorSetupOptions(
             disabled_project_files=self.disabled_project_files | {project_file_id},
-            prompt_for_project_files=self.prompt_for_project_files,
             project_file_overrides=dict(self.project_file_overrides),
-            integration_overrides=dict(self.integration_overrides),
-        )
-
-    def with_project_file_override(
-        self,
-        project_file_id: str,
-        enabled: bool,
-    ) -> EditorSetupOptions:
-        """Return options with one managed project file explicitly enabled or disabled."""
-
-        return EditorSetupOptions(
-            disabled_project_files=self.disabled_project_files,
-            prompt_for_project_files=self.prompt_for_project_files,
-            project_file_overrides={**self.project_file_overrides, project_file_id: enabled},
             integration_overrides=dict(self.integration_overrides),
         )
 
@@ -73,49 +158,14 @@ class EditorSetupOptions:
 
         return EditorSetupOptions(
             disabled_project_files=self.disabled_project_files,
-            prompt_for_project_files=self.prompt_for_project_files,
             project_file_overrides=dict(self.project_file_overrides),
             integration_overrides={**self.integration_overrides, integration_id: enabled},
         )
 
 
-class EditorSetupIntegration(Protocol):
-    """Setup hooks implemented by each AI editor integration."""
-
-    def configure_options(
-        self,
-        console_obj: Any,
-        options: EditorSetupOptions,
-    ) -> EditorSetupOptions:
-        """Let the integration prompt or adjust setup options before writing files."""
-        ...
-
-    def write_project_files(
-        self,
-        console_obj: Any,
-        repo_path: Path,
-        options: EditorSetupOptions,
-    ) -> None:
-        """Write project-local config or instruction files for this editor."""
-        ...
-
-    def register_client(self, console_obj: Any, repo_path: Path) -> None:
-        """Register global or user-level client configuration for this editor."""
-        ...
-
-    def refresh_project_files(
-        self,
-        console_obj: Any,
-        repo_path: Path,
-        options: EditorSetupOptions,
-    ) -> None:
-        """Refresh managed project files after repository content changes."""
-        ...
-
-
 def _resolve_integrations(
-    integrations: tuple[EditorSetupIntegration, ...] | None,
-) -> tuple[EditorSetupIntegration, ...]:
+    integrations: tuple[InstallLifecycle, ...] | None,
+) -> tuple[InstallLifecycle, ...]:
     if integrations is not None:
         return integrations
     from repowise.cli.editor_integrations.defaults import get_default_editor_integrations
@@ -124,24 +174,107 @@ def _resolve_integrations(
 
 
 def resolve_editor_setup_options(
-    console_obj: Any,
     *,
     disabled_project_files: Iterable[str] | None = None,
-    prompt_for_project_files: bool = False,
     project_file_overrides: Mapping[str, bool] | None = None,
     integration_overrides: Mapping[str, bool] | None = None,
-    integrations: tuple[EditorSetupIntegration, ...] | None = None,
 ) -> EditorSetupOptions:
-    """Build setup options, allowing integrations to own their prompts."""
+    """Build setup options from the CLI flags.
 
-    options = EditorSetupOptions(
+    Used to also give every integration a chance to prompt, through a
+    ``configure_options`` hook. That is gone: the prompting is now one
+    checklist (:func:`select_agents_interactively`) built from the registry
+    rather than one hand-written question per agent, so the hook had no
+    implementation left that did anything.
+    """
+
+    return EditorSetupOptions(
         disabled_project_files=frozenset(disabled_project_files or ()),
-        prompt_for_project_files=prompt_for_project_files,
         project_file_overrides=dict(project_file_overrides or {}),
         integration_overrides=dict(integration_overrides or {}),
     )
-    for integration in _resolve_integrations(integrations):
-        options = integration.configure_options(console_obj, options)
+
+
+def select_agents_interactively(
+    console_obj: Any,
+    repo_path: Path,
+    options: EditorSetupOptions,
+) -> EditorSetupOptions:
+    """Ask once which agents to set up, and fold the answer into *options*.
+
+    Replaces the three sequential yes/no prompts each integration used to own
+    — one per agent, in registry order, each hand-written. Two things were wrong
+    with that shape and only one of them was cosmetic. The cosmetic one: Codex
+    defaulted to *no* while its two neighbours defaulted to yes, so holding
+    Enter through the sequence silently inverted in the middle, and the code
+    apologised for it in a dim line. The structural one: a fourth agent meant a
+    fourth prompt, written by hand, in a fourth module.
+
+    Now the checklist is built from the registry and pre-ticked from detection,
+    so an agent is offered because it is installed rather than because someone
+    remembered to write a question for it.
+
+    The mapping back onto options carries no per-agent knowledge: an unticked
+    agent has its own ``project_file_id`` disabled and its integration id
+    overridden off, both of which the descriptor supplies. A ticked one is
+    overridden on. An id already carrying an explicit override (a CLI flag such
+    as ``--codex``) is shown pre-ticked to match the flag, so accepting the
+    checklist re-applies what the flag already said.
+    """
+    from repowise.cli.agent_targets.registry import default_selection, describe_agents
+    from repowise.cli.ui.agent_selection import AgentChoice, interactive_agent_select
+
+    # Offer only what this command can act on. The checklist is built from the
+    # agent registry and the writing is done by the setup integrations, and
+    # those are two lists: an agent can be registered (so it gets a matrix row,
+    # a ``--target`` id and a ``doctor`` row) without ``init`` having a writer
+    # for it. Showing the rest turns a ticked box into a silent no-op, which
+    # reads as success because every agent that *was* written prints a line.
+    #
+    # ``repowise agents add --target=<id>`` is the command for those, and the
+    # line below names it rather than leaving them invisible.
+    rows = describe_agents(repo_path)
+    installable = {integration.integration_id for integration in _resolve_integrations(None)}
+    deferred = [row for row in rows if row["id"] not in installable]
+    rows = [row for row in rows if row["id"] in installable]
+    for row in deferred:
+        if row["present"] or row["registrations"]:
+            console_obj.print(
+                f"  [dim]{row['display_name']} detected. Set it up with "
+                f"[bold]repowise agents add --target={row['id']}[/bold][/dim]"
+            )
+
+    ticked = default_selection(rows)
+    for row in rows:
+        flagged = options.integration_overrides.get(row["id"])
+        if flagged is not None:
+            ticked = (ticked | {row["id"]}) if flagged else (ticked - {row["id"]})
+
+    chosen = interactive_agent_select(
+        console_obj,
+        [
+            AgentChoice(
+                id=row["id"],
+                display_name=row["display_name"],
+                detail=(
+                    "already wired"
+                    if row["registrations"]
+                    else ("installed" if row["present"] else "not detected")
+                ),
+                enabled=row["id"] in ticked,
+            )
+            for row in rows
+        ],
+    )
+    if chosen is None:
+        # stdin claimed a terminal and then returned EOF. Keep the defaults.
+        return options
+
+    for row in rows:
+        enabled = row["id"] in chosen
+        options = options.with_integration_override(row["id"], enabled)
+        if not enabled:
+            options = options.with_disabled_project_file(row["project_file_id"])
     return options
 
 
@@ -151,9 +284,30 @@ def write_editor_project_files(
     *,
     options: EditorSetupOptions | None = None,
     disabled_project_files: Iterable[str] | None = None,
-    integrations: tuple[EditorSetupIntegration, ...] | None = None,
-) -> None:
-    """Write common MCP config and project-local editor files."""
+    integrations: tuple[InstallLifecycle, ...] | None = None,
+    no_editor_setup: bool = False,
+) -> list[Path]:
+    """Write project-local editor files. Returns the paths written.
+
+    **``--no-editor-setup`` now covers this too.** It used to gate only
+    :func:`register_editor_clients`, the *global* half — so a user who read the
+    flag as "leave my repo alone" still got ``.mcp.json``, ``.claude/CLAUDE.md``
+    and two ``.vscode`` files written into their working tree, and there was no
+    combination of flags that indexed a repo without writing into it (VS Code
+    had no opt-out flag at all). The flag's own help text admitted the gap
+    rather than closing it. Now one switch means one thing.
+
+    ``.repowise/mcp.json`` is written either way, and is the one deliberate
+    exception. It lives in the directory the index already occupies, no editor
+    reads it unless pointed at it, and it is what ``repowise mcp .`` prints —
+    the escape hatch this flag's own message sends people to. Skipping it would
+    mean opting out of editor setup also opted out of ever opting back in.
+
+    The return value is the manifest the completion panel prints. It is
+    collected from the integrations rather than hardcoded so the list cannot
+    drift from the writes: an integration that stops writing a file stops
+    reporting it in the same edit.
+    """
 
     from repowise.cli.mcp_config import save_mcp_config
 
@@ -161,19 +315,54 @@ def write_editor_project_files(
     resolved_options = options or EditorSetupOptions(
         disabled_project_files=frozenset(disabled_project_files or ()),
     )
+
+    if is_editor_setup_disabled(no_editor_setup):
+        _persist_project_file_optouts(repo_path, resolved_options)
+        return []
+
+    written: list[Path] = []
     for integration in _resolve_integrations(integrations):
-        integration.write_project_files(console_obj, repo_path, resolved_options)
+        # ``or []`` rather than a required return: an integration that has
+        # nothing to report is not a broken one, and this keeps the protocol
+        # widening backwards-compatible for any out-of-tree implementation.
+        written.extend(
+            integration.write_project_files(console_obj, repo_path, resolved_options) or []
+        )
+    return written
+
+
+def _persist_project_file_optouts(repo_path: Path, options: EditorSetupOptions) -> None:
+    """Record ``--no-claude-md`` / ``--no-agents-md`` even when nothing is written.
+
+    Those flags mean "never generate this file", not "skip it this once", and
+    the only thing that ever wrote them to ``config.yaml`` was the generator
+    itself on its way to declining. Skipping the integrations therefore also
+    skipped the memory of the opt-out, so ``init --no-editor-setup
+    --no-claude-md`` wrote nothing now and then let the next ``repowise update``
+    generate the file the user had just refused.
+
+    A preference is not a write, so it survives the switch that turns writes
+    off. This mirrors the carve-out ``--no-distill-hook`` already has, for the
+    same reason.
+    """
+    from repowise.cli.editor_files import set_editor_file_enabled
+
+    for file_id in sorted(options.disabled_project_files):
+        set_editor_file_enabled(repo_path, file_id, False)
+    for file_id, enabled in sorted(options.project_file_overrides.items()):
+        set_editor_file_enabled(repo_path, file_id, enabled)
 
 
 def register_editor_clients(
     console_obj: Any,
     repo_path: Path,
     *,
-    integrations: tuple[EditorSetupIntegration, ...] | None = None,
+    no_editor_setup: bool = False,
+    integrations: tuple[InstallLifecycle, ...] | None = None,
 ) -> None:
     """Register editor clients with repowise MCP and hooks where supported."""
 
-    if _editor_setup_disabled():
+    if is_editor_setup_disabled(no_editor_setup):
         return
     for integration in _resolve_integrations(integrations):
         integration.register_client(console_obj, repo_path)
@@ -184,7 +373,7 @@ def refresh_editor_project_files(
     repo_path: Path,
     *,
     options: EditorSetupOptions | None = None,
-    integrations: tuple[EditorSetupIntegration, ...] | None = None,
+    integrations: tuple[InstallLifecycle, ...] | None = None,
 ) -> None:
     """Refresh editor-managed project files without rewriting common MCP config."""
 

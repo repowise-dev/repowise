@@ -2,9 +2,8 @@
 
 import { useMemo, useState } from "react";
 import { Bug, Search } from "lucide-react";
-import { AgentBadge, NewContributorBadge } from "./agent-badge";
+import { AgentBadge, NewContributorBadge, isNewContributor } from "./agent-badge";
 import { PriorityBadge } from "./priority-badge";
-import { ChurnBar } from "../git/churn-bar";
 import { Input } from "../ui/input";
 import { EmptyState } from "../shared/empty-state";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
@@ -15,9 +14,6 @@ import type { Commit, ReviewPriority } from "@repowise-dev/types/git";
 
 export type CommitSort = "risk" | "date";
 export type CommitAuthorship = "all" | "human" | "agent";
-
-/** Below this many prior commits the author gets a "new contributor" badge. */
-const NEW_CONTRIBUTOR_THRESHOLD = 3;
 
 export interface CommitTableProps {
   commits: Commit[];
@@ -59,7 +55,11 @@ const COLUMNS: ResponsiveColumn<CommitRow>[] = [
           {c.short_sha}
         </span>
         {c.is_fix && <Bug className="h-3 w-3 shrink-0 text-[var(--color-error)]" />}
-        <span className="truncate text-xs text-[var(--color-text-primary)]" title={c.subject}>
+        {/* Wraps rather than truncates. This is the primary column, and an
+            ellipsis here reports a layout decision to the reader as a shorter
+            commit message: "release: v0.4.0, language-support upgrades across
+            all Goo…" is the page hiding the part that says which. */}
+        <span className="min-w-0 text-xs text-[var(--color-text-primary)] [text-wrap:pretty]">
           {c.subject || "(no subject)"}
         </span>
       </div>
@@ -74,11 +74,9 @@ const COLUMNS: ResponsiveColumn<CommitRow>[] = [
       <div className="flex items-center gap-1.5 min-w-0 text-xs text-[var(--color-text-secondary)]">
         <span className="truncate">{c.author_name || "—"}</span>
         {c.agent_name && <AgentBadge agentName={c.agent_name} tier={c.agent_autonomy_tier} />}
-        {!c.agent_name &&
-          c.author_experience != null &&
-          c.author_experience < NEW_CONTRIBUTOR_THRESHOLD && (
-            <NewContributorBadge experience={c.author_experience} />
-          )}
+        {!c.agent_name && isNewContributor(c.author_commit_count) && (
+          <NewContributorBadge commitCount={c.author_commit_count as number} />
+        )}
       </div>
     ),
     mobileRender: (c) => c.author_name || "—",
@@ -109,11 +107,15 @@ const COLUMNS: ResponsiveColumn<CommitRow>[] = [
   {
     key: "risk",
     header: "Risk",
-    headerClassName: "w-40",
+    headerClassName: "w-28",
+    // No ChurnBar. The cell was carrying the same fact three times over (a
+    // filled bar, the percentile, and the pill), and because the queue sorts
+    // by risk the bar was full-width and semantic-red on every visible row —
+    // decoration that could not vary, drawn in the loudest colour available.
+    // The number and the pill say it, and only one of them needs ink.
     render: (c) => (
       <div className="flex items-center gap-2">
-        <ChurnBar percentile={c.risk_percentile} className="w-16" />
-        <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums w-8">
+        <span className="w-8 text-xs tabular-nums text-[var(--color-text-tertiary)]">
           {Math.round(c.risk_percentile)}%
         </span>
         <PriorityBadge priority={c.review_priority as ReviewPriority} />

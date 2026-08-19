@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import APIRouter, Depends, HTTPException
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import (
     KnowledgeMapOwner,
@@ -24,7 +24,7 @@ router = APIRouter(
 @router.get("/{repo_id}/knowledge-map", response_model=KnowledgeMapResponse)
 async def get_knowledge_map(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> KnowledgeMapResponse:
     """Return knowledge-map data for a repository.
 

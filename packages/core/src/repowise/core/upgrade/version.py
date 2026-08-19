@@ -31,7 +31,14 @@ from __future__ import annotations
 #: Current on-disk store format. Stamped into ``state.json`` as
 #: ``store_format_version`` on every persist. Legacy stores predating this
 #: field are treated as version 0.
-STORE_FORMAT_VERSION: int = 1
+#:
+#: v2 introduces the derived concept tree (subsystem pages + written prose in
+#: place of per-directory module pages). Unlike v1, it is not reachable by the
+#: automatic reconcile: only a full re-index rebuilds an old store's pages into
+#: it. Its migration is therefore ``REINDEX_RECOMMENDED``, and :func:`stamp`
+#: clamps a routine persist just below it so the notice keeps firing until the
+#: user actually re-indexes.
+STORE_FORMAT_VERSION: int = 2
 
 #: Current parser/extractor schema. Folded into the parse-cache fingerprint in
 #: place of the package version. See :mod:`repowise.core.ingestion.parse_cache`.

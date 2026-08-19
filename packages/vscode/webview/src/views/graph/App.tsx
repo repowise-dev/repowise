@@ -57,7 +57,7 @@ export function App({ host, params, repo, refreshToken }: ViewProps<"graph">) {
       <div className="relative min-h-0 flex-1">
         {data.error ? (
           <div className="flex h-full items-center justify-center p-6">
-            <div className="max-w-md rounded-lg border border-[var(--color-error)] bg-[var(--color-bg-elevated)] p-4 text-sm">
+            <div className="max-w-md rounded-lg border border-[var(--color-error)] bg-[var(--color-bg-elevated)] p-4 text-[15px]">
               <p className="font-medium text-[var(--color-error)]">
                 Could not load the knowledge graph.
               </p>
@@ -66,8 +66,6 @@ export function App({ host, params, repo, refreshToken }: ViewProps<"graph">) {
           </div>
         ) : (
           <GraphFlow
-            moduleGraph={data.moduleGraph as ModuleGraph | undefined}
-            isLoadingModuleGraph={data.isLoadingModuleGraph}
             fullGraph={data.fullGraph as GraphExport | undefined}
             isLoadingFullGraph={data.isLoadingFullGraph}
             // Legacy file-level architecture graph is unused by the constellation
@@ -89,10 +87,6 @@ export function App({ host, params, repo, refreshToken }: ViewProps<"graph">) {
             executionFlows={data.executionFlows as ExecutionFlows | undefined}
             initialSelectedNode={params.selectNode ?? null}
             onViewModeChange={data.setViewMode}
-            onModulePathChange={data.setModulePath}
-            onExpandedModulesChange={(expanded) =>
-              data.setHasExpandedModules(expanded.size > 0)
-            }
             onNodeClick={handleNodeClick}
             onNodeViewDocs={openIfFile}
             renderPathFinder={(p) => (

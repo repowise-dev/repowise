@@ -24,9 +24,9 @@ repowise generates and maintains a structured wiki for any codebase. It tracks c
 | **Git intelligence** | Churn hotspots, ownership, bus factor, change patterns |
 | **Dead code detection** | Finds confirmed unused exports, functions, and types |
 | **Decision intelligence** | Captures *why* code is structured the way it is |
-| **MCP server** | 10 tools for AI assistants (Claude Code, Codex, Cursor, Windsurf, Cline) |
+| **MCP server** | 11 default tools (10 flagship + `list_repos`) for AI assistants; 17 registered |
 | **Web dashboard** | Browse wiki, search, and explore architecture diagrams |
-| **Multi-language** | Python, TypeScript, JavaScript, Go, Rust, Java, C/C++, Kotlin, Ruby, C#, Swift, Scala, PHP |
+| **Multi-language** | 16 AST languages (11 Full tier): Python, TypeScript, JavaScript, Go, Rust, Java, C/C++, Kotlin, Ruby, C#, Swift, Scala, PHP, Dart, Shell |
 
 ---
 

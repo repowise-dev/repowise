@@ -1,11 +1,21 @@
 "use client";
 
 /**
- * Triage view — the landing surface for Code Health. An airy proof + overview:
- * the "can you trust this score?" headline, the repo KPI strip, and the master–
- * detail Code Health map with its inspector rail. The dense drill-down (the
- * fix-next queue, performance risks, function-level panels) lives in
- * {@link FindingsView} behind its own tab.
+ * Code Health's landing surface, on the section design language.
+ *
+ * The shape is: one lede that leads with the defect score and says in prose
+ * what it means, then the galaxy map as the page's spine with its inspector
+ * beside it, then the host's hotspot and trend sections. Grouping is hairlines
+ * and vertical rhythm, not boxes — the previous version stacked a collapsible
+ * accuracy banner, three bordered signal tiles, a bordered stat strip and a
+ * bordered map, then floated three more glass panels on top of the map itself,
+ * which is chrome sitting on the one thing the reader came to look at.
+ *
+ * The map's lens switcher and legend now live around the canvas rather than on
+ * it (`chrome="none"`), which is also what let the floating panels go: one of
+ * them painted `--color-bg-glass`, a token still pinned to the graphite the
+ * dark ramp moved off in July, so those panels were rendering a surface colour
+ * that exists nowhere else in the app.
  *
  * Presentation + orchestration only: the host injects data, links, and the
  * file-detail drawer through a {@link CodeHealthAdapter}, so web and hosted
@@ -13,6 +23,7 @@
  */
 
 import { useCallback, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import useSWR from "swr";
 import { Search } from "lucide-react";
 import type {
@@ -22,50 +33,69 @@ import type {
 } from "@repowise-dev/types/health";
 
 import { Skeleton } from "../ui/skeleton";
-import { Button } from "../ui/button";
+import { ApiError } from "../shared/api-error";
+import { toFriendlyMessage } from "../lib/errors";
+import { OverviewSection } from "../overview/section";
 
-import { HealthKpiCards } from "./kpi-cards";
+import { CodeHealthLede } from "./code-health-lede";
 import { BiomarkerList } from "./biomarker-list";
 import {
   CodeHealthMap,
+  MapLegend,
+  MapLensSwitcher,
   type CodeHealthMapFile,
   type CodeHealthOverlay,
 } from "./code-health-map";
-import { RecalibrationBanner } from "./recalibration-banner";
-import { DefectAccuracyCard } from "./defect-accuracy-card";
 import { FileSpotlight } from "./code-health-controls";
 import { type Severity } from "./tokens";
 import type { CodeHealthAdapter } from "./code-health-adapter";
 
 export type HealthPillar = "all" | "defect" | "maintainability" | "performance";
 
+/** Map height. The inspector is height-matched to it so the rail never outgrows
+ *  the field it is inspecting. */
+const MAP_HEIGHT = 720;
+
 export function TriageView({
   adapter,
-  trend,
+  trend: _trend,
   overlay = "health",
   onOverlayChange,
+  lenses,
   mapFiles,
   overlayLoading,
   pillar: controlledPillar,
   onPillarChange,
+  hotspotsSlot,
+  trendSlot,
 }: {
   adapter: CodeHealthAdapter;
-  /** Trend fetched once by the host — feeds the KPI sparklines. */
+  /** Trend fetched once by the host. Consumed by `trendSlot`; accepted here so
+   *  the host's existing call site keeps type-checking. */
   trend?: HealthTrendResponse;
   /** Active map lens, owned by the host so the spine is shared across tabs. */
   overlay?: CodeHealthOverlay;
   onOverlayChange?: (overlay: CodeHealthOverlay) => void;
+  /** Lenses offered in the switcher. Hosts that join churn in pass it here. */
+  lenses?: CodeHealthOverlay[];
   /** Map files fetched once by the host (shared across overlays). */
   mapFiles?: HealthFilesResponse;
   /** The active lens's per-file signal is still loading (e.g. churn). */
   overlayLoading?: boolean;
   /**
    * Findings pillar filter. Controlled by the host when it wants to URL-sync
-   * the value (so the Overview + KPI tiles can deep-link into a dimension);
-   * falls back to local state otherwise.
+   * the value; falls back to local state otherwise.
    */
   pillar?: HealthPillar;
   onPillarChange?: (pillar: HealthPillar) => void;
+  /**
+   * Sections the host composes and hands in, rather than props this view
+   * fetches for itself. Hotspots needs git history and trend needs a second
+   * endpoint; a host without either passes nothing and the section does not
+   * render, instead of an empty state pitching data that will never arrive.
+   */
+  hotspotsSlot?: ReactNode;
+  trendSlot?: ReactNode;
 }) {
   const { cacheKey } = adapter;
   const { data: overview, isLoading, error, mutate } = useSWR<HealthOverviewResponse>(
@@ -74,16 +104,14 @@ export function TriageView({
     { revalidateOnFocus: false },
   );
 
-  // Severity gates the inspector-rail findings list.
+  // Severity gates the inspector findings list.
   const [minSeverity, setMinSeverity] = useState<Severity | "all">("all");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
-  // ---- Map-driven UI: rail spotlight + filename dim + search ----
+  // ---- Map-driven UI: inspector spotlight + filename dim + search ----
   const [hoverFile, setHoverFile] = useState<CodeHealthMapFile | null>(null);
   const [mapQuery, setMapQuery] = useState("");
 
-  // ---- Pillar filter — controlled by the host (URL-synced) when supplied,
-  //      otherwise local. Lets the Overview + KPI tiles deep-link a dimension. ----
   const [pillarState, setPillarState] = useState<HealthPillar>("all");
   const pillar = controlledPillar ?? pillarState;
   const findingsRef = useRef<HTMLDivElement | null>(null);
@@ -94,16 +122,9 @@ export function TriageView({
     },
     [onPillarChange],
   );
-  const focusPillar = useCallback(
-    (next: "defect" | "maintainability" | "performance") => {
-      setPillar(next);
-      findingsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    },
-    [setPillar],
-  );
 
-  // Severity + pillar drive the sidebar findings list; omit unset filters
-  // rather than passing `undefined` (strict optional props in the shared lib).
+  // Severity + pillar drive the findings list; omit unset filters rather than
+  // passing `undefined` (strict optional props in the shared lib).
   const sidebarFilter: {
     minSeverity?: Severity;
     dimension?: "defect" | "maintainability" | "performance";
@@ -111,161 +132,150 @@ export function TriageView({
   if (minSeverity !== "all") sidebarFilter.minSeverity = minSeverity;
   if (pillar !== "all") sidebarFilter.dimension = pillar;
 
-  const avgSeries = trend?.history?.slice().reverse().map((p) => p.average_health);
-  const hotspotSeries = trend?.history?.slice().reverse().map((p) => p.hotspot_health);
-  const worstSeries = trend?.history
-    ?.slice()
-    .reverse()
-    .map((p) => p.worst_performer_score ?? 0);
-
-  // KPI trend inputs are all optional in the shared card; include only the
-  // ones the host actually fetched (no `undefined` under strict optionals).
-  const kpiTrend: {
-    averageHistory?: number[];
-    hotspotHistory?: number[];
-    worstHistory?: number[];
-    averageDelta?: number;
-    hotspotDelta?: number;
-  } = {};
-  if (avgSeries) kpiTrend.averageHistory = avgSeries;
-  if (hotspotSeries) kpiTrend.hotspotHistory = hotspotSeries;
-  if (worstSeries) kpiTrend.worstHistory = worstSeries;
-  if (trend?.summary?.average_delta != null)
-    kpiTrend.averageDelta = trend.summary.average_delta;
-  if (trend?.summary?.hotspot_delta != null)
-    kpiTrend.hotspotDelta = trend.summary.hotspot_delta;
-
-  // CodeHealthMap's lens controls are optional; omit when the host doesn't
-  // own the lens (hosted before it wires the shared spine).
+  // CodeHealthMap's optional props, omitted rather than passed as `undefined`.
   const mapExtra: {
-    onOverlayChange?: (overlay: CodeHealthOverlay) => void;
+    lenses?: CodeHealthOverlay[];
     overlayLoading?: boolean;
   } = {};
-  if (onOverlayChange) mapExtra.onOverlayChange = onOverlayChange;
+  if (lenses) mapExtra.lenses = lenses;
   if (overlayLoading !== undefined) mapExtra.overlayLoading = overlayLoading;
 
+  if (isLoading) {
+    return (
+      <div className="flex flex-col gap-6">
+        {/* Shapes and widths match the real layout. A skeleton that does not
+            causes a reflow when content lands, which reads as slower than
+            showing nothing. */}
+        <Skeleton className="h-12 w-40 rounded-lg" />
+        <Skeleton className="h-20 w-full max-w-[54ch] rounded-lg" />
+        <Skeleton className="h-[74px] w-full" />
+        <Skeleton className="w-full rounded-xl" style={{ height: MAP_HEIGHT }} />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <ApiError
+        title="Couldn't load health data"
+        message={`${toFriendlyMessage(error)} Index this repo if it has not been indexed yet.`}
+        onRetry={() => void mutate()}
+      />
+    );
+  }
+
+  if (!overview) return null;
+
   return (
-    <div className="space-y-6">
-      {isLoading ? (
-        <div className="space-y-3">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <Skeleton key={i} className="h-28 w-full rounded-xl" />
-            ))}
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className="h-20 w-full rounded-lg" />
-            ))}
-          </div>
-        </div>
-      ) : error ? (
-        <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 text-sm text-[var(--color-text-secondary)] flex items-center justify-between gap-2">
-          <span>Couldn&apos;t load health data. Index this repo to populate it.</span>
-          <Button size="sm" variant="outline" onClick={() => mutate()}>Retry</Button>
-        </div>
-      ) : overview ? (
-        <>
-          <RecalibrationBanner repoId={cacheKey} />
+    <div className="flex flex-col gap-6 sm:gap-8">
+      <CodeHealthLede
+        summary={overview.summary}
+        accuracy={overview.defect_accuracy ?? null}
+        distribution={overview.distribution ?? null}
+      />
 
-          {/* Proof, up front: the defect-validated headline that sets this score
-              apart — a slim one-line banner that expands to the full breakdown. */}
-          {overview.defect_accuracy ? (
-            <DefectAccuracyCard data={overview.defect_accuracy} collapsible />
-          ) : null}
-
-          <HealthKpiCards
-            summary={overview.summary}
-            distribution={overview.distribution ?? null}
-            {...kpiTrend}
-            onSelectPillar={focusPillar}
-          />
-
-          {/* Hero: the Code Health Map — modules as nested bubbles, files
-              sized by lines of code and colored by health. The centerpiece. */}
-          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6">
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-baseline gap-2">
-                <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
-                  Code health map
-                </h2>
-                <span className="text-xs text-[var(--color-text-tertiary)]">
-                  {mapFiles ? `${mapFiles.total.toLocaleString()} files` : "loading…"} · click a module to
-                  zoom, a file to open
+      <OverviewSection
+        title="Code health map"
+        description="Every file as a node, clustered into module galaxies and sized by lines of code. The lens recolors the same field rather than redrawing it. Click a galaxy to zoom, a file to inspect it."
+        action={
+          onOverlayChange ? (
+            <MapLensSwitcher
+              overlay={overlay}
+              onOverlayChange={onOverlayChange}
+              {...(lenses ? { lenses } : {})}
+            />
+          ) : undefined
+        }
+      >
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="flex flex-col gap-2.5">
+            {!mapFiles ? (
+              <Skeleton className="w-full rounded-xl" style={{ height: MAP_HEIGHT }} />
+            ) : (
+              <CodeHealthMap
+                files={mapFiles.files}
+                search={mapQuery}
+                selectedPath={selectedFile}
+                onSelectFile={(p) => setSelectedFile(p)}
+                onHoverFile={setHoverFile}
+                minHeight={MAP_HEIGHT}
+                overlay={overlay}
+                chrome="none"
+                {...mapExtra}
+              />
+            )}
+            <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+              <MapLegend overlay={overlay} loading={overlayLoading ?? false} />
+              {mapFiles && (
+                <span className="font-mono text-[10px] uppercase tracking-[0.12em] tabular-nums text-[var(--color-text-tertiary)]">
+                  {mapFiles.total.toLocaleString()} files
                 </span>
-              </div>
-              {!mapFiles ? (
-                <Skeleton className="w-full rounded-xl" style={{ height: 720 }} />
-              ) : (
-                <CodeHealthMap
-                  files={mapFiles.files}
-                  search={mapQuery}
-                  selectedPath={selectedFile}
-                  onSelectFile={(p) => setSelectedFile(p)}
-                  onHoverFile={setHoverFile}
-                  minHeight={720}
-                  overlay={overlay}
-                  {...mapExtra}
-                />
               )}
             </div>
-
-            {/* Inspector rail — height-matched to the map (master–detail).
-                Search + the file you're inspecting sit on top; the findings
-                list scrolls in place so the rail never outgrows the map. */}
-            <aside className="flex flex-col gap-3 lg:sticky lg:top-4 lg:h-[756px]">
-              <div className="relative">
-                <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
-                <input
-                  value={mapQuery}
-                  onChange={(e) => setMapQuery(e.target.value)}
-                  placeholder="Find a file in the map…"
-                  className="w-full text-xs pl-7 pr-2 py-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] focus:outline-none focus:border-[var(--color-border-strong)]"
-                />
-              </div>
-
-              <FileSpotlight file={hoverFile} onOpen={(p) => setSelectedFile(p)} />
-
-              <div ref={findingsRef} className="flex items-center gap-2 scroll-mt-4">
-                <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] mr-auto">
-                  Findings
-                </h2>
-                <select
-                  value={pillar}
-                  onChange={(e) => setPillar(e.target.value as HealthPillar)}
-                  aria-label="Health pillar"
-                  className="text-xs px-2 py-1 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]"
-                >
-                  <option value="all">All pillars</option>
-                  <option value="defect">Defect risk</option>
-                  <option value="maintainability">Maintainability</option>
-                  <option value="performance">Performance</option>
-                </select>
-                <select
-                  value={minSeverity}
-                  onChange={(e) => setMinSeverity(e.target.value as Severity | "all")}
-                  aria-label="Minimum severity"
-                  className="text-xs px-2 py-1 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)]"
-                >
-                  <option value="all">All severities</option>
-                  <option value="low">Low+</option>
-                  <option value="medium">Medium+</option>
-                  <option value="high">High+</option>
-                  <option value="critical">Critical</option>
-                </select>
-              </div>
-              <div className="min-h-0 flex-1 overflow-y-auto pr-1 lg:pb-0 pb-1">
-                <BiomarkerList
-                  findings={overview.top_findings}
-                  compact
-                  {...sidebarFilter}
-                  onSelect={(f) => setSelectedFile(f.file_path)}
-                />
-              </div>
-            </aside>
           </div>
-        </>
-      ) : null}
+
+          {/* Inspector — height-matched to the map. Separated by space, not by
+              a rule: a vertical hairline down the side of the canvas would turn
+              the map into a trench. */}
+          <aside className="flex flex-col gap-3 lg:sticky lg:top-4 lg:h-[772px]">
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+              <input
+                value={mapQuery}
+                onChange={(e) => setMapQuery(e.target.value)}
+                placeholder="Find a file in the map…"
+                aria-label="Find a file in the map"
+                className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] py-1.5 pl-7 pr-2 text-xs focus:border-[var(--color-border-hover)] focus:outline-none"
+              />
+            </div>
+
+            <FileSpotlight file={hoverFile} onOpen={(p) => setSelectedFile(p)} />
+
+            <div
+              ref={findingsRef}
+              className="flex flex-wrap items-center gap-2 border-t border-[var(--color-border-default)] pt-3"
+            >
+              <h3 className="mr-auto font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+                Findings
+              </h3>
+              <select
+                value={pillar}
+                onChange={(e) => setPillar(e.target.value as HealthPillar)}
+                aria-label="Health pillar"
+                className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1 text-xs"
+              >
+                <option value="all">All pillars</option>
+                <option value="defect">Defect risk</option>
+                <option value="maintainability">Maintainability</option>
+                <option value="performance">Performance</option>
+              </select>
+              <select
+                value={minSeverity}
+                onChange={(e) => setMinSeverity(e.target.value as Severity | "all")}
+                aria-label="Minimum severity"
+                className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 py-1 text-xs"
+              >
+                <option value="all">All severities</option>
+                <option value="low">Low+</option>
+                <option value="medium">Medium+</option>
+                <option value="high">High+</option>
+                <option value="critical">Critical</option>
+              </select>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto pb-1 pr-1 lg:pb-0">
+              <BiomarkerList
+                findings={overview.top_findings}
+                compact
+                {...sidebarFilter}
+                onSelect={(f) => setSelectedFile(f.file_path)}
+              />
+            </div>
+          </aside>
+        </div>
+      </OverviewSection>
+
+      {hotspotsSlot}
+      {trendSlot}
 
       {adapter.renderFileDrawer({
         filePath: selectedFile,

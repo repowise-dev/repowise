@@ -8,6 +8,8 @@ from typing import Any
 
 import click
 
+from repowise.cli.ui.brand import OK, WARN
+
 
 def offer_distill_rewrite_hook(
     console_obj: Any,
@@ -15,6 +17,7 @@ def offer_distill_rewrite_hook(
     flag: bool | None,
     *,
     yes: bool = False,
+    no_editor_setup: bool = False,
 ) -> None:
     """Opt-in install of the distill command-rewrite hook (Claude Code).
 
@@ -33,18 +36,30 @@ def offer_distill_rewrite_hook(
     selected repo for the workspace flow. Recording the verdict everywhere
     matters because the hook treats any repo with ``.repowise/`` and no
     config as enabled (with the ``ask`` posture).
+
+    Installing the hook writes user-level config, so ``--no-editor-setup`` (or
+    the equivalent env var) suppresses both the install and the prompt. An
+    explicit ``--no-distill-hook`` still records its opt-out: that record is
+    repo-local, and it is the only thing that gates an already-installed global
+    hook off *here*, so dropping it would leave the hook rewriting commands in
+    a repo the user just opted out of.
     """
-    import os
+    from repowise.cli.editor_setup import is_editor_setup_disabled
 
     if not repo_paths:
         return
-    if os.environ.get("REPOWISE_SKIP_EDITOR_SETUP", "").strip().lower() not in (
-        "",
-        "0",
-        "false",
-        "no",
-    ):
+
+    if is_editor_setup_disabled(no_editor_setup):
+        if flag:
+            console_obj.print(
+                "  [dim]Rewrite hook not installed: editor setup is off for this "
+                "run. Run 'repowise hook rewrite install' to set it up.[/dim]"
+            )
+        elif flag is False:
+            _record_distill_verdict(console_obj, repo_paths, enabled=False)
+        # `flag is None` decided nothing, so it writes nothing.
         return
+
     # --yes with an undecided flag: skip the interactive prompt entirely.
     if flag is None and yes:
         return
@@ -52,7 +67,6 @@ def offer_distill_rewrite_hook(
         return
 
     from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
-    from repowise.cli.helpers import save_distill_commands_enabled as _save_distill_enabled
 
     adapter = ClaudeCodeAdapter()
     if flag is None:
@@ -60,33 +74,91 @@ def offer_distill_rewrite_hook(
             return
         console_obj.print()
         console_obj.print(
-            "[bold]Distill:[/bold] rewrite noisy agent commands (tests, builds, "
+            "[bold]Distill:[/bold] Rewrite noisy agent commands (tests, builds, "
             "git, searches) to `repowise distill ...` for compact output?"
         )
         scope = f"Applies to all {len(repo_paths)} selected repos. " if len(repo_paths) > 1 else ""
         console_obj.print(
-            f"  [dim]{scope}Each rewrite is shown for approval; raw output stays "
-            "recoverable via `repowise expand`.[/dim]"
+            f"  [dim]{scope}Rewrites run without a prompt and only ever wrap a "
+            "recognized command; set `permission: ask` in .repowise/config.yaml to "
+            "approve each one. Raw output stays recoverable via `repowise expand`.[/dim]"
         )
-        flag = click.confirm("  Install the Claude Code rewrite hook?", default=True)
+        # Named here because a yes turns them on. The question stays one
+        # question: this is the same consent, and the thing being consented to
+        # is "hooks may compact what your agent sees", not three features.
+        # Every surface a yes covers has to be named, or it is not consent.
+        console_obj.print(
+            "  [dim]Also shrinks three big tool results, all reversible: a "
+            "whole-file Read comes back as a skeleton, a grep matching many "
+            "files comes back as a per-file summary, and re-reading a file you "
+            "already read — unchanged, unedited — comes back as a one-line "
+            "pointer instead of the content. Each says how to get the rest, and "
+            "reading again always returns it. Toggle later: "
+            "`repowise hook read-skeleton`, `repowise hook search-digest`, "
+            "`repowise hook read-reread`.[/dim]"
+        )
+        try:
+            flag = click.confirm("  Install the Claude Code rewrite hook?", default=True)
+        except (click.Abort, EOFError):
+            # Same unanswerable-terminal case as the post-commit hook offer
+            # above: decline an optional extra rather than fail a finished run.
+            console_obj.print(
+                "\n  [dim]Skipped. Run 'repowise hook rewrite install' later to set up.[/dim]"
+            )
+            return
 
     if flag:
         path = adapter.install_rewrite_hook()
         if path:
-            console_obj.print(f"  [green]✓[/green] Rewrite hook installed ({path})")
+            console_obj.print(f"  [{OK}]✓[/] Rewrite hook installed ({path})")
         else:
-            console_obj.print("  [yellow]Rewrite hook install failed.[/yellow]")
+            console_obj.print(f"  [{WARN}]Rewrite hook install failed.[/]")
     else:
         console_obj.print(
             "  [dim]Skipped. Run 'repowise hook rewrite install' later to set up.[/dim]"
         )
 
+    _record_distill_verdict(console_obj, repo_paths, enabled=bool(flag))
+
+
+def _record_distill_verdict(
+    console_obj: Any,
+    repo_paths: list[Path],
+    *,
+    enabled: bool,
+) -> None:
+    """Persist the hook-intervention verdict for every repo in this run.
+
+    Several keys, one answer. ``distill.commands.enabled`` gates rewriting a
+    Bash command into ``repowise distill``; ``hooks.read_skeleton`` gates
+    serving an unbounded Read of a large indexed file as its skeleton;
+    ``hooks.search_digest`` gates serving a multi-file grep flood as its
+    compact digest. All are the same consent, "repowise's hooks may intervene
+    in my agent's tool calls", and the one the user was asked is the broadest
+    of them, so a second prompt would be asking permission we already have.
+
+    Read-skeleton shipped with no code path that wrote its key at all, which
+    left it reachable only by hand-editing YAML. That is not a discovery
+    problem: its gate needs 50 firings across 10 sessions to decide whether it
+    stays, and a feature nobody can turn on returns zero of them and settles
+    nothing. Every replacing surface added since rides this same verdict for
+    that reason.
+    """
+
+    from repowise.cli.helpers import (
+        HOOK_REPLACEMENT_SURFACES,
+        save_distill_commands_enabled,
+        save_hook_surface_enabled,
+    )
+
     for repo_path in repo_paths:
         try:
-            _save_distill_enabled(repo_path, enabled=bool(flag))
+            save_distill_commands_enabled(repo_path, enabled=enabled)
+            for surface in HOOK_REPLACEMENT_SURFACES:
+                save_hook_surface_enabled(repo_path, surface, enabled=enabled)
         except Exception as exc:  # init must not crash on a config write
             console_obj.print(
-                f"  [yellow]Could not record distill verdict for {repo_path.name}: {exc}[/yellow]"
+                f"  [{WARN}]Could not record hook verdict for {repo_path.name}: {exc}[/]"
             )
 
 
@@ -108,6 +180,25 @@ def offer_hook_install(
     if not sys.stdin.isatty():
         return  # Non-interactive — skip
 
+    try:
+        _offer_hook_install_prompts(console_obj, repo_paths, aliases)
+    except (click.Abort, EOFError):
+        # isatty() claimed a terminal that cannot answer (Windows Git Bash
+        # ``< /dev/null``, pty wrappers, ``docker run -t`` without -i). This is
+        # the last step of a run whose index and wiki are already written, and
+        # an optional hook is not worth failing it over: decline and exit
+        # clean. Ctrl-C lands here too, which asks for the same outcome.
+        console_obj.print(
+            "\n  [dim]Skipped the hook. Run 'repowise hook install' later to set it up.[/dim]"
+        )
+
+
+def _offer_hook_install_prompts(
+    console_obj: Any,
+    repo_paths: list[Path],
+    aliases: list[str] | None,
+) -> None:
+    """Ask which repos get a post-commit hook, and install it. Prompts."""
     from repowise.cli.hooks import install, status
 
     # Filter to repos that don't already have the hook
@@ -130,7 +221,7 @@ def offer_hook_install(
         rp, label = candidates[0]
         if click.confirm(f"  Install post-commit hook for {label}?", default=True):
             result = install(rp)
-            console_obj.print(f"  [green]✓[/green] {label}: {result}")
+            console_obj.print(f"  [{OK}]✓[/] {label}: {result}")
         else:
             console_obj.print("  [dim]Skipped. Run 'repowise hook install' later to set up.[/dim]")
     else:
@@ -159,7 +250,7 @@ def offer_hook_install(
             if 0 <= idx < len(candidates):
                 rp, label = candidates[idx]
                 result = install(rp)
-                console_obj.print(f"  [green]✓[/green] {label}: {result}")
+                console_obj.print(f"  [{OK}]✓[/] {label}: {result}")
                 installed += 1
 
         if installed == 0:

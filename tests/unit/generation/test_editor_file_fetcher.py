@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -100,7 +100,17 @@ async def _add_page(session, repo_id, page_id, page_type, target_path, content):
 
 
 async def _add_git_meta(
-    session, repo_id, file_path, *, is_hotspot=False, churn_pct=0.5, owner=None
+    session,
+    repo_id,
+    file_path,
+    *,
+    is_hotspot=False,
+    churn_pct=0.5,
+    owner=None,
+    prior_defect_count=0,
+    fix_mass=0.0,
+    bug_magnet=False,
+    last_fix_at=None,
 ):
     gm = GitMetadata(
         repository_id=repo_id,
@@ -109,6 +119,10 @@ async def _add_git_meta(
         churn_percentile=churn_pct,
         commit_count_90d=10,
         primary_owner_name=owner,
+        prior_defect_count=prior_defect_count,
+        fix_mass=fix_mass,
+        bug_magnet=bug_magnet,
+        last_fix_at=last_fix_at,
     )
     session.add(gm)
     await session.flush()
@@ -185,7 +199,14 @@ async def test_fetch_entry_points(session, repo, tmp_path):
     assert "src/utils.py" not in data.entry_points
 
 
-async def test_fetch_entry_points_sorted_by_pagerank(session, repo, tmp_path):
+async def test_fetch_entry_points_breaks_ties_on_pagerank(session, repo, tmp_path):
+    """PageRank is the tiebreak, and only that.
+
+    Both names are neutral and both sit at depth 1, so nothing above centrality
+    in the shared rank key separates them and the more central file still leads.
+    Renamed from ``..._sorted_by_pagerank``: PageRank used to be the whole
+    ordering here, and the name outlived it by one commit.
+    """
     await _add_graph_node(session, repo.id, "src/low.py", is_entry_point=True, pagerank=0.1)
     await _add_graph_node(session, repo.id, "src/high.py", is_entry_point=True, pagerank=0.9)
     await session.commit()
@@ -194,6 +215,22 @@ async def test_fetch_entry_points_sorted_by_pagerank(session, repo, tmp_path):
     data = await fetcher.fetch()
 
     assert data.entry_points[0] == "src/high.py"
+
+
+async def test_fetch_entry_points_ranks_execution_start_above_pagerank(session, repo, tmp_path):
+    """The fallback's own defect: centrality rewards fan-in, so a widely
+    imported barrel outranked the real front door precisely because everything
+    depends on it. ``ORDER BY pagerank DESC`` led with ``types/index.ts``."""
+    await _add_graph_node(
+        session, repo.id, "src/types/index.ts", is_entry_point=True, pagerank=0.99
+    )
+    await _add_graph_node(session, repo.id, "src/main.py", is_entry_point=True, pagerank=0.01)
+    await session.commit()
+
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+
+    assert data.entry_points == ["src/main.py", "src/types/index.ts"]
 
 
 async def test_fetch_entry_points_prefers_curated_list(session, repo, tmp_path):
@@ -235,6 +272,68 @@ async def test_fetch_hotspots(session, repo, tmp_path):
     assert data.hotspots[0].path == "src/billing.py"
     assert data.hotspots[0].owner == "@alice"
     assert data.hotspots[0].churn_percentile == 95.0  # stored 0.95 → displayed 95.0
+
+
+async def test_fetch_hotspots_admits_bug_magnets_that_are_not_churn_hotspots(
+    session, repo, tmp_path
+):
+    # The filter used to be is_hotspot-only, so a file fixed four times last
+    # month that simply is not busy could never appear no matter how it ranked.
+    await _add_git_meta(session, repo.id, "src/busy.py", is_hotspot=True, churn_pct=0.99)
+    await _add_git_meta(
+        session,
+        repo.id,
+        "src/broken.py",
+        is_hotspot=False,
+        churn_pct=0.10,
+        bug_magnet=True,
+        fix_mass=9.0,
+        prior_defect_count=4,
+        last_fix_at=datetime.now(UTC) - timedelta(days=14),
+    )
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    paths = [h.path for h in data.hotspots]
+    assert paths == ["src/broken.py", "src/busy.py"]  # fix evidence leads
+    assert data.hotspots[0].fix_count == 4
+    assert data.hotspots[0].bug_magnet is True
+    assert data.hotspots[0].last_fix_age == "2 weeks ago"
+
+
+async def test_fetch_hotspots_falls_back_to_churn_order_without_fix_data(session, repo, tmp_path):
+    # A repo with no fix convention has zero fix mass everywhere; the ordering
+    # must degrade to exactly the churn ranking it had before, not to nothing.
+    await _add_git_meta(session, repo.id, "src/low.py", is_hotspot=True, churn_pct=0.20)
+    await _add_git_meta(session, repo.id, "src/high.py", is_hotspot=True, churn_pct=0.90)
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert [h.path for h in data.hotspots] == ["src/high.py", "src/low.py"]
+    assert all(h.fix_count == 0 and h.last_fix_age is None for h in data.hotspots)
+
+
+async def test_fetch_hotspots_drops_the_magnet_flag_when_recency_is_unknown(
+    session, repo, tmp_path
+):
+    # bug_magnet with a NULL last_fix_at would render an unanchored accusation.
+    await _add_git_meta(
+        session,
+        repo.id,
+        "src/a.py",
+        is_hotspot=True,
+        bug_magnet=True,
+        prior_defect_count=9,
+        last_fix_at=None,
+    )
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.hotspots[0].bug_magnet is False
+    assert data.hotspots[0].last_fix_age is None
 
 
 async def test_fetch_active_decisions_only(session, repo, tmp_path):

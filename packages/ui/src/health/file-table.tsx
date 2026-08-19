@@ -63,9 +63,15 @@ export function HealthFileTable({
   selectedPath,
   emptyMessage,
 }: HealthFileTableProps) {
-  // When sorting by score, two floored files both read 1.0; break that tie by
-  // deduction magnitude so the deeper problem sorts first (server sorts by
-  // score only, so this is a within-page refinement — P1).
+  // Two floored files both read 1.0; break that tie by deduction magnitude so
+  // the deeper problem sorts first. The OSS server now does this in the crud
+  // layer, which makes this a no-op there — but this component is published and
+  // the hosted backend still sorts on score alone, so it stays as that
+  // deployment's only tiebreak until the same ordering lands there.
+  //
+  // It can only ever refine the page it was handed. Recovering a file the
+  // server left *off* the page needs the server-side sort; that is why this is
+  // a fallback and not the fix.
   const rows = useMemo(() => {
     if (sortField !== "score") return files;
     const dir = sortOrder === "desc" ? -1 : 1;

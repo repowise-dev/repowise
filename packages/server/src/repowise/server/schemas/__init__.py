@@ -34,13 +34,6 @@ from .c4 import (
     C4RelationResponse,
     C4SystemResponse,
 )
-from .zoom import (
-    ZoomMapResponse,
-    ZoomMetricsResponse,
-    ZoomNodeResponse,
-    ZoomRectResponse,
-    ZoomRelationResponse,
-)
 from .chat import (
     ChatMessageResponse,
     ChatRequest,
@@ -55,6 +48,7 @@ from .code_quality import (
 )
 from .decisions import (
     DecisionCodeEdge,
+    DecisionCountsResponse,
     DecisionCreate,
     DecisionEvidenceResponse,
     DecisionGraphEdge,
@@ -63,6 +57,12 @@ from .decisions import (
     DecisionLineageEntry,
     DecisionRecordResponse,
     DecisionStatusUpdate,
+)
+from .episodes import (
+    EpisodeCountsResponse,
+    EpisodeDetail,
+    EpisodeListResponse,
+    EpisodeSummary,
 )
 from .external_systems import (
     ExternalSystemEntry,
@@ -77,11 +77,14 @@ from .git import (
     CommitEvolutionResponse,
     CommitResponse,
     CommitStatsResponse,
+    FixHistoryFileResponse,
+    FixHistoryResponse,
     GitMetadataResponse,
     GitSummaryResponse,
     HotspotResponse,
     OwnershipEntry,
     RiskDriverResponse,
+    RiskHistogramBucket,
     RiskRangeResponse,
 )
 from .graph import (
@@ -107,17 +110,6 @@ from .health import (
     CoordinatorHealthResponse,
     HealthResponse,
 )
-from .mcp import (
-    McpToolInfo,
-    McpToolSurfaceResponse,
-    UpdateMcpToolsRequest,
-)
-from .meta import (
-    ChangelogEntryModel,
-    ChangelogResponse,
-    ChangelogSectionModel,
-    VersionResponse,
-)
 from .intelligence import (
     CallerCalleeEntry,
     CallersCalleesResponse,
@@ -130,9 +122,19 @@ from .intelligence import (
     NeighboringCommunity,
     SymbolNodeSummary,
 )
+from .mcp import (
+    McpToolInfo,
+    McpToolSurfaceResponse,
+    UpdateMcpToolsRequest,
+)
+from .meta import (
+    ChangelogEntryModel,
+    ChangelogResponse,
+    ChangelogSectionModel,
+    VersionResponse,
+)
 from .ownership import (
     GoverningDecisionRef,
-    OwnerAgentCollab,
     KnowledgeMapOwner,
     KnowledgeMapResponse,
     KnowledgeMapSilo,
@@ -140,6 +142,7 @@ from .ownership import (
     ModuleHealthDetail,
     ModuleHealthOwner,
     ModuleHealthSummary,
+    OwnerAgentCollab,
     OwnerCoAuthor,
     OwnerFileEntry,
     OwnerListEntry,
@@ -151,12 +154,15 @@ from .ownership import (
 from .pages import (
     JobResponse,
     PageResponse,
+    PageSummaryResponse,
     PageVersionResponse,
 )
 from .pagination import Paginated
 from .repository import (
     RepoCreate,
     RepoResponse,
+    ReposSummaryResponse,
+    RepoSummaryRow,
     RepoUpdate,
 )
 from .search import (
@@ -209,12 +215,17 @@ from .workspace import (
     WorkspaceSystemNode,
     WorkspaceUnmatchedConsumer,
 )
+from .zoom import (
+    ZoomMapResponse,
+    ZoomMetricsResponse,
+    ZoomNodeResponse,
+    ZoomRectResponse,
+    ZoomRelationResponse,
+)
 
 __all__ = [
     "AgentTrendBucket",
     "AgentTrendResponse",
-    "CommitEvolutionBucket",
-    "CommitEvolutionResponse",
     "ArchEdgeResponse",
     "ArchLayerResponse",
     "ArchNodeResponse",
@@ -245,6 +256,8 @@ __all__ = [
     "ChatRequest",
     "CochangeWarning",
     "CommitDetailResponse",
+    "CommitEvolutionBucket",
+    "CommitEvolutionResponse",
     "CommitResponse",
     "CommitStatsResponse",
     "CommunityDetailResponse",
@@ -262,6 +275,7 @@ __all__ = [
     "DeadCodePatchRequest",
     "DeadCodeSummaryResponse",
     "DecisionCodeEdge",
+    "DecisionCountsResponse",
     "DecisionCreate",
     "DecisionEvidenceResponse",
     "DecisionGraphEdge",
@@ -273,14 +287,20 @@ __all__ = [
     "DirectRiskEntry",
     "DistillSavingsGroup",
     "DistillSavingsResponse",
-    "McpDropGroup",
     "EgoGraphResponse",
+    "EpisodeCountsResponse",
+    "EpisodeDetail",
+    "EpisodeListResponse",
+    "EpisodeSummary",
     "ExecutionFlowEntry",
     "ExecutionFlowsResponse",
     "ExternalSystemEntry",
     "ExternalSystemsResponse",
+    "FixHistoryFileResponse",
+    "FixHistoryResponse",
     "GitMetadataResponse",
     "GitSummaryResponse",
+    "GoverningDecisionRef",
     "GraphEdgeResponse",
     "GraphExportResponse",
     "GraphMetricsResponse",
@@ -294,11 +314,11 @@ __all__ = [
     "KnowledgeMapResponse",
     "KnowledgeMapSilo",
     "KnowledgeMapTarget",
+    "McpDropGroup",
     "McpToolInfo",
     "McpToolSurfaceResponse",
     "ModuleEdgeResponse",
     "ModuleGraphResponse",
-    "GoverningDecisionRef",
     "ModuleHealthDetail",
     "ModuleHealthOwner",
     "ModuleHealthSummary",
@@ -313,16 +333,20 @@ __all__ = [
     "OwnerProfileResponse",
     "OwnershipEntry",
     "PageResponse",
+    "PageSummaryResponse",
     "PageVersionResponse",
     "Paginated",
     "RepoCreate",
     "RepoResponse",
     "RepoStatsResponse",
+    "RepoSummaryRow",
     "RepoUpdate",
+    "ReposSummaryResponse",
     "ReviewerEntry",
     "ReviewerSuggestion",
     "ReviewerSuggestionsResponse",
     "RiskDriverResponse",
+    "RiskHistogramBucket",
     "RiskRangeResponse",
     "SearchRequest",
     "SearchResultResponse",
@@ -336,13 +360,12 @@ __all__ = [
     "UpdateMcpToolsRequest",
     "VersionResponse",
     "WebhookResponse",
-    "WorkspaceCoChangeEntry",
+    "WorkspaceArchitectureResponse",
     "WorkspaceBlastRadiusResponse",
     "WorkspaceBreakingChange",
     "WorkspaceBreakingChangesResponse",
-    "WorkspaceImpactedConsumer",
+    "WorkspaceCoChangeEntry",
     "WorkspaceCoChangesResponse",
-    "WorkspaceArchitectureResponse",
     "WorkspaceConformanceResponse",
     "WorkspaceConformanceViolation",
     "WorkspaceContractEntry",
@@ -355,6 +378,7 @@ __all__ = [
     "WorkspaceGraphEdge",
     "WorkspaceGraphNode",
     "WorkspaceGraphResponse",
+    "WorkspaceImpactedConsumer",
     "WorkspaceImpactedNode",
     "WorkspaceOrphanProvider",
     "WorkspaceRepoDiagnostics",

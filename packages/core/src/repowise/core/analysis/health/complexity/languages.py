@@ -445,6 +445,13 @@ _KOTLIN = LanguageNodeMap(
     # ``assertTrue(...)`` are plain calls placed directly in the statement
     # list (no ``expression_statement`` wrapper).
     assert_call_kinds=frozenset({"call_expression"}),
+    # The perf pass. Kotlin has no ``new``: a constructor (``OkHttpClient()``)
+    # is an ordinary ``call_expression`` over a bare ``identifier``, so one kind
+    # covers calls and construction alike. ``suspend`` is a modifier TOKEN, not
+    # a node type, so ``async_function_kinds`` stays empty and
+    # ``KotlinPerfDialect.is_async_fn`` sniffs the modifier instead (the same
+    # posture Rust takes for ``async fn``).
+    call_kinds=frozenset({"call_expression"}),
 )
 
 _DART = LanguageNodeMap(
@@ -512,6 +519,26 @@ _CPP = LanguageNodeMap(
     # ``ASSERT_TRUE`` are ordinary calls (``expect``/``assert`` prefix matched
     # case-insensitively).
     assert_call_kinds=frozenset({"call_expression"}),
+    # The perf pass needs both forms: ``db.execute()`` / ``std::fs::read()``
+    # (``call_expression``) and ``new Client()`` (``new_expression``, which the
+    # grammar does NOT spell as a call). C++ has no ``async``/``await``, so
+    # ``async_function_kinds`` stays empty and ``blocking_sync_in_async`` is
+    # deliberately unimplemented rather than faked onto ``std::async``.
+    call_kinds=frozenset({"call_expression", "new_expression"}),
+    # ``x = …`` and ``x += …`` are both an ``assignment_expression`` (the
+    # dialect tells them apart by the ``operator`` token, as in Java and Go), so
+    # the augmented set stays empty. ``int x = 1, y = 2;`` is one
+    # ``declaration`` nesting one ``init_declarator`` per bound name.
+    # ``conditional_expression`` is in ``branch_kinds`` for CCN but NOT in
+    # ``if_kinds``: a ternary is an expression, not a CFG statement.
+    assignment_kinds=frozenset({"assignment_expression"}),
+    local_decl_kinds=frozenset({"declaration"}),
+    if_kinds=frozenset({"if_statement"}),
+    block_kinds=frozenset({"compound_statement"}),
+    return_kinds=frozenset({"return_statement"}),
+    raise_kinds=frozenset({"throw_statement"}),
+    break_kinds=frozenset({"break_statement"}),
+    continue_kinds=frozenset({"continue_statement"}),
 )
 
 _CSHARP = LanguageNodeMap(
@@ -676,9 +703,7 @@ _SHELL = LanguageNodeMap(
     branch_kinds=frozenset({"if_statement", "elif_clause"}),
     # `until ...` parses as `while_statement` in tree-sitter-bash, so it is
     # covered here; `for ((;;))` is `c_style_for_statement`.
-    loop_kinds=frozenset(
-        {"for_statement", "c_style_for_statement", "while_statement"}
-    ),
+    loop_kinds=frozenset({"for_statement", "c_style_for_statement", "while_statement"}),
     # No exceptions in shell (`trap` is not `try`).
     try_kinds=frozenset(),
     catch_kinds=frozenset(),
@@ -694,10 +719,75 @@ _SHELL = LanguageNodeMap(
 )
 
 
+_PASCAL = LanguageNodeMap(
+    # ``defProc`` pairs a signature (``header: declProc``) with a ``body``
+    # block field -- the interface-only ``declProc`` forward/interface
+    # declaration carries no body and is deliberately NOT a function kind
+    # (nothing to walk; the implementation-section ``defProc`` is the one
+    # physical node with a measurable body). Anonymous procedure/function
+    # literals (``Proc := procedure begin ... end``) are a distinct
+    # ``lambda`` node type that also carries its own ``body`` field.
+    function_kinds=frozenset({"defProc"}),
+    lambda_kinds=frozenset({"lambda"}),
+    # ``if`` / ``ifElse`` are two distinct node types for bare-then vs.
+    # then/else. An ``else if`` chain nests a fresh ``if``/``ifElse`` one
+    # level inside the ``else`` field rather than a flat elif-clause, so the
+    # recursive walker already counts one branch per level without special
+    # casing.
+    branch_kinds=frozenset({"if", "ifElse"}),
+    loop_kinds=frozenset({"for", "while", "repeat"}),
+    try_kinds=frozenset({"try"}),
+    # A bound handler (``on E: Exception do``) is an ``exceptionHandler``
+    # node; a bare ``except ... end`` with no ``on`` clauses has no such
+    # node at all (the statements sit directly under ``except``), so a
+    # parameterless catch-all is undercounted -- the safe direction, same
+    # posture Dart takes for its bare ``on FormatException {}``.
+    catch_kinds=frozenset({"exceptionHandler"}),
+    switch_kinds=frozenset({"case"}),
+    # The ``else`` branch of a ``case`` has no dedicated node (its
+    # statements sit directly under ``case``, same shape as the bare
+    # ``except``), so it doesn't add a caseCase count -- undercounted, safe.
+    case_kinds=frozenset({"caseCase"}),
+    # ``and`` / ``or`` are named keyword-TOKEN node types in this grammar
+    # (``kAnd`` / ``kOr``, siblings of the operands inside ``exprBinary``),
+    # not generic operator text inside a binary node, so no text-sniffing
+    # set is needed here (unlike the C-family languages above).
+    boolean_operator_kinds=frozenset({"kAnd", "kOr"}),
+    # No class-level metrics: Pascal splits a class into an interface-only
+    # ``declClass`` (method SIGNATURES only, via ``declProc`` -- no bodies)
+    # and a fully separate implementation section where each qualified
+    # method (``TFoo.Bar``) is its own top-level ``defProc``. There is no
+    # single node that groups a type's method BODIES the way
+    # ``_collect_class_methods`` expects (``declClass``'s children are
+    # forward declarations only), so mapping ``class_kinds`` here would
+    # silently emit a ``ClassComplexity`` with ``method_count == 0`` for
+    # every class. Same posture as Go (external-receiver methods): left
+    # unmapped rather than emitting a misleading zero-method class.
+    if_kinds=frozenset({"if", "ifElse"}),
+    block_kinds=frozenset({"block"}),
+    # No dedicated ``return`` node -- ``Result := ...`` is an ordinary
+    # assignment and a bare ``Exit`` / ``Exit(...)`` is an ordinary
+    # identifier/call statement, so neither edges to the CFG exit specially
+    # (safe under-signal, not a crash).
+    return_kinds=frozenset(),
+    raise_kinds=frozenset({"raise"}),
+    # ``Break`` / ``Continue`` are ordinary identifiers (a bare
+    # ``statement`` wrapping an ``identifier``), not dedicated node types --
+    # same under-signal posture as ``return_kinds``.
+    break_kinds=frozenset(),
+    continue_kinds=frozenset(),
+    with_kinds=frozenset({"with"}),
+)
+
+
 LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "python": _PY,
     "typescript": _TS,
     "tsx": _TS,
+    # An SFC reaches the walker as a TypeScript buffer (see
+    # ingestion/sfc_source.py), so the TS node map applies verbatim.
+    "svelte": _TS,
+    "vue": _TS,
     "javascript": _JS,
     "jsx": _JS,
     "go": _GO,
@@ -710,6 +800,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "scala": _SCALA,
     "ruby": _RUBY,
     "shell": _SHELL,
+    "pascal": _PASCAL,
 }
 
 

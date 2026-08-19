@@ -1,15 +1,13 @@
 """Onboarding documentation collection.
 
-A curated set of up to eight pages — Project Overview, Architecture Guide,
-Getting Started, Codebase Map, Key Concepts, How It Works, Development Guide,
-Active Landscape — designed to be the first thing a new contributor (or LLM
-agent) reads.
+A curated set of up to six pages: Project Overview, Getting Started, Key
+Concepts, How It Works, Active Landscape and Glossary, designed to be the first
+thing a new contributor (or LLM agent) reads.
 
-Two slots ("project_overview", "architecture_guide") are *promoted*: they
-reuse the existing ``repo_overview`` and ``architecture_diagram`` pages,
-tagged via ``metadata.onboarding_slot``. The other six slots are new pages
-generated at level 8 with ``page_type='onboarding'`` and a
-``metadata.subkind`` discriminator.
+One slot ("project_overview") is *promoted*: it reuses the existing
+``repo_overview`` page, tagged via ``metadata.onboarding_slot``. The other
+five slots are new pages generated at level 8 with ``page_type='onboarding'``
+and a ``metadata.subkind`` discriminator.
 
 Architecture:
   - :mod:`slots`     — slot identifiers, fixed reading order, promoted map.
@@ -28,11 +26,8 @@ from .slots import (
     ONBOARDING_ORDER,
     PROMOTED_SLOTS,
     SLOT_ACTIVE_LANDSCAPE,
-    SLOT_ARCHITECTURE_GUIDE,
-    SLOT_CODEBASE_MAP,
-    SLOT_DEVELOPMENT_GUIDE,
     SLOT_GETTING_STARTED,
-    SLOT_GUIDED_TOUR,
+    SLOT_GLOSSARY,
     SLOT_HOW_IT_WORKS,
     SLOT_KEY_CONCEPTS,
     SLOT_PROJECT_OVERVIEW,
@@ -45,11 +40,8 @@ __all__ = [
     "ONBOARDING_ORDER",
     "PROMOTED_SLOTS",
     "SLOT_ACTIVE_LANDSCAPE",
-    "SLOT_ARCHITECTURE_GUIDE",
-    "SLOT_CODEBASE_MAP",
-    "SLOT_DEVELOPMENT_GUIDE",
     "SLOT_GETTING_STARTED",
-    "SLOT_GUIDED_TOUR",
+    "SLOT_GLOSSARY",
     "SLOT_HOW_IT_WORKS",
     "SLOT_KEY_CONCEPTS",
     "SLOT_PROJECT_OVERVIEW",

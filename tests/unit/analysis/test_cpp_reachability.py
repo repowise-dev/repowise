@@ -34,7 +34,6 @@ from repowise.core.analysis.dead_code.cpp_reachability import (
     is_cpp_file_reachable,
 )
 
-
 # ---------------------------------------------------------------------------
 # Graph helper
 # ---------------------------------------------------------------------------

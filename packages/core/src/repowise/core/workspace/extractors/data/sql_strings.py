@@ -84,6 +84,33 @@ _SQL_KEYWORDS = frozenset(
 
 _MIN_LITERAL_LEN = 12
 
+# A SQL literal *opens* with SQL. Prose that happens to satisfy the verb shape
+# does not: a docstring reading "The incremental update path re-parses ... would
+# SELECT the whole table ... vanished from a file" clears every gate above and
+# yielded the tables ``path`` and ``would``. Anchoring to the start rejects
+# prose as a class instead of blocklisting the English words it leaks.
+#
+# The opener set is deliberately wider than the statement verbs. A query is
+# routinely preceded by a named-query comment (``-- name: get_user``, the
+# aiosql/yesql/sqlc/HugSQL convention), a ``CREATE TABLE x AS SELECT ... FROM
+# y`` whose read of ``y`` is a real consumer, an ``EXPLAIN``, or a T-SQL
+# ``DECLARE``/``SET``/``BEGIN`` preamble. Requiring a bare statement verb threw
+# all of those away; the verb gate below still decides whether it is SQL.
+_SQL_COMMENT_PREFIX_RE = re.compile(r"^(?:\s|--[^\n]*\n|/\*.*?\*/)+", re.DOTALL)
+_SQL_OPENER_RE = re.compile(
+    r"^[(\s]*(?:"
+    r"WITH|SELECT|INSERT|UPDATE|DELETE|MERGE|REPLACE|UPSERT"
+    r"|CREATE|EXPLAIN|TRUNCATE|CALL|EXEC(?:UTE)?|DECLARE|SET|BEGIN|COPY"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _opens_with_sql(literal: str) -> bool:
+    """True when *literal* begins with SQL, ignoring any leading comment."""
+    stripped = _SQL_COMMENT_PREFIX_RE.sub("", literal, count=1)
+    return bool(_SQL_OPENER_RE.match(stripped))
+
 
 def _verb_for_statement(stmt: object) -> str:
     kind = type(stmt).__name__.lower()
@@ -121,6 +148,7 @@ class SqlStringsDialect:
             s = next(g for g in m.groups() if g is not None)
             if (
                 len(s) >= _MIN_LITERAL_LEN
+                and _opens_with_sql(s)
                 and _SQL_VERB_RE.search(s)
                 and (_UPPER_VERB_RE.search(s) or _SQL_PUNCT_RE.search(s))
             ):
@@ -156,9 +184,18 @@ class SqlStringsDialect:
             if stmt is None:
                 return None
             verb = _verb_for_statement(stmt)
+            # A CTE alias is a name bound by this statement, not a table it
+            # reads. sqlglot models a reference to one as exp.Table all the
+            # same, so ``WITH ranked AS (...) ... FROM ranked`` reported a
+            # table named ``ranked``. Only unqualified references shadow.
+            cte_names = {
+                cte.alias.lower() for cte in stmt.find_all(exp.CTE) if cte.alias
+            }
             for table in stmt.find_all(exp.Table):
                 name = table.name
                 if not name:
+                    continue
+                if not table.db and name.lower() in cte_names:
                     continue
                 raw = f"{table.db}.{name}" if table.db else name
                 found.append((raw, verb))

@@ -351,6 +351,13 @@ class CodexCliProvider(BaseProvider):
             serializes subprocess calls by default.
     """
 
+    # A process spawn plus a full Codex agent turn. The floor is tens of
+    # seconds even for a short prompt, so an interactive caller has to budget
+    # in minutes or it cancels every call it ever makes (#1119). Stays under
+    # _EXEC_TIMEOUT_SECONDS so the caller gives up before the subprocess does
+    # and the error names the real cause.
+    interactive_timeout_s: float = 180.0
+
     def __init__(
         self,
         model: str | None = None,
@@ -404,6 +411,7 @@ class CodexCliProvider(BaseProvider):
             "--cd",
             str(self._repo_path),
         ]
+        cmd.extend(["--config", "project_doc_max_bytes=0"])
         reasoning_config = _codex_reasoning_config(self._codex_cmd, self.model_name, reasoning)
         if reasoning_config:
             cmd.extend(["--config", reasoning_config])

@@ -7,10 +7,10 @@ interface Props {
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const { slug } = await params;
+  const { id, slug } = await params;
   const pageId = slug.join("/");
   try {
-    const page = await getPageById(pageId);
+    const page = await getPageById(pageId, id);
     return { title: page.title };
   } catch {
     return { title: "Documentation" };

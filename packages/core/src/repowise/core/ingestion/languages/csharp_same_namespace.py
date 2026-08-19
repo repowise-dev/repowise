@@ -12,10 +12,10 @@ produce **no edge at all** under plain import resolution, which makes the
 most cohesive parts of a C# codebase (and entire xunit suites) read as
 disconnected orphans.
 
-This pass mirrors the JVM same-package prior art
-(:mod:`.jvm_same_package`): a self-contained, regex-driven scan over raw
-source text that emits conservative ``imports`` edges after the regular
-import-resolution phases ran.
+This is the C# binding of the shared implicit-scope scan
+(:mod:`.scope_scan`). It hands over two scopes in C# lookup order — the file's
+own namespace(s) first, then the project's global usings — and owns the
+namespace index; that module owns the identifier scan and the edge emission.
 
 For each C# file A, every capitalized identifier in A's source is checked
 against the types declared in A's *candidate namespaces*: first A's own
@@ -54,13 +54,12 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .scope_scan import FileScope, ScopeTier, emit_scope_edges
+
 if TYPE_CHECKING:
     import networkx as nx
 
     from ..resolvers.dotnet.index import DotNetProjectIndex
-
-# Capitalized identifier — candidate type reference.
-_TYPE_IDENT_RE = re.compile(r"\b[A-Z][A-Za-z0-9_]*\b")
 
 # ``using Foo.Bar;`` / ``global using Foo.Bar;`` — namespace usings.
 _USING_NS_RE = re.compile(
@@ -159,12 +158,15 @@ def resolve_csharp_same_namespace_refs(
 
     ns_types = build_namespace_type_index(cs_texts)
 
-    count = 0
-    for path in sorted(cs_texts):
-        text = cs_texts[path]
+    def _declarers(namespaces: list[str], ident: str) -> set[str]:
+        declaring: set[str] = set()
+        for ns in namespaces:
+            declaring.update(ns_types.get(ns, {}).get(ident, ()))
+        return declaring
+
+    def plan(path: str, text: str) -> FileScope | None:
         own_namespaces = list(dict.fromkeys(declared_namespaces(text)))
         explicit_ns = [m.group(1) for m in _USING_NS_RE.finditer(text)]
-        alias_names = {m.group(1) for m in _USING_ALIAS_RE.finditer(text)}
 
         # Project-wide usings (``global using`` files + csproj <Using>
         # items + SDK implicit sets), restricted to namespaces that
@@ -182,57 +184,41 @@ def resolve_csharp_same_namespace_refs(
                 )
 
         if not own_namespaces and not global_ns:
-            continue
+            return None
 
         # Types declared in namespaces this file explicitly ``using``s —
         # those resolve through the normal import path and shadow the
-        # global-using tier.
+        # global-using tier only. An explicit using does *not* shadow the
+        # file's own namespace: C# lookup gives the closest scope priority.
         explicit_types: set[str] = set()
         for ns in explicit_ns:
             explicit_types.update(ns_types.get(ns, ()))
 
-        # target file → (referenced names, hint source)
-        found: dict[str, tuple[list[str], str]] = {}
-        for ident in sorted(set(_TYPE_IDENT_RE.findall(text))):
-            if ident in _BCL_COMMON_TYPES or ident in alias_names:
-                continue
-            target: str | None = None
-            hint = _SAME_NAMESPACE_HINT
-            # Tier 1: the file's own namespace(s) — closest scope wins.
-            declaring: set[str] = set()
-            for ns in own_namespaces:
-                declaring.update(ns_types.get(ns, {}).get(ident, ()))
-            if declaring:
-                if len(declaring) != 1:
-                    continue  # ambiguous — no edge to anyone
-                target = next(iter(declaring))
-            elif global_ns:
-                if ident in explicit_types:
-                    continue  # explicit using already resolved it
-                hint = _GLOBAL_USING_HINT
-                declaring = set()
-                for ns in global_ns:
-                    declaring.update(ns_types.get(ns, {}).get(ident, ()))
-                if len(declaring) != 1:
-                    continue
-                target = next(iter(declaring))
-            if target is None or target == path:
-                continue
-            names, _ = found.setdefault(target, ([], hint))
-            names.append(ident)
-
-        for target, (names, hint) in sorted(found.items()):
-            if not graph.has_node(path) or not graph.has_node(target):
-                continue
-            if graph.has_edge(path, target):
-                continue  # a real import (or stronger evidence) wins
-            graph.add_edge(
-                path,
-                target,
-                edge_type="imports",
-                imported_names=names,
-                hint_source=hint,
+        tiers = []
+        if own_namespaces:
+            tiers.append(
+                ScopeTier(
+                    hint=_SAME_NAMESPACE_HINT,
+                    lookup=lambda ident: _declarers(own_namespaces, ident),
+                )
             )
-            count += 1
+        if global_ns:
+            tiers.append(
+                ScopeTier(
+                    hint=_GLOBAL_USING_HINT,
+                    lookup=lambda ident: (
+                        set() if ident in explicit_types else _declarers(global_ns, ident)
+                    ),
+                )
+            )
+        return FileScope(
+            tiers=tuple(tiers),
+            shadowed=frozenset(m.group(1) for m in _USING_ALIAS_RE.finditer(text)),
+        )
 
-    return count
+    return emit_scope_edges(
+        graph,
+        ((path, cs_texts[path]) for path in sorted(cs_texts)),
+        plan,
+        skip_names=_BCL_COMMON_TYPES,
+    )

@@ -10,8 +10,8 @@ from httpx import AsyncClient
 from repowise.core.persistence import (
     batch_upsert_graph_edges,
     batch_upsert_graph_nodes,
+    crud,
 )
-from repowise.core.persistence import crud
 
 
 async def create_test_repo(client: AsyncClient) -> dict:
@@ -223,9 +223,7 @@ async def test_type_filter_narrows_plans_but_keeps_summary(client: AsyncClient, 
     assert body["summary"]["total"] == 4
 
 
-async def test_file_path_filter_narrows_plans_but_keeps_summary(
-    client: AsyncClient, app
-) -> None:
+async def test_file_path_filter_narrows_plans_but_keeps_summary(client: AsyncClient, app) -> None:
     repo_id = await _seed(client, app)
     resp = await client.get(
         f"/api/repos/{repo_id}/refactoring/targets",
@@ -308,6 +306,79 @@ async def test_centrality_breaks_ties_in_ranking(client: AsyncClient, app) -> No
     files = [p["file_path"] for p in body["plans"]]
     assert files == ["pkg/hub.py", "pkg/leaf.py"]
     assert body["plans"][0]["rank_score"] > body["plans"][1]["rank_score"]
+
+
+async def test_plot_fields_come_from_centrality_and_health(client: AsyncClient, app) -> None:
+    """`dependents` and `file_nloc` are served, and both read one source per
+    figure. `dependents` is the in-degree the ranking already uses, so two plans
+    on the same file agree even though their blast-radius dicts carry the count
+    under different keys — the drift that made a scatter axis untrustworthy."""
+    repo = await create_test_repo(client)
+    repo_id = repo["id"]
+    async with app.state.session_factory() as session:
+        await crud.batch_upsert_graph_metrics(
+            session, repo_id, {"pkg/hub.py": {"in_degree": 25, "out_degree": 1}}
+        )
+        await crud.save_health_metrics(
+            session,
+            repo_id,
+            [
+                {
+                    "file_path": "pkg/hub.py",
+                    "score": 4.0,
+                    "max_ccn": 9,
+                    "max_nesting": 3,
+                    "nloc": 812,
+                    "has_test_file": False,
+                    "module": "pkg",
+                }
+            ],
+        )
+        common = {
+            "file_path": "pkg/hub.py",
+            "target_symbol": "C",
+            "plan": {},
+            "evidence": {},
+            "impact_delta": 0.0,
+            "effort_bucket": "M",
+            "confidence": "medium",
+            "source_biomarker": "",
+        }
+        await crud.save_refactoring_suggestions(
+            session,
+            repo_id,
+            [
+                # Two detectors, two different blast-radius spellings.
+                {
+                    **common,
+                    "refactoring_type": "extract_class",
+                    "blast_radius": {"dependents_count": 9},
+                },
+                {**common, "refactoring_type": "break_cycle", "blast_radius": {"callers": 3}},
+            ],
+        )
+        await session.commit()
+
+    plans = (await client.get(f"/api/repos/{repo_id}/refactoring/targets")).json()["plans"]
+    assert len(plans) == 2
+    assert {p["dependents"] for p in plans} == {25}
+    assert {p["file_nloc"] for p in plans} == {812}
+
+    # The single-plan endpoint agrees with the list it was opened from.
+    detail = (await client.get(f"/api/repos/{repo_id}/refactoring/{plans[0]['id']}")).json()
+    assert detail["dependents"] == 25
+    assert detail["file_nloc"] == 812
+
+
+async def test_plot_fields_default_to_zero_without_a_health_pass(client: AsyncClient, app) -> None:
+    """A repo with plans but no health snapshot still serves the fields. 0 is a
+    real answer here — the surface reads it as "not measured" and drops the
+    plan from the chart rather than plotting it at the origin."""
+    repo_id = await _seed(client, app)
+    plans = (await client.get(f"/api/repos/{repo_id}/refactoring/targets")).json()["plans"]
+    assert plans
+    assert all(p["file_nloc"] == 0 for p in plans)
+    assert all(p["dependents"] == 0 for p in plans)
 
 
 async def test_min_confidence_filters(client: AsyncClient, app) -> None:

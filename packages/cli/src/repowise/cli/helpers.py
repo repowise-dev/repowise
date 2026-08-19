@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -13,6 +14,7 @@ from typing import Any, Literal, TypeVar
 import click
 from rich.console import Console
 
+from repowise.cli.output import resolve_console_width
 from repowise.core.reasoning import (
     ReasoningMode,
 )
@@ -43,11 +45,26 @@ from repowise.core.update_lock import (
 
 T = TypeVar("T")
 
-console = Console()
-err_console = Console(stderr=True)
+# Width is pinned only when the stream is not a terminal — see
+# `output.resolve_console_width`. Without it rich renders a pipe at 80 columns
+# and ellipsises the very paths an agent needs to act on.
+console = Console(width=resolve_console_width(sys.stdout))
+err_console = Console(stderr=True, width=resolve_console_width(sys.stderr))
 
 STATE_FILENAME = "state.json"
 REPOWISE_DIR = ".repowise"
+
+# Suppresses mirroring the provider key into `.repowise/.env`. The env
+# spelling of `init --no-save-key`, mirroring REPOWISE_SKIP_EDITOR_SETUP: CI
+# and shared machines configure the process, not the command line. It is also
+# how the interactive key prompt records a "no": that answer is taken at the
+# start of the run and has to survive until config is written at the end.
+NO_SAVE_KEY_ENV = "REPOWISE_NO_SAVE_KEY"
+
+
+def _clean_flag(value: str | None) -> bool:
+    """Whether an env var is set to something meaning "on"."""
+    return (value or "").strip().lower() not in ("", "0", "false", "no")
 
 
 # ---------------------------------------------------------------------------
@@ -182,23 +199,81 @@ def get_db_url_for_repo(repo_path: Path) -> str:
     return resolve_db_url(repo_path)
 
 
-async def _ensure_db_async(repo_path: Path) -> tuple[Any, Any]:
-    from repowise.core.persistence import (
-        create_engine,
-        create_session_factory,
-        init_db,
-    )
-
-    url = get_db_url_for_repo(repo_path)
-    engine = create_engine(url)
-    await init_db(engine)
-    session_factory = create_session_factory(engine)
-    return engine, session_factory
+#: Busy timeout for the reconcile's own connection. The engine default is 30s,
+#: sized for bulk graph-edge writes; inheriting it here is a trap, because a
+#: read command opens several engines (``status`` four, ``doctor`` five) and a
+#: store locked by a concurrent ``repowise update`` would stall each one in
+#: turn — measured at 133s of silence for ``status`` before this was bounded.
+#: The reconcile is a best-effort secondary write, so it takes the same lever
+#: issue #326 gave the cost tracker: fail fast and be dropped rather than block.
+_RECONCILE_BUSY_TIMEOUT_MS = 2000
 
 
-def ensure_db(repo_path: Path) -> tuple[Any, Any]:
-    """Create the DB engine, initialise the schema, and return ``(engine, session_factory)``."""
-    return run_async(_ensure_db_async(repo_path))
+async def reconcile_schema_best_effort(db_url: str) -> None:
+    """Back-fill additive schema drift on the store at *db_url*, best-effort.
+
+    An index built by an older repowise is missing whatever columns the models
+    have gained since, and the ORM then fails with a raw ``no such column`` on
+    the first query — which for a read command means every read. ``init_db``
+    back-fills those columns in place and is idempotent, so the CLI pairs it
+    with ``create_engine`` everywhere it opens a store, the way the MCP server,
+    the workspace registry and the FastAPI app already do in their lifespans.
+
+    Opportunistic, not a precondition, which is the part worth having in one
+    place. Reconciling needs a write, and a store can be read-only or
+    exclusively locked by a concurrent ``repowise update``. Aborting there would
+    be a regression twice over: a store already on the current schema needs no
+    DDL and would have read fine, and where the drift is real the following
+    query fails with the ``no such column`` that the failure shield turns into
+    "this index predates the installed repowise, run repowise update" — a
+    better answer than whichever write error stopped the repair.
+
+    Takes a URL rather than an engine so the repair runs on its own short-timeout
+    connection: the caller's engine keeps the full 30s window for the work it was
+    opened to do, and a contended repair gives up in two seconds instead of
+    stalling the command behind it.
+
+    Never CREATES a store. ``init_db`` on a fresh path would materialise a
+    42-table file, so a read command run in a repo that was never indexed would
+    leave a database behind where the user expects "not indexed yet".
+    """
+    from repowise.core.persistence import create_engine, init_db
+
+    if _missing_sqlite_file(db_url):
+        return
+
+    engine = create_engine(db_url, busy_timeout_ms=_RECONCILE_BUSY_TIMEOUT_MS)
+    try:
+        with contextlib.suppress(Exception):
+            await init_db(engine)
+    finally:
+        with contextlib.suppress(Exception):
+            await engine.dispose()
+
+
+def _missing_sqlite_file(db_url: str) -> bool:
+    """True when *db_url* names a SQLite file that does not exist yet.
+
+    Only SQLite is checked: a server-backed URL has no file to create, and the
+    caller is not the component that decides whether that database should exist.
+    """
+    if not db_url.startswith("sqlite"):
+        return False
+    _, sep, tail = db_url.partition(":///")
+    if not sep or not tail or tail.startswith(":memory:"):
+        return False
+    return not Path(tail).exists()
+
+
+def db_configured() -> bool:
+    """True when ``REPOWISE_DB_URL`` or ``REPOWISE_DATABASE_URL`` is set.
+
+    The DB may still be the repo-local ``wiki.db`` default — the file
+    existence check the callers pair this with decides that.
+    """
+    from repowise.core.persistence import get_configured_db_url
+
+    return get_configured_db_url() is not None
 
 
 # ---------------------------------------------------------------------------
@@ -214,19 +289,61 @@ def load_state(repo_path: Path) -> dict[str, Any]:
     return {}
 
 
-def save_state(repo_path: Path, state: dict[str, Any]) -> None:
+#: Slots the last whole-repo generation put in front of this repository's
+#: signals, which is not the same as the slots that produced a page. The two
+#: differ, and only the first answers "has this index ever been offered a
+#: Glossary?".
+ONBOARDING_SLOTS_OFFERED_KEY = "onboarding_slots_offered"
+
+
+def stamp_offered_slots(state: dict[str, Any], *, enabled: bool = True) -> None:
+    """Record which onboarding slots this whole-repo run evaluated.
+
+    Only a run that generates the whole repository may call this: the slot
+    gates read whole-repo signals, so a scoped run that saw one changed file
+    has not offered anything to anything.
+
+    Written because a missing onboarding row has two causes that look identical
+    in a store and want opposite responses. A slot registered after this index
+    was built has never been evaluated here, and ``update --full`` would build
+    it; a slot that *was* evaluated and whose gate refused the repository will
+    be refused again by the same signals, and telling the user to spend a model
+    run on it is a lie. Measured on ``test-repos/microdot``: of the five
+    registered slots, two produce pages and three (``getting_started``,
+    ``active_landscape``, ``glossary``) are gate-skipped on every run, full or
+    fresh. A notice driven by the rows alone would name all three, forever, and
+    none of them would ever arrive.
+
+    ``enabled`` is the run's ``enable_onboarding``. A run with onboarding off
+    offered nothing, and recording otherwise would silence the notice for a
+    user who later turns it on.
+    """
+    from repowise.core.generation.onboarding import iter_specs
+
+    state[ONBOARDING_SLOTS_OFFERED_KEY] = (
+        sorted(spec.slot for spec in iter_specs()) if enabled else []
+    )
+
+
+def save_state(repo_path: Path, state: dict[str, Any], *, full_index: bool = False) -> None:
     """Write *state* to ``.repowise/state.json``.
 
     Every persist stamps the store-format markers (``store_format_version`` and
     the ``written_by_version`` package version that wrote it) so the upgrade
     layer always has a current record of the store's shape and provenance.
+
+    ``full_index`` marks a persist that follows a full-repo (re)generation, so
+    the store may be stamped to the terminal store-format version. A routine
+    incremental persist leaves it False and the version clamps below any
+    ``REINDEX_RECOMMENDED`` gate, keeping a reindex recommendation alive until
+    an actual re-index clears it.
     """
     ensure_repowise_dir(repo_path)
     try:
         from repowise.cli import __version__ as _pkg_version
         from repowise.core.upgrade import stamp as _stamp_store_version
 
-        _stamp_store_version(state, package_version=_pkg_version)
+        _stamp_store_version(state, package_version=_pkg_version, full_index=full_index)
     except Exception:  # never let stamping block a persist
         pass
     from repowise.core.fsutils import atomic_write_text
@@ -292,10 +409,8 @@ def write_update_queued(repo_path: Path, head: str | None) -> None:
     except OSError:
         return
     payload = {"target_commit": head, "queued_at": time.time()}
-    try:
+    with contextlib.suppress(OSError):
         _update_queued_path(repo_path).write_text(json.dumps(payload), encoding="utf-8")
-    except OSError:
-        pass
 
 
 def read_update_queued(repo_path: Path) -> dict[str, Any] | None:
@@ -319,10 +434,8 @@ def read_update_queued(repo_path: Path) -> dict[str, Any] | None:
 
 def clear_update_queued(repo_path: Path) -> None:
     """Drop the queued marker. Called by update_cmd once it owns the real lock."""
-    try:
+    with contextlib.suppress(OSError):
         _update_queued_path(repo_path).unlink(missing_ok=True)
-    except OSError:
-        pass
 
 
 def write_update_pending(repo_path: Path, head: str | None) -> None:
@@ -338,10 +451,8 @@ def write_update_pending(repo_path: Path, head: str | None) -> None:
         ensure_repowise_dir(repo_path)
     except OSError:
         return
-    try:
+    with contextlib.suppress(OSError):
         _update_pending_path(repo_path).write_text(head, encoding="utf-8")
-    except OSError:
-        pass
 
 
 def read_update_pending(repo_path: Path) -> str | None:
@@ -358,10 +469,55 @@ def read_update_pending(repo_path: Path) -> str | None:
 
 def clear_update_pending(repo_path: Path) -> None:
     """Drop the pending marker once the rolled-forward update has consumed it."""
-    try:
+    with contextlib.suppress(OSError):
         _update_pending_path(repo_path).unlink(missing_ok=True)
-    except OSError:
-        pass
+
+
+def _pending_commit_still_ahead(
+    repo_path: Path, pending_head: str, indexed_head: str | None
+) -> bool:
+    """True only when ``pending_head`` is a resolvable commit strictly ahead of
+    ``indexed_head`` — a newer commit the index has not caught up to yet.
+
+    Equal commits, ancestors of ``indexed_head``, and commits that no longer
+    resolve (rebased or gc'd away) all return ``False``, so the caller clears
+    them instead of leaving the marker behind forever.
+    """
+    if not indexed_head or pending_head == indexed_head:
+        return False
+    import subprocess
+
+    try:
+        # ``indexed_head`` is an ancestor of ``pending_head`` => pending is
+        # newer than what we indexed and worth keeping. A non-zero exit
+        # (including an unresolvable pending commit) means "not ahead".
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", indexed_head, pending_head],
+            cwd=str(repo_path),
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def consume_update_pending(repo_path: Path, indexed_head: str | None) -> None:
+    """Clear the ``.update.pending`` marker once the index has caught up to it.
+
+    A bailed update writes the latest HEAD to ``.update.pending`` (see
+    :func:`write_update_pending`) so the in-flight update can tell more commits
+    landed. The update that actually holds the lock calls this when it
+    finishes: the marker is obsolete unless it points to a commit strictly
+    *ahead* of the one just indexed. The previous consumer only cleared on an
+    exact ``pending == head`` match, so once HEAD advanced past the pending
+    commit (or that commit was rebased away) the marker leaked indefinitely.
+    """
+    pending_head = read_update_pending(repo_path)
+    if pending_head is None:
+        return
+    if not _pending_commit_still_ahead(repo_path, pending_head, indexed_head):
+        clear_update_pending(repo_path)
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +577,28 @@ def get_head_commit(repo_path: Path) -> str | None:
     return _core_head(Path(repo_path))
 
 
+def head_commit_ts(repo_path: Path) -> float | None:
+    """Committer timestamp of the repo's HEAD, or None when git is unavailable.
+
+    Anchors the periodic idle-file health re-score gate (#728) to repo time
+    rather than wall clock, so the cadence is deterministic under
+    ``REPOWISE_GIT_WINDOW_ANCHOR`` and correct for historical checkouts.
+
+    Shared with ``init`` so a fresh index can stamp ``last_full_rescore_at`` in
+    the same units the gate reads it back in.
+    """
+    try:
+        import git
+
+        repo = git.Repo(repo_path, search_parent_directories=True)
+        try:
+            return float(repo.head.commit.committed_date)
+        finally:
+            repo.close()
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Config (provider / model / embedder persisted after init)
 # ---------------------------------------------------------------------------
@@ -442,6 +620,92 @@ def resolve_reasoning(
         raise click.ClickException(str(exc)) from exc
 
 
+def resolve_max_file_pages(
+    chosen: int | None = None,
+    config: dict[str, Any] | None = None,
+) -> int | None:
+    """Resolve the file-page cap: explicit choice, then config.yaml, then unset.
+
+    Three states reach ``GenerationConfig.max_file_pages`` (see its comment and
+    ``selection/selector.py``): ``None`` leaves the volume policy in charge, ``0``
+    is an explicit refusal to cap, and a positive value is a cap.
+
+    A negative or unparseable ``max_file_pages`` in config.yaml resolves to
+    ``None`` rather than to zero pages, so a typo hands the decision back to the
+    policy instead of silently deleting the file layer.
+    """
+    raw = chosen if chosen is not None else (config or {}).get("max_file_pages")
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if value == 0:
+        return 0  # "all of them", and it survives the policy
+    return value if value > 0 else None
+
+
+def _persist_provider_key(repo_path: Path, provider: str) -> None:
+    """Mirror ``provider``'s credential from the environment into ``.repowise/.env``.
+
+    Key persistence used to hang off the interactive key *prompt*, so it only
+    ran when the user typed a key. Supplying the key through the environment is
+    precisely the no-prompt case, which meant a scripted
+    ``init --provider openai --yes`` indexed fine and wrote ``provider:`` to
+    config.yaml but left no credential behind: ``repowise mcp`` against that
+    repo then answered ``degraded: "no-llm-provider"``. Scripted init is the
+    primary path for agents and CI, so a run that succeeds has to leave a repo
+    whose MCP server can actually answer.
+
+    The rule, stated out loud: a key that successfully indexed this repo is the
+    key this repo needs, so it is saved, with a notice naming the file and
+    ``--no-save-key`` to opt out. Nothing is written for a provider that needs
+    no credential.
+
+    Routed through :func:`save_repo_env_key` rather than writing the file here:
+    the ``.gitignore`` entry and the owner-only mode come with it, and a
+    hand-rolled write would leave a committable secret.
+
+    Best-effort by design. It runs at the tail of a completed init, after the
+    index has been paid for, and it is the first thing on that path to write
+    outside ``.repowise/``, so a read-only checkout or an unwritable
+    ``.gitignore`` must cost the user a warning, not the run.
+    """
+    from repowise.core.providers.llm.registry import PROVIDER_API_KEY_ENVS
+    from repowise.core.repo_config import save_repo_env_key
+
+    if _clean_flag(os.environ.get(NO_SAVE_KEY_ENV)):
+        return
+
+    # Keys only. ``provider_required_envs`` would also hand back ollama's
+    # OLLAMA_BASE_URL, and pinning an endpoint into the repo is a different
+    # decision from saving a credential: a later run on another network
+    # would silently reuse the stale URL.
+    #
+    # Some providers accept either of two vars (gemini: GEMINI_API_KEY /
+    # GOOGLE_API_KEY). Persist the one actually carrying the value, not both,
+    # so the var written is the var `provider_kwargs` will read back.
+    for env_var in PROVIDER_API_KEY_ENVS.get(provider, ()):
+        value = (os.environ.get(env_var) or "").strip()
+        if not value:
+            continue
+        try:
+            save_repo_env_key(repo_path, env_var, value)
+        except (OSError, ValueError) as exc:
+            err_console.print(
+                f"[yellow]Warning:[/yellow] could not save {env_var} to "
+                f".repowise/.env ({exc}). The index is complete, but "
+                f"`repowise mcp` will need {env_var} in its environment."
+            )
+            return
+        console.print(
+            f"[dim]Saved {env_var} to .repowise/.env (gitignored). "
+            f"--no-save-key or {NO_SAVE_KEY_ENV}=1 to skip.[/dim]"
+        )
+        return
+
+
 def save_config(
     repo_path: Path,
     provider: str,
@@ -452,6 +716,7 @@ def save_config(
     exclude_patterns: list[str] | None = None,
     commit_limit: int | None = None,
     reasoning: str | None = None,
+    save_key: bool = True,
 ) -> None:
     """Write provider/model/embedder (and optionally exclude_patterns) to ``.repowise/config.yaml``.
 
@@ -461,6 +726,12 @@ def save_config(
     embedder used at init time — without it the server silently falls back to a
     provider default (e.g. ``text-embedding-3-small``), which mismatches the
     indexed vectors and breaks chat/search retrieval (issue #426).
+
+    ``save_key`` also mirrors the provider's credential into ``.repowise/.env``.
+    It belongs here because this function *is* the "this run committed to this
+    provider for this repo" moment, shared by all three flows that reach it
+    (single-repo init, workspace init, ``workspace add``). All three otherwise
+    leave an indexed repo their MCP server cannot authenticate against.
     """
     ensure_repowise_dir(repo_path)
     config_path = get_repowise_dir(repo_path) / CONFIG_FILENAME
@@ -494,6 +765,9 @@ def save_config(
         if reasoning is not None:
             lines.append(f"reasoning: {resolve_reasoning(reasoning)}")
         config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    if save_key:
+        _persist_provider_key(repo_path, provider)
 
 
 def save_config_partial(
@@ -550,6 +824,28 @@ def save_distill_commands_enabled(repo_path: Path, *, enabled: bool) -> None:
     save_config_partial(repo_path, distill=distill)
 
 
+#: The hook surfaces that *replace* a tool result rather than adding to it.
+#: One consent turns them all on; each has its own ``repowise hook <name>``
+#: toggle afterwards, so a surface that turns out to be wrong can be dropped
+#: without taking the others with it.
+HOOK_REPLACEMENT_SURFACES = ("read_skeleton", "search_digest")
+
+
+def save_hook_surface_enabled(repo_path: Path, surface: str, *, enabled: bool) -> None:
+    """Deep-merge ``hooks.<surface>`` into ``.repowise/config.yaml``.
+
+    Same shape as :func:`save_distill_commands_enabled`, and written by the
+    same consent: the rewrite-hook prompt means "let repowise's hooks
+    intervene in your agent's tool calls", and rewriting a Bash command is a
+    larger intervention than serving a Read as its skeleton or a search as its
+    digest, not a smaller one. There is deliberately no second question.
+    """
+    cfg = load_config(repo_path)
+    hooks = dict(cfg.get("hooks") or {})
+    hooks[surface] = enabled
+    save_config_partial(repo_path, hooks=hooks)
+
+
 def config_fingerprint(repo_path: Path) -> str:
     """SHA-256 hex of ``.repowise/config.yaml`` + ``health-rules.json`` content.
 
@@ -588,13 +884,24 @@ def resolve_provider(
       4. Auto-detect from API key env vars
     """
     from repowise.core.providers import get_provider
+    from repowise.core.providers.llm.registry import (
+        PROVIDER_AUTODETECT_ORDER,
+        provider_credentials_present,
+        provider_kwargs,
+    )
 
     cfg: dict[str, Any] = {}
     if repo_path is not None:
         cfg = load_config(repo_path)
 
     if provider_name is None:
-        provider_name = os.environ.get("REPOWISE_PROVIDER")
+        # An empty or whitespace-only value means "not set", not "a provider
+        # named ''". CI systems and agent harnesses declare env vars with empty
+        # values routinely (``REPOWISE_PROVIDER: ""`` in a workflow matrix),
+        # and the explicit-provider branch below keys off ``is not None``, so
+        # an empty string reached get_provider() and raised a bare ValueError
+        # traceback instead of falling through to auto-detection.
+        provider_name = (os.environ.get("REPOWISE_PROVIDER") or "").strip() or None
 
     if provider_name is None and cfg.get("provider"):
         provider_name = cfg["provider"]
@@ -603,27 +910,51 @@ def resolve_provider(
     if model is None and cfg.get("model"):
         model = cfg["model"]
 
-    def _resolve_base_url(name: str) -> str | None:
-        """Return base_url from env or repo config for the provider."""
-        env_vars = {
-            "anthropic": ["ANTHROPIC_BASE_URL"],
-            "openai": ["OPENAI_BASE_URL"],
-            "gemini": ["GEMINI_BASE_URL"],
-            "deepseek": ["DEEPSEEK_BASE_URL"],
-            "kimi": ["KIMI_BASE_URL"],
-            "ollama": ["OLLAMA_BASE_URL"],
-            "litellm": ["LITELLM_BASE_URL", "LITELLM_API_BASE"],
-        }
-        for var in env_vars.get(name, []):
-            val = os.environ.get(var)
-            if val:
-                return val
+    def _config_base_url(name: str) -> str | None:
+        """Return a base_url the repo config sets for the provider, if any.
+
+        Env vars are handled by :func:`provider_kwargs` from the shared
+        registry mapping; this covers only the config-file source, which is
+        CLI-specific.
+        """
         section = cfg.get(name)
         if isinstance(section, dict):
             base_url = section.get("base_url")
             if base_url:
                 return base_url
         return None
+
+    def _build(name: str) -> Any:
+        """Instantiate ``name`` with env-derived kwargs plus config fallbacks."""
+        kwargs = provider_kwargs(name, model=model, repo_path=repo_path)
+        # Applied to any name, as before: openrouter takes a base_url without
+        # having an env var for one, so gating this on the env map would drop a
+        # config value that used to be honored. (A stray `mock: {base_url: …}`
+        # in config.yaml still reaches a constructor that has no such
+        # parameter and raises TypeError. Longstanding, orthogonal to #1119.)
+        config_base_url = _config_base_url(name)
+        if config_base_url:
+            kwargs.setdefault("base_url", config_base_url)
+        try:
+            return get_provider(name, **kwargs)
+        except click.ClickException:
+            raise
+        except Exception as exc:
+            # Everything this constructor reads is user input: env vars and
+            # .repowise/config.yaml, base_url above all. A typo there is a
+            # configuration error, not a repowise bug, but it used to surface
+            # as a raw traceback that escaped every caller's handler —
+            # OLLAMA_BASE_URL=http://localhost:abc makes httpx raise
+            # InvalidURL, which killed `init` outright.
+            # Imported here, not at module scope: the telemetry spool imports
+            # this module back for the global config dir.
+            from repowise.cli.platform import telemetry
+
+            telemetry.add_command_outcome(failure_reason="provider_setup_failed")
+            raise click.ClickException(
+                f"Could not set up the {name} provider: {exc}. Check its "
+                "settings in your environment and .repowise/config.yaml."
+            ) from exc
 
     if provider_name is not None:
         # Validate configuration before attempting to create provider
@@ -634,104 +965,19 @@ def resolve_provider(
             # For explicit provider requests, we still try to create it
             # The provider constructor will fail if the API key is actually required
 
-        kwargs: dict[str, Any] = {}
-        if model:
-            kwargs["model"] = model
-        base_url = _resolve_base_url(provider_name)
-        if base_url:
-            kwargs["base_url"] = base_url
-        if provider_name == "codex_cli" and repo_path is not None:
-            kwargs["repo_path"] = repo_path
-        if provider_name == "opencode" and repo_path is not None:
-            kwargs["repo_path"] = repo_path
+        return _build(provider_name)
 
-        # Pass API key from environment if available
-        if provider_name == "anthropic" and os.environ.get("ANTHROPIC_API_KEY"):
-            kwargs["api_key"] = os.environ["ANTHROPIC_API_KEY"]
-        elif provider_name == "openai" and os.environ.get("OPENAI_API_KEY"):
-            kwargs["api_key"] = os.environ["OPENAI_API_KEY"]
-        elif provider_name == "gemini" and (
-            os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        ):
-            kwargs["api_key"] = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        elif provider_name == "openrouter" and os.environ.get("OPENROUTER_API_KEY"):
-            kwargs["api_key"] = os.environ["OPENROUTER_API_KEY"]
-        elif provider_name == "deepseek" and os.environ.get("DEEPSEEK_API_KEY"):
-            kwargs["api_key"] = os.environ["DEEPSEEK_API_KEY"]
-        elif provider_name == "kimi" and os.environ.get("KIMI_API_KEY"):
-            kwargs["api_key"] = os.environ["KIMI_API_KEY"]
-        elif provider_name == "litellm" and os.environ.get("LITELLM_API_KEY"):
-            kwargs["api_key"] = os.environ["LITELLM_API_KEY"]
-        elif provider_name == "ollama" and os.environ.get("OLLAMA_BASE_URL"):
-            kwargs["base_url"] = os.environ["OLLAMA_BASE_URL"]
+    # Auto-detect from whatever credentials the env carries, in the shared
+    # priority order. The per-provider env-var mapping lives in the registry
+    # beside the provider table, so adding a provider wires it into the CLI and
+    # the MCP server at once instead of into whichever copy got remembered.
+    for candidate in PROVIDER_AUTODETECT_ORDER:
+        if provider_credentials_present(candidate):
+            return _build(candidate)
 
-        return get_provider(provider_name, **kwargs)
+    from repowise.cli.platform import telemetry
 
-    # Auto-detect from env vars
-    if os.environ.get("ANTHROPIC_API_KEY") and os.environ["ANTHROPIC_API_KEY"].strip():
-        kwargs = (
-            {"model": model, "api_key": os.environ["ANTHROPIC_API_KEY"]}
-            if model
-            else {"api_key": os.environ["ANTHROPIC_API_KEY"]}
-        )
-        base_url = _resolve_base_url("anthropic")
-        if base_url:
-            kwargs["base_url"] = base_url
-        return get_provider("anthropic", **kwargs)
-    if os.environ.get("OPENAI_API_KEY") and os.environ["OPENAI_API_KEY"].strip():
-        kwargs = (
-            {"model": model, "api_key": os.environ["OPENAI_API_KEY"]}
-            if model
-            else {"api_key": os.environ["OPENAI_API_KEY"]}
-        )
-        base_url = _resolve_base_url("openai")
-        if base_url:
-            kwargs["base_url"] = base_url
-        return get_provider("openai", **kwargs)
-    if os.environ.get("OPENROUTER_API_KEY") and os.environ["OPENROUTER_API_KEY"].strip():
-        kwargs = (
-            {"model": model, "api_key": os.environ["OPENROUTER_API_KEY"]}
-            if model
-            else {"api_key": os.environ["OPENROUTER_API_KEY"]}
-        )
-        return get_provider("openrouter", **kwargs)
-    if os.environ.get("OLLAMA_BASE_URL") and os.environ["OLLAMA_BASE_URL"].strip():
-        kwargs = (
-            {"model": model, "base_url": os.environ["OLLAMA_BASE_URL"]}
-            if model
-            else {"base_url": os.environ["OLLAMA_BASE_URL"]}
-        )
-        return get_provider("ollama", **kwargs)
-    if (os.environ.get("GEMINI_API_KEY") and os.environ["GEMINI_API_KEY"].strip()) or (
-        os.environ.get("GOOGLE_API_KEY") and os.environ["GOOGLE_API_KEY"].strip()
-    ):
-        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        kwargs = {"model": model, "api_key": api_key} if model else {"api_key": api_key}
-        base_url = _resolve_base_url("gemini")
-        if base_url:
-            kwargs["base_url"] = base_url
-        return get_provider("gemini", **kwargs)
-    if os.environ.get("DEEPSEEK_API_KEY") and os.environ["DEEPSEEK_API_KEY"].strip():
-        kwargs = (
-            {"model": model, "api_key": os.environ["DEEPSEEK_API_KEY"]}
-            if model
-            else {"api_key": os.environ["DEEPSEEK_API_KEY"]}
-        )
-        base_url = _resolve_base_url("deepseek")
-        if base_url:
-            kwargs["base_url"] = base_url
-        return get_provider("deepseek", **kwargs)
-    if os.environ.get("KIMI_API_KEY") and os.environ["KIMI_API_KEY"].strip():
-        kwargs = (
-            {"model": model, "api_key": os.environ["KIMI_API_KEY"]}
-            if model
-            else {"api_key": os.environ["KIMI_API_KEY"]}
-        )
-        base_url = _resolve_base_url("kimi")
-        if base_url:
-            kwargs["base_url"] = base_url
-        return get_provider("kimi", **kwargs)
-
+    telemetry.add_command_outcome(failure_reason="no_provider_configured")
     raise click.ClickException(
         "No provider configured. Use --provider, set REPOWISE_PROVIDER, "
         "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / "
@@ -740,6 +986,61 @@ def resolve_provider(
         "an authenticated Codex CLI subscription, or REPOWISE_PROVIDER=opencode "
         "to use opencode."
     )
+
+
+def resolve_provider_or_prompt(
+    provider_name: str | None,
+    model: str | None,
+    repo_path: Path,
+    *,
+    reasoning: str | None = None,
+    interactive: bool,
+) -> Any:
+    """Resolve a provider, falling back to init's interactive setup on a miss.
+
+    Ordinary resolution is :func:`resolve_provider`. When that fails because no
+    provider/key is configured and ``interactive`` is set (an interactive
+    terminal, not a hook / CI / ``--progress json`` run), reuse init's exact
+    provider + API-key prompt, persist the choice, and retry — so a docs run
+    that only just asked for LLM pages onboards the same way ``init`` does
+    instead of dying with "No provider configured".
+
+    When ``interactive`` is False the original error propagates unchanged, so
+    background runs (post-commit hook, CI, machine-driven ``--progress json``)
+    keep their clean, non-blocking failure.
+
+    Persistence reuses init's helpers: the key lands in ``.repowise/.env`` (from
+    the prompt) and provider/model in ``.repowise/config.yaml`` here, so the
+    prompt only ever appears once per repo.
+    """
+    try:
+        return resolve_provider(provider_name, model, repo_path=repo_path)
+    except Exception as original_error:
+        if not interactive:
+            raise
+        from repowise.cli.ui import interactive_provider_config_select
+
+        # ``interactive`` rests on ``isatty()``, which lies: under Git Bash,
+        # some pty wrappers, and ``docker run -t`` without -i it claims a
+        # terminal it cannot read from, and agents drive us through exactly
+        # those shapes. Treat the prompt as the probe (as init does): if stdin
+        # cannot answer, click raises EOFError/Abort, so fall back to the clean,
+        # actionable "No provider configured" error instead of a bare "Aborted!".
+        try:
+            selection = interactive_provider_config_select(
+                console, model, reasoning, repo_path=repo_path
+            )
+        except (EOFError, click.Abort):
+            raise original_error from None
+
+        # Persist provider/model so future runs resolve without re-prompting.
+        # The API key was already persisted to .repowise/.env by the prompt.
+        save_config_partial(
+            repo_path,
+            provider=selection.provider_name,
+            model=selection.model,
+        )
+        return resolve_provider(selection.provider_name, selection.model, repo_path=repo_path)
 
 
 # ---------------------------------------------------------------------------
@@ -768,16 +1069,17 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
         """Check if environment variable exists (even if empty)."""
         return var_name in os.environ
 
-    # Define required environment variables for each provider
+    # Required environment variables per provider, read from the registry that
+    # also drives resolution, so a provider added there is validated here without
+    # a second edit. The agent-CLI providers are absent by design: they need no
+    # env var, so they are handled by the binary checks below instead.
+    from repowise.core.providers.llm.registry import (
+        PROVIDER_API_KEY_ENVS,
+        provider_required_envs,
+    )
+
     provider_env_vars = {
-        "anthropic": ["ANTHROPIC_API_KEY"],
-        "openai": ["OPENAI_API_KEY"],
-        "openrouter": ["OPENROUTER_API_KEY"],
-        "deepseek": ["DEEPSEEK_API_KEY"],
-        "kimi": ["KIMI_API_KEY"],
-        "gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],  # Either one
-        "ollama": ["OLLAMA_BASE_URL"],
-        "litellm": ["LITELLM_API_KEY"],  # May need others depending on backend
+        name: list(provider_required_envs(name)) for name in (*PROVIDER_API_KEY_ENVS, "ollama")
     }
 
     if provider_name:
@@ -1138,15 +1440,3 @@ def resolve_command_target(
         reason="no workspace nearby",
         auto_detected=False,
     )
-
-
-def is_interactive_session() -> bool:
-    """Best-effort check for an interactive TTY.
-
-    Centralized so commands can share one definition; some test runners
-    fake stdin in ways that break ``sys.stdin.isatty()``.
-    """
-    try:
-        return sys.stdin.isatty()
-    except (AttributeError, ValueError):
-        return False

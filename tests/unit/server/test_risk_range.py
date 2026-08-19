@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from httpx import AsyncClient
 
-from repowise.core.analysis.change_risk import baseline_scores
+from repowise.core.analysis.change_risk import baseline_samples, scores_excluding
 from tests.unit.server.conftest import create_test_repo
 
 
@@ -65,15 +65,19 @@ async def test_risk_range_happy_path(client: AsyncClient, git_repo: Path, tmp_pa
     assert data["base"] == base
     assert data["head"] == "HEAD"
     assert 0.0 <= data["score"] <= 10.0
-    assert 0.0 <= data["probability"] <= 1.0
-    assert data["level"] in {"low", "moderate", "high"}
+    assert data["score_unit"] == "per-commit"
     assert data["is_fix"] is True
     assert data["features"]["nf"] == 2
     assert data["features"]["la"] == 3
     assert isinstance(data["drivers"], list) and len(data["drivers"]) > 0
-    # Only two commits sampled, below _MIN_BASELINE, so no percentile.
+    # The collinear diffusion features stay out of the reported drivers.
+    assert {d["feature"] for d in data["drivers"]}.isdisjoint({"nf", "nd", "ns"})
+    # Only two commits sampled, below _MIN_BASELINE, so no percentile — which
+    # is exactly when the absolute band is offered, and only then.
     assert data["risk_percentile"] is None
     assert data["review_priority"] is None
+    assert data["classification"] is None
+    assert data["fallback_band"] in {"low", "moderate", "high"}
 
 
 @pytest.mark.asyncio
@@ -115,10 +119,36 @@ async def test_risk_range_baseline_zero_skips_percentile(
     assert data["review_priority"] is None
 
 
-def test_baseline_scores_returns_floats(git_repo: Path) -> None:
+def test_baseline_samples_pair_each_sha_with_a_float(git_repo: Path) -> None:
     _commit(git_repo, {"src/d.py": "a = 1\nb = 2\n"}, "feat: add d")
     _commit(git_repo, {"src/e.py": "c = 3\n"}, "fix: crash on null")
 
-    scores = baseline_scores(str(git_repo), "HEAD", 200, (), "")
-    assert len(scores) >= 1
-    assert all(isinstance(s, float) for s in scores)
+    samples = baseline_samples(str(git_repo), "HEAD", 200, ())
+    assert len(samples) >= 1
+    assert all(isinstance(sha, str) and isinstance(score, float) for sha, score in samples)
+
+
+def test_baseline_samples_filters_excluded_paths(git_repo: Path) -> None:
+    _commit(git_repo, {"src/app.py": "a = 1\n"}, "feat: app")
+    _commit(
+        git_repo,
+        {"tests/test_app.py": "\n".join(f"assert {i}" for i in range(30)) + "\n"},
+        "test: app",
+    )
+
+    samples = baseline_samples(str(git_repo), "HEAD", 2, (), exclude_patterns=("tests/",))
+
+    assert len(samples) == 1
+
+
+def test_scores_excluding_omits_target_ref(git_repo: Path) -> None:
+    _commit(git_repo, {"src/app.py": "a = 1\n"}, "feat: app")
+    head = _commit(git_repo, {"src/next.py": "b = 2\n"}, "feat: next")
+
+    samples = baseline_samples(str(git_repo), "HEAD", 2, ())
+
+    # The sample is cached whole; only the ranking drops the target itself.
+    assert len(samples) == 2
+    assert len(scores_excluding(samples, head)) == 1
+    assert len(scores_excluding(samples, head[:7])) == 1
+    assert len(scores_excluding(samples, "")) == 2

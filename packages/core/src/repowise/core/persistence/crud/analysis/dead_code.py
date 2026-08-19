@@ -8,7 +8,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.dead_code.risk_factors import effective_safe_to_delete
+from repowise.core.analysis.dead_code.risk_factors import (
+    RISK_CAP_CONFIDENCE,
+    SAFE_CONFIDENCE_THRESHOLD,
+    effective_safe_to_delete,
+)
 
 from ...models import DeadCodeFinding, _new_uuid
 from .._shared import _BATCH_SIZE, _finding_file_path
@@ -32,7 +36,6 @@ def _dead_code_row_kwargs(finding: Any, repository_id: str) -> dict:
             "lines": finding.lines,
             "start_line": finding.start_line,
             "end_line": finding.end_line,
-            "package": finding.package,
             "evidence_json": json.dumps(finding.evidence if hasattr(finding, "evidence") else []),
             "safe_to_delete": finding.safe_to_delete,
             "primary_owner": finding.primary_owner,
@@ -77,40 +80,78 @@ async def save_dead_code_findings(
         await session.flush()
 
 
-async def upsert_dead_code_findings(
+def _finding_identity(finding: Any) -> tuple:
+    """The (file, kind, symbol) triple that makes two findings the same finding.
+
+    Compared against ``DeadCodeFinding`` rows, whose ``kind`` column holds the
+    enum's *value*. Both shapes reach here: the dataclass (workspace path) and
+    ``dataclasses.asdict`` output (CLI path), and ``asdict`` leaves the
+    ``DeadCodeKind`` member intact rather than converting it. ``DeadCodeKind``
+    is a ``StrEnum``, so ``str()`` happens to give the value today; unwrapping
+    ``.value`` states the requirement instead of inheriting it from the mixin.
+    """
+    kind = finding.kind if hasattr(finding, "kind") else finding.get("kind", "")
+    symbol = finding.symbol_name if hasattr(finding, "kind") else finding.get("symbol_name")
+    return (_finding_file_path(finding), str(getattr(kind, "value", kind)), symbol)
+
+
+async def replace_dead_code_findings(
     session: AsyncSession,
     repository_id: str,
     findings: list[Any],
     *,
-    file_paths: list[str],
+    scope: frozenset[str] | set[str] | None = None,
 ) -> None:
-    """Replace open dead-code findings **only for the given file paths**.
+    """Replace open dead-code findings, for *scope* or for the whole repository.
 
-    Used by the incremental ``repowise update`` path so unchanged files keep
-    their findings instead of being wiped on every partial re-index. Callers
-    must pass the full set of *changed* file paths (not just paths that
-    produced findings) so a changed-but-now-clean file has its stale findings
-    removed.
+    The incremental update path used to replace findings only for the files
+    that changed, which meant an unchanged file kept whatever verdict the last
+    full index gave it. Dead code is a cross-file property — removing the last
+    import of a module makes *that module* dead, and it is not in the change
+    set — so a change-scoped write can never express the result of the
+    analysis that produced it. The analyzer computes the repo-wide truth
+    either way; this persists it rather than discarding the inconvenient part.
+
+    *scope* is the set of file paths the caller can actually speak for, and
+    ``None`` means all of them. It is not a performance knob and not a
+    threshold: dead-code confidence is scored from per-file git metadata, and
+    a file the caller has no metadata for scores 0.7 with
+    ``safe_to_delete=True`` however actively it is committed to. Writing that
+    would be worse than writing nothing, so a caller holding partial metadata
+    passes the part it has and every other file keeps its stored verdict.
+    Rows outside *scope* are neither deleted nor inserted.
+
+    Findings the user has acted on are not resurrected. The delete is scoped
+    to ``status == "open"``, so a dismissed or resolved row survives it, and
+    any incoming finding matching such a row by (file, kind, symbol) is
+    dropped rather than re-inserted as a fresh ``open`` duplicate. Without
+    that second half a repo-wide write would re-open every dismissal on every
+    update, which the old change-scoped write only did for changed files.
+
+    There is no unique constraint on that triple (and ``symbol_name`` is
+    nullable, so one would not bite without a functional index), hence
+    delete-then-insert with the surviving keys filtered out in Python rather
+    than an ``ON CONFLICT`` upsert.
     """
-    if not file_paths:
-        return
-    allowed = set(file_paths)
     existing = await session.execute(
-        select(DeadCodeFinding).where(
-            DeadCodeFinding.repository_id == repository_id,
-            DeadCodeFinding.status == "open",
-            DeadCodeFinding.file_path.in_(file_paths),
-        )
+        select(DeadCodeFinding).where(DeadCodeFinding.repository_id == repository_id)
     )
+    acted_on: set[tuple] = set()
     for row in existing.scalars().all():
-        await session.delete(row)
+        if scope is not None and row.file_path not in scope:
+            continue
+        if row.status == "open":
+            await session.delete(row)
+        else:
+            acted_on.add((row.file_path, row.kind, row.symbol_name))
     await session.flush()
 
-    # Insert only within the replaced scope (delete is scoped to file_paths).
-    scoped = [f for f in findings if _finding_file_path(f) in allowed]
-    for i in range(0, len(scoped), _BATCH_SIZE):
-        batch = scoped[i : i + _BATCH_SIZE]
+    writable = [f for f in findings if scope is None or _finding_file_path(f) in scope]
+    for i in range(0, len(writable), _BATCH_SIZE):
+        batch = writable[i : i + _BATCH_SIZE]
         for finding in batch:
+            if _finding_identity(finding) in acted_on:
+                continue
             session.add(DeadCodeFinding(**_dead_code_row_kwargs(finding, repository_id)))
         await session.flush()
 
@@ -168,9 +209,9 @@ async def get_dead_code_summary(session: AsyncSession, repository_id: str) -> di
     by_kind: dict[str, int] = {}
 
     for f in findings:
-        if f.confidence >= 0.7:
+        if f.confidence >= SAFE_CONFIDENCE_THRESHOLD:
             summary["high"] += 1
-        elif f.confidence >= 0.4:
+        elif f.confidence >= RISK_CAP_CONFIDENCE:
             summary["medium"] += 1
         else:
             summary["low"] += 1

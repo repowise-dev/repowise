@@ -31,6 +31,12 @@ from ...ingestion.git_indexer.function_blame import (
     BlameIndex,
     distinct_commits_in_range,
 )
+
+# Package attribution lives in one place, shared with the traverser and with
+# the `repowise update` backfill, so all three agree on what a package is.
+from ...ingestion.package_roots import module_for as _module_for
+from ...ingestion.package_roots import package_roots_from_paths as _package_roots
+from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
 from .biomarkers import FileContext, detect_all
 from .biomarkers.base import HasEdge
 from .complexity import FileComplexity, FunctionComplexity, walk_file
@@ -52,10 +58,32 @@ from .refactoring import (
     detect_refactorings,
     rank_suggestions,
 )
-from .refactoring.graph_signals import build_file_scc_index
+from .refactoring.graph_signals import build_file_scc_index, build_methods_by_file
 from .scoring import attach_impacts, compute_kpis, remap_severities, score_file
 
 log = structlog.get_logger(__name__)
+
+# Bump when a change to this analyzer makes already-persisted health rows wrong
+# — a new or removed biomarker, a changed attribution rule, a different finding
+# shape. ``repowise update`` compares it against the value stored in state.json
+# and re-scores on mismatch (see ``update_cmd.persistence.full_rescore_due``),
+# instead of waiting out the 7-day decay timer.
+#
+# Reach, stated honestly: the gate is only consulted once an update reaches the
+# incremental path, so this lands on the next update that has changed files. A
+# repo with no new commits returns at the "already up to date" branch and picks
+# the correction up on its next commit; workspace members and the hosted
+# indexer do not run this path at all. That is the same reach the decay timer
+# already has — this extends that trigger rather than adding a wider one.
+#
+# Deliberately *not* folded into ``config_fingerprint``: that fingerprint means
+# "this repo's config content changed", and a workspace update answers drift in
+# it by full-re-indexing every member repo. An analyzer change invalidates the
+# scores, not the parse or the git index, so it routes to the re-score alone.
+#
+# Not a licence to move a calibrated scoring weight — those are frozen
+# independently of this stamp.
+HEALTH_ANALYZER_VERSION = 1
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.
@@ -85,38 +113,21 @@ def _log_duplication_diagnostics(report: DuplicationReport) -> None:
         log.debug("health_duplication_limits", **diag)
 
 
-def _is_test_file(rel_path: str) -> bool:
-    p = rel_path.lower()
-    return (
-        "/test/" in p
-        or "/tests/" in p
-        or "/__tests__/" in p
-        or p.startswith("test_")
-        or p.endswith("_test.py")
-        or p.endswith(".test.ts")
-        or p.endswith(".test.tsx")
-        or p.endswith(".test.js")
-        or p.endswith(".test.mts")
-        or p.endswith(".test.cts")
-        or p.endswith(".spec.ts")
-        or p.endswith(".spec.js")
-        or p.endswith(".spec.mts")
-        or p.endswith(".spec.cts")
-        or p.endswith("_test.go")
-    )
 
 
-def _fallback_module(rel_path: str) -> str | None:
-    """Top-level directory as a stand-in module label when no community map.
+def _read_source_lines(abs_path: str) -> list[str] | None:
+    """Read a file's source as 1-indexed lines for the Extract Helper snippet.
 
-    Returns ``None`` for root-level files so the rollup endpoint doesn't
-    create a phantom "" bucket.
+    Failure-isolated: a read or decode error yields ``None`` (the detector then
+    omits the snippet and keeps its line ranges), never an exception into the
+    health pass. Decodes UTF-8 leniently since the snippet is for display, not
+    re-parsing.
     """
-    norm = rel_path.replace("\\", "/")
-    if "/" not in norm:
+    try:
+        text = Path(abs_path).read_bytes().decode("utf-8", errors="replace")
+    except OSError:
         return None
-    head = norm.split("/", 1)[0]
-    return head or None
+    return text.splitlines()
 
 
 class _ImportEdgeView:
@@ -288,6 +299,7 @@ class HealthAnalyzer:
         coverage_map: dict[str, dict[str, Any]] | None = None,
         module_map: dict[str, str] | None = None,
         duplication_cache_dir: Any | None = None,
+        repo_root: Any | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
@@ -307,6 +319,39 @@ class HealthAnalyzer:
         # repo's ``.repowise``). None disables caching — the duplication
         # pass then re-tokenizes everything, exactly as before.
         self.duplication_cache_dir = duplication_cache_dir
+        # Checkout root, used only to read package boundaries off disk. None
+        # falls back to inferring them from the analyzed file list, which sees
+        # only the manifests the traverser emitted.
+        self.repo_root = repo_root
+        self._package_roots_cache: set[str] | None = None
+
+    def _package_boundaries(self, analyzed_paths: set[str]) -> set[str]:
+        """Package roots for this repo, decided once per analyzer.
+
+        One answer for every file, so ``module`` is a property of the repo
+        layout rather than of whichever code path happens to be running — the
+        defect this replaced was four call sites disagreeing.
+
+        Read off disk when a ``repo_root`` is known, because the analyzed file
+        list only carries manifests the traverser could language-detect, and it
+        drops ``go.mod``, ``pom.xml``, ``build.gradle``, ``Gemfile``,
+        ``build.sbt`` and a dozen more. Falls back to the file list otherwise
+        (in-memory callers and tests), which is the previous behaviour.
+        """
+        if self._package_roots_cache is not None:
+            return self._package_roots_cache
+        roots: set[str] | None = None
+        if self.repo_root is not None:
+            try:
+                roots = _scan_package_roots(self.repo_root)
+            except OSError as exc:
+                # An unreadable tree must not fail the health pass; the file
+                # list still gives the pre-existing answer.
+                log.debug("health_package_root_scan_failed", error=str(exc))
+        if roots is None:
+            roots = _package_roots(analyzed_paths)
+        self._package_roots_cache = roots
+        return roots
 
     def analyze(
         self,
@@ -314,6 +359,7 @@ class HealthAnalyzer:
         *,
         on_step: Any | None = None,
         changed_files: set[str] | list[str] | None = None,
+        repo_function_mod_p80: int | None = None,
     ) -> HealthReport:
         """Analyze the configured parsed files.
 
@@ -323,6 +369,15 @@ class HealthAnalyzer:
         files), but only files in *changed_files* contribute findings /
         metrics. The caller is responsible for upserting (not replacing)
         the result against the existing rows.
+
+        *repo_function_mod_p80* overrides the repo-wide 80th percentile of
+        per-function modification counts that gates the Function Hotspot
+        biomarker. On an incremental run ``walked`` holds only the changed
+        files, so deriving the percentile from it would bias the gate
+        toward churn-heavy subsets (issue #1484) — the caller should pass
+        the percentile computed over the full repo (from the persisted
+        ``git_function_blame`` rollup) instead. ``None`` (the default)
+        computes it from the walked set as before.
         """
         cfg = config or {}
         disabled: list[str] = list(cfg.get("disabled_biomarkers", ()))
@@ -336,7 +391,9 @@ class HealthAnalyzer:
         # PageRank is optional — graph_builder.symbol_pagerank exists but
         # is symbol-level; we use file-level in-degree as the dependents
         # signal (cheap, deterministic, conservative).
-        path_basenames = _path_basenames({pf.file_info.path for pf in self.parsed_files})
+        analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
+        path_basenames = _path_basenames(analyzed_paths)
+        package_roots = self._package_boundaries(analyzed_paths)
         repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
         graph_view: HasEdge | None = _ImportEdgeView(self.graph) if self.graph is not None else None
 
@@ -367,6 +424,7 @@ class HealthAnalyzer:
         # Repo-wide SCC index (import cycles), computed once and threaded into
         # each file's RefactoringContext so Break Cycle never recomputes it.
         file_scc_index = build_file_scc_index(self.graph)
+        methods_by_file = build_methods_by_file(self.graph)
         findings: list[HealthFindingData] = []
         metrics: list[HealthFileMetricData] = []
         suggestions: list[RefactoringSuggestion] = []
@@ -389,7 +447,11 @@ class HealthAnalyzer:
             if on_step:
                 on_step(pf.file_info.path)
 
-        repo_fn_mod_p80 = _compute_repo_function_mod_p80(walked, self.git_meta_map)
+        repo_fn_mod_p80 = (
+            repo_function_mod_p80
+            if repo_function_mod_p80 is not None
+            else _compute_repo_function_mod_p80(walked, self.git_meta_map)
+        )
         repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
         repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
@@ -422,6 +484,7 @@ class HealthAnalyzer:
                 pf,
                 fcx,
                 path_basenames,
+                package_roots,
                 disabled=file_disabled,
                 dup_report=dup_report,
                 graph_view=graph_view,
@@ -434,6 +497,7 @@ class HealthAnalyzer:
                 refactoring_enabled=refactoring_enabled,
                 refactoring_min_confidence=refactoring_min_confidence,
                 file_scc_index=file_scc_index,
+                methods_by_file=methods_by_file,
                 dataflow_cache=dataflow_cache,
             )
             metrics.append(file_metric)
@@ -472,6 +536,7 @@ class HealthAnalyzer:
         on_step: Any | None = None,
         changed_files: set[str] | list[str] | None = None,
         max_workers: int | None = None,
+        repo_function_mod_p80: int | None = None,
     ) -> HealthReport:
         """Parallel variant of :meth:`analyze` for large repos.
 
@@ -484,6 +549,11 @@ class HealthAnalyzer:
         Duplication still runs once up-front (cross-file by nature), and
         the symbol-complexity write-back still runs on the main thread
         so ORM objects don't cross thread boundaries unexpectedly.
+
+        *repo_function_mod_p80* overrides the repo-wide percentile that
+        gates the Function Hotspot biomarker (see :meth:`analyze`); on an
+        incremental run the caller passes the value computed over the full
+        repo so the gate is not biased by the changed-files subset.
         """
         cfg = config or {}
         disabled: list[str] = list(cfg.get("disabled_biomarkers", ()))
@@ -494,7 +564,9 @@ class HealthAnalyzer:
         )
         changed_set: set[str] | None = set(changed_files) if changed_files is not None else None
 
-        path_basenames = _path_basenames({pf.file_info.path for pf in self.parsed_files})
+        analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
+        path_basenames = _path_basenames(analyzed_paths)
+        package_roots = self._package_boundaries(analyzed_paths)
         repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
         graph_view: HasEdge | None = _ImportEdgeView(self.graph) if self.graph is not None else None
 
@@ -560,7 +632,11 @@ class HealthAnalyzer:
             except Exception as exc:
                 log.debug("health_duplication_failed", error=str(exc))
                 dup_report = DuplicationReport()
-        repo_fn_mod_p80 = _compute_repo_function_mod_p80(list(walked), self.git_meta_map)
+        repo_fn_mod_p80 = (
+            repo_function_mod_p80
+            if repo_function_mod_p80 is not None
+            else _compute_repo_function_mod_p80(list(walked), self.git_meta_map)
+        )
         repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
         repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
@@ -577,6 +653,7 @@ class HealthAnalyzer:
         refactoring_enabled: bool = bool(cfg.get("refactoring_enabled", True))
         refactoring_min_confidence: str | None = cfg.get("refactoring_min_confidence")
         file_scc_index = build_file_scc_index(self.graph)
+        methods_by_file = build_methods_by_file(self.graph)
         findings: list[HealthFindingData] = []
         metrics: list[HealthFileMetricData] = []
         suggestions: list[RefactoringSuggestion] = []
@@ -594,6 +671,7 @@ class HealthAnalyzer:
                 pf,
                 fcx,
                 path_basenames,
+                package_roots,
                 disabled=file_disabled,
                 dup_report=dup_report,
                 graph_view=graph_view,
@@ -606,6 +684,7 @@ class HealthAnalyzer:
                 refactoring_enabled=refactoring_enabled,
                 refactoring_min_confidence=refactoring_min_confidence,
                 file_scc_index=file_scc_index,
+                methods_by_file=methods_by_file,
                 dataflow_cache=dataflow_cache,
             )
             metrics.append(file_metric)
@@ -769,6 +848,7 @@ class HealthAnalyzer:
         pf: Any,
         fcx: FileComplexity,
         path_basenames: set[str],
+        package_roots: set[str],
         *,
         disabled: list[str],
         dup_report: DuplicationReport,
@@ -782,6 +862,7 @@ class HealthAnalyzer:
         refactoring_enabled: bool = True,
         refactoring_min_confidence: str | None = None,
         file_scc_index: dict[str, tuple[str, ...]] | None = None,
+        methods_by_file: dict[str, tuple[str, ...]] | None = None,
         dataflow_cache: FileDataflowCache | None = None,
     ) -> tuple[HealthFileMetricData, list[HealthFindingData], list[RefactoringSuggestion]]:
         file_path = pf.file_info.path
@@ -816,7 +897,7 @@ class HealthAnalyzer:
         clones = dup_report.pairs_by_file.get(file_path, [])
         dup_pct = dup_report.duplication_pct.get(file_path)
 
-        module = self.module_map.get(file_path) or _fallback_module(file_path)
+        module = _module_for(file_path, package_roots)
 
         file_git_meta = self.git_meta_map.get(file_path, {}) or {}
         blame_idx_obj = file_git_meta.get("blame_index")
@@ -826,8 +907,13 @@ class HealthAnalyzer:
             file_path=file_path,
             language=pf.file_info.language,
             nloc=nloc,
+            # ``pf.file_info.is_test`` is the decision ingestion already made
+            # for this file, with its language in hand — read it rather than
+            # re-derive from the path string (#1103). The coverage check stays
+            # because it also sniffs framework imports out of the source, which
+            # a path cannot tell you.
             has_test_file=_has_paired_test_file(file_path, path_basenames)
-            or _is_test_file(file_path)
+            or pf.file_info.is_test
             or _coverage_is_test_file(file_path)
             or fcx.has_inline_tests,
             module=module,
@@ -899,8 +985,16 @@ class HealthAnalyzer:
             module_map=self.module_map,
             graph=self.graph,
             file_scc=(file_scc_index or {}).get(file_path),
+            file_methods=(
+                methods_by_file.get(file_path, ()) if methods_by_file is not None else None
+            ),
             function_analyses=self._extract_method_analyses(pf, findings, dataflow_cache),
             blame_index=blame_index,
+            # Source is threaded only for clone-bearing files (the Extract Helper
+            # detector's snippet). Reading it unconditionally would put a
+            # repo-sized read back into the per-file path; gating on clones keeps
+            # it proportional to the small set of files that actually carry one.
+            source_lines=_read_source_lines(pf.file_info.abs_path) if clones else None,
         )
         suggestions = detect_refactorings(
             rctx,

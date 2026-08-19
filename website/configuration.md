@@ -47,6 +47,7 @@ provider: anthropic                  # LLM provider
 model: claude-sonnet-4-6             # Model identifier
 embedder: gemini                     # Embedding provider
 reasoning: auto                      # auto | off/none | minimal | low | medium | high | xhigh | max
+max_tokens: 16384                    # Max output tokens per generated documentation page
 exclude_patterns:                    # Gitignore-style patterns
   - vendor/
   - "*.generated.*"
@@ -73,6 +74,12 @@ providers and model families that expose them. Providers or models that cannot
 translate an explicit mode fail before making an API call. The interactive
 `serve` chat streaming path is separate and does not currently consume this
 setting.
+
+`max_tokens` bounds each model-written documentation response. It is a
+persistent repository setting used by `init`, `update`, `generate`, `restyle`,
+workspace generation, and server-triggered generation. If generation reaches a
+token limit before the page is complete, repowise rejects the partial page
+instead of saving it.
 
 ---
 
@@ -194,7 +201,6 @@ Any model available in your local Ollama installation can be used.
 LiteLLM acts as a proxy supporting OpenAI, Azure, Cohere, Mistral, and dozens more.
 
 ```bash
-pip install "repowise[litellm]"
 export LITELLM_API_KEY="..."
 repowise init --provider litellm --model azure/gpt-4
 ```

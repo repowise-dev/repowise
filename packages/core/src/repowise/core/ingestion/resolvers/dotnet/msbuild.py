@@ -10,11 +10,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from xml.etree import ElementTree as ET
 
 import structlog
 
-from repowise.core.fs_walk import iter_glob
+from repowise.core.fs_walk import glob_via
 
 log = structlog.get_logger(__name__)
 
@@ -113,10 +114,14 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
     return project
 
 
-def find_csproj_files(repo_path: Path, *, prune_nested_git: bool = True) -> list[Path]:
+def find_csproj_files(
+    repo_path: Path, *, prune_nested_git: bool = True, snapshot: Any | None = None
+) -> list[Path]:
     """Return all .csproj files under *repo_path*, skipping bin/obj output."""
     out: list[Path] = []
-    for csproj in iter_glob(repo_path, "*.csproj", prune_nested_git=prune_nested_git):
+    for csproj in glob_via(
+        snapshot, repo_path, "*.csproj", prune_nested_git=prune_nested_git
+    ):
         if path_has_dotnet_scan_skip_dir(csproj, repo_path):
             continue
         out.append(csproj)
@@ -130,24 +135,3 @@ def path_has_dotnet_scan_skip_dir(path: Path, repo_root: Path) -> bool:
     except ValueError:
         parts = path.parts
     return any(part.casefold() in _DOTNET_SCAN_SKIP_DIRS_CASEFOLDED for part in parts)
-
-
-def find_directory_build_props(start: Path, repo_root: Path) -> list[Path]:
-    """Walk from *start* up to *repo_root* collecting Directory.Build.props.
-
-    The first match closer to start "wins" but MSBuild semantics merge them
-    bottom-up. Repowise just collects them so the resolver can union the
-    implicit-using flags and project usings.
-    """
-    out: list[Path] = []
-    cur = start.resolve()
-    repo_root = repo_root.resolve()
-    while True:
-        for name in ("Directory.Build.props", "Directory.Build.targets", "Directory.Packages.props"):
-            cand = cur / name
-            if cand.exists():
-                out.append(cand)
-        if cur == repo_root or cur.parent == cur:
-            break
-        cur = cur.parent
-    return out

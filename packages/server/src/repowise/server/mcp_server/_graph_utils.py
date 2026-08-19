@@ -7,14 +7,22 @@ across `tool_flows.py` and `routers/graph.py`.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from typing import Any
 
-from repowise.core.analysis.execution_flows import _EXCLUDE_PATH_PATTERNS
+from repowise.core.analysis.execution_flows import (
+    _EXCLUDE_PATH_PATTERNS,
+    FlowTermination,
+    classify_termination,
+)
 from repowise.core.persistence.crud import (
     get_graph_edges_for_node,
     get_graph_nodes_by_ids,
 )
 from repowise.core.persistence.models import GraphNode
+
+# Callee rows per hop; a stop behind this cut is an unknown, not a leaf.
+_CALLEE_FETCH_LIMIT = 20
 
 
 def _node_id_is_excluded(node_id: str) -> bool:
@@ -68,6 +76,8 @@ async def bfs_trace(
     entry_id: str,
     max_depth: int,
     node_cache: dict[str, GraphNode] | None = None,
+    hop_origins: dict[tuple[str, str], str] | None = None,
+    termination: dict[str, Any] | None = None,
 ) -> list[str]:
     """Trace the primary execution path from *entry_id* along ``calls`` edges.
 
@@ -78,6 +88,13 @@ async def bfs_trace(
     DB-cheap proxy for the core scorer's fan-out ordering). Test/demo/fixture
     nodes and low-confidence (< 0.5) edges are skipped; a visited set keeps it
     cycle-safe.
+
+    *hop_origins*, when given, is filled with ``{(src, dst): resolution_origin}``
+    for each hop taken. Keyed by pair rather than position because callers
+    filter the returned trace afterwards, and a positional list would then
+    describe the wrong hops.
+
+    *termination*, when given, is filled with ``reason`` and ``detail``.
     """
     if node_cache is None:
         node_cache = {}
@@ -86,37 +103,75 @@ async def bfs_trace(
     visited: set[str] = {entry_id}
     current = entry_id
 
+    revisited = 0
+    low_confidence: Counter = Counter()
+    excluded = 0
+    truncated = False
+
     for _ in range(max_depth):
-        edges = await get_graph_edges_for_node(
+        # One row over the limit, so a node with exactly the limit reads as
+        # uncut rather than as a stop we cannot explain.
+        rows = await get_graph_edges_for_node(
             session,
             repo_id,
             current,
             direction="callees",
             edge_types=["calls"],
-            limit=20,
+            limit=_CALLEE_FETCH_LIMIT + 1,
         )
+        edges = rows[:_CALLEE_FETCH_LIMIT]
+        # Rows arrive most-confident first, so a tail below the floor is
+        # provably unwalkable and hides nothing: only a cut whose last kept row
+        # is still walkable leaves a real unknown.
+        truncated = len(rows) > _CALLEE_FETCH_LIMIT and (
+            edges[-1].confidence or 0.0
+        ) >= 0.5
+        revisited = 0
+        low_confidence = Counter()
+        excluded = 0
 
         best_id: str | None = None
         best_conf = -1.0
+        best_origin: str | None = None
         for e in edges:
             tid = e.target_node_id
             conf = e.confidence if e.confidence is not None else 0.0
-            if (
-                tid in visited
-                or conf < 0.5
-                or _node_id_is_excluded(tid)
-            ):
+            if conf < 0.5:
+                low_confidence[e.resolution_origin or "unlabelled"] += 1
+                continue
+            if _node_id_is_excluded(tid):
+                excluded += 1
+                continue
+            if tid in visited:
+                revisited += 1
                 continue
             if conf > best_conf:
                 best_conf = conf
                 best_id = tid
+                best_origin = e.resolution_origin
 
         if best_id is None:
             break
 
+        if hop_origins is not None and best_origin:
+            hop_origins[(current, best_id)] = best_origin
         visited.add(best_id)
         trace.append(best_id)
         current = best_id
+
+    if termination is not None:
+        reason: FlowTermination = classify_termination(
+            hops_taken=len(trace) - 1,
+            max_depth=max_depth,
+            revisited=revisited,
+            low_confidence=sum(low_confidence.values()),
+            excluded=excluded,
+            truncated=truncated,
+        )
+        termination["reason"] = reason
+        termination["detail"] = (
+            dict(low_confidence) if reason == "confidence_filtered" else {}
+        )
 
     return trace
 

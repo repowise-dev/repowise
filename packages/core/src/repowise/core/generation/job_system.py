@@ -108,7 +108,10 @@ class JobSystem:
         job_id = str(uuid.uuid4())
         # Serialize config to dict (works for frozen dataclasses)
         try:
-            config_dict: dict[str, object] = dataclasses.asdict(config)
+            serializer = getattr(config, "to_dict", None)
+            config_dict: dict[str, object] = (
+                serializer() if callable(serializer) else dataclasses.asdict(config)
+            )
         except TypeError:
             config_dict = {}
 

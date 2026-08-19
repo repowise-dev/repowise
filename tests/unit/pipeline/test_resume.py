@@ -223,3 +223,77 @@ async def test_rehydrate_analysis_returns_empty_views_when_none_persisted(sf):
     dead_code_report, decision_report = await ctrl.rehydrate_analysis()
     assert dead_code_report.findings == []
     assert decision_report.decisions == []
+
+
+# ---------------------------------------------------------------------------
+# A failed checkpoint must be audible
+# ---------------------------------------------------------------------------
+
+
+class _RecordingProgress:
+    def __init__(self) -> None:
+        self.messages: list[tuple[str, str]] = []
+
+    def on_message(self, level: str, text: str) -> None:
+        self.messages.append((level, text))
+
+
+async def test_a_failed_index_checkpoint_is_reported(sf, monkeypatch):
+    """The CLI promises "indexed work so far has been saved — run --resume".
+
+    When this write fails that promise is false. It was reported only through
+    ``logger.warning``, which the CLI pins to ERROR, so the user found out by
+    paying for the whole index a second time.
+    """
+    repo_id = await _make_repo(sf)
+
+    def _boom(*_a: object, **_k: object):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(
+        "repowise.core.pipeline.resume.controller.persist_ingestion", _boom
+    )
+
+    progress = _RecordingProgress()
+    ctrl = ResumeController(sf, repo_id, resume=False)
+    await ctrl.checkpoint_index(
+        parsed_files=[],
+        graph_builder=None,
+        git_metadata_list=[],
+        progress=progress,
+    )
+
+    assert progress.messages, "a failed checkpoint said nothing"
+    level, text = progress.messages[0]
+    assert level == "warning"
+    assert "database is locked" in text
+    # And it must not claim the index is on disk when it is not.
+    assert await ctrl.can_skip(ResumePhase.INDEX) is False
+
+
+async def test_a_successful_checkpoint_says_nothing(sf, monkeypatch):
+    """Only failures are worth a line; a clean run must stay quiet.
+
+    The persisters are stubbed to succeed rather than fed a real graph: what
+    is under test is that the reporting sits on the failure path only, not
+    what ``persist_ingestion`` writes.
+    """
+    repo_id = await _make_repo(sf)
+
+    async def _ok(*_a: object, **_k: object) -> None:
+        return None
+
+    monkeypatch.setattr("repowise.core.pipeline.resume.controller.persist_ingestion", _ok)
+    monkeypatch.setattr("repowise.core.pipeline.resume.controller.persist_git", _ok)
+
+    progress = _RecordingProgress()
+
+    ctrl = ResumeController(sf, repo_id, resume=False)
+    await ctrl.checkpoint_index(
+        parsed_files=[],
+        graph_builder=None,
+        git_metadata_list=[],
+        progress=progress,
+    )
+
+    assert progress.messages == []

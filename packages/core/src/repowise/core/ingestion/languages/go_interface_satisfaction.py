@@ -49,6 +49,8 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from ..heritage_resolver import heritage_ancestors
+
 if TYPE_CHECKING:
     import networkx as nx
     from tree_sitter import Node
@@ -57,12 +59,13 @@ log = structlog.get_logger(__name__)
 
 _IMPLEMENTS_CONFIDENCE = 0.6
 
-# Cap on embedded-interface expansion depth — guards against cyclic or
-# pathological embedding chains. Real Go embedding nests only a level or two.
+# Cap on embedded-interface expansion depth — guards against pathological
+# embedding chains. Real Go embedding nests only a level or two. (Cycles are
+# the walk's own business, not this constant's.)
 _MAX_EMBED_DEPTH = 6
 
 
-def _receiver_type_name(method_node: "Node", src: bytes) -> str | None:
+def _receiver_type_name(method_node: Node, src: bytes) -> str | None:
     """Return the bare receiver type of a ``method_declaration``.
 
     ``func (f *File) M()`` → ``File``; ``func (f File) M()`` → ``File``.
@@ -98,7 +101,7 @@ def _receiver_type_name(method_node: "Node", src: bytes) -> str | None:
     return None
 
 
-def _interface_facts(iface_node: "Node", src: bytes) -> tuple[set[str], list[str]]:
+def _interface_facts(iface_node: Node, src: bytes) -> tuple[set[str], list[str]]:
     """Return (explicit method names, embedded interface bare names)."""
     methods: set[str] = set()
     embedded: list[str] = []
@@ -130,7 +133,7 @@ def _interface_facts(iface_node: "Node", src: bytes) -> tuple[set[str], list[str
 
 
 class _FileFacts:
-    __slots__ = ("interfaces", "concrete_methods", "type_kind")
+    __slots__ = ("concrete_methods", "interfaces", "type_kind")
 
     def __init__(self) -> None:
         # name -> (explicit methods, embedded bare names)
@@ -141,10 +144,10 @@ class _FileFacts:
         self.type_kind: dict[str, str] = {}
 
 
-def _extract_file_facts(root: "Node", src: bytes) -> _FileFacts:
+def _extract_file_facts(root: Node, src: bytes) -> _FileFacts:
     facts = _FileFacts()
 
-    def walk(node: "Node") -> None:
+    def walk(node: Node) -> None:
         if node.type == "type_spec":
             name_node = node.child_by_field_name("name")
             type_node = node.child_by_field_name("type")
@@ -172,7 +175,7 @@ def _extract_file_facts(root: "Node", src: bytes) -> _FileFacts:
     return facts
 
 
-def _parse_go(src: bytes) -> "Node | None":
+def _parse_go(src: bytes) -> Node | None:
     """Parse Go source into a tree-sitter root node using the shared grammar."""
     from ..parser import _get_language  # local import: avoid cycle at module load
 
@@ -187,7 +190,7 @@ def _parse_go(src: bytes) -> "Node | None":
 
 
 def resolve_go_interface_satisfaction(
-    graph: "nx.DiGraph", parsed_files: dict[str, Any]
+    graph: nx.DiGraph, parsed_files: dict[str, Any]
 ) -> int:
     """Emit ``method_implements`` edges for structural Go interface satisfaction.
 
@@ -244,28 +247,30 @@ def resolve_go_interface_satisfaction(
     for key in interface_methods:
         name_to_iface_keys.setdefault(key[1], []).append(key)
 
-    def _expand(key: tuple[str, str], depth: int, seen: set) -> set[str]:
-        if key in seen or depth > _MAX_EMBED_DEPTH:
-            return set(interface_methods.get(key, set()))
-        seen.add(key)
-        result = set(interface_methods.get(key, set()))
+    def _embedded(key: tuple[str, str]) -> list[tuple[str, str]]:
+        """The interfaces *key* embeds, resolved to keys of their own."""
         pkg = key[0]
+        out: list[tuple[str, str]] = []
         for bare in interface_embeds.get(key, ()):
-            # Prefer an embedded interface in the same package.
-            target = None
+            # Prefer an embedded interface in the same package; otherwise take
+            # the name only when the repo holds exactly one interface with it.
             if (pkg, bare) in interface_methods:
-                target = (pkg, bare)
-            else:
-                candidates = name_to_iface_keys.get(bare)
-                if candidates and len(candidates) == 1:
-                    target = candidates[0]
-            if target is not None:
-                result |= _expand(target, depth + 1, seen)
-        return result
+                out.append((pkg, bare))
+                continue
+            candidates = name_to_iface_keys.get(bare)
+            if candidates and len(candidates) == 1:
+                out.append(candidates[0])
+        return out
 
+    # Anchor is (package dir, name), so same-named interfaces in different
+    # packages stay separate.
     expanded_iface: dict[tuple[str, str], frozenset[str]] = {}
     for key in interface_methods:
-        methods = _expand(key, 0, set())
+        methods: set[str] = set()
+        for reached in heritage_ancestors(
+            key, _embedded, max_expand_depth=_MAX_EMBED_DEPTH
+        ):
+            methods |= interface_methods.get(reached, set())
         if methods:
             expanded_iface[key] = frozenset(methods)
 

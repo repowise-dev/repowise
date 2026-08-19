@@ -7,11 +7,13 @@
  * are also supported via the `exports` map in package.json.
  */
 
+export * from "./node-ids.js";
 export * from "./pagination.js";
 export * from "./graph.js";
 export * from "./git.js";
 export * from "./docs.js";
 export * from "./decisions.js";
+export * from "./episodes.js";
 export * from "./dead-code.js";
 export * from "./symbols.js";
 export * from "./chat.js";
@@ -23,6 +25,7 @@ export * from "./security.js";
 export * from "./owners.js";
 export * from "./modules.js";
 export * from "./overview.js";
+export * from "./repos.js";
 export * from "./files.js";
 export * from "./external-systems.js";
 export * from "./health.js";

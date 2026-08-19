@@ -14,7 +14,6 @@ from .helpers import (
     node_text,
 )
 
-
 # C# XML doc comments use a small set of tags. We extract <summary> as the
 # primary docstring text and drop the structural markup. The fragments are
 # rarely strict XML (e.g. unclosed <see cref="..."/> in legacy code), so a
@@ -58,7 +57,7 @@ def extract_module_docstring(root: Node, src: str, lang: str) -> str | None:
                 "future_import_statement",
             ):
                 break
-    elif lang in ("typescript", "javascript"):
+    elif lang in ("typescript", "javascript", "svelte", "vue"):
         # Look for leading /** ... */ comment
         for child in root.children:
             if child.type == "comment":
@@ -234,7 +233,7 @@ def extract_symbol_docstring(def_node: Node, src: str, lang: str) -> str | None:
                 return None
         return None
 
-    elif lang in ("typescript", "javascript"):
+    elif lang in ("typescript", "javascript", "svelte", "vue"):
         return find_preceding_jsdoc(def_node, src)
 
     elif lang == "go":

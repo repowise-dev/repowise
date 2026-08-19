@@ -13,3 +13,7 @@ export type {
   DistillSavingsGroup,
   McpDropGroup,
 } from "./distill-savings-card";
+export { RoiCard } from "./roi-card";
+export type { RoiCardProps } from "./roi-card";
+export { SavingsTrendChart } from "./savings-trend-chart";
+export type { SavingsTrendChartProps } from "./savings-trend-chart";

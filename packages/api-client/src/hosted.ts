@@ -48,9 +48,11 @@ import type {
   ModuleHealthSummary,
   Paginated,
   PageResponse,
+  PageSummary,
   RepoResponse,
   SearchResultResponse,
 } from "./types";
+import type { PageFields } from "./pages";
 
 // ---------------------------------------------------------------------------
 // Config + hosted-only response types
@@ -249,12 +251,23 @@ export function mapHostedPage(raw: Record<string, unknown>, repoId: string): Pag
   const str = (k: string): string => (typeof raw[k] === "string" ? (raw[k] as string) : "");
   const num = (k: string, fallback = 0): number =>
     typeof raw[k] === "number" ? (raw[k] as number) : fallback;
+  const content = str("content");
+  const metadata = (raw.metadata as Record<string, unknown> | undefined) ?? {};
+  // The layer stamp gets a field of its own because `toPageSummary` drops the
+  // whole metadata blob, and the docs tree groups pages by this stamp off a
+  // summary listing. Blank reads as `null`, never "", so "no layer claimed
+  // this page" cannot be mistaken for a layer whose name is empty.
+  const stamp = (key: string): string | null => {
+    const value = metadata[key];
+    return typeof value === "string" && value ? value : null;
+  };
   return {
     id: str("id") || str("page_id"),
     repository_id: repoId,
     page_type: str("page_type"),
     title: str("title"),
-    content: str("content"),
+    content,
+    content_chars: content.length,
     target_path: str("target_path"),
     source_hash: str("source_hash"),
     model_name: str("model_name"),
@@ -266,11 +279,19 @@ export function mapHostedPage(raw: Record<string, unknown>, repoId: string): Pag
     version: num("version", 1),
     confidence: num("confidence", 1),
     freshness_status: str("freshness_status") || "fresh",
-    metadata: (raw.metadata as Record<string, unknown> | undefined) ?? {},
+    metadata,
+    layer_id: stamp("layer_id"),
+    layer_name: stamp("layer_name"),
     human_notes: null,
     created_at: str("created_at"),
     updated_at: str("updated_at") || str("created_at"),
   };
+}
+
+/** Drop a page's two heavy fields, keeping the rest byte-identical. */
+export function toPageSummary(page: PageResponse): PageSummary {
+  const { content: _content, metadata: _metadata, ...summary } = page;
+  return summary;
 }
 
 /** A dead_code.json finding into the local finding shape (artifact rows lack
@@ -296,6 +317,10 @@ export function mapHostedDeadCodeFinding(raw: Record<string, unknown>): DeadCode
     primary_owner: partial.primary_owner ?? null,
     status: partial.status ?? "open",
     note: partial.note ?? null,
+    // Artifacts written before these were surfaced carry neither; a missing
+    // date must not read as "never touched", so it stays null.
+    last_commit_at: partial.last_commit_at ?? null,
+    commit_count_90d: partial.commit_count_90d ?? 0,
   };
 }
 
@@ -309,7 +334,6 @@ export function mapHostedSearchResult(raw: Record<string, unknown>): SearchResul
     score: partial.score ?? 0,
     snippet: partial.snippet ?? "",
     search_type: partial.search_type ?? "keyword",
-    is_deterministic: partial.is_deterministic ?? false,
   };
 }
 
@@ -384,7 +408,14 @@ export interface HostedProvider {
     repoId: string,
     opts?: { page_type?: string; limit?: number; offset?: number },
   ): Promise<PageResponse[]>;
-  listAllPages(repoId: string, opts?: { page_type?: string }): Promise<PageResponse[]>;
+  listAllPages(
+    repoId: string,
+    opts: { page_type?: string; fields: "summary" },
+  ): Promise<PageSummary[]>;
+  listAllPages(
+    repoId: string,
+    opts?: { page_type?: string; fields?: "full" },
+  ): Promise<PageResponse[]>;
   getPageById(pageId: string, repoId?: string): Promise<PageResponse>;
 
   // Decisions / risk / dead code
@@ -553,6 +584,32 @@ export function createHostedProvider(config: HostedProviderConfig): HostedProvid
     return mapped;
   }
 
+  // Declared out here (rather than inline in the returned object) so it can
+  // carry the same overloads the interface does — an object-literal method
+  // can't.
+  async function listAllPages(
+    repoId: string,
+    opts: { page_type?: string; fields: "summary" },
+  ): Promise<PageSummary[]>;
+  async function listAllPages(
+    repoId: string,
+    opts?: { page_type?: string; fields?: "full" },
+  ): Promise<PageResponse[]>;
+  async function listAllPages(
+    repoId: string,
+    opts?: { page_type?: string; fields?: PageFields },
+  ): Promise<PageSummary[]> {
+    const pages = await loadPages(repoId);
+    const scoped = opts?.page_type
+      ? pages.filter((p) => p.page_type === opts.page_type)
+      : pages;
+    // Hosted serves its whole docs artifact in one cached call, so `summary`
+    // saves it no round trip. It still honours the contract: callers get rows
+    // with no `content`/`metadata`, so a component typed against the summary
+    // shape can't quietly read a body a leaner backend wouldn't have sent.
+    return opts?.fields === "summary" ? scoped.map(toPageSummary) : scoped;
+  }
+
   return {
     listRepos,
     refresh(): void {
@@ -610,10 +667,10 @@ export function createHostedProvider(config: HostedProviderConfig): HostedProvid
       return items;
     },
     async listHealthFiles(repoId, opts): Promise<HealthFilesResponse> {
-      // Hosted returns a bare (server-sliced) list with its own param names;
-      // the local route returns a windowed envelope. Fetch a wide window and
-      // apply the local windowing semantics client-side. Ceiling: repos with
-      // more than 500 scored files see the worst 500 (server sort: score).
+      // This route used to return a bare (server-sliced) list and now returns
+      // the same windowed envelope the local route does. Accept both, since an
+      // older deployment still answers with the array. Fetch a wide window and
+      // apply the local windowing semantics client-side.
       const filter = opts?.only_hotspots
         ? "hotspots"
         : opts?.only_untested
@@ -621,18 +678,32 @@ export function createHostedProvider(config: HostedProviderConfig): HostedProvid
           : opts?.only_failing
             ? "failing"
             : undefined;
-      const rows = await snapGet<HealthFilesResponse["files"]>(repoId, "/health/files", {
-        limit: 500,
-        sort: opts?.sort,
-        q: opts?.search,
-        filter,
-      });
-      let files = rows ?? [];
-      if (opts?.module) files = files.filter((f) => f.file_path.startsWith(opts.module as string));
+      const res = await snapGet<HealthFilesResponse | HealthFilesResponse["files"]>(
+        repoId,
+        "/health/files",
+        {
+          limit: 2000,
+          sort: opts?.sort,
+          q: opts?.search,
+          filter,
+        },
+      );
+      const envelope = Array.isArray(res) ? null : res;
+      let files: HealthFilesResponse["files"] = Array.isArray(res)
+        ? res
+        : (res?.files ?? []);
+      // The server's total counts what it filtered; a client-side module
+      // filter narrows further, so only trust the server total when we did not
+      // narrow the set ourselves.
+      let total = envelope?.total ?? files.length;
+      if (opts?.module) {
+        files = files.filter((f) => f.file_path.startsWith(opts.module as string));
+        total = files.length;
+      }
       if (opts?.order === "desc") files = [...files].reverse();
       const offset = opts?.offset ?? 0;
       const limit = opts?.limit ?? 50;
-      return { total: files.length, offset, limit, files: files.slice(offset, offset + limit) };
+      return { total, offset, limit, files: files.slice(offset, offset + limit) };
     },
     getHealthFileBreakdown: (repoId, filePath) =>
       snapGet(repoId, "/health/files/breakdown", { file_path: filePath }),
@@ -728,10 +799,7 @@ export function createHostedProvider(config: HostedProviderConfig): HostedProvid
       }
       return pages;
     },
-    async listAllPages(repoId, opts): Promise<PageResponse[]> {
-      const pages = await loadPages(repoId);
-      return opts?.page_type ? pages.filter((p) => p.page_type === opts.page_type) : pages;
-    },
+    listAllPages,
     async getPageById(pageId, repoId): Promise<PageResponse> {
       const pools = repoId
         ? [await loadPages(repoId)]

@@ -81,7 +81,7 @@ function cellBackground(cell: DsmCell, isDiagonal: boolean, role?: NodeRole): st
     // The diagonal is a service vs itself — repurpose it to surface the
     // service's architecture role so the on-diagonal core block stands out.
     if (role) return `color-mix(in srgb, ${roleStyle(role).color} 38%, transparent)`;
-    return "var(--color-bg-subtle)";
+    return "var(--color-bg-wash)";
   }
   if (!cell.present) return "transparent";
   if (cell.violation) return "color-mix(in srgb, var(--color-risk-high) 28%, transparent)";

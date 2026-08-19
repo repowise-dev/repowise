@@ -16,6 +16,7 @@ from repowise.core.analysis.health.grading import (
 from repowise.core.analysis.health.grading import (
     distribution as health_distribution,
 )
+from repowise.core.analysis.health.scoring import hotspot_health
 from repowise.core.generation.onboarding.slots import (
     ONBOARDING_ORDER,
     PROMOTED_SLOTS,
@@ -25,6 +26,9 @@ from repowise.core.persistence.crud import (
 )
 from repowise.core.persistence.crud import (
     get_health_summary as _get_health_summary,
+)
+from repowise.core.persistence.crud import (
+    get_hotspot_file_paths,
 )
 from repowise.core.persistence.crud import (
     get_kg_layers as _get_kg_layers,
@@ -254,6 +258,26 @@ async def _load_overview_page(session: Any, repository: Any) -> Page | None:
     return result.scalars().first()
 
 
+def _section_sort_key(section: str | None) -> tuple:
+    """Sort key that puts "8.10" after "8.9" instead of between "8.1" and "8.2".
+
+    Unplaced pages (no section) sort last rather than first, so a store whose
+    tree has not been rebuilt degrades to the previous title order instead of
+    leading with its least-placed pages.
+    """
+    if not section:
+        return (1,)
+    try:
+        return (0, tuple(int(part) for part in section.split(".")))
+    except ValueError:
+        return (0, ())
+
+
+def _module_order_key(page: Any) -> tuple:
+    """Outline position of a module page, falling back to its title."""
+    return (_section_sort_key(page.section_number), page.title or "")
+
+
 async def _load_module_pages(
     session: Any, repository: Any, collector: OmissionCollector
 ) -> list[Page]:
@@ -263,10 +287,14 @@ async def _load_module_pages(
         .where(
             Page.repository_id == repository.id,
             Page.page_type == "module_page",
+            Page.freshness_status != "tombstone",
         )
         .order_by(Page.title)
     )
-    all_module_pages = result.scalars().all()
+    # Outline order, not alphabetical: the stored tree already ranks modules by
+    # the dependency layer they sit in, so the capped-to-8 list is the top of
+    # the spine rather than whatever sorts first.
+    all_module_pages = sorted(result.scalars().all(), key=_module_order_key)
     if len(all_module_pages) > _MODULE_CAP:
         collector.add(
             f"module pages beyond cap={_MODULE_CAP} "
@@ -509,6 +537,135 @@ async def _build_architecture(session: Any, repository: Any) -> dict[str, Any]:
     }
 
 
+# The outline is the whole wiki, so it is served shallow by default: the top
+# rung plus a descendant count per entry orients an agent in a few hundred
+# tokens. ``include=["outline"]`` opens the next rung.
+_OUTLINE_TOP_CAP = 40
+_OUTLINE_CHILD_CAP = 10
+
+
+async def _load_tree_rows(session: Any, repository: Any) -> list[Any]:
+    """Tree columns for every live page. Tombstones are deliberately unplaced."""
+    result = await session.execute(
+        select(
+            Page.id,
+            Page.title,
+            Page.page_type,
+            Page.target_path,
+            Page.parent_page_id,
+            Page.display_order,
+            Page.section_number,
+        ).where(
+            Page.repository_id == repository.id,
+            Page.freshness_status != "tombstone",
+        )
+    )
+    return list(result.tuples().all())
+
+
+def _outline_index(rows: list[Any]) -> tuple[Any | None, dict[str, list[Any]]]:
+    """Root row and parent → children map, or ``(None, {})`` for an unbuilt tree."""
+    by_id = {r.id: r for r in rows}
+    children: dict[str, list[Any]] = defaultdict(list)
+    claimed: set[str] = set()
+    for row in rows:
+        parent = row.parent_page_id
+        if parent and parent != row.id and parent in by_id:
+            children[parent].append(row)
+            claimed.add(row.id)
+    if not claimed:
+        # Every parent is null: the store predates the tree, or it has not been
+        # rebuilt since. An outline built from that would be a flat list
+        # dressed up as a hierarchy, so none is served.
+        return None, {}
+    for siblings in children.values():
+        siblings.sort(key=lambda r: (r.display_order or 0, r.target_path or "", r.id))
+    candidates = [r for r in rows if r.id not in claimed and r.id in children]
+    root = next(
+        (r for r in candidates if r.page_type == "repo_overview"),
+        candidates[0] if candidates else None,
+    )
+    return root, children
+
+
+def _count_descendants(row: Any, children: dict[str, list[Any]], seen: set[str]) -> int:
+    """Size of a subtree, guarding against a parent cycle rather than recursing into one."""
+    if row.id in seen:
+        return 0
+    seen.add(row.id)
+    return sum(1 + _count_descendants(c, children, seen) for c in children.get(row.id, []))
+
+
+def _outline_node(
+    row: Any, children: dict[str, list[Any]], depth: int, collector: OmissionCollector
+) -> dict[str, Any]:
+    node: dict[str, Any] = {
+        "section": row.section_number,
+        "page_id": row.id,
+        "title": row.title,
+        "page_type": row.page_type,
+    }
+    if row.target_path:
+        node["target_path"] = row.target_path
+    kids = children.get(row.id, [])
+    if kids:
+        node["descendants"] = _count_descendants(row, children, set())
+    if kids and depth > 0:
+        cap = _OUTLINE_CHILD_CAP
+        if len(kids) > cap:
+            collector.add(
+                f"outline children of {row.id} beyond cap={cap} ({len(kids) - cap} dropped)",
+                "\n".join(f"{k.section_number} {k.title}: {k.target_path}" for k in kids[cap:]),
+            )
+        node["children"] = [_outline_node(k, children, depth - 1, collector) for k in kids[:cap]]
+    return node
+
+
+def _build_outline(rows: list[Any], depth: int, collector: OmissionCollector) -> dict[str, Any]:
+    """The stored page tree, rooted at the repo overview.
+
+    This is the same hierarchy the web app and the editor extension render:
+    onboarding pages, then the architecture diagram, then the dependency spine
+    of layers with their modules, files and cycles underneath. Each entry
+    carries the dotted ``section`` it was assigned at generation time, so a
+    page id quoted anywhere else in this response can be located in it.
+    """
+    root, children = _outline_index(rows)
+    if root is None:
+        return {}
+    top = children.get(root.id, [])
+    reachable = 1 + _count_descendants(root, children, set())
+    if len(top) > _OUTLINE_TOP_CAP:
+        collector.add(
+            f"outline top-level entries beyond cap={_OUTLINE_TOP_CAP} "
+            f"({len(top) - _OUTLINE_TOP_CAP} dropped)",
+            "\n".join(
+                f"{r.section_number} {r.title}: {r.target_path}" for r in top[_OUTLINE_TOP_CAP:]
+            ),
+        )
+    outline: dict[str, Any] = {
+        "root": {"page_id": root.id, "title": root.title},
+        "total_pages": len(rows),
+        "sections": [
+            _outline_node(r, children, depth - 1, collector) for r in top[:_OUTLINE_TOP_CAP]
+        ],
+    }
+    if len(top) > _OUTLINE_TOP_CAP:
+        # Siblings are ordered by type rank, so the served entries are the
+        # spine (onboarding, diagram, layers, modules) and what falls off the
+        # end is the long tail of cycles and loose files. Say so rather than
+        # letting the list read as the whole top rung.
+        outline["sections_total"] = len(top)
+        outline["sections_truncated"] = True
+    # Pages the tree has no place for — a dangling parent, or a page generated
+    # since the last rebuild. Reported rather than quietly missing, so the
+    # section count is never read as the page count.
+    unplaced = len(rows) - reachable
+    if unplaced > 0:
+        outline["unplaced_pages"] = unplaced
+    return outline
+
+
 async def _build_reading_order(session: Any, repository: Any) -> list[dict[str, Any]]:
     """Canonical onboarding spine — only slots that actually produced a page."""
     ro_result = await session.execute(
@@ -537,6 +694,12 @@ async def _build_reading_order(session: Any, repository: Any) -> list[dict[str, 
                 "title": p.title,
                 "page_id": p.id,
                 "target_path": p.target_path,
+                # Where this page sits in the outline. The two orders differ on
+                # purpose: reading order is the onboarding curriculum, keyed by
+                # slot, and it starts at the overview and the architecture
+                # guide, which the outline places as the root and a diagram
+                # rather than as steps one and two.
+                "section": p.section_number,
             }
         )
     return reading_order
@@ -559,20 +722,25 @@ def _resolve_title(overview_page: Page | None, repository: Any) -> str:
 async def _build_code_health(session: Any, repository: Any) -> dict[str, Any]:
     """Headline code-health KPIs; empty when health hasn't been run on this repo."""
     try:
-        health_summary = await _get_health_summary(session, repository.id)
+        # Metrics first, handed to the summary: it reads the same table, and
+        # that read now also aggregates the per-file deduction used to rank
+        # floored files, so letting it load its own copy pays for the ranking
+        # twice.
         metrics_rows = await _get_health_metrics(session, repository.id)
         if not metrics_rows:
             return {}
-        # Hotspot health: NLOC-weighted avg over the top-25% files by NLOC,
-        # matching the dashboard KPI definition.
-        sorted_by_nloc = sorted(metrics_rows, key=lambda m: m.nloc or 0, reverse=True)
-        top_q = sorted_by_nloc[: max(1, len(sorted_by_nloc) // 4)]
-        tot = sum(max(m.nloc, 1) for m in top_q)
-        hotspot_avg = sum(m.score * max(m.nloc, 1) for m in top_q) / tot if tot else 10.0
+        health_summary = await _get_health_summary(session, repository.id, metrics=metrics_rows)
+        # Hotspot health from the one owner, over the rows already loaded above.
+        # This used to average the top 25% of files *by NLOC* under a comment
+        # claiming it matched the dashboard; it never did. That ranks size, not
+        # churn, and it disagreed with the persisted KPI on all 42 local indexes
+        # (median 2.67 of 10, worst 6.46), reading higher on 31 of them. It also
+        # sorted every file row to produce one float.
+        hotspot_paths = await get_hotspot_file_paths(session, repository.id)
         return {
             "average_health": health_summary["average_health"],
             "band": band_for(float(health_summary["average_health"])),
-            "hotspot_health": round(hotspot_avg, 2),
+            "hotspot_health": hotspot_health(metrics_rows, hotspot_paths),
             "worst_performer_path": health_summary["worst_performer_path"],
             "worst_performer_score": health_summary["worst_performer_score"],
             "open_findings": health_summary["open_findings"],
@@ -689,7 +857,9 @@ def _dedupe_tour_steps(tour: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped
 
 
-def _build_guided_tour(overview_page: Page, result: dict[str, Any]) -> None:
+def _build_guided_tour(
+    overview_page: Page, result: dict[str, Any], sections: dict[str, str | None]
+) -> None:
     """Attach the topology-driven guided tour + layer order from overview page metadata."""
     from repowise.core.generation.models import compute_page_id
 
@@ -699,19 +869,24 @@ def _build_guided_tour(overview_page: Page, result: dict[str, Any]) -> None:
         ov_meta = {}
     tour = _dedupe_tour_steps(ov_meta.get("guided_tour") or [])
     if tour:
-        result["guided_tour"] = [
-            {
-                "order": s.get("order"),
-                "title": s.get("title"),
-                "kind": s.get("kind"),
-                "reason": s.get("reason"),
-                "target_path": s.get("target_path"),
-                "page_id": compute_page_id(
-                    s.get("page_type", "file_page"), s.get("target_path", "")
-                ),
-            }
-            for s in tour
-        ]
+        steps = []
+        for s in tour:
+            page_id = compute_page_id(s.get("page_type", "file_page"), s.get("target_path", ""))
+            steps.append(
+                {
+                    "order": s.get("order"),
+                    "title": s.get("title"),
+                    "kind": s.get("kind"),
+                    "reason": s.get("reason"),
+                    "target_path": s.get("target_path"),
+                    "page_id": page_id,
+                    # A tour step is a walk of the import graph, so it crosses
+                    # the outline rather than following it; the section says
+                    # which part of the tree each stop landed in.
+                    "section": sections.get(page_id),
+                }
+            )
+        result["guided_tour"] = steps
         result["guided_tour_hint"] = (
             "Topology-ordered walk of the codebase: read these page_ids "
             "in order — entry points first, then the files they import, "
@@ -726,9 +901,10 @@ def _build_guided_tour(overview_page: Page, result: dict[str, Any]) -> None:
 async def get_overview(repo: str | None = None, include: list[str] | None = None) -> dict:
     """Architecture map for an unfamiliar repo — first call when you don't know your way around.
 
-    Returns the synthesised overview plus key modules, entry points, repo-wide
-    git health (hotspot count, churn trend, bus-factor distribution), the
-    knowledge map (top owners, knowledge silos), and the community summary.
+    Returns the synthesised overview plus the wiki outline (the stored page
+    tree, top rung), key modules, entry points, repo-wide git health (hotspot
+    count, churn trend, bus-factor distribution), the knowledge map (top
+    owners, knowledge silos), and the community summary.
     Skip this on subsequent calls — once you have the map, jump straight to
     ``get_context`` / ``get_answer``.
 
@@ -745,7 +921,8 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     Args:
         repo: Repository alias, path, or ID. Use ``"all"`` for workspace overview.
         include: Opt-in extras. ``"content"`` returns the full overview essay in
-            ``content_md`` instead of the compact summary section.
+            ``content_md`` instead of the compact summary section. ``"outline"``
+            expands the page tree one rung deeper (modules under their layer).
     """
     if repo == "all":
         return await _workspace_overview()
@@ -776,6 +953,9 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
         community_summary = _build_community_summary(all_nodes)
         architecture = await _build_architecture(session, repository)
         reading_order = await _build_reading_order(session, repository)
+        tree_rows = await _load_tree_rows(session, repository)
+        sections = {r.id: r.section_number for r in tree_rows}
+        outline = _build_outline(tree_rows, 2 if "outline" in set(include or []) else 1, collector)
         title = _resolve_title(overview_page, repository)
         code_health = await _build_code_health(session, repository)
         key_decisions_section = await _build_key_decisions(session, repository, exclude_spec)
@@ -793,6 +973,9 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
                     "name": p.title,
                     "path": p.target_path,
                     "description": _module_description(p.content),
+                    "page_id": p.id,
+                    "section": p.section_number,
+                    "parent_page_id": p.parent_page_id,
                 }
                 for p in module_pages
             ],
@@ -806,6 +989,17 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
             result["content_hint"] = (
                 "Overview essay trimmed to its summary section. "
                 'Call get_overview(include=["content"]) for the full walkthrough.'
+            )
+
+        if outline:
+            result["outline"] = outline
+            result["outline_hint"] = (
+                "The stored page tree — the same outline the web app and the "
+                "editor extension render. Every 'section' in this response "
+                "indexes into it, and 'descendants' is how much sits below an "
+                "entry. Top rung only by default; call "
+                'get_overview(include=["outline"]) for one level deeper, then '
+                "get_context on an entry's target_path to read it."
             )
 
         if architecture:
@@ -826,7 +1020,7 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
         # from the import graph (entry points first, then inward, infra last).
         # Persisted on the repo_overview page metadata at generation time.
         if overview_page:
-            _build_guided_tour(overview_page, result)
+            _build_guided_tour(overview_page, result, sections)
 
         # Append workspace context footer when in workspace mode
         ws_footer = _build_workspace_footer()
@@ -838,9 +1032,14 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
         result["tool_guide"] = {
             "first_call": "get_answer for any how/where/why question; trust "
             "confidence=high directly (it is content-grounded).",
-            "reading_code": "get_context skeleton (≈37% of a full Read) → "
-            "get_symbol for bodies (verified: true = no re-read needed). "
-            "Raw Read only for files marked mostly_full or unservable.",
+            # NOT "get_context skeleton -> get_symbol for bodies". That routed
+            # the agent into a per-signature walk, which is where three
+            # quarters of every measured session's retrieval calls went, on the
+            # one tool whose payload cannot be trimmed. get_context serves no
+            # source by default now, so this names the two whole-file routes.
+            "reading_code": 'get_context(include=["skeleton"]) for a whole file '
+            "verified, or just Read it. get_symbol only for an id a response "
+            "already gave you — never file-by-signature.",
             "recipes": [
                 "get_answer low confidence → Read best_guesses[0].file",
                 "get_context hotspot: true → get_risk before editing",
@@ -851,7 +1050,8 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
                 "prose → wiki search. Force with mode=symbol|path|concept|hybrid.",
             ],
             "reread_triggers": "Only re-read source on bounds: approximate, "
-            "stale_warning in _meta, or search_method: bm25.",
+            "stale_warning in _meta, or a search hit whose sources are [fts] "
+            "only (keyword match, no semantic agreement).",
         }
 
         result["_meta"] = _build_meta(repository=repository)

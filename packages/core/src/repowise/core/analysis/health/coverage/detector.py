@@ -21,41 +21,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ....test_paths import is_test_related_path
 from .clover import parse_clover
 from .cobertura import parse_cobertura
 from .lcov import parse_lcov
 from .model import CoverageReport
 from .repowise_json import parse_repowise_json
-
-# Test-file globs / suffixes — checked against POSIX-normalized paths.
-_TEST_PATH_FRAGMENTS = (
-    "/test/",
-    "/tests/",
-    "/__tests__/",
-    "/spec/",
-    "/specs/",
-)
-_TEST_FILE_SUFFIXES = (
-    "_test.py",
-    "_test.go",
-    ".test.ts",
-    ".test.tsx",
-    ".test.js",
-    ".test.jsx",
-    ".test.mts",
-    ".test.cts",
-    ".spec.ts",
-    ".spec.tsx",
-    ".spec.js",
-    ".spec.jsx",
-    ".spec.mts",
-    ".spec.cts",
-    "_spec.rb",
-    "Test.java",
-    "Tests.java",
-    "Spec.scala",
-)
-_TEST_FILE_PREFIXES = ("test_",)
 
 # Test framework import patterns — used when the path heuristic is
 # inconclusive. Detected via cheap substring scan (no tree-sitter pass).
@@ -113,22 +84,14 @@ def parse(text: str, *, format: str | None = None) -> CoverageReport:
 
 
 def is_test_file(rel_path: str, source: str | None = None) -> bool:
-    """Heuristic — does *rel_path* look like a test file?
+    """Does *rel_path* look like a test file?
 
-    *source* is an optional file body; when supplied we additionally
-    check for test-framework imports for files whose paths don't match
-    obvious conventions.
+    The path rules live in :mod:`repowise.core.test_paths`, the one home for
+    them (#1103). What this adds is the *source* branch: given a file body, a
+    test-framework import marks a test whose path follows no convention at all,
+    which no amount of path matching can tell you.
     """
-    p = rel_path.replace("\\", "/")
-    lower = p.lower()
-    base = p.rsplit("/", 1)[-1]
-    if any(frag in lower for frag in _TEST_PATH_FRAGMENTS):
-        return True
-    if any(lower.startswith(frag.lstrip("/")) for frag in _TEST_PATH_FRAGMENTS):
-        return True
-    if base.startswith(_TEST_FILE_PREFIXES):
-        return True
-    if any(base.endswith(sfx) for sfx in _TEST_FILE_SUFFIXES):
+    if is_test_related_path(rel_path):
         return True
     if source:
         head = source[:4096]

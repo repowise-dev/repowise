@@ -109,7 +109,7 @@ export function TopSymbolsRow({
               onClick={onSelect ? () => onSelect(s) : undefined}
               className={cn(
                 "group flex items-center gap-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2 py-1.5 text-left transition-colors",
-                onSelect && "hover:border-[var(--color-accent-primary)] hover:bg-[var(--color-bg-hover)] cursor-pointer",
+                onSelect && "hover:border-[var(--color-accent-primary)] hover:bg-[var(--color-bg-wash-hover)] cursor-pointer",
               )}
               title={s.qualified_name || s.name}
               aria-label={`Open symbol ${s.name}`}

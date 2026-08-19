@@ -43,7 +43,16 @@ class _FakeJobStore:
         return rec
 
     async def list_jobs(self, *, repository_id=None, phase=None, state=None, limit=100):
-        return list(self.jobs.values())
+        # Honour every filter SqlJobStore applies: callers push predicates down
+        # to the store, so a double that ignores them hides real bugs.
+        matches = [
+            j
+            for j in self.jobs.values()
+            if (repository_id is None or j.repository_id == repository_id)
+            and (phase is None or j.phase == phase)
+            and (state is None or j.state == state)
+        ]
+        return matches[:limit]
 
 
 async def test_fast_mode_skips_generation_and_co_change(sample_repo_path: Path) -> None:

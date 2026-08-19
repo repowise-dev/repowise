@@ -1,3 +1,4 @@
+import type { ZoomMap } from "@repowise-dev/ui/zoom";
 import { apiGet } from "./client";
 import type {
   ArchitectureGraphResponse,
@@ -153,4 +154,16 @@ export async function getExecutionFlows(
   params?: { top_n?: number; max_depth?: number; entry_point?: string },
 ): Promise<ExecutionFlowsResponse> {
   return apiGet<ExecutionFlowsResponse>(`/api/graph/${repoId}/execution-flows`, params);
+}
+
+/**
+ * The continuous-zoom containment tree (system -> layer -> ... -> file). The
+ * response shape is the shared `ZoomMap` consumed by the canvas renderer.
+ * `focus` + `max_depth` fetch deeper subtrees lazily for large repos.
+ */
+export async function getZoomMap(
+  repoId: string,
+  params?: { max_depth?: number; focus?: string },
+): Promise<ZoomMap> {
+  return apiGet<ZoomMap>(`/api/graph/${repoId}/zoom-map`, params);
 }

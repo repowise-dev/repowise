@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field  # noqa: F401  — re-exported
 from pathlib import Path
 
+from ..models import DynamicKind
 from ._walk import iter_glob
 
 
@@ -12,7 +13,10 @@ from ._walk import iter_glob
 class DynamicEdge:
     source: str  # repo-relative path
     target: str  # repo-relative path
-    edge_type: str  # "dynamic_uses" | "dynamic_imports" | "url_route"
+    # The hint kind, not the graph edge type: `EdgesMixin.add_dynamic_edges`
+    # prefixes anything not already starting with "dynamic", so `url_route`
+    # lands in the graph as `dynamic_url_route`.
+    edge_type: DynamicKind
     hint_source: str  # extractor name
     weight: float = 1.0
 

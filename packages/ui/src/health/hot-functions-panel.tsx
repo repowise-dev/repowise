@@ -4,7 +4,8 @@ import { useState } from "react";
 import { ArrowUpRight, ChevronDown, ChevronRight, Flame } from "lucide-react";
 import { biomarkerLabel } from "./biomarker-glossary";
 import type { BiomarkerDetailsRecord } from "./biomarker-details";
-import { SEVERITY_CHIP, SEVERITY_LABEL, type Severity } from "./tokens";
+import { type Severity } from "./tokens";
+import { SeverityMark } from "./severity-mark";
 
 export interface HotFunctionFinding {
   id: string;
@@ -146,11 +147,7 @@ export function HotFunctionsPanel({
               onClick={interactive ? () => onSelect!(row.representative) : undefined}
             >
               <div className="flex items-center gap-2 flex-wrap">
-                <span
-                  className={`inline-block rounded px-1.5 py-px text-[10px] uppercase font-semibold ${SEVERITY_CHIP[row.worst_severity]}`}
-                >
-                  {SEVERITY_LABEL[row.worst_severity]}
-                </span>
+                <SeverityMark severity={row.worst_severity} />
                 {(() => {
                   const href = symbolHrefFor
                     ? symbolHrefFor(row.representative)

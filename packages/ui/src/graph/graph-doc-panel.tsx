@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
-import { ChatMarkdown } from "../chat/chat-markdown";
+import { Markdown } from "../shared/markdown";
 import { ConfidenceBadge } from "../wiki/confidence-badge";
 import { formatRelativeTime } from "../lib/format";
 import type { DocPage } from "@repowise-dev/types/docs";
@@ -128,8 +128,8 @@ export function GraphDocPanel({
 
         {page && !isLoading && (
           <div className="px-4 py-4">
-            <article className="prose-chat text-xs">
-              <ChatMarkdown content={page.content} />
+            <article>
+              <Markdown content={page.content} density="compact" />
             </article>
           </div>
         )}

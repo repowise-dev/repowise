@@ -1,4 +1,6 @@
-import { AlertTriangle, ArrowUpRight } from "lucide-react";
+import { ArrowUpRight } from "lucide-react";
+
+import { coverageBand } from "./tokens";
 
 export interface UntestedHotspotEntry {
   file_path: string;
@@ -15,72 +17,82 @@ export interface UntestedHotspotWarningProps {
   onSelect?: ((filePath: string) => void) | undefined;
 }
 
+/**
+ * The files where a coverage gap actually costs something, as hairline rows.
+ *
+ * It used to be a tinted warning panel with its own border, icon, heading and
+ * description, which is four pieces of chrome around a list the section header
+ * now names. The colour moved onto the one figure that carries a band, the
+ * coverage percentage, so a file at 0% reads louder than one at 28% instead of
+ * every row reading equally alarming because the panel behind them is amber.
+ */
 export function UntestedHotspotWarning({
   entries,
-  limit = 5,
+  limit = 6,
   onSelect,
 }: UntestedHotspotWarningProps) {
   if (entries.length === 0) return null;
   const shown = entries.slice(0, limit);
+
   return (
-    <div className="rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/5 p-4">
-      <div className="flex items-start gap-2 mb-2">
-        <AlertTriangle className="h-4 w-4 text-[var(--color-warning)] mt-0.5" />
-        <div>
-          <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
-            Untested hotspots
-          </h3>
-          <p className="text-xs text-[var(--color-text-secondary)]">
-            High-churn, centrally depended-on files with little or no test coverage.
-          </p>
-        </div>
-      </div>
-      <ul className="space-y-0.5">
+    <div className="flex flex-col">
+      <ul className="border-t border-[var(--color-border-default)]">
         {shown.map((e) => {
-          const meta = (
-            <span className="text-xs text-[var(--color-text-tertiary)] tabular-nums">
-              {e.line_coverage_pct == null
-                ? "no coverage data"
-                : `${e.line_coverage_pct.toFixed(0)}% covered`}
-              {e.dependents_count != null && ` · ${e.dependents_count} dependents`}
-              {e.commit_count_90d != null &&
-                e.commit_count_90d > 0 &&
-                ` · ${e.commit_count_90d} commits/90d`}
-            </span>
+          const body = (
+            <>
+              <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--color-text-primary)]">
+                {e.file_path}
+              </span>
+              <span className="shrink-0 tabular-nums text-xs text-[var(--color-text-tertiary)]">
+                {e.dependents_count != null && `${e.dependents_count} dependents`}
+                {e.dependents_count != null &&
+                  e.commit_count_90d != null &&
+                  e.commit_count_90d > 0 &&
+                  " · "}
+                {e.commit_count_90d != null &&
+                  e.commit_count_90d > 0 &&
+                  `${e.commit_count_90d} commits in 90d`}
+              </span>
+              <span
+                className="w-[4.5rem] shrink-0 text-right text-xs font-semibold tabular-nums"
+                style={{
+                  color:
+                    e.line_coverage_pct == null
+                      ? "var(--color-text-tertiary)"
+                      : coverageBand(e.line_coverage_pct).color,
+                }}
+              >
+                {e.line_coverage_pct == null
+                  ? "no data"
+                  : `${e.line_coverage_pct.toFixed(0)}%`}
+              </span>
+            </>
           );
-          if (onSelect) {
-            return (
-              <li key={e.file_path}>
-                <button
-                  type="button"
-                  onClick={() => onSelect(e.file_path)}
-                  className="group flex w-full flex-wrap items-baseline gap-x-3 rounded-md px-2 py-1 text-left text-sm hover:bg-[var(--color-warning)]/10"
-                >
-                  <span className="inline-flex items-center gap-1 font-mono text-[var(--color-text-primary)] truncate">
-                    <span className="truncate">{e.file_path}</span>
-                    <ArrowUpRight className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)] group-hover:text-[var(--color-warning)]" />
-                  </span>
-                  {meta}
-                </button>
-              </li>
-            );
-          }
+
           return (
             <li
               key={e.file_path}
-              className="flex flex-wrap items-baseline gap-x-3 px-2 py-1 text-sm"
+              className="border-b border-[var(--color-border-default)]"
             >
-              <span className="font-mono text-[var(--color-text-primary)] truncate">
-                {e.file_path}
-              </span>
-              {meta}
+              {onSelect ? (
+                <button
+                  type="button"
+                  onClick={() => onSelect(e.file_path)}
+                  className="group flex w-full items-baseline gap-x-4 py-2.5 text-left hover:bg-[var(--color-bg-elevated)]"
+                >
+                  {body}
+                  <ArrowUpRight className="h-3 w-3 shrink-0 self-center text-[var(--color-text-tertiary)] group-hover:text-[var(--color-accent-primary)]" />
+                </button>
+              ) : (
+                <div className="flex w-full items-baseline gap-x-4 py-2.5">{body}</div>
+              )}
             </li>
           );
         })}
       </ul>
       {entries.length > limit && (
-        <p className="text-xs text-[var(--color-text-tertiary)] mt-2">
-          + {entries.length - limit} more
+        <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
+          {entries.length - limit} more sit in the file table below.
         </p>
       )}
     </div>

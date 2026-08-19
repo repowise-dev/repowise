@@ -11,10 +11,16 @@ name: Publish internal prereleases
 # (`publish.yml`) only fires on `v*` tags and is unaffected.
 #
 # Triggers:
-#   - push to `next` (auto)
+#   - push to `main` (auto), so a merged PR publishes itself
 #   - workflow_dispatch (manual, for re-publishes)
 #
-# Triggers on push to `main` so merged PRs automatically publish.
+# Publishing is idempotent. The version is derived from the commit SHA, so
+# republishing one is by definition a no-op, and each step skips when the
+# version is already on the registry. Without that, anything that delivers a
+# second push event for a SHA already published (a duplicate webhook, a re-run,
+# a manual dispatch on an already-built commit) turns main red on a 409 with
+# nothing actually wrong. `cancel-in-progress` is deliberately not the fix: it
+# would kill a real publish mid-flight when the next merge lands.
 
 on:
   push:
@@ -70,7 +76,11 @@ jobs:
         run: |
           npm pkg set version="$VERSION"
           npm pkg delete private
-          npm publish
+          if npm view "@repowise-dev/types@$VERSION" version >/dev/null 2>&1; then
+            echo "@repowise-dev/types@$VERSION is already published, skipping"
+          else
+            npm publish
+          fi
 
       - name: Publish @repowise-dev/ui
         working-directory: packages/ui
@@ -81,12 +91,16 @@ jobs:
           npm pkg set version="$VERSION"
           npm pkg set dependencies.@repowise-dev/types="$VERSION"
           npm pkg delete private
-          npm publish
+          if npm view "@repowise-dev/ui@$VERSION" version >/dev/null 2>&1; then
+            echo "@repowise-dev/ui@$VERSION is already published, skipping"
+          else
+            npm publish
+          fi
 
       - name: Summary
         run: |
           {
-            echo "### Published"
+            echo "### Available on GitHub Packages"
             echo ""
             echo "- \`@repowise-dev/types@${{ steps.ver.outputs.version }}\`"
             echo "- \`@repowise-dev/ui@${{ steps.ver.outputs.version }}\`"

@@ -16,14 +16,6 @@ export interface FileWikiPageRef {
   confidence: number;
   human_notes: string | null;
   updated_at: string | null;
-  /**
-   * Deterministic coverage-tail pages are template-generated (zero LLM).
-   * `is_deterministic` drives the "Auto" badge in the file docs tab;
-   * `doc_tier` (2/3) mirrors `metadata.doc_tier`. Optional so payloads that
-   * predate the fields still type-check.
-   */
-  is_deterministic?: boolean;
-  doc_tier?: number | null;
 }
 
 export interface FileHealthFinding {
@@ -125,12 +117,26 @@ export interface FileDetailGit extends Hotspot {
   co_change_partners: CoChangePartner[];
   agent: FileAgentProvenance;
   first_commit_at: string | null;
+  /** `symbol_id` -> counted fixes that landed in it, over the same window as
+   *  `prior_defect_count`. Approximate: symbol spans are current-tree while
+   *  each fix's line ranges are numbered on its own parent commit. A symbol
+   *  with no fixes is absent from the map; the whole map is empty on an index
+   *  that predates the fix rollup. */
+  fix_symbol_counts?: Record<string, number>;
 }
 
 export interface FileDetailCoverage {
   line_coverage_pct: number;
   branch_coverage_pct: number | null;
   total_coverable_lines: number;
+  /**
+   * How many lines `covered_lines` names. Always sent, including under
+   * `fields=slim` where the array itself is dropped — the coverage headline
+   * only ever wanted the count, and counting it client-side is what forced the
+   * whole integer array across the wire. Optional so older payloads parse.
+   */
+  covered_line_count?: number;
+  /** Empty under `fields=slim`; read `covered_line_count` for the total. */
   covered_lines: number[];
   source_format: string;
   ingested_at: string | null;
@@ -247,7 +253,16 @@ export interface FileDetailResponse {
   coverage: FileDetailCoverage | null;
   graph: FileDetailGraph | null;
   symbols: FileSymbolSlim[];
+  /** Empty under `fields=slim`; read `function_blame_count` for the total. */
   function_blame: FunctionBlameRow[];
+  /**
+   * How many blame rows exist, in both modes. Optional so a frontend ahead of
+   * its backend degrades rather than rendering `NaN` — the same contract
+   * `coverage.covered_line_count` follows, and for the same reason: a caller
+   * deciding whether a block is worth fetching cannot otherwise tell an empty
+   * table from a dropped one.
+   */
+  function_blame_count?: number;
   governing_decisions: GoverningDecisionRef[];
   dead_code: FileDeadCodeFinding[];
 }

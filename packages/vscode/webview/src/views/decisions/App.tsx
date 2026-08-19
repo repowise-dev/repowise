@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { FileText, Landmark, Lightbulb } from "lucide-react";
-import { Badge, Card, CardContent } from "@repowise-dev/ui/ui";
+import { Badge } from "@repowise-dev/ui/ui";
 import { EmptyState } from "@repowise-dev/ui/shared";
+import {
+  DecisionStatusMark,
+  decisionStatusColor,
+} from "@repowise-dev/ui/decisions/decision-status-mark";
 import { WikiMarkdown } from "@repowise-dev/ui/wiki/wiki-markdown";
 import { formatRelativeTime, stripMarkdown } from "@repowise-dev/ui/lib/format";
 import type { DecisionRecordResponse } from "@repowise-dev/api-client/types";
@@ -11,29 +15,14 @@ type Status = DecisionRecordResponse["status"];
 
 const STATUS_ORDER: readonly Status[] = ["active", "proposed", "deprecated", "superseded"];
 
-/** Left dot / accent per status, matching the shared decisions widget. */
-const STATUS_DOT: Record<Status, string> = {
-  active: "var(--color-success)",
-  proposed: "var(--color-info)",
-  deprecated: "var(--color-error)",
-  superseded: "var(--color-text-tertiary)",
-};
-
 function statusLabel(status: Status): string {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
-function StatusBadge({ status }: { status: Status }) {
-  const color = STATUS_DOT[status];
-  return (
-    <span
-      className="inline-flex items-center rounded border px-2 py-0.5 text-[11px] font-medium"
-      style={{ color, borderColor: `color-mix(in srgb, ${color} 35%, transparent)` }}
-    >
-      {statusLabel(status)}
-    </span>
-  );
-}
+/** Record section labels. Uppercase micro-labels are mono: it separates a
+ *  machine-shaped label from the prose under it without spending a colour. */
+const SECTION_LABEL =
+  "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
 function recencyKey(d: DecisionRecordResponse): number {
   const raw = d.updated_at || d.created_at;
@@ -59,14 +48,17 @@ function DecisionsSkeleton() {
         </div>
       </header>
       <div className="flex min-h-0 flex-1">
-        <div className="w-80 shrink-0 space-y-2 border-r border-[var(--color-border-default)] p-3">
+        {/* Borderless rows, matching the loaded list: a skeleton drawing seven
+            boxes for content that lands as seven plain rows reflows the panel
+            at exactly the moment it is meant to steady it. */}
+        <div className="w-80 shrink-0 space-y-1 border-r border-[var(--color-border-default)] p-3">
           {Array.from({ length: 7 }).map((_, i) => (
-            <div
-              key={i}
-              className="space-y-2 rounded-lg border border-[var(--color-border-default)] p-3"
-            >
-              <div className="h-4 w-3/4 animate-pulse rounded bg-[var(--color-bg-inset)]" />
-              <div className="h-3 w-1/2 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+            <div key={i} className="flex items-start gap-3 px-3 py-2.5">
+              <div className="mt-1 h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-[var(--color-bg-inset)]" />
+              <div className="min-w-0 flex-1 space-y-1.5">
+                <div className="h-4 w-3/4 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+                <div className="h-3 w-1/2 animate-pulse rounded bg-[var(--color-bg-inset)]" />
+              </div>
             </div>
           ))}
         </div>
@@ -172,7 +164,7 @@ export function App({ host, refreshToken }: ViewProps<"decisions">) {
   return (
     <div className="flex h-full flex-col">
       <header className="border-b border-[var(--color-border-default)] px-6 py-4">
-        <h1 className="flex items-center gap-2 text-lg font-semibold text-[var(--color-text-primary)]">
+        <h1 className="flex items-center gap-2 text-[22px] font-semibold text-[var(--color-text-primary)]">
           <Landmark className="h-5 w-5 text-[var(--color-text-secondary)]" />
           Decisions
         </h1>
@@ -217,13 +209,13 @@ export function App({ host, refreshToken }: ViewProps<"decisions">) {
                 >
                   <span
                     className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full"
-                    style={{ backgroundColor: STATUS_DOT[d.status] }}
+                    style={{ backgroundColor: decisionStatusColor(d.status) }}
                   />
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium text-[var(--color-text-primary)]">
+                    <span className="block text-[15px] font-medium leading-snug text-[var(--color-text-primary)]">
                       {stripMarkdown(d.title)}
                     </span>
-                    <span className="mt-0.5 block text-[11px] text-[var(--color-text-tertiary)]">
+                    <span className="mt-0.5 block text-xs text-[var(--color-text-tertiary)]">
                       {formatRelativeTime(d.updated_at || d.created_at)}
                       {d.source ? ` · ${d.source.replace(/_/g, " ")}` : ""}
                     </span>
@@ -258,8 +250,8 @@ function Detail({
   return (
     <article className="mx-auto max-w-2xl space-y-5">
       <div className="space-y-3">
-        <StatusBadge status={decision.status} />
-        <h2 className="text-xl font-semibold leading-snug text-[var(--color-text-primary)]">
+        <DecisionStatusMark status={decision.status} className="capitalize" />
+        <h2 className="text-[22px] font-semibold leading-snug text-[var(--color-text-primary)]">
           {stripMarkdown(decision.title)}
         </h2>
         {decision.tags.length > 0 && (
@@ -275,10 +267,13 @@ function Detail({
 
       {sections.map((s) => (
         <section key={s.heading} className="space-y-1.5">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-tertiary)]">
+          <h3 className={SECTION_LABEL}>
             {s.heading}
           </h3>
-          <div className="prose-sm max-w-none text-sm text-[var(--color-text-secondary)]">
+          {/* No `prose` wrapper: WikiMarkdown themes every element it emits
+              through our tokens, so the plugin only imposes a second font
+              scale and set of margins over one that is already set. */}
+          <div className="max-w-none text-[var(--color-text-secondary)]">
             <WikiMarkdown content={s.body} />
           </div>
         </section>
@@ -293,7 +288,7 @@ function Detail({
 
       {decision.affected_files.length > 0 && (
         <section className="space-y-1.5">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-tertiary)]">
+          <h3 className={SECTION_LABEL}>
             Affected files
           </h3>
           <ul className="space-y-1">
@@ -307,18 +302,14 @@ function Detail({
       )}
 
       {decision.evidence_file && (
-        <Card>
-          <CardContent className="py-3">
-            <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--color-text-tertiary)]">
-              Evidence
-            </h3>
-            <FileRef
-              host={host}
-              path={decision.evidence_file}
-              line={decision.evidence_line ?? undefined}
-            />
-          </CardContent>
-        </Card>
+        <section className="space-y-1.5 border-t border-[var(--color-border-default)] pt-4">
+          <h3 className={SECTION_LABEL}>Evidence</h3>
+          <FileRef
+            host={host}
+            path={decision.evidence_file}
+            line={decision.evidence_line ?? undefined}
+          />
+        </section>
       )}
     </article>
   );
@@ -327,10 +318,10 @@ function Detail({
 function ListSection({ heading, items }: { heading: string; items: string[] }) {
   return (
     <section className="space-y-1.5">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-tertiary)]">
+      <h3 className={SECTION_LABEL}>
         {heading}
       </h3>
-      <ul className="list-disc space-y-1 pl-5 text-sm text-[var(--color-text-secondary)]">
+      <ul className="list-disc space-y-1 pl-5 text-[15px] text-[var(--color-text-secondary)]">
         {items.map((item, i) => (
           <li key={i}>{item}</li>
         ))}
@@ -352,7 +343,7 @@ function FileRef({
     <button
       type="button"
       onClick={() => host.openFile(path, line)}
-      className="inline-flex items-center gap-1.5 text-sm text-[var(--color-accent-primary)] hover:underline"
+      className="inline-flex items-center gap-1.5 text-[15px] text-[var(--color-accent-primary)] hover:underline"
     >
       <FileText className="h-3.5 w-3.5 shrink-0" />
       <span className="break-all text-left">

@@ -1,7 +1,7 @@
 "use client";
 
 import useSWR from "swr";
-import { listRepos, getRepo } from "@/lib/api/repos";
+import { getRepo } from "@/lib/api/repos";
 import { ApiClientError } from "@/lib/api/client";
 import type { RepoResponse } from "@/lib/api/types";
 
@@ -19,15 +19,6 @@ function skipRetryOn404(
     () => revalidate({ retryCount: retryCount + 1 }),
     5_000 * Math.min(2 ** retryCount, 8),
   );
-}
-
-export function useRepos() {
-  const { data, error, isLoading, mutate } = useSWR<RepoResponse[]>(
-    "repos",
-    () => listRepos(),
-    { refreshInterval: 30_000, onErrorRetry: skipRetryOn404 },
-  );
-  return { repos: data ?? [], error, isLoading, mutate };
 }
 
 export function useRepo(repoId: string | null) {

@@ -23,19 +23,6 @@ def test_generate_mcp_config():
     assert "stdio" in server["args"]
 
 
-def test_format_setup_instructions():
-    from pathlib import Path
-
-    from repowise.cli.mcp_config import format_setup_instructions
-
-    instructions = format_setup_instructions(Path("/tmp/test-repo"))
-    assert "Project .mcp.json" in instructions
-    assert "Claude Code" not in instructions
-    assert "Cursor" in instructions
-    assert "Cline" in instructions
-    assert "repowise" in instructions
-
-
 @pytest.mark.asyncio
 async def test_mcp_lifespan_uses_cli_database_env_var(monkeypatch):
     """REPOWISE_DB_URL should be respected by MCP lifespan via resolve_db_url."""

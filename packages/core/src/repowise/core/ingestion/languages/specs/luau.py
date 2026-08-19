@@ -14,6 +14,8 @@ SPEC = LanguageSpec(
     heritage_node_types=frozenset(),
     entry_point_patterns=("init.luau", "init.lua"),
     manifest_files=("default.project.json", "wally.toml", ".rojo.json"),
+    # Rojo CLI settings; the project/wally files declare the package.
+    build_config_manifests=(".rojo.json",),
     blocked_dirs=("Packages", "ServerPackages", "DevPackages"),
     builtin_calls=frozenset(
         {

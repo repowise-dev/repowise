@@ -5,8 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import click
-
+from repowise.cli.agent_targets.targets import vscode as vscode_target
 from repowise.cli.editor_setup import EditorSetupOptions
 
 
@@ -18,32 +17,19 @@ class VSCodeSetup:
     they use the bare ``repowise`` command like the committed ``.mcp.json``.
     """
 
-    integration_id = "vscode"
-    project_file_id = "vscode_mcp"
-
-    def configure_options(
-        self,
-        console_obj: Any,
-        options: EditorSetupOptions,
-    ) -> EditorSetupOptions:
-        if (
-            not options.prompt_for_project_files
-            or self.project_file_id in options.disabled_project_files
-        ):
-            return options
-        if _prompt_vscode_enabled(console_obj):
-            return options
-        return options.with_disabled_project_file(self.project_file_id)
+    #: Read from the descriptor rather than restated, so the ids have one home.
+    integration_id = vscode_target.ID
+    project_file_id = vscode_target.PROJECT_FILE_ID
 
     def write_project_files(
         self,
         console_obj: Any,
         repo_path: Path,
         options: EditorSetupOptions,
-    ) -> None:
+    ) -> list[Path]:
         if self.project_file_id in options.disabled_project_files:
-            return
-        _write_vscode_files(console_obj, repo_path)
+            return []
+        return _write_vscode_files(console_obj, repo_path)
 
     def register_client(self, console_obj: Any, repo_path: Path) -> None:
         """VS Code reads the workspace .vscode/mcp.json; no user-level setup needed."""
@@ -61,42 +47,39 @@ class VSCodeSetup:
         _write_vscode_files(console_obj, repo_path)
 
 
-def _prompt_vscode_enabled(console_obj: Any) -> bool:
-    """Ask whether the VS Code workspace config should be written."""
+def _write_vscode_files(console_obj: Any, repo_path: Path) -> list[Path]:
+    """Write or merge the managed .vscode files, skipping any JSONC file safely.
 
-    console_obj.print()
-    console_obj.print(
-        "[bold]VS Code:[/bold] Configure the workspace MCP server and recommend the extension?"
-    )
-    return click.confirm(
-        "  Write .vscode/mcp.json and .vscode/extensions.json?",
-        default=True,
-    )
-
-
-def _write_vscode_files(console_obj: Any, repo_path: Path) -> None:
-    """Write or merge the managed .vscode files, skipping any JSONC file safely."""
+    Returns the paths actually written. A file we declined to touch is not in
+    the list, which is what keeps the end-of-run manifest a record of what
+    happened rather than a restatement of what we intended.
+    """
 
     from repowise.cli.mcp_config import (
         save_vscode_extensions_config,
         save_vscode_mcp_config,
     )
+    from repowise.cli.ui.brand import OK, WARN
 
+    written: list[Path] = []
     try:
         mcp_path = save_vscode_mcp_config(repo_path)
-        console_obj.print(f"  [green]✓[/green] VS Code MCP configured ({mcp_path})")
+        console_obj.print(f"  [{OK}]✓[/] VS Code MCP configured ({mcp_path})")
+        written.append(Path(mcp_path))
     except ValueError:
         console_obj.print(
-            "  [yellow].vscode/mcp.json left unchanged (not valid JSON; it may contain "
-            'comments). Add a "repowise" server under "servers" manually.[/yellow]'
+            f"  [{WARN}].vscode/mcp.json left unchanged (not valid JSON; it may contain "
+            'comments). Add a "repowise" server under "servers" manually.[/]'
         )
 
     try:
         ext_path = save_vscode_extensions_config(repo_path)
-        console_obj.print(f"  [green]✓[/green] VS Code extension recommended ({ext_path})")
+        console_obj.print(f"  [{OK}]✓[/] VS Code extension recommended ({ext_path})")
+        written.append(Path(ext_path))
     except ValueError:
         console_obj.print(
-            "  [yellow].vscode/extensions.json left unchanged (not valid JSON; it may "
+            f"  [{WARN}].vscode/extensions.json left unchanged (not valid JSON; it may "
             'contain comments). Add "repowise-dev.repowise" to "recommendations" '
-            "manually.[/yellow]"
+            "manually.[/]"
         )
+    return written

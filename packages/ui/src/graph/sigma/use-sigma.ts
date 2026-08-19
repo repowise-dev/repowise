@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useState } from "react";
+import { useRef, useEffect, useCallback, useState, useMemo } from "react";
 import type Sigma from "sigma";
 import type Graph from "graphology";
 import type { NodeLabelDrawingFunction, drawDiscNodeLabel } from "sigma/rendering";
@@ -15,7 +15,7 @@ import {
   type EdgeKind,
   languageColor,
 } from "./constants";
-import { getCommunityFamily, resolveToken, useThemeVersion } from "../../shared/use-theme-tokens";
+import { resolveToken, useCommunityFamilies, useThemeVersion } from "../../shared/use-theme-tokens";
 
 // ---- Color helpers (kept minimal — avoid regex in hot paths) ----
 
@@ -28,21 +28,85 @@ function rgbToHex(r: number, g: number, b: number): string {
   return "#" + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
 }
 
-const THEME_COLORS = {
-  dark:  { bg: [18, 18, 28] as const, text: "#f5f5f7", subtitle: "#888888", tooltip: "#12121c" },
-  light: { bg: [250, 250, 252] as const, text: "#1a1a2e", subtitle: "#666666", tooltip: "#ffffff" },
-};
+/**
+ * Parse a resolved token into RGB. Custom properties come back as authored, so
+ * in practice this only ever sees `#rrggbb` — but a token that later becomes
+ * `#rgb` or an `rgb()` string must not silently yield NaN, which would poison
+ * `dimColor` for every node on the canvas. Runs once per theme flip, never in
+ * a hot path, so the regex is affordable here.
+ */
+function parseColorToRgb(
+  value: string,
+  fallback: [number, number, number],
+): [number, number, number] {
+  const v = value.trim();
+  if (/^#[0-9a-f]{6}$/i.test(v)) return hexToRgb(v);
+  if (/^#[0-9a-f]{3}$/i.test(v)) {
+    return [
+      parseInt(v[1]! + v[1]!, 16),
+      parseInt(v[2]! + v[2]!, 16),
+      parseInt(v[3]! + v[3]!, 16),
+    ];
+  }
+  const m = v.match(/^rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/i);
+  if (m) return [Number(m[1]), Number(m[2]), Number(m[3])];
+  return fallback;
+}
+
+/** WCAG relative luminance. */
+function relativeLuminance([r, g, b]: [number, number, number]): number {
+  const channel = (c: number) => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+}
+
+function contrastRatio(a: number, b: number): number {
+  return a > b ? (a + 0.05) / (b + 0.05) : (b + 0.05) / (a + 0.05);
+}
+
+// Ink for labels painted *inside* a colored disc. Deliberately theme-independent:
+// the disc fill is a community hue that does not track light/dark the way body
+// text does, so the ink is picked from the fill's own luminance instead of the
+// theme. This used to be a single hardcoded dark ink, which measured 5.23-8.86:1
+// across all 12 hues in dark mode but failed 4.5:1 on 10 of 12 in LIGHT, where
+// the community hues are deep and saturated.
+//
+// The pair is deliberately a shade wider than the page's text tokens. Picking by
+// luminance alone against the softer #1a1320/#faf7f4 pair left four mid-luminance
+// hues stranded at 4.32-4.40:1 — close, but short. These clear 4.5:1 on all 12
+// hues in BOTH themes (worst pair 4.54:1) while staying warm, where pure
+// black/white would read as a foreign element on this palette.
+const DISC_INK_DARK = "#0d0910";
+const DISC_INK_LIGHT = "#fffdfb";
+const DISC_INK_DARK_LUM = relativeLuminance(hexToRgb(DISC_INK_DARK));
+const DISC_INK_LIGHT_LUM = relativeLuminance(hexToRgb(DISC_INK_LIGHT));
+const discInkCache = new Map<string, string>();
+
+/** Pick whichever ink contrasts better against the disc fill. */
+function discInkFor(fill: string): string {
+  const cached = discInkCache.get(fill);
+  if (cached) return cached;
+  const lum = relativeLuminance(parseColorToRgb(fill, [128, 128, 128]));
+  const ink =
+    contrastRatio(lum, DISC_INK_DARK_LUM) >= contrastRatio(lum, DISC_INK_LIGHT_LUM)
+      ? DISC_INK_DARK
+      : DISC_INK_LIGHT;
+  discInkCache.set(fill, ink);
+  return ink;
+}
 
 /**
- * Hub/core disc-label drawer, built per theme. Hub/core labels render centered
- * *inside* the disc (ROBOTICS-style) with a soft halo ring in the family hue;
- * everything else falls through to Sigma's stock side-label drawer. Factored out
- * of the init effect so the theme effect can re-set it on light/dark toggle
- * (the closure must NOT capture stale theme colors). Closes over only its args +
- * the stable THEME_COLORS import.
+ * Hub/core disc-label drawer. Hub/core labels render centered *inside* the disc
+ * (ROBOTICS-style) with a soft halo ring in the family hue; everything else
+ * falls through to Sigma's stock side-label drawer.
+ *
+ * Takes no palette: every colour it paints comes off the node itself (the halo
+ * from `haloColor`, the ink from `labelInk`), both resolved by the colour pass.
+ * That is what lets it survive a theme flip without being rebuilt.
  */
 function makeDrawNodeLabel(
-  graphTheme: "light" | "dark",
   drawDisc: typeof drawDiscNodeLabel,
 ): NodeLabelDrawingFunction {
   return (context, data, settings) => {
@@ -53,7 +117,6 @@ function makeDrawNodeLabel(
       return;
     }
 
-    const theme = THEME_COLORS[graphTheme] ?? THEME_COLORS.dark;
     const size = data.size || 20;
 
     // Soft 2px halo ring in the family hue (emulated — NodeCircleProgram
@@ -81,24 +144,28 @@ function makeDrawNodeLabel(
     }
     context.textAlign = "center";
     context.textBaseline = "middle";
-    // Core is dark → light text; hubs are warm → dark text for contrast.
-    context.fillStyle = kind === "core" ? theme.text : "#1a1320";
+    // Pre-resolved from the node's BASE fill by the color pass. Deriving it
+    // here from `data.color` would be wrong: `data` is post-reducer, so a
+    // dimmed hub would pick ink against its dimmed fill and come out brighter
+    // than an undimmed one — dimming would make labels louder, not quieter.
+    // The fallback only covers a node the color pass has not reached yet,
+    // whose color is therefore still an undimmed placeholder.
+    context.fillStyle = (extra.labelInk as string) || discInkFor(data.color);
     context.fillText(label, data.x, data.y);
   };
 }
 
 /**
- * Hover tooltip drawer, built per theme. Hubs get a small surface card (member
+ * Hover tooltip drawer, built per palette. Hubs get a small surface card (member
  * count, doc %, langs); other nodes get a label/path pill. Factored out of the
  * init effect alongside makeDrawNodeLabel so the theme effect can re-set it on
- * light/dark toggle. Closes over only its arg + the stable THEME_COLORS import.
+ * light/dark toggle (the closure must NOT capture a stale palette).
  */
-function makeDrawNodeHover(graphTheme: "light" | "dark"): NodeLabelDrawingFunction {
+function makeDrawNodeHover(theme: VizPalette): NodeLabelDrawingFunction {
   return (context, data, settings) => {
     const label = data.label;
     if (!label) return;
 
-    const theme = THEME_COLORS[graphTheme] ?? THEME_COLORS.dark;
     const extra = data as Record<string, unknown>;
     const fullPath = (extra.fullPath as string) ?? undefined;
 
@@ -246,9 +313,15 @@ interface VizPalette {
   label: string;
   pathHighlight: string;
   edge: Record<EdgeKind, string>;
+  /** The canvas plane, as RGB. `dimColor` blends toward this. */
+  bg: [number, number, number];
+  text: string;
+  subtitle: string;
+  tooltip: string;
 }
 
 function resolveVizPalette(theme: "light" | "dark"): VizPalette {
+  const dark = theme === "dark";
   return {
     risk: {
       high: resolveToken("--color-risk-high", "#b23a2e"),
@@ -257,13 +330,31 @@ function resolveVizPalette(theme: "light" | "dark"): VizPalette {
     },
     hotspot: resolveToken("--color-warning", "#9a6614"),
     decision: resolveToken("--color-warning", "#9a6614"),
-    label: resolveToken("--color-text-secondary", theme === "dark" ? "#a79db3" : "#5e5360"),
+    label: resolveToken("--color-text-secondary", dark ? "#a79db3" : "#5e5360"),
     pathHighlight: resolveToken("--color-accent-fill", "#f59520"),
     edge: edgeColorsForTheme(theme),
+    // The canvas plane. sigma-canvas paints `--color-bg-root` explicitly in
+    // dark and stays transparent in light over a body painted the same token,
+    // so this one value is the correct blend target in BOTH themes. It used to
+    // be a hardcoded mirror that had drifted: #12121c (blue-black) against a
+    // real #0e0e0f, and a cool white against warm #fbf6f1 paper. dimColor
+    // blends toward it, so every dimmed node settled lighter and bluer than
+    // the canvas and never fully receded — and dimming is how this canvas
+    // expresses focus.
+    bg: parseColorToRgb(
+      resolveToken("--color-bg-root", dark ? "#0e0e0f" : "#fbf6f1"),
+      dark ? [14, 14, 15] : [251, 246, 241],
+    ),
+    text: resolveToken("--color-text-primary", dark ? "#f2f2f3" : "#241b2c"),
+    subtitle: resolveToken("--color-text-secondary", dark ? "#b4b4b9" : "#5e5360"),
+    tooltip: resolveToken("--color-bg-surface", dark ? "#141416" : "#ffffff"),
   };
 }
 
-let activeBg: readonly [number, number, number] = THEME_COLORS.dark.bg;
+// Read by `dimColor`, which runs inside Sigma's node reducer — outside React,
+// so it cannot take the palette as an argument. Kept in sync by the theme
+// effect, which also drops the color caches keyed to the previous plane.
+let activeBg: readonly [number, number, number] = [14, 14, 15];
 
 const dimColorCache = new Map<string, string>();
 const brightenColorCache = new Map<string, string>();
@@ -325,7 +416,6 @@ export interface UseSigmaOptions {
   container: HTMLDivElement | null;
   graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes> | null;
   selectedNodeId: string | null;
-  hoveredNodeId: string | null;
   highlightedPath: Set<string>;
   highlightedEdges: Set<string>;
   searchDimmedNodes: Set<string> | null;
@@ -352,21 +442,37 @@ export interface UseSigmaReturn {
 }
 
 export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
-  const newBg = (THEME_COLORS[options.graphTheme] ?? THEME_COLORS.dark).bg;
-  if (newBg !== activeBg) {
-    activeBg = newBg;
+  // Re-resolve theme tokens (risk / hotspot / edge / label / plane) when the
+  // theme flips so the canvas repaints in the active palette. Memoized, not
+  // recomputed per render: this was previously the argument to `useRef(...)`,
+  // which evaluates on every render and discards all but the first result —
+  // seven getComputedStyle reads per render for nothing.
+  const themeVersion = useThemeVersion();
+  const viz = useMemo(
+    () => resolveVizPalette(options.graphTheme),
+    [options.graphTheme, themeVersion],
+  );
+  // Pre-resolves the 12 community families once per theme version. The color
+  // pass below used to call the raw `getCommunityFamily` per node, which is two
+  // getComputedStyle reads each — ~3,000 synchronous style reads for a
+  // 1,500-node load, repeated on every colorMode toggle and theme flip.
+  const communityFamilies = useCommunityFamilies();
+
+  // Mirror of `viz` readable from Sigma's reducers, which run outside React.
+  const vizRef = useRef<VizPalette>(viz);
+
+  // Point `dimColor` at the new canvas plane during render, not in the effect
+  // below. Sigma renders on its own schedule, so a frame driven by mouse or
+  // camera motion can land between commit and passive-effect flush; doing this
+  // in the effect would let that frame blend toward the previous theme's plane
+  // using caches keyed to it. `viz` is memoized, so this fires once per theme
+  // change rather than once per render.
+  if (activeBg !== viz.bg) {
+    activeBg = viz.bg;
     clearColorCaches();
   }
 
-  // Re-resolve theme tokens (risk / hotspot / community / edge / label) when the
-  // theme flips so the canvas repaints in the active palette.
-  const themeVersion = useThemeVersion();
-  const vizRef = useRef<VizPalette>(resolveVizPalette(options.graphTheme));
-
   const sigmaRef = useRef<Sigma | null>(null);
-  // Sigma's stock disc-label drawer, captured from the dynamic import in the
-  // init effect so the theme effect can rebuild the label drawer factory.
-  const drawDiscRef = useRef<typeof drawDiscNodeLabel | null>(null);
   const [sigmaReady, setSigmaReady] = useState<Sigma | null>(null);
   const selectedRef = useRef<string | null>(null);
   const highlightedPathRef = useRef<Set<string>>(new Set());
@@ -419,7 +525,6 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
   useEffect(() => {
     const graph = options.graph;
     if (!graph || graph.order === 0) return;
-    const viz = (vizRef.current = resolveVizPalette(options.graphTheme));
     const cm = options.colorMode;
     const coreColor = resolveToken("--color-bg-inset", "#141415");
     graph.updateEachNodeAttributes(
@@ -429,32 +534,43 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
         // the active colorMode — the radial view *is* the community view. The
         // repo-core is a dark plum disc; its halo borrows the soft canvas dot.
         if (attrs.nodeType === "hub") {
-          const family = getCommunityFamily(attrs.communityId);
+          const family = communityFamilies(attrs.communityId);
           color = family.hub;
-          const next = { ...attrs, color, haloColor: family.satellite || family.hub };
-          if (attrs.color === color && attrs.haloColor === next.haloColor) return attrs;
-          return next;
+          const haloColor = family.satellite || family.hub;
+          const labelInk = discInkFor(color);
+          if (
+            attrs.color === color &&
+            attrs.haloColor === haloColor &&
+            attrs.labelInk === labelInk
+          ) {
+            return attrs;
+          }
+          return { ...attrs, color, haloColor, labelInk };
         }
         if (attrs.nodeType === "core") {
           color = coreColor;
-          if (attrs.color === color) return attrs;
-          return { ...attrs, color };
+          const labelInk = discInkFor(color);
+          if (attrs.color === color && attrs.labelInk === labelInk) return attrs;
+          return { ...attrs, color, labelInk };
         }
         if (cm === "language") {
           // Modules aggregate many languages and carry none themselves — fall
           // back to the community hue instead of a meaningless "other" gray.
           color =
             attrs.nodeType === "module"
-              ? getCommunityFamily(attrs.communityId).hub
+              ? communityFamilies(attrs.communityId).hub
               : languageColor(attrs.language || "other");
-        } else if (cm === "community") {
-          // Modules (centroids) get the hub hue; files use the softer satellite
-          // tint so leaves recede behind their community's anchor.
-          const family = getCommunityFamily(attrs.communityId);
-          color = attrs.nodeType === "module" ? family.hub : family.satellite;
         } else {
-          const risk = attrs.pagerank * 3;
-          color = risk > 0.7 ? viz.risk.high : risk > 0.3 ? viz.risk.medium : viz.risk.low;
+          // Community. Modules (centroids) get the hub hue; files use the
+          // softer satellite tint so leaves recede behind their anchor.
+          //
+          // A third branch used to paint a "risk" lens from `pagerank * 3`
+          // against thresholds of 0.3 and 0.7. PageRank sums to 1 across the
+          // graph, so those thresholds are unreachable on any real repo and
+          // the lens rendered entirely green. See the `ColorMode` docstring in
+          // `graph-toolbar.tsx` for why it is gone rather than re-tuned.
+          const family = communityFamilies(attrs.communityId);
+          color = attrs.nodeType === "module" ? family.hub : family.satellite;
         }
         if (attrs.isDead) color = desaturateColor(color, 0.6);
         if (attrs.isHotspot) color = tintColor(color, viz.hotspot, 0.4);
@@ -464,16 +580,16 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
         if (attrs.color === color) return attrs;
         return { ...attrs, color };
       },
-      { attributes: ["color"] },
+      { attributes: ["color", "haloColor", "labelInk"] },
     );
-  }, [options.colorMode, options.graph, options.graphTheme, themeVersion]);
+  }, [options.colorMode, options.graph, viz, communityFamilies]);
 
   // Re-color edges by semantic kind for the active theme (canvas can't resolve
   // var()). Build-time colors are placeholders; this is the source of truth.
   useEffect(() => {
     const graph = options.graph;
     if (!graph || graph.size === 0) return;
-    const edge = (vizRef.current = resolveVizPalette(options.graphTheme)).edge;
+    const edge = viz.edge;
     graph.updateEachEdgeAttributes(
       (_edgeKey, attrs) => {
         const color = edge[attrs.edgeKind] ?? edge.import;
@@ -482,27 +598,24 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
       },
       { attributes: ["color"] },
     );
-  }, [options.graph, options.graphTheme, themeVersion]);
+  }, [options.graph, viz]);
 
-  // Keep the label color in the active text token when the theme flips, and
-  // rebuild the hub/core disc-label + hover drawers so their theme-dependent
-  // text/tooltip colors track the toggle (the init-effect closures would
-  // otherwise stay pinned to the mount-time theme until remount).
+  // Theme flip: publish the new palette to the reducers, re-point the canvas
+  // plane that `dimColor` blends toward (dropping the color caches keyed to the
+  // old plane), and rebuild the disc-label + hover drawers, whose closures
+  // capture palette colors and would otherwise stay pinned to the mount-time
+  // theme until remount.
   useEffect(() => {
+    vizRef.current = viz;
     const sigma = sigmaRef.current;
     if (!sigma) return;
-    const label = (vizRef.current = resolveVizPalette(options.graphTheme)).label;
-    sigma.setSetting("labelColor", { color: label });
-    const drawDisc = drawDiscRef.current;
-    if (drawDisc) {
-      sigma.setSetting(
-        "defaultDrawNodeLabel",
-        makeDrawNodeLabel(options.graphTheme, drawDisc),
-      );
-    }
-    sigma.setSetting("defaultDrawNodeHover", makeDrawNodeHover(options.graphTheme));
+    sigma.setSetting("labelColor", { color: viz.label });
+    // Only the hover drawer needs rebuilding: it paints the tooltip card from
+    // the palette. The disc-label drawer takes its colours off the node and is
+    // theme-independent, so it is built once at init.
+    sigma.setSetting("defaultDrawNodeHover", makeDrawNodeHover(viz));
     sigma.refresh();
-  }, [options.graphTheme, themeVersion]);
+  }, [viz]);
 
   // Initialize Sigma (dynamic import to avoid SSR WebGL crash)
   useEffect(() => {
@@ -525,7 +638,6 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
       const EdgeLineProgram = sigmaRendering.EdgeLineProgram;
       const EdgeArrowProgram = sigmaRendering.EdgeArrowProgram;
       const drawDiscNodeLabel = sigmaRendering.drawDiscNodeLabel;
-      drawDiscRef.current = drawDiscNodeLabel;
 
       if (cancelled) return;
 
@@ -553,13 +665,24 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
         minCameraRatio: 0.002,
         maxCameraRatio: 50,
         hideEdgesOnMove: true,
+        // Labels are a canvas2d pass that Sigma re-runs on every camera frame,
+        // and at this graph size it is the dominant cost of a pan or a zoom —
+        // WebGL draws the nodes almost for free by comparison. With this set,
+        // dragging and zooming skip renderLabels/renderEdgeLabels/
+        // renderHighlightedNodes entirely and paint nodes only; everything
+        // comes back on the first settled frame. Pairs with hideEdgesOnMove
+        // above, which already does the same for the edge programs.
+        hideLabelsOnMove: true,
         zIndex: true,
 
-        // Hub/core disc labels + hover tooltips. Built per theme via module-level
-        // factories so the theme effect can re-set them on light/dark toggle
-        // without remount (single source of truth — no duplicated drawer logic).
-        defaultDrawNodeLabel: makeDrawNodeLabel(options.graphTheme, drawDiscNodeLabel),
-        defaultDrawNodeHover: makeDrawNodeHover(options.graphTheme),
+        // Hub/core disc labels + hover tooltips. The label drawer is
+        // theme-independent (it reads colours off the node) and is built once.
+        // The hover drawer paints from the palette, so the theme effect re-sets
+        // it on light/dark toggle without a remount; it is read through the ref
+        // here because this effect depends only on the container, which would
+        // otherwise leave its `viz` closure stale.
+        defaultDrawNodeLabel: makeDrawNodeLabel(drawDiscNodeLabel),
+        defaultDrawNodeHover: makeDrawNodeHover(vizRef.current),
 
         // --- nodeReducer: ONLY handles interaction state (selection, search, path) ---
         // Colors and sizes are pre-set on the graphology graph by the effect above.
@@ -687,6 +810,25 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
     sigma.setGraph(options.graph);
     sigma.getCamera().animatedReset({ duration: 500 });
   }, [options.graph]);
+
+  // Label culling is a function of graph size, but the init effect above depends
+  // only on the container — so a scope switch or a "load more" step to a much
+  // larger graph would otherwise keep the mount-time values and label-spam the
+  // canvas. `sigmaReady` is in the deps so this also applies once the async init
+  // resolves. `setSetting` has no equality check of its own — it revalidates and
+  // schedules a refresh on every call — but this only fires when the graph
+  // identity actually changes, and the graph-swap effect above already refreshes
+  // and resets the camera, so the extra schedule coalesces into that frame.
+  useEffect(() => {
+    const sigma = sigmaRef.current;
+    const graph = options.graph;
+    if (!sigma || !graph) return;
+    sigma.setSetting("labelDensity", getLabelDensity(graph.order));
+    sigma.setSetting(
+      "labelRenderedSizeThreshold",
+      getLabelRenderedSizeThreshold(graph.order),
+    );
+  }, [options.graph, sigmaReady]);
 
   const focusNode = useCallback((nodeId: string, ratio = 0.15) => {
     const sigma = sigmaRef.current;

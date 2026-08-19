@@ -16,6 +16,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
+from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_score
+from repowise.core.entry_candidacy import conventional_entry_stems
+from repowise.core.generation.entry_points import rank_entry_points
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import (
     DecisionRecord,
@@ -31,9 +34,9 @@ from .data import (
     DecisionSummary,
     EditorFileData,
     HotspotFile,
+    KeyModule,
     KGLayerSummary,
     KGTourStepSummary,
-    KeyModule,
 )
 from .tech_stack import detect_build_commands, detect_tech_stack
 
@@ -145,11 +148,25 @@ class EditorFileDataFetcher:
     async def _get_entry_points(self) -> list[str]:
         """Curated orientation entry points (re-export barrels and sinks demoted).
 
-        Prefers the curated ``kg_project_meta`` list. The raw ``is_entry_point``
-        flag also tags every package-export file (cn.ts, types/*.ts) — high
-        fan-in sinks that are the opposite of where a reader starts, and ordering
-        them by PageRank floats those sinks to the top. Falls back to the
-        flag (PageRank-ordered) only for indexes built before the curation pass.
+        Prefers the curated ``kg_project_meta`` list, and falls back to the raw
+        ``is_entry_point`` flag whenever that list is absent or empty — an
+        index written before the curation pass, a run with
+        ``REPOWISE_KG_CURATION=0``, or a repo whose candidates were all
+        filtered out.
+
+        The fallback used to read ``ORDER BY pagerank DESC``, which is the
+        ordering :mod:`repowise.core.generation.entry_points` exists to argue
+        against: centrality rewards fan-in, so a package-root ``types/index.ts``
+        floated above the real front door precisely because everything imports
+        it. It now ranks on execution-start evidence and keeps PageRank as the
+        tiebreak the shared key already defines.
+
+        Ranking has to happen after the read, not in the ``ORDER BY``, so the
+        query is bounded by the flag rather than by ``LIMIT``. Measured over 42
+        local indexes the widest flag set is 9,644 rows of one path and two
+        floats. That is per call, and the call is not once per run: the CLI
+        makes one per editor file, and ``GET /repos/{id}/claude-md`` makes one
+        per request.
         """
         meta = await crud.get_kg_project_meta(self._session, self._repo_id)
         if meta is not None:
@@ -161,44 +178,79 @@ class EditorFileDataFetcher:
                 return curated[:_MAX_ENTRY_POINTS]
 
         result = await self._session.execute(
-            select(GraphNode.node_id)
-            .where(
+            select(GraphNode.node_id, GraphNode.pagerank, GraphNode.betweenness).where(
                 GraphNode.repository_id == self._repo_id,
                 GraphNode.is_entry_point == True,  # noqa: E712
             )
-            .order_by(GraphNode.pagerank.desc())
-            .limit(_MAX_ENTRY_POINTS)
         )
-        return [row[0] for row in result.all()]
+        candidates = [(node_id, pr or 0.0, bt or 0.0) for node_id, pr, bt in result.all()]
+        ranked = rank_entry_points(candidates, conventional_entry_stems())
+        return ranked[:_MAX_ENTRY_POINTS]
 
     async def _get_hotspots(self) -> list[HotspotFile]:
-        """Top hotspot files by churn_percentile with owner info."""
+        """Top attention-worthy files: bug-fix history first, churn as fallback.
+
+        Two populations, deliberately unioned rather than re-sorted. Ranking by
+        fix mass inside ``is_hotspot`` alone would still be churn-gated: a file
+        fixed four times last month that simply is not busy could never appear.
+        So the filter admits bug magnets too, and the order puts fix evidence
+        ahead of commit counts, because the section's own instruction is to call
+        ``get_risk`` (a defect tool) before editing.
+
+        Churn stays the fallback and the tie-break. A repo whose commit messages
+        do not follow a fix convention has zero fix mass everywhere, and this
+        degrades to exactly the churn ordering it had before rather than to an
+        empty section.
+
+        The fix columns come from the same row the churn columns already did, so
+        this is the same single query it was.
+        """
         result = await self._session.execute(
             select(
                 GitMetadata.file_path,
                 GitMetadata.churn_percentile,
                 GitMetadata.commit_count_90d,
                 GitMetadata.primary_owner_name,
+                GitMetadata.prior_defect_count,
+                GitMetadata.bug_magnet,
+                GitMetadata.last_fix_at,
             )
             .where(
                 GitMetadata.repository_id == self._repo_id,
-                GitMetadata.is_hotspot == True,  # noqa: E712
+                (GitMetadata.is_hotspot == True)  # noqa: E712
+                | (GitMetadata.bug_magnet == True),  # noqa: E712
             )
             .order_by(
+                GitMetadata.bug_magnet.desc(),
+                GitMetadata.fix_mass.desc(),
                 GitMetadata.churn_percentile.desc(),
                 GitMetadata.file_path.asc(),  # deterministic tie-break
             )
             .limit(_MAX_HOTSPOTS)
         )
-        return [
-            HotspotFile(
-                path=row[0],
-                churn_percentile=round(row[1] * 100, 1),  # stored as 0.0-1.0
-                commit_count_90d=row[2],
-                owner=row[3],
+        now = datetime.now(UTC)
+        hotspots: list[HotspotFile] = []
+        for row in result.all():
+            last_fix_at = row[6]
+            age: str | None = None
+            if isinstance(last_fix_at, datetime):
+                # SQLite hands these back naive; re-attach UTC before subtracting
+                # or the delta is wrong by the local offset (see signals.iso_utc).
+                moment = last_fix_at if last_fix_at.tzinfo else last_fix_at.replace(tzinfo=UTC)
+                age = _humanize_age(max(0, (now - moment).days))
+            hotspots.append(
+                HotspotFile(
+                    path=row[0],
+                    churn_percentile=round(row[1] * 100, 1),  # stored as 0.0-1.0
+                    commit_count_90d=row[2],
+                    owner=row[3],
+                    fix_count=row[4] or 0,
+                    # Never claim "bug magnet" without an age to anchor it.
+                    bug_magnet=bool(row[5]) and age is not None,
+                    last_fix_age=age,
+                )
             )
-            for row in result.all()
-        ]
+        return hotspots
 
     async def _get_decisions(self) -> list[DecisionSummary]:
         """Active decision records, least-stale first."""
@@ -265,32 +317,29 @@ class EditorFileDataFetcher:
         if not metric_rows:
             return None
 
-        # KPIs.
-        total_nloc = sum(max(m.nloc, 1) for m in metric_rows)
-        avg = (
-            sum(m.score * max(m.nloc, 1) for m in metric_rows) / total_nloc
-            if total_nloc
-            else sum(m.score for m in metric_rows) / len(metric_rows)
-        )
+        # KPIs. The weighting is the shared one rather than a fourth copy of it:
+        # this reimplemented ``nloc_weighted_score`` exactly, including the
+        # zero-total-weight fallback to a plain mean. The empty case cannot
+        # reach it — ``metric_rows`` is checked above.
+        avg = nloc_weighted_score(metric_rows)
         worst = min(metric_rows, key=lambda m: m.score)
 
-        # Hotspot-flagged paths.
-        hotspot_paths_res = await self._session.execute(
-            select(GitMetadata.file_path).where(
-                GitMetadata.repository_id == self._repo_id,
-                GitMetadata.is_hotspot == True,  # noqa: E712
-            )
-        )
-        hotspot_paths = {row[0] for row in hotspot_paths_res.all()}
+        # Hotspot-flagged paths, and the hotspot KPI over them. Both come from
+        # the shared owners now; this file used to re-derive the same weighted
+        # average inline and the same path query inline, and agreed with the
+        # canonical KPI only by coincidence.
+        hotspot_paths = await crud.get_hotspot_file_paths(self._session, self._repo_id)
+        hotspot_kpi = hotspot_health(metric_rows, hotspot_paths)
 
-        hotspot_metrics = [m for m in metric_rows if m.file_path in hotspot_paths]
-        if hotspot_metrics:
-            h_nloc = sum(max(m.nloc, 1) for m in hotspot_metrics)
-            hotspot_health = (
-                sum(m.score * max(m.nloc, 1) for m in hotspot_metrics) / h_nloc if h_nloc else avg
-            )
-        else:
-            hotspot_health = avg
+        # CEILING: when the repo has no hotspot files the honest answer is "no
+        # hotspots", and every other surface now says so by omitting the number.
+        # This one still substitutes the repo average, because saying nothing
+        # means making the figure optional in ``claude_md.j2`` / ``agents_md.j2``
+        # — and that same template line is the subject of issue #1490, which an
+        # outside contributor has claimed. UPGRADE PATH: once #1490 lands and the
+        # line renders conditionally, drop this fallback and pass ``hotspot_kpi``
+        # straight through. Affects only repos with no recent churn at all.
+        hotspot_for_claude_md = hotspot_kpi if hotspot_kpi is not None else avg
 
         # Maintainability pillar headline: NLOC-weighted over the per-file
         # maintainability scores, skipping rows that predate the split. ``None``
@@ -368,7 +417,7 @@ class EditorFileDataFetcher:
                 )
 
         return CodeHealthBlock(
-            hotspot_health=round(hotspot_health, 2),
+            hotspot_health=round(hotspot_for_claude_md, 2),
             average_health=round(avg, 2),
             worst_score=round(worst.score, 2),
             worst_path=worst.file_path,
@@ -387,7 +436,6 @@ class EditorFileDataFetcher:
             performance_skipped_files=perf_coverage.skipped_files,
             performance_unsupported_languages=perf_coverage.unsupported_languages,
             critical_biomarkers=critical,
-            untested_hotspots=[],  # Phase 2 fills this from coverage data
         )
 
     async def _get_kg_data(
@@ -400,11 +448,11 @@ class EditorFileDataFetcher:
 
         layers = [
             KGLayerSummary(
-                name=l.name,
-                file_count=len(json.loads(l.node_ids_json) if l.node_ids_json else []),
-                description=_truncate_at_word(l.description or "", 80),
+                name=layer.name,
+                file_count=len(json.loads(layer.node_ids_json) if layer.node_ids_json else []),
+                description=_truncate_at_word(layer.description or "", 80),
             )
-            for l in db_layers
+            for layer in db_layers
         ]
 
         # Guided tour: the overview page's metadata_json carries the
@@ -481,6 +529,24 @@ def _get_head_short_sha(repo_path: Path) -> str:
         return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:
         return ""
+
+
+def _humanize_age(days: int) -> str:
+    """Render an age as "2 weeks ago" / "3 months ago", never as a bare count.
+
+    Twin of the pre-edit hook's ``decision_inject._humanize_age``, which states
+    why the two are not shared: that module is on a sub-100ms budget and cannot
+    afford to import ``repowise.core``. Keep the phrasing in step by hand.
+    """
+    if days <= 1:
+        return "today" if days <= 0 else "yesterday"
+    if days < 14:
+        return f"{days} days ago"
+    if days < 60:
+        weeks = round(days / 7)
+        return f"{weeks} week{'' if weeks == 1 else 's'} ago"
+    months = round(days / 30)
+    return f"{months} month{'' if months == 1 else 's'} ago"
 
 
 def _extract_sentences(text: str, max_sentences: int) -> str:

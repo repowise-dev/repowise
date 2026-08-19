@@ -3,11 +3,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hierarchy, treemap, treemapSquarify, type HierarchyRectangularNode } from "d3-hierarchy";
 import type { FileRow } from "@repowise-dev/types/files";
+import {
+  ALERT_MAX,
+  bandForScore,
+  HEALTH_BAND_LABEL,
+  HEALTHY_MIN,
+  type HealthBand,
+} from "@repowise-dev/types/health";
 import { ChevronRight, FolderOpen } from "lucide-react";
-import { cn } from "../lib/cn";
-import { healthInk } from "../health/tokens";
+import { healthBandInk, healthInk } from "../health/tokens";
 
-export type TreemapSize = "importance" | "loc";
+/**
+ * `dependents` is the PageRank percentile over the import graph. It is named
+ * for what it measures rather than "importance", which is a judgement the
+ * number does not make: the files it ranks highest are the ones everything
+ * imports — `conftest.py`, `models.py`, `cn.ts` — and calling that importance
+ * invites the reader to treat a leaf utility as the thing to go read first.
+ */
+export type TreemapSize = "dependents" | "loc";
 export type TreemapColor = "health" | "language";
 
 interface FilesTreemapProps {
@@ -35,31 +48,56 @@ interface LevelChild {
   language: string;
 }
 
-const LANG_COLORS: Record<string, string> = {
-  python: "var(--color-info)",
-  typescript: "var(--color-accent-secondary)",
-  javascript: "var(--color-warning)",
-  tsx: "var(--color-accent-secondary)",
-  go: "var(--color-edge-co-change)",
-  rust: "var(--color-risk-medium)",
-  java: "var(--color-plum-400)",
-  ruby: "var(--color-risk-high)",
-};
-const LANG_FALLBACK = "var(--color-text-tertiary)";
+/** How many languages get their own step before the rest fall into "Other". */
+const LANG_RANKED = 5;
 
-function langColor(lang: string): string {
-  return LANG_COLORS[lang.toLowerCase()] ?? LANG_FALLBACK;
+const LANG_OTHER_INK = "var(--color-bg-inset)";
+const NO_SCORE_INK = "var(--color-text-tertiary)";
+
+/**
+ * Language → fill, as one accent stepped down by how much of the repo each
+ * language holds.
+ *
+ * What this replaces was eight hand-picked hues, two of which were
+ * `--color-risk-medium` and `--color-risk-high` — the same tokens the health
+ * mode paints on these same tiles. An amber square therefore meant "middling
+ * health" in one mode and "Rust" in the other, on a canvas that carried no key
+ * in either. Two unlabelled marks sharing a colour vocabulary is worse than one
+ * unlabelled mark: a gap the reader can leave open becomes a trap, because
+ * whoever correctly infers one mode has been taught a rule that makes them
+ * confidently wrong about the other.
+ *
+ * Stepping one accent leaves the traffic lights to the mode that actually
+ * carries a band, and it is the same ramp `LanguageBar` uses for the same
+ * reason — proportion is the message, and naming each language is the key's
+ * job. Ranks come from the whole repo rather than the drilled level so a
+ * language does not change colour as you walk into a folder.
+ */
+function langRanks(files: FileRow[]): Map<string, number> {
+  const tally = new Map<string, number>();
+  for (const f of files) {
+    if (f.language) tally.set(f.language, (tally.get(f.language) ?? 0) + 1);
+  }
+  const ordered = [...tally.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  return new Map(ordered.slice(0, LANG_RANKED).map(([lang], i) => [lang, i]));
 }
 
-/** Health score (0-10) → traffic-light fill. Null reads neutral. */
+function langInk(rank: number | undefined): string {
+  if (rank == null) return LANG_OTHER_INK;
+  if (rank === 0) return "var(--color-accent-fill)";
+  return `color-mix(in srgb, var(--color-accent-fill) ${Math.max(12, 70 - rank * 16)}%, var(--color-bg-inset))`;
+}
+
+/** Health score (0-10) → the canonical band ink. Null reads neutral. */
 function healthColor(score: number | null): string {
-  if (score == null) return "var(--color-text-tertiary)";
+  if (score == null) return NO_SCORE_INK;
   return healthInk(score);
 }
 
 function sizeValue(row: FileRow, sizeBy: TreemapSize): number {
   if (sizeBy === "loc") return Math.max(row.loc ?? 1, 1);
-  // Importance: pagerank percentile, floored so trivial files still get a sliver.
+  // PageRank percentile, floored so a file nothing imports still gets a sliver
+  // rather than collapsing to a zero-area tile you cannot click.
   return Math.max(row.pagerank_pct, 1);
 }
 
@@ -126,6 +164,111 @@ function levelChildren(files: FileRow[], prefix: string[], sizeBy: TreemapSize):
   return out;
 }
 
+interface KeySwatch {
+  key: string;
+  label: string;
+  /** The band's range, or blank where the label is the whole story. */
+  hint: string;
+  ink: string;
+}
+
+/**
+ * The canvas key, plus what area means and how much is on screen.
+ *
+ * Rendered by `FilesTreemap` rather than placed by the page. Both halves of
+ * that are deliberate: chrome belongs *around* a canvas rather than floating on
+ * it, and a caption has to come from the same source as the thing it captions —
+ * a key assembled from its own second pass over the data is how you end up with
+ * a sentence that no longer describes the picture above it. This one reads the
+ * same `level` array the tiles are drawn from and the same functions that fill
+ * them.
+ *
+ * The map shipped with no key at all in either colour mode, which is what let
+ * the language palette quietly borrow the health tokens for a year.
+ */
+function KeyRow({
+  level,
+  ranks,
+  colorBy,
+  sizeBy,
+  prefix,
+}: {
+  level: LevelChild[];
+  ranks: Map<string, number>;
+  colorBy: TreemapColor;
+  sizeBy: TreemapSize;
+  prefix: string[];
+}) {
+  const swatches = useMemo<KeySwatch[]>(() => {
+    if (colorBy === "health") {
+      // All three bands always, even where one is absent from this level: a
+      // fixed scale showing two steps reads as a scale that has two.
+      const out: KeySwatch[] = (["healthy", "warning", "alert"] as HealthBand[]).map((band) => ({
+        key: band,
+        label: HEALTH_BAND_LABEL[band],
+        hint:
+          band === "healthy"
+            ? `${HEALTHY_MIN}+`
+            : band === "alert"
+              ? `< ${ALERT_MAX}`
+              : `${ALERT_MAX}–${HEALTHY_MIN}`,
+        ink: healthBandInk(band),
+      }));
+      if (level.some((c) => c.avgScore == null)) {
+        out.push({
+          key: "none",
+          label: "Not scored",
+          hint: "",
+          ink: NO_SCORE_INK,
+        });
+      }
+      return out;
+    }
+    // Languages are the opposite case: list the ones actually on screen, since
+    // a key naming a language no tile carries is a key you have to ignore.
+    const present = [...new Set(level.map((c) => c.language).filter(Boolean))];
+    const out: KeySwatch[] = present
+      .filter((lang) => ranks.has(lang))
+      .sort((a, b) => ranks.get(a)! - ranks.get(b)!)
+      .map((lang) => ({
+        key: lang,
+        label: lang,
+        hint: "",
+        ink: langInk(ranks.get(lang)),
+      }));
+    if (level.some((c) => !c.language || !ranks.has(c.language))) {
+      out.push({ key: "other", label: "Other", hint: "", ink: LANG_OTHER_INK });
+    }
+    return out;
+  }, [colorBy, level, ranks]);
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-t border-[var(--color-border-default)] pt-3">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 font-mono text-[10px] text-[var(--color-text-tertiary)]">
+        {swatches.map((s) => (
+          <span key={s.key} className="inline-flex items-center">
+            <span
+              aria-hidden
+              className="mr-1.5 inline-block h-2 w-2 rounded-sm"
+              style={{ background: s.ink }}
+            />
+            {s.label}
+            {s.hint && (
+              <span className="ml-1 tabular-nums text-[var(--color-text-secondary)]">{s.hint}</span>
+            )}
+          </span>
+        ))}
+      </div>
+      <p className="text-xs text-[var(--color-text-tertiary)]">
+        Area is{" "}
+        {sizeBy === "loc" ? "lines of code" : "how much the rest of the codebase depends on it"}.{" "}
+        <span className="tabular-nums">{level.length}</span> {level.length === 1 ? "item" : "items"}{" "}
+        {prefix.length > 0 ? `in ${prefix.join("/")}/` : "at the repository root"}.
+      </p>
+    </div>
+  );
+}
+
 /** Treemap node datum: the root carries `children`, each leaf a `child`. */
 interface TreeDatum {
   children?: TreeDatum[];
@@ -190,9 +333,14 @@ export function FilesTreemap({
     setTip({ x: e.clientX - rect.left, y: e.clientY - rect.top, child });
   }, []);
 
+  // Ranked over every file, not the drilled level, so a language keeps its
+  // step as you walk into a folder.
+  const ranks = useMemo(() => langRanks(files), [files]);
+
   const fill = useCallback(
-    (c: LevelChild) => (colorBy === "language" ? langColor(c.language) : healthColor(c.avgScore)),
-    [colorBy],
+    (c: LevelChild) =>
+      colorBy === "language" ? langInk(ranks.get(c.language)) : healthColor(c.avgScore),
+    [colorBy, ranks],
   );
 
   if (children.length === 0) {
@@ -255,7 +403,7 @@ export function FilesTreemap({
                   fill={fill(c)}
                   opacity={c.isFolder ? 0.55 : 0.85}
                   rx={3}
-                  stroke={c.isFolder ? "var(--color-border-strong)" : "none"}
+                  stroke={c.isFolder ? "var(--color-border-hover)" : "none"}
                   strokeWidth={c.isFolder ? 1 : 0}
                   className="transition-opacity hover:opacity-100"
                 />
@@ -324,21 +472,22 @@ export function FilesTreemap({
             </p>
             {tip.child.avgScore != null && (
               <p
-                className={cn(
-                  "mt-0.5 font-medium",
-                  tip.child.avgScore < 4
-                    ? "text-[var(--color-risk-high)]"
-                    : tip.child.avgScore < 7
-                      ? "text-[var(--color-risk-medium)]"
-                      : "text-[var(--color-risk-low)]",
-                )}
+                className="mt-0.5 font-medium tabular-nums"
+                // Painted by the same function as the tile underneath the
+                // pointer. It was not: this line banded at 7 while `healthInk`
+                // bands at 8, so every file scoring 7.x was an amber tile with
+                // a green score written on top of it.
+                style={{ color: healthColor(tip.child.avgScore) }}
               >
-                health {tip.child.avgScore.toFixed(1)}
+                {HEALTH_BAND_LABEL[bandForScore(tip.child.avgScore)]} ·{" "}
+                {tip.child.avgScore.toFixed(1)}
               </p>
             )}
           </div>
         )}
       </div>
+
+      <KeyRow level={children} ranks={ranks} colorBy={colorBy} sizeBy={sizeBy} prefix={prefix} />
     </div>
   );
 }

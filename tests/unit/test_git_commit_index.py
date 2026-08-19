@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 from repowise.core.ingestion.git_commit_index import load_commit_index
+
+
+def _iso_from_ts(ts: int) -> str:
+    """Render a git ``%cI`` value (strict ISO-8601 with a numeric offset)."""
+    return datetime.fromtimestamp(int(ts), UTC).isoformat()
 
 
 def _build_log(commits: list[dict]) -> str:
@@ -28,6 +34,8 @@ def _build_log(commits: list[dict]) -> str:
             + c.get("ce", c["ae"])
             + "\x1f"
             + str(c["ct"])
+            + "\x1f"
+            + _iso_from_ts(c["ct"])
             + "\x1f"
             + c.get("parents", "")
             + "\x1f"

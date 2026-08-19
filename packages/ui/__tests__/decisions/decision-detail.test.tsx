@@ -105,6 +105,22 @@ describe("DecisionDetail", () => {
     expect(toastSuccess).toHaveBeenCalled();
   });
 
+  it("dismisses a proposal as a tombstone, not as a deprecation", async () => {
+    // The button sent `deprecated`, which the engine keeps re-deriving on every
+    // index — so a dismissed proposal came back. `dismissed` is the status that
+    // is skipped on re-extraction and hidden from listings.
+    const adapter = makeAdapter();
+    renderView(<DecisionDetail decision={makeDecision()} adapter={adapter} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Dismiss" }));
+
+    await waitFor(() =>
+      expect(adapter.patchDecision).toHaveBeenCalledWith({ status: "dismissed" }),
+    );
+  });
+
   it("renders the evolution timeline when the lineage chain is non-trivial", async () => {
     const adapter = makeAdapter({
       getLineage: vi.fn(
@@ -126,8 +142,72 @@ describe("DecisionDetail", () => {
         adapter={makeAdapter()}
       />,
     );
-    expect(screen.getByText("Created: —")).toBeInTheDocument();
+    // The meta ribbon is a <dl>: the label is the term, the value the
+    // definition, so they are no longer one "Created: —" string.
+    const term = screen.getByText("Recorded");
+    expect(term.nextElementSibling).toHaveTextContent("—");
     expect(screen.queryByText(/Invalid Date/i)).not.toBeInTheDocument();
+  });
+
+  it("reports what moved as a count, not as a proportion", () => {
+    // Was "Staleness 42%" in a meta ribbon. A proportion has no reading at a
+    // glance; the count it is a proportion of does.
+    renderView(
+      <DecisionDetail
+        decision={makeDecision({
+          staleness_score: 0.42,
+          affected_files: ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts"],
+        })}
+        adapter={makeAdapter()}
+      />,
+    );
+    expect(screen.queryByText("Staleness")).not.toBeInTheDocument();
+    expect(screen.queryByText("42%")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/3 of its 6 files have changed since it was recorded/),
+    ).toBeInTheDocument();
+  });
+
+  it("says outright when a record cannot be checked at all", () => {
+    // An unscoped record scores 0.0 and used to render exactly like a record
+    // whose code had not moved. Two meanings, one encoding.
+    renderView(
+      <DecisionDetail
+        decision={makeDecision({ affected_files: [], staleness_score: 0 })}
+        adapter={makeAdapter()}
+      />,
+    );
+    expect(
+      screen.getByText(/names no files, so whether the code moved/),
+    ).toBeInTheDocument();
+  });
+
+  it("states the quiet case rather than leaving it blank", () => {
+    renderView(
+      <DecisionDetail
+        decision={makeDecision({
+          affected_files: ["a.ts", "b.ts"],
+          staleness_score: 0,
+        })}
+        adapter={makeAdapter()}
+      />,
+    );
+    expect(
+      screen.getByText(
+        "All 2 files it names are still tracked and unchanged since it was recorded.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("drops confidence from the ribbon, since it restated the source beside it", () => {
+    renderView(
+      <DecisionDetail
+        decision={makeDecision({ confidence: 0.844 })}
+        adapter={makeAdapter()}
+      />,
+    );
+    expect(screen.queryByText("Confidence")).not.toBeInTheDocument();
+    expect(screen.queryByText("84%")).not.toBeInTheDocument();
   });
 
   it("explains what Confirm/Dismiss do next to the buttons", () => {

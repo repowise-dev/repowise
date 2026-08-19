@@ -8,9 +8,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from rich.console import Console
-from rich.panel import Panel
 
+from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from repowise.core.test_paths import is_test_related_path
 
 
 @dataclass
@@ -27,7 +28,6 @@ class RepoScanInfo:
     """(dir_name, file_count) for dirs with >50 files — used for exclude suggestions."""
 
 
-_TEST_PATTERNS = {"test_", "_test.", ".test.", "tests/", "test/", "__tests__/", "spec/"}
 _INFRA_NAMES = {"dockerfile", "makefile", "jenkinsfile", "terraform", ".tf", ".sh", ".bash"}
 # Derived from the centralised LanguageRegistry, supplemented with
 # display-only languages (HTML, CSS) not tracked by the pipeline.
@@ -51,39 +51,26 @@ for _lang, _exts in _LANG_MAP.items():
     for _ext in _exts:
         _EXT_TO_LANG[_ext] = _lang
 
-_SKIP_DIRS = {
-    "node_modules",
-    ".venv",
-    "venv",
-    "__pycache__",
-    "dist",
-    "build",
-    ".next",
-    "target",
-    "vendor",
-    ".git",
-    ".hg",
-    "env",
-    ".tox",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".pytest_cache",
-    "site-packages",
-}
+# Shared junk set plus names too ambiguous for the global prune list; a
+# miscounted scan stat is harmless, a wrongly unindexed dir is not.
+_SKIP_DIRS = PRUNED_DIRS | frozenset({"dist", "build", "target", "vendor", "env", "site-packages"})
 
 
 def quick_repo_scan(repo_path: Path) -> RepoScanInfo:
     """Fast pre-scan: count files, detect languages, count git commits.
 
-    No AST parsing — just ``os.walk`` + extension histogram + ``git rev-list --count``.
-    Typically completes in <2s even on large repos.
+    No AST parsing — just the shared pruned walk + extension histogram +
+    ``git rev-list --count``. The walk skips junk dirs, nested git repos
+    (vendored/sibling checkouts must not inflate the stats), and junction
+    cycles. Typically completes in <2s even on large repos.
     """
     info = RepoScanInfo()
     dir_counts: dict[str, int] = {}
 
-    for dirpath, dirnames, filenames in os.walk(repo_path):
-        # Prune heavy/irrelevant directories in-place
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
+    for dirpath, dirnames, filenames in walk_repo(repo_path, prune_dirs=_SKIP_DIRS):
+        # Additionally skip all remaining dotdirs (IDE/tool config), like
+        # the pre-fs_walk scan always did.
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
 
         rel_dir = os.path.relpath(dirpath, repo_path)
         top_dir = rel_dir.split(os.sep)[0] if rel_dir != "." else "."
@@ -98,9 +85,12 @@ def quick_repo_scan(repo_path: Path) -> RepoScanInfo:
             if lang:
                 info.language_counts[lang] = info.language_counts.get(lang, 0) + 1
 
-            # Test file detection
-            full_rel = os.path.join(rel_dir, lower).replace("\\", "/")
-            if any(p in full_rel for p in _TEST_PATTERNS):
+            # Test file detection. Original case, not `lower`: the shared rules
+            # read `Foo.Tests/` and `FooTest.java` case-sensitively on purpose.
+            # No language is known this early — the scan runs before ingestion —
+            # so `spec/` falls to the unambiguous reading.
+            full_rel = os.path.join(rel_dir, fname).replace("\\", "/")
+            if is_test_related_path(full_rel):
                 info.test_file_count += 1
 
             # Infra file detection
@@ -143,16 +133,52 @@ def quick_repo_scan(repo_path: Path) -> RepoScanInfo:
     return info
 
 
+_NON_SOURCE_LANGS = frozenset({"JSON", "YAML", "Markdown", "HTML", "CSS"})
+
+
+def source_file_counts(scan: RepoScanInfo) -> dict[str, int]:
+    """Per-language counts for the source languages only.
+
+    Data, markup and stylesheet files are counted by the scan (they are files)
+    but are not what "how much code is here" means, and they get no file page.
+    """
+    return {
+        lang: count for lang, count in scan.language_counts.items() if lang not in _NON_SOURCE_LANGS
+    }
+
+
+def estimated_documentable_files(scan: RepoScanInfo | None) -> int:
+    """Roughly how many files would get a ``file_page``, from the pre-scan.
+
+    An estimate, not the count: the real allow-set comes out of ingestion, which
+    has not run when the interactive questions are asked. It is the source-file
+    count less the test files, because test files and pure re-export modules are
+    the two classes the importance floor drops
+    (``generation.selection.selector._passes_importance_floor``). Used only to
+    decide whether a repo is big enough to be asked about page volume, and to
+    quote an order of magnitude while asking.
+    """
+    if scan is None:
+        return 0
+    src = sum(source_file_counts(scan).values()) or scan.total_files
+    return max(0, src - scan.test_file_count)
+
+
+def estimated_wiki_render_minutes(documentable: int) -> tuple[int, int]:
+    """Rough low/high minutes to render and embed *documentable* file pages.
+
+    Calibrated at roughly 1-2 minutes per thousand pages. Shared by the pre-scan
+    summary and the page-volume question so the two screens cannot quote
+    different numbers for the same work.
+    """
+    return max(1, round(documentable / 1000)), max(2, round(2 * documentable / 1000))
+
+
 def print_scan_summary(console: Console, scan: RepoScanInfo) -> None:
     """Print a compact pre-scan summary below the banner."""
     # File count + language count
-    lang_count = len(
-        [
-            name
-            for name, c in scan.language_counts.items()
-            if c > 0 and name not in ("JSON", "YAML", "Markdown", "HTML", "CSS")
-        ]
-    )
+    source_langs = {lang: c for lang, c in source_file_counts(scan).items() if c > 0}
+    lang_count = len(source_langs)
 
     parts = [f"[bold]{scan.total_files:,}[/bold] files"]
     if lang_count:
@@ -163,11 +189,6 @@ def print_scan_summary(console: Console, scan: RepoScanInfo) -> None:
     header_line = " · ".join(parts)
 
     # Top languages (source code only, top 4)
-    source_langs = {
-        lang: count
-        for lang, count in scan.language_counts.items()
-        if lang not in ("JSON", "YAML", "Markdown", "HTML", "CSS")
-    }
     total_source = sum(source_langs.values()) or 1
     top_langs = sorted(source_langs.items(), key=lambda x: -x[1])[:4]
     lang_parts = [f"{lang} {count / total_source:.0%}" for lang, count in top_langs]
@@ -182,17 +203,19 @@ def print_scan_summary(console: Console, scan: RepoScanInfo) -> None:
     src_files = sum(source_langs.values()) or scan.total_files
     ingest_min = max(1, round(src_files / 500))
     ingest_max = max(2, round(src_files / 250))
+    # Both halves are numbers now. The model step is deliberately absent: its
+    # duration follows the concept-page count, which ingestion has not produced
+    # yet, and the generation plan states it exactly (with a price) a screen
+    # later. A second guess here would only be a worse version of that one.
+    render_min, render_max = estimated_wiki_render_minutes(estimated_documentable_files(scan))
     eta_line = (
-        f"~{ingest_min}-{ingest_max} min ingestion · LLM generation depends on model + page count"
+        f"~{ingest_min}-{ingest_max} min to index · "
+        f"~{render_min}-{render_max} min more to render and embed the wiki"
     )
 
-    body = f"  {header_line}\n  [dim]{lang_line}[/dim]\n  [dim]{eta_line}[/dim]"
-
-    console.print(
-        Panel(
-            body,
-            border_style="dim",
-            padding=(0, 1),
-        )
-    )
+    # A readout, so no border. It sits directly under the banner and used to be
+    # the first of five boxes a user crossed before anything was asked of them.
+    console.print(f"  {header_line}")
+    console.print(f"  [dim]{lang_line}[/dim]")
+    console.print(f"  [dim]{eta_line}[/dim]")
     console.print()

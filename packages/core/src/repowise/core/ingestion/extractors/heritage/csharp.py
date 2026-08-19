@@ -5,6 +5,7 @@ from __future__ import annotations
 from tree_sitter import Node
 
 from ...models import HeritageRelation
+from ...type_names import bare_type_name, strip_call_arguments
 from ..helpers import node_text
 
 
@@ -42,8 +43,7 @@ def _extract_csharp_heritage(
         if base.type == "argument_list":
             continue
         text = node_text(base, src).strip()
-        bare = text.split("<")[0].split("(")[0].strip()
-        bare = bare.rsplit(".", 1)[-1].strip()
+        bare = bare_type_name(strip_call_arguments(text))
         if not bare or bare == name:
             continue
         looks_interface = bare.startswith("I") and len(bare) > 1 and bare[1].isupper()

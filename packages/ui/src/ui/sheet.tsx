@@ -30,12 +30,17 @@ SheetOverlay.displayName = "SheetOverlay";
 interface SheetContentProps
   extends React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> {
   side?: "left" | "right";
+  /** Accessible name for the close button. Defaults to the navigation wording
+   *  this component was written for; pass it when the sheet holds something
+   *  else, so a screen reader is not told to "close navigation" on a detail
+   *  panel. */
+  closeLabel?: string;
 }
 
 const SheetContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   SheetContentProps
->(({ className, children, side = "left", ...props }, ref) => (
+>(({ className, children, side = "left", closeLabel = "Close navigation", ...props }, ref) => (
   <SheetPortal>
     <SheetOverlay />
     <DialogPrimitive.Content
@@ -64,7 +69,7 @@ const SheetContent = React.forwardRef<
           "hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)]",
           "disabled:pointer-events-none",
         )}
-        aria-label="Close navigation"
+        aria-label={closeLabel}
       >
         <X className="h-5 w-5" />
       </DialogPrimitive.Close>

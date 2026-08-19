@@ -18,6 +18,16 @@ from repowise.server.services.c4_builder.labels import coupling_strength, relati
         (("dynamic_imports", "imports"), "imports"),
         (("dynamic_imports",), "imports"),
         (("calls", "imports"), "calls"),
+        # Tokens the extractors really emit must all be named. These three were
+        # missing, so a lazy import, a conftest link and a subclass all reported
+        # as "depends on" — the label reserved for a wholly-unknown set.
+        (("dynamic_uses",), "uses"),
+        (("framework",), "uses"),
+        (("extends",), "inherits from"),
+        # A static import describes the same dependency more precisely.
+        (("framework", "imports"), "imports"),
+        # ...but a subclass relationship outranks it, as `calls` does.
+        (("extends", "imports"), "inherits from"),
         # Empty / unknown never yields a bare token or empty string.
         ((), "depends on"),
         (("totally_unknown",), "depends on"),

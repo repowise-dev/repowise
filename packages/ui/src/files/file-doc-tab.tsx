@@ -1,12 +1,6 @@
 import type { ReactNode } from "react";
 import { BookOpen } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
-import { Badge } from "../ui/badge";
-import {
-  isDeterministicPage,
-  DETERMINISTIC_BADGE_LABEL,
-  DETERMINISTIC_BADGE_TITLE,
-} from "../lib/page-types";
 import { formatRelativeTime } from "../lib/format";
 import type { FileWikiPageRef } from "@repowise-dev/types/files";
 
@@ -14,71 +8,58 @@ interface FileDocTabProps {
   wikiPage: FileWikiPageRef | null;
   /** Server-rendered wiki content (the host renders markdown its own way). */
   docSlot?: ReactNode | undefined;
-  /** Deep link into the docs reading surface. */
-  wikiHref?: string | undefined;
 }
 
-const FRESHNESS_CLASS: Record<string, string> = {
-  fresh: "text-[var(--color-success)] border-[var(--color-success)]/30",
-  stale: "text-[var(--color-warning)] border-[var(--color-warning)]/30",
-  outdated: "text-[var(--color-error)] border-[var(--color-error)]/30",
-};
-
-export function FileDocTab({ wikiPage, docSlot, wikiHref }: FileDocTabProps) {
+export function FileDocTab({ wikiPage, docSlot }: FileDocTabProps) {
   if (!wikiPage) {
     return (
       <EmptyState
+        titleAs="h2"
         icon={<BookOpen className="h-8 w-8" />}
-        title="This page didn't make the cut"
-        description="Not every file gets its own documentation page, and that's perfectly normal."
+        title="No documentation page for this file"
+        description="Repowise writes pages for the files that carry a repository's shape. Re-run the index with a wider page budget to bring this one in."
       />
     );
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge
-          variant="outline"
-          className={`text-[10px] h-5 ${FRESHNESS_CLASS[wikiPage.freshness_status] ?? ""}`}
+    <div className="space-y-6">
+      {/* The freshness marker lives in the header, where it sits beside the
+          score and is on screen from whichever tab you arrive on. Repeating it
+          here would be a badge on a row that already carries one. What is
+          local to this tab is when the page was written.
+
+          "Open in Documentation" used to sit here too, which made the one link
+          out of this page reachable only from the tab that already renders the
+          page. It is in the header now, so a reader on Health or Dependencies
+          can see it. Leaving a second copy here would be two doors to one
+          destination on one screen. */}
+      {wikiPage.updated_at && (
+        <p
+          className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]"
+          title={new Date(wikiPage.updated_at).toLocaleString()}
         >
-          {wikiPage.freshness_status}
-        </Badge>
-        {isDeterministicPage(wikiPage) && (
-          <Badge variant="outline" className="text-[10px] h-5" title={DETERMINISTIC_BADGE_TITLE}>
-            {DETERMINISTIC_BADGE_LABEL}
-          </Badge>
-        )}
-        {wikiPage.updated_at && (
-          <span
-            className="text-xs text-[var(--color-text-tertiary)]"
-            title={new Date(wikiPage.updated_at).toLocaleString()}
-          >
-            updated {formatRelativeTime(wikiPage.updated_at)}
-          </span>
-        )}
-        {wikiHref && (
-          <a
-            href={wikiHref}
-            className="ml-auto text-xs text-[var(--color-accent-primary)] hover:underline"
-          >
-            Open in Docs →
-          </a>
-        )}
-      </div>
+          Written {formatRelativeTime(wikiPage.updated_at)}
+        </p>
+      )}
+
       {wikiPage.human_notes && (
-        <div className="rounded-md border border-[var(--color-accent-primary)]/30 bg-[var(--color-bg-elevated)] p-3">
-          <p className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1">
+        <div className="border-l-2 border-[var(--color-accent-primary)] pl-4">
+          <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
             Team notes
           </p>
-          <p className="text-xs text-[var(--color-text-secondary)] whitespace-pre-wrap">
+          <p className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-[var(--color-text-secondary)]">
             {wikiPage.human_notes}
           </p>
         </div>
       )}
-      <article className="prose prose-invert max-w-none leading-relaxed overflow-hidden">
-        {docSlot}
-      </article>
+
+      {/* No `prose` wrapper — rule 12. Tailwind Typography is banned on our
+          markdown: every element the renderer emits is already themed through
+          our tokens, `code::before/::after` prints literal backticks into the
+          page, and `prose-invert` is a static class that cannot follow the
+          theme. If the markdown needs a style, it gets styled in the renderer. */}
+      <article className="max-w-none overflow-hidden">{docSlot}</article>
     </div>
   );
 }

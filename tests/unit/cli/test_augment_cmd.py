@@ -33,7 +33,12 @@ def _init_repowise_repo(path: Path) -> None:
     repowise_dir = path / ".repowise"
     repowise_dir.mkdir()
     (repowise_dir / "state.json").write_text(
-        json.dumps({"last_sync_commit": "1111111111111111111111111111111111111111"}),
+        json.dumps(
+            {
+                "last_sync_commit": "1111111111111111111111111111111111111111",
+                "docs_mode": "llm",
+            }
+        ),
         encoding="utf-8",
     )
 

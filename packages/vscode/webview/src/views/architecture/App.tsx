@@ -181,10 +181,10 @@ function ArchitectureMap({ host, repo, params, refreshToken }: ViewProps<"archit
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h1 className="truncate text-sm font-semibold text-[var(--color-text-primary)]">
+              <h1 className="truncate text-[15px] font-semibold text-[var(--color-text-primary)]">
                 {repo.name}
               </h1>
-              <span className="rounded-full border border-[var(--color-border-default)] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-secondary)]">
+              <span className="rounded-full border border-[var(--color-border-default)] px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-secondary)]">
                 {levelLabel}
               </span>
             </div>

@@ -16,28 +16,34 @@ from typing import Any
 
 import jinja2
 import pytest
+from structlog.testing import capture_logs
 
+from repowise.core.analysis.execution_flows import ExecutionFlow
 from repowise.core.generation import onboarding
-from repowise.core.generation.models import GENERATION_LEVELS, GeneratedPage
+from repowise.core.generation.context.token_budget import estimate_tokens
+from repowise.core.generation.context_assembler import ContextAssembler
+from repowise.core.generation.models import GENERATION_LEVELS, GeneratedPage, GenerationConfig
 from repowise.core.generation.onboarding.signals import OnboardingSignals
 from repowise.core.generation.onboarding.slots import (
     ONBOARDING_ORDER,
     PROMOTED_SLOTS,
     SLOT_ACTIVE_LANDSCAPE,
-    SLOT_CODEBASE_MAP,
-    SLOT_DEVELOPMENT_GUIDE,
     SLOT_GETTING_STARTED,
     SLOT_HOW_IT_WORKS,
     SLOT_KEY_CONCEPTS,
     target_path,
 )
 from repowise.core.generation.page_generator import PageGenerator
+from repowise.core.generation.page_generator.core import PriorPage
 from repowise.core.ingestion.models import (
     FileInfo,
     ParsedFile,
     RepoStructure,
     Symbol,
 )
+from repowise.core.providers.llm.base import GeneratedResponse
+from repowise.core.providers.llm.mock import MockProvider
+from repowise.core.test_paths import is_test_related_path
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -58,7 +64,9 @@ def _file(
         size_bytes=512,
         git_hash="abc",
         last_modified=datetime(2026, 1, 1, tzinfo=UTC),
-        is_test=False,
+        # Stamped the way ingestion stamps it, so subkinds that read the flag
+        # see what they would see in a real run.
+        is_test=is_test_related_path(path, language),
         is_config=False,
         is_api_contract=False,
         is_entry_point=is_entry_point,
@@ -107,6 +115,7 @@ def _signals(
     tour_stops: tuple[dict, ...] = (),
     layer_order: tuple[str, ...] = (),
     completed_page_summaries: dict[str, str] | None = None,
+    flows: tuple[object, ...] = (),
 ) -> OnboardingSignals:
     paths = [f.file_info.path for f in files]
     pr = pagerank or {p: 0.1 for p in paths}
@@ -114,7 +123,7 @@ def _signals(
     # Minimal fake graph_builder — community_info / execution_flows return empty.
     graph_builder = SimpleNamespace(
         community_info=lambda: {},
-        execution_flows=lambda: SimpleNamespace(flows=[]),
+        execution_flows=lambda: SimpleNamespace(flows=list(flows)),
     )
     repo_structure = RepoStructure(
         is_monorepo=False,
@@ -122,7 +131,8 @@ def _signals(
         root_language_distribution={"python": 1.0},
         total_files=len(files),
         total_loc=len(files) * 50,
-        entry_points=entry_points or [f.file_info.path for f in files if f.file_info.is_entry_point],
+        entry_points=entry_points
+        or [f.file_info.path for f in files if f.file_info.is_entry_point],
     )
     return OnboardingSignals(
         repo_name="testrepo",
@@ -156,9 +166,13 @@ def test_subkinds_registered_in_canonical_order() -> None:
     # ONBOARDING_ORDER.
     expected = [s for s in ONBOARDING_ORDER if s not in PROMOTED_SLOTS.values()]
     assert slots == expected
-    # Six templated subkinds + the topology-driven guided tour.
-    assert len(slots) == 7
-    assert "guided_tour" in slots
+    # Four templated subkinds plus the glossary, which is rendered without a
+    # model at all. The promoted overview brings orientation to six pages.
+    assert len(slots) == 5
+    assert len(ONBOARDING_ORDER) == 6
+    # Last, and it must stay last: a glossary is a lookup surface, not a
+    # reading step.
+    assert slots[-1] == "glossary"
 
 
 def test_onboarding_level_is_eight() -> None:
@@ -166,38 +180,11 @@ def test_onboarding_level_is_eight() -> None:
 
 
 def test_target_path_format() -> None:
-    assert target_path("codebase_map") == "onboarding/codebase_map"
+    assert target_path("key_concepts") == "onboarding/key_concepts"
 
 
 def test_promoted_slots_map() -> None:
-    assert PROMOTED_SLOTS == {
-        "repo_overview": "project_overview",
-        "architecture_diagram": "architecture_guide",
-    }
-
-
-# ---------------------------------------------------------------------------
-# Codebase map — always generates
-# ---------------------------------------------------------------------------
-
-
-def test_codebase_map_always_builds() -> None:
-    spec = onboarding.get_spec(SLOT_CODEBASE_MAP)
-    assert spec is not None
-    files = [
-        _file("src/auth/login.py", symbols=["Login"]),
-        _file("src/auth/session.py", symbols=["Session"]),
-        _file("src/auth/middleware.py", symbols=["AuthMiddleware"]),
-        _file("src/api/routes.py", symbols=["Router"]),
-        _file("src/api/handlers.py", symbols=["Handler"]),
-        _file("src/api/serializers.py", symbols=["Serializer"]),
-    ]
-    sig = _signals(files=files)
-    ctx = spec.build_context(sig)
-    assert ctx is not None
-    assert len(ctx.directories) >= 1
-    # Largest dir first
-    assert ctx.directories[0].file_count >= ctx.directories[-1].file_count
+    assert PROMOTED_SLOTS == {"repo_overview": "project_overview"}
 
 
 # ---------------------------------------------------------------------------
@@ -264,8 +251,18 @@ def test_getting_started_fires_on_manifest() -> None:
     sig = _signals(
         files=[_file("src/a.py")],
         external_systems=(
-            {"name": "fastapi", "ecosystem": "pypi", "category": "framework"},
-            {"name": "pytest", "ecosystem": "pypi", "is_dev": True},
+            # Key names must match what pipeline/orchestrator.py actually emits
+            # off ExternalSystemRecord. This test previously passed "is_dev",
+            # which no producer ever sets, so it asserted against a shape
+            # production never produces and hid the misclassification below.
+            {
+                "name": "fastapi",
+                "ecosystem": "pypi",
+                "category": "framework",
+                "version": "0.110.0",
+                "is_dev_dep": False,
+            },
+            {"name": "pytest", "ecosystem": "pypi", "is_dev_dep": True},
         ),
     )
     ctx = spec.build_context(sig)
@@ -273,6 +270,69 @@ def test_getting_started_fires_on_manifest() -> None:
     assert "pypi" in ctx.package_managers
     assert any(d["name"] == "fastapi" for d in ctx.runtime_dependencies)
     assert any(d["name"] == "pytest" for d in ctx.dev_dependencies)
+    # A dev dependency must not leak into the runtime list.
+    assert not any(d["name"] == "pytest" for d in ctx.runtime_dependencies)
+
+
+def test_getting_started_dependency_entries_always_carry_a_version_key() -> None:
+    """The stub template tests ``d.version`` under StrictUndefined.
+
+    A missing key raises "'dict object' has no attribute 'version'" and loses
+    the whole page, which is what happened in production.
+    """
+    spec = onboarding.get_spec(SLOT_GETTING_STARTED)
+    assert spec is not None
+    sig = _signals(
+        files=[_file("src/a.py")],
+        external_systems=(
+            {"name": "fastapi", "ecosystem": "pypi", "version": "0.110.0"},
+            # No version at all, and an explicit None: both must normalize.
+            {"name": "requests", "ecosystem": "pypi"},
+            {"name": "httpx", "ecosystem": "pypi", "version": None},
+        ),
+    )
+    ctx = spec.build_context(sig)
+    assert ctx is not None
+
+    for dep in [*ctx.runtime_dependencies, *ctx.dev_dependencies]:
+        assert "version" in dep, f"{dep['name']} has no version key"
+        assert isinstance(dep["version"], str), "version must never be None"
+
+    by_name = {d["name"]: d for d in ctx.runtime_dependencies}
+    assert by_name["fastapi"]["version"] == "0.110.0"
+    assert by_name["requests"]["version"] == ""
+    assert by_name["httpx"]["version"] == ""
+
+
+def test_getting_started_stub_renders_under_strict_undefined() -> None:
+    """End-to-end guard on the exact production failure: it must not raise."""
+    templates_dir = Path(onboarding.__file__).resolve().parents[1] / "templates"
+    env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(str(templates_dir)),
+        undefined=jinja2.StrictUndefined,
+        autoescape=False,
+    )
+
+    spec = onboarding.get_spec(SLOT_GETTING_STARTED)
+    assert spec is not None
+    sig = _signals(
+        files=[_file("src/a.py")],
+        external_systems=(
+            {"name": "fastapi", "ecosystem": "pypi", "version": "0.110.0"},
+            {"name": "requests", "ecosystem": "pypi"},
+            {"name": "pytest", "ecosystem": "pypi", "is_dev_dep": True},
+        ),
+    )
+    ctx = spec.build_context(sig)
+    assert ctx is not None
+
+    rendered = env.get_template("stub/onboarding/getting_started.j2").render(ctx=ctx)
+
+    assert "fastapi" in rendered
+    assert "0.110.0" in rendered
+    assert "pytest" in rendered
+    # A versionless dependency renders its name with no trailing "None".
+    assert "None" not in rendered
 
 
 def test_getting_started_fires_on_readme_install_section() -> None:
@@ -369,37 +429,409 @@ def test_how_it_works_fires_on_cli_archetype_via_entry_point() -> None:
     assert ctx.archetype == "cli"
 
 
-# ---------------------------------------------------------------------------
-# Development guide — gated on ≥2 structural signals
-# ---------------------------------------------------------------------------
-
-
-def test_development_guide_skipped_for_unconventional_repo() -> None:
-    spec = onboarding.get_spec(SLOT_DEVELOPMENT_GUIDE)
+async def test_how_it_works_without_a_detected_flow_preserves_generic_fallback() -> None:
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
     assert spec is not None
-    sig = _signals(files=[_file("src/a.py"), _file("src/b.py")])
-    assert spec.build_context(sig) is None
+    signals = _signals(
+        files=[_file("src/cli/__main__.py", is_entry_point=True)],
+        entry_points=["src/cli/__main__.py"],
+    )
+    config = GenerationConfig(cache_enabled=False)
+    provider = MockProvider()
+
+    page = await PageGenerator(provider, ContextAssembler(config), config).generate_onboarding_page(
+        spec, signals
+    )
+
+    assert page is not None
+    prompt = provider.calls[0]["user_prompt"]
+    assert "narrate the transition generically" in prompt
+    assert "Attribute behavior only to the symbol whose exact source excerpt" not in prompt
+    assert "## Exact source excerpts" not in prompt
 
 
-def test_development_guide_fires_with_suffix_pattern_and_test_mirror() -> None:
-    spec = onboarding.get_spec(SLOT_DEVELOPMENT_GUIDE)
+@pytest.mark.parametrize(
+    ("token_budget", "include_source", "skip_reason"),
+    ((0, True, "budget_disabled"), (300, False, "source_not_indexed")),
+)
+async def test_how_it_works_without_usable_exact_source_preserves_generic_fallback(
+    token_budget: int,
+    include_source: bool,
+    skip_reason: str,
+) -> None:
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
     assert spec is not None
-    files = [
-        _file("src/auth_handler.py", symbols=["AuthHandler"]),
-        _file("src/user_handler.py", symbols=["UserHandler"]),
-        _file("src/billing_handler.py", symbols=["BillingHandler"]),
-        _file("src/order_handler.py", symbols=["OrderHandler"]),
-        _file("tests/test_auth_handler.py"),
-        _file("tests/test_user_handler.py"),
-        _file("tests/test_billing_handler.py"),
+    hop_specs = (
+        ("src/cli.py", "main"),
+        ("src/parser.py", "parse_request"),
+        ("src/worker.py", "enqueue_job"),
+    )
+    files = []
+    references = []
+    source_map = {}
+    for path, symbol_name in hop_specs:
+        parsed = _file(path, is_entry_point=path == "src/cli.py", symbols=[symbol_name])
+        parsed.symbols[0].start_line = 1
+        parsed.symbols[0].end_line = 2
+        files.append(parsed)
+        references.append(f"{path}::{symbol_name}")
+        if include_source:
+            source_map[path] = f"def {symbol_name}():\n    return None\n".encode()
+    flow = ExecutionFlow(
+        entry_point_id=references[0],
+        entry_point_name="main",
+        entry_point_score=0.9,
+        trace=references,
+        depth=2,
+        crosses_community=False,
+        communities_visited=[0],
+        termination="no_callees",
+    )
+    signals = _signals(files=files, source_map=source_map, flows=(flow,))
+    config = GenerationConfig(
+        cache_enabled=False,
+        source_evidence_token_budget=token_budget,
+    )
+    provider = MockProvider()
+
+    page = await PageGenerator(provider, ContextAssembler(config), config).generate_onboarding_page(
+        spec, signals
+    )
+
+    assert page is not None
+    prompt = provider.calls[0]["user_prompt"]
+    assert "narrate the transition generically" in prompt
+    assert "Attribute behavior only to the symbol whose exact source excerpt" not in prompt
+    assert "## Exact source excerpts" not in prompt
+    assert page.metadata["source_evidence"]["skipped"] == [
+        {"path": reference, "reason": skip_reason} for reference in references
     ]
-    sig = _signals(files=files)
-    ctx = spec.build_context(sig)
-    assert ctx is not None
-    suffixes = {p.suffix for p in ctx.suffix_patterns}
-    assert "handler" in suffixes
-    assert ctx.test_mirror is not None
-    assert ctx.test_mirror.test_root == "tests"
+
+
+async def test_onboarding_prompt_includes_configured_source_evidence() -> None:
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+    signals = _signals(
+        files=[_file("src/cli/__main__.py", is_entry_point=True)],
+        entry_points=["src/cli/__main__.py"],
+        source_map={
+            "docs/ARCHITECTURE.md": b"The CLI validates input and dispatches the worker pipeline."
+        },
+    )
+    config = GenerationConfig(
+        cache_enabled=False,
+        source_evidence_files={
+            "onboarding/how_it_works": ("docs/ARCHITECTURE.md",),
+        },
+    )
+    provider = MockProvider()
+    generator = PageGenerator(provider, ContextAssembler(config), config)
+
+    page = await generator.generate_onboarding_page(spec, signals)
+
+    assert page is not None
+    prompt = provider.calls[0]["user_prompt"]
+    assert '<repository-file path="docs/ARCHITECTURE.md">' in prompt
+    assert "validates input and dispatches the worker pipeline" in prompt
+    provenance = page.metadata["source_evidence"]
+    assert provenance["page_key"] == "onboarding/how_it_works"
+    assert provenance["token_budget"] == 8000
+    assert provenance["estimated_tokens"] <= 8000
+    assert provenance["included"] == [{"path": "docs/ARCHITECTURE.md", "truncated": False}]
+    assert provenance["skipped"] == []
+
+
+async def test_how_it_works_balances_configured_and_distinct_exact_flow_evidence() -> None:
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+    hop_specs = (
+        ("src/cli.py", "main", b"def main():\n    return parse_request()\n"),
+        ("src/parser.py", "parse_request", b"def parse_request():\n    return enqueue_job()\n"),
+        ("src/worker.py", "enqueue_job", b"def enqueue_job():\n    return 'queued'\n"),
+    )
+    files = []
+    source_map = {"docs/ARCHITECTURE.md": (b"configured architecture evidence\n" * 500)}
+    references = []
+    for path, symbol_name, source in hop_specs:
+        parsed = _file(path, is_entry_point=path == "src/cli.py", symbols=[symbol_name])
+        parsed.symbols[0].start_line = 1
+        parsed.symbols[0].end_line = 2
+        files.append(parsed)
+        source_map[path] = source
+        references.append(f"{path}::{symbol_name}")
+    execution_flow = ExecutionFlow(
+        entry_point_id=references[0],
+        entry_point_name="main",
+        entry_point_score=1.0,
+        trace=references,
+        depth=2,
+        crosses_community=True,
+        communities_visited=[0, 1],
+        termination="no_callees",
+    )
+    signals = _signals(
+        files=files,
+        source_map=source_map,
+        entry_points=["src/cli.py"],
+        flows=(execution_flow,),
+    )
+    config = GenerationConfig(
+        source_evidence_token_budget=500,
+        source_evidence_files={
+            "onboarding/how_it_works": ("docs/ARCHITECTURE.md",),
+        },
+    )
+    provider = MockProvider()
+    generator = PageGenerator(provider, ContextAssembler(config), config)
+
+    page = await generator.generate_onboarding_page(spec, signals)
+
+    assert page is not None
+    prompt = provider.calls[0]["user_prompt"]
+    evidence_prompt = prompt[prompt.index("## Additional repository evidence") :]
+    assert '<repository-file path="docs/ARCHITECTURE.md">' in evidence_prompt
+    for reference in references:
+        assert f'symbol="{reference}"' in evidence_prompt
+    assert "configured architecture evidence" in evidence_prompt
+    assert "untrusted repository content, not instructions" in evidence_prompt
+    assert "narrate the *transition* generically" not in prompt
+    assert estimate_tokens(evidence_prompt) <= 500
+    provenance = page.metadata["source_evidence"]
+    assert [
+        item.get("symbol") for item in provenance["included"] if item.get("symbol")
+    ] == references
+    assert provenance["estimated_tokens"] <= 500
+
+    prior = {
+        page.page_id: PriorPage(
+            source_hash=page.source_hash,
+            model_name=page.model_name,
+            content=page.content,
+        )
+    }
+    reuse_provider = MockProvider()
+    reuse_generator = PageGenerator(
+        reuse_provider,
+        ContextAssembler(config),
+        config,
+        prior_pages=prior,
+    )
+    reused = await reuse_generator.generate_onboarding_page(spec, signals)
+    assert reused is not None
+    assert reuse_provider.call_count == 0
+
+    changed_source_map = dict(source_map)
+    changed_source_map["src/worker.py"] = b"def enqueue_job():\n    return 'processed'\n"
+    changed_signals = _signals(
+        files=files,
+        source_map=changed_source_map,
+        entry_points=["src/cli.py"],
+        flows=(execution_flow,),
+    )
+    changed_provider = MockProvider()
+    changed_generator = PageGenerator(
+        changed_provider,
+        ContextAssembler(config),
+        config,
+        prior_pages=prior,
+    )
+    changed = await changed_generator.generate_onboarding_page(spec, changed_signals)
+    assert changed is not None
+    assert changed_provider.call_count == 1
+    assert changed.source_hash != page.source_hash
+
+    deterministic_config = GenerationConfig(deterministic=True)
+    deterministic_generator = PageGenerator(
+        MockProvider(),
+        ContextAssembler(deterministic_config),
+        deterministic_config,
+    )
+    deterministic = await deterministic_generator.generate_onboarding_page(spec, signals)
+    assert deterministic is not None
+    assert deterministic.metadata["source_evidence"]["skipped"] == [
+        {"path": reference, "reason": "deterministic_generation"} for reference in references
+    ]
+
+
+async def test_how_it_works_grounds_identifiers_found_only_in_exact_evidence() -> None:
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+    parsed = _file("src/router.py", is_entry_point=True, symbols=["entry", "finish", "exit"])
+    parsed.symbols[0].start_line = parsed.symbols[0].end_line = 1
+    parsed.symbols[1].start_line = parsed.symbols[1].end_line = 2
+    parsed.symbols[2].start_line = parsed.symbols[2].end_line = 3
+    references = (
+        "src/router.py::entry",
+        "src/router.py::finish",
+        "src/router.py::exit",
+    )
+    flow = ExecutionFlow(
+        entry_point_id=references[0],
+        entry_point_name="entry",
+        entry_point_score=1.0,
+        trace=list(references),
+        depth=2,
+        crosses_community=False,
+        communities_visited=[0],
+        termination="no_callees",
+    )
+    signals = _signals(
+        files=[parsed],
+        source_map={
+            "src/router.py": (
+                b"ExactWorker.dispatch routes the request\n"
+                b"ExactQueue.finish records completion\n"
+                b"return response\n"
+            )
+        },
+        flows=(flow,),
+    )
+    response = GeneratedResponse(
+        content=(
+            "`ExactWorker.dispatch` hands work to `ExactQueue.finish`; "
+            "`FabricatedWorker.run` is not real."
+        ),
+        input_tokens=100,
+        output_tokens=30,
+    )
+    provider = MockProvider(responses=[response])
+    config = GenerationConfig(source_evidence_token_budget=500)
+
+    page = await PageGenerator(provider, ContextAssembler(config), config).generate_onboarding_page(
+        spec, signals
+    )
+
+    assert page is not None
+    assert "`ExactWorker.dispatch`" in page.content
+    assert "`ExactQueue.finish`" in page.content
+    assert "`FabricatedWorker.run`" not in page.content
+    assert "FabricatedWorker.run" in page.content
+
+
+async def test_onboarding_evidence_survives_grounding_and_controls_cache_reuse() -> None:
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+    source_map = {
+        "docs/runtime-flow.md": (
+            b"`EvidenceRouter.dispatch` validates input, then calls `WorkerPipeline.run`."
+        )
+    }
+    signals = _signals(
+        files=[_file("src/cli/__main__.py", is_entry_point=True)],
+        entry_points=["src/cli/__main__.py"],
+        source_map=source_map,
+    )
+    config = GenerationConfig(
+        source_evidence_files={
+            "onboarding/how_it_works": ("docs/runtime-flow.md",),
+        },
+    )
+    response = GeneratedResponse(
+        content=(
+            "## Runtime flow\n\n`EvidenceRouter.dispatch` invokes "
+            "`WorkerPipeline.run`; `InventedDaemon` is unrelated."
+        ),
+        input_tokens=10,
+        output_tokens=20,
+    )
+    first_provider = MockProvider(responses=[response])
+    first_generator = PageGenerator(first_provider, ContextAssembler(config), config)
+
+    first = await first_generator.generate_onboarding_page(spec, signals)
+
+    assert first is not None
+    assert "`EvidenceRouter.dispatch`" in first.content
+    assert "`WorkerPipeline.run`" in first.content
+    assert "`InventedDaemon`" not in first.content
+
+    prior = {
+        first.page_id: PriorPage(
+            source_hash=first.source_hash,
+            model_name=first.model_name,
+            content=first.content,
+        )
+    }
+    reuse_provider = MockProvider()
+    reuse_generator = PageGenerator(
+        reuse_provider,
+        ContextAssembler(config),
+        config,
+        prior_pages=prior,
+    )
+
+    reused = await reuse_generator.generate_onboarding_page(spec, signals)
+
+    assert reused is not None
+    assert reuse_provider.call_count == 0
+    assert reused.metadata["reused_from_prior_run"] is True
+    assert reused.metadata["source_evidence"]["included"] == [
+        {"path": "docs/runtime-flow.md", "truncated": False}
+    ]
+
+    changed_signals = _signals(
+        files=[_file("src/cli/__main__.py", is_entry_point=True)],
+        entry_points=["src/cli/__main__.py"],
+        source_map={"docs/runtime-flow.md": b"EvidenceRouter.dispatch now calls QueueWorker.run."},
+    )
+    changed_provider = MockProvider(responses=[response])
+    changed_generator = PageGenerator(
+        changed_provider,
+        ContextAssembler(config),
+        config,
+        prior_pages=prior,
+    )
+
+    changed = await changed_generator.generate_onboarding_page(spec, changed_signals)
+
+    assert changed is not None
+    assert changed_provider.call_count == 1
+    assert changed.source_hash != first.source_hash
+
+
+async def test_missing_onboarding_evidence_is_visible_in_page_provenance() -> None:
+    spec = onboarding.get_spec(SLOT_HOW_IT_WORKS)
+    assert spec is not None
+    signals = _signals(
+        files=[_file("src/cli/__main__.py", is_entry_point=True)],
+        entry_points=["src/cli/__main__.py"],
+    )
+    config = GenerationConfig(
+        source_evidence_files={
+            "onboarding/how_it_works": ("docs/missing.md",),
+        },
+    )
+    generator = PageGenerator(MockProvider(), ContextAssembler(config), config)
+
+    page = await generator.generate_onboarding_page(spec, signals)
+
+    assert page is not None
+    assert page.metadata["source_evidence"]["included"] == []
+    assert page.metadata["source_evidence"]["skipped"] == [
+        {"path": "docs/missing.md", "reason": "not_indexed"}
+    ]
+
+
+async def test_evidence_for_a_gated_page_is_reported_as_not_generated() -> None:
+    spec = onboarding.get_spec(SLOT_KEY_CONCEPTS)
+    assert spec is not None
+    # One symbol is below the concept gate, so the page is never generated.
+    signals = _signals(files=[_file("src/one.py", symbols=["One"])])
+    config = GenerationConfig(
+        source_evidence_files={
+            "onboarding/key_concepts": ("docs/concepts.md",),
+        },
+    )
+    generator = PageGenerator(MockProvider(), ContextAssembler(config), config)
+
+    with capture_logs() as logs:
+        page = await generator.generate_onboarding_page(spec, signals)
+
+    assert page is None
+    assert any(
+        entry.get("event") == "source_evidence.skipped"
+        and entry.get("skipped") == [{"path": "docs/concepts.md", "reason": "page_not_generated"}]
+        for entry in logs
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -434,53 +866,12 @@ def test_tag_promoted_pages_sets_onboarding_slot() -> None:
     ]
     PageGenerator._tag_promoted_pages(pages)
     assert pages[0].metadata["onboarding_slot"] == "project_overview"
-    assert pages[1].metadata["onboarding_slot"] == "architecture_guide"
+    # The architecture diagram is no longer a page, so nothing promotes it. A
+    # stale row from an older index must not be tagged into a slot that the
+    # reading order no longer has.
+    assert "onboarding_slot" not in pages[1].metadata
     # Non-promoted pages stay untouched.
     assert "onboarding_slot" not in pages[2].metadata
-
-
-# ---------------------------------------------------------------------------
-# Guided tour — gated on having a real (multi-stop) tour
-# ---------------------------------------------------------------------------
-
-
-def _tour_stops(n: int) -> tuple[dict, ...]:
-    return tuple(
-        {
-            "order": i + 1,
-            "target_path": f"src/file_{i}.py",
-            "page_type": "file_page",
-            "title": f"file_{i}.py",
-            "depth": i,
-            "kind": "code",
-            "reason": "reason",
-        }
-        for i in range(n)
-    )
-
-
-def test_guided_tour_skipped_without_enough_stops() -> None:
-    spec = onboarding.get_spec("guided_tour")
-    assert spec is not None
-    sig = _signals(files=[_file("src/main.py", is_entry_point=True)], tour_stops=_tour_stops(1))
-    assert spec.build_context(sig) is None
-
-
-def test_guided_tour_builds_with_stops_and_summaries() -> None:
-    spec = onboarding.get_spec("guided_tour")
-    assert spec is not None
-    sig = _signals(
-        files=[_file("src/main.py", is_entry_point=True)],
-        tour_stops=_tour_stops(3),
-        layer_order=("API", "Service", "Data"),
-        completed_page_summaries={"src/file_0.py": "Entry orchestrator."},
-    )
-    ctx = spec.build_context(sig)
-    assert ctx is not None
-    assert len(ctx.stops) == 3
-    assert ctx.layer_order == ["API", "Service", "Data"]
-    # Summary is attached to the matching stop.
-    assert ctx.stops[0].summary == "Entry orchestrator."
 
 
 # ---------------------------------------------------------------------------
@@ -509,12 +900,6 @@ def _jinja_env() -> jinja2.Environment:
 @pytest.mark.parametrize(
     "subkind_slot,ctx_factory",
     [
-        (
-            SLOT_CODEBASE_MAP,
-            lambda: onboarding.get_spec(SLOT_CODEBASE_MAP).build_context(
-                _signals(files=[_file(f"src/m{i}.py", symbols=[f"M{i}"]) for i in range(6)])
-            ),
-        ),
         (
             SLOT_ACTIVE_LANDSCAPE,
             lambda: onboarding.get_spec(SLOT_ACTIVE_LANDSCAPE).build_context(
@@ -571,33 +956,6 @@ def _jinja_env() -> jinja2.Environment:
                 )
             ),
         ),
-        (
-            "guided_tour",
-            lambda: onboarding.get_spec("guided_tour").build_context(
-                _signals(
-                    files=[_file("src/main.py", is_entry_point=True)],
-                    tour_stops=_tour_stops(3),
-                    layer_order=("API", "Service"),
-                    completed_page_summaries={"src/file_0.py": "Entry orchestrator."},
-                )
-            ),
-        ),
-        (
-            SLOT_DEVELOPMENT_GUIDE,
-            lambda: onboarding.get_spec(SLOT_DEVELOPMENT_GUIDE).build_context(
-                _signals(
-                    files=[
-                        _file("src/auth_handler.py"),
-                        _file("src/user_handler.py"),
-                        _file("src/billing_handler.py"),
-                        _file("src/order_handler.py"),
-                        _file("tests/test_auth_handler.py"),
-                        _file("tests/test_user_handler.py"),
-                        _file("tests/test_billing_handler.py"),
-                    ]
-                )
-            ),
-        ),
     ],
 )
 def test_subkind_template_renders(subkind_slot: str, ctx_factory: Any) -> None:
@@ -626,12 +984,24 @@ def test_how_it_works_renders_curated_tour_steps() -> None:
         entry_points=["src/main.py"],
     )
     curated_steps = (
-        {"order": 1, "target_path": "README.md", "page_type": "repo_overview",
-         "title": "README.md", "depth": 0, "kind": "overview",
-         "reason": "Start here for the end-to-end picture."},
-        {"order": 2, "target_path": "src/main.py", "page_type": "file_page",
-         "title": "main.py", "depth": 1, "kind": "code",
-         "reason": "An entry point — execution and imports fan out from here."},
+        {
+            "order": 1,
+            "target_path": "README.md",
+            "page_type": "repo_overview",
+            "title": "README.md",
+            "depth": 0,
+            "kind": "overview",
+            "reason": "Start here for the end-to-end picture.",
+        },
+        {
+            "order": 2,
+            "target_path": "src/main.py",
+            "page_type": "file_page",
+            "title": "main.py",
+            "depth": 1,
+            "kind": "code",
+            "reason": "An entry point — execution and imports fan out from here.",
+        },
     )
     sig = dataclasses.replace(sig, kg_tour_steps=curated_steps)
     ctx = spec.build_context(sig)
@@ -656,9 +1026,12 @@ def test_how_it_works_renders_legacy_tour_steps() -> None:
         entry_points=["src/main.py"],
     )
     legacy_steps = (
-        {"order": 1, "title": "Start Here",
-         "description": "Begin with the entry point.",
-         "nodeIds": ["file:src/main.py"]},
+        {
+            "order": 1,
+            "title": "Start Here",
+            "description": "Begin with the entry point.",
+            "nodeIds": ["file:src/main.py"],
+        },
     )
     sig = dataclasses.replace(sig, kg_tour_steps=legacy_steps)
     ctx = spec.build_context(sig)

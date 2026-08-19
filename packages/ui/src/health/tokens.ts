@@ -25,6 +25,13 @@ export const SEVERITY_LABEL: Record<Severity, string> = {
   low: "Low",
 };
 
+/**
+ * @deprecated Use `SeverityMark`. This paints a tinted ground, a border and
+ * coloured text for one token that repeats several times per row, and in a
+ * findings list the grounds tile into stripes that outweigh the marker names
+ * beside them. Kept exported because `@repowise-dev/ui` is consumed outside
+ * this repo; nothing in here should reach for it.
+ */
 export const SEVERITY_CHIP: Record<Severity, string> = {
   critical:
     "bg-[var(--color-error)]/15 text-[var(--color-error)] border border-[var(--color-error)]/30",
@@ -59,16 +66,25 @@ export function scoreBand(score: number): ScoreBand {
 }
 
 /* Color classes for the 3 canonical health bands (Alert/Warning/Healthy).
- * Literal strings so Tailwind's static scanner keeps them. */
+ * Literal strings so Tailwind's static scanner keeps them.
+ *
+ * These MUST use the same tokens as `HEALTH_BAND_INK` below. They did not:
+ * the Warning band read `--color-caution` here and `--color-warning` there,
+ * so a 6.9 was one amber as a label and a different amber as a fill —
+ * the treemap tile and the file page's score, or the zoom map's dot and its
+ * detail panel, describing one file in one viewport. Two marks on one object
+ * may not disagree about a colour they both derive from `bandForScore`.
+ * `--color-caution` stays where it belongs: the four-step severity/presentation
+ * ramp below, which is not a band. */
 const HEALTH_BAND_TEXT: Record<HealthBand, string> = {
   alert: "text-[var(--color-error)]",
-  warning: "text-[var(--color-caution)]",
+  warning: "text-[var(--color-warning)]",
   healthy: "text-[var(--color-success)]",
 };
 
 const HEALTH_BAND_BADGE_SOFT: Record<HealthBand, string> = {
   alert: "bg-[var(--color-error)]/15 text-[var(--color-error)]",
-  warning: "bg-[var(--color-caution)]/15 text-[var(--color-caution)]",
+  warning: "bg-[var(--color-warning)]/15 text-[var(--color-warning)]",
   healthy: "bg-[var(--color-success)]/15 text-[var(--color-success)]",
 };
 
@@ -129,12 +145,22 @@ const HEALTH_BAND_INK: Record<HealthBand, string> = {
 };
 
 /**
+ * A canonical band as an ink color, for a key or legend that has a band but no
+ * score to derive it from. Exported so an off-canvas key paints from the same
+ * table the fills do — a legend with its own copy of the colours is a legend
+ * that can describe a canvas it no longer matches.
+ */
+export function healthBandInk(band: HealthBand): string {
+  return HEALTH_BAND_INK[band];
+}
+
+/**
  * Canonical banding for a higher-is-better health score on the 0-10 scale,
  * as an ink color usable in `style`/SVG attributes. Thresholds come from the
  * shared `bandForScore` mirror so every surface agrees on what counts as red.
  */
 export function healthInk(score10: number): string {
-  return HEALTH_BAND_INK[bandForScore(score10)];
+  return healthBandInk(bandForScore(score10));
 }
 
 /** `healthInk` for scores expressed on a 0-100 scale. */
@@ -163,6 +189,30 @@ export function coverageColor(pct: number): string {
   if (pct < 60) return "bg-[var(--color-warning)]";
   if (pct < 80) return "bg-[var(--color-caution)]";
   return "bg-[var(--color-success)]";
+}
+
+/**
+ * Coverage as a band, at the thresholds {@link coverageColor} already paints.
+ *
+ * One function for the same reason `healthBand()` is one function: the coverage
+ * lede prints the label, the figure takes the colour and the distribution bar
+ * segments by it, and three call sites disagreeing about where "Strong" starts
+ * is worse than the duplication that avoids it.
+ */
+export function coverageBand(pct: number): { color: string; label: string } {
+  if (pct < 30) return { color: "var(--color-error)", label: "Thin" };
+  if (pct < 60) return { color: "var(--color-warning)", label: "Partial" };
+  if (pct < 80) return { color: "var(--color-caution)", label: "Solid" };
+  return { color: "var(--color-success)", label: "Strong" };
+}
+
+/** Tailwind text colour for a coverage figure, on the same bands. */
+export function coverageTextColor(pct: number | null | undefined): string {
+  if (pct == null) return "text-[var(--color-text-primary)]";
+  if (pct < 30) return "text-[var(--color-error)]";
+  if (pct < 60) return "text-[var(--color-warning)]";
+  if (pct < 80) return "text-[var(--color-caution)]";
+  return "text-[var(--color-success)]";
 }
 
 export function deltaColor(delta: number | null | undefined): string {

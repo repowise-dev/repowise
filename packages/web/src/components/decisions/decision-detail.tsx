@@ -56,7 +56,7 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
           : "";
       return `${prefix}/commits${qs}`;
     },
-    hotspotsHref: () => `${prefix}/code-health?tab=hotspots`,
+    hotspotsHref: () => `${prefix}/code-health?tab=triage`,
     LinkComponent: Link,
   };
 

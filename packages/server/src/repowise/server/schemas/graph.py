@@ -32,6 +32,13 @@ class GraphEdgeResponse(BaseModel):
     source: str
     target: str
     imported_names: list[str]
+    # Both already exist and are fully populated on GraphEdge; they were simply
+    # never serialized. Without edge_type the client can only infer edge kind
+    # from `imported_names` being empty, which lumps every `defines` / `calls` /
+    # `co_changes` / `has_method` row into one "dynamic" bucket. Optional so
+    # every other consumer of this model gains them additively.
+    edge_type: str | None = None
+    confidence: float | None = None
 
 
 class GraphExportResponse(BaseModel):

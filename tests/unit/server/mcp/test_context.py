@@ -330,9 +330,14 @@ def test_truncate_noop_when_under_budget():
         "_meta": {},
     }
     out = _truncate_to_budget(small)
-    assert out["truncated"] is False
-    assert out["dropped_targets"] == []
-    assert out["dropped_symbols"] == {}
+    # Absent, not false. ``truncated: false`` plus two empty containers is 60
+    # characters of "nothing happened" on every response that fits — which is
+    # nearly all of them. Both projections read these with ``.get()``, so empty
+    # and absent are the same answer to a consumer.
+    assert not out.get("truncated")
+    assert not out.get("dropped_targets")
+    assert not out.get("dropped_symbols")
+    assert "truncated" not in out
     assert "content_md" not in out["targets"]["a.py"]["docs"]  # wasn't there anyway
 
 
@@ -525,6 +530,92 @@ async def test_symbol_callers_carry_definition_line(setup_mcp, session):
 
 
 @pytest.mark.asyncio
+async def test_one_caller_joined_by_two_edge_types_is_listed_once(setup_mcp, session):
+    """Two edges between the same pair must not become two callers.
+
+    The displayed list is compared against a COUNT(DISTINCT) to decide
+    truncation, so an entry per edge makes the two sides count different
+    things: the list looks longer than the true total and `callers_truncated`
+    stays unset while real callers have been cut. Reachable since the caller
+    set became the shared symbol view — in Go a struct routinely both `calls`
+    an interface's methods and `method_implements` it.
+    """
+    from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
+    from repowise.server.mcp_server import get_context
+
+    repo = (await session.execute(__import__("sqlalchemy").select(Repository))).scalars().first()
+    target_id = "src/store/iface.go::Storer"
+    caller_id = "src/store/disk.go::DiskStore"
+    session.add_all(
+        [
+            GraphNode(
+                id="dup_tgt",
+                repository_id=repo.id,
+                node_id=target_id,
+                node_type="symbol",
+                name="Storer",
+                file_path="src/store/iface.go",
+                kind="interface",
+                start_line=1,
+                end_line=5,
+                created_at=_NOW,
+            ),
+            GraphNode(
+                id="dup_src",
+                repository_id=repo.id,
+                node_id=caller_id,
+                node_type="symbol",
+                name="DiskStore",
+                file_path="src/store/disk.go",
+                kind="struct",
+                start_line=1,
+                end_line=9,
+                created_at=_NOW,
+            ),
+            GraphEdge(
+                id="dup_edge_calls",
+                repository_id=repo.id,
+                source_node_id=caller_id,
+                target_node_id=target_id,
+                edge_type="calls",
+                confidence=0.9,
+                created_at=_NOW,
+            ),
+            GraphEdge(
+                id="dup_edge_impl",
+                repository_id=repo.id,
+                source_node_id=caller_id,
+                target_node_id=target_id,
+                edge_type="method_implements",
+                confidence=0.95,
+                created_at=_NOW,
+            ),
+        ]
+    )
+    await session.flush()
+
+    result = await get_context([target_id], include=["callers"], compact=False)
+    t = result["targets"][target_id]
+    matching = [c for c in t.get("callers", []) if c["symbol_id"] == caller_id]
+    assert len(matching) == 1, matching
+    # The two edges are different relations, so they are reported separately
+    # rather than collapsed onto whichever had the higher confidence: the call
+    # is a call, and satisfying the interface is heritage.
+    assert matching[0]["edge_type"] == "calls"
+    assert not t.get("callers_truncated")
+
+    impl = [
+        r
+        for r in t.get("relations", [])
+        if r["edge_type"] == "method_implements" and r["direction"] == "in"
+    ]
+    assert len(impl) == 1, t.get("relations")
+    assert impl[0]["group"] == "heritage"
+    assert impl[0]["total"] == 1
+    assert [r["symbol_id"] for r in impl[0]["rows"]] == [caller_id]
+
+
+@pytest.mark.asyncio
 async def test_high_fan_in_callers_signal_truncation(setup_mcp, session):
     """A symbol with more callers than the display cap must report the TRUE
     total + a truncation flag, so a find-all-callers sweep is not silently
@@ -586,3 +677,113 @@ async def test_high_fan_in_callers_signal_truncation(setup_mcp, session):
     assert t["callers_total"] == n_callers  # true total surfaced
     assert t["callers_truncated"] is True
     assert "grep" in t["_callers_note"]
+
+
+# --- Structural retrieval: parent page + concept-page tree position ---------
+
+
+async def _add_tree(session) -> None:
+    """Wire a layer -> concept -> file/sub-concept tree onto the populated db.
+
+    ``layer:core`` (§1) -> ``src/payments`` concept (§1.2) -> a file page (§1.2.1)
+    and a ``src/payments/providers`` sub-concept child (§1.2.3).
+    """
+    from repowise.core.persistence.models import Repository
+
+    rid = (
+        await session.execute(__import__("sqlalchemy").select(Repository))
+    ).scalars().first().id
+
+    def _page(pid, ptype, title, path, *, parent=None, section=None, order=0):
+        return Page(
+            id=pid,
+            repository_id=rid,
+            page_type=ptype,
+            title=title,
+            content=f"# {title}\n\nbody for {title}.",
+            summary=f"{title} summary.",
+            target_path=path,
+            source_hash=f"h-{pid}",
+            model_name="mock",
+            provider_name="mock",
+            generation_level=2,
+            confidence=0.9,
+            freshness_status="fresh",
+            metadata_json="{}",
+            parent_page_id=parent,
+            section_number=section,
+            display_order=order,
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+
+    session.add_all(
+        [
+            _page("layer_page:layer:core", "layer_page", "Layer: Core", "layer:core", section="1"),
+            _page(
+                "module_page:src/payments",
+                "module_page",
+                "Payments Module",
+                "src/payments",
+                parent="layer_page:layer:core",
+                section="1.2",
+            ),
+            _page(
+                "file_page:src/payments/charge.py",
+                "file_page",
+                "Charge",
+                "src/payments/charge.py",
+                parent="module_page:src/payments",
+                section="1.2.1",
+                order=1,
+            ),
+            _page(
+                "module_page:src/payments/providers",
+                "module_page",
+                "Payment Providers",
+                "src/payments/providers",
+                parent="module_page:src/payments",
+                section="1.2.3",
+                order=2,
+            ),
+        ]
+    )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_file_target_surfaces_parent_concept_page(setup_mcp, session):
+    """A file target points up to the subsystem page that documents it."""
+    from repowise.server.mcp_server import get_context
+
+    await _add_tree(session)
+    result = await get_context(["src/payments/charge.py"])
+    t = result["targets"]["src/payments/charge.py"]
+    assert t["type"] == "file"
+    parent = t["parent_page"]
+    assert parent["title"] == "Payments Module"
+    assert parent["target_path"] == "src/payments"
+    assert parent["section"] == "1.2"
+
+
+@pytest.mark.asyncio
+async def test_concept_target_returns_section_and_children(setup_mcp, session):
+    """A concept target carries its tree position (section, parent) and its
+    non-file sub-concept children, not just the flat member-file list."""
+    from repowise.server.mcp_server import get_context
+
+    await _add_tree(session)
+    result = await get_context(["src/payments"])
+    t = result["targets"]["src/payments"]
+    assert t["type"] == "module"
+    # Own tree position.
+    assert t["docs"]["section"] == "1.2"
+    assert t["parent_page"]["title"] == "Layer: Core"
+    # Sub-concept child surfaced; the file child stays in "files", not "children".
+    children = t["docs"].get("children", [])
+    assert any(
+        c["target_path"] == "src/payments/providers" and c["page_type"] == "module_page"
+        for c in children
+    )
+    assert all(c["page_type"] != "file_page" for c in children)
+    assert any(f["path"] == "src/payments/charge.py" for f in t["docs"]["files"])

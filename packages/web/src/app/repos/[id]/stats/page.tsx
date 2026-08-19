@@ -25,10 +25,10 @@ export default async function StatsPage({ params }: Props) {
     <PageShell
       title="By the Numbers"
       icon={<BarChart3 className="h-5 w-5" />}
-      description="A tour of everything the index knows about this codebase — scale, growth, people, and the signals only repowise computes."
+      description="The things about this codebase you can't see anywhere else — how big it got, when it started, when the work actually happens, and the records it holds."
       maxWidth="wide"
     >
-      <StatsTabs data={data} />
+      <StatsTabs data={data} repoId={id} />
     </PageShell>
   );
 }

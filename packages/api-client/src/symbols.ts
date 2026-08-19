@@ -13,6 +13,8 @@ export interface SymbolListParams {
   file_path?: string;
   in_hot_files?: boolean;
   in_entry_points?: boolean;
+  /** Only symbols a counted bug fix landed in. */
+  bug_fixed?: boolean;
   sort?: SymbolSortKey;
   limit?: number;
   offset?: number;

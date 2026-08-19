@@ -7,8 +7,9 @@ every public name, so existing imports are unaffected.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
@@ -18,13 +19,24 @@ from ..models import (
     GraphNodeMembership,
     _new_uuid,
 )
-from ._shared import _BATCH_SIZE, _batch_upsert_keyed
+from ._shared import _BATCH_SIZE, UpsertGate, _batch_upsert_keyed
 
 # ---------------------------------------------------------------------------
 # Graph CRUD (batch)
 # ---------------------------------------------------------------------------
 
 _METRIC_FIELDS = ("pagerank", "betweenness", "community_id", "in_degree", "out_degree")
+
+# Absolute tolerance for the centrality columns' skip test. The observed
+# process-to-process spread on an unchanged repo is ~1e-17 (bench probe
+# `probe_graph_determinism.py --cmp`), so this sits five orders above the
+# noise it exists to absorb and six below the smallest difference any reader
+# of these columns can act on — the rankings they feed are read as an order,
+# and no two distinct files sit 1e-12 apart in it. A backend that stored these
+# at lower precision than the payload computes them would push every row past
+# the tolerance and write it, which is today's behaviour, not a wrong one.
+_CENTRALITY_ATOL = 1e-12
+_CENTRALITY_COLUMNS = frozenset({"pagerank", "betweenness"})
 
 
 def _update_graph_node(existing: GraphNode, node_data: dict) -> None:
@@ -33,16 +45,58 @@ def _update_graph_node(existing: GraphNode, node_data: dict) -> None:
             setattr(existing, key, val)
 
 
+# Every column ``_update_graph_node`` can write from a node payload. A payload
+# field missing here turns the gate off for that node rather than skipping it
+# (see UpsertGate), so adding a field to persist_graph_nodes without adding it
+# here costs a write, never a lost one. The direction that is NOT self-healing
+# is the reverse: an update_fn that writes something the payload does not carry
+# (a timestamp, a counter) would be skipped along with the row, so keep these
+# three update_fns strictly payload-driven.
+_NODE_FIELDS = (
+    "node_type",
+    "language",
+    "symbol_count",
+    "has_error",
+    "is_test",
+    "is_entry_point",
+    "pagerank",
+    "betweenness",
+    "community_id",
+    "community_meta_json",
+    "kind",
+    "name",
+    "qualified_name",
+    "file_path",
+    "start_line",
+    "end_line",
+    "visibility",
+    "signature",
+    "parent_symbol_id",
+)
+
+
+def _node_gate_values(node_data: dict) -> dict:
+    return {k: v for k, v in node_data.items() if k != "node_id"}
+
+
 def _update_graph_edge(existing: GraphEdge, edge_data: dict) -> None:
     imported = edge_data.get("imported_names_json")
     if imported is not None:
         existing.imported_names_json = imported
+    # Assigned unconditionally, including None: an edge that stops being
+    # cohesion (a real import statement appears between two package siblings)
+    # must lose the stamp, or cycle detection keeps skipping it forever.
+    existing.hint_source = edge_data.get("hint_source")
     confidence = edge_data.get("confidence")
     if confidence is not None:
         # Keep the max on collision, mirroring the in-memory resolver
         # (_resolvers.py:504-505). A pair can carry several resolved calls of
         # differing confidence; a last-write upsert could stamp a real call
         # below _FLOW_CALLS_CONF_FLOOR (0.5) and drop it from flow-path answers.
+        # The origin explains the confidence, so it moves only when the
+        # confidence does.
+        if confidence > (existing.confidence or 0.0):
+            existing.resolution_origin = edge_data.get("resolution_origin")
         existing.confidence = max(existing.confidence or 0.0, confidence)
 
 
@@ -53,6 +107,9 @@ def _update_graph_metric(existing: GraphMetric, m: dict) -> None:
 
 
 _MEMBERSHIP_FIELDS = ("node_type", "scc_id", "scc_size", "symbol_community_id")
+
+# Chunk size for IN (...) deletes — stays under SQLite's host-parameter limit.
+_MEMBERSHIP_PRUNE_CHUNK = 500
 
 
 def _update_graph_node_membership(existing: GraphNodeMembership, m: dict) -> None:
@@ -72,6 +129,11 @@ async def batch_upsert_graph_nodes(
     (excluding id and repository_id which are set here).
 
     Uses SELECT-then-INSERT/UPDATE for dialect portability.
+
+    *nodes* is a full snapshot of the repo's graph on every call, including the
+    incremental update path, where a one-file change leaves the overwhelming
+    majority of it identical. The gate skips those rows before they are
+    hydrated as ORM objects.
     """
     await _batch_upsert_keyed(
         session,
@@ -81,6 +143,13 @@ async def batch_upsert_graph_nodes(
         item_key_fn=lambda n: n.get("node_id", ""),
         row_key_fn=lambda row: row.node_id,
         update_fn=_update_graph_node,
+        gate=UpsertGate(
+            key_column=GraphNode.node_id,
+            columns=_NODE_FIELDS,
+            item_values_fn=_node_gate_values,
+            float_columns=_CENTRALITY_COLUMNS,
+            float_atol=_CENTRALITY_ATOL,
+        ),
         insert_fn=lambda n: GraphNode(
             id=_new_uuid(),
             repository_id=repository_id,
@@ -97,7 +166,8 @@ async def batch_upsert_graph_edges(
     """Upsert graph edges for a repository.
 
     Each element of *edges* should have ``source_node_id``, ``target_node_id``,
-    ``edge_type``, and optionally ``imported_names_json`` and ``confidence``.
+    ``edge_type``, and optionally ``imported_names_json``, ``confidence``,
+    ``hint_source`` and ``resolution_origin``.
 
     The unique constraint is (repository_id, source, target, edge_type),
     allowing multiple edge types between the same pair of nodes.
@@ -122,6 +192,8 @@ async def batch_upsert_graph_edges(
             imported_names_json=e.get("imported_names_json", "[]"),
             edge_type=e.get("edge_type", "imports"),
             confidence=e.get("confidence", 1.0),
+            hint_source=e.get("hint_source"),
+            resolution_origin=e.get("resolution_origin"),
         ),
     )
 
@@ -214,6 +286,8 @@ async def reconcile_edges_for_files(
                 imported_names_json=e.get("imported_names_json", "[]"),
                 edge_type=e.get("edge_type", "imports"),
                 confidence=e.get("confidence", 1.0),
+                hint_source=e.get("hint_source"),
+                resolution_origin=e.get("resolution_origin"),
             )
         )
     await session.flush()
@@ -241,6 +315,13 @@ async def batch_upsert_graph_metrics(
         item_key_fn=lambda kv: kv[0],
         row_key_fn=lambda row: row.node_id,
         update_fn=lambda existing, kv: _update_graph_metric(existing, kv[1]),
+        gate=UpsertGate(
+            key_column=GraphMetric.node_id,
+            columns=_METRIC_FIELDS,
+            item_values_fn=lambda kv: {k: v for k, v in kv[1].items() if k in _METRIC_FIELDS},
+            float_columns=_CENTRALITY_COLUMNS,
+            float_atol=_CENTRALITY_ATOL,
+        ),
         insert_fn=lambda kv: GraphMetric(
             id=_new_uuid(),
             repository_id=repository_id,
@@ -265,7 +346,37 @@ async def batch_upsert_graph_node_membership(
     ``scc_id`` / ``scc_size`` (file nodes in a size>=2 cycle) /
     ``symbol_community_id`` (symbol nodes). Additive to ``graph_nodes``;
     SELECT-then-write for dialect portability (SQLite + Postgres).
+
+    The snapshot is a full recomputation, so absence is meaningful: a node the
+    caller did not send is a node that is no longer in any cycle or community.
+    Rows for absent nodes are therefore deleted rather than left behind. Without
+    that, a pure upsert let a file that dropped out of a cycle keep its old
+    ``scc_id`` / ``scc_size`` forever, and the Stats "largest cycle" record and
+    ``get_scc_members`` both read exactly those rows — so a fixed cycle stayed
+    on screen indefinitely.
     """
+    current = set(membership)
+    # The stale scan already has to walk every row this repo owns, so it reads
+    # the comparison columns at the same time and hands them to the gate. A
+    # second narrow scan measured slower than the writes it was saving on a
+    # snapshot where most rows genuinely moved.
+    existing_rows = (
+        await session.execute(
+            select(
+                GraphNodeMembership.node_id,
+                *[getattr(GraphNodeMembership, c) for c in _MEMBERSHIP_FIELDS],
+            ).where(GraphNodeMembership.repository_id == repository_id)
+        )
+    ).all()
+    stale = [row[0] for row in existing_rows if row[0] not in current]
+    for i in range(0, len(stale), _MEMBERSHIP_PRUNE_CHUNK):
+        await session.execute(
+            delete(GraphNodeMembership).where(
+                GraphNodeMembership.repository_id == repository_id,
+                GraphNodeMembership.node_id.in_(stale[i : i + _MEMBERSHIP_PRUNE_CHUNK]),
+            )
+        )
+
     await _batch_upsert_keyed(
         session,
         GraphNodeMembership,
@@ -274,6 +385,18 @@ async def batch_upsert_graph_node_membership(
         item_key_fn=lambda kv: kv[0],
         row_key_fn=lambda row: row.node_id,
         update_fn=lambda existing, kv: _update_graph_node_membership(existing, kv[1]),
+        gate=UpsertGate(
+            key_column=GraphNodeMembership.node_id,
+            columns=_MEMBERSHIP_FIELDS,
+            item_values_fn=lambda kv: {
+                k: v for k, v in kv[1].items() if k in _MEMBERSHIP_FIELDS
+            },
+            # Pruned keys are excluded: their rows are gone by the time the
+            # upsert runs, and a snapshot never sends a key it just pruned.
+            prefetched={
+                row[0]: row[1:] for row in existing_rows if row[0] in current
+            },
+        ),
         insert_fn=lambda kv: GraphNodeMembership(
             id=_new_uuid(),
             repository_id=repository_id,
@@ -397,6 +520,8 @@ async def get_all_graph_edges(
                 "edge_type": row.edge_type,
                 "confidence": row.confidence,
                 "imported_names": imported_names,
+                "hint_source": row.hint_source,
+                "resolution_origin": row.resolution_origin,
             }
         )
     return edges
@@ -442,7 +567,36 @@ async def get_graph_edges_for_node(
     edge_types:
         Optional filter, e.g. ``["calls"]`` or ``["extends", "implements"]``.
     limit:
-        Max edges per direction.
+        Max edges per direction. **The cut is ranked**: rows come back most
+        confident first, ties broken on the other endpoint's id. Without an
+        ``ORDER BY`` the survivors were whichever rows the table handed over,
+        so a node with more adjacent edges than *limit* could return its
+        containment rows and none of its real calls — the failure
+        ``routers/files.py`` documents at its own call site rather than fixing
+        here. What the consumers do afterwards is the argument for ranking at
+        this end: ``mcp_server/_graph_utils`` and ``tool_symbol`` drop anything
+        below 0.5, so an unranked cut can hand them 50 rows and leave them
+        nothing; and ``routers/symbols`` and ``routers/graph/intelligence``
+        **sort by confidence after** the cut, which presented a
+        confident-looking order over an arbitrary subset — ranking was already
+        the contract there, applied one step too late.
+
+        On SQLite the unranked form was not arbitrary in practice: the rows
+        arrive in index order, which is stable but is promised by no query
+        planner and by no other backend. Deterministic, and still the wrong
+        rows.
+
+        **It costs something, on one direction only.** ``graph_edges`` is
+        indexed on ``(repository_id, source_node_id, target_node_id,
+        edge_type)``, so the *callees* branch seeks and then sorts a narrow
+        match set, while the *callers* branch filters on ``target_node_id``,
+        which that index cannot serve — it scanned before and now also builds a
+        temp b-tree, losing the early exit the bare ``LIMIT`` gave it. Measured
+        on django's 120k-edge index: the hottest node (1,525 inbound edges)
+        goes 10.9 ms to 38.2 ms; a low-degree node is unchanged at ~37 ms
+        because it was already scanning. The fix is an index on
+        ``(repository_id, target_node_id)``, which ``GraphEdge`` now declares
+        as ``ix_graph_edges_repo_target``.
     """
     results: list[GraphEdge] = []
 
@@ -453,7 +607,9 @@ async def get_graph_edges_for_node(
         )
         if edge_types:
             q = q.where(GraphEdge.edge_type.in_(edge_types))
-        q = q.limit(limit)
+        q = q.order_by(
+            GraphEdge.confidence.desc(), GraphEdge.source_node_id, GraphEdge.edge_type
+        ).limit(limit)
         res = await session.execute(q)
         results.extend(res.scalars().all())
 
@@ -464,7 +620,9 @@ async def get_graph_edges_for_node(
         )
         if edge_types:
             q = q.where(GraphEdge.edge_type.in_(edge_types))
-        q = q.limit(limit)
+        q = q.order_by(
+            GraphEdge.confidence.desc(), GraphEdge.target_node_id, GraphEdge.edge_type
+        ).limit(limit)
         res = await session.execute(q)
         results.extend(res.scalars().all())
 
@@ -492,6 +650,64 @@ async def get_graph_nodes_by_ids(
         for node in result.scalars().all():
             out[node.node_id] = node
     return out
+
+
+async def get_test_file_paths(
+    session: AsyncSession,
+    repository_id: str,
+    paths: Sequence[str] | None = None,
+) -> set[str]:
+    """Relative paths of every file the ingester classified as test material.
+
+    Reads the flag ingestion already decided per file (#1103 made ``is_test``
+    the single canonical answer to "is this a test"). For a file node
+    ``node_id`` *is* the repo-relative path, so the result joins straight onto
+    ``HealthFileMetric.file_path`` / ``HealthFinding.file_path`` with no
+    denormalized column and no migration.
+
+    ``node_type == "file"`` is required, not incidental: symbol nodes carry
+    ``is_test`` too and their ``node_id`` is a ``"<path>::<name>"`` composite,
+    which would never match a file path but would inflate the read.
+
+    *paths* narrows the read to "which of **these** are tests". A caller that
+    only ever asks ``path in result`` for a known path set — ``get_health`` in
+    targeted mode, where the caller named the files — pays for a keyed seek on
+    ``uq_graph_node`` instead of the repo-wide read. ``None`` keeps the
+    repo-wide answer, which is what the dashboard's production/test *split*
+    needs (it partitions a finding list whose paths are not known up front).
+    Passing an empty sequence means "no paths asked about" and returns an empty
+    set without a query — not the same thing as ``None``.
+
+    Narrow in columns, and now optionally in rows. The repo-wide form seeks on
+    ``ix_graph_nodes_repo_type`` (0051); before that index it scanned every node
+    the repo has (~27 ms on this 36k-node index, ~8 ms after).
+
+    Degrades to "nothing is test material" when the graph is missing or lags
+    the health pass. That is the safe direction: a caller sees the unsplit
+    world it saw before, never a production file mislabelled as a test.
+    Censused on this repo's index — 1,030 test file nodes, none of them absent
+    from ``health_file_metrics``.
+    """
+    if paths is not None and not paths:
+        return set()
+    q = select(GraphNode.node_id).where(
+        GraphNode.repository_id == repository_id,
+        GraphNode.node_type == "file",
+        GraphNode.is_test.is_(True),
+    )
+    if paths is not None:
+        # Chunked like ``get_graph_nodes_bulk`` above — a ``module:`` target
+        # expands to every file in the module, which on a monorepo is more
+        # bind parameters than SQLite's limit allows in one statement.
+        out: set[str] = set()
+        ordered = list(paths)
+        for i in range(0, len(ordered), _BATCH_SIZE):
+            batch = ordered[i : i + _BATCH_SIZE]
+            rows = await session.execute(q.where(GraphNode.node_id.in_(batch)))
+            out |= {row[0] for row in rows.all()}
+        return out
+    result = await session.execute(q)
+    return {row[0] for row in result.all()}
 
 
 async def get_community_members(
@@ -528,6 +744,42 @@ async def get_all_file_metrics(
         )
     )
     return list(result.scalars().all())
+
+
+async def get_pagerank_percentile(
+    session: AsyncSession,
+    repository_id: str,
+    pagerank: float,
+) -> int:
+    """Percentile rank (0-100) of *pagerank* among the repo's file nodes.
+
+    Counted in SQL. The callers that want one file's rank used to load every
+    file node through :func:`get_all_file_metrics` and scan the list in Python,
+    which is the whole repo graph materialized as ORM objects to produce a
+    single integer.
+
+    The arithmetic deliberately matches ``mcp_server._graph_utils.percentile_rank``
+    — ``round(100 * below / n)`` over every ``node_type == "file"`` row — so
+    swapping a caller over does not move the number it prints. Note this is not
+    the same figure the Files *index* shows under ``pagerank_pct``: that one
+    drops external and framework nodes first and divides by ``n - 1``.
+    Reconciling the two is a behaviour change and not this function's job.
+    """
+    row = (
+        await session.execute(
+            select(
+                func.count().label("total"),
+                func.sum(case((GraphNode.pagerank < pagerank, 1), else_=0)).label("below"),
+            ).where(
+                GraphNode.repository_id == repository_id,
+                GraphNode.node_type == "file",
+            )
+        )
+    ).one()
+    total = row.total or 0
+    if not total:
+        return 0
+    return round(100.0 * (row.below or 0) / total)
 
 
 async def get_cross_community_edges(
@@ -616,25 +868,124 @@ async def get_node_degree_counts(
     session: AsyncSession,
     repository_id: str,
     node_id: str,
+    *,
+    edge_types: list[str] | None = None,
 ) -> dict[str, int]:
-    """Return in-degree and out-degree for a node from edge counts."""
-    in_result = await session.execute(
-        select(func.count())
-        .select_from(GraphEdge)
-        .where(
-            GraphEdge.repository_id == repository_id,
-            GraphEdge.target_node_id == node_id,
-        )
+    """Return in-degree and out-degree for a node from edge counts.
+
+    ``edge_types`` narrows the count the same way it narrows
+    :func:`get_graph_edges_for_node`. A caller that presents degree beside a
+    list of neighbours should pass the view it used for that list, or the
+    count and the list describe different graphs — a file's unfiltered
+    in-degree is rendered as "Dependents (N)" above a dependents list, and
+    the two disagreed by the file's own symbol count.
+    """
+    in_q = select(func.count()).select_from(GraphEdge).where(
+        GraphEdge.repository_id == repository_id,
+        GraphEdge.target_node_id == node_id,
     )
-    out_result = await session.execute(
-        select(func.count())
-        .select_from(GraphEdge)
-        .where(
-            GraphEdge.repository_id == repository_id,
-            GraphEdge.source_node_id == node_id,
-        )
+    out_q = select(func.count()).select_from(GraphEdge).where(
+        GraphEdge.repository_id == repository_id,
+        GraphEdge.source_node_id == node_id,
     )
+    if edge_types:
+        in_q = in_q.where(GraphEdge.edge_type.in_(edge_types))
+        out_q = out_q.where(GraphEdge.edge_type.in_(edge_types))
+    in_result = await session.execute(in_q)
+    out_result = await session.execute(out_q)
     return {
         "in_degree": in_result.scalar() or 0,
         "out_degree": out_result.scalar() or 0,
     }
+
+
+async def get_node_degree_by_edge_type(
+    session: AsyncSession,
+    repository_id: str,
+    node_id: str,
+    *,
+    edge_types: list[str] | None = None,
+) -> dict[str, dict[str, int]]:
+    """Return ``edge_type -> {in_degree, out_degree}`` for one node.
+
+    The breakdown :func:`get_node_degree_counts` collapses. A surface that
+    groups a node's neighbours by relation kind needs a total *per kind* — and
+    getting there by calling the scalar version once per kind is a query per
+    row of the answer.
+
+    Edge types with no edges in either direction are absent rather than zero,
+    so the caller can treat the mapping as "what this node actually has".
+    """
+    counts: dict[str, dict[str, int]] = {}
+    for direction, column in (
+        ("in_degree", GraphEdge.target_node_id),
+        ("out_degree", GraphEdge.source_node_id),
+    ):
+        q = (
+            select(GraphEdge.edge_type, func.count())
+            .where(GraphEdge.repository_id == repository_id, column == node_id)
+            .group_by(GraphEdge.edge_type)
+        )
+        if edge_types:
+            q = q.where(GraphEdge.edge_type.in_(edge_types))
+        for edge_type, n in await session.execute(q):
+            counts.setdefault(edge_type, {"in_degree": 0, "out_degree": 0})[direction] = n
+    return counts
+
+
+async def get_node_degree_counts_bulk(
+    session: AsyncSession,
+    repository_id: str,
+    node_ids: list[str],
+    *,
+    edge_types: list[str] | None = None,
+) -> dict[str, dict[str, int]]:
+    """Return ``node_id -> {in_degree, out_degree}`` for many nodes at once.
+
+    Three queries total instead of three per node (existence, then one grouped
+    count per direction). Callers that need degrees for a set of files were
+    otherwise forced into an N+1.
+
+    ``edge_types`` narrows the count exactly as it does in
+    :func:`get_node_degree_counts`. The two must stay in step: they are the
+    single and bulk halves of one question, and both feed ``file_signals``.
+
+    A node absent from the graph is absent from the result, mirroring
+    ``get_graph_node`` returning ``None``: consumers distinguish "not a graph
+    node" (no entry) from "a node with no edges" (``{0, 0}``), and collapsing
+    the two would report isolated files as un-analyzed.
+    """
+    if not node_ids:
+        return {}
+    # Batched like ``get_graph_nodes_by_ids`` above: SQLITE_MAX_VARIABLE_NUMBER
+    # is 999 on SQLite < 3.32, and the caller's input is unbounded by design (a
+    # ``module:`` target expands to every file in the module).
+    unique_ids = list(dict.fromkeys(node_ids))
+    counts: dict[str, dict[str, int]] = {}
+    for i in range(0, len(unique_ids), _BATCH_SIZE):
+        existing = await session.execute(
+            select(GraphNode.node_id).where(
+                GraphNode.repository_id == repository_id,
+                GraphNode.node_id.in_(unique_ids[i : i + _BATCH_SIZE]),
+            )
+        )
+        for node_id in existing.scalars().all():
+            counts[node_id] = {"in_degree": 0, "out_degree": 0}
+    if not counts:
+        return {}
+    present = list(counts)
+    for column, key in (
+        (GraphEdge.target_node_id, "in_degree"),
+        (GraphEdge.source_node_id, "out_degree"),
+    ):
+        for i in range(0, len(present), _BATCH_SIZE):
+            q = select(column, func.count()).where(
+                GraphEdge.repository_id == repository_id,
+                column.in_(present[i : i + _BATCH_SIZE]),
+            )
+            if edge_types:
+                q = q.where(GraphEdge.edge_type.in_(edge_types))
+            rows = await session.execute(q.group_by(column))
+            for node_id, count in rows.all():
+                counts[node_id][key] = count or 0
+    return counts

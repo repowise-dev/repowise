@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import os
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
-from repowise.cli.commands.distill_cmd import distill_command
+from repowise.cli.commands.distill_cmd import _render_command, distill_command
 from repowise.cli.commands.expand_cmd import expand_command
 from repowise.core.distill.markers import parse_marker_refs
 from repowise.core.distill.store import OmissionStore
@@ -55,6 +59,166 @@ def test_distill_failing_git_command_keeps_exit_code(repo_cwd: Path) -> None:
     # error output through, and the nonzero exit code survives.
     result = CliRunner().invoke(distill_command, ["git", "log", "-40"])
     assert result.exit_code != 0
+
+
+@pytest.mark.skipif(os.name != "posix", reason="cmd.exe has no grep")
+def test_distill_runs_a_pipeline_passed_as_one_token(repo_cwd: Path) -> None:
+    """One argv token containing a pipe must execute AS a pipeline.
+
+    This is the execution model the rewrite hook's safe-pipeline shape
+    depends on: the hook quotes the whole pipeline so the pipe binds inside
+    distill's own shell. The producer prints a line only grep can remove, so
+    the assertion fails if the pipe silently did not run.
+    """
+    script = (
+        "for i in range(40): "
+        "print('Requirement already satisfied: pkg%d in /venv/site-packages' % i)\n"
+        "print('ZZZDROPME')\n"
+        "print('Successfully installed flask-3.1.0')"
+    )
+    pipeline = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)} | grep -v ZZZDROPME"
+
+    result = CliRunner().invoke(distill_command, [pipeline])
+
+    assert result.exit_code == 0
+    # Proof the pipe ran: only grep could have dropped this line.
+    assert "ZZZDROPME" not in result.output
+    # Proof distill still distilled what came back out of it.
+    assert "Successfully installed flask-3.1.0" in result.output
+    refs = parse_marker_refs(result.output)
+    assert refs, f"no recoverable marker in:\n{result.output}"
+    assert CliRunner().invoke(expand_command, [refs[0]]).exit_code == 0
+
+
+def test_render_command_quotes_shell_metacharacters() -> None:
+    """argv tokens must not turn into shell syntax when distill rejoins them.
+
+    The rewrite hook leans on this for every non-pipe command it forwards as
+    separate tokens: ``pytest -k "a|b"`` must run as one command, not a
+    pipeline. POSIX ``shlex.join`` gets it right. Windows
+    ``list2cmdline`` quotes for the C runtime's argv parser rather than for
+    cmd.exe, so a metacharacter with no surrounding space rides through
+    unquoted; ``_render_command`` caret-escapes the rendered line to close
+    that.
+    """
+    rendered = _render_command(("git", "log", "--grep=a&&b"))
+    if os.name == "posix":
+        assert rendered == "git log '--grep=a&&b'"
+    else:
+        assert rendered == "git log --grep=a^&^&b"
+
+
+def test_render_command_passes_a_single_token_through() -> None:
+    """One token means the user quoted the command themselves; that is intent."""
+    assert _render_command(("pytest -x | head -5",)) == "pytest -x | head -5"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "--grep=a&whoami",
+        "--grep=a|whoami",
+        "--grep=a>rendered_should_not_write.txt",
+        "--grep=a;b",
+        "plain",
+        "has space",
+        'say "hi" now',
+        'a"b&c',
+        "a^b",
+        "a(b)c",
+        "trailing\\back\\slash\\",
+        "--format=%H",
+        "--format=%h%n%s",
+        "a!USERNAME!b",
+        "café中文",
+        "",
+        "^",
+        "a\tb",
+    ],
+)
+def test_render_command_roundtrips_argv_through_the_shell(payload: str, tmp_path: Path) -> None:
+    """The rendered string must hand the child exactly the token we started with.
+
+    This is the real contract: ``_render_command`` output goes straight to
+    ``subprocess.run(..., shell=True)``, so anything the shell reinterprets
+    is a command the user never typed. Asserting on the rendered string
+    alone did not catch the cmd.exe metacharacter hole, so this one runs the
+    render and reads the child's ``sys.argv`` back.
+    """
+    tokens = (sys.executable, "-c", "import sys,json;print(json.dumps(sys.argv[1:]))", payload)
+    proc = subprocess.run(
+        _render_command(tokens),
+        shell=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=tmp_path,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout.strip().splitlines()[-1]) == [payload]
+    # A redirect that reached the shell would have written a file instead.
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe program-name resolution")
+def test_render_command_keeps_an_executable_path_with_spaces_intact(tmp_path: Path) -> None:
+    """The program name needs real grouping quotes, not caret-escaped ones.
+
+    cmd.exe resolves the executable before caret processing, so escaping the
+    quotes around ``C:\\Program Files\\...`` splits the path at its first
+    space and the command does not run at all. This is the ``.cmd``-shim case
+    that ``shell=True`` exists to support.
+    """
+    shim_dir = tmp_path / "with space"
+    shim_dir.mkdir()
+    shim = shim_dir / "my shim.cmd"
+    # Echoes a fixed marker rather than %*: a batch file re-parses whatever %*
+    # expands to, which is the shim's own hazard and would not be testing the
+    # renderer. Argument fidelity is covered by the parametrized test above.
+    shim.write_text("@echo SHIM_OK\n", encoding="utf-8")
+
+    proc = subprocess.run(
+        _render_command((str(shim), "arg one", "a&b")),
+        shell=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=tmp_path,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    assert "SHIM_OK" in proc.stdout
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe rendering rules")
+def test_render_command_refuses_a_defined_env_var_expansion(monkeypatch) -> None:
+    """cmd expands %VAR% and re-parses the result, so a metacharacter in the
+    value is command execution. There is no escape for it, so refuse."""
+    monkeypatch.setenv("REPOWISE_TEST_EVIL", "x&echo pwned")
+    with pytest.raises(Exception, match="REPOWISE_TEST_EVIL"):
+        _render_command(("git", "log", "--grep=%REPOWISE_TEST_EVIL%"))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe rendering rules")
+def test_render_command_allows_an_undefined_percent_pair(monkeypatch) -> None:
+    """`git log --format=%h%n%s` reads as %h% to cmd but expands to nothing."""
+    monkeypatch.delenv("h", raising=False)
+    monkeypatch.delenv("n", raising=False)
+    assert "%h%n%s" in _render_command(("git", "log", "--format=%h%n%s"))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe rendering rules")
+@pytest.mark.parametrize("payload", ["a\nb", "a\r\nb", "a\rb"])
+def test_render_command_refuses_newlines(payload: str) -> None:
+    """cmd truncates the command line at a newline and drops a bare CR, both
+    silently, so the child would get a quietly different argv."""
+    with pytest.raises(Exception, match="newline"):
+        _render_command(("git", "log", f"--grep={payload}"))
 
 
 def test_distill_and_expand_roundtrip(repo_cwd: Path, fixtures_dir: Path) -> None:
@@ -139,7 +303,7 @@ def test_distill_does_not_eat_the_wrapped_commands_source_flag(repo_cwd: Path) -
     """--source after the command belongs to the command, not to distill."""
     result = CliRunner().invoke(
         distill_command,
-        _py("import sys; print(sys.argv[1:])") + ["--source", "mine"],
+        [*_py("import sys; print(sys.argv[1:])"), "--source", "mine"],
     )
     assert result.exit_code == 0
     assert "['--source', 'mine']" in result.output

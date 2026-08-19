@@ -128,6 +128,20 @@ class TestDbUrl:
         assert url == f"sqlite+aiosqlite:///{expected_path}"
         assert (tmp_path / ".repowise").exists()
 
+    def test_configured_db_url_none_without_env(self, monkeypatch):
+        from repowise.core.persistence import get_configured_db_url
+
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        assert get_configured_db_url() is None
+
+    def test_configured_db_url_returns_normalized_env_url(self, monkeypatch):
+        from repowise.core.persistence import get_configured_db_url
+
+        monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+        monkeypatch.setenv("REPOWISE_DB_URL", "postgresql://user:pass@host:5432/db")
+        assert get_configured_db_url() == "postgresql+asyncpg://user:pass@host:5432/db"
+
 
 class TestResolveReasoning:
     def test_flag_wins_over_env(self, monkeypatch):
@@ -302,12 +316,44 @@ class TestUpdateLock:
 
         ensure_repowise_dir(tmp_path)
         lock_path = tmp_path / ".repowise" / UPDATE_LOCK_FILENAME
-        # Stale: started 2 hours ago
+        # Old, and carrying no PID, so the wall clock is what decides. Written
+        # without a `pid` deliberately: since the lock rework, a lock whose
+        # owner is alive is not stale however old it is, so naming any live PID
+        # here would assert the opposite of the contract.
         lock_path.write_text(
-            json.dumps({"pid": 1, "target_commit": "x", "started_at": 0}),
+            json.dumps({"target_commit": "x", "started_at": 0}),
             encoding="utf-8",
         )
         assert read_update_lock(tmp_path) is None
+
+    def test_a_live_owner_outranks_the_clock(self, tmp_path):
+        """An ancient lock is NOT stale while the process holding it is alive.
+
+        The other half of the contract, and the half nothing asserted. Without
+        it, a test could name a PID that merely happens to be dead on the
+        machine running it and read as if it were testing age — which is
+        exactly what `pid: 1` did: absent on Windows, always alive on Linux, so
+        the same assertion meant opposite things on the two platforms.
+
+        Uses this process's own PID, which is alive everywhere by definition.
+        """
+        import json
+        import os
+
+        from repowise.cli.helpers import (
+            UPDATE_LOCK_FILENAME,
+            ensure_repowise_dir,
+            read_update_lock,
+        )
+
+        ensure_repowise_dir(tmp_path)
+        (tmp_path / ".repowise" / UPDATE_LOCK_FILENAME).write_text(
+            json.dumps({"pid": os.getpid(), "target_commit": "x", "started_at": 0}),
+            encoding="utf-8",
+        )
+        payload = read_update_lock(tmp_path)
+        assert payload is not None
+        assert payload["target_commit"] == "x"
 
     def test_read_handles_corrupt_payload(self, tmp_path):
         from repowise.cli.helpers import (
@@ -705,7 +751,6 @@ class TestRotateUpdateLog:
 
     def test_truncates_when_over_cap(self, tmp_path):
         from repowise.cli.helpers import (
-            UPDATE_LOG_KEEP_TAIL_BYTES,
             UPDATE_LOG_MAX_BYTES,
             ensure_repowise_dir,
             rotate_update_log_if_needed,
@@ -727,3 +772,112 @@ class TestRotateUpdateLog:
         assert len(after) < UPDATE_LOG_MAX_BYTES
         assert b"TAIL_MARKER_ZZZZ" in after
         assert after.startswith(b"... (log truncated) ...")
+
+
+# ---------------------------------------------------------------------------
+# resolve_provider_or_prompt
+# ---------------------------------------------------------------------------
+
+
+class TestResolveProviderOrPrompt:
+    """The shared onboarding wrapper `repowise generate` / `repowise update` use.
+
+    A docs run with no provider/key should, on a real terminal, reuse init's
+    provider + key prompt and persist the choice; a hook / CI / agent run must
+    stay a clean, non-blocking failure and never hang on a prompt it cannot
+    answer (isatty lies under Git Bash / pty wrappers / `docker run -t`).
+    """
+
+    def _no_provider(self):
+        import click
+
+        def _raise(*_args, **_kwargs):
+            raise click.ClickException("No provider configured. Use --provider, ...")
+
+        return _raise
+
+    def test_non_interactive_reraises_clean_error(self, tmp_path, monkeypatch):
+        """interactive=False propagates the original error, prompt never called."""
+        import click
+
+        from repowise.cli import helpers
+
+        monkeypatch.setattr(helpers, "resolve_provider", self._no_provider())
+        called = {"prompt": 0}
+
+        def _prompt(*_a, **_k):
+            called["prompt"] += 1
+
+        monkeypatch.setattr(
+            "repowise.cli.ui.interactive_provider_config_select", _prompt, raising=False
+        )
+
+        with pytest.raises(click.ClickException, match="No provider configured"):
+            helpers.resolve_provider_or_prompt(None, None, tmp_path, interactive=False)
+        assert called["prompt"] == 0
+
+    @pytest.mark.parametrize("exc_name", ["EOFError", "Abort"])
+    def test_unanswerable_prompt_falls_back_to_clean_error(
+        self, tmp_path, monkeypatch, exc_name
+    ):
+        """A tty that lies: the prompt hits EOF/Abort, so we surface the clean
+        actionable error instead of a bare 'Aborted!' — the agent-safe path."""
+        import click
+
+        from repowise.cli import helpers
+
+        monkeypatch.setattr(helpers, "resolve_provider", self._no_provider())
+        exc = EOFError() if exc_name == "EOFError" else click.Abort()
+
+        def _prompt(*_a, **_k):
+            raise exc
+
+        monkeypatch.setattr(
+            "repowise.cli.ui.interactive_provider_config_select", _prompt, raising=False
+        )
+
+        with pytest.raises(click.ClickException, match="No provider configured"):
+            helpers.resolve_provider_or_prompt(None, None, tmp_path, interactive=True)
+
+    def test_prompt_success_persists_and_resolves(self, tmp_path, monkeypatch):
+        """A real answer: persist provider/model to config and return the provider."""
+        from repowise.cli import helpers
+        from repowise.cli.ui.provider_selection import ProviderSelection
+
+        sentinel = object()
+        calls = {"resolve": 0}
+
+        def _resolve(provider_name, model, repo_path=None):
+            calls["resolve"] += 1
+            if calls["resolve"] == 1:
+                import click
+
+                raise click.ClickException("No provider configured. ...")
+            assert provider_name == "mock"
+            assert model == "mock-model-1"
+            return sentinel
+
+        monkeypatch.setattr(helpers, "resolve_provider", _resolve)
+
+        prompt_calls = {"n": 0}
+
+        def _prompt(console, model, reasoning=None, *, repo_path=None):
+            prompt_calls["n"] += 1
+            return ProviderSelection("mock", "mock-model-1", "auto")
+
+        monkeypatch.setattr(
+            "repowise.cli.ui.interactive_provider_config_select", _prompt, raising=False
+        )
+
+        result = helpers.resolve_provider_or_prompt(
+            None, None, tmp_path, reasoning=None, interactive=True
+        )
+
+        assert result is sentinel
+        assert prompt_calls["n"] == 1
+        # provider/model persisted so a later run resolves without re-prompting.
+        from repowise.cli.helpers import load_config
+
+        cfg = load_config(tmp_path)
+        assert cfg.get("provider") == "mock"
+        assert cfg.get("model") == "mock-model-1"

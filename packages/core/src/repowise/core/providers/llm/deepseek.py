@@ -18,6 +18,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 import structlog
+from openai import APIError as _OpenAIAPIError
 from openai import APIStatusError as _OpenAIAPIStatusError
 from openai import AsyncOpenAI
 from openai import RateLimitError as _OpenAIRateLimitError
@@ -33,6 +34,7 @@ from repowise.core.providers.llm.base import (
     RateLimitError,
     ensure_reasoning_supported,
     fallback_model_option,
+    normalize_stop_reason,
     parse_retry_after,
     provider_retry_stop,
     provider_retry_wait,
@@ -267,13 +269,21 @@ class DeepSeekProvider(BaseProvider):
             ) from exc
         except _OpenAIAPIStatusError as exc:
             raise ProviderError("deepseek", str(exc), status_code=exc.status_code) from exc
+        except _OpenAIAPIError as exc:
+            raise ProviderError(
+                "deepseek", str(exc), status_code=getattr(exc, "status_code", None)
+            ) from exc
 
         usage = response.usage
+        choice = response.choices[0]
+        stop_reason, provider_stop_reason = normalize_stop_reason(choice.finish_reason)
         result = GeneratedResponse(
-            content=response.choices[0].message.content or "",
+            content=choice.message.content or "",
             input_tokens=usage.prompt_tokens if usage else 0,
             output_tokens=usage.completion_tokens if usage else 0,
             cached_tokens=0,
+            stop_reason=stop_reason,
+            provider_stop_reason=provider_stop_reason,
             usage={
                 "prompt_tokens": usage.prompt_tokens if usage else 0,
                 "completion_tokens": usage.completion_tokens if usage else 0,
@@ -299,7 +309,7 @@ class DeepSeekProvider(BaseProvider):
                     model=self._model,
                     input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
-                    operation="doc_generation",
+                    operation=self._cost_tracker.operation,
                     file_path=None,
                 )
 
@@ -341,6 +351,10 @@ class DeepSeekProvider(BaseProvider):
             ) from exc
         except _OpenAIAPIStatusError as exc:
             raise ProviderError("deepseek", str(exc), status_code=exc.status_code) from exc
+        except _OpenAIAPIError as exc:
+            raise ProviderError(
+                "deepseek", str(exc), status_code=getattr(exc, "status_code", None)
+            ) from exc
 
         tool_calls_acc: dict[int, dict[str, Any]] = {}
 
@@ -410,3 +424,7 @@ class DeepSeekProvider(BaseProvider):
             ) from exc
         except _OpenAIAPIStatusError as exc:
             raise ProviderError("deepseek", str(exc), status_code=exc.status_code) from exc
+        except _OpenAIAPIError as exc:
+            raise ProviderError(
+                "deepseek", str(exc), status_code=getattr(exc, "status_code", None)
+            ) from exc

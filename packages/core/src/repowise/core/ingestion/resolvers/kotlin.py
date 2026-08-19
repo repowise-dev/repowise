@@ -84,10 +84,18 @@ def resolve_kotlin_import_all(
     if namespace_class == "external":
         return (ctx.add_external_node(module_path),)
 
-    # Try stem lookup on the class/function name
-    result = ctx.stem_lookup(local.lower())
-    if result and (result.endswith(".kt") or result.endswith(".kts") or result.endswith(".java")):
-        return (result,)
+    # Match on the class/function name alone, but only among the files of the
+    # package the import actually names: a repo-wide match discards the
+    # package, so a third-party type binds to any same-named repo class.
+    if len(parts) > 1:
+        scoped = jvm_index.file_in_package_by_stem(".".join(parts[:-1]), local)
+        if scoped and (scoped.endswith(".kt") or scoped.endswith(".kts") or scoped.endswith(".java")):
+            return (scoped,)
+    else:
+        # A single-segment import carries no package to check against.
+        result = ctx.stem_lookup(local.lower())
+        if result and (result.endswith(".kt") or result.endswith(".kts") or result.endswith(".java")):
+            return (result,)
 
     # Try matching the package path as a directory structure
     if len(parts) > 1:

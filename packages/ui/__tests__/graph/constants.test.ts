@@ -41,14 +41,27 @@ describe("getLayoutDuration", () => {
 });
 
 describe("label density", () => {
-  it("uses 0.15 / 6px at or below 2000 nodes", () => {
-    expect(getLabelDensity(2000)).toBe(0.15);
-    expect(getLabelRenderedSizeThreshold(2000)).toBe(6);
+  it("uses 0.15 / 6px at or below 1200 nodes", () => {
+    expect(getLabelDensity(1200)).toBe(0.15);
+    expect(getLabelRenderedSizeThreshold(1200)).toBe(6);
   });
 
-  it("uses 0.07 / 8px above 2000 nodes", () => {
-    expect(getLabelDensity(2001)).toBe(0.07);
-    expect(getLabelRenderedSizeThreshold(2001)).toBe(8);
+  it("thins out above 1200 nodes", () => {
+    expect(getLabelDensity(1201)).toBe(0.07);
+    expect(getLabelRenderedSizeThreshold(1201)).toBe(8);
+  });
+
+  it("thins out again near the load-more ceiling", () => {
+    expect(getLabelDensity(2501)).toBe(0.05);
+    expect(getLabelRenderedSizeThreshold(2501)).toBe(10);
+  });
+
+  // Regression guard: both thresholds used to step at 2,000 while the export
+  // was capped at 1,500, so the "large graph" branch could never be reached on
+  // any repo. Every rung must sit inside what the loader can actually deliver.
+  it("steps below the node cap the loader can reach", () => {
+    expect(getLabelDensity(1500)).toBeLessThan(0.15);
+    expect(getLabelRenderedSizeThreshold(1500)).toBeGreaterThan(6);
   });
 });
 

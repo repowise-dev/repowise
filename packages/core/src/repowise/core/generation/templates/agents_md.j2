@@ -1,45 +1,64 @@
-## Repowise Codebase Context For {{ data.repo_name }}
+## Codebase Intelligence for {{ data.repo_name }} (Repowise)
 
-This repository is indexed by Repowise. Use the Repowise MCP tools for codebase orientation, discovery, implementation context, modification risk, design rationale, and cleanup planning. MCP data reflects the last index run; verify against source files before editing.
+Indexed by [Repowise](https://repowise.dev). Last indexed: {{ data.indexed_at }}{% if data.indexed_commit %} (commit {{ data.indexed_commit }}){% endif %}{% if data.avg_confidence %}. Confidence: {{ (data.avg_confidence * 100) | int }}%.{% endif %}
 
-Last indexed: {{ data.indexed_at }}{% if data.indexed_commit %} (commit {{ data.indexed_commit }}){% endif %}{% if data.avg_confidence %}. Confidence: {{ (data.avg_confidence * 100) | int }}%.{% endif %}
+### How to work in this repo
 
+- **Trust the index.** `verified: true` means the bytes were checked against the live tree, so never re-read those lines. Re-read only on `bounds: "approximate"`, `_meta.stale_warning`, `search_method: "bm25"` or `confidence: "low"`; `index_behind: true` alone is informational.
+- **Pre-edit, not instead-of-edit.** These tools decide *which* files to read and edit. Reading a file before you edit it is correct and expected.
+- **Noisy commands** (tests, builds, `git log`/`diff`, searches, listings): prefer `repowise distill <cmd>`, the same command with its exit code preserved and errors-first output. A `[repowise#<ref>: N lines omitted]` marker is recoverable via `repowise expand <ref>` (add `-q <regex>` to filter); never re-run the command to see omitted output.
+- **Recording a decision** you had to reason out: `repowise decision add --title T --decision D` records it without prompting and prints the id (`--format json` to parse it back). It lands `proposed`, for a person to confirm.
+
+### Tools
+
+{{ data.tool_table_md }}
 {% if data.architecture_summary %}
+
 ### Architecture
 {{ data.architecture_summary }}
 {% endif %}
 {% if data.key_modules %}
-### Key Modules
-| Module | Purpose | Owner |
-|--------|---------|-------|
+
+### Key modules
 {% for mod in data.key_modules %}
-| `{{ mod.name }}` | {{ mod.purpose or "-" }} | {{ mod.owner or "-" }} |
+- `{{ mod.name }}`{% if mod.purpose %} — {{ mod.purpose }}{% endif %}
+
 {% endfor %}
 {% endif %}
 {% if data.entry_points %}
-### Entry Points
-{% for ep in data.entry_points %}
+
+### Entry points
+{% for ep in data.entry_points[:6] %}
 - `{{ ep }}`
 {% endfor %}
 {% endif %}
 {% if data.hotspots %}
-### Risk Hotspots
-| File | Churn | 90d Commits | Owner |
-|------|-------|-------------|-------|
+
+### Files that need care (bug-fix history first, then churn — check `get_risk` before editing)
 {% for h in data.hotspots %}
-| `{{ h.path }}` | {{ h.churn_percentile }}th percentile | {{ h.commit_count_90d }} | {{ h.owner or "-" }} |
+- `{{ h.path }}` — {% if h.fix_count and h.last_fix_age %}{{ h.fix_count }} bug fix{{ 'es' if h.fix_count != 1 else '' }}, last fix {{ h.last_fix_age }}{% if h.bug_magnet %} (bug magnet){% endif %}; {% endif %}{{ h.commit_count_90d }} commits/90d
 {% endfor %}
 {% endif %}
+{% if data.code_health %}
 
-### Repowise MCP Workflow
+### Code health
+Three co-equal signals: defect risk {{ data.code_health.average_health }}/10 avg, hotspot health {{ data.code_health.hotspot_health }}/10 ({{ data.code_health.hotspot_trend }}), worst `{{ data.code_health.worst_path }}` at {{ data.code_health.worst_score }}/10{% if data.code_health.maintainability_average is not none %} · maintainability {{ data.code_health.maintainability_average }}/10{% endif %}{% if data.code_health.performance_average is not none %} · performance risk {{ data.code_health.performance_findings }} open static I/O-in-loop / N+1 finding{{ 's' if data.code_health.performance_findings != 1 else '' }}{% endif %}. Detail: `get_health()`.
+{% if data.code_health.critical_biomarkers %}
 
-- Overview: call `get_overview()` at the start of an unfamiliar task to orient on architecture, modules, entry points, and tech stack.
-- Search: call `search_codebase(query="...")` when locating where a concept, symbol, feature, or behavior is implemented.
-- Context: call `get_context(targets=["path/or/symbol", "..."])` for enriched docs, ownership, decisions, callers, and related files before relying on raw source alone.
-- Risk: call `get_risk(targets=["path/to/file.py"])` before modifying shared utilities, public APIs, hotspots, high-coupling modules, or files with unknown dependents.
-- Why: call `get_why(query="...")` before architectural changes or when the user asks why code is structured a certain way.
-- Dead code: call `get_dead_code(safe_only=true)` before cleanup or removal work; treat lower-confidence findings as candidates to investigate.
-- Connections: call `get_context(targets=["..."], include=["callers", "callees"])` when tracing how a symbol connects to the rest of the code.
+Critical files:
+{% for b in data.code_health.critical_biomarkers %}
+- `{{ b.path }}` — {{ b.summary }}
+{% endfor %}
+{% endif %}
+{% endif %}
+{% if data.decisions %}
+
+### Standing decisions (ask `get_why` before diverging)
+{% for d in data.decisions[:3] %}
+- {{ d.title }}{% if d.rationale %} — {{ d.rationale }}{% endif %}
+
+{% endfor %}
+{% endif %}
 {% if data.build_commands %}
 
 ### Commands

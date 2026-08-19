@@ -19,7 +19,9 @@ Two alert kinds are emitted, matching plan §4 Phase 4 P4.1:
 The module is intentionally state-free. Callers pass in the snapshot
 history (oldest → newest) and receive a list of alerts back. No DB
 access lives here so trend logic stays unit-testable without an engine
-or a session.
+or a session. The one exception is ``_parsed_map`` below, a bounded
+content-keyed cache over ``json.loads`` of a snapshot's per-file map — a pure
+cache with no observable effect on any return value.
 """
 
 from __future__ import annotations
@@ -27,22 +29,14 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Protocol
+from functools import lru_cache
+from typing import Any
+
+from .scoring import SCORE_FLOOR, SCORE_MAX
 
 DECLINE_THRESHOLD: float = 0.5
 DECLINE_LOOKBACK: int = 5  # compare current vs snapshot N positions back
 PREDICTED_DECLINE_CONSECUTIVE: int = 3
-
-
-class SnapshotLike(Protocol):
-    """Minimal shape the trend logic needs from a snapshot row."""
-
-    taken_at: datetime
-    hotspot_health: float
-    average_health: float
-    worst_performer_path: str | None
-    worst_performer_score: float | None
-    per_file_scores_json: str
 
 
 @dataclass
@@ -204,22 +198,83 @@ def recent_kpis(history: list[Any], limit: int = 10) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------- #
 # Per-file trajectory
 #
-# The snapshot writer stores a compact ``{path: score}`` map per snapshot
-# (``HealthSnapshot.per_file_scores_json``). These helpers turn that rolling
-# window into a single file's score-over-time series. Like the repo-level
-# helpers above they are intentionally state-free:
-# callers pass the snapshot history (oldest → newest) and get plain data back,
-# so the logic stays unit-testable without a DB and is reused verbatim by the
-# PR bot's in-comment sparkline.
+# The snapshot writer stores two compact maps per snapshot: ``{path: score}``
+# (``HealthSnapshot.per_file_scores_json``) for every scored file, and
+# ``{path: total_deduction}`` (``per_file_deductions_json``) for the files whose
+# score is held at ``SCORE_FLOOR``. These helpers turn that rolling window into
+# a single file's trajectory. Like the repo-level helpers above they are
+# intentionally state-free: callers pass the snapshot history (oldest → newest)
+# and get plain data back, so the logic stays unit-testable without a DB and is
+# reused verbatim by the PR bot's in-comment sparkline.
 # --------------------------------------------------------------------------- #
+
+
+def snapshot_file_maps(
+    metrics: list[Any],
+    findings: list[Any],
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Build both of a snapshot's per-file maps from one health report.
+
+    Returns ``(per_file_scores, per_file_deductions)``, ready to hand to
+    ``save_health_snapshot``.
+
+    One function because there are three writers — ``repowise health``,
+    ``repowise upgrade`` and the full-index pipeline — and a repo's history
+    would otherwise carry different data depending on which of them wrote the
+    row last. That failure has happened here before, with a different argument
+    and four call sites.
+
+    ``per_file_deductions`` holds only the files whose score sits at
+    ``SCORE_FLOOR``. For every other file the deduction is exactly
+    ``SCORE_MAX - score``, so recording it would be storing a value the reader
+    can already compute — on the repowise index, 2,083 B of floored files
+    against 142,812 B if every file with findings were written, beside a
+    187,593 B score map. The deduction is summed from ``health_impact``, which
+    is the per-finding contribution the scorer used to produce ``score``, so
+    the pair is consistent by construction rather than by reconciliation.
+
+    Note the recorded depth is the **category-capped** total, so it is itself
+    bounded by ``sum(CATEGORY_CAPS)`` and the unclamped score cannot go below
+    ``SCORE_MAX - sum(CATEGORY_CAPS)``. A file with every category at its cap
+    is flat again, one level down. Nothing on the repowise index is close
+    (deepest is 12.91 of a possible 13.5), and recording the pre-cap sum
+    instead would be recording a number the score was never computed from.
+    """
+    per_file_scores = {m.file_path: round(float(m.score), 2) for m in metrics}
+
+    totals: dict[str, float] = {}
+    for f in findings:
+        path = getattr(f, "file_path", None)
+        if not path:
+            continue
+        totals[path] = totals.get(path, 0.0) + float(getattr(f, "health_impact", 0.0) or 0.0)
+
+    per_file_deductions = {
+        m.file_path: round(totals[m.file_path], 2)
+        for m in metrics
+        if float(m.score) <= SCORE_FLOOR and m.file_path in totals
+    }
+    return per_file_scores, per_file_deductions
 
 
 @dataclass
 class FileTrendPoint:
-    """One file's score at one snapshot."""
+    """One file's score at one snapshot.
+
+    ``score`` is the clamped, surfaced number. ``unclamped_score`` is
+    ``SCORE_MAX - total_deduction`` where the snapshot recorded a deduction,
+    and ``score`` otherwise — so it is the series that keeps moving after the
+    floor is hit, and is identical to ``score`` for every file that has not hit
+    it and for every row written before deductions were captured.
+
+    Required rather than defaulted: a point that silently defaults to its own
+    score is exactly the flat line this field exists to stop, and it would be
+    indistinguishable from a real one at the read site.
+    """
 
     taken_at: datetime | None
     score: float
+    unclamped_score: float
 
 
 @dataclass
@@ -231,6 +286,12 @@ class FileTrend:
     drawing a misleading single dot (plan §2: "silent when < 2 real
     snapshots"). ``current`` / ``previous`` / ``delta`` and ``declining``
     are all ``None`` / ``False`` in that case.
+
+    ``current`` / ``previous`` / ``delta`` stay on the clamped score — that is
+    the number printed everywhere else in the product and changing it would
+    make the trend disagree with the file's own header. ``unclamped_delta`` is
+    the movement the floor hides, and equals ``delta`` whenever the floor is
+    not involved, so a consumer can read it unconditionally.
     """
 
     file_path: str
@@ -240,29 +301,77 @@ class FileTrend:
     delta: float | None
     declining: bool
     snapshot_count: int
+    unclamped_delta: float | None = None
 
 
-def _score_in_snapshot(snap: Any, file_path: str) -> float | None:
-    """Read ``file_path``'s score from a snapshot's compact JSON map.
-
-    Returns ``None`` when the file is absent from that snapshot (it may have
-    been added later, renamed, or filtered out of that run) or when the map
-    can't be parsed — the series simply skips that snapshot.
-    """
-    raw = getattr(snap, "per_file_scores_json", None)
-    if not raw:
-        return None
+# A snapshot's ``{path: value}`` map is a per-*repo* blob — one JSON object
+# holding every file's score — and this module reads it one file at a time. So a
+# caller asking about N files paid ``N x len(history)`` parses of the same few
+# blobs: the cross-function N+1 the health pillar's own ``json_parse_in_loop``
+# biomarker exists to flag, in the health pillar. Measured on the repowise index
+# (20 snapshots averaging 186 KB each), ``get_health`` on a ``module:`` target
+# expanding to 822 files spent **13.0s** here; memoized, 0.4s.
+#
+# Keyed on the raw JSON **text**, not on the snapshot object. Content-keying
+# makes staleness impossible by construction (different bytes are a different
+# key), needs no hashable/weak-referenceable snapshot — a plain dataclass in a
+# test is neither — and lets two callers holding different rows for the same
+# stored snapshot share one parse. The window a caller reads is 20 snapshots x 2
+# maps, so ``maxsize`` covers a full window with headroom; the ceiling is that a
+# long-lived server holds up to 64 parsed maps, which is what bounds it.
+@lru_cache(maxsize=64)
+def _parsed_map(raw: str) -> Any:
+    """``json.loads(raw)``, memoized. ``None`` when the text will not parse."""
     try:
-        scores = json.loads(raw)
+        return json.loads(raw)
     except (ValueError, TypeError):
         return None
-    val = scores.get(file_path) if isinstance(scores, dict) else None
+
+
+def _value_in_snapshot(snap: Any, column: str, file_path: str) -> float | None:
+    """Read one float out of a snapshot's compact ``{path: value}`` JSON map.
+
+    Returns ``None`` when the file is absent from that map (it may have been
+    added later, renamed, filtered out of that run, or — for the deductions map
+    — simply not be at the floor) or when the map can't be parsed.
+    """
+    raw = getattr(snap, column, None)
+    if not raw:
+        return None
+    parsed = _parsed_map(raw)
+    val = parsed.get(file_path) if isinstance(parsed, dict) else None
     if val is None:
         return None
     try:
         return float(val)
     except (ValueError, TypeError):
         return None
+
+
+def _score_in_snapshot(snap: Any, file_path: str) -> float | None:
+    """``file_path``'s clamped score in *snap*, or ``None`` if not recorded."""
+    return _value_in_snapshot(snap, "per_file_scores_json", file_path)
+
+
+def _unclamped_in_snapshot(snap: Any, file_path: str, score: float) -> float | None:
+    """``file_path``'s score with the floor undone, as far as *snap* knows.
+
+    Three cases, and the third is the one that matters:
+
+    * A recorded deduction means the clamp bit and this snapshot kept the
+      depth. The honest value is ``SCORE_MAX - deduction``, below the floor and
+      possibly negative.
+    * No deduction and a score above the floor: the clamp did not bite, so the
+      score already *is* the unclamped value.
+    * No deduction and a score **at** the floor: the depth is unknown. The row
+      predates deduction capture, or the file had no findings to sum. Returns
+      ``None`` — not ``score``, which would assert a depth of exactly 9.0 that
+      was never measured.
+    """
+    deduction = _value_in_snapshot(snap, "per_file_deductions_json", file_path)
+    if deduction is not None:
+        return round(SCORE_MAX - deduction, 2)
+    return score if score > SCORE_FLOOR else None
 
 
 def file_score_series(history: list[Any], file_path: str) -> list[FileTrendPoint]:
@@ -275,13 +384,39 @@ def file_score_series(history: list[Any], file_path: str) -> list[FileTrendPoint
     *history* is expected oldest-first (the natural ``list_health_snapshots``
     order). This is the exact function the PR bot reuses for its in-comment
     sparkline, so it stays free of any persistence or presentation concern.
+
+    ``unclamped_score`` diverges from ``score`` only when **every** point in
+    the series has a known depth. A series that mixes measured depth with
+    snapshots that never recorded it is the dangerous case, not the harmless
+    one: the unmeasured points read as ``1.0`` and the measured ones as their
+    real depth, so the first index after depth capture is switched on draws a
+    cliff on a file that did not change. Measured against the live index —
+    fifteen snapshots without capture plus one with, and nothing altered —
+    that flipped **21 of 32** floored files to ``declining`` with drops up to
+    3.9 points. Waiting for the window to fill costs a slow start; not waiting
+    reports a collapse that never happened.
     """
-    points: list[FileTrendPoint] = []
+    raw: list[tuple[Any, float, float | None]] = []
     for snap in history:
         score = _score_in_snapshot(snap, file_path)
         if score is None:
             continue
-        points.append(FileTrendPoint(taken_at=getattr(snap, "taken_at", None), score=score))
+        raw.append(
+            (
+                getattr(snap, "taken_at", None),
+                score,
+                _unclamped_in_snapshot(snap, file_path, score),
+            )
+        )
+    depth_known = all(unclamped is not None for _, _, unclamped in raw)
+    points = [
+        FileTrendPoint(
+            taken_at=taken_at,
+            score=score,
+            unclamped_score=unclamped if depth_known else score,
+        )
+        for taken_at, score, unclamped in raw
+    ]
     if len(points) < 2:
         return []
     return points
@@ -294,10 +429,20 @@ def _file_declining(points: list[FileTrendPoint]) -> bool:
     ``DECLINE_THRESHOLD`` below the point ``DECLINE_LOOKBACK`` back, or the
     tail is ``PREDICTED_DECLINE_CONSECUTIVE`` strict drops in a row. Single
     snapshot-to-snapshot noise is deliberately not enough.
+
+    Computed on ``unclamped_score``, which is identical to ``score`` for every
+    file that has not hit the floor — so nothing changes for the 99% — and is
+    the only series that can move for one that has. There is deliberately **no**
+    third ``at_floor`` state: the original complaint was that ``declining:
+    false`` sat beside a visibly collapsed series, and that was a disagreement
+    between the flag and the *clamped* line, not a missing state. Against the
+    unclamped line a flat flag now describes a flat series, and a file that
+    keeps getting worse below the floor trips the flag for the first time —
+    which is the behaviour the flag always claimed to have.
     """
     if len(points) <= 1:
         return False
-    scores = [p.score for p in points]
+    scores = [p.unclamped_score for p in points]
 
     if (
         len(scores) > DECLINE_LOOKBACK
@@ -340,6 +485,7 @@ def file_trend(history: list[Any], file_path: str) -> FileTrend:
         current=current,
         previous=previous,
         delta=round(current - previous, 2),
+        unclamped_delta=round(points[-1].unclamped_score - points[-2].unclamped_score, 2),
         declining=_file_declining(points),
         snapshot_count=len(history),
     )

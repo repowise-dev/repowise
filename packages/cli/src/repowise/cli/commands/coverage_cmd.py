@@ -14,6 +14,7 @@ from pathlib import Path
 
 import click
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
@@ -21,12 +22,13 @@ from repowise.cli.helpers import (
     resolve_command_target,
     run_async,
 )
+from repowise.cli.output import emit_json, format_option, notice_console
 
 
-def _resolve_coverage_repo(path: str | None) -> Path:
+def _resolve_coverage_repo(path: str | None, fmt: str = "table") -> Path:
     """Resolve the repo path for coverage subcommands (workspace-aware)."""
     target = resolve_command_target(path=path)
-    target.notice(console, command="coverage")
+    target.notice(notice_console(fmt), command="coverage")
     if target.is_workspace:
         primary = target.primary_path()
         if primary is None:
@@ -65,7 +67,19 @@ def coverage_group() -> None:
     default=None,
     help="Force a parser instead of auto-detecting from content.",
 )
-def coverage_add(paths: tuple[str, ...], repo: str | None, coverage_format: str | None) -> None:
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Show debug logs from the pipeline.",
+)
+def coverage_add(
+    paths: tuple[str, ...],
+    repo: str | None,
+    coverage_format: str | None,
+    verbose: bool,
+) -> None:
     """Ingest coverage (auto-discovers reports when none are given).
 
     Stores per-file line/branch coverage, and additionally the per-test
@@ -81,6 +95,8 @@ def coverage_add(paths: tuple[str, ...], repo: str | None, coverage_format: str 
         repowise coverage add .coverage            # per-test map from coverage.py
         repowise coverage add web.lcov api.lcov    # merged hit-wins
     """
+    configure_cli_logging(verbose=verbose)
+
     repo_path = _resolve_coverage_repo(repo)
     ensure_repowise_dir(repo_path)
 
@@ -271,9 +287,14 @@ def _discover_context_reports(repo_path: Path) -> list[Path]:
 @click.option(
     "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
 )
-def coverage_status(repo: str | None) -> None:
+# Safe to spell this ``--format`` here: the ``--format`` that names an *input*
+# parser (lcov / cobertura / clover) lives on ``coverage add``, not on the
+# group, so the two never meet on one command line.
+@format_option()
+def coverage_status(repo: str | None, fmt: str) -> None:
     """Show the coverage currently ingested for this repo."""
-    repo_path = _resolve_coverage_repo(repo)
+    repo_path = _resolve_coverage_repo(repo, fmt)
+    notices = notice_console(fmt)
 
     async def _do() -> None:
         from repowise.core.persistence import (
@@ -292,16 +313,30 @@ def coverage_status(repo: str | None) -> None:
         async with get_session(sf) as session:
             repo_row = await get_repository_by_path(session, str(repo_path))
             if repo_row is None:
-                console.print("[yellow]No index yet — run `repowise init`.[/yellow]")
+                notices.print("[yellow]No index yet — run `repowise init`.[/yellow]")
+                if fmt == "json":
+                    emit_json({"repo": str(repo_path), "indexed": False})
                 return
             summary = await get_coverage_summary(session, repo_row.id)
             map_summary = await get_test_coverage_summary(session, repo_row.id)
 
+            if fmt == "json":
+                emit_json(
+                    {
+                        "repo": str(repo_path),
+                        "indexed": True,
+                        "coverage": summary if summary.get("file_count") else None,
+                        "test_map": map_summary if map_summary.get("pair_count") else None,
+                    }
+                )
+                return
+
             if not summary.get("file_count") and not map_summary.get("pair_count"):
                 console.print(
                     "[yellow]No coverage ingested.[/yellow] Run "
-                    "[cyan]repowise coverage add[/cyan] for per-file coverage, or "
-                    "[cyan]repowise coverage contexts[/cyan] for the per-test map."
+                    "[cyan]repowise coverage add <report>[/cyan]. A .coverage file "
+                    "recorded with [cyan]--contexts=test[/cyan] also builds the "
+                    "per-test map."
                 )
                 return
 
@@ -326,8 +361,9 @@ def coverage_status(repo: str | None) -> None:
                 )
             else:
                 console.print(
-                    "[dim]No test-to-code map yet - build one with "
-                    "[cyan]repowise coverage contexts[/cyan].[/dim]"
+                    "[dim]No test-to-code map yet - record one with "
+                    "[cyan]coverage run --contexts=test -m pytest[/cyan], then "
+                    "[cyan]repowise coverage add .coverage[/cyan].[/dim]"
                 )
 
     run_async(_do())

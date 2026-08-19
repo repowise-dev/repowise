@@ -40,6 +40,14 @@ class HotspotFile:
     churn_percentile: float
     commit_count_90d: int
     owner: str | None
+    # Bug-fix history for the same file. ``fix_count`` is the windowed
+    # production-code fix count (``GitMetadata.prior_defect_count``), and
+    # ``last_fix_age`` is pre-rendered ("2 weeks ago") because a count with no
+    # recency reads as an accusation about 2019. ``bug_magnet`` is only ever set
+    # alongside an age, per the recency contract in ``types/health.ts``.
+    fix_count: int = 0
+    bug_magnet: bool = False
+    last_fix_age: str | None = None
 
 
 @dataclass(frozen=True)
@@ -79,7 +87,6 @@ class CodeHealthBlock:
     performance_skipped_files: int = 0
     performance_unsupported_languages: list[tuple[str, int]] = field(default_factory=list)
     critical_biomarkers: list[dict] = field(default_factory=list)
-    untested_hotspots: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

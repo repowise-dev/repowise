@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -13,7 +12,6 @@ from repowise.core.generation.context_assembler import ContextAssembler, FilePag
 from repowise.core.generation.kg_context import KGFileContext
 from repowise.core.generation.models import GenerationConfig
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -23,7 +21,6 @@ def _make_config(**overrides: Any) -> GenerationConfig:
     defaults = {
         "token_budget": 4000,
         "max_concurrency": 2,
-        "large_file_source_pct": 0.5,
     }
     defaults.update(overrides)
     return GenerationConfig(**defaults)
@@ -100,10 +97,24 @@ def _make_kg_file_context(**overrides: Any) -> KGFileContext:
         layer_description="Handles core data processing logic",
         role="edge_connector",
         neighbors=[
-            {"path": "src/utils.py", "name": "utils.py", "same_layer": True, "relationship": "imports"},
-            {"path": "src/api.py", "name": "api.py", "same_layer": False, "relationship": "imported_by"},
+            {
+                "path": "src/utils.py",
+                "name": "utils.py",
+                "same_layer": True,
+                "relationship": "imports",
+            },
+            {
+                "path": "src/api.py",
+                "name": "api.py",
+                "same_layer": False,
+                "relationship": "imported_by",
+            },
         ],
-        tour_step={"order": 2, "title": "Core Logic", "description": "Explore the core processing pipeline."},
+        tour_step={
+            "order": 2,
+            "title": "Core Logic",
+            "description": "Explore the core processing pipeline.",
+        },
         tags=["core", "pipeline"],
         node_summary="Central processing module for data ingestion",
     )
@@ -124,7 +135,12 @@ class TestFilePageContextWithKG:
         kg = _make_kg_file_context()
 
         ctx = assembler.assemble_file_page(
-            parsed, graph, {"src/core.py": 0.5}, {}, {}, b"x = 1",
+            parsed,
+            graph,
+            {"src/core.py": 0.5},
+            {},
+            {},
+            b"x = 1",
             kg_context=kg,
         )
         assert ctx.kg_layer_name == "Core Pipeline"
@@ -142,7 +158,12 @@ class TestFilePageContextWithKG:
         graph = _make_graph()
 
         ctx = assembler.assemble_file_page(
-            parsed, graph, {}, {}, {}, b"x = 1",
+            parsed,
+            graph,
+            {},
+            {},
+            {},
+            b"x = 1",
         )
         assert ctx.kg_layer_name == ""
         assert ctx.kg_layer_role == ""
@@ -157,7 +178,12 @@ class TestFilePageContextWithKG:
         graph = _make_graph()
 
         ctx = assembler.assemble_file_page(
-            parsed, graph, {}, {}, {}, b"x = 1",
+            parsed,
+            graph,
+            {},
+            {},
+            {},
+            b"x = 1",
             kg_context=None,
         )
         assert ctx.kg_layer_name == ""
@@ -169,7 +195,12 @@ class TestFilePageContextWithKG:
         kg = _make_kg_file_context(role="entry_point")
 
         ctx = assembler.assemble_file_page(
-            parsed, graph, {}, {}, {}, b"x = 1",
+            parsed,
+            graph,
+            {},
+            {},
+            {},
+            b"x = 1",
             kg_context=kg,
         )
         assert ctx.kg_layer_role == "entry_point"
@@ -181,7 +212,12 @@ class TestFilePageContextWithKG:
         kg = _make_kg_file_context(role="internal")
 
         ctx = assembler.assemble_file_page(
-            parsed, graph, {}, {}, {}, b"x = 1",
+            parsed,
+            graph,
+            {},
+            {},
+            {},
+            b"x = 1",
             kg_context=kg,
         )
         assert ctx.kg_layer_role == "internal"
@@ -193,7 +229,12 @@ class TestFilePageContextWithKG:
         kg = _make_kg_file_context(tour_step=None)
 
         ctx = assembler.assemble_file_page(
-            parsed, graph, {}, {}, {}, b"x = 1",
+            parsed,
+            graph,
+            {},
+            {},
+            {},
+            b"x = 1",
             kg_context=kg,
         )
         assert ctx.kg_tour_step is None
@@ -206,7 +247,12 @@ class TestFilePageContextWithKG:
         kg = _make_kg_file_context(neighbors=[])
 
         ctx = assembler.assemble_file_page(
-            parsed, graph, {}, {}, {}, b"x = 1",
+            parsed,
+            graph,
+            {},
+            {},
+            {},
+            b"x = 1",
             kg_context=kg,
         )
         assert ctx.kg_neighbors == []
@@ -220,11 +266,21 @@ class TestTokenBudgetWithKG:
         kg = _make_kg_file_context()
 
         ctx_with = assembler.assemble_file_page(
-            parsed, graph, {}, {}, {}, b"x = 1",
+            parsed,
+            graph,
+            {},
+            {},
+            {},
+            b"x = 1",
             kg_context=kg,
         )
         ctx_without = assembler.assemble_file_page(
-            parsed, graph, {}, {}, {}, b"x = 1",
+            parsed,
+            graph,
+            {},
+            {},
+            {},
+            b"x = 1",
         )
         assert ctx_with.estimated_tokens >= ctx_without.estimated_tokens
 
@@ -246,132 +302,38 @@ class TestTokenBudgetWithKG:
 class TestFilePageTemplate:
     @pytest.fixture
     def jinja_env(self):
-        from jinja2 import Environment, FileSystemLoader
         from pathlib import Path
 
-        template_dir = Path(__file__).resolve().parents[3] / "packages" / "core" / "src" / "repowise" / "core" / "generation" / "templates"
-        return Environment(loader=FileSystemLoader(str(template_dir)))
+        from jinja2 import Environment, FileSystemLoader
 
-    def test_tier1_template_renders_kg_layer(self, jinja_env):
-        tmpl = jinja_env.get_template("file_page.j2")
-        ctx = FilePageContext(
-            file_path="src/core.py",
-            language="python",
-            docstring=None,
-            symbols=[],
-            imports=[],
-            exports=[],
-            file_source_snippet="",
-            pagerank_score=0.0,
-            betweenness_score=0.0,
-            community_id=0,
-            dependents=[],
-            dependencies=[],
-            is_api_contract=False,
-            is_entry_point=False,
-            is_test=False,
-            parse_errors=[],
-            estimated_tokens=0,
-            kg_layer_name="Core Pipeline",
-            kg_layer_description="Central processing logic",
-            kg_layer_role="edge_connector",
-            kg_neighbors=[{"path": "src/utils.py", "relationship": "imports", "same_layer": True}],
-            kg_tour_step={"order": 1, "title": "Start Here", "description": "Begin exploration."},
-            kg_node_summary="Core module",
+        from repowise.core.generation.page_generator.structural import (
+            as_markdown,
+            oneline,
+            signature,
         )
-        rendered = tmpl.render(ctx=ctx)
-        assert "## Architectural Layer" in rendered
-        assert "**Core Pipeline**" in rendered
-        assert "**edge connector**" in rendered
-        assert "## Architectural Neighbors" in rendered
-        assert "`src/utils.py`" in rendered
-        assert "same layer" in rendered
-        assert "## Codebase Tour" in rendered
-        assert "Step 1: Start Here" in rendered
+        from repowise.core.generation.structural_labels import resolve_structural_labels
 
-    def test_tier1_template_entry_point_role(self, jinja_env):
-        tmpl = jinja_env.get_template("file_page.j2")
-        ctx = FilePageContext(
-            file_path="src/main.py",
-            language="python",
-            docstring=None,
-            symbols=[],
-            imports=[],
-            exports=[],
-            file_source_snippet="",
-            pagerank_score=0.0,
-            betweenness_score=0.0,
-            community_id=0,
-            dependents=[],
-            dependencies=[],
-            is_api_contract=False,
-            is_entry_point=True,
-            is_test=False,
-            parse_errors=[],
-            estimated_tokens=0,
-            kg_layer_name="CLI",
-            kg_layer_description="Command line interface",
-            kg_layer_role="entry_point",
+        template_dir = (
+            Path(__file__).resolve().parents[3]
+            / "packages"
+            / "core"
+            / "src"
+            / "repowise"
+            / "core"
+            / "generation"
+            / "templates"
         )
-        rendered = tmpl.render(ctx=ctx)
-        assert "**layer entry point**" in rendered
-        assert "edge connector" not in rendered
+        env = Environment(loader=FileSystemLoader(str(template_dir)))
+        # Mirror the production environment, which registers these in
+        # PageGenerator.__init__. Without them the templates fail to compile.
+        env.filters["oneline"] = oneline
+        env.filters["as_markdown"] = as_markdown
+        env.filters["signature"] = signature
+        env.globals["labels"] = resolve_structural_labels(None)
+        return env
 
-    def test_tier1_template_no_kg(self, jinja_env):
+    def test_file_page_renders_kg_layer(self, jinja_env):
         tmpl = jinja_env.get_template("file_page.j2")
-        ctx = FilePageContext(
-            file_path="src/core.py",
-            language="python",
-            docstring=None,
-            symbols=[],
-            imports=[],
-            exports=[],
-            file_source_snippet="",
-            pagerank_score=0.0,
-            betweenness_score=0.0,
-            community_id=0,
-            dependents=[],
-            dependencies=[],
-            is_api_contract=False,
-            is_entry_point=False,
-            is_test=False,
-            parse_errors=[],
-            estimated_tokens=0,
-        )
-        rendered = tmpl.render(ctx=ctx)
-        assert "## Architectural Layer" not in rendered
-        assert "## Architectural Neighbors" not in rendered
-        assert "## Codebase Tour" not in rendered
-
-    def test_tier1_template_kg_signals(self, jinja_env):
-        tmpl = jinja_env.get_template("file_page.j2")
-        ctx = FilePageContext(
-            file_path="src/core.py",
-            language="python",
-            docstring=None,
-            symbols=[],
-            imports=[],
-            exports=[],
-            file_source_snippet="",
-            pagerank_score=0.0,
-            betweenness_score=0.0,
-            community_id=0,
-            dependents=[],
-            dependencies=[],
-            is_api_contract=False,
-            is_entry_point=False,
-            is_test=False,
-            parse_errors=[],
-            estimated_tokens=0,
-            kg_layer_name="Core Pipeline",
-            kg_layer_role="edge_connector",
-        )
-        rendered = tmpl.render(ctx=ctx)
-        assert "part of the Core Pipeline layer" in rendered
-        assert "edge connector (imported cross-layer)" in rendered
-
-    def test_tier2_template_renders_kg_layer(self, jinja_env):
-        tmpl = jinja_env.get_template("file_page_tier2.j2")
         ctx = FilePageContext(
             file_path="src/utils.py",
             language="python",
@@ -379,7 +341,6 @@ class TestFilePageTemplate:
             symbols=[],
             imports=[],
             exports=[],
-            file_source_snippet="",
             pagerank_score=0.0,
             betweenness_score=0.0,
             community_id=0,
@@ -397,8 +358,8 @@ class TestFilePageTemplate:
         assert "**Layer:** Core Pipeline" in rendered
         assert "**Role:** internal" in rendered
 
-    def test_tier2_template_no_kg(self, jinja_env):
-        tmpl = jinja_env.get_template("file_page_tier2.j2")
+    def test_file_page_without_kg(self, jinja_env):
+        tmpl = jinja_env.get_template("file_page.j2")
         ctx = FilePageContext(
             file_path="src/utils.py",
             language="python",
@@ -406,7 +367,6 @@ class TestFilePageTemplate:
             symbols=[],
             imports=[],
             exports=[],
-            file_source_snippet="",
             pagerank_score=0.0,
             betweenness_score=0.0,
             community_id=0,
@@ -420,33 +380,3 @@ class TestFilePageTemplate:
         )
         rendered = tmpl.render(ctx=ctx)
         assert "**Layer:**" not in rendered
-
-    def test_tier1_cross_layer_neighbor(self, jinja_env):
-        tmpl = jinja_env.get_template("file_page.j2")
-        ctx = FilePageContext(
-            file_path="src/core.py",
-            language="python",
-            docstring=None,
-            symbols=[],
-            imports=[],
-            exports=[],
-            file_source_snippet="",
-            pagerank_score=0.0,
-            betweenness_score=0.0,
-            community_id=0,
-            dependents=[],
-            dependencies=[],
-            is_api_contract=False,
-            is_entry_point=False,
-            is_test=False,
-            parse_errors=[],
-            estimated_tokens=0,
-            kg_layer_name="Core",
-            kg_layer_description="Core logic",
-            kg_layer_role="internal",
-            kg_neighbors=[
-                {"path": "src/api.py", "relationship": "imported_by", "same_layer": False},
-            ],
-        )
-        rendered = tmpl.render(ctx=ctx)
-        assert "cross-layer" in rendered

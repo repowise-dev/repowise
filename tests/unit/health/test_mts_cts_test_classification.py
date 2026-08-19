@@ -1,41 +1,16 @@
-"""`.mts`/`.cts` test files must be classified as tests across health logic (#288)."""
+"""A source file's *paired* test must be found for `.mts`/`.cts` sources (#288).
+
+This is a different question from "is this path a test?" — that one now has a
+single implementation and a single corpus in ``tests/unit/test_test_paths.py``.
+What remains here is the pairing rule: given ``src/foo.mts``, is there a
+``src/foo.test.mts`` beside it? The per-implementation matrix this file used to
+carry is gone with the implementations it named (#1103).
+"""
 
 from __future__ import annotations
 
-import pytest
-
-from repowise.core.analysis.health.biomarkers.coverage_gap import _looks_like_test_path
-from repowise.core.analysis.health.biomarkers.hidden_coupling import (
-    _is_test_path as _coupling_is_test_path,
-)
-from repowise.core.analysis.health.coverage import is_test_file, paired_test_file
-from repowise.core.analysis.health.engine import (
-    _has_paired_test_file,
-    _path_basenames,
-)
-from repowise.core.analysis.health.engine import (
-    _is_test_file as _engine_is_test_file,
-)
-
-
-@pytest.mark.parametrize("path", ["src/foo.test.mts", "src/foo.test.cts", "src/foo.spec.mts", "src/foo.spec.cts"])
-def test_engine_is_test_file(path: str) -> None:
-    assert _engine_is_test_file(path)
-
-
-@pytest.mark.parametrize("path", ["src/foo.test.mts", "src/foo.spec.cts"])
-def test_coverage_is_test_file(path: str) -> None:
-    assert is_test_file(path)
-
-
-@pytest.mark.parametrize("path", ["src/foo.test.mts", "src/foo.spec.cts"])
-def test_hidden_coupling_is_test_path(path: str) -> None:
-    assert _coupling_is_test_path(path)
-
-
-@pytest.mark.parametrize("path", ["src/foo.test.mts", "src/foo.spec.cts"])
-def test_coverage_gap_looks_like_test_path(path: str) -> None:
-    assert _looks_like_test_path(path)
+from repowise.core.analysis.health.coverage import paired_test_file
+from repowise.core.analysis.health.engine import _has_paired_test_file, _path_basenames
 
 
 def test_paired_test_file_finds_mts_cts() -> None:

@@ -15,7 +15,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-
 # -- File score --------------------------------------------------------
 
 # Bonuses applied additively on top of normalized PageRank+betweenness.
@@ -121,22 +120,6 @@ def score_symbol(symbol: Any, file_pagerank: float, max_pagerank: float) -> floa
         return 0.0
     weight = _KIND_WEIGHT.get(str(symbol.kind), 0.5)
     return _normalize(file_pagerank, max_pagerank) * weight
-
-
-# -- Module score ------------------------------------------------------
-
-
-def score_module(*, size: int, cohesion: float, min_module_size: int) -> float:
-    """Score a community/directory cluster for ``module_page`` candidacy.
-
-    Communities below ``min_module_size`` score 0 — they fold into the
-    parent directory's module page (or are dropped if there is no
-    parent).
-    """
-    if size < min_module_size:
-        return 0.0
-    # Cohesion is typically [0, 1]. Multiply by log-ish size factor.
-    return (size**0.5) * (0.5 + cohesion)
 
 
 # -- SCC score ---------------------------------------------------------

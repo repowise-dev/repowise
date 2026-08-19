@@ -1,8 +1,8 @@
 """Dynamic-hint extractor for C++ function pointers, dlopen/dlsym, and Qt
 ``QObject::connect`` signal/slot wiring.
 
-Mirrors :mod:`.c` but on C++ extensions (``.cc``/``.cpp``/``.cxx``/``.hpp``/
-``.hxx``) and adds the Qt connect-string idiom — ``QObject::connect(s,
+Mirrors :mod:`.c` but on the C++ extensions in ``_CPP_EXTS`` below, and adds
+the Qt connect-string idiom — ``QObject::connect(s,
 SIGNAL(sig()), r, SLOT(slot()))`` — which wires a method into a runtime
 dispatch table that the static call graph never sees.
 """
@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from .base import DynamicEdge, DynamicHintExtractor
 
 _SKIP_DIRS = {
@@ -19,7 +20,13 @@ _SKIP_DIRS = {
     "node_modules", ".git", "third_party", "vendor", "_deps",
 }
 
-_CPP_EXTS: tuple[str, ...] = (".cc", ".cpp", ".cxx", ".c++", ".hpp", ".hxx", ".h")
+# Include fragments are scanned too: a generated binding table pasted into a
+# .inl is exactly where function-pointer and designated-initialiser wiring
+# tends to live, which is the wiring this extractor exists to find.
+_CPP_EXTS: tuple[str, ...] = (
+    ".cc", ".cpp", ".cxx", ".c++", ".hh", ".hpp", ".hxx", ".h",
+    *sorted(INCLUDE_FRAGMENT_EXTENSIONS),
+)
 
 # fp = some_function;  (function-pointer wiring — RHS must be a known
 # function name to count as a function-pointer assignment).
@@ -129,7 +136,7 @@ class CppDynamicHints(DynamicHintExtractor):
         for _src, text, rel in sources:
             seen: set[tuple[str, str]] = set()
 
-            def _emit(name: str, kind: str) -> None:
+            def _emit(name: str, kind: str, *, seen: set = seen, rel: str = rel) -> None:
                 for target in func_to_files.get(name, ()):
                     key = (target, kind)
                     if key in seen or target == rel:

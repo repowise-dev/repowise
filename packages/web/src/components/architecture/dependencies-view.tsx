@@ -22,7 +22,10 @@ export function DependenciesView({ repoId }: { repoId: string }) {
       <div>
         <h1 className="mb-1 flex items-center gap-2 text-xl font-semibold text-[var(--color-text-primary)]">
           <Package className="h-5 w-5 text-[var(--color-accent-primary)]" />
-          Dependencies
+          {/* Matches the tab. "Dependencies" collided with the Map tab, which
+              IS the dependency graph — this page is the declared package
+              manifest, which is a different thing entirely. */}
+          Packages
         </h1>
         <p className="text-sm text-[var(--color-text-secondary)]">
           Third-party dependencies declared in this repo&apos;s manifests.

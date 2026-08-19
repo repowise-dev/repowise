@@ -29,6 +29,8 @@ import logging
 import math
 import os
 
+from repowise.core.providers.embedding.base import resolve_embedding_timeout
+
 # Suppress "Both GOOGLE_API_KEY and GEMINI_API_KEY are set" from google-genai SDK.
 # We resolve and pass the key explicitly, so the env-var conflict warning is noise.
 logging.getLogger("google_genai._api_client").setLevel(logging.ERROR)
@@ -56,9 +58,11 @@ class GeminiEmbedder:
         model: str = "gemini-embedding-001",
         task_type: str = "SEMANTIC_SIMILARITY",
         output_dimensionality: int = 768,
-        timeout: float = _DEFAULT_TIMEOUT,
+        timeout: float | None = None,
     ) -> None:
-        self._api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        self._api_key = (
+            api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        )
         if not self._api_key:
             raise ValueError(
                 "Gemini API key required. Pass api_key= or set GEMINI_API_KEY env var."
@@ -66,7 +70,9 @@ class GeminiEmbedder:
         self._model = model
         self._task_type = task_type
         self._output_dimensionality = output_dimensionality
-        self._timeout = timeout
+        self._timeout = resolve_embedding_timeout(
+            timeout, self._DEFAULT_TIMEOUT, provider_env="GEMINI_EMBEDDING_TIMEOUT"
+        )
         self._client: object | None = None  # cached; created once on first embed()
 
     @property
@@ -121,6 +127,15 @@ class GeminiEmbedder:
             )
 
             raw_vectors = [list(e.values) for e in result.embeddings]
+            widths = {len(v) for v in raw_vectors}
+            if widths and widths != {output_dimensionality}:
+                actual = min(widths - {output_dimensionality})
+                raise ValueError(
+                    f"GeminiEmbedder declared {output_dimensionality}-dimensional vectors but"
+                    f" the API returned {actual} (model={model!r}). The API ignored"
+                    f" 'output_dimensionality'. Verify the model supports {output_dimensionality}"
+                    f" dimensions, or construct GeminiEmbedder with output_dimensionality={actual}."
+                )
             return [_l2_normalize(v) for v in raw_vectors]
 
         return await asyncio.to_thread(_embed_sync)

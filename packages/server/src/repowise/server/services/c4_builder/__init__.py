@@ -22,31 +22,39 @@ from dataclasses import replace
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ids import ExternalSystemId, SystemId, file_path_of, parse, render
 from repowise.core.persistence import ExternalSystem, Repository
-from repowise.core.persistence.crud import get_kg_project_meta
+from repowise.core.persistence.crud import (
+    get_kg_layers,
+    get_kg_project_meta,
+    get_kg_tour_steps,
+)
 from repowise.core.persistence.models import DeadCodeFinding, GitMetadata
 
 from .actors import derive_actors
-from .components import detect_components
+from .components import detect_components, detect_components_for_all
 from .containers import container_id, detect_containers
 from .models import (
     C4L1,
     C4L2,
     C4L3,
+    C4Model,
     Component,
     Container,
     ExternalSystemView,
     Person,
     Relation,
     System,
+    TourStep,
 )
-from .relations import aggregate_relations, external_node_to_system_id
-from .signals import count_box_signals
+from .relations import aggregate_relations, external_node_to_system_id, load_edges
+from .signals import build_box_signals, count_box_signals
 
 __all__ = [
     "C4L1",
     "C4L2",
     "C4L3",
+    "C4Model",
     "Component",
     "Container",
     "ExternalSystemView",
@@ -57,6 +65,7 @@ __all__ = [
     "build_l1",
     "build_l2",
     "build_l3",
+    "build_model",
     "container_id",
     "load_repo",
 ]
@@ -92,7 +101,7 @@ async def _external_views(
     name_to_id: dict[str, str] = {}
     for name in sorted(by_name):
         row = by_name[name]
-        view_id = f"ext:{name}"
+        view_id = render(ExternalSystemId(name))
         views.append(
             ExternalSystemView(
                 id=view_id,
@@ -108,10 +117,15 @@ async def _external_views(
     return views, name_to_id
 
 
+def _is_external_box(box_id: str) -> bool:
+    """True if a relation endpoint is an external-system box rather than ours."""
+    return isinstance(parse(box_id), ExternalSystemId)
+
+
 def _system_for(repo: Repository | None, repo_id: str) -> System:
     if repo is None:
-        return System(id=f"sys:{repo_id}", name=repo_id)
-    return System(id=f"sys:{repo.id}", name=repo.name, description="")
+        return System(id=render(SystemId(repo_id)), name=repo_id)
+    return System(id=render(SystemId(repo.id)), name=repo.name, description="")
 
 
 # ---------------------------------------------------------------------------
@@ -119,23 +133,33 @@ def _system_for(repo: Repository | None, repo_id: str) -> System:
 # ---------------------------------------------------------------------------
 
 
+async def _actors_for(
+    session: AsyncSession, repo_id: str, system: System
+) -> tuple[list[Person], list[Relation]]:
+    """The actor set and its edges into the system.
+
+    The two travel together on purpose. A person with no edge to the system is
+    an orphan: Structurizr's context view includes the system plus what is
+    related to it, so an unconnected actor is simply not drawn, and the batched
+    build used to produce exactly that by deriving the people alone.
+
+    Actors are derived from how the system is actually entered (CLI user, API
+    client, scheduled job …) rather than a lone hardcoded "User".
+    """
+    actors = derive_actors(await _curated_entry_points(session, repo_id))
+    people = [
+        Person(id=a.id, name=a.name, description=a.description, kind=a.kind) for a in actors
+    ]
+    relations = [Relation(source_id=a.id, target_id=system.id, label=a.verb) for a in actors]
+    return people, relations
+
+
 async def build_l1(session: AsyncSession, repo_id: str) -> C4L1:
     repo = await load_repo(session, repo_id)
     system = _system_for(repo, repo_id)
     externals, _ = await _external_views(session, repo_id)
 
-    # Derive the actor set from how the system is actually entered (CLI user,
-    # API client, scheduled job …) rather than a lone hardcoded "User".
-    entry_points = await _curated_entry_points(session, repo_id)
-    actors = derive_actors(entry_points)
-    people = [
-        Person(id=a.id, name=a.name, description=a.description, kind=a.kind)
-        for a in actors
-    ]
-
-    relations: list[Relation] = [
-        Relation(source_id=a.id, target_id=system.id, label=a.verb) for a in actors
-    ]
+    people, relations = await _actors_for(session, repo_id, system)
     for ext in externals:
         relations.append(
             Relation(source_id=system.id, target_id=ext.id, label=ext.category)
@@ -170,7 +194,7 @@ async def build_l2(session: AsyncSession, repo_id: str) -> C4L2:
     )
 
     # Only surface externals actually depended on by at least one container.
-    used_external_ids = {r.target_id for r in relations if r.target_id.startswith("ext:")}
+    used_external_ids = {r.target_id for r in relations if _is_external_box(r.target_id)}
     pruned_externals = [e for e in externals if e.id in used_external_ids]
     return C4L2(containers=containers, external_systems=pruned_externals, relations=relations)
 
@@ -229,8 +253,8 @@ async def build_l3(session: AsyncSession, repo_id: str, container_id_value: str)
     ]
 
     externals_all, _ = await _external_views(session, repo_id)
-    used_external_ids = {r.target_id for r in relations if r.target_id.startswith("ext:")}
-    used_external_ids |= {r.source_id for r in relations if r.source_id.startswith("ext:")}
+    used_external_ids = {r.target_id for r in relations if _is_external_box(r.target_id)}
+    used_external_ids |= {r.source_id for r in relations if _is_external_box(r.source_id)}
     externals = [e for e in externals_all if e.id in used_external_ids]
 
     return C4L3(
@@ -239,6 +263,169 @@ async def build_l3(session: AsyncSession, repo_id: str, container_id_value: str)
         external_systems=externals,
         relations=relations,
     )
+
+
+async def build_model(
+    session: AsyncSession, repo_id: str, *, include_components: bool = True
+) -> C4Model:
+    """Build every C4 level in one pass, for callers that need the whole model.
+
+    ``build_l3`` re-reads the graph per container, which is correct for a
+    dashboard showing one at a time and quadratic-feeling for anything walking
+    all of them. Here the file table and the edge table are each read once and
+    sliced in Python.
+
+    Set ``include_components=False`` to stop after containers — the component
+    level is the expensive half and an export may not want it.
+    """
+    repo = await load_repo(session, repo_id)
+    system = _system_for(repo, repo_id)
+    containers = await detect_containers(session, repo_id, root_name=repo.name if repo else None)
+    externals_all, _ = await _external_views(session, repo_id)
+
+    people, actor_relations = await _actors_for(session, repo_id, system)
+
+    file_to_container = await _file_to_container_map(session, repo_id, containers)
+    file_to_external = await external_node_to_system_id(session, repo_id)
+    containers = await _annotate_container_signals(
+        session, repo_id, containers, file_to_container
+    )
+
+    edges = await load_edges(session, repo_id)
+    container_relations = await aggregate_relations(
+        session,
+        repo_id,
+        file_to_box=file_to_container,
+        file_to_external=file_to_external,
+        edges=edges,
+    )
+
+    components_by_container: dict[str, list[Component]] = {}
+    component_relations: list[Relation] = []
+    file_to_component: dict[str, str] = {}
+    if include_components:
+        detected = await detect_components_for_all(session, repo_id, containers)
+        for cid, (components, file_index) in detected.items():
+            components_by_container[cid] = components
+            file_to_component.update(file_index)
+        component_relations = await aggregate_relations(
+            session,
+            repo_id,
+            file_to_box=file_to_component,
+            file_to_external=file_to_external,
+            edges=edges,
+        )
+
+    # An external nobody depends on is noise in every view that shows it.
+    used = {r.target_id for r in container_relations if _is_external_box(r.target_id)}
+    used |= {r.source_id for r in container_relations if _is_external_box(r.source_id)}
+    used |= {r.target_id for r in component_relations if _is_external_box(r.target_id)}
+    used |= {r.source_id for r in component_relations if _is_external_box(r.source_id)}
+    externals = [e for e in externals_all if e.id in used]
+
+    # Every per-file signal is read once here and rolled up to both levels, so
+    # the metadata costs a fixed number of queries rather than one per box.
+    per_file = await _per_file_signals(session, repo_id)
+    box_signals = build_box_signals(file_to_container, **per_file)
+    if file_to_component:
+        box_signals.update(build_box_signals(file_to_component, **per_file))
+
+    return C4Model(
+        system=system,
+        people=people,
+        containers=containers,
+        components_by_container=components_by_container,
+        external_systems=externals,
+        container_relations=container_relations,
+        component_relations=component_relations,
+        actor_relations=actor_relations,
+        box_signals=box_signals,
+        tour=await _tour_steps(session, repo_id),
+    )
+
+
+async def _per_file_signals(session: AsyncSession, repo_id: str) -> dict[str, dict]:
+    """Read the per-file health, ownership and layer sources, once each."""
+    git_rows = (
+        await session.execute(
+            select(
+                GitMetadata.file_path,
+                GitMetadata.is_hotspot,
+                GitMetadata.primary_owner_name,
+                GitMetadata.bus_factor,
+            ).where(GitMetadata.repository_id == repo_id)
+        )
+    ).all()
+    hotspot_paths = [row[0] for row in git_rows if row[1]]
+    file_owners = {row[0]: row[2] for row in git_rows if row[2]}
+    # A real bus factor is at least 1 — the indexer seeds the column with 0 and
+    # only overwrites it for files that have commit history, so 0 means "not
+    # known". Emitting it would read as "nobody owns this", which is a much
+    # louder claim than the gap it actually is.
+    file_bus_factors = {row[0]: row[3] for row in git_rows if row[3]}
+
+    dead_paths = [
+        row[0]
+        for row in (
+            await session.execute(
+                select(DeadCodeFinding.file_path).where(
+                    DeadCodeFinding.repository_id == repo_id,
+                    DeadCodeFinding.status == "open",
+                    DeadCodeFinding.kind == "unreachable_file",
+                )
+            )
+        ).all()
+    ]
+
+    # Layer membership is curated per file; a box inherits the layers of the
+    # files it holds. Layer node ids carry the KG "file:" prefix, the graph
+    # does not, so they are converted rather than compared raw.
+    file_layers: dict[str, str] = {}
+    for layer in await get_kg_layers(session, repo_id):
+        try:
+            node_ids = json.loads(layer.node_ids_json or "[]")
+        except (ValueError, TypeError):
+            continue
+        # Only a decode failure was guarded, but a column holding a valid JSON
+        # string or object parses fine and then iterates: a bare `"abc"` would
+        # yield the file paths "a", "b", "c", and an object its keys.
+        if not isinstance(node_ids, list):
+            continue
+        for node_id in node_ids:
+            path = file_path_of(str(node_id))
+            if path:
+                file_layers.setdefault(path, layer.name)
+
+    return {
+        "hotspot_paths": hotspot_paths,
+        "dead_paths": dead_paths,
+        "file_layers": file_layers,
+        "file_owners": file_owners,
+        "file_bus_factors": file_bus_factors,
+        # No git metadata at all means churn was never measured — every
+        # indexed repo with history has rows here. Without this an
+        # index-only run would report every box as hotspot-free.
+        "churn_measured": bool(git_rows),
+    }
+
+
+async def _tour_steps(session: AsyncSession, repo_id: str) -> list[TourStep]:
+    """The curated reading order, if this repo has one."""
+    layer_names = {
+        layer.layer_id: layer.name for layer in await get_kg_layers(session, repo_id)
+    }
+    steps = await get_kg_tour_steps(session, repo_id)
+    return [
+        TourStep(
+            order=step.step_order,
+            title=step.title,
+            description=step.description or "",
+            reason=step.reason or "",
+            target_path=step.target_path,
+            layer_name=layer_names.get(step.layer_id or ""),
+        )
+        for step in sorted(steps, key=lambda s: s.step_order)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +437,10 @@ async def _curated_entry_points(session: AsyncSession, repo_id: str) -> list[str
     """Return the curated entry-point paths persisted at index time.
 
     These are the ranked, cleaned execution starts (Phase 1) — not the raw
-    ingestion ``is_entry_point`` flags, which still include barrels/configs.
+    ingestion ``is_entry_point`` flags, which still include shallow barrels and
+    test/example paths. Candidacy drops configs and deep glue leaves at
+    ingestion now; the curator owns the layer/support and barrel exclusions
+    that need a layer map or parsed files.
     """
     project_meta = await get_kg_project_meta(session, repo_id)
     if not project_meta:

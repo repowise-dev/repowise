@@ -30,6 +30,7 @@ Trigger an incremental update of the Repowise index.
 - `--since REF` — base git ref to diff from (overrides saved last_sync_commit). Accepts a commit SHA, tag, or branch name.
 - `--cascade-budget N` — max pages to regenerate per run (default: 30)
 - `--dry-run` — show affected pages without regenerating
+- `-v, --verbose` — show the full changed-file list, per-phase internals, and debug logs (the run is quiet by default)
 
 ## Handling $ARGUMENTS
 

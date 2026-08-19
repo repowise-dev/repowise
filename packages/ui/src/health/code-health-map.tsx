@@ -1,6 +1,9 @@
 "use client";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+// Aliased: the bare name would shadow the DOM `KeyboardEvent` the Esc handler
+// below is typed against.
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import * as d3 from "d3-hierarchy";
 import { scoreBand, type ScoreBand } from "./tokens";
 import { useCommunityFamilies } from "../shared/use-theme-tokens";
@@ -59,14 +62,29 @@ export interface CodeHealthMapProps {
   minHeight?: number;
   /** Which lens recolors the field. Defaults to `health`. */
   overlay?: CodeHealthOverlay;
-  /** When provided, an on-canvas lens switcher is rendered. */
+  /** When provided, the lens is switchable. */
   onOverlayChange?: (overlay: CodeHealthOverlay) => void;
+  /** Lenses offered in the switcher. Defaults to {@link OVERLAY_ORDER}. */
+  lenses?: CodeHealthOverlay[];
   /**
    * The active overlay's per-file signal is still loading. When true the legend
    * shows a "loading…" note instead of its bands, so an all-neutral field reads
    * as "fetching data" rather than "no data".
    */
   overlayLoading?: boolean;
+  /**
+   * Where the lens switcher and legend live.
+   *
+   * `"canvas"` (default) floats them over the map. `"none"` renders neither, for
+   * hosts that lay them out themselves with {@link MapLensSwitcher} /
+   * {@link MapLegend} — the section-style Code Health page does this, because
+   * three glass panels stacked on the left of the canvas put chrome on top of
+   * the one thing the reader came for.
+   *
+   * Defaults to `"canvas"` so the VS Code webview, which has no other lens
+   * picker, keeps working untouched.
+   */
+  chrome?: "canvas" | "none";
 }
 
 /* Band → SVG fill var(). Same ramp as every score pill on the surface:
@@ -88,13 +106,13 @@ const BAND_LABEL: { band: ScoreBand; label: string }[] = [
 /** Neutral fill for nodes a non-health overlay has no signal for. */
 const NEUTRAL_FILL = "var(--color-text-tertiary)";
 
-interface LegendRow {
+export interface LegendRow {
   fill: string;
   label: string;
 }
 
-/** Lens metadata: how to fill a node and what the on-canvas key reads. */
-interface OverlaySpec {
+/** Lens metadata: how to fill a node and what the key reads. */
+export interface OverlaySpec {
   label: string;
   /** Caption shown under the legend key. */
   caption: string;
@@ -147,7 +165,7 @@ function churnFill(pctile: number | null | undefined): string {
   return "var(--color-success)";
 }
 
-const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
+export const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
   health: {
     label: "Health",
     caption: "galaxy = module · size = lines of code",
@@ -220,12 +238,19 @@ const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
 };
 
 /**
- * Lenses offered in the on-canvas switcher: the three co-equal health signals,
- * all backed by a per-file score in the map payload. Coverage / churn / dead-code
- * / security keep their `OVERLAY_SPECS` entries (other tabs still use them) but
- * are not presented in this switcher.
+ * Default lenses offered in the switcher: the three co-equal health signals,
+ * all backed by a per-file score that rides on the map payload itself.
+ *
+ * Churn is deliberately not in the default. It colors by `churn_percentile`,
+ * which arrives on a separate request the host has to join in, so offering it
+ * where nobody joined it paints an all-neutral field that reads as "no churn"
+ * rather than "no data". Hosts that do the join pass their own `lenses`.
  */
-const OVERLAY_ORDER: CodeHealthOverlay[] = ["health", "maintainability", "performance"];
+export const OVERLAY_ORDER: CodeHealthOverlay[] = [
+  "health",
+  "maintainability",
+  "performance",
+];
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5)); // ~2.39996 rad
 
@@ -311,7 +336,9 @@ export function CodeHealthMap({
   minHeight = 640,
   overlay = "health",
   onOverlayChange,
+  lenses = OVERLAY_ORDER,
   overlayLoading = false,
+  chrome = "canvas",
 }: CodeHealthMapProps) {
   const overlaySpec = OVERLAY_SPECS[overlay] ?? OVERLAY_SPECS.health;
   const containerRef = useRef<HTMLDivElement>(null);
@@ -434,14 +461,14 @@ export function CodeHealthMap({
   const q = (search ?? "").trim().toLowerCase();
 
   if (S === 0) {
-    return <div ref={containerRef} className="w-full rounded-xl bg-[var(--color-bg-canvas)]" style={{ minHeight }} />;
+    return <div ref={containerRef} className="w-full rounded-xl bg-[var(--color-bg-root)]" style={{ minHeight }} />;
   }
 
   if (files.length === 0) {
     return (
       <div
         ref={containerRef}
-        className="flex w-full items-center justify-center rounded-xl border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-canvas)] text-sm text-[var(--color-text-tertiary)]"
+        className="flex w-full items-center justify-center rounded-xl border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-root)] text-sm text-[var(--color-text-tertiary)]"
         style={{ minHeight }}
       >
         No files to map yet. Index this repo to populate health.
@@ -468,11 +495,22 @@ export function CodeHealthMap({
         <defs>
           <radialGradient id="ch-mist" cx="50%" cy="42%" r="75%">
             <stop offset="0%" stopColor="var(--color-bg-surface)" />
-            <stop offset="100%" stopColor="var(--color-bg-canvas)" />
+            <stop offset="100%" stopColor="var(--color-bg-root)" />
           </radialGradient>
-          <filter id="ch-nebula" x="-30%" y="-30%" width="160%" height="160%">
-            <feGaussianBlur stdDeviation="7" />
-          </filter>
+          {/* Nebula falloff. This was an feGaussianBlur, which is an offscreen
+              raster pass per blob — and the blobs live inside the group whose
+              transform animates on every galaxy zoom, so all of them re-rastered
+              every frame of a 460ms transition. A gradient is painted directly,
+              costs nothing to animate, and the stops below are tuned to match
+              the old stdDeviation=7 edge: flat through the middle, soft over the
+              last ~15%. `currentColor` resolves per blob, so one def serves
+              every galaxy family instead of one gradient each. */}
+          <radialGradient id="ch-nebula">
+            <stop offset="0%" stopColor="currentColor" stopOpacity="1" />
+            <stop offset="70%" stopColor="currentColor" stopOpacity="1" />
+            <stop offset="88%" stopColor="currentColor" stopOpacity="0.55" />
+            <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
+          </radialGradient>
         </defs>
 
         {/* Misty backdrop + starfield (static, clicking it exits a galaxy). */}
@@ -500,10 +538,14 @@ export function CodeHealthMap({
                 key={`blob-${g.module}`}
                 cx={g.cx + offX}
                 cy={g.cy + offY}
-                r={g.R * 0.96}
-                fill={fam.hub}
+                // Was 0.96 with a blur that spread past the edge; the gradient
+                // stops inside its own radius, so the blob grows to compensate.
+                r={g.R * 1.02}
+                // `color` feeds the gradient's currentColor stops.
+                style={{ color: fam.hub }}
+                fill="url(#ch-nebula)"
                 fillOpacity={faded ? 0.05 : 0.16}
-                filter="url(#ch-nebula)"
+                data-galaxy={g.module}
                 className="cursor-zoom-in"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -545,6 +587,7 @@ export function CodeHealthMap({
             q={q}
             offX={offX}
             offY={offY}
+            strokeWidth={0.5 / k}
             interactive={!!onSelectFile}
             onSelect={handleSelect}
             onHoverEnter={handleHoverEnter}
@@ -575,7 +618,7 @@ export function CodeHealthMap({
                 r={Math.max(2.5, g.R * 0.035)}
                 fill={fam.hub}
                 fillOpacity={faded ? 0.3 : 0.95}
-                stroke="var(--color-bg-canvas)"
+                stroke="var(--color-bg-root)"
                 strokeWidth={1}
                 vectorEffect="non-scaling-stroke"
                 className="pointer-events-none"
@@ -597,8 +640,11 @@ export function CodeHealthMap({
           return (
             <span
               key={`lbl-${g.module}`}
-              className={`absolute -translate-x-1/2 -translate-y-1/2 inline-flex items-center gap-1.5 whitespace-nowrap rounded bg-[var(--color-bg-glass)] px-1.5 py-0.5 font-serif uppercase tracking-wide text-[var(--color-text-primary)] shadow-sm ring-1 ring-[var(--color-border-default)] backdrop-blur-sm ${
-                big ? "text-sm font-semibold" : "text-[12px] font-medium"
+              // Mono, not serif. These are data-viz labels on a canvas overlay
+              // — machine-produced names, which the type rules put in mono;
+              // serif is reserved for long-form reading surfaces.
+              className={`absolute -translate-x-1/2 -translate-y-1/2 inline-flex items-center gap-1.5 whitespace-nowrap rounded bg-[var(--color-bg-glass)] px-1.5 py-0.5 font-mono uppercase tracking-[0.12em] text-[var(--color-text-primary)] shadow-sm ring-1 ring-[var(--color-border-default)] backdrop-blur-sm ${
+                big ? "text-[11px] font-medium" : "text-[10px]"
               }`}
               style={{ left: p.x, top: p.y }}
             >
@@ -611,60 +657,49 @@ export function CodeHealthMap({
         })}
       </div>
 
-      {/* Lens switcher (on-canvas) — recolors the same field. */}
-      {onOverlayChange ? (
-        <div className="absolute left-3 top-3 flex flex-wrap gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-glass)] p-1 text-xs shadow-sm backdrop-blur-sm">
-          {OVERLAY_ORDER.map((mode) => (
-            <button
-              key={mode}
-              type="button"
-              onClick={() => onOverlayChange(mode)}
-              aria-pressed={overlay === mode}
-              className={
-                overlay === mode
-                  ? "rounded px-2 py-1 font-medium bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)]"
-                  : "rounded px-2 py-1 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-              }
-            >
-              {OVERLAY_SPECS[mode].label}
-            </button>
-          ))}
-        </div>
-      ) : null}
+      {/* Lens switcher + legend, floated over the canvas. Only for hosts that
+          have nowhere else to put them (the VS Code webview). The web page
+          passes chrome="none" and lays both out around the map instead, so the
+          reader is not looking at the field through three glass panels. */}
+      {chrome === "canvas" ? (
+        <>
+          {onOverlayChange ? (
+            <div className="absolute left-3 top-3 flex flex-wrap gap-1 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-glass)] p-1 text-xs shadow-sm backdrop-blur-sm">
+              {lenses.map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => onOverlayChange(mode)}
+                  aria-pressed={overlay === mode}
+                  className={
+                    overlay === mode
+                      ? "rounded px-2 py-1 font-medium bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)]"
+                      : "rounded px-2 py-1 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                  }
+                >
+                  {OVERLAY_SPECS[mode].label}
+                </button>
+              ))}
+            </div>
+          ) : null}
 
-      {/* Legend (on-canvas) — follows the active lens. */}
-      <div
-        className={`absolute left-3 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-glass)] px-3 py-2 text-xs shadow-sm backdrop-blur-sm ${
-          onOverlayChange ? "top-14" : "top-3"
-        }`}
-      >
-        <div className="mb-1.5 font-medium text-[var(--color-text-secondary)]">
-          {overlaySpec.label}
-        </div>
-        {overlayLoading ? (
-          <div className="flex items-center gap-1.5 text-[var(--color-text-tertiary)]">
-            <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-[var(--color-text-tertiary)]" />
-            loading {overlaySpec.label.toLowerCase()}…
+          <div
+            className={`absolute left-3 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-glass)] px-3 py-2 text-xs shadow-sm backdrop-blur-sm ${
+              onOverlayChange ? "top-14" : "top-3"
+            }`}
+          >
+            <div className="mb-1.5 font-medium text-[var(--color-text-secondary)]">
+              {overlaySpec.label}
+            </div>
+            <MapLegendRows spec={overlaySpec} loading={overlayLoading} />
+            <div className="mt-2 border-t border-[var(--color-border-default)] pt-1.5 text-[var(--color-text-tertiary)]">
+              {overlaySpec.caption}
+              <br />
+              click a galaxy to zoom
+            </div>
           </div>
-        ) : (
-          <div className="flex flex-col gap-1">
-            {overlaySpec.legend.map((row) => (
-              <span
-                key={row.label}
-                className="flex items-center gap-1.5 text-[var(--color-text-tertiary)]"
-              >
-                <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: row.fill }} />
-                {row.label}
-              </span>
-            ))}
-          </div>
-        )}
-        <div className="mt-2 border-t border-[var(--color-border-default)] pt-1.5 text-[var(--color-text-tertiary)]">
-          {overlaySpec.caption}
-          <br />
-          click a galaxy to zoom
-        </div>
-      </div>
+        </>
+      ) : null}
 
       {/* Zoom-out breadcrumb — only shown while a galaxy is focused */}
       {focusGalaxy ? (
@@ -699,6 +734,7 @@ const FileNodes = memo(function FileNodes({
   q,
   offX,
   offY,
+  strokeWidth,
   interactive,
   onSelect,
   onHoverEnter,
@@ -710,6 +746,20 @@ const FileNodes = memo(function FileNodes({
   q: string;
   offX: number;
   offY: number;
+  /**
+   * Stroke in user units, pre-divided by the zoom scale so it lands on 0.5
+   * device px at rest.
+   *
+   * The obvious spelling is `vectorEffect="non-scaling-stroke"`, which is what
+   * this used. But Chrome recomputes stroke geometry per element per frame for
+   * that attribute, and these are ~2,000 elements inside the group whose
+   * transform animates on every galaxy zoom. Dividing by `k` instead is free.
+   * The trade is that during the 460ms transition the browser interpolates the
+   * transform while this value is already at its destination, so strokes are
+   * fractionally off mid-flight — invisible on a 0.5px line under a moving
+   * field, and the field is correct the instant it settles.
+   */
+  strokeWidth: number;
   interactive: boolean;
   onSelect: (path: string) => void;
   onHoverEnter: (f: CodeHealthMapFile) => void;
@@ -725,16 +775,21 @@ const FileNodes = memo(function FileNodes({
               const f = nd.file;
               const dim = q.length > 0 && !f.file_path.toLowerCase().includes(q);
               return (
+                /* No <title> child. It was ~2,000 extra DOM nodes driving a
+                   native tooltip that appears on its own delay, in the corner
+                   the pointer is in, restating what HoverCard already shows
+                   the moment you touch a node — two tooltips racing. `data-path`
+                   costs no node and gives tests a stable handle. */
                 <circle
                   key={f.file_path}
+                  data-path={f.file_path}
                   cx={nd.x + offX}
                   cy={nd.y + offY}
                   r={nd.r}
                   fill={fill(f)}
                   fillOpacity={faded ? 0.18 : dim ? 0.12 : 0.9}
-                  stroke="var(--color-bg-canvas)"
-                  strokeWidth={0.5}
-                  vectorEffect="non-scaling-stroke"
+                  stroke="var(--color-bg-root)"
+                  strokeWidth={strokeWidth}
                   className={interactive ? "cursor-pointer" : undefined}
                   onMouseEnter={() => onHoverEnter(f)}
                   onMouseLeave={() => onHoverLeave(f)}
@@ -742,9 +797,7 @@ const FileNodes = memo(function FileNodes({
                     e.stopPropagation();
                     onSelect(f.file_path);
                   }}
-                >
-                  <title>{`${f.file_path}\nscore ${f.score.toFixed(1)} · ${f.nloc.toLocaleString()} NLOC`}</title>
-                </circle>
+                />
               );
             })}
           </g>
@@ -794,7 +847,7 @@ function NodeHighlight({
           r={hov.r + 1.5}
           fill={fill(hov.file)}
           fillOpacity={1}
-          stroke="var(--color-bg-canvas)"
+          stroke="var(--color-bg-root)"
           strokeWidth={0.5}
           vectorEffect="non-scaling-stroke"
         />
@@ -813,6 +866,138 @@ function HoverCard({ file }: { file: CodeHealthMapFile }) {
         {cov != null ? ` · ${Math.round(cov)}% cov` : ""}
         {file.has_test_file ? "" : " · untested"}
       </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * Map chrome
+ *
+ * The switcher and the key, as components a host can place around the map
+ * rather than on top of it. Both read the same {@link OVERLAY_SPECS} the
+ * canvas does, so an off-canvas legend can never drift from the fills it is
+ * describing.
+ * ------------------------------------------------------------------ */
+
+/** The legend's colour rows, shared by both placements. */
+function MapLegendRows({ spec, loading }: { spec: OverlaySpec; loading: boolean }) {
+  if (loading) {
+    return (
+      <div className="flex items-center gap-1.5 text-[var(--color-text-tertiary)]">
+        <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-[var(--color-text-tertiary)]" />
+        loading {spec.label.toLowerCase()}…
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1">
+      {spec.legend.map((row) => (
+        <span key={row.label} className="flex items-center gap-1.5 text-[var(--color-text-tertiary)]">
+          <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: row.fill }} />
+          {row.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The lens switcher as a real segmented control, for `chrome="none"` hosts.
+ *
+ * A radiogroup rather than a row of `aria-pressed` buttons: picking a lens is
+ * one choice out of a set, and the roving-tabindex arrow-key behaviour comes
+ * free with the role.
+ */
+export function MapLensSwitcher({
+  overlay,
+  onOverlayChange,
+  lenses = OVERLAY_ORDER,
+  className,
+}: {
+  overlay: CodeHealthOverlay;
+  onOverlayChange: (overlay: CodeHealthOverlay) => void;
+  lenses?: CodeHealthOverlay[];
+  className?: string;
+}) {
+  const onKeyDown = (e: ReactKeyboardEvent) => {
+    const i = lenses.indexOf(overlay);
+    if (i < 0) return;
+    let next = i;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") next = (i + 1) % lenses.length;
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp")
+      next = (i - 1 + lenses.length) % lenses.length;
+    else return;
+    e.preventDefault();
+    const target = lenses[next];
+    if (target) onOverlayChange(target);
+  };
+
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Map lens"
+      onKeyDown={onKeyDown}
+      className={`inline-flex rounded-md border border-[var(--color-border-default)] p-0.5 ${className ?? ""}`}
+    >
+      {lenses.map((mode) => {
+        const active = overlay === mode;
+        return (
+          <button
+            key={mode}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            tabIndex={active ? 0 : -1}
+            onClick={() => onOverlayChange(mode)}
+            className={`rounded px-2.5 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] ${
+              active
+                ? "bg-[var(--color-bg-elevated)] font-semibold text-[var(--color-text-primary)]"
+                : "font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+            }`}
+          >
+            {OVERLAY_SPECS[mode].label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * The active lens's key, laid out as a horizontal strip to sit under the map.
+ *
+ * Same content as the on-canvas panel, arranged to read as a caption rather
+ * than as a floating card: the swatches run inline and the lens caption closes
+ * the line.
+ */
+export function MapLegend({
+  overlay,
+  loading = false,
+  className,
+}: {
+  overlay: CodeHealthOverlay;
+  loading?: boolean;
+  className?: string;
+}) {
+  const spec = OVERLAY_SPECS[overlay] ?? OVERLAY_SPECS.health;
+  return (
+    <div
+      className={`flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-[var(--color-text-tertiary)] ${className ?? ""}`}
+    >
+      {loading ? (
+        <span className="flex items-center gap-1.5">
+          <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--color-text-tertiary)]" />
+          loading {spec.label.toLowerCase()}…
+        </span>
+      ) : (
+        spec.legend.map((row) => (
+          <span key={row.label} className="flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: row.fill }} />
+            {row.label}
+          </span>
+        ))
+      )}
+      <span className="font-mono text-[10px] uppercase tracking-[0.12em]">{spec.caption}</span>
     </div>
   );
 }

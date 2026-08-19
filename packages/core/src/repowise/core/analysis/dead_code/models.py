@@ -25,7 +25,6 @@ class DeadCodeFindingData:
     last_commit_at: datetime | None
     commit_count_90d: int
     lines: int
-    package: str | None
     evidence: list[str]
     safe_to_delete: bool
     primary_owner: str | None
@@ -48,3 +47,17 @@ class DeadCodeReport:
     findings: list[DeadCodeFindingData]
     deletable_lines: int
     confidence_summary: dict  # {"high": N, "medium": N, "low": N}
+    #: Number of findings produced by the analyzers but dropped because their
+    #: confidence is below ``min_confidence``.  Exposed so the CLI can print a
+    #: "N findings hidden; pass --min-confidence 0.0 to see them" footer
+    #: without changing what the buckets mean or what the report returns.
+    hidden_below_threshold: int = 0
+    #: The file paths this report is allowed to speak for, or ``None`` for
+    #: "all of them". Confidence is scored from per-file git metadata, and a
+    #: file with no metadata is indistinguishable from one with no commits —
+    #: it scores 0.7 with ``safe_to_delete=True`` however active it is. The
+    #: incremental path can only obtain metadata for some files, so it sets
+    #: this to the set it actually has, and persistence leaves every other
+    #: file's stored verdict alone rather than overwriting it with a guess.
+    #: A full run has metadata for everything and leaves this ``None``.
+    authoritative_paths: frozenset[str] | None = None

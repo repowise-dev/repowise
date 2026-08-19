@@ -1,11 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { config } from "@/lib/config";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@repowise-dev/ui/ui/card";
-import { Label } from "@repowise-dev/ui/ui/label";
+import { OverviewSection } from "@repowise-dev/ui/overview";
 import { Input } from "@repowise-dev/ui/ui/input";
-import { Badge } from "@repowise-dev/ui/ui/badge";
 import {
   Select,
   SelectContent,
@@ -13,18 +11,25 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repowise-dev/ui/ui/select";
+import {
+  SettingsRow,
+  SettingsRows,
+  SaveIndicator,
+  EnvVarLine,
+  type SaveState,
+} from "@repowise-dev/ui/settings";
 
 const PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "kimi", "opencode", "ollama", "litellm", "mock"] as const;
 const EMBEDDERS = ["mock", "gemini", "openai", "openrouter", "ollama"] as const;
 
 const MODEL_PLACEHOLDERS: Record<string, string> = {
-  gemini: "gemini-3.1-flash-lite-preview",
-  openai: "gpt-5.4-nano",
-  anthropic: "claude-sonnet-4-6",
+  gemini: "gemini-3.5-flash-lite",
+  openai: "gpt-5.6-luna",
+  anthropic: "claude-haiku-4-5",
   deepseek: "deepseek-v4-flash",
   kimi: "kimi-for-coding",
   opencode: "opencode/default",
-  ollama: "llama3.2",
+  ollama: "qwen3.5:4b",
   litellm: "groq/llama-3.1-70b-versatile",
   mock: "mock",
 };
@@ -49,22 +54,29 @@ const EMBEDDER_ENV_VARS: Record<string, string[]> = {
   mock: [],
 };
 
-type TestStatus = "idle" | "testing" | "ok" | "error";
-
+/**
+ * Model and embedder defaults for init/sync triggered from the UI.
+ *
+ * This used to render a second card, "Server Connection", with its own Test
+ * button against the same `/api/health` that `ConnectionSection` already tests
+ * — a hand-rolled `<button>` painted with `--color-border`, a token defined in
+ * no stylesheet, reporting with literal ✓/✗ glyphs. It is gone; what it
+ * uniquely showed, the provider the *server* is configured with, is a line
+ * here where it belongs.
+ */
 export function ProviderSection() {
   const [provider, setProvider] = useState("gemini");
   const [model, setModel] = useState("");
   const [embedder, setEmbedder] = useState("mock");
-  const [testStatus, setTestStatus] = useState<TestStatus>("idle");
-  const [testError, setTestError] = useState("");
   const [serverProvider, setServerProvider] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [saveState, setSaveState] = useState<SaveState>("idle");
+
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setProvider(config.getProvider());
     setModel(config.getModel());
     setEmbedder(config.getEmbedder());
-    // Fetch current server config from /api/health
     fetch("/api/health")
       .then((r) => r.json())
       .then((data) => {
@@ -73,101 +85,93 @@ export function ProviderSection() {
       .catch(() => {});
   }, []);
 
+  useEffect(
+    () => () => {
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+    },
+    [],
+  );
+
+  function flashSaved() {
+    setSaveState("saved");
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setSaveState("idle"), 2000);
+  }
+
   function handleProviderChange(v: string) {
     setProvider(v);
     config.setProvider(v);
-    setTestStatus("idle");
+    flashSaved();
   }
 
   function handleEmbedderChange(v: string) {
     setEmbedder(v);
     config.setEmbedder(v);
+    flashSaved();
   }
 
-  async function handleTestConnection() {
-    setTestStatus("testing");
-    setTestError("");
-    try {
-      const res = await fetch("/api/health");
-      const data = await res.json();
-      if (res.ok && data.status === "healthy") {
-        setTestStatus("ok");
-      } else {
-        setTestStatus("error");
-        setTestError(data.status ?? "Server returned non-healthy status");
-      }
-    } catch (err) {
-      setTestStatus("error");
-      setTestError(String(err));
-    }
+  function handleModelBlur() {
+    config.setModel(model);
+    flashSaved();
   }
 
   const providerInfo = PROVIDER_ENV_VARS[provider];
   const embedderVars = EMBEDDER_ENV_VARS[embedder] ?? [];
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Provider &amp; Model</CardTitle>
-          <CardDescription>
-            Defaults used when triggering init or sync from the UI.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label>Provider</Label>
-              <Select value={provider} onValueChange={handleProviderChange}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PROVIDERS.map((p) => (
-                    <SelectItem key={p} value={p}>
-                      {p}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="model">Model</Label>
-              <Input
-                id="model"
-                placeholder={MODEL_PLACEHOLDERS[provider] ?? "model name"}
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                onBlur={() => config.setModel(model)}
-                className="font-mono"
-              />
-            </div>
-          </div>
-
-          {providerInfo && providerInfo.vars.length > 0 && (
-            <div className="rounded-md border border-dashed p-3 space-y-1.5">
-              <p className="text-xs font-medium text-[var(--color-text-secondary)]">
-                Required env vars for {provider}:
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {providerInfo.vars.map((v) => (
-                  <code
-                    key={v}
-                    className="text-xs bg-[var(--color-bg-secondary)] px-1.5 py-0.5 rounded font-mono"
-                  >
-                    {v}
-                  </code>
+    <OverviewSection
+      title="Model defaults"
+      description={
+        serverProvider
+          ? `Used when you trigger init or sync from this dashboard. The server itself is currently configured with ${serverProvider}.`
+          : "Used when you trigger init or sync from this dashboard."
+      }
+      action={<SaveIndicator state={saveState} />}
+    >
+      <SettingsRows>
+        <SettingsRow
+          label="Provider"
+          hint={providerInfo?.installHint}
+        >
+          <div className="space-y-2">
+            <Select value={provider} onValueChange={handleProviderChange}>
+              <SelectTrigger className="w-full sm:w-64">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PROVIDERS.map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {p}
+                  </SelectItem>
                 ))}
-              </div>
-              <p className="text-xs text-[var(--color-text-tertiary)]">{providerInfo.installHint}</p>
-            </div>
-          )}
+              </SelectContent>
+            </Select>
+            {providerInfo && <EnvVarLine vars={providerInfo.vars} />}
+          </div>
+        </SettingsRow>
 
-          <div className="space-y-1.5">
-            <Label>Embedder</Label>
+        <SettingsRow
+          label="Model"
+          htmlFor="model"
+          hint="Leave blank to use the provider's default."
+        >
+          <Input
+            id="model"
+            placeholder={MODEL_PLACEHOLDERS[provider] ?? "model name"}
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            onBlur={handleModelBlur}
+            className="font-mono sm:max-w-md"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label="Embedder"
+          hint="What semantic search is built from. The mock embedder disables it."
+        >
+          <div className="space-y-2">
             <Select value={embedder} onValueChange={handleEmbedderChange}>
-              <SelectTrigger className="w-48">
+              <SelectTrigger className="w-full sm:w-64">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -178,59 +182,40 @@ export function ProviderSection() {
                 ))}
               </SelectContent>
             </Select>
-            {embedderVars.length > 0 && (
-              <p className="text-xs text-[var(--color-text-tertiary)]">
-                Requires{" "}
-                {embedderVars.map((v) => (
-                  <code key={v} className="font-mono">{v}</code>
-                ))}{" "}
-                — set <code className="font-mono">REPOWISE_EMBEDDER={embedder}</code> on the server.
-              </p>
-            )}
-            {embedder === "mock" && (
-              <p className="text-xs text-[var(--color-text-tertiary)]">
-                Using mock embedder — semantic search disabled. Set{" "}
-                <code className="font-mono">REPOWISE_EMBEDDER=gemini</code> or{" "}
-                <code className="font-mono">REPOWISE_EMBEDDER=openai</code> for real RAG.
-              </p>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Server Connection</CardTitle>
-          <CardDescription>
-            Test that the repowise server is reachable and healthy.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {serverProvider && (
-            <p className="text-sm text-[var(--color-text-secondary)]">
-              Server configured with provider:{" "}
-              <Badge variant="outline" className="font-mono text-xs">{serverProvider}</Badge>
-            </p>
-          )}
-          <div className="flex items-center gap-3">
-            <button
-              onClick={handleTestConnection}
-              disabled={testStatus === "testing"}
-              className="text-sm px-3 py-1.5 rounded-md border border-[var(--color-border)] hover:bg-[var(--color-bg-secondary)] disabled:opacity-50 transition-colors"
-            >
-              {testStatus === "testing" ? "Testing…" : "Test connection"}
-            </button>
-            {testStatus === "ok" && (
-              <span className="text-sm text-[var(--color-success)]">✓ Server healthy</span>
-            )}
-            {testStatus === "error" && (
-              <span className="text-sm text-[var(--color-error)]">
-                ✗ {testError || "Connection failed"}
-              </span>
+            {embedder === "mock" ? (
+              <EnvVarLine
+                vars={[]}
+                note={
+                  <>
+                    Semantic search is off. Set{" "}
+                    <code className="font-mono text-[var(--color-text-secondary)]">
+                      REPOWISE_EMBEDDER=gemini
+                    </code>{" "}
+                    or{" "}
+                    <code className="font-mono text-[var(--color-text-secondary)]">
+                      REPOWISE_EMBEDDER=openai
+                    </code>{" "}
+                    on the server for real retrieval.
+                  </>
+                }
+              />
+            ) : (
+              <EnvVarLine
+                vars={embedderVars}
+                note={
+                  <>
+                    Set{" "}
+                    <code className="font-mono text-[var(--color-text-secondary)]">
+                      REPOWISE_EMBEDDER={embedder}
+                    </code>{" "}
+                    on the server.
+                  </>
+                }
+              />
             )}
           </div>
-        </CardContent>
-      </Card>
-    </div>
+        </SettingsRow>
+      </SettingsRows>
+    </OverviewSection>
   );
 }

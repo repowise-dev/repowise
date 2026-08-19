@@ -4,7 +4,7 @@ Uses the same google-genai SDK as GeminiEmbedder for consistency.
 Runs the synchronous SDK call in a thread pool to avoid blocking asyncio.
 
 Recommended models:
-    - gemini-3.1-flash-lite-preview  — fast + cheap (default)
+    - gemini-3.5-flash-lite  — fast + cheap (default)
     - gemini-3-flash-preview         — higher quality
 """
 
@@ -30,6 +30,7 @@ from repowise.core.providers.llm.base import (
     RateLimitError,
     ensure_reasoning_supported,
     fallback_model_option,
+    normalize_stop_reason,
     provider_retry_stop,
     provider_retry_wait,
     provider_should_retry,
@@ -200,7 +201,7 @@ class GeminiProvider(BaseProvider):
     """Native Gemini provider using the google-genai SDK.
 
     Args:
-        model:        Gemini model name. Defaults to gemini-3.1-flash-lite-preview.
+        model:        Gemini model name. Defaults to gemini-3.5-flash-lite.
         api_key:      Google API key. Falls back to GEMINI_API_KEY or GOOGLE_API_KEY env var.
         base_url:     Optional custom base URL (e.g., for proxy/self-hosted endpoints).
         rate_limiter: Optional RateLimiter instance.
@@ -209,7 +210,7 @@ class GeminiProvider(BaseProvider):
 
     def __init__(
         self,
-        model: str = "gemini-3.1-flash-lite-preview",
+        model: str = "gemini-3.5-flash-lite",
         api_key: str | None = None,
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
@@ -350,9 +351,7 @@ class GeminiProvider(BaseProvider):
                 config_kwargs: dict[str, Any] = {
                     "system_instruction": system_prompt,
                     "temperature": temperature,
-                    # max_output_tokens intentionally omitted — Gemini flash
-                    # models default to 65k tokens, which is far better for
-                    # documentation generation than any low cap we'd impose.
+                    "max_output_tokens": max_tokens,
                 }
                 if thinking_config is not None:
                     config_kwargs["thinking_config"] = thinking_config
@@ -375,11 +374,17 @@ class GeminiProvider(BaseProvider):
                 raise ProviderError("gemini", f"{type(exc).__name__}: {exc_str}") from exc
 
             usage = response.usage_metadata
+            candidate = response.candidates[0] if response.candidates else None
+            stop_reason, provider_stop_reason = normalize_stop_reason(
+                getattr(candidate, "finish_reason", None)
+            )
             return GeneratedResponse(
                 content=response.text or "",
                 input_tokens=getattr(usage, "prompt_token_count", 0) or 0,
                 output_tokens=getattr(usage, "candidates_token_count", 0) or 0,
                 cached_tokens=getattr(usage, "cached_content_token_count", 0) or 0,
+                stop_reason=stop_reason,
+                provider_stop_reason=provider_stop_reason,
                 usage={
                     "prompt_token_count": getattr(usage, "prompt_token_count", 0) or 0,
                     "candidates_token_count": getattr(usage, "candidates_token_count", 0) or 0,
@@ -415,7 +420,7 @@ class GeminiProvider(BaseProvider):
                     model=self._model,
                     input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
-                    operation="doc_generation",
+                    operation=self._cost_tracker.operation,
                     file_path=None,
                 )
 

@@ -24,7 +24,8 @@ when ``--full`` is passed.
 
 from __future__ import annotations
 
-import dataclasses
+import contextlib
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -36,47 +37,84 @@ from repowise.cli.helpers import (
     get_head_commit,
     load_config,
     load_state,
+    resolve_max_file_pages,
     resolve_provider,
     resolve_reasoning,
     run_async,
     save_state,
+    stamp_offered_slots,
 )
+from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+from repowise.core.docs_mode import docs_mode_state_fields
+from repowise.core.update_lock import release_update_lock, try_acquire_update_lock
 
 
-def _reparse(repo_path: Path, exclude_patterns: list[str]) -> tuple[list[Any], dict[str, bytes], Any]:
+def _gate_cost(
+    parsed_files: list[Any],
+    graph_builder: Any,
+    config: Any,
+    provider: Any,
+    repo_path: Path,
+    *,
+    yes: bool,
+) -> None:
+    """Print the estimated spend and confirm past the gate. Raises on decline.
+
+    Best-effort on the estimate itself: a failure there prints the reason and
+    lets the run proceed rather than blocking an upgrade on a number that is
+    advisory anyway.
+    """
+    try:
+        from repowise.cli.commands.init_cmd.generation import (
+            COST_GATE_USD,
+            cost_gate_declined,
+            format_cost,
+        )
+        from repowise.core.cost_estimator import build_generation_plan, estimate_cost
+
+        plans = build_generation_plan(parsed_files, graph_builder, config)
+        est = estimate_cost(plans, provider.provider_name, provider.model_name, repo_path=repo_path)
+    except Exception as exc:
+        console.print(f"[yellow]Cost estimate unavailable ({exc}); continuing.[/yellow]")
+        return
+
+    pages = sum(p.count for p in plans)
+    console.print(f"Estimated: [bold]{pages}[/bold] pages, [bold]{format_cost(est)}[/bold].")
+
+    # Nothing to ask on a run that cannot be asked. Without this the confirm
+    # reads EOF, raises, and the caller reports a successful run that generated
+    # nothing, which is the worst of the three possible answers.
+    if est.estimated_cost_usd > COST_GATE_USD and not yes and not sys.stdin.isatty():
+        raise click.ClickException(
+            f"This would spend about {format_cost(est)} and there is no terminal to "
+            "confirm on. Re-run with --yes to accept the cost."
+        )
+    if cost_gate_declined(est, yes=yes, message="  Generate the wiki at this cost?"):
+        raise click.Abort()
+
+
+def _reparse(
+    repo_path: Path, exclude_patterns: list[str]
+) -> tuple[list[Any], dict[str, bytes], Any]:
     """Parse files for ASTs + source bytes WITHOUT building/resolving the graph.
 
-    The graph is rehydrated from SQL separately; here we only need the parsed
-    files and raw source the generator consumes. Skipping ``GraphBuilder.build``
-    is the whole point — that resolution pass is what the fast index already did.
+    Thin CLI wrapper over :func:`repowise.core.pipeline.reparse_repo`: reads the
+    persisted submodule/nested-repo semantics from ``state.json`` so a fast index
+    built with ``--include-submodules`` re-parses the same file set, then defers
+    to the shared core parser.
     """
-    from repowise.core.ingestion import ASTParser, FileTraverser
+    from repowise.core.pipeline import reparse_repo
 
     # Honor the persisted submodule semantics of the original index — a
     # fast index built with --include-submodules must not drop submodule
     # files from the docs re-parse (missing key → False, legacy behavior).
     state = load_state(repo_path)
-    traverser = FileTraverser(
+    return reparse_repo(
         repo_path,
-        extra_exclude_patterns=exclude_patterns or None,
+        exclude_patterns,
         include_submodules=bool(state.get("include_submodules", False)),
         include_nested_repos=bool(state.get("include_nested_repos", False)),
     )
-    file_infos = list(traverser.traverse())
-    repo_structure = traverser.get_repo_structure()
-
-    parser = ASTParser()
-    parsed_files: list[Any] = []
-    source_map: dict[str, bytes] = {}
-    for fi in file_infos:
-        try:
-            source = Path(fi.abs_path).read_bytes()
-            parsed = parser.parse_file(fi, source)
-            parsed_files.append(parsed)
-            source_map[fi.path] = source
-        except Exception:
-            pass  # unreadable / unparseable files are skipped, as in init
-    return parsed_files, source_map, repo_structure
 
 
 async def _backfill_git(
@@ -119,9 +157,7 @@ async def _backfill_git(
             console.print(
                 "[dim]Found an interrupted git backfill — resuming (re-running FULL tier).[/dim]"
             )
-        summary, git_results = await backfill_full_tier(
-            indexer, repo_id, job_store=job_store
-        )
+        summary, git_results = await backfill_full_tier(indexer, repo_id, job_store=job_store)
         if git_results:
             await upsert_git_metadata_bulk(session, repo_id, git_results)
             await recompute_git_percentiles(session, repo_id)
@@ -146,6 +182,8 @@ async def _run_upgrade(
     exclude_patterns: list[str],
     commit_limit: int | None,
     follow_renames: bool,
+    embedder_name: str | None,
+    yes: bool,
 ) -> list[Any]:
     """Drive the full upgrade and return the generated pages."""
     from repowise.cli.helpers import get_db_url_for_repo
@@ -156,7 +194,7 @@ async def _run_upgrade(
         create_session_factory,
         get_session,
         init_db,
-        upsert_page_from_generated,
+        upsert_pages_from_generated,
         upsert_repository,
     )
     from repowise.core.pipeline import rehydrate_graph_builder, run_generation
@@ -194,6 +232,13 @@ async def _run_upgrade(
         "(graph reused from index — not re-resolved)."
     )
 
+    # Show the bill before running it. `init` gates its generation phase and
+    # this one did not, which mattered little while `--full` only ever followed
+    # an explicit `--mode fast`, and matters now that it is the advertised way
+    # to turn a template wiki into a written one: the user reaching for it has
+    # never been shown a cost for this repo.
+    _gate_cost(parsed_files, graph_builder, config, provider, repo_path, yes=yes)
+
     # 5. Generate the docs the fast index skipped. Honor the cost-tracking
     # opt-out (issue #326) so REPOWISE_NO_COST_TRACKING is respected here too;
     # an in-memory tracker still powers the live cost readout.
@@ -206,6 +251,21 @@ async def _run_upgrade(
         # they never contend with the generation writer (issue #326).
         cost_tracker = CostTracker(session_factory=sf, repo_id=repo_id, buffered=True)
     provider._cost_tracker = cost_tracker
+
+    # Embed as we generate. Leaving this None meant the upgrade produced a
+    # fully written wiki that semantic search could not see, and the user had
+    # no reason to suspect it: nothing in the output mentions embedding. The
+    # store is the same LanceDB directory `init` and `update` write to.
+    from repowise.cli.providers import build_embedder, build_vector_store, resolve_embedder
+
+    embedder = None
+    vector_store = None
+    try:
+        embedder = build_embedder(resolve_embedder(embedder_name), repo_path)
+        vector_store = build_vector_store(repo_path, embedder)
+    except Exception as exc:
+        console.print(f"[yellow]Embedding skipped: {exc}[/yellow]")
+
     generated_pages = await run_generation(
         repo_path=repo_path,
         parsed_files=parsed_files,
@@ -214,8 +274,8 @@ async def _run_upgrade(
         repo_structure=repo_structure,
         git_meta_map=git_meta_map,
         llm_client=provider,
-        embedder=None,
-        vector_store=None,
+        embedder=embedder,
+        vector_store=vector_store,
         concurrency=config.max_concurrency,
         progress=None,
         cost_tracker=cost_tracker,
@@ -227,14 +287,25 @@ async def _run_upgrade(
 
     # 6. Persist pages + a GenerationJob marker, then build the FTS index.
     async with get_session(sf) as session:
-        for page in generated_pages:
-            await upsert_page_from_generated(session, page, repo_id)
+        await upsert_pages_from_generated(session, generated_pages, repo_id)
+        try:
+            from repowise.core.pipeline.page_tree_sync import rebuild_page_tree
+
+            await rebuild_page_tree(session, repo_id)
+        except Exception:
+            # Placement is navigation, not content. An upgrade that produced
+            # pages should not fail because they could not be ordered.
+            pass
         try:
             from datetime import UTC, datetime
 
+            from repowise.core.generation.models import count_stub_fallbacks
             from repowise.core.persistence.crud import upsert_generation_job
 
             now = datetime.now(UTC)
+            # See init_cmd/persistence.py: a stub the provider failure put up
+            # has a row but no prose, so it is not a completed page.
+            stub_fallbacks = count_stub_fallbacks(generated_pages)
             job = await upsert_generation_job(
                 session,
                 repository_id=repo_id,
@@ -242,7 +313,8 @@ async def _run_upgrade(
                 total_pages=len(generated_pages),
                 config={"mode": "upgrade", "source": "cli_update_full"},
             )
-            job.completed_pages = len(generated_pages)
+            job.completed_pages = len(generated_pages) - stub_fallbacks
+            job.failed_pages = stub_fallbacks
             job.started_at = now
             job.finished_at = now
         except Exception:
@@ -252,7 +324,13 @@ async def _run_upgrade(
         fts = FullTextSearch(engine)
         await fts.ensure_index()
         for page in generated_pages:
-            await fts.index(page.page_id, page.title, page.content)
+            await fts.index(
+                page.page_id,
+                page.title,
+                page.content,
+                summary=page.summary,
+                target_path=page.target_path,
+            )
     except Exception:
         pass  # FTS indexing is best-effort
 
@@ -264,6 +342,7 @@ async def _run_upgrade(
     # biomarkers land — otherwise the upgrade leaves the health tables frozen
     # at the fast index's ESSENTIAL state. Mirrors what `init` / `update` do.
     try:
+        from repowise.core.analysis.health.trends import snapshot_file_maps
         from repowise.core.persistence.crud import (
             save_health_findings,
             save_health_metrics,
@@ -284,7 +363,10 @@ async def _run_upgrade(
                 if health_report.findings:
                     await save_health_findings(session, repo_id, health_report.findings)
                 kpis = health_report.kpis or {}
-                try:
+                with contextlib.suppress(Exception):  # snapshot is best-effort
+                    scores_map, deductions_map = snapshot_file_maps(
+                        health_report.metrics or [], health_report.findings or []
+                    )
                     await save_health_snapshot(
                         session,
                         repo_id,
@@ -292,13 +374,9 @@ async def _run_upgrade(
                         average_health=float(kpis.get("average_health", 10.0)),
                         worst_performer_path=kpis.get("worst_performer_path"),
                         worst_performer_score=kpis.get("worst_performer_score"),
-                        per_file_scores={
-                            m.file_path: round(float(m.score), 2)
-                            for m in health_report.metrics or []
-                        },
+                        per_file_scores=scores_map,
+                        per_file_deductions=deductions_map,
                     )
-                except Exception:
-                    pass  # snapshot is best-effort
             console.print(
                 f"Code health recomputed at FULL tier: "
                 f"[cyan]{len(health_report.findings)}[/cyan] findings."
@@ -306,8 +384,31 @@ async def _run_upgrade(
     except Exception as exc:
         console.print(f"[yellow]Health recompute skipped: {exc}[/yellow]")
 
+    # The repo's real page count, not this run's. An upgrade regenerates rather
+    # than appends, and it does not necessarily cover every page the repo
+    # already had, so `len(generated_pages)` under-reports the wiki that
+    # `repowise status` then displays.
+    try:
+        from sqlalchemy import func as sa_func
+        from sqlalchemy import select as sa_select
+
+        from repowise.core.persistence.models import Page
+
+        async with get_session(sf) as session:
+            total_pages = int(
+                (
+                    await session.execute(
+                        sa_select(sa_func.count())
+                        .select_from(Page)
+                        .where(Page.repository_id == repo_id)
+                    )
+                ).scalar_one()
+            )
+    except Exception:
+        total_pages = len(generated_pages)
+
     await engine.dispose()
-    return generated_pages
+    return generated_pages, total_pages
 
 
 def upgrade_to_full(
@@ -317,11 +418,14 @@ def upgrade_to_full(
     model: str | None,
     reasoning: str | None,
     concurrency: int,
+    yes: bool = False,
 ) -> None:
-    """Upgrade a fast (index-only / ESSENTIAL git) index to a full one.
+    """Write the repo's wiki with a model, reusing the persisted graph.
 
-    Backfills the git tier and generates the LLM docs the fast index skipped,
-    reusing the persisted graph instead of rebuilding it.
+    Two repos arrive here. A ``--mode fast`` index has no pages and an
+    ESSENTIAL git tier, both of which this fills in. An ``--index-only`` repo
+    has a full git tier and a wiki rendered from templates, and this replaces
+    those pages with written ones.
     """
     from repowise.cli.ui import load_dotenv
     from repowise.core.generation import GenerationConfig
@@ -341,15 +445,16 @@ def upgrade_to_full(
     # not have one configured yet. resolve_provider surfaces a clear error.
     provider = resolve_provider(provider_name, model, repo_path=repo_path)
 
-    config = GenerationConfig(
+    config = GenerationConfig.from_repo_config(
+        cfg,
         max_concurrency=concurrency,
         language=cfg.get("language", "en"),
         reasoning=resolve_reasoning(reasoning, cfg),
         enable_onboarding=bool(cfg.get("enable_onboarding", True)),
+        # A whole-repo selection, so the file-page cap chosen at init applies
+        # here; without it this run would grow the file layer back.
+        max_file_pages=resolve_max_file_pages(config=cfg),
     )
-    tier1_top_n = cfg.get("tier1_top_n")
-    if tier1_top_n is not None:
-        config = dataclasses.replace(config, tier1_top_n=tier1_top_n)
 
     exclude_patterns = list(cfg.get("exclude_patterns") or [])
     commit_limit = cfg.get("commit_limit")
@@ -361,27 +466,95 @@ def upgrade_to_full(
         f"[cyan]{provider.model_name}[/cyan]. This generates docs for the whole repo."
     )
 
-    generated_pages = run_async(
-        _run_upgrade(
-            repo_path,
-            provider,
-            config,
-            exclude_patterns=exclude_patterns,
-            commit_limit=commit_limit,
-            follow_renames=follow_renames,
+    # An index-only repo records the mock embedder, because that mode promises
+    # no spend and a hosted embedder is a real bill. That promise is void here:
+    # the user is already paying a model. Keeping the mock would leave the
+    # upgrade with a fully written wiki that semantic search cannot read, which
+    # is the failure this whole path exists to end. So re-resolve, and record
+    # the answer so later updates stay on it.
+    embedder_name = cfg.get("embedder")
+    if not embedder_name or embedder_name == "mock":
+        from repowise.cli.providers import resolve_embedder
+
+        resolved = resolve_embedder(None)
+        if resolved != (embedder_name or "mock"):
+            console.print(f"Embedder: [cyan]{resolved}[/cyan] (was mock, index-only's default).")
+            embedder_name = resolved
+
+    # A full upgrade is the same class of state/DB writer as an incremental
+    # update, so it must sit under the same single-flight lock: without it, a
+    # concurrent `repowise update` could race this run's save_state (the exact
+    # race the lock exists to prevent). If another update holds the lock, the
+    # full upgrade defers the same way update_cmd does — the running update
+    # will roll forward to HEAD.
+    existing_lock = try_acquire_update_lock(repo_path, head)
+    if existing_lock is not None:
+        from repowise.cli.helpers import write_update_pending
+
+        write_update_pending(repo_path, head)
+        raise click.ClickException(
+            "Another `repowise update` is already running on this repo. "
+            "The full upgrade is deferred; it will run on the next pass."
         )
-    )
 
-    # Flip persisted state to full so subsequent `repowise update` runs the
-    # normal incremental LLM path (docs_enabled) rather than offering upgrade.
-    state["last_sync_commit"] = head
-    state["docs_enabled"] = True
-    state["git_tier"] = "full"
-    state["total_pages"] = len(generated_pages)
-    save_state(repo_path, state)
+    # We own the lock from here on; release it when this function returns
+    # (success, cost-gate Abort, or unexpected failure) rather than at process
+    # exit — atexit would leave the lock held for the rest of the CLI process.
+    try:
+        try:
+            generated_pages, total_pages = run_async(
+                _run_upgrade(
+                    repo_path,
+                    provider,
+                    config,
+                    exclude_patterns=exclude_patterns,
+                    commit_limit=commit_limit,
+                    follow_renames=follow_renames,
+                    embedder_name=embedder_name,
+                    yes=yes,
+                )
+            )
+        except click.Abort:
+            # Declined at the cost gate. The git backfill that ran before it is
+            # kept (it costs nothing to keep and everything to redo), and the
+            # persisted docs mode is left alone so the repo keeps whatever wiki it
+            # already had.
+            console.print("[yellow]Nothing generated.[/yellow] The index is unchanged.")
+            return
 
-    elapsed = time.monotonic() - start
-    console.print(
-        f"[bold green]Upgrade complete[/bold green] in {elapsed:.1f}s — "
-        f"{len(generated_pages)} pages generated, git tier now FULL."
-    )
+        # Flip persisted state to full so subsequent `repowise update` runs the
+        # normal incremental LLM path rather than offering upgrade.
+        state["last_sync_commit"] = head
+        state.update(docs_mode_state_fields("llm"))
+        state["git_tier"] = "full"
+        state["total_pages"] = total_pages
+        # Record who wrote the pages. Without this, `repowise status` on a repo
+        # upgraded this way reports its provider and model as unknown, which reads
+        # as "nothing wrote this wiki" right after a run that did.
+        state["provider"] = provider.provider_name
+        state["model"] = provider.model_name
+        # `update --full` regenerates the whole wiki (concept tree included), so it
+        # brings the store to the terminal store format the same way a full init
+        # does. Stamp it as such rather than clamping at the reindex gate.
+        #
+        # This is also the run that answers the missing-slot notice: it evaluates
+        # every registered onboarding slot against whole-repo signals, so after it
+        # there is nothing left for the notice to report.
+        stamp_offered_slots(state, enabled=config.enable_onboarding)
+        # This run re-ran health analysis over the whole repo, so its rows come
+        # from the current analyzer. Without the stamp the next plain `update`
+        # would read a stale version and pay a redundant full re-score.
+        state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+        save_state(repo_path, state, full_index=True)
+        if embedder_name and embedder_name != cfg.get("embedder"):
+            from repowise.cli.helpers import save_config_partial
+
+            save_config_partial(repo_path, embedder=embedder_name)
+
+        elapsed = time.monotonic() - start
+        console.print(
+            f"[bold green]Upgrade complete[/bold green] in {elapsed:.1f}s — "
+            f"{len(generated_pages)} pages generated, git tier now FULL."
+        )
+    finally:
+        release_update_lock(repo_path)

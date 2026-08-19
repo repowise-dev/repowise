@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -40,11 +41,12 @@ _MAX_AGENTIC_LOOPS = 10
 
 _SYSTEM_PROMPT_TEMPLATE = """You are a codebase intelligence assistant for the repository "{repo_name}" located at {repo_path}.
 
-You have access to 8 specialized tools for querying the codebase wiki, dependency graph, git history, and architectural decisions. Use them proactively — do NOT answer from memory when a tool gives more accurate answers.
+You have access to 7 specialized tools for querying the codebase wiki, dependency graph, git history, and architectural decisions. Use them proactively — do NOT answer from memory when a tool gives more accurate answers.
 
 Guidelines:
 - Call get_overview first if the user asks about the codebase generally and no prior context exists
 - Pass all relevant targets to get_context and get_risk in a single call — never call the same tool twice for different targets when they can be batched
+- Call get_change_risk for commit / PR-range defect scoring (revspec)
 - Call get_why for any "why was this built this way" question
 - Call search_codebase for broad questions about where something is implemented
 - Cite specific file paths, function names, and line numbers from tool results — be concrete, not general
@@ -71,6 +73,34 @@ async def _get_repo_info(factory: Any, repo_id: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _workspace_alias(request: Request, repo_path: str, repo_name: str) -> str | None:
+    """Return the workspace alias owning *repo_path*, or None outside a workspace.
+
+    ``local_path`` is stored verbatim at index time, so it can be relative
+    (``repowise init .`` records ``"."``) and resolve against the server's
+    cwd rather than the repo. The name fallback covers that; a miss only
+    costs us the repo scoping, so it is logged rather than raised.
+    """
+    ws_config = getattr(request.app.state, "workspace_config", None)
+    ws_root = getattr(request.app.state, "workspace_root", None)
+    if ws_config is None or ws_root is None:
+        return None
+
+    resolved = Path(repo_path).resolve()
+    for entry in ws_config.repos:
+        if (Path(ws_root) / entry.path).resolve() == resolved:
+            return entry.alias
+    for entry in ws_config.repos:
+        if entry.alias == repo_name:
+            return entry.alias
+
+    logger.warning(
+        "chat_workspace_alias_unresolved",
+        extra={"repo_path": repo_path, "repo_name": repo_name},
+    )
+    return None
+
+
 @router.post("/api/repos/{repo_id}/chat/messages")
 async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
     """Stream an agentic chat response via SSE."""
@@ -83,6 +113,9 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
 
     # Resolve repo
     repo_name, repo_path = await _get_repo_info(factory, repo_id)
+    # In workspace mode the MCP tools address repos by alias, not by the id
+    # in this URL, so resolve it once and scope every tool call to it.
+    repo_alias = _workspace_alias(request, repo_path, repo_name)
 
     # Resolve provider. A per-request override (the UI model picker) applies to
     # THIS request only and is not persisted — an explicit selection is
@@ -123,7 +156,16 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
                 if conv_id:
                     conv = await crud.get_conversation(session, conv_id)
                     if not conv or conv.repository_id != repo_id:
-                        yield _sse_event("error", {"message": "Conversation not found"})
+                        # Every other failure here goes out on the ``data``
+                        # channel carrying a ``type``, which is the only shape
+                        # the client switches on. This one used to be an
+                        # ``error``-channel event with no ``type``, so the UI
+                        # dropped it and then sat on the stream's close with
+                        # nothing to show.
+                        yield _sse_event(
+                            "data",
+                            {"type": "error", "message": "Conversation not found"},
+                        )
                         return
                 else:
                     title = " ".join(body.message.split()[:6])
@@ -151,7 +193,7 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
             # Tool executor callback — used by providers that run the
             # agentic loop internally (e.g. Gemini for thought_signature).
             async def _tool_executor(name: str, args: dict) -> dict:
-                return await execute_tool(name, args)
+                return await execute_tool(name, args, repo=repo_alias)
 
             # Agentic loop
             assistant_text_parts: list[str] = []
@@ -271,7 +313,7 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
 
                     # Execute each tool and add results
                     for tc in pending_tool_calls:
-                        result = await execute_tool(tc["name"], tc["arguments"])
+                        result = await execute_tool(tc["name"], tc["arguments"], repo=repo_alias)
                         artifact_type = get_artifact_type(tc["name"])
 
                         # Build summary from result
@@ -372,7 +414,7 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
 @router.get("/api/repos/{repo_id}/chat/conversations")
 async def list_conversations(
     repo_id: str,
-    session=Depends(get_db_session),  # noqa: B008
+    session=Depends(get_db_session),
 ):
     convs = await crud.list_conversations(session, repo_id)
     result = []
@@ -386,7 +428,7 @@ async def list_conversations(
 async def get_conversation(
     repo_id: str,
     conversation_id: str,
-    session=Depends(get_db_session),  # noqa: B008
+    session=Depends(get_db_session),
 ):
     conv = await crud.get_conversation(session, conversation_id)
     if not conv or conv.repository_id != repo_id:
@@ -403,7 +445,7 @@ async def get_conversation(
 async def delete_conversation(
     repo_id: str,
     conversation_id: str,
-    session=Depends(get_db_session),  # noqa: B008
+    session=Depends(get_db_session),
 ):
     conv = await crud.get_conversation(session, conversation_id)
     if not conv or conv.repository_id != repo_id:
@@ -506,6 +548,17 @@ def _build_tool_summary(tool_name: str, result: dict[str, Any]) -> str:
             parts.append(f"{bug_prone} bug-prone")
         return ", ".join(parts)
 
+    if tool_name == "get_change_risk":
+        ref = result.get("ref", "change")
+        priority = result.get("review_priority") or result.get("classification") or "unknown"
+        pct = result.get("risk_percentile")
+        if pct is not None:
+            return f"Change risk for {ref}: {priority} (p{pct})"
+        score = result.get("score")
+        if score is not None:
+            return f"Change risk for {ref}: {priority} (score {score})"
+        return f"Change risk for {ref}: {priority}"
+
     if tool_name == "get_why":
         mode = result.get("mode", "")
         if mode == "health":
@@ -521,25 +574,16 @@ def _build_tool_summary(tool_name: str, result: dict[str, Any]) -> str:
             author = (
                 origin.get("primary_author", "unknown") if origin.get("available") else "unknown"
             )
-            return f"{len(decisions)} decision(s), alignment: {score}, author: {author}"
+            # ``decisions`` is capped by the path-mode projection; report what
+            # governs the file, not how many survived the cap.
+            total = result.get("decisions_total", len(decisions))
+            return f"{total} decision(s), alignment: {score}, author: {author}"
         decisions = result.get("decisions", [])
         return f"Found {len(decisions)} decision(s)"
 
     if tool_name == "search_codebase":
         results = result.get("results", [])
         return f"Found {len(results)} result(s)"
-
-    if tool_name == "get_dependency_path":
-        dist = result.get("distance", -1)
-        if dist >= 0:
-            return f"Path found (distance: {dist})"
-        ctx = result.get("visual_context", {})
-        ancestors = ctx.get("nearest_common_ancestors", [])
-        if ancestors:
-            return f"No direct path — nearest bridge: {ancestors[0]['node']}"
-        if ctx.get("disconnected"):
-            return "No path — nodes are in separate dependency clusters"
-        return "No direct path found"
 
     if tool_name == "get_dead_code":
         summary = result.get("summary", {})
@@ -548,8 +592,5 @@ def _build_tool_summary(tool_name: str, result: dict[str, Any]) -> str:
         total = summary.get("total_findings", 0)
         lines = summary.get("deletable_lines", 0)
         return f"{total} findings ({high_count} high-confidence), {lines} deletable lines"
-
-    if tool_name == "get_architecture_diagram":
-        return f"Generated {result.get('diagram_type', 'diagram')}"
 
     return "Completed"

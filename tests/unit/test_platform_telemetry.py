@@ -48,11 +48,6 @@ def _capture(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
 
 
 class TestConsent:
-    def test_enabled_by_default(self, isolated):
-        _, path = isolated
-        _write_state(path, anon_id="abc")
-        assert telemetry.is_enabled() is True
-
     def test_do_not_track_blocks_send(self, isolated, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("DO_NOT_TRACK", "1")
         sent = _capture(monkeypatch)

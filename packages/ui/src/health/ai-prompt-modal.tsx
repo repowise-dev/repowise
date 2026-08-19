@@ -130,7 +130,7 @@ export function AiPromptModal({
                       "rounded-md border px-3 py-2 text-left transition-colors " +
                       (active
                         ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-muted)]"
-                        : "border-[var(--color-border-default)] hover:border-[var(--color-border-strong)] hover:bg-[var(--color-bg-elevated)]")
+                        : "border-[var(--color-border-default)] hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)]")
                     }
                     title={f.hint}
                   >
@@ -149,7 +149,7 @@ export function AiPromptModal({
             </div>
           </div>
 
-          <div className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-muted)] max-h-[420px] overflow-y-auto">
+          <div className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-inset)] max-h-[420px] overflow-y-auto">
             <pre className="px-3 py-2 text-[11.5px] font-mono text-[var(--color-text-primary)] whitespace-pre-wrap break-words">
               {prompt}
             </pre>

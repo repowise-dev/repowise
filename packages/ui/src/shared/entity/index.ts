@@ -11,6 +11,8 @@ export {
   encodeFilePath,
   fileEntityPath,
   symbolEntityPath,
+  filePageId,
+  docsPagePath,
   ENTITY_KIND_LABEL,
 } from "./routes";
 export type {

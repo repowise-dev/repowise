@@ -10,6 +10,7 @@ import click
 import pytest
 
 from repowise.cli import mcp_config
+from repowise.cli.agent_adapters import codex as codex_adapter
 from repowise.cli.editor_integrations import claude_config
 
 
@@ -89,16 +90,26 @@ def test_generate_codex_hooks_config_uses_supported_events_only() -> None:
     config = mcp_config.generate_codex_hooks_config()
     hooks = config["hooks"]
 
-    assert set(hooks) == {"SessionStart", "UserPromptSubmit", "PostToolUse"}
+    # UserPromptSubmit is retired: it registered an unmatched hook that fired on
+    # every prompt and returned the byte-identical static block SessionStart had
+    # already delivered.
+    assert set(hooks) == {"SessionStart", "PostToolUse"}
     assert hooks["SessionStart"][0]["matcher"] == "startup|resume|clear"
-    assert hooks["PostToolUse"][0]["matcher"] == "Bash"
+    # Derived from the adapter, never spelled here: Codex calls its shell tool
+    # `shell_command` on current releases and `Bash` on older ones, and a
+    # matcher naming only `Bash` selects nothing on a current Codex while
+    # looking exactly like a working one.
+    assert hooks["PostToolUse"][0]["matcher"] == codex_adapter.SHELL_TOOL_MATCHER
+    assert "shell_command" in hooks["PostToolUse"][0]["matcher"]
     assert hooks["PostToolUse"][1]["matcher"] == "apply_patch|Edit|Write"
+    # 10, matching the Claude Code entries. 30 was an unreconciled ceiling
+    # rather than a considered budget.
     assert [
         hook["timeout"]
         for entries in hooks.values()
         for entry in entries
         for hook in entry["hooks"]
-    ] == [30] * 4
+    ] == [10] * 3
 
 
 def test_save_codex_hooks_config_creates_hooks_json_and_feature_flag(
@@ -109,7 +120,8 @@ def test_save_codex_hooks_config_creates_hooks_json_and_feature_flag(
     assert hooks_path == tmp_path / ".codex" / "hooks.json"
     saved_hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved_hooks["hooks"]
-    assert saved_hooks["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"] == (
+    assert "UserPromptSubmit" not in saved_hooks["hooks"]
+    assert saved_hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"] == (
         "repowise-augment --client codex"
     )
 
@@ -153,11 +165,125 @@ def test_save_codex_hooks_config_merges_without_duplicates(tmp_path: Path) -> No
         for hook in entry["hooks"]
         if hook["command"] == "repowise-augment --client codex"
     ]
-    assert len(repowise_commands) == 4
+    assert len(repowise_commands) == 3
 
     saved_config = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert saved_config["features"]["foo"] is True
     assert saved_config["features"]["hooks"] is True
+
+
+def _legacy_hooks_document() -> dict:
+    """A ``.codex/hooks.json`` exactly as installs before the retirement wrote it."""
+    return {
+        "hooks": {
+            "SessionStart": [
+                {
+                    "matcher": "startup|resume|clear",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "repowise-augment --client codex",
+                            "timeout": 30,
+                            "statusMessage": "Loading repowise context...",
+                        }
+                    ],
+                }
+            ],
+            "UserPromptSubmit": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "repowise-augment --client codex",
+                            "timeout": 30,
+                            "statusMessage": "Loading repowise context...",
+                        }
+                    ]
+                }
+            ],
+        }
+    }
+
+
+def _write_hooks(tmp_path: Path, document: dict) -> Path:
+    hooks_path = tmp_path / ".codex" / "hooks.json"
+    hooks_path.parent.mkdir(parents=True, exist_ok=True)
+    hooks_path.write_text(json.dumps(document), encoding="utf-8")
+    return hooks_path
+
+
+def test_save_codex_hooks_config_retires_user_prompt_submit_in_place(
+    tmp_path: Path,
+) -> None:
+    """The merge is additive, so retiring an event needs a migration to reach disk.
+
+    Without one, every install that predates the retirement keeps firing a hook
+    on every prompt forever: reinstalling appends nothing (the matcher is already
+    ours) and reports success, so there is no repair a user could even attempt.
+    """
+    hooks_path = _write_hooks(tmp_path, _legacy_hooks_document())
+
+    mcp_config.save_codex_hooks_config(tmp_path)
+
+    saved = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
+    assert "UserPromptSubmit" not in saved
+    assert set(saved) == {"SessionStart", "PostToolUse"}
+
+
+def test_save_codex_hooks_config_moves_shipped_timeout_but_not_a_user_raised_one(
+    tmp_path: Path,
+) -> None:
+    """30 was ours and moves; anything else was a choice and stays."""
+    document = _legacy_hooks_document()
+    document["hooks"]["SessionStart"][0]["hooks"][0]["timeout"] = 120
+    hooks_path = _write_hooks(tmp_path, document)
+
+    mcp_config.save_codex_hooks_config(tmp_path)
+
+    saved = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
+    assert saved["SessionStart"][0]["hooks"][0]["timeout"] == 120
+    assert [hook["timeout"] for entry in saved["PostToolUse"] for hook in entry["hooks"]] == [
+        10,
+        10,
+    ]
+
+
+def test_save_codex_hooks_config_migration_spares_a_user_hook_on_a_retired_event(
+    tmp_path: Path,
+) -> None:
+    """We remove our command from ``UserPromptSubmit``, never the user's event."""
+    document = _legacy_hooks_document()
+    document["hooks"]["UserPromptSubmit"].append(
+        {"hooks": [{"type": "command", "command": "echo mine"}]}
+    )
+    document["hooks"]["UserPromptSubmit"][0]["hooks"].append(
+        {"type": "command", "command": "echo alongside"}
+    )
+    hooks_path = _write_hooks(tmp_path, document)
+
+    mcp_config.save_codex_hooks_config(tmp_path)
+
+    saved = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
+    remaining = [
+        hook["command"] for entry in saved["UserPromptSubmit"] for hook in entry["hooks"]
+    ]
+    assert remaining == ["echo alongside", "echo mine"]
+
+
+def test_save_codex_hooks_config_survives_shapes_we_did_not_write(tmp_path: Path) -> None:
+    """A file the user owns can hold anything; the migration answers, never raises."""
+    document = _legacy_hooks_document()
+    document["hooks"]["SessionStart"][0]["hooks"].append({"type": "command", "command": 7})
+    document["hooks"]["UserPromptSubmit"].append("not-an-entry")
+    document["hooks"]["Whatever"] = "not-a-list"
+    hooks_path = _write_hooks(tmp_path, document)
+
+    mcp_config.save_codex_hooks_config(tmp_path)
+
+    saved = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
+    assert saved["Whatever"] == "not-a-list"
+    assert saved["UserPromptSubmit"] == ["not-an-entry"]
+    assert {"type": "command", "command": 7} in saved["SessionStart"][0]["hooks"]
 
 
 def test_save_codex_hooks_config_rejects_invalid_existing_file(tmp_path: Path) -> None:
@@ -382,22 +508,22 @@ def test_save_root_mcp_config_preserves_user_env_block(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _post_repowise_entries(saved: dict) -> list:
+def _repowise_entries(saved: dict, event: str) -> list:
+    """``(matcher, command)`` for the repowise hooks registered on *event*."""
     return [
         (entry.get("matcher"), h["command"])
-        for entry in saved["hooks"].get("PostToolUse", [])
+        for entry in saved["hooks"].get(event, [])
         for h in entry["hooks"]
         if "repowise" in h.get("command", "")
     ]
+
+
+def _post_repowise_entries(saved: dict) -> list:
+    return _repowise_entries(saved, "PostToolUse")
 
 
 def _session_start_repowise_entries(saved: dict) -> list:
-    return [
-        (entry.get("matcher"), h["command"])
-        for entry in saved["hooks"].get("SessionStart", [])
-        for h in entry["hooks"]
-        if "repowise" in h.get("command", "")
-    ]
+    return _repowise_entries(saved, "SessionStart")
 
 
 def test_install_claude_code_hooks_creates_missing_file(
@@ -414,9 +540,22 @@ def test_install_claude_code_hooks_creates_missing_file(
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
     assert _post_repowise_entries(saved) == [
-        (claude_config._AUGMENT_MATCHER, "repowise-augment")
+        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
     ]
-    assert _session_start_repowise_entries(saved) == [("startup|resume|clear", "repowise-augment")]
+    assert _session_start_repowise_entries(saved) == [
+        ("startup|resume|clear", claude_config._AUGMENT_HOOK_COMMAND)
+    ]
+    assert _repowise_entries(saved, "PostToolUseFailure") == [
+        (claude_config._FAILURE_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
+    ]
+
+
+def test_the_failure_matcher_covers_only_tools_that_take_a_path() -> None:
+    """A Bash failure is a command line, not a path, and would wake the hook
+    for a question this surface cannot answer."""
+    matched = set(claude_config._FAILURE_MATCHER.split("|"))
+    assert matched == {"Read", "Edit", "Write", "Grep", "Glob", "NotebookEdit"}
+    assert "Bash" not in matched and "PowerShell" not in matched
 
 
 def test_install_claude_code_hooks_preserves_user_pretool_hooks(
@@ -452,7 +591,7 @@ def test_install_claude_code_hooks_preserves_user_pretool_hooks(
     assert saved["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "echo read"
     # PostToolUse now has the repowise hook.
     assert _post_repowise_entries(saved) == [
-        (claude_config._AUGMENT_MATCHER, "repowise-augment")
+        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
     ]
 
 
@@ -498,7 +637,7 @@ def test_install_claude_code_hooks_migrates_pre_0_6_1_command(
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
     assert _post_repowise_entries(saved) == [
-        (claude_config._AUGMENT_MATCHER, "repowise-augment")
+        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
     ]
 
 
@@ -538,7 +677,7 @@ def test_install_claude_code_hooks_migrates_pre_0_6_2_matcher(
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
     assert _post_repowise_entries(saved) == [
-        (claude_config._AUGMENT_MATCHER, "repowise-augment")
+        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
     ]
 
 
@@ -594,7 +733,7 @@ def test_migrate_claude_code_hooks_handles_full_legacy_payload(
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "PreToolUse" not in saved["hooks"]
     assert _post_repowise_entries(saved) == [
-        (claude_config._AUGMENT_MATCHER, "repowise-augment")
+        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
     ]
 
     # Idempotent: a second run finds nothing to do.
@@ -632,7 +771,7 @@ def test_migrate_claude_code_hooks_widens_legacy_matchers(
     assert claude_config.migrate_claude_code_hooks() is True
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert _post_repowise_entries(saved) == [
-        (claude_config._AUGMENT_MATCHER, "repowise-augment")
+        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
     ]
 
 
@@ -647,23 +786,36 @@ def test_migrate_claude_code_hooks_never_widens_user_matcher(
         json.dumps(
             {
                 "hooks": {
+                    # Commands are already in the guarded shape, so the only
+                    # migration that could fire here is the matcher widening
+                    # this test is about.
                     "PostToolUse": [
                         {
                             "matcher": "Bash|Grep|Glob",
                             "hooks": [
-                                {"type": "command", "command": "repowise-augment"},
+                                {
+                                    "type": "command",
+                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                },
                                 {"type": "command", "command": "my-linter"},
                             ],
                         }
                     ],
-                    # SessionStart already present so its backfill (a separate
-                    # migration) can't mask the matcher no-op under test.
+                    # SessionStart and PostToolUseFailure already present so
+                    # their backfills (separate migrations) can't mask the
+                    # matcher no-op under test.
                     "SessionStart": [
                         {
                             "matcher": "startup|resume|clear",
-                            "hooks": [{"type": "command", "command": "repowise-augment"}],
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                }
+                            ],
                         }
                     ],
+                    "PostToolUseFailure": [claude_config._failure_entry()],
                 }
             }
         ),
@@ -716,20 +868,24 @@ def test_migrate_claude_code_hooks_noop_when_already_current(
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     settings_path = tmp_path / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True)
+    # The guarded command, not the bare script name: a bare name is now a
+    # legacy shape the migration rewrites, so using it here would assert a
+    # no-op that must not happen.
     payload = {
         "hooks": {
             "PostToolUse": [
                 {
                     "matcher": claude_config._AUGMENT_MATCHER,
-                    "hooks": [{"type": "command", "command": "repowise-augment"}],
+                    "hooks": [{"type": "command", "command": claude_config._AUGMENT_HOOK_COMMAND}],
                 }
             ],
             "SessionStart": [
                 {
                     "matcher": "startup|resume|clear",
-                    "hooks": [{"type": "command", "command": "repowise-augment"}],
+                    "hooks": [{"type": "command", "command": claude_config._AUGMENT_HOOK_COMMAND}],
                 }
             ],
+            "PostToolUseFailure": [claude_config._failure_entry()],
         }
     }
     original = json.dumps(payload, indent=2) + "\n"
@@ -768,9 +924,152 @@ def test_migrate_claude_code_hooks_backfills_session_start(
 
     assert claude_config.migrate_claude_code_hooks() is True
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
-    assert _session_start_repowise_entries(saved) == [("startup|resume|clear", "repowise-augment")]
+    assert _session_start_repowise_entries(saved) == [
+        ("startup|resume|clear", claude_config._AUGMENT_HOOK_COMMAND)
+    ]
     # Idempotent on the second pass.
     assert claude_config.migrate_claude_code_hooks() is False
+
+
+def test_migrate_narrows_the_shell_tools_out_of_an_existing_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bash and PowerShell are dropped from an install that already has them.
+
+    Every previous matcher change widened, so migration had only ever been
+    exercised in that direction. This one narrows: shell tools were 51% of hook
+    invocations and 0.7% of emissions, and the cost is interpreter start, which
+    no gate inside the hook can avoid. An existing machine has to get the fix
+    without a re-init, so the old wide matcher is in the legacy tuple.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": (
+                                "Bash|PowerShell|Grep|Glob|Read|Edit|Write"
+                                "|mcp__.*[Rr]epowise.*__.*"
+                            ),
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                }
+                            ],
+                        },
+                        # Somebody else's hook on the same event, carrying the
+                        # same matcher. Rewriting it would silently change a
+                        # tool the user pointed it at on purpose.
+                        {
+                            "matcher": (
+                                "Bash|PowerShell|Grep|Glob|Read|Edit|Write"
+                                "|mcp__.*[Rr]epowise.*__.*"
+                            ),
+                            "hooks": [{"type": "command", "command": "node theirs.js"}],
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert claude_config.migrate_claude_code_hooks() is True
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    entries = saved["hooks"]["PostToolUse"]
+    assert entries[0]["matcher"] == claude_config._AUGMENT_MATCHER
+    assert "Bash" not in entries[0]["matcher"]
+    assert "PowerShell" not in entries[0]["matcher"]
+    assert entries[1]["matcher"] == (
+        "Bash|PowerShell|Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*"
+    )
+
+
+def test_migrate_backfills_the_failure_hook_for_older_installs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An install predating PostToolUseFailure gains it on self-heal.
+
+    Without this the surface only ever reaches people who install fresh, which
+    is the smaller half of the population and the harder one to notice.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": claude_config._AUGMENT_MATCHER,
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                }
+                            ],
+                        }
+                    ],
+                    "SessionStart": [claude_config._session_start_entry()],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert claude_config.migrate_claude_code_hooks() is True
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert _repowise_entries(saved, "PostToolUseFailure") == [
+        (claude_config._FAILURE_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
+    ]
+    assert claude_config.migrate_claude_code_hooks() is False
+
+
+def test_migrate_preserves_a_user_failure_hook(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user's own PostToolUseFailure hook is kept; the repowise entry appends."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": claude_config._AUGMENT_MATCHER,
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": claude_config._AUGMENT_HOOK_COMMAND,
+                                }
+                            ],
+                        }
+                    ],
+                    "SessionStart": [claude_config._session_start_entry()],
+                    "PostToolUseFailure": [
+                        {"hooks": [{"type": "command", "command": "echo mine"}]}
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert claude_config.migrate_claude_code_hooks() is True
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    failure = saved["hooks"]["PostToolUseFailure"]
+    assert failure[0]["hooks"][0]["command"] == "echo mine"
+    assert _repowise_entries(saved, "PostToolUseFailure") == [
+        (claude_config._FAILURE_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
+    ]
 
 
 def test_migrate_claude_code_hooks_no_session_start_without_augment(
@@ -799,6 +1098,7 @@ def test_migrate_claude_code_hooks_no_session_start_without_augment(
     assert claude_config.migrate_claude_code_hooks() is False
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "SessionStart" not in saved["hooks"]
+    assert "PostToolUseFailure" not in saved["hooks"]
 
 
 def test_migrate_claude_code_hooks_preserves_user_session_start(
@@ -829,7 +1129,9 @@ def test_migrate_claude_code_hooks_preserves_user_session_start(
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     session = saved["hooks"]["SessionStart"]
     assert session[0]["hooks"][0]["command"] == "echo mine"
-    assert _session_start_repowise_entries(saved) == [("startup|resume|clear", "repowise-augment")]
+    assert _session_start_repowise_entries(saved) == [
+        ("startup|resume|clear", claude_config._AUGMENT_HOOK_COMMAND)
+    ]
 
 
 def test_migrate_claude_code_hooks_silent_when_settings_missing(
@@ -866,8 +1168,12 @@ def test_plugin_hooks_json_mirrors_settings_entries(repo_root: Path) -> None:
             for h in entry["hooks"]
         ]
 
-    assert rows("PostToolUse") == [(claude_config._AUGMENT_MATCHER, "repowise-augment")]
-    assert rows("SessionStart") == [(claude_config._SESSION_START_MATCHER, "repowise-augment")]
+    assert rows("PostToolUse") == [
+        (claude_config._AUGMENT_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
+    ]
+    assert rows("SessionStart") == [
+        (claude_config._SESSION_START_MATCHER, claude_config._AUGMENT_HOOK_COMMAND)
+    ]
 
 
 def test_install_claude_code_hooks_rejects_invalid_existing_file(

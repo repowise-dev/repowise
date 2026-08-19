@@ -5,7 +5,12 @@ from __future__ import annotations
 from tree_sitter import Node
 
 from ...models import HeritageRelation
-from ..helpers import node_text
+from ._types import type_runs
+
+# A superclass constructor call sits inside the extends clause but is not part
+# of the parent's name.
+_SKIP = frozenset({"arguments"})
+_SEPARATORS = frozenset({"extends", "with"})
 
 
 def _extract_scala_heritage(
@@ -13,23 +18,16 @@ def _extract_scala_heritage(
 ) -> None:
     """Scala: ``class Foo extends Bar with Trait1 with Trait2``."""
     for child in def_node.children:
-        if child.type == "extends_clause":
-            saw_with = False
-            for sub in child.children:
-                if sub.type == "extends":
-                    continue
-                if sub.type == "with":
-                    saw_with = True
-                    continue
-                if sub.type == "type_identifier":
-                    parent = node_text(sub, src).strip()
-                    if parent and parent != name:
-                        kind = "implements" if saw_with else "extends"
-                        out.append(
-                            HeritageRelation(
-                                child_name=name,
-                                parent_name=parent,
-                                kind=kind,
-                                line=line,
-                            )
-                        )
+        if child.type != "extends_clause":
+            continue
+        for separator, parent in type_runs(child, src, _SEPARATORS, _SKIP):
+            if parent == name:
+                continue
+            out.append(
+                HeritageRelation(
+                    child_name=name,
+                    parent_name=parent,
+                    kind="implements" if separator == "with" else "extends",
+                    line=line,
+                )
+            )

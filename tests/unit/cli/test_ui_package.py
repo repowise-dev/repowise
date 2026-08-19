@@ -35,9 +35,10 @@ def test_facade_reexports_public_surface() -> None:
         "print_scan_summary",
         "print_index_only_intro",
         "quick_repo_scan",
-        "build_analysis_summary_panel",
+        "print_analysis_summary",
         "build_completion_panel",
         "build_contextual_next_steps",
+        "build_status_notes",
         "format_bytes",
         "format_elapsed",
         "LARGE_REPO_FILE_THRESHOLD",
@@ -110,14 +111,13 @@ def test_advanced_config_default_keys_no_fast(monkeypatch: pytest.MonkeyPatch) -
         "exclude": (),
         "commit_limit": 500,
         "follow_renames": False,
+        # No scan, so the repo cannot be shown to be large: no cap, no question.
+        "max_file_pages": None,
         "concurrency": 10,
         "reasoning": "auto",
         "embedder": "mock",
         "test_run": False,
         "onboarding": True,
-        "harvest_decisions": True,
-        "tier1_top_n": None,
-        "tier2_tail_enabled": True,
         "wiki_style": DEFAULT_STYLE,
         "language": "en",
     }
@@ -126,7 +126,12 @@ def test_advanced_config_default_keys_no_fast(monkeypatch: pytest.MonkeyPatch) -
 def test_advanced_config_index_only_omits_generation_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """generate_docs=False gathers indexing knobs only — no LLM-only keys."""
+    """generate_docs=False gathers indexing knobs only — no LLM-only keys.
+
+    ``embedder`` is the exception and is asked for: an index-only run renders a
+    template wiki, and those pages embed like any other, so the choice is real.
+    It defaults to the mock because this mode promises no spend.
+    """
     result = _drive_advanced_config(monkeypatch, scan=None, allow_fast=False, generate_docs=False)
     assert result == {
         "generate_docs": False,
@@ -137,17 +142,19 @@ def test_advanced_config_index_only_omits_generation_keys(
         "exclude": (),
         "commit_limit": 500,
         "follow_renames": False,
+        # Asked in this branch too: an index-only run renders file pages as well.
+        "max_file_pages": None,
+        "embedder": "mock",
     }
-    # The generation-only knobs must not appear.
-    for key in ("concurrency", "embedder", "onboarding", "harvest_decisions", "wiki_style"):
+    # The knobs that only shape a model's writing must not appear.
+    for key in ("concurrency", "reasoning", "onboarding", "wiki_style"):
         assert key not in result
 
 
 def test_advanced_config_allow_fast_small_repo(monkeypatch: pytest.MonkeyPatch) -> None:
     scan = RepoScanInfo(total_files=100)
     result = _drive_advanced_config(monkeypatch, scan=scan, allow_fast=True)
-    # Small repo: run mode defaults to standard, tier cap default 0 -> None.
+    # Small repo: run mode defaults to standard.
     assert result["run_mode"] == "standard"
-    assert result["tier1_top_n"] is None
     assert result["commit_limit"] == 1000  # <500 files -> deeper history default
     assert result["concurrency"] == 12  # <200 files -> higher concurrency default

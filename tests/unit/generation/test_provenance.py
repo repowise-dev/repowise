@@ -56,6 +56,29 @@ def test_layer_metadata_attached():
     assert page.metadata["layer_role"] == "entry_point"
 
 
+def test_curated_layer_without_an_id_still_gets_one():
+    """A curated layer_name with no id used to leave the page unjoinable.
+
+    Consumers group on layer_id, so a page carrying only the display name
+    dropped out of the architecture ordering entirely.
+    """
+    page = _page()
+    _attach_file_provenance(page, _ctx(kg_layer_name="Shared UI Components"))
+    assert page.metadata["layer_id"] == "layer:shared-ui-components"
+
+
+def test_every_file_page_carries_a_layer_id():
+    for ctx in (
+        _ctx(),
+        _ctx(kg_layer_name="Domain", kg_layer_id="layer:domain"),
+        _ctx(kg_layer_name="Ingestion and Reasoning"),
+        _ctx(file_path="src/api/users.py"),
+    ):
+        page = _page()
+        _attach_file_provenance(page, ctx)
+        assert page.metadata.get("layer_id", "").startswith("layer:")
+
+
 def test_no_kg_layer_falls_back_to_inferred_layer():
     # Every file page must carry a layer_name so the Architecture tree can
     # group it; with no KG layer it is inferred from the path, and the
@@ -95,3 +118,15 @@ def test_dependencies_capped_at_ten():
     page = _page()
     _attach_file_provenance(page, _ctx(dependencies=[f"d{i}.py" for i in range(20)]))
     assert len(page.metadata["sources"]) == 10
+
+
+def test_fallback_layer_id_matches_the_id_curation_would_mint():
+    """A near-miss id points a file page at a layer page that does not exist."""
+    from repowise.core.analysis.knowledge_graph import _slugify
+    from repowise.core.generation.layers import DEFAULT_LAYER, DOCS_TOOLING_LAYER
+
+    for name in ("UI", "CLI", "API", "Service", "Data", "Types", "Config",
+                 "Utility", "Test", "Middleware", DEFAULT_LAYER, DOCS_TOOLING_LAYER):
+        page = _page()
+        _attach_file_provenance(page, _ctx(kg_layer_name=name))
+        assert page.metadata["layer_id"] == f"layer:{_slugify(name)}"

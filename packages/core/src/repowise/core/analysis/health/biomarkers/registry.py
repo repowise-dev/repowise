@@ -123,6 +123,19 @@ _DETECTOR_FACTORIES: list[type[Biomarker]] = [
 ]
 
 
+def continuous_biomarkers() -> frozenset[str]:
+    """Names of detectors whose deduction is continuous rather than gated.
+
+    A continuous biomarker fires on *every* file that carries its input signal
+    (``coverage_gradient`` on every file with coverage data), so it wins a
+    max-impact tiebreak on files that have nothing else wrong with them and
+    tells a reader nothing about why this file rather than any other. Read off
+    the class attribute rather than listed here so a new continuous detector
+    cannot be added without this set following it.
+    """
+    return frozenset(c.name for c in _DETECTOR_FACTORIES if getattr(c, "continuous", False))
+
+
 def registered_biomarkers(
     *, disabled: Sequence[str] = (), extra: Sequence[Biomarker] = ()
 ) -> list[Biomarker]:

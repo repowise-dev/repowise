@@ -2,11 +2,16 @@
 // Decisions
 // ---------------------------------------------------------------------------
 
+// One vocabulary, imported rather than re-typed. Three copies of the union
+// lived here and none of them listed `dismissed`, which the engine has always
+// accepted — so the UI had no way to say it and sent `deprecated` instead.
+import type { DecisionStatus } from "@repowise-dev/types/decisions";
+
 export interface DecisionRecordResponse {
   id: string;
   repository_id: string;
   title: string;
-  status: "proposed" | "active" | "deprecated" | "superseded";
+  status: DecisionStatus;
   context: string;
   decision: string;
   rationale: string;
@@ -68,7 +73,7 @@ export interface DecisionEvidenceResponse {
 export interface DecisionLineageEntry {
   id: string;
   title: string;
-  status: "proposed" | "active" | "deprecated" | "superseded";
+  status: DecisionStatus;
   source: string;
   relation: string | null;
 }
@@ -80,7 +85,7 @@ export interface DecisionLineageResponse {
 export interface DecisionGraphNode {
   id: string;
   title: string;
-  status: "proposed" | "active" | "deprecated" | "superseded";
+  status: DecisionStatus;
   source: string;
   confidence: number;
   staleness_score: number;
@@ -124,4 +129,13 @@ export interface DecisionStatusUpdate {
   superseded_by?: string;
   affected_modules?: string[];
   affected_files?: string[];
+}
+
+/** Counts by status, from a grouped COUNT on the server. */
+export interface DecisionCounts {
+  total: number;
+  active: number;
+  proposed: number;
+  superseded: number;
+  deprecated: number;
 }

@@ -502,6 +502,165 @@ def test_python_pandas_iterrows_in_loop():
     assert not any(k == "pandas_iterrows_in_loop" for k, _ in _hits("python", plain))
 
 
+def test_python_pathlib_round_trips_are_filesystem_sinks():
+    """``p.read_text()`` in a loop is per-iteration file I/O.
+
+    Python's filesystem lexicon recognised only the bare ``open(...)`` builtin,
+    so the idiom the whole ecosystem actually uses was invisible: a loop full of
+    ``Path.read_text()`` scored a perfect 10/10 on the performance dimension.
+    Matched on the method name alone because only a ``pathlib.Path`` spells
+    these — the receiver is usually a plain local (``src_path.read_text()``),
+    so there is no import to classify.
+    """
+    for method in ("read_text", "read_bytes", "write_text", "write_bytes"):
+        src = f"def f(ps):\n    for p in ps:\n        p.{method}()\n"
+        assert ("io_in_loop", "filesystem") in _hits("python", src), method
+    # The constructor-receiver form resolves the same way.
+    ctor = "from pathlib import Path\ndef f(ps):\n    for p in ps:\n        Path(p).read_text()\n"
+    assert ("io_in_loop", "filesystem") in _hits("python", ctor)
+
+
+def test_python_metadata_syscalls_are_not_filesystem_sinks():
+    """``exists`` / ``stat`` / ``glob`` in a loop are cheap and usually correct.
+
+    The deliberate precision boundary: flagging a metadata probe per iteration
+    is the obvious false-positive class, so only round-trip verbs are sinks.
+    Mirrors the C++ dialect excluding buffered stdio.
+    """
+    for method in ("exists", "is_file", "is_dir", "stat", "glob"):
+        src = f"def f(ps):\n    for p in ps:\n        p.{method}()\n"
+        assert not any(k == "io_in_loop" for k, _ in _hits("python", src)), method
+
+
+def test_python_os_and_shutil_verbs_gated_on_the_module_root():
+    """``os``/``shutil`` verbs need the literal module root, never ``io_names``.
+
+    ``os`` is far too broad to classify wholesale, so the root name plus an
+    explicit verb set is the whole gate — the same shape ``subprocess`` uses.
+    """
+    assert ("io_in_loop", "filesystem") in _hits(
+        "python", "import os\ndef f(ps):\n    for p in ps:\n        os.listdir(p)\n"
+    )
+    assert ("io_in_loop", "filesystem") in _hits(
+        "python", "import shutil\ndef f(ps):\n    for p in ps:\n        shutil.rmtree(p)\n"
+    )
+    # Non-I/O members of the same module never fire.
+    assert not any(
+        k == "io_in_loop"
+        for k, _ in _hits("python", "import os\ndef f(ps):\n    for p in ps:\n        os.getpid()\n")
+    )
+    # ``remove`` / ``move`` / ``replace`` are ordinary collection verbs off the
+    # module root, so an unrelated receiver must stay silent.
+    for src in (
+        "def f(xs, q):\n    for x in xs:\n        q.remove(x)\n",
+        "def f(xs, q):\n    for x in xs:\n        q.replace(x, 1)\n",
+    ):
+        assert not any(k == "io_in_loop" for k, _ in _hits("python", src))
+
+
+def test_python_chained_os_call_is_not_a_filesystem_sink():
+    """``os.path.join(a, b).replace(...)`` is string work, not file I/O.
+
+    ``callee_root_name`` resolves the LEFTMOST identifier of the whole callee
+    chain, so a call on the *result* of an ``os.*`` expression also arrives at
+    ``sink_kind`` as ``root == "os"``. The canonical Windows path idiom below
+    therefore looked like a filesystem sink, and produced both a bogus
+    ``io_in_loop`` and a bogus (un-gated) ``nested_loop_with_io``. The verb set
+    must hold no name a ``str`` / ``list`` / ``dict`` also answers to.
+    """
+    src = (
+        "import os\n"
+        "def f(top):\n"
+        "    for root, dirs, files in os.walk(top):\n"
+        "        for name in files:\n"
+        "            rel = os.path.join(root, name).replace('\\\\', '/')\n"
+    )
+    hits = _hits("python", src)
+    assert not any(k == "io_in_loop" for k, _ in hits), hits
+    assert not any(k == "nested_loop_with_io" for k, _ in hits), hits
+    # Other chained-root shapes off the same ceiling.
+    for expr in ("os.environ.get(k).replace('a', 'b')", "os.path.relpath(p).replace('a', 'b')"):
+        assert not any(
+            k == "io_in_loop" for k, _ in _hits("python", f"import os\ndef f(xs):\n    for x in xs:\n        {expr}\n")
+        ), expr
+    # The genuine two-segment call is unaffected.
+    assert ("io_in_loop", "filesystem") in _hits(
+        "python", "import os\ndef f(ps):\n    for p in ps:\n        os.rename(p, p)\n"
+    )
+
+
+def test_python_point_reads_do_not_become_hot_path_candidates():
+    """Widening the fs lexicon must not widen ``hot_path_sync_io`` with it.
+
+    That marker fires outside any loop, so it was gated (11/11) on unbounded
+    work: subprocess spawns and whole-tree walks. A single ``p.write_text()``
+    in a hot function is bounded and ordinary. Without the decoupling this
+    change alone added 118 such candidates on the dogfood corpus.
+    """
+
+    def hot_fact(src):
+        fc = walk_file("t.py", "python", src.encode())
+        return [f.blocking_sink_kind for f in fc.perf_fn_facts if f.blocking_sink_kind]
+
+    # Point-sized reads/writes: real sinks, but not hot-path candidates.
+    for method in ("read_text", "read_bytes", "write_text", "write_bytes"):
+        assert hot_fact(f"def f(p):\n    p.{method}()\n") == [], method
+    # Single-inode ``os`` / ``shutil`` work is the same bounded cost class and
+    # must be excluded too — 177 such candidates on the OSS corpus otherwise
+    # came through the door this attribute exists to close.
+    for expr in (
+        "os.remove(p)",
+        "os.unlink(p)",
+        "os.makedirs(p)",
+        "os.mkdir(p)",
+        "os.rmdir(p)",
+        "os.rename(p, p)",
+        "os.listdir(p)",
+        "os.scandir(p)",
+        "shutil.copyfile(p, p)",
+        "shutil.copy(p, p)",
+        "shutil.move(p, p)",
+    ):
+        src = f"import os\nimport shutil\ndef f(p):\n    {expr}\n"
+        assert hot_fact(src) == [], expr
+    # Unbounded work keeps its candidacy, as does the bare ``open`` builtin the
+    # marker was originally calibrated on.
+    for expr in ("os.walk(p)", "shutil.rmtree(p)", "shutil.copytree(p, p)"):
+        src = f"import os\nimport shutil\ndef f(p):\n    {expr}\n"
+        assert hot_fact(src) == ["filesystem"], expr
+    assert hot_fact("def f(p):\n    open(p).read()\n") == ["filesystem"]
+    assert hot_fact("import subprocess\ndef f(p):\n    subprocess.run([p])\n") == ["subprocess"]
+    # Excluding a verb from hot-path candidacy must NOT cost it the bare-sink
+    # fact the cross-function N+1 bridge runs on.
+    fc = walk_file("t.py", "python", b"import os\ndef f(p):\n    os.remove(p)\n")
+    assert [f.bare_sink_kind for f in fc.perf_fn_facts] == ["filesystem"]
+    # Still a per-iteration finding when it IS in a loop.
+    assert ("io_in_loop", "filesystem") in _hits(
+        "python", "def f(ps):\n    for p in ps:\n        p.write_text('x')\n"
+    )
+
+
+def test_python_filesystem_sink_reaches_the_cross_function_bridge():
+    """A bare fs sink makes its function a cross-function reachability target.
+
+    The shape that motivated this: a per-file loop calls a small reader helper
+    that holds the actual ``read_bytes``. The loop and the I/O are in different
+    functions, so only the ``PerfFnFacts.bare_sink_kind`` fact can carry it.
+    """
+    src = (
+        "from pathlib import Path\n"
+        "def read_source(p):\n"
+        "    return Path(p).read_bytes()\n"
+        "def scan(paths):\n"
+        "    for p in paths:\n"
+        "        read_source(p)\n"
+    )
+    fc = walk_file("t.py", "python", src.encode())
+    facts = {f.function: f for f in fc.perf_fn_facts}
+    assert facts["read_source"].bare_sink_kind == "filesystem"
+    assert "read_source" in dict(facts["scan"].loop_call_targets)
+
+
 def test_ts_json_parse_in_loop():
     src = "function f(xs){ for (const x of xs) { const c = JSON.parse(JSON.stringify(x)); } }"
     assert ("json_parse_in_loop", "") in _hits("typescript", src)
@@ -559,9 +718,7 @@ _DART_CASES = [
         "immutable-string += accumulation in a loop is O(n^2)",
     ),
     (
-        "void f(List<int> xs) {\n"
-        "  for (final x in xs) { final d = Dio(); }\n"
-        "}\n",
+        "void f(List<int> xs) {\n  for (final x in xs) { final d = Dio(); }\n}\n",
         [("resource_construction_in_loop", "")],
         "a Dio client constructed per-iteration",
     ),
@@ -665,9 +822,7 @@ _SCALA_CASES = [
         "generic .send with NO network import is gated out",
     ),
     (
-        "object A { def m(paths: List[String]): Unit = {\n"
-        "  for (p <- paths) { os.read(p) }\n"
-        "} }\n",
+        "object A { def m(paths: List[String]): Unit = {\n  for (p <- paths) { os.read(p) }\n} }\n",
         [("io_in_loop", "filesystem")],
         "os-lib os.read is method-gated (no import needed)",
     ),
@@ -699,7 +854,7 @@ _SCALA_CASES = [
         "  acc\n"
         "} }\n",
         [("string_concat_in_loop", "")],
-        "`acc = acc + \"lit\"` reassignment form on a string var",
+        '`acc = acc + "lit"` reassignment form on a string var',
     ),
 ]
 
@@ -783,8 +938,7 @@ _RUBY_CASES = [
         "bare get (Sinatra route DSL shape) is not a network sink",
     ),
     (
-        'require "faraday"\n'
-        "def m(conn, urls)\n  urls.each do |u|\n    conn.get(u)\n  end\nend\n",
+        'require "faraday"\ndef m(conn, urls)\n  urls.each do |u|\n    conn.get(u)\n  end\nend\n',
         [("io_in_loop", "network")],
         "instance client verb WITH a network require",
     ),
@@ -799,7 +953,7 @@ _RUBY_CASES = [
         "loop do ... end is an unconditional-repeat loop scope",
     ),
     (
-        "def m\n  3.times do\n    File.read(\"x\")\n  end\nend\n",
+        'def m\n  3.times do\n    File.read("x")\n  end\nend\n',
         [],
         "literal-receiver .times is a constant-bound loop",
     ),
@@ -846,5 +1000,346 @@ def test_ruby_same_collection_nested_block_loops_fact():
         "end\n"
     )
     fc = walk_file("t.rb", "ruby", src.encode())
+    assert any(f.nested_loop_line for f in fc.perf_fn_facts)
+    assert not any(h.kind == "nested_loop_quadratic" for h in fc.perf_hits)
+
+
+# ---------------------------------------------------------------------------
+# Kotlin
+# ---------------------------------------------------------------------------
+
+_KOTLIN_CASES = [
+    (
+        "fun m(ids: List<Long>) {\n    for (id in ids) {\n        repo.findById(id)\n    }\n}\n",
+        [("io_in_loop", "db")],
+        "Spring-Data derived query in a native for loop",
+    ),
+    (
+        "fun m(ids: List<Long>) {\n    ids.forEach { repo.findById(it) }\n}\n",
+        [("io_in_loop", "db")],
+        "the combinator form is a loop scope (block_loop_body)",
+    ),
+    (
+        "fun m(ids: List<Long>) {\n    ids.map { repo.findById(it) }\n}\n",
+        [("io_in_loop", "db")],
+        "map with a trailing lambda is full iteration",
+    ),
+    (
+        "fun m(x: Foo) {\n    x.let { repo.findById(1) }\n    x.apply { repo.findById(2) }\n}\n",
+        [],
+        "let/apply are scope functions that run once, never loops",
+    ),
+    (
+        "fun m(ids: List<Long>) {\n    ids.firstOrNull { repo.findById(it) != null }\n}\n",
+        [],
+        "an early-exit search is not a full-iteration loop",
+    ),
+    (
+        "fun m() {\n    for (u in repo.findAll()) {\n        use(u)\n    }\n}\n",
+        [],
+        "the loop HEADER runs once - loop_body scoping (grammar has no body field)",
+    ),
+    (
+        "fun m(paths: List<String>) {\n"
+        "    for (p in paths) {\n        File(p).forEachLine { use(it) }\n    }\n}\n",
+        [("io_in_loop", "filesystem")],
+        "File-exclusive kotlin.io extension functions fire ungated",
+    ),
+    (
+        "fun m(frames: List<Frame>) {\n    for (f in frames) {\n        f.readText()\n    }\n}\n",
+        [],
+        "generic stream verbs are reused by kotlinx-io on in-memory buffers",
+    ),
+    (
+        "fun m(hosts: List<String>) {\n"
+        "    for (h in hosts) {\n        InetAddress.getByName(h)\n    }\n}\n",
+        [],
+        "a static factory is not a derived query despite matching ...By[A-Z]",
+    ),
+    (
+        "fun m(ids: List<Long>, userRepository: Repo) {\n"
+        "    for (id in ids) {\n        userRepository.findByEmail(id)\n    }\n}\n",
+        [("io_in_loop", "db")],
+        "a derived query on a repository instance still classifies",
+    ),
+    (
+        "fun m(xs: List<String>) {\n"
+        '    for (x in xs) {\n        val r = Regex("\\\\b$x\\\\b")\n    }\n}\n',
+        [],
+        "an interpolated pattern varies per iteration - not hoistable",
+    ),
+    (
+        'fun m() {\n    for (i in 0..9) {\n        File("x").forEachLine { use(it) }\n    }\n}\n',
+        [],
+        "a literal range is a constant-bound loop",
+    ),
+    (
+        "fun m() {\n"
+        '    for (i in 0 until 8) {\n        File("x").forEachLine { use(it) }\n    }\n}\n',
+        [],
+        "0 until 8 is an infix call, not a range node, but still constant",
+    ),
+    (
+        "fun m() {\n"
+        '    for (i in 8 downTo 0) {\n        File("x").forEachLine { use(it) }\n    }\n}\n',
+        [],
+        "downTo is the descending spelling of the same constant bound",
+    ),
+    (
+        "fun m(n: Int) {\n"
+        '    for (i in 0 until n) {\n        File("x").forEachLine { use(it) }\n    }\n}\n',
+        [("io_in_loop", "filesystem")],
+        "a variable upper bound is data-dependent, not constant",
+    ),
+    (
+        'fun m() {\n    repeat(3) {\n        File("x").readText()\n    }\n}\n',
+        [],
+        "repeat(<literal>) is the combinator spelling of a constant bound",
+    ),
+    (
+        'fun m(app: Javalin, sizes: List<Int>) {\n    sizes.forEach { s -> app.routes.get("/x") }\n}\n',
+        [],
+        "a bare HTTP verb is the route-registration DSL, not a client call",
+    ),
+    (
+        'fun m(xs: List<String>) {\n    var acc = ""\n    for (x in xs) {\n        acc += "a"\n    }\n}\n',
+        [("string_concat_in_loop", "")],
+        "+= onto a same-file string var accumulates across iterations",
+    ),
+    (
+        "fun m(xs: List<String>) {\n    val out = mutableListOf<String>()\n"
+        '    for (x in xs) {\n        out += "a"\n    }\n}\n',
+        [],
+        "+= onto a MutableList is an amortized append, not a rebuild",
+    ),
+    (
+        'fun m(xs: List<String>) {\n    for (x in xs) {\n        var part = ""\n'
+        '        part += "a"\n        use(part)\n    }\n}\n',
+        [],
+        "an accumulator declared inside the loop is reset every iteration",
+    ),
+    (
+        'fun m(xs: List<String>) {\n    for (x in xs) {\n        val r = Regex("^a")\n    }\n}\n',
+        [("regex_compile_in_loop", "")],
+        "Regex(literal) recompiled per iteration",
+    ),
+    (
+        "fun m(xs: List<String>, pat: String) {\n"
+        "    for (x in xs) {\n        val r = Regex(pat)\n    }\n}\n",
+        [],
+        "a dynamic pattern may legitimately vary - not hoistable",
+    ),
+    (
+        "fun m(xs: List<String>) {\n    for (x in xs) {\n        lock.lock()\n    }\n}\n",
+        [("lock_in_loop", "")],
+        "a lock taken every iteration is a contention site",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _KOTLIN_CASES, ids=[c[2] for c in _KOTLIN_CASES])
+def test_kotlin_cases(src, expected, note):
+    assert _hits("kotlin", src) == sorted(expected), note
+
+
+def test_kotlin_suspend_is_async_via_modifier_token():
+    # ``suspend`` is a ``function_modifier`` TOKEN, not a node type - the case
+    # ``BasePerfDialect.is_async_fn`` documents.
+    src = "suspend fun m() {\n    Thread.sleep(10)\n    runBlocking { g() }\n}\n"
+    assert _hits("kotlin", src) == [
+        ("blocking_sync_in_async", "Thread.sleep"),
+        ("blocking_sync_in_async", "runBlocking"),
+    ]
+
+
+def test_kotlin_blocking_calls_outside_suspend_are_silent():
+    src = "fun m() {\n    Thread.sleep(10)\n    runBlocking { g() }\n}\n"
+    assert _hits("kotlin", src) == []
+
+
+def test_kotlin_combinator_receiver_runs_once():
+    # Only the lambda is per-iteration; the receiver chain runs once.
+    src = "fun m() {\n    repo.findAll().forEach { use(it) }\n}\n"
+    assert _hits("kotlin", src) == []
+
+
+def test_kotlin_deferred_lambda_in_loop_is_not_per_iteration():
+    # A lambda that is NOT an iteration combinator's body opens a new execution
+    # scope: it is merely DEFINED per iteration, so loop_depth resets there.
+    src = (
+        "fun m(ids: List<Long>) {\n"
+        "    for (id in ids) {\n"
+        "        register { repo.findById(id) }\n"
+        "    }\n"
+        "}\n"
+    )
+    assert _hits("kotlin", src) == []
+
+
+def test_kotlin_same_collection_nested_combinators_fact():
+    src = "fun m(xs: List<Long>) {\n    xs.forEach { a -> xs.forEach { b -> combine(a, b) } }\n}\n"
+    fc = walk_file("t.kt", "kotlin", src.encode())
+    assert any(f.nested_loop_line for f in fc.perf_fn_facts)
+    assert not any(h.kind == "nested_loop_quadratic" for h in fc.perf_hits)
+
+
+# ---------------------------------------------------------------------------
+# C++
+# ---------------------------------------------------------------------------
+
+_CPP_CASES = [
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        sqlite3_step(stmt);\n    }\n}\n",
+        [("io_in_loop", "db")],
+        "a library-prefixed db round-trip in a range-for",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        '    for (auto x : v) {\n        fopen("a.txt", "r");\n    }\n}\n',
+        [("io_in_loop", "filesystem")],
+        "an unqualified POSIX open in a loop",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        '    for (auto x : v) {\n        std::fprintf(stderr, "%d", x);\n    }\n}\n',
+        [],
+        "buffered stdio is not a round-trip, and std:: is a qualifier",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        json::accept(x);\n    }\n}\n",
+        [],
+        "a namespaced call merely sharing a POSIX name never classifies",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        buf.read();\n        set.remove(x);\n    }\n}\n",
+        [],
+        "member calls are container vocabulary, not I/O",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        std::filesystem::remove(p);\n    }\n}\n",
+        [("io_in_loop", "filesystem")],
+        "std::filesystem free functions key off the qualifier segment",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        '    for (auto x : v) {\n        std::regex re("^a");\n    }\n}\n',
+        [("regex_compile_in_loop", "")],
+        "a regex declaration recompiles the pattern every iteration",
+    ),
+    (
+        "void m(std::vector<int> v, std::string pat) {\n"
+        "    for (auto x : v) {\n        std::regex re(pat);\n    }\n}\n",
+        [],
+        "a dynamic pattern is not provably hoistable",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        std::ifstream in(paths[x]);\n    }\n}\n",
+        [],
+        "a stream over a per-iteration path has nothing to hoist",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        threads.push_back(std::thread(work));\n    }\n}\n",
+        [],
+        "constructing threads in a loop is how a pool is built",
+    ),
+    (
+        "void m(std::vector<int> v) {\n    std::string s;\n"
+        '    for (auto x : v) {\n        s += "a";\n    }\n}\n',
+        [],
+        "std::string += appends in place - amortized O(1), never a rebuild",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n"
+        "        auto* p = new Widget();\n"
+        "        auto q = std::make_unique<Widget>();\n"
+        "    }\n}\n",
+        [],
+        "allocation in a loop is ordinary C++",
+    ),
+    (
+        'void m() {\n    for (int i = 0; i < 8; i++) {\n        fopen("a.txt", "r");\n    }\n}\n',
+        [],
+        "a literal C-style bound is a constant loop",
+    ),
+    (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n        std::lock_guard<std::mutex> g(mu);\n    }\n}\n",
+        [("lock_in_loop", "")],
+        "an RAII guard taken every iteration is a contention site",
+    ),
+    (
+        "void m(std::vector<int> v) {\n    for (auto x : v) {\n        mu.lock();\n    }\n}\n",
+        [("lock_in_loop", "")],
+        "the explicit acquire form of the same site",
+    ),
+    (
+        "void m() {\n    for (auto x : load_all()) {\n        use(x);\n    }\n}\n",
+        [],
+        "the range-for header runs once",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,expected,note", _CPP_CASES, ids=[c[2] for c in _CPP_CASES])
+def test_cpp_cases(src, expected, note):
+    assert _hits("cpp", src) == sorted(expected), note
+
+
+def test_cpp_implicit_this_socket_verbs_do_not_classify():
+    # In C++ a member call from inside its own class is spelled unqualified, so
+    # ``send(pkt)`` is indistinguishable from POSIX ``send`` (seastar's
+    # ``ipv4::get_packet`` does exactly this).
+    src = (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n"
+        "        send(a, b, c);\n"
+        "        connect(addr);\n"
+        "    }\n"
+        "}\n"
+    )
+    assert _hits("cpp", src) == []
+
+
+def test_cpp_suffixed_socket_verbs_still_classify():
+    src = (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n"
+        "        ::sendmsg(fd, &msg, 0);\n"
+        "    }\n"
+        "}\n"
+    )
+    assert _hits("cpp", src) == [("io_in_loop", "network")]
+
+
+def test_cpp_function_name_resolves_through_the_declarator_chain():
+    src = (
+        "void outer(std::vector<int> v) {\n"
+        "    for (auto x : v) {\n"
+        "        sqlite3_step(stmt);\n"
+        "    }\n"
+        "}\n"
+    )
+    fc = walk_file("t.cpp", "cpp", src.encode())
+    assert [h.function for h in fc.perf_hits] == ["outer"]
+
+
+def test_cpp_same_collection_nested_range_for_fact():
+    src = (
+        "void m(std::vector<int> v) {\n"
+        "    for (auto a : v) {\n"
+        "        for (auto b : v) {\n"
+        "            combine(a, b);\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+    )
+    fc = walk_file("t.cpp", "cpp", src.encode())
     assert any(f.nested_loop_line for f in fc.perf_fn_facts)
     assert not any(h.kind == "nested_loop_quadratic" for h in fc.perf_hits)

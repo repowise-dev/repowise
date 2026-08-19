@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from httpx import AsyncClient
 
@@ -28,6 +30,8 @@ async def _insert_dead_code(session_factory, repo_id: str) -> str:
                     "safe_to_delete": True,
                     "primary_owner": "Alice",
                     "age_days": 180,
+                    "last_commit_at": datetime(2026, 1, 5, tzinfo=UTC),
+                    "commit_count_90d": 0,
                 },
                 {
                     "kind": "unused_export",
@@ -42,6 +46,8 @@ async def _insert_dead_code(session_factory, repo_id: str) -> str:
                     "safe_to_delete": False,
                     "primary_owner": "Bob",
                     "age_days": 90,
+                    "last_commit_at": datetime(2026, 6, 20, tzinfo=UTC),
+                    "commit_count_90d": 7,
                 },
             ],
         )
@@ -69,6 +75,27 @@ async def test_list_dead_code_with_data(client: AsyncClient, app) -> None:
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 2
+
+
+@pytest.mark.asyncio
+async def test_list_dead_code_surfaces_staleness(client: AsyncClient, app) -> None:
+    """The web surface gets the age signal that used to reach only the agent.
+
+    ``last_commit_at`` is the staleness fact, not ``age_days`` — the latter
+    runs from the file's first commit and answers a different question.
+    """
+    repo = await create_test_repo(client)
+    await _insert_dead_code(app.state.session_factory, repo["id"])
+
+    data = (await client.get(f"/api/repos/{repo['id']}/dead-code")).json()
+
+    unreachable = next(f for f in data if f["kind"] == "unreachable_file")
+    assert unreachable["last_commit_at"].startswith("2026-01-05")
+    assert unreachable["commit_count_90d"] == 0
+
+    unused = next(f for f in data if f["kind"] == "unused_export")
+    assert unused["last_commit_at"].startswith("2026-06-20")
+    assert unused["commit_count_90d"] == 7
 
 
 @pytest.mark.asyncio

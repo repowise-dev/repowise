@@ -4,32 +4,45 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
+from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.analysis.health.biomarkers import continuous_biomarkers
 from repowise.core.analysis.health.churn_complexity import churn_complexity_points
+from repowise.core.analysis.health.complexity.languages import LANGUAGE_MAPS
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
 from repowise.core.analysis.health.grading import HEALTHY_MIN, band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
 from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
+from repowise.core.analysis.health.scoring import hotspot_health
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.suggestions import suggestion_for
 from repowise.core.analysis.health.trends import diff_snapshots, file_trend, recent_kpis
+from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.crud import (
     get_all_git_metadata,
     get_coverage_summary,
     get_file_language_map,
-    get_git_metadata,
-    get_graph_node,
-    get_node_degree_counts,
+    get_git_metadata_bulk,
+    get_hotspot_file_paths,
+    get_node_degree_counts_bulk,
     get_refactoring_suggestions,
+    get_test_file_paths,
     list_health_snapshots,
     load_coverage_for_repo,
+    sort_metrics_worst_first,
 )
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import HealthFileMetric, HealthFinding
+from repowise.core.persistence.models import (
+    HealthFileMetric,
+    HealthFinding,
+    RefactoringSuggestion,
+)
 from repowise.core.registry import mcp_tool_registry as mcp
+from repowise.server.mcp_server._budget import effective_char_budget
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -38,12 +51,151 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
+# How much a single execution of each I/O boundary costs, as an order of
+# magnitude rather than a measurement: a process spawn is milliseconds, a wire
+# round-trip is hundreds of microseconds up, a pooled local query is tens, and a
+# filesystem call is usually a page-cache hit. "A subprocess spawn in a loop is
+# not a filesystem stat in a loop" is the whole point of ranking on this.
+_PERF_BOUNDARY_POINTS = {"subprocess": 4, "network": 3, "db": 2, "lock": 2, "filesystem": 1}
+
+# What the marker itself proves about *how often* the boundary cost is paid.
+# Two independent proofs, and neither dominates — which is why the three signals
+# are added rather than multiplied:
+#
+#   * a **multiplier** — the cost repeats per iteration (N), per nested pair
+#     (N x M), or quadratically. Every ``*_in_loop`` marker carries this.
+#   * **hotness** — the cost is paid on a request-reachable path.
+#     ``hot_path_sync_io`` and ``nested_loop_quadratic`` are the request-
+#     reachability signal, and it needs no new column: both are emitted **only**
+#     for a function ``perf.ranking.PerfRanker`` called hot (top-quintile
+#     call-graph in-degree, or a churny/hotspot file), so their presence is
+#     already a proof. ``blocking_io_under_lock`` proves something adjacent —
+#     every thread serializes behind the wait.
+#
+# ``hot_path_sync_io`` therefore sits level with a plain loop marker, not above
+# it: it proves hotness and no multiplier, and a loop proves a multiplier and no
+# hotness. Boundary kind is what separates them in practice.
+#
+# Deliberately not ``severity``: the column disagrees with this ordering and
+# cannot be fixed from here without a re-score. ``hot_path_sync_io`` is written
+# ``LOW`` and ``io_in_loop`` ``MEDIUM``, so the marker carrying a hotness proof
+# is graded *below* the ungated one — and on this repo severity takes exactly
+# two values across all 697 perf findings (522 medium, 175 low), which is not
+# an ordering.
+#
+# Exhaustive over the 20 detectors declaring ``category = "performance"``;
+# ``test_perf_rank.py`` fails if a new one is added without a weight, so the
+# default below is a guard rather than a resting place.
+_PERF_MARKER_POINTS = {
+    # Superlinear, and gated on hotness.
+    "nested_loop_quadratic": 5,
+    # N x M round-trips, or a wait every thread queues behind.
+    "nested_loop_with_io": 4,
+    "blocking_io_under_lock": 4,
+    "sql_cartesian_join": 4,
+    # One boundary crossing per iteration — the N+1 family.
+    "io_in_loop": 3,
+    "serial_await_in_loop": 3,
+    "lock_in_loop": 3,
+    "goroutine_in_unbounded_loop": 3,
+    "resource_construction_in_loop": 3,
+    # One crossing, but proven to sit on a hot path.
+    "hot_path_sync_io": 3,
+    # In-loop CPU/allocation costs: real, and orders below a round-trip.
+    "blocking_sync_in_async": 2,
+    "pandas_iterrows_in_loop": 2,
+    "pd_concat_in_loop": 2,
+    "json_parse_in_loop": 2,
+    "array_spread_in_reduce": 2,
+    "defer_in_loop": 2,
+    "regex_compile_in_loop": 1,
+    "string_concat_in_loop": 1,
+    "membership_test_against_list_in_loop": 1,
+    "list_insert_zero_in_loop": 1,
+}
+
+# Unknown marker. Deliberately the floor, not the middle: a detector added
+# without a weight should under-rank rather than jump the queue, the same
+# degrade-to-no-signal direction the perf gate itself takes.
+_PERF_UNKNOWN_MARKER_POINTS = 1
+
+# A hit whose loop and whose sink are in different functions. Worth a point on
+# its own: an intra-function loop is often visibly bounded at the call site,
+# while a cross-function N+1 is the one nobody sees by reading the loop.
+_PERF_CROSSFN_POINTS = 1
+
+
+def _perf_rank(biomarker_type: str | None, details: Any) -> int:
+    """Order-of-magnitude ranking key for one ``performance`` finding.
+
+    The performance dimension had none. Every finding carries
+    ``health_impact: 0`` by construction — the dimension is deliberately never
+    blended into the score — so the list came back in whatever order the impact
+    tie broke, which is file order. "Which of these 697 matters" was
+    unanswerable from the payload, and worse, the *cap* was arbitrary too: with
+    ``include=['performance']`` the head is 20 of 697 chosen by nothing.
+
+    Additive over three signals the payload already carries, in points rather
+    than a calibrated scale, because it is an **ordering key and not a score**.
+    Nothing here is blended into ``score`` / ``performance_score``, and nothing
+    here was fitted against the defect corpus — the frozen weights this file
+    documents stay frozen. A caller who disagrees can re-rank: every input is in
+    ``biomarker_type`` and ``details`` on the same row.
+    """
+    if not isinstance(details, dict):
+        details = {}
+    points = _PERF_MARKER_POINTS.get(biomarker_type or "", _PERF_UNKNOWN_MARKER_POINTS)
+    points += _PERF_BOUNDARY_POINTS.get(details.get("boundary_kind") or "", 0)
+    if details.get("cross_function"):
+        points += _PERF_CROSSFN_POINTS
+    return points
+
+
+def _rank_emitted(rows: list[Any]) -> list[Any]:
+    """Break the ``health_impact`` ties that the performance dimension is made of.
+
+    Rows arrive impact-ordered from SQL, which decides nothing among the
+    performance findings: they all carry ``0``, so the head was whatever the tie
+    broke to — file order. This re-sorts **within** each impact tier, so the
+    defect ordering every other block is built on is untouched (identical
+    impacts were already interchangeable) and the perf tier stops being
+    alphabetical.
+
+    ``file_path`` is the final key so the order is total and reproducible; two
+    findings that rank the same used to swap places between calls on nothing.
+    Rows with no ``details_json`` attribute — the narrow dashboard read, unless
+    the caller filtered to ``performance`` — rank on the marker alone, which is
+    exactly the tier where the rank cannot move a row anyway.
+    """
+    if not rows:
+        return rows
+
+    def key(r: Any) -> tuple[float, int, str]:
+        impact = float(getattr(r, "health_impact", 0.0) or 0.0)
+        dimension = getattr(r, "dimension", None) or "defect"
+        if dimension != "performance":
+            return (-impact, 0, getattr(r, "file_path", "") or "")
+        raw = getattr(r, "details_json", None)
+        try:
+            details = json.loads(raw) if raw else {}
+        except Exception:
+            details = {}
+        return (
+            -impact,
+            -_perf_rank(getattr(r, "biomarker_type", None), details),
+            getattr(r, "file_path", "") or "",
+        )
+
+    return sorted(rows, key=key)
+
 
 def _serialize_finding(f: HealthFinding) -> dict[str, Any]:
     try:
         details = json.loads(f.details_json) if f.details_json else {}
     except Exception:
         details = {}
+    dimension = getattr(f, "dimension", None) or "defect"
+    rank = {"perf_rank": _perf_rank(f.biomarker_type, details)} if dimension == "performance" else {}
     return {
         "biomarker_type": f.biomarker_type,
         "severity": f.severity,
@@ -57,7 +209,11 @@ def _serialize_finding(f: HealthFinding) -> dict[str, Any]:
         "status": f.status,
         # Health pillar this finding homes under (defect / maintainability /
         # performance) for per-dimension filtering.
-        "dimension": getattr(f, "dimension", None) or "defect",
+        "dimension": dimension,
+        # Performance rows only — see ``_perf_rank``. Absent everywhere else
+        # rather than zero: a defect finding ranks on ``weighted_deficit`` and a
+        # 0 here would read as "measured, and it is nothing".
+        **rank,
     }
 
 
@@ -94,6 +250,137 @@ def _serialize_refactoring(r: Any) -> dict[str, Any]:
     }
 
 
+# ``include`` and ``only`` were different vocabularies: the block a caller
+# switches on with ``include=["biomarkers"]`` lands under the key ``findings``,
+# so the obvious ``only=["biomarkers"]`` projected it away again. Alias the three
+# that have a 1:1 key rather than make the caller learn two names for one block.
+# ``signals`` is deliberately absent — it has no top-level key to alias to, it
+# merges into ``metrics[].signals``, so it stays reported in ``unknown_only_keys``.
+_ONLY_ALIASES = {
+    "biomarkers": "findings",
+    "accuracy": "defect_accuracy",
+    "refactoring": "refactoring_plans",
+}
+
+# Files the directive reduces over: ``fix_first`` plus the two in ``then``. Named
+# because three separate places have to agree on it — the plan lookup, the lead
+# set the directive reads, and the directive itself — and they are far apart.
+_DIRECTIVE_CANDIDATES = 3
+
+
+# Deliberately not ``CHAR_BUDGET`` (8000 tokens). That ceiling is for tools that
+# *summarize*; the dashboard is a ranked report and already measures ~44k chars
+# at the documented default ``limit=20``, so budgeting it there would silently
+# halve every list on a call that has never failed. The ceiling that matters here
+# is the one whose breach is an isError: pass an effectively-unbounded
+# ``configured`` so ``effective_char_budget`` returns the host-derived cap alone
+# (25000 tokens x 0.6 x 4 chars = 60,000), and follows a narrowed
+# ``MAX_MCP_OUTPUT_TOKENS`` down.
+_HOST_CEILING = 1 << 30
+
+# Room for what the guard adds *after* it measures: ``truncated_to_fit``, the
+# recovery sentence and ``timing_ms``. Without it the report of the trim pushed
+# the response back over the ceiling the trim existed to respect — the marker
+# has to be inside the budget, not on top of it. Same shape as ``tool_why``'s
+# ``_COLLECTOR_HEADROOM_CHARS``, and generous: over-reserving costs a row.
+_TRUNCATION_MARKER_HEADROOM = 400
+
+# Every list this response can carry that grows with the repo, trimmed
+# longest-first when the whole payload would overflow the host's tool-result cap.
+# Named rather than derived from "every value that is a list" so trimming can
+# never eat a small structural list (``kpis.performance_unsupported_languages``,
+# ``unresolved``) to save bytes a growable list is responsible for.
+#
+# **This list must stay exhaustive, and the first version of it was not.** It
+# held only the eight dashboard blocks that carry a ``limit`` cap, which are the
+# lists least able to overflow — while the three genuinely unbounded ones were
+# invisible to the guard. ``metrics`` and ``trends`` are built per *target* with
+# no cap at all (a ``module:`` target expands to every file in the module), and
+# targeted ``coverage.files`` serializes the per-line ``covered_lines`` arrays
+# that dashboard mode declines to read precisely because they measured 466,874 B.
+# A guard that misses those does something worse than nothing: it trims a small
+# capped list to zero, still overflows, and stamps ``truncated_to_fit`` claiming
+# it handled the problem. **When adding a list to this response, add it here.**
+#
+# Dotted entries address one level of nesting; the flat ``result.get(k)`` scan
+# would never have found them.
+_TRIMMABLE_LISTS = (
+    "refactoring_plans",
+    "high_leverage_files",
+    "worst_files",
+    "test_findings",
+    "top_findings",
+    "findings",
+    "churn_complexity",
+    "modules",
+    "metrics",
+    "trends",
+    "coverage.files",
+    "trend.recent",
+)
+
+
+def _resolve_list(result: dict[str, Any], path: str) -> list[Any] | None:
+    """The list at a ``_TRIMMABLE_LISTS`` path, or ``None`` when absent."""
+    node: Any = result
+    for part in path.split("."):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(part)
+    return node if isinstance(node, list) and node else None
+
+
+def _fit_to_budget(result: dict[str, Any], budget: int) -> dict[str, int]:
+    """Trim ranked lists until *result* fits *budget* chars. Returns what it cut.
+
+    ``include`` only ever adds a block, and the dashboard's ranked lists compose:
+    measured on this repo, bare ``include=['refactoring']`` returns ~59k chars
+    with no single list at fault (refactoring_plans 34%, high_leverage_files 16%,
+    worst_files 16%, test_findings 13%, top_findings 13%). Past the host's
+    ``MAX_MCP_OUTPUT_TOKENS`` the result is *rejected* with an isError — the
+    agent loses the whole answer — so a per-list cap that is individually
+    reasonable is not enough; something has to bound the sum.
+
+    Trims the currently-longest list, so the cut lands on whichever block is
+    actually responsible rather than on a fixed victim. Every trimmed list keeps
+    its ``*_total`` sibling, and the cut is reported in
+    ``_meta.truncated_to_fit`` — the recovery path is ``only=[...]``, which gates
+    the work as well as the payload.
+    """
+    dropped: dict[str, int] = {}
+    size = len(json.dumps(result, default=str))
+    while size > budget:
+        candidates = {k: rs for k in _TRIMMABLE_LISTS if (rs := _resolve_list(result, k))}
+        longest = max(candidates, key=lambda k: len(candidates[k]), default=None)
+        if longest is None:
+            # Nothing left to give. Better an oversized response the host may
+            # reject than a silently empty one — and _meta says what happened.
+            break
+        rows = candidates[longest]
+        # Estimate how many rows the overflow is worth from this list's own mean
+        # row size, so a 200-row overflow is not 200 whole-response
+        # re-serializations. Never more than half the list per pass: the estimate
+        # is a mean over uneven rows, and over-trimming cannot be undone.
+        per_row = max(1, len(json.dumps(rows, default=str)) // len(rows))
+        take = max(1, min(len(rows), (size - budget) // per_row, max(1, len(rows) // 2)))
+        del rows[len(rows) - take :]
+        dropped[longest] = dropped.get(longest, 0) + take
+        size = len(json.dumps(result, default=str))
+    return dropped
+
+
+def _in_dimensions(row: Any, dimensions: set[str]) -> bool:
+    """True when *row* belongs to one of *dimensions* (empty set -> everything).
+
+    ``dimension`` is nullable and a NULL means ``defect``: the column was added
+    without a backfill, so pre-existing rows stay NULL until the next index
+    recomputes them. Reading it as anything else drops real defect findings.
+    """
+    if not dimensions:
+        return True
+    return (row.dimension or "defect") in dimensions
+
+
 def _round_opt(v: Any) -> float | None:
     """Round a nullable per-dimension score, preserving ``None`` (not measured)."""
     return round(v, 2) if v is not None else None
@@ -105,13 +392,25 @@ def _leads_by_file(findings: list[Any]) -> dict[str, dict[str, Any]]:
     ``primary_biomarker`` / ``primary_reason`` give a low file "the one reason"
     to lead with; ``total_deduction`` (summed ``health_impact``) distinguishes
     two files that both floor at 1.0. Additive — the score itself is untouched.
+
+    The headline prefers the strongest **discrete** finding. A continuous
+    biomarker fires on every file carrying its input signal, so on a repo with
+    coverage data ``coverage_gradient`` wins the max-impact tiebreak nearly
+    everywhere: measured on this repo before the preference, it led 22 of the
+    top 50 ``worst_files`` and 14 of the top 50 ``high_leverage_files`` with
+    "N% of lines uncovered", which is true and tells a reader nothing about why
+    this file rather than any other. The gradient still counts in
+    ``total_deduction`` and still leads when it is a file's only finding — it
+    just stops crowding out a nameable cause.
     """
+    continuous = continuous_biomarkers()
     by_file: dict[str, list[Any]] = {}
     for f in findings:
         by_file.setdefault(f.file_path, []).append(f)
     leads: dict[str, dict[str, Any]] = {}
     for path, fs in by_file.items():
-        primary = max(fs, key=lambda x: x.health_impact)
+        discrete = [f for f in fs if f.biomarker_type not in continuous]
+        primary = max(discrete or fs, key=lambda x: x.health_impact)
         leads[path] = {
             "primary_biomarker": primary.biomarker_type,
             "primary_reason": primary.reason,
@@ -120,13 +419,24 @@ def _leads_by_file(findings: list[Any]) -> dict[str, dict[str, Any]]:
     return leads
 
 
-def _serialize_metric(m: HealthFileMetric, lead: dict[str, Any] | None = None) -> dict[str, Any]:
+def _serialize_metric(
+    m: HealthFileMetric,
+    lead: dict[str, Any] | None = None,
+    *,
+    is_test: bool = False,
+) -> dict[str, Any]:
     return {
         "file_path": m.file_path,
         "score": round(m.score, 2),
         "max_ccn": m.max_ccn,
         "max_nesting": m.max_nesting,
         "nloc": m.nloc,
+        # Two different questions, deliberately both present: ``has_test_file``
+        # is "does something test this file", ``is_test`` is "is this file
+        # itself test material". Defect risk in a test reads differently from
+        # defect risk in the code it covers, and nothing in the payload used to
+        # say which one you were looking at.
+        "is_test": is_test,
         "has_test_file": m.has_test_file,
         "line_coverage_pct": m.line_coverage_pct,
         "branch_coverage_pct": m.branch_coverage_pct,
@@ -136,11 +446,20 @@ def _serialize_metric(m: HealthFileMetric, lead: dict[str, Any] | None = None) -
         # headline recovers if the file reaches 8.0, so ranking by it — not by
         # raw score — points at the files that actually move the average. A tiny
         # 1.0 file and a 1200-line 1.0 file score the same but differ 40x here.
+        # The unit is score-points x NLOC, which is meaningless on its own — the
+        # docstring and ``gap_analysis.weighted_gap_points`` give it a
+        # denominator, and every ``high_leverage_files`` row carries the same
+        # quantity as ``share_of_repo_gap_pct``.
         "weighted_deficit": round(max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1)),
-        # Per-dimension scores from the three-signal split. ``score`` is the
-        # overall surfaced number (== ``defect_score`` for now);
+        # Per-dimension scores from the three-signal split. ``defect_score`` is
+        # deliberately absent: ``engine.py`` sets it and ``score`` from the same
+        # ``scores["defect"]`` value, so it was pure duplication on every row of
+        # every response — measured on this repo, 3,314 of 3,314 rows had
+        # ``score == defect_score`` and none was NULL. Two names for one number
+        # cost an agent a source read to decide which to rank on, and the one to
+        # rank on is neither (it is ``weighted_deficit``). ``score`` survives
+        # because every doc, skill and UI already names it.
         # ``performance_score`` is computed but not yet surfaced as its own pillar.
-        "defect_score": _round_opt(getattr(m, "defect_score", None)),
         "maintainability_score": _round_opt(getattr(m, "maintainability_score", None)),
         "performance_score": _round_opt(getattr(m, "performance_score", None)),
         # Dominant-cause lead + pre-clamp magnitude (null when no findings for
@@ -152,21 +471,32 @@ def _serialize_metric(m: HealthFileMetric, lead: dict[str, Any] | None = None) -
     }
 
 
-def _serialize_coverage_row(row: Any) -> dict[str, Any]:
-    try:
-        covered = json.loads(row.covered_lines_json) if row.covered_lines_json else []
-    except Exception:
-        covered = []
-    return {
+def _serialize_coverage_row(row: Any, *, covered_lines: bool = True) -> dict[str, Any]:
+    """One coverage row. ``covered_lines=False`` omits the per-line array.
+
+    The narrow form is not the wide form minus a key: a row read with
+    ``include_covered_lines=False`` carries no ``covered_lines_json`` at all, so
+    touching it would raise rather than merely waste the parse.
+    """
+    out: dict[str, Any] = {
         "file_path": row.file_path,
         "source_format": row.source_format,
         "line_coverage_pct": row.line_coverage_pct,
         "branch_coverage_pct": row.branch_coverage_pct,
-        "covered_lines": covered,
-        "total_coverable_lines": row.total_coverable_lines,
-        "ingested_at": row.ingested_at.isoformat() if row.ingested_at else None,
-        "ingested_commit_sha": row.ingested_commit_sha,
     }
+    # Inserted here rather than appended, so the wide form stays byte-identical
+    # to what callers already receive.
+    if covered_lines:
+        try:
+            out["covered_lines"] = (
+                json.loads(row.covered_lines_json) if row.covered_lines_json else []
+            )
+        except Exception:
+            out["covered_lines"] = []
+    out["total_coverable_lines"] = row.total_coverable_lines
+    out["ingested_at"] = row.ingested_at.isoformat() if row.ingested_at else None
+    out["ingested_commit_sha"] = row.ingested_commit_sha
+    return out
 
 
 def _module_rollups(metrics: list[HealthFileMetric]) -> list[dict[str, Any]]:
@@ -202,6 +532,131 @@ def _module_rollups(metrics: list[HealthFileMetric]) -> list[dict[str, Any]]:
     return out
 
 
+def _unresolved_targets(
+    *,
+    file_targets: list[str],
+    module_targets: list[str],
+    matched_modules: set[str],
+    resolved_paths: set[str],
+    excluded_paths: set[str],
+    repo_root: Any,
+) -> list[dict[str, str]]:
+    """Name every requested target that produced no rows, with a reason.
+
+    A dropped target is otherwise indistinguishable from a clean file: an
+    empty ``findings`` list reads as "this file is healthy", which is the most
+    damaging default this tool can have. The reason is the actionable part —
+    ``not_indexed`` means run ``repowise update``, ``no_such_path`` means the
+    target was a typo, ``excluded`` means the repo config drops it on purpose.
+    """
+    out: list[dict[str, str]] = []
+    for t in file_targets:
+        if t in resolved_paths:
+            continue
+        if t in excluded_paths:
+            reason = "excluded"
+        else:
+            try:
+                on_disk = (Path(repo_root) / t).exists()
+            except (OSError, ValueError):
+                on_disk = False
+            reason = "not_indexed" if on_disk else "no_such_path"
+        out.append({"target": t, "reason": reason})
+    out.extend(
+        {"target": f"module:{name}", "reason": "no_such_module"}
+        for name in module_targets
+        if name not in matched_modules
+    )
+    return out
+
+
+def _directive(
+    by_leverage: list[HealthFileMetric],
+    leads: dict[str, dict[str, Any]],
+    gap_points: int,
+    plan_biomarkers_by_path: dict[str, set[str]] | None = None,
+    plan_count_by_path: dict[str, int] | None = None,
+) -> dict[str, Any] | None:
+    """The one file to fix first, and what fixing it buys.
+
+    Every other block here ranks and describes; none of them recommends. That
+    gap is why a correct finding can sit at position 12 of an undifferentiated
+    list and change nobody's behaviour. Same role as ``get_risk``'s
+    ``directive``: lead with the call, keep the evidence underneath.
+
+    Ranked by ``weighted_deficit`` (not ``score``, which floors at 1.0), so
+    this names the file that actually moves the repo average.
+    """
+    if not by_leverage:
+        return None
+    top = by_leverage[0]
+    recovers = round(max(HEALTHY_MIN - top.score, 0.0) * max(top.nloc, 1))
+    lead = leads.get(top.file_path) or {}
+    # Does anything behind ``plan_via`` actually address the cause named in
+    # ``reason``? Plans carry the biomarker that produced them, and several
+    # biomarkers have no detector at all — ``coverage_gradient`` above all, which
+    # no plan kind can answer because none of them writes tests. Saying so beats
+    # routing the caller to plans for a different problem with full confidence.
+    lead_biomarker = lead.get("primary_biomarker")
+    available = (plan_biomarkers_by_path or {}).get(top.file_path, set())
+    addresses = bool(lead_biomarker) and lead_biomarker in available
+    out = {
+        "fix_first": top.file_path,
+        "reason": lead.get("primary_reason") or f"scores {round(top.score, 2)}",
+        # Points the repo headline recovers if this one file reaches Healthy,
+        # and what share of the total gap that is — the "few files, not the
+        # long tail" argument made concrete for a single file. The denominator
+        # is the *gross* deficit of all below-target files (not the net gap,
+        # which healthy files cushion): per-file shares are then bounded by
+        # 100% and sum to 100% by construction (issue #1437).
+        "recovers_points": recovers,
+        "share_of_repo_gap_pct": (
+            round(100.0 * recovers / gap_points, 1) if gap_points else None
+        ),
+        "then": [m.file_path for m in by_leverage[1:3]],
+        # Projected, not bare. ``include`` adds a block without subtracting the
+        # dashboard, and five ranked lists at the default ``limit`` compose: the
+        # bare ``include=['refactoring']`` measured 70,776 chars on this repo
+        # (refactoring_plans 34%, the other four lists 59%) and simply fails the
+        # MCP token cap, so the one call the directive tells an agent to make was
+        # the one call it could not complete. ``only`` already exists to fix this
+        # (it gates the work as well as the payload); the directive just has to
+        # ask for it. Same block, ~24k chars, no dashboard restated.
+        "plan_via": "get_health(include=['refactoring'], only=['refactoring_plans'])",
+        "plan_addresses_reason": addresses,
+    }
+    # Only speak when there is a named cause to speak about. With no lead the
+    # ``reason`` above already falls back to the bare score, and a note reading
+    # "No stored plan addresses None" would be worse than silence.
+    if not addresses and lead_biomarker:
+        # Name the gap rather than leaving the caller to diff two biomarker
+        # vocabularies. The three branches call for different next moves:
+        # plans for other causes, plans with no recorded cause, or no plans.
+        n_plans = (plan_count_by_path or {}).get(top.file_path, 0)
+        if available:
+            # Deliberately "target X, Y" rather than "the plans target only X, Y":
+            # plans with an empty ``source_biomarker`` are counted in ``n_plans``
+            # but cannot be named, so an exhaustive phrasing would be a claim
+            # this read cannot support.
+            out["plan_note"] = (
+                f"No stored plan addresses {lead_biomarker!r}; the plans on this file "
+                f"target {', '.join(sorted(available))}. Treat plan_via as related "
+                f"cleanup, not the fix for reason."
+            )
+        elif n_plans:
+            out["plan_note"] = (
+                f"No stored plan addresses {lead_biomarker!r}; this file's {n_plans} "
+                f"plan(s) record no source biomarker. Treat plan_via as related "
+                f"cleanup, not the fix for reason."
+            )
+        else:
+            out["plan_note"] = (
+                f"No stored plan addresses {lead_biomarker!r}, and this file has no "
+                f"plans at all. plan_via will return plans for other files."
+            )
+    return out
+
+
 def _dimension_average(metrics: list[HealthFileMetric], attr: str) -> float | None:
     """NLOC-weighted headline over a per-dimension score attribute.
 
@@ -222,12 +677,26 @@ def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
     """How few files must reach 8.0 for the *weighted average* to reach 8.0.
 
     Answers what the bare KPI cannot: the NLOC-weighted average is held down by a
-    *few large low-scoring files*, not the long tail. The gap here is the **net**
-    points the average needs (``8.0 * total_nloc - Σ score*nloc``) — healthy files
-    already sit above 8.0 and cushion it, so this is smaller than the gross
-    all-files-healthy deficit and is the number that matches the goal "move the
-    average". ``files_to_reach_target`` is the punchline: lift the worst-deficit N
-    files to 8.0 and the headline crosses 8.0. Pure over the metrics in hand.
+    *few large low-scoring files*, not the long tail. Two gaps are computed and
+    kept deliberately distinct:
+
+    - ``weighted_gap_points`` — the **net** points the average needs
+      (``8.0 * total_nloc - Σ score*nloc``). Healthy files already sit above 8.0
+      and cushion it, so this is smaller than the gross all-files-healthy
+      deficit and is the number that matches the goal "move the average".
+      ``files_to_reach_target`` is the punchline: lift the worst-deficit N files
+      to 8.0 and the headline crosses 8.0. This can be 0 or negative on a
+      mostly-healthy repo (the average is already above 8.0).
+    - ``weighted_gross_gap_points`` — the **gross** deficit,
+      ``Σ max(8.0 - score, 0) * nloc`` over files below 8.0. This is the
+      denominator ``share_of_repo_gap_pct`` uses: it is positive whenever any
+      file is below target (unlike the net gap), so a share is meaningful even
+      when the average is already healthy, and per-file shares sum to exactly
+      100% by construction. The net gap is not used there precisely because
+      healthy files cushion it — one large low file could then read as closing
+      more than the whole remaining gap (issue #1437).
+
+    Pure over the metrics in hand.
     """
     total_nloc = sum(max(m.nloc, 1) for m in metrics)
     weighted_sum = sum(m.score * max(m.nloc, 1) for m in metrics)
@@ -240,11 +709,13 @@ def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
         ),
         reverse=True,
     )
-    if net_gap <= 0 or not below:
+    gross_gap = sum(below)
+    if not below:
         return {
             "target_score": HEALTHY_MIN,
             "weighted_gap_points": 0,
-            "files_below_target": len(below),
+            "weighted_gross_gap_points": 0,
+            "files_below_target": 0,
             "files_to_reach_target": 0,
             "files_for_half_gap": 0,
         }
@@ -257,15 +728,23 @@ def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
                 return i
         return len(below)
 
+    # ``files_to_reach_target`` needs the net gap to mean "the headline crosses
+    # 8.0". When the net gap is <= 0 (average already healthy) there is nothing
+    # to reach, so those fields are 0 — but the gross gap is still reported
+    # because per-file shares are meaningful whenever any file is below target.
+    reachable = max(net_gap, 0)
     return {
         "target_score": HEALTHY_MIN,
         # Net weighted points the average must recover to reach 8.0.
-        "weighted_gap_points": round(net_gap),
+        "weighted_gap_points": round(max(net_gap, 0)),
+        # Gross deficit of all below-target files: the share_of_repo_gap_pct
+        # denominator (see docstring for why it is not the net gap).
+        "weighted_gross_gap_points": round(gross_gap),
         "files_below_target": len(below),
         # The reframe: lift this many worst-deficit files to 8.0 and the weighted
         # average reaches 8.0; half that gap needs even fewer.
-        "files_to_reach_target": _files_for(net_gap),
-        "files_for_half_gap": _files_for(0.5 * net_gap),
+        "files_to_reach_target": _files_for(reachable),
+        "files_for_half_gap": _files_for(0.5 * reachable),
     }
 
 
@@ -292,16 +771,32 @@ def _perf_kpis(performance_findings: int, coverage: PerfCoverage | None) -> dict
     }
 
 
+def _code_only(
+    metrics: list[HealthFileMetric], lang_by_path: dict[str, str]
+) -> list[HealthFileMetric]:
+    """The metric rows the complexity walker actually walks.
+
+    ``LANGUAGE_MAPS`` is already the repo's definition of "real code" — the perf
+    pillar uses exactly this filter so docs/config rows never dilute its
+    coverage math (``perf/coverage.py::coverage_for_metrics``). The defect
+    headline never applied it.
+    """
+    return [m for m in metrics if lang_by_path.get(m.file_path, "") in LANGUAGE_MAPS]
+
+
 def _compute_kpis(
     metrics: list[HealthFileMetric],
     *,
+    hotspot_paths: set[str] | None = None,
     performance_findings: int = 0,
     coverage: PerfCoverage | None = None,
+    lang_by_path: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if not metrics:
         return {
             "file_count": 0,
             "average_health": 10.0,
+            "hotspot_health": None,
             "worst_performer_path": None,
             "worst_performer_score": None,
             "maintainability_average": None,
@@ -311,9 +806,36 @@ def _compute_kpis(
     total_nloc = sum(max(m.nloc, 1) for m in metrics)
     avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
     worst = min(metrics, key=lambda r: r.score)
+    # What the headline would read over code alone. No biomarker walks a
+    # markdown or JSON file, so those rows carry a mechanical 10.0 that means
+    # "nothing looked at this", exactly the fabricated-10.0 problem the perf
+    # pillar already surfaces rather than hides (``perf/coverage.py``). Measured
+    # on this repo: 233 of 3,314 rows are non-code, 221 of them score exactly
+    # 10.0, they are 7.5% of NLOC, and they lift ``average_health`` 7.31 -> 7.47.
+    # Surfaced rather than subtracted: ``average_health`` is what the badge, the
+    # snapshots, the trend alerts and the web UI all read, and redefining it
+    # here alone would make this tool disagree with every one of them.
+    code_kpis: dict[str, Any] = {}
+    if lang_by_path is not None:
+        code = _code_only(metrics, lang_by_path)
+        code_nloc = sum(max(m.nloc, 1) for m in code)
+        code_kpis = {
+            "non_code_files": len(metrics) - len(code),
+            "average_health_code_only": (
+                round(sum(m.score * max(m.nloc, 1) for m in code) / code_nloc, 2)
+                if code_nloc
+                else None
+            ),
+        }
     return {
         "file_count": len(metrics),
         "average_health": round(avg, 2),
+        # ``None`` when the repo has no hotspot files, which is a real answer:
+        # the alternative is averaging an empty set to a perfect 10.0 and
+        # reporting it as a score, the same fabricated-10.0 problem the comment
+        # above objects to for non-code rows.
+        "hotspot_health": hotspot_health(metrics, hotspot_paths or set()),
+        **code_kpis,
         # NLOC-weighted (``average_health``) vs plain file mean. When these
         # diverge, a few large low-scoring files are holding the headline down —
         # the weighted number is what the dashboard/badge surface, and the gap
@@ -338,110 +860,378 @@ async def get_health(
     include: list[str] | None = None,
     repo: str | None = None,
     limit: int = 20,
+    only: list[str] | None = None,
 ) -> dict:
     """Code-health scores and findings — self-check a file before/after editing.
 
-    No ``targets`` → repo dashboard (KPIs, worst files, ``high_leverage_files``
-    ranked by ``weighted_deficit`` = the files that actually move the repo
-    average). With ``targets`` → per-file scores + findings for those paths.
+    No ``targets`` → repo dashboard, led by a ``directive`` naming the one file
+    to fix first. With ``targets`` → per-file scores + findings. Rank by
+    ``weighted_deficit`` (score-points x NLOC), not ``score``, which floors at
+    1.0; ``share_of_repo_gap_pct`` is the same quantity as a percentage.
 
-    Three co-equal dimensions per file: ``score`` (defect risk, the headline),
-    ``maintainability_score`` (readability/change-cost smells), and
-    ``performance_score`` (static I/O-in-loop / N+1 RISK, high-precision /
-    low-recall, never blended into the defect headline). Each finding carries
-    its ``dimension``; a performance finding's ``details`` name the
-    ``boundary_kind`` (db/network/filesystem/subprocess/lock) and, for
-    cross-function N+1, the caller→sink ``path``.
+    Per file: ``score`` is defect risk *and* the headline — there is no
+    ``defect_score`` — beside ``maintainability_score`` / ``performance_score``
+    (never blended in).
 
     Args:
-        targets: file paths or ``module:<name>``. Empty → dashboard mode.
-        include: opt-in blocks (default stays lean): ``biomarkers`` (findings
-            in dashboard mode) | ``refactoring`` (deterministic suggestion per
-            finding) | ``trend`` | ``coverage`` | ``accuracy`` (does the score
-            rank the buggy files first) | ``signals`` (per-file churn/owners/
-            degree, targeted mode) | ``churn_complexity`` (danger-zone
-            quadrant) | ``performance``/``defect``/``maintainability``
-            (filter findings to one dimension).
+        targets: file paths or ``module:<name>``. Empty → dashboard. A target
+            matching nothing is named in ``unresolved`` with a reason (so empty
+            ``findings`` means healthy); it survives any ``only``.
+        include: ``biomarkers`` | ``refactoring`` | ``trend`` | ``coverage`` |
+            ``accuracy`` | ``signals`` | ``churn_complexity`` |
+            ``performance``/``defect``/``maintainability`` (dimension). Only
+            *adds*, and the ranked lists compose — pair with ``only``, e.g.
+            ``include=['refactoring'], only=['refactoring_plans']``. Over-cap
+            responses are trimmed (``_meta.truncated_to_fit``).
+        only: keep just these top-level keys; ``["directive"]`` is cheapest and
+            ``*_total`` siblings survive. Only the three block names
+            alias (``biomarkers``/``accuracy``/``refactoring``); the dimension
+            names ``performance``/``defect``/``maintainability`` and ``signals``
+            do not, and land in ``unknown_only_keys``.
         repo: usually omitted.
-        limit: max rows in ranked lists (capped at 50).
+        limit: max rows per ranked list (max 50, ``0`` for none).
     """
-    limit = min(max(limit, 1), 50)
+    started = perf_counter()
+    # ``0`` means none, matching the ``module_limit`` convention on the REST
+    # coverage route. It used to clamp up to 1, so the documented way to ask for
+    # "the totals, none of the rows" silently returned a row.
+    limit = min(max(limit, 0), 50)
     include_set = set(include or [])
+    only_list = [_ONLY_ALIASES.get(k, k) for k in (only or [])]
+    only_set = set(only_list)
+
+    def wants(block: str) -> bool:
+        """True when ``block`` survives the ``only`` projection.
+
+        ``only`` used to be applied to the finished response, so the cheapest
+        documented call — ``only=["directive"]`` — still paid for every block it
+        then discarded. Consulted before the expensive optional work so the
+        projection gates the work as well as the payload.
+        """
+        return not only_set or block in only_set
+
+    # Resolved before the reads, not after them. Applied to the finished
+    # response, a dimension filter narrowed a list that had already been capped
+    # by impact — and performance findings carry low impact by construction, so
+    # ``include=["biomarkers", "performance"]`` filtered a defect-heavy head down
+    # to nothing while the total still reported the whole repo. The filter now
+    # decides which rows are eligible for the cap in the first place.
+    dimension_filter = include_set & {"performance", "defect", "maintainability"}
+    # The serialized-rows read is the expensive optional one; skip it when no
+    # block that carries findings survives the projection.
+    wants_findings = wants("findings") or wants("top_findings")
+    wants_test_findings = wants("test_findings")
+    # Everything downstream of the test/production split, in one place.
+    #
+    # Keep this list exhaustive. The read it gates is not free (the column list
+    # is narrow but the predicate is not indexed, so it scans this repo's graph
+    # nodes — ~55 ms warm on a 35k-node index), and ``only=["directive"]`` /
+    # ``["kpis"]`` / ``["modules"]`` serialize no metric row and no finding.
+    # But a *missing* entry here is worse than the read: it makes the split
+    # collapse for that projection, which is the same "a projection changed
+    # what a surviving key holds" defect this change exists to close. Adding
+    # ``suggestion_legend`` was not optional — the legend derives from the split
+    # heads, and leaving it out silently reverted that fix.
+    needs_test_paths = (
+        wants_findings
+        or wants_test_findings
+        or wants("worst_files")
+        or wants("high_leverage_files")
+        or wants("metrics")
+        or ("refactoring" in include_set and wants("suggestion_legend"))
+    )
 
     # Split ``module:foo`` targets out of the path list. A target that
     # matches one or more modules is expanded into the set of files
     # belonging to those modules.
     raw_targets = list(targets or [])
     module_targets = [t.split(":", 1)[1] for t in raw_targets if t.startswith("module:")]
-    file_targets = [t for t in raw_targets if not t.startswith("module:")]
+    # Stored paths are POSIX-separated. Normalize so a Windows caller passing
+    # ``packages\core\x.py`` matches instead of coming back ``no_such_path``.
+    file_targets = [t.replace("\\", "/") for t in raw_targets if not t.startswith("module:")]
 
     ctx = await _resolve_repo_context(repo)
     # Performance headline inputs (dashboard mode): filled inside the session.
     perf_coverage: PerfCoverage | None = None
     perf_findings_count = 0
+    # ``None`` means "not read", which is what keeps the code/non-code KPI split
+    # off targeted responses rather than reporting it over one file.
+    lang_by_path: dict[str, str] | None = None
     async with get_session(ctx.session_factory) as session:
-        repository = await _get_repo(session, repo)
+        repository = await _get_repo(session)
 
         all_metrics_q = select(HealthFileMetric).where(
             HealthFileMetric.repository_id == repository.id
         )
         exclude_spec = _get_exclude_spec(ctx.path)
-        all_metrics = filter_rows_by_attr(
-            list((await session.execute(all_metrics_q)).scalars().all()),
-            "file_path",
-            exclude_spec,
-        )
+        indexed_rows = list((await session.execute(all_metrics_q)).scalars().all())
+        all_metrics = filter_rows_by_attr(indexed_rows, "file_path", exclude_spec)
+        # Paths the index knows about but the exclude config drops. Kept so an
+        # unresolved target can report "excluded" (a config decision) rather
+        # than "no_such_path" (a typo) — the two need different responses.
+        excluded_paths = {m.file_path for m in indexed_rows} - {m.file_path for m in all_metrics}
 
+        matched_modules: set[str] = set()
         if module_targets:
             module_set = set(module_targets)
             for m in all_metrics:
                 if m.module in module_set:
+                    matched_modules.add(m.module)
                     file_targets.append(m.file_path)
             file_targets = sorted(set(file_targets))
 
-        effective_targets = file_targets if (raw_targets) else []
+        # A non-empty ``targets`` means the caller asked for a scope, and that
+        # holds even when nothing resolves. Keying the mode off the *resolved*
+        # paths let ``targets=["module:typo"]`` fall through to dashboard mode
+        # and answer a module-scoped question with repo-wide numbers — an
+        # answer that reads as scoped and is not.
+        scoped = bool(raw_targets)
+        effective_targets = file_targets if scoped else []
+        nothing_resolved = scoped and not effective_targets
 
-        if effective_targets:
-            metric_rows = [
-                m
-                for m in sorted(all_metrics, key=lambda r: r.score)
-                if m.file_path in set(effective_targets)
-            ]
-        else:
-            metric_rows = sorted(all_metrics, key=lambda r: r.score)
+        # Test material, from the flag ingestion already decided per file.
+        # Gated on ``needs_test_paths`` — see the note at its definition — and
+        # placed after the ``module:`` expansion so targeted mode can scope it.
+        #
+        # Targeted mode only ever asks ``path in test_paths`` for paths the
+        # caller named, so it reads exactly those; dashboard mode partitions a
+        # ranked finding list whose paths are not known until the read below
+        # runs, so it keeps the repo-wide answer. Measured on this repo, that
+        # is 32.9ms -> 0.6ms on a single-file target — a quarter of the whole
+        # call, paid to answer "is this one file a test".
+        test_paths: set[str] = set()
+        if needs_test_paths:
+            test_paths = await get_test_file_paths(
+                session, repository.id, effective_targets if scoped else None
+            )
 
-        finding_q = select(HealthFinding).where(
+        open_findings = (
             HealthFinding.repository_id == repository.id,
             HealthFinding.status == "open",
         )
-        if effective_targets:
-            finding_q = finding_q.where(HealthFinding.file_path.in_(effective_targets))
-        finding_q = finding_q.order_by(HealthFinding.health_impact.desc())
-        finding_rows = filter_rows_by_attr(
-            list((await session.execute(finding_q)).scalars().all()),
-            "file_path",
-            exclude_spec,
+        # Two row sets, deliberately split.
+        #
+        # ``finding_rows`` are the ones this response will serialize.
+        # ``lead_rows`` is the wider set the per-file dominant-cause reduction
+        # and the exact totals are computed from — it only ever needs four
+        # columns.
+        #
+        # Targeted mode asks about a handful of files, so one full read serves
+        # both. Dashboard mode does not: hydrating every open finding as a full
+        # ORM object to emit ``limit`` of them measured 262ms on this repo, and
+        # that cost is linear in finding count, so it grows with the repo the
+        # dashboard is describing.
+        #
+        # ``test_finding_rows`` is the dashboard-only test bucket (see the split
+        # below). Targeted mode never fills it: the caller named the files, so
+        # partitioning what they explicitly asked about would be answering a
+        # different question than the one they asked.
+        test_finding_rows: list[Any] = []
+        test_findings_total = 0
+        if scoped:
+            finding_rows = filter_rows_by_attr(
+                list(
+                    (
+                        await session.execute(
+                            select(HealthFinding)
+                            .where(*open_findings)
+                            .where(HealthFinding.file_path.in_(effective_targets))
+                            .order_by(HealthFinding.health_impact.desc())
+                        )
+                    )
+                    .scalars()
+                    .all()
+                ),
+                "file_path",
+                exclude_spec,
+            )
+            lead_rows: list[Any] = finding_rows
+            emitted = _rank_emitted(
+                [f for f in finding_rows if _in_dimensions(f, dimension_filter)]
+            )
+            finding_rows = emitted[:limit]
+            legend_rows: list[Any] = finding_rows
+        else:
+            # Narrow read over every open finding: the four attributes
+            # ``_leads_by_file`` reads, plus ``dimension`` for the perf headline
+            # and ``id`` to fetch the head. SQLAlchemy ``Row`` exposes these as
+            # attributes, so the reduction and the exclude filter both run
+            # against it unchanged.
+            #
+            # ``details_json`` joins them only when the caller asked for the
+            # performance dimension, because that is the only case where a perf
+            # finding can reach the head at all: every one carries
+            # ``health_impact: 0``, so in a mixed list all ~10k defect findings
+            # sort above them and the rank could not move a row. Measured on
+            # this repo the column costs 6.6ms on the read (parsing the 697 perf
+            # rows out of 10,740 costs a further 1.2ms), which is worth paying
+            # for the one call it changes and not worth paying for the default.
+            lite_cols = [
+                HealthFinding.id,
+                HealthFinding.file_path,
+                HealthFinding.health_impact,
+                HealthFinding.biomarker_type,
+                HealthFinding.reason,
+                HealthFinding.dimension,
+            ]
+            if "performance" in dimension_filter:
+                lite_cols.append(HealthFinding.details_json)
+            lite_rows = list(
+                (
+                    await session.execute(
+                        select(*lite_cols)
+                        .where(*open_findings)
+                        .order_by(HealthFinding.health_impact.desc())
+                    )
+                ).all()
+            )
+            # ``lead_rows`` stays the unfiltered open set: it feeds the per-file
+            # leads and the performance KPI, neither of which should change
+            # because the caller asked to *see* one dimension.
+            lead_rows = filter_rows_by_attr(lite_rows, "file_path", exclude_spec)
+            emitted = _rank_emitted([r for r in lead_rows if _in_dimensions(r, dimension_filter)])
+            # Test material goes in its own bucket rather than competing for
+            # the repo's headline finding list. Measured on this repo, **2 of
+            # the top 5** open findings by impact sit on test files, and 4-5 of
+            # the top 20 — the top-20 figure is tie-dependent (ranks 14+ are all
+            # at impact 2.16), which is itself the point: a fifth of the
+            # most-read list was the test suite, decided partly by tie-break.
+            # Splitting keeps both readable. A thrashing test suite is a real
+            # signal some teams want; it is just not the same question as
+            # "where is the defect risk in this codebase".
+            #
+            # Split *before* the cap, so each list is the top ``limit`` of its
+            # own population — capping first and partitioning after would give
+            # the smaller bucket whatever happened to land in the head.
+            prod_emitted = [r for r in emitted if r.file_path not in test_paths]
+            test_emitted = [r for r in emitted if r.file_path in test_paths]
+            # Both heads, in one list, decided here rather than downstream: the
+            # legend has to be a pure function of the ranked set so no
+            # projection can change what a surviving key contains.
+            legend_rows: list[Any] = prod_emitted[:limit] + test_emitted[:limit]
+            # Fetch the head by id rather than re-running the ranked query with
+            # an over-fetch margin. The margin had to cover every exclusion in
+            # the table, so a repo excluding a large subtree turned the "capped"
+            # read back into a near-full one; by id it is exactly ``limit`` rows
+            # whatever the exclude config or dimension filter say.
+            head_ids = [r.id for r in prod_emitted[:limit]]
+            test_head_ids = [r.id for r in test_emitted[:limit]] if wants_test_findings else []
+            finding_rows = []
+            if not wants_findings:
+                head_ids = []
+            # One read for both heads — the split is a partition of the same
+            # ranked set, so paying two round-trips for it would be the N+1 this
+            # tool flags in itself.
+            wanted_ids = head_ids + test_head_ids
+            if wanted_ids:
+                by_id = {
+                    f.id: f
+                    for f in (
+                        await session.execute(
+                            select(HealthFinding).where(HealthFinding.id.in_(wanted_ids))
+                        )
+                    )
+                    .scalars()
+                    .all()
+                }
+                # Re-imposed from the id lists; ``IN`` does not preserve order.
+                finding_rows = [by_id[i] for i in head_ids if i in by_id]
+                test_finding_rows = [by_id[i] for i in test_head_ids if i in by_id]
+            test_findings_total = len(test_emitted)
+
+        # Counts the rows this response is about: the post-exclusion open set,
+        # narrowed to the requested dimensions when one was asked for. Reporting
+        # the unfiltered total beside a filtered list is what made an empty
+        # ``findings`` read as "nothing here" rather than "nothing shown".
+        #
+        # In dashboard mode this counts the *production* half, because that is
+        # the list it sits beside; ``test_findings_total`` counts the other half
+        # and the two still sum to the whole open set. Same rule #1337 settled
+        # for the dimension filter: a total describes the list it is a sibling
+        # of, never a wider set the caller cannot see.
+        findings_total = len(emitted if scoped else prod_emitted)
+
+        # Worst-first order, placed here because ranking needs the summed
+        # deduction per file and ``lead_rows`` is the first point that carries
+        # every open finding this response is entitled to see. Same comparator
+        # the crud layer applies to ``get_health_metrics``, so the REST
+        # dashboard and this tool cannot disagree about which file is worst —
+        # but fed from rows already in memory, so it costs no extra query.
+        #
+        # Deliberately ``lead_rows`` (the unfiltered open set) rather than
+        # ``emitted``: asking to *see* one dimension must not restate which
+        # files the repo's worst are.
+        deduction_by_path: dict[str, float] = {}
+        for f in lead_rows:
+            deduction_by_path[f.file_path] = deduction_by_path.get(f.file_path, 0.0) + float(
+                f.health_impact or 0.0
+            )
+        # Rebound rather than kept beside a sorted copy, and above every reader.
+        # ``kpis``, the module rollup, the leverage view and the churn quadrant
+        # all reduce with ``min()`` or a stable sort, which resolve ties by
+        # *input* order — so leaving them on the raw list would have one
+        # response name one file as the worst performer while the
+        # ``worst_files`` list printed below it led with another.
+        all_metrics = sort_metrics_worst_first(all_metrics, deduction_by_path)
+        metric_rows = (
+            [m for m in all_metrics if m.file_path in set(effective_targets)]
+            if scoped
+            else all_metrics
         )
 
+        # Hotspot health was the one repo KPI this tool never returned, while
+        # ``get_overview`` invented its own definition for it — so the canonical
+        # persisted number was surfaced by neither. One scalar column, gated the
+        # same way as the language map below: ``targets`` mode builds no ``kpis``
+        # block at all, so scoping the call must not pay for this read.
+        hotspot_paths: set[str] = set()
+        if not scoped and wants("kpis"):
+            hotspot_paths = await get_hotspot_file_paths(session, repository.id)
+
         # Dashboard perf headline: coverage (how much of the analyzed code the
-        # perf pass ran on) + open performance-finding count. finding_rows in
-        # dashboard mode is the complete open set, so the count is exact.
-        if not effective_targets:
+        # perf pass ran on) + open performance-finding count. Both feed ``kpis``
+        # alone, so a projection that drops kpis skips the language-map read.
+        # The same map answers "how much of this headline is non-code" — one
+        # read, two KPIs.
+        if not scoped and wants("kpis"):
             lang_by_path = await get_file_language_map(session, repository.id)
             perf_coverage = coverage_for_metrics(all_metrics, lang_by_path)
             perf_findings_count = sum(
-                1 for f in finding_rows if (f.dimension or "defect") == "performance"
+                1 for f in lead_rows if (f.dimension or "defect") == "performance"
+            )
+
+        # ``accuracy`` scores the ranking against the whole repo rather than the
+        # capped head, but it reads exactly one biomarker: ``compute_defect_accuracy``
+        # ignores every finding whose type is not ``prior_defect``. Selecting
+        # those directly keeps the honest denominator without re-reading the
+        # ~10k rows the narrow pass above exists to avoid.
+        accuracy_rows: list[Any] = []
+        if "accuracy" in include_set and not scoped:
+            accuracy_rows = filter_rows_by_attr(
+                list(
+                    (
+                        await session.execute(
+                            select(HealthFinding)
+                            .where(*open_findings)
+                            .where(HealthFinding.biomarker_type == "prior_defect")
+                        )
+                    )
+                    .scalars()
+                    .all()
+                ),
+                "file_path",
+                exclude_spec,
             )
 
         # Structured refactoring plans (Extract Class, ...) — loaded only when
         # asked for, scoped to the same targets, exclude-filtered like findings.
         refactoring_rows: list[Any] = []
-        if "refactoring" in include_set:
+        if "refactoring" in include_set and not nothing_resolved:
             refactoring_rows = filter_rows_by_attr(
                 await get_refactoring_suggestions(
                     session,
                     repository.id,
-                    file_paths=list(effective_targets) if effective_targets else None,
+                    file_paths=list(effective_targets) if scoped else None,
                 ),
                 "file_path",
                 exclude_spec,
@@ -449,10 +1239,21 @@ async def get_health(
 
         coverage_rows: list[Any] = []
         coverage_summary: dict[str, Any] = {}
-        if "coverage" in include_set:
+        if "coverage" in include_set and not nothing_resolved:
             coverage_rows = filter_rows_by_attr(
+                # ``effective_targets``, not ``targets`` — a raw ``module:foo``
+                # target is not a file path and matched nothing here.
+                #
+                # Only targeted mode serializes ``covered_lines``. The dashboard
+                # used to read every ``covered_lines_json`` blob, ``json.loads``
+                # each one, and then strip the field back out with a dict
+                # comprehension — 466,874 B of parse per call for a key it never
+                # emitted. Decline the column at the read instead.
                 await load_coverage_for_repo(
-                    session, repository.id, file_paths=list(targets) if targets else None
+                    session,
+                    repository.id,
+                    file_paths=list(effective_targets) if scoped else None,
+                    include_covered_lines=scoped,
                 ),
                 "file_path",
                 exclude_spec,
@@ -467,20 +1268,29 @@ async def get_health(
         # before touching it. Targeted mode only; the target set is small.
         signals_by_path: dict[str, dict[str, Any]] = {}
         if "signals" in include_set and effective_targets:
+            # Batched, not per-file. This loop used to issue three round-trips
+            # per target (git metadata, graph node, degree counts) — the exact
+            # cross-function N+1 the tool's own ``io_in_loop`` biomarker flags
+            # here. ``module:`` targets expand to every file in the module, so
+            # the target set is not always small.
+            git_meta_by_path = await get_git_metadata_bulk(
+                session, repository.id, list(effective_targets)
+            )
+            degrees_by_path = await get_node_degree_counts_bulk(
+                session,
+                repository.id,
+                list(effective_targets),
+                edge_types=sorted(FILE_DEPENDENCY_EDGE_TYPES),
+            )
             for path in effective_targets:
-                git_meta = await get_git_metadata(session, repository.id, path)
-                node = await get_graph_node(session, repository.id, path)
-                degrees = (
-                    await get_node_degree_counts(session, repository.id, path)
-                    if node is not None
-                    else None
+                signals_by_path[path] = asdict(
+                    file_signals(git_meta_by_path.get(path), degrees_by_path.get(path))
                 )
-                signals_by_path[path] = asdict(file_signals(git_meta, degrees))
 
         # Churn x complexity quadrant for the whole repo (dashboard mode). One
         # git-metadata query joined against the already-loaded metrics.
         churn_points: list[dict[str, Any]] = []
-        if "churn_complexity" in include_set and not effective_targets:
+        if "churn_complexity" in include_set and not scoped:
             git_meta_by_path = await get_all_git_metadata(session, repository.id)
             churn_points = [
                 asdict(p) for p in churn_complexity_points(all_metrics, git_meta_by_path)[:limit]
@@ -490,31 +1300,138 @@ async def get_health(
         # per-file trajectory we attach in targeted mode ("should I touch this
         # file" context for agents).
         snapshots: list[Any] = []
-        if "trend" in include_set or effective_targets:
+        if "trend" in include_set or scoped:
             snapshots = await list_health_snapshots(session, repository.id, limit=20)
 
+        # Dominant-cause lead per file. Targeted mode wants one per target, so
+        # the reduction runs over the whole (small) scoped set. Dashboard mode
+        # only ever prints a lead for the files it emits, so it reduces just
+        # those rows instead of all ~10k — identical output, and
+        # ``_leads_by_file`` measured ~148ms per call handed the full set.
+        #
+        # Computed inside the session because the directive's plan lookup below
+        # needs ``by_leverage`` and has to run before the session closes.
+        if scoped:
+            by_leverage: list[HealthFileMetric] = []
+            lead_source: list[Any] = lead_rows
+        else:
+            # Leverage view: files ranked by NLOC-weighted deficit (how much
+            # each drags the headline), not by raw score. Distinct from
+            # worst_files — a big warning-band file outranks a tiny alert-band
+            # one here because fixing it moves the average far more. Computed
+            # before the leads so the set of printed files is known.
+            by_leverage = sorted(
+                (m for m in all_metrics if m.score < HEALTHY_MIN),
+                key=lambda m: max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1),
+                reverse=True,
+            )
+            printed = {m.file_path for m in metric_rows[:limit]}
+            printed |= {m.file_path for m in by_leverage[:limit]}
+            # The directive's three candidates, unconditionally — it reads
+            # ``by_leverage[:3]`` and is not a ranked list, so its leads must not
+            # depend on ``limit``. Before ``limit=0`` existed this was covered by
+            # the clamp to 1 only by accident; at 0 the lead set came back empty
+            # and the directive degraded to a fallback ``reason`` ("scores 1.0")
+            # *and* asserted ``plan_addresses_reason: false`` on every file —
+            # a wrong claim rather than a missing one.
+            printed |= {m.file_path for m in by_leverage[:_DIRECTIVE_CANDIDATES]}
+            lead_source = [r for r in lead_rows if r.file_path in printed]
+        leads = _leads_by_file(lead_source)
+
+        # Which biomarkers the stored plans for the directive's candidates
+        # actually address. The directive names a file and a ``reason``, then
+        # points at ``include=['refactoring']`` for the fix — but no detector
+        # emits a plan for ``coverage_gradient``, which is the dominant cause on
+        # most of this repo's worst files, so that promise was unkeepable and
+        # silent about it. Read for the three named files only (``fix_first``
+        # plus the two in ``then``), and only when the directive survives the
+        # projection, so ``only=["directive"]`` stays the cheapest useful call.
+        # Two columns, not whole rows: this reads one field, and the ORM row
+        # carries ``plan_json`` + ``evidence_json`` + ``blast_radius_json``.
+        # ``status == "open"`` mirrors ``get_refactoring_suggestions`` so the
+        # directive cannot claim a plan the ``refactoring`` block would not
+        # return. Candidate paths come from ``by_leverage`` ⊆ ``all_metrics``,
+        # already exclude-filtered, so the ``IN`` needs no second pass through
+        # the exclude spec.
+        plan_biomarkers_by_path: dict[str, set[str]] = {}
+        plan_count_by_path: dict[str, int] = {}
+        if not scoped and wants("directive") and by_leverage:
+            directive_paths = [m.file_path for m in by_leverage[:_DIRECTIVE_CANDIDATES]]
+            for path, source in (
+                await session.execute(
+                    select(
+                        RefactoringSuggestion.file_path,
+                        RefactoringSuggestion.source_biomarker,
+                    ).where(
+                        RefactoringSuggestion.repository_id == repository.id,
+                        RefactoringSuggestion.status == "open",
+                        RefactoringSuggestion.file_path.in_(directive_paths),
+                    )
+                )
+            ).all():
+                # Presence is counted separately from attribution. Every
+                # ``split_file`` and ``break_cycle`` plan stores an empty
+                # ``source_biomarker``, so keying "has plans" off the biomarker
+                # set would report no plans on a file while the highest-leverage
+                # plan kind sits on it.
+                plan_count_by_path[path] = plan_count_by_path.get(path, 0) + 1
+                if source:
+                    plan_biomarkers_by_path.setdefault(path, set()).add(source)
+
+    # KPIs deliberately keep test files in. Excluding them is not a display
+    # choice, it is a scoring change: measured across this workspace, dropping
+    # test material moves NLOC-weighted ``average_health`` 7.52 -> 6.87 here,
+    # 7.07 -> 6.27 on the backend repo and 7.59 -> 7.46 on the frontend. Test
+    # files score *better* than production code, so excluding them would make
+    # every repo's headline drop overnight with no defect having been found.
+    # The calibrated numbers stay where they are; the split above is about which
+    # findings compete for a ranked list, not about what the score means.
     kpis = _compute_kpis(
-        metric_rows if effective_targets else all_metrics,
+        metric_rows if scoped else all_metrics,
+        hotspot_paths=hotspot_paths,
         performance_findings=perf_findings_count,
         coverage=perf_coverage,
+        lang_by_path=lang_by_path,
     )
-    # Dominant-cause lead per file, from the findings already loaded (targeted
-    # findings are scoped to the targets; dashboard findings cover every file).
-    leads = _leads_by_file(finding_rows)
 
-    if effective_targets:
+    if scoped:
         metric_payload: list[dict[str, Any]] = []
         for m in metric_rows:
-            row = _serialize_metric(m, leads.get(m.file_path))
+            row = _serialize_metric(m, leads.get(m.file_path), is_test=m.file_path in test_paths)
             if m.file_path in signals_by_path:
                 row["signals"] = signals_by_path[m.file_path]
             metric_payload.append(row)
         result: dict[str, Any] = {
             "mode": "targets",
             "targets": raw_targets,
+            # Deliberately NOT capped by ``limit``: the caller named these files
+            # and getting back fewer than they asked about would answer a
+            # different question. The response-size guard is what bounds it, and
+            # ``metrics_total`` is the ``*_total`` sibling that makes a trim
+            # visible — a ``module:`` target expands to every file in the module,
+            # so this is the one growable list whose length the caller cannot
+            # infer from what they passed.
             "metrics": metric_payload,
-            "findings": [_serialize_finding(f) for f in finding_rows],
+            "metrics_total": len(metric_payload),
+            # Capped like every other ranked list, with the total alongside so
+            # the truncation is visible rather than inferred from the length.
+            "findings": [_serialize_finding(f) for f in finding_rows[:limit]],
+            "findings_total": findings_total,
         }
+        unresolved = _unresolved_targets(
+            file_targets=file_targets,
+            module_targets=module_targets,
+            matched_modules=matched_modules,
+            resolved_paths={m.file_path for m in metric_rows},
+            excluded_paths=excluded_paths,
+            repo_root=ctx.path,
+        )
+        if unresolved:
+            result["unresolved"] = unresolved
+            if any(u["reason"] == "no_such_module" for u in unresolved):
+                # ``module:`` has no discovery call of its own, so a bad name
+                # would otherwise cost a full dashboard round-trip to correct.
+                result["known_modules"] = sorted({m.module for m in all_metrics if m.module})
         # Per-file score trajectory for each target — silent (omitted) when a
         # file has < 2 snapshots of history rather than a misleading flat line.
         trends = []
@@ -522,63 +1439,131 @@ async def get_health(
             t = file_trend(snapshots, m.file_path)
             if not t.points:
                 continue
-            trends.append(
-                {
-                    "file_path": t.file_path,
-                    "series": [round(p.score, 2) for p in t.points],
-                    "current": t.current,
-                    "delta": t.delta,
-                    "declining": t.declining,
-                }
-            )
+            series = [round(p.score, 2) for p in t.points]
+            entry: dict[str, Any] = {
+                "file_path": t.file_path,
+                "series": series,
+                "current": t.current,
+                "delta": t.delta,
+                "declining": t.declining,
+            }
+            # The score floors at 1.0, so a file deep enough to sit on it keeps
+            # a flat series however much of the work gets done. Where a
+            # snapshot recorded the real depth, carry the series that can still
+            # move — and only there, so the files the floor never touches pay
+            # nothing for it.
+            unclamped = [round(p.unclamped_score, 2) for p in t.points]
+            if unclamped != series:
+                entry["unclamped_series"] = unclamped
+                entry["unclamped_delta"] = t.unclamped_delta
+            trends.append(entry)
         if trends:
             result["trends"] = trends
         if module_targets:
-            scoped = [m for m in all_metrics if m.module in set(module_targets)]
-            result["modules"] = _module_rollups(scoped)
+            in_modules = [m for m in all_metrics if m.module in set(module_targets)]
+            result["modules"] = _module_rollups(in_modules)
     else:
         # Dashboard mode — top-N worst files + headline findings + the
         # per-module rollup so the overview page doesn't need a second
-        # round-trip.
-        # Leverage view: files ranked by NLOC-weighted deficit (how much each
-        # drags the headline), not by raw score. Distinct from worst_files —
-        # a big warning-band file outranks a tiny alert-band one here because
-        # fixing it moves the average far more. Same serializer, so every row
-        # carries weighted_deficit for the caller to sort on further.
-        by_leverage = sorted(
-            (m for m in all_metrics if m.score < HEALTHY_MIN),
-            key=lambda m: max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1),
-            reverse=True,
-        )
+        # round-trip. ``by_leverage`` is built above, before the leads.
+        # Same serializer as worst_files, so every row carries
+        # weighted_deficit for the caller to sort on further.
+        all_modules = _module_rollups(all_metrics)
+        gap = _gap_analysis(all_metrics)
         result = {
             "mode": "dashboard",
+            # Lead with the call, not the data. Every block below ranks and
+            # describes; this one recommends.
+            "directive": _directive(
+                by_leverage,
+                leads,
+                gap.get("weighted_gross_gap_points") or 0,
+                plan_biomarkers_by_path,
+                plan_count_by_path,
+            ),
             "kpis": kpis,
             "distribution": health_distribution(all_metrics),
             # Where the gap to Healthy concentrates — the "few files, not the
             # long tail" reframe that turns a repo-wide number into a short list.
-            "gap_analysis": _gap_analysis(all_metrics),
+            "gap_analysis": gap,
             "worst_files": [
-                _serialize_metric(m, leads.get(m.file_path)) for m in metric_rows[:limit]
+                _serialize_metric(m, leads.get(m.file_path), is_test=m.file_path in test_paths)
+                for m in metric_rows[:limit]
             ],
+            # Both ranked file lists deliberately keep test files in place, and
+            # both now say which rows are tests. Measured on this repo, 0 of the
+            # top 25 by the worst-first comparator are test material, so there
+            # is no crowding here to fix — and dropping them would quietly
+            # change which files the repo's "worst" are. The crowding is in the
+            # *finding* lists, which is where the split below happens.
+            "worst_files_total": len(metric_rows),
+            # The one list whose entire purpose is leverage ranking, so it is the
+            # one place ``weighted_deficit`` gets a denominator. The bare number
+            # is score-points x NLOC and answers "which is bigger" but never "is
+            # this worth doing"; the same quantity as a share of the repo's total
+            # gap does, and it is the unit ``directive`` already speaks. The
+            # denominator is the gross deficit of all below-target files, so a
+            # share is bounded by 100% and the rows sum to 100% by construction
+            # — the net gap would let healthy files cushion the total and push a
+            # single large file over 100% (issue #1437).
             "high_leverage_files": [
-                _serialize_metric(m, leads.get(m.file_path)) for m in by_leverage[:limit]
+                {
+                    **_serialize_metric(
+                        m, leads.get(m.file_path), is_test=m.file_path in test_paths
+                    ),
+                    "share_of_repo_gap_pct": (
+                        round(
+                            100.0
+                            * max(HEALTHY_MIN - m.score, 0.0)
+                            * max(m.nloc, 1)
+                            / gap["weighted_gross_gap_points"],
+                            1,
+                        )
+                        if gap.get("weighted_gross_gap_points")
+                        else None
+                    ),
+                }
+                for m in by_leverage[:limit]
             ],
+            "high_leverage_files_total": len(by_leverage),
             "top_findings": [_serialize_finding(f) for f in finding_rows[:limit]],
-            "modules": _module_rollups(all_metrics),
+            "top_findings_total": findings_total,
+            # The test half of the same ranked set, in its own bucket so a
+            # thrashing test suite stays visible without competing with
+            # production defect risk for the most-read list.
+            "test_findings": [_serialize_finding(f) for f in test_finding_rows[:limit]],
+            "test_findings_total": test_findings_total,
+            # Worst-first, so the cap keeps the modules worth looking at. On a
+            # monorepo the tail is dozens of single-file buckets.
+            "modules": all_modules[:limit],
+            "modules_total": len(all_modules),
         }
         if "churn_complexity" in include_set:
             result["churn_complexity"] = churn_points
         if "accuracy" in include_set:
-            # Self-validation: does the score rank the buggy files first? Pure
-            # over the already-loaded metrics + findings (no extra query).
+            # Self-validation: does the score rank the buggy files first?
+            # Scored over the full open set (``accuracy_rows``), not the capped
+            # head — ranking quality measured on the top 20 would be circular.
             # ``None`` when there isn't enough signal for an honest number.
             result["defect_accuracy"] = compute_defect_accuracy(
                 all_metrics,
-                [_serialize_finding(f) for f in finding_rows],
+                [_serialize_finding(f) for f in accuracy_rows],
             )
 
     if "biomarkers" in include_set and "findings" not in result:
-        result["findings"] = [_serialize_finding(f) for f in finding_rows]
+        # Capped like every other ranked list. Uncapped, this was the one block
+        # in the tool that could return the repo's entire open finding set: on a
+        # 3.2k-file repo ``include=["biomarkers"]`` with no targets served 10.3k
+        # rows / 4.7MB, which overflows an agent's context and returns nothing
+        # usable. Findings arrive impact-ordered, so the cap keeps the ones
+        # worth reading.
+        result["findings"] = [_serialize_finding(f) for f in finding_rows[:limit]]
+        result["findings_total"] = findings_total
+        # Same production/test split as ``top_findings``: this block only ever
+        # fires in dashboard mode (targeted mode set ``findings`` above), so it
+        # is describing the repo, not a file the caller named.
+        result["test_findings"] = [_serialize_finding(f) for f in test_finding_rows[:limit]]
+        result["test_findings_total"] = test_findings_total
 
     if "refactoring" in include_set:
         # Structured refactoring plans (the concrete split groups / evidence /
@@ -596,37 +1581,55 @@ async def get_health(
             m.file_path: round(max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1))
             for m in all_metrics
         }
+        # A "plans matching the file's lead biomarker sort first" tiebreak was
+        # tried here and removed: measured on this repo, 0 of the top 20 files
+        # by deficit have any plan addressing their lead, so it could not move a
+        # row inside the cap, while ``deficit`` rounds to an int and ties across
+        # files — which would have let the boost reorder *between* files. The
+        # honest fix for the mismatch is ``directive.plan_addresses_reason``,
+        # which reports it rather than reshuffling around it.
         ranked = sorted(
             refactoring_rows,
             key=lambda r: (deficit_by_path.get(r.file_path, 0), r.impact_delta or 0.0),
             reverse=True,
         )
+        # ...then spread the cap across files. Deficit is a *file* property, so a
+        # pure deficit sort puts every plan on the worst file ahead of every plan
+        # on the second worst: asking for the top 8 returned 8 plans on one file
+        # out of 1,903, and an agent asking "what should I refactor?" saw no view
+        # of the repo at all. Round-robin one plan per file per pass, files in
+        # their ranked order (a file ranks by its best plan) and plans in theirs,
+        # so the head spans as many files as it has rows. The order is otherwise
+        # unchanged — the worst file still leads, it just no longer owns the list.
+        by_file: dict[str, list[Any]] = {}
+        for r in ranked:
+            by_file.setdefault(r.file_path, []).append(r)
+        spread: list[Any] = []
+        while len(spread) < limit and by_file:
+            for path in list(by_file):
+                spread.append(by_file[path].pop(0))
+                if not by_file[path]:
+                    del by_file[path]
+                if len(spread) >= limit:
+                    break
         result["refactoring_plans"] = [
             {
                 **_serialize_refactoring(r),
                 "file_weighted_deficit": deficit_by_path.get(r.file_path, 0),
             }
-            for r in ranked[:limit]
+            for r in spread
         ]
         result["refactoring_plans_total"] = len(refactoring_rows)
-        # Attach the deterministic prose suggestion to every finding as the
-        # fallback for biomarkers without a structured detector yet. Surfaces
-        # on the dashboard cards too so both consumers stay in sync.
-        for field in ("findings", "top_findings"):
-            rows = result.get(field)
-            if rows:
-                result[field] = [
-                    {**row, "suggestion": suggestion_for(row.get("biomarker_type", ""))}
-                    for row in rows
-                ]
-        if "findings" not in result and "top_findings" not in result:
-            result["findings"] = [
-                {
-                    **_serialize_finding(f),
-                    "suggestion": suggestion_for(f.biomarker_type),
-                }
-                for f in finding_rows
-            ]
+        # The deterministic prose suggestion is the fallback for biomarkers
+        # that have no structured detector yet. It is emitted once per
+        # biomarker type as ``suggestion_legend`` (built below, after the
+        # dimension filter) rather than copied onto every finding: the text is
+        # keyed purely by type, so the per-row form repeated one ~40-word
+        # string up to 10x in a single response.
+        #
+        # (The old no-findings-anywhere fallback here was unreachable: targeted
+        # mode always sets ``findings`` and dashboard mode always sets
+        # ``top_findings``.)
 
     if "trend" in include_set:
         summary = diff_snapshots(snapshots)
@@ -654,12 +1657,13 @@ async def get_health(
     if "coverage" in include_set:
         # Drop the bulky covered-lines arrays from dashboard mode; full
         # detail is available in targeted mode.
-        if targets:
+        if scoped:
             coverage_payload = [_serialize_coverage_row(r) for r in coverage_rows]
         else:
+            # Built narrow, not built wide and subtracted from. These rows came
+            # back without the column at all (see the read above).
             coverage_payload = [
-                {k: v for k, v in _serialize_coverage_row(r).items() if k != "covered_lines"}
-                for r in coverage_rows[:limit]
+                _serialize_coverage_row(r, covered_lines=False) for r in coverage_rows[:limit]
             ]
         # ``ingested_at`` is a datetime on the summary too — coerce.
         if coverage_summary.get("ingested_at") is not None:
@@ -672,21 +1676,106 @@ async def get_health(
             "files": coverage_payload,
         }
 
-    # Dimension filter: ``include=["performance"]`` (or "defect" /
-    # "maintainability") narrows the returned findings to that pillar so an
-    # agent can ask "show me only the performance risk in this change". Applied
-    # after the biomarkers/refactoring includes so it filters whatever findings
-    # the response carries. Each finding's ``dimension`` is set at scoring time.
-    dimension_filter = include_set & {"performance", "defect", "maintainability"}
-    if dimension_filter:
-        for field in ("findings", "top_findings"):
-            rows = result.get(field)
-            if rows:
-                result[field] = [
-                    r for r in rows if (r.get("dimension") or "defect") in dimension_filter
-                ]
+    # (The dimension filter — ``include=["performance"]`` and friends, so an
+    # agent can ask "show me only the performance risk in this change" — is
+    # applied where the rows are selected, not here. Filtering the finished
+    # response meant filtering a list already capped by impact.)
+
+    # One entry per biomarker type actually present in the findings this
+    # response carries. Built last so the dimension filter above has already
+    # narrowed the rows the caller will join against.
+    if "refactoring" in include_set and wants("suggestion_legend"):
+        # Built from the ranked rows themselves, not from the serialized blocks
+        # in ``result``. It used to read ``result["findings"]`` /
+        # ``["top_findings"]``, which the ``only`` projection's ``wants()``
+        # gating can skip building — so
+        # ``only=["refactoring_plans","suggestion_legend"]`` returned an empty
+        # legend and adding ``top_findings`` back to ``only`` refilled it. A
+        # projection is supposed to subtract keys, never change what a surviving
+        # key contains.
+        #
+        # Scope note, and it is a real limitation rather than an oversight: the
+        # legend explains the *findings*, while it ships beside
+        # ``refactoring_plans``. Those are different sets — no plan kind is
+        # sourced from ``coverage_gradient``, the lead biomarker on this repo's
+        # ten worst files — so a legend entry can describe a biomarker the plans
+        # do not address. ``directive.plan_addresses_reason`` is what reports
+        # that mismatch; the legend is not the place to paper over it.
+        present_types = {getattr(r, "biomarker_type", None) for r in legend_rows}
+        result["suggestion_legend"] = {
+            bt: suggestion_for(bt) for bt in sorted(t for t in present_types if t)
+        }
+
+    # Projection. ``include`` could only ever add blocks, so asking for one
+    # extra block re-shipped the whole dashboard with it; ``only`` is the
+    # subtract half. Applied last so it can drop anything above, and ``mode`` /
+    # ``_meta`` always survive — a response the caller cannot orient in is not
+    # a saving.
+    if only:
+        # Every capped list's ``*_total`` sibling survives with it. The tool
+        # documents "each carries a ``*_total`` sibling so truncation is never
+        # silent", and the projection was quietly breaking exactly that promise:
+        # ``only=["modules"]`` at ``limit=50`` returned 50 of 116 modules with
+        # no ``modules_total`` to say so. Retaining it is not the caller's job —
+        # a caller who knew to ask for the total would not need the guarantee.
+        # ``unresolved`` / ``known_modules`` survive any projection, for the same
+        # reason ``mode`` does. They are the block that stops an empty result
+        # reading as "this file is healthy" (A1), and projecting them away put a
+        # typo'd target straight back to silent: ``targets=["does/not/exist.py"],
+        # only=["metrics"]`` returned ``metrics: []`` and nothing else. A caller
+        # who has to ask for the error report in order to see it does not have an
+        # error report.
+        keep = (
+            set(only_list)
+            | {"mode", "unresolved", "known_modules"}
+            | {f"{k}_total" for k in only_list}
+        )
+        # A key that does not exist in this response is named rather than
+        # quietly yielding an empty one — same rule as ``unresolved`` above.
+        # A misspelled projection is otherwise indistinguishable from a block
+        # the repo genuinely has no data for. Reported against what the caller
+        # actually passed, so an alias resolving to a present key is not "unknown".
+        unknown = sorted(
+            raw for raw, resolved in zip(only, only_list, strict=True) if resolved not in result
+        )
+        result = {k: v for k, v in result.items() if k in keep}
+        if unknown:
+            result["unknown_only_keys"] = unknown
 
     # Targeted mode scopes the stale signal to the asked-about files; the
     # dashboard (no targets) keeps the repo-level warning.
     result["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
+    # When the health pass last ran, which is a separate pass from indexing and
+    # can lag it. ``_build_meta``'s fields all describe the *index*, so a stale
+    # health row was previously invisible.
+    analyzed = [m for m in all_metrics if getattr(m, "updated_at", None)]
+    if analyzed:
+        latest = max(analyzed, key=lambda m: m.updated_at)
+        result["_meta"]["health_analyzed_at"] = latest.updated_at.isoformat()
+        # The commit the health rows were scored against. Distinct from
+        # ``indexed_commit``: the incremental path upserts only the files that
+        # changed (``upsert_health_metrics``), so the table can legitimately hold
+        # rows from several passes, and reporting one SHA for all of them would
+        # be a claim this read cannot support. Report the newest pass's commit,
+        # and say how many others are still represented.
+        commits = {c for m in analyzed if (c := getattr(m, "analyzed_commit", None))}
+        if latest_commit := getattr(latest, "analyzed_commit", None):
+            result["_meta"]["health_analyzed_commit"] = latest_commit[:12]
+        if len(commits) > 1:
+            result["_meta"]["health_analyzed_commits_distinct"] = len(commits)
+    # Keep the whole response under the host's tool-result cap. Applied after the
+    # projection (so ``only`` is credited for what it saved) and after ``_meta``
+    # (which the host tokenizes too), but before ``timing_ms`` so the reported
+    # time covers the trim.
+    if dropped := _fit_to_budget(
+        result, effective_char_budget(_HOST_CEILING) - _TRUNCATION_MARKER_HEADROOM
+    ):
+        result["_meta"]["truncated_to_fit"] = dropped
+        result["_meta"]["truncated_recovery"] = (
+            "Response exceeded the MCP result cap. Re-request a single block with "
+            "only=[...] — each list's *_total says what was there."
+        )
+    # Server-side wall clock, as ``get_context`` already reports. Without it a
+    # regression in here is invisible until someone profiles it by hand.
+    result["_meta"]["timing_ms"] = round((perf_counter() - started) * 1000, 2)
     return result

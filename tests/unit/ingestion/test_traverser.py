@@ -7,7 +7,44 @@ from pathlib import Path
 import pytest
 
 from repowise.core.ingestion import traverser as traverser_mod
-from repowise.core.ingestion.traverser import FileTraverser, _detect_language
+from repowise.core.ingestion.traverser import (
+    FileTraverser,
+    _compile_gitignore,
+    _detect_language,
+)
+
+
+class TestCompileGitignore:
+    def test_malformed_line_is_not_fatal_and_keeps_valid(self) -> None:
+        spec = _compile_gitignore([".godot\\", "build/", "*.log", "", "# note"])
+        assert spec.match_file("build/x")
+        assert spec.match_file("a.log")
+        # A malformed line never takes down its neighbours.
+        assert not spec.match_file("src/main.py")
+
+    def test_trailing_backslash_matches_nothing(self) -> None:
+        # Git parity: git treats a dangling trailing backslash (e.g. `.godot\`)
+        # as an escape of nothing, so the pattern matches nothing — no error, no
+        # fallback to the bare path. Dropping the line reproduces that exactly.
+        # Do NOT re-add a salvage that rewrites `.godot\` -> `.godot`: that would
+        # diverge from git (it would start ignoring `.godot/` that git tracks).
+        spec = _compile_gitignore([".godot\\"])
+        assert not spec.match_file(".godot")
+        assert not spec.match_file(".godot/imported/x.res")
+        assert not spec.match_file("godot.py")
+
+    def test_unrecoverable_line_is_dropped(self) -> None:
+        # A lone backslash is unparseable and empty once stripped -> drop it,
+        # do not raise, and keep the valid neighbour.
+        spec = _compile_gitignore(["\\", "keep-me/"])
+        assert spec.match_file("keep-me/x")
+
+    def test_all_valid_lines_preserved(self) -> None:
+        spec = _compile_gitignore(["dist/", "*.tmp"])
+        assert spec.match_file("dist/a")
+        assert spec.match_file("x.tmp")
+        assert not spec.match_file("keep.py")
+
 
 # ---------------------------------------------------------------------------
 # Language detection
@@ -173,12 +210,96 @@ class TestFileTraverser:
         assert not any("local-stash" in p for p in paths)
         assert not any("notes.scratch" in p for p in paths)
 
-    def test_skips_oversized_files(self, tmp_path: Path) -> None:
+    def test_malformed_gitignore_line_does_not_abort(self, tmp_path: Path) -> None:
+        # Git tolerates patterns that pathspec rejects (e.g. a trailing
+        # backslash like ``.godot\``). One such line must not crash the whole
+        # traversal; the remaining valid patterns must still apply.
+        (tmp_path / ".gitignore").write_text(".godot\\\n*.log\napp_ok.py\n")
+        (tmp_path / "app.py").write_text("pass")
+        (tmp_path / "app_ok.py").write_text("pass")
+        (tmp_path / "debug.log").write_text("logs")
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+        # Did not raise, and the well-formed patterns after the bad line held.
+        assert any("app.py" in p for p in paths)
+        assert not any("app_ok.py" in p for p in paths)
+        assert not any("debug.log" in p for p in paths)
+
+    def test_skips_oversized_files_without_a_parser(self, tmp_path: Path) -> None:
+        # No AST parser, so size is the only signal and the default cap holds.
+        big = tmp_path / "fixture.json"
+        big.write_bytes(b'{"k": 1}\n' * 200_000)  # ~1.7 MB
+        traverser = FileTraverser(tmp_path, max_file_size_kb=500)
+        paths = [f.path for f in traverser.traverse()]
+        assert not any("fixture.json" in p for p in paths)
+        assert traverser.stats.skipped_oversized == 1
+        # Blobs stay in the aggregate — naming them would drown the signal.
+        assert traverser.stats.skipped_source_files == []
+
+    def test_indexes_source_past_the_default_cap(self, tmp_path: Path) -> None:
+        # The #1237 regression: a repo's biggest hand-written module was
+        # dropped before any language check ran.
         big = tmp_path / "big.py"
         big.write_bytes(b"x = 1\n" * 200_000)  # ~1.2 MB
         traverser = FileTraverser(tmp_path, max_file_size_kb=500)
         paths = [f.path for f in traverser.traverse()]
-        assert not any("big.py" in p for p in paths)
+        assert any("big.py" in p for p in paths)
+        assert traverser.stats.skipped_oversized == 0
+
+    def test_skips_source_past_the_source_ceiling(self, tmp_path: Path) -> None:
+        # The ceiling is a memory budget: tree-sitter peaks at ~95 MB of RSS
+        # per MB of source and the parse pool runs 8 workers.
+        big = tmp_path / "huge.py"
+        big.write_bytes(b"x = 1\n" * 500_000)  # ~2.9 MB, over the 2 MB ceiling
+        traverser = FileTraverser(tmp_path, max_file_size_kb=500)
+        paths = [f.path for f in traverser.traverse()]
+        assert not any("huge.py" in p for p in paths)
+        assert traverser.stats.skipped_oversized == 1
+        # ...and it is named, because a silently dropped module is the bug.
+        assert [s.path for s in traverser.stats.skipped_source_files] == ["huge.py"]
+        assert traverser.stats.skipped_source_files[0].reason == "over_max_size"
+
+    def test_skips_minified_bundle_under_the_ceiling(self, tmp_path: Path) -> None:
+        # Real parser, source extension, under the ceiling — only the line
+        # shape distinguishes it from hand-written code.
+        bundle = tmp_path / "vendor.js"
+        bundle.write_bytes(b"!function(){" + b";".join(b"var a=1" for _ in range(90_000)) + b"}();")
+        assert bundle.stat().st_size > 500 * 1024
+        traverser = FileTraverser(tmp_path, max_file_size_kb=500)
+        paths = [f.path for f in traverser.traverse()]
+        assert not any("vendor.js" in p for p in paths)
+        assert traverser.stats.skipped_oversized == 1
+        assert traverser.stats.skipped_source_files[0].reason == "minified"
+
+    def test_source_ceiling_cannot_be_raised_by_max_file_size_kb(self, tmp_path: Path) -> None:
+        # The source ceiling is a memory budget (~95 MB RSS per MB of source,
+        # times an 8-worker pool), not a preference. Raising the caller-facing
+        # knob must not be able to lift it, or the OOM guard is optional.
+        big = tmp_path / "huge.py"
+        big.write_bytes(b"x = 1\n" * 500_000)  # ~2.9 MB, over the 2 MB ceiling
+        traverser = FileTraverser(tmp_path, max_file_size_kb=100_000)  # 100 MB
+        paths = [f.path for f in traverser.traverse()]
+        assert not any("huge.py" in p for p in paths)
+        assert traverser.stats.skipped_oversized == 1
+
+    def test_max_file_size_kb_still_governs_parserless_files(self, tmp_path: Path) -> None:
+        # ...but it remains the knob for everything with no parser.
+        blob = tmp_path / "fixture.json"
+        blob.write_bytes(b'{"k": 1}\n' * 200_000)  # ~1.7 MB
+        traverser = FileTraverser(tmp_path, max_file_size_kb=100_000)
+        paths = [f.path for f in traverser.traverse()]
+        assert any("fixture.json" in p for p in paths)
+
+    def test_normal_source_is_not_mistaken_for_minified(self, tmp_path: Path) -> None:
+        # Long-ish but ordinary lines must survive the guard: the threshold is
+        # 200 bytes/line and real source measured 25-60.
+        wide = tmp_path / "wide.py"
+        line = b"result = compute(" + b"argument_name, " * 8 + b"final)\n"  # ~140 bytes
+        wide.write_bytes(line * 5_000)
+        assert wide.stat().st_size > 500 * 1024
+        traverser = FileTraverser(tmp_path, max_file_size_kb=500)
+        paths = [f.path for f in traverser.traverse()]
+        assert any("wide.py" in p for p in paths)
 
     def test_deterministic_ordering(self, simple_repo: Path) -> None:
         traverser = FileTraverser(simple_repo)
@@ -456,8 +577,10 @@ class TestTraversalStats:
         assert traverser.stats.included >= 1
 
     def test_stats_counts_oversized_skips(self, tmp_path: Path) -> None:
-        big = tmp_path / "big.py"
-        big.write_bytes(b"x = 1\n" * 200_000)
+        # A parserless blob past the cap: the counter must still fire, or the
+        # size guard has been removed rather than narrowed.
+        big = tmp_path / "big.json"
+        big.write_bytes(b'{"k": 1}\n' * 200_000)
         (tmp_path / "small.py").write_text("pass")
         traverser = FileTraverser(tmp_path, max_file_size_kb=500)
         list(traverser.traverse())
@@ -745,3 +868,204 @@ class TestEntryPointFlag:
         assert "server.py" in flagged
         assert "pkg/helper.py" not in flagged
         assert "latest_app.py" not in flagged
+
+    def test_candidacy_rejects_names_that_cannot_start_execution(self, tmp_path: Path) -> None:
+        # Every one of these matches the traverser's name/stem conventions and
+        # is still not where a reader enters the system. The flag is what
+        # exempts a file from dead-code detection, so a name-only guess here is
+        # a file nothing can ever report.
+        files = {
+            "index.html": "<html></html>",  # entry *filename*, non-code language
+            "docs/guide/index.md": "# guide",  # entry stem, non-code language
+            "pkg/resolvers/dotnet/index.ts": "export * from './x';",  # deep glue leaf
+            "src/main.py": "print('x')",  # the control: a real entry
+            "cli/index.ts": "export const x = 1;",  # glue near a package root survives
+        }
+        for rel, content in files.items():
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+        assert self._flagged(tmp_path) == {"src/main.py", "cli/index.ts"}
+
+    def test_stem_union_widens_the_flag_without_dropping_a_stem(self, tmp_path: Path) -> None:
+        # The flag stems and the stems the wiki ranks by were kept by hand and
+        # disagreed both ways. Union: neither side loses one it had.
+        files = {
+            "src/bootstrap.rb": "puts 1",  # ranking-only stem, now flagged
+            "src/cli.go": "package main",
+            "src/entry.ts": "export const x = 1;",
+            "run.py": "print('x')",  # flag-only stems must survive
+            "start.js": "console.log(1);",
+        }
+        for rel, content in files.items():
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+        assert self._flagged(tmp_path) == set(files)
+
+    def test_pyproject_console_scripts_flag_entry_modules(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            "[project]\n"
+            'name = "demo"\n'
+            "[project.scripts]\n"
+            'demo-hook = "demo.cli.hook:main"\n'
+            "[project.entry-points.plugins]\n"
+            'demo-plugin = "demo.plugins:register"\n'
+        )
+        files = {
+            "src/demo/cli/hook.py": "def main(): pass",
+            "src/demo/plugins/__init__.py": "def register(): pass",
+            "src/demo/cli/other.py": "x = 1",
+        }
+        for rel, content in files.items():
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+        flagged = self._flagged(tmp_path)
+        assert "src/demo/cli/hook.py" in flagged
+        assert "src/demo/plugins/__init__.py" in flagged
+        assert "src/demo/cli/other.py" not in flagged
+
+    def test_a_console_script_target_outranks_the_candidacy_rule(self, tmp_path: Path) -> None:
+        # ``pyproject.toml`` *names* the module a launcher imports, so it is
+        # evidence, not a guess about the filename — the glue-leaf rule must
+        # not overrule it. Same reason the post-traversal stampers
+        # (graph_warmups / framework_edges) are left alone.
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "demo"\n[project.scripts]\ndemo = "demo.sub.index:main"\n'
+        )
+        p = tmp_path / "src" / "demo" / "sub" / "index.py"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("def main(): pass")
+        assert "src/demo/sub/index.py" in self._flagged(tmp_path)
+
+    def test_single_segment_script_target_matches_exactly(self, tmp_path: Path) -> None:
+        # A bare ``main`` target must not suffix-match every ``.../main.py``.
+        # The stem must be one the name conventions do *not* claim, or both
+        # files flag for that reason and the test proves nothing — ``cli`` was
+        # such a stem until it joined the flag set.
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "demo"\n[project.scripts]\ndemo = "tool:main"\n'
+        )
+        (tmp_path / "tool.py").write_text("def main(): pass")
+        nested = tmp_path / "pkg" / "tool.py"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("x = 1")
+        flagged = self._flagged(tmp_path)
+        assert "tool.py" in flagged
+        assert "pkg/tool.py" not in flagged
+
+
+# ---------------------------------------------------------------------------
+# Test-file classification
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "rel_path",
+    [
+        "tests/conftest.py",
+        "tests/type_check/typing_app.py",
+        "packages/ui/__tests__/brand.test.ts",
+        "packages/ui/__tests__/chat/panel.tsx",
+        "src/components/Button.test.tsx",
+        "src/lib/parse.spec.ts",
+        "test/fixtures/app.py",
+        "spec/support/helper.rb",
+        "src/pkg/tests/helpers.py",
+        "pkg/test_thing.py",
+        "pkg/thing_test.go",
+    ],
+)
+def test_test_files_are_recognised_including_root_level_suites(rel_path):
+    """Directory and filename conventions across languages, not just Python.
+
+    Two gaps, both of which let test files into the concept tree. ``"/tests/"
+    in path`` needs a slash on both sides, so a root-level ``tests/`` — the
+    usual layout — read as production code. And the stem rule knew only
+    ``test_x`` / ``x_test``, so the whole JavaScript convention
+    (``__tests__/`` directories, ``x.test.ts`` filenames) was invisible:
+    measured on this repository, 122 test files survived into the production
+    set and five concept pages were nothing but tests.
+    """
+    from repowise.core.test_paths import is_test_related_path
+
+    assert is_test_related_path(rel_path)
+
+
+@pytest.mark.parametrize(
+    "rel_path",
+    [
+        "src/latest/api.py",
+        "src/contest/rules.py",
+        "protests/model.py",
+        "src/testing_utils.py",
+    ],
+)
+def test_production_paths_that_merely_contain_the_word_are_not_tests(rel_path):
+    """Segment match, not substring: ``contest`` and ``latest`` are not tests."""
+    from repowise.core.test_paths import is_test_related_path
+
+    assert not is_test_related_path(rel_path)
+
+
+class TestUnknownLanguageFileRecording:
+    """Paths kept when language detection fails, for the dead-code clamp.
+
+    The clamp reads files ingestion never parsed and refuses to call a symbol
+    deletion-ready when an unread file names it. It could never be offered a
+    file without a language spec, because the walk bumped a counter and threw
+    the path away.
+    """
+
+    def test_records_a_reference_bearing_file(self, tmp_path: Path) -> None:
+        (tmp_path / "guide.rst").write_text("literalinclude:: ../src/widget.py\n")
+        traverser = FileTraverser(tmp_path)
+        paths = [f.path for f in traverser.traverse()]
+
+        # Still not indexed — recording a path registers no language.
+        assert not any("guide.rst" in p for p in paths)
+        assert traverser.stats.skipped_unknown_language == 1
+        assert [s.path for s in traverser.stats.unknown_language_files] == ["guide.rst"]
+        assert traverser.stats.unknown_language_files[0].reason == "unknown_language"
+
+    def test_ignores_formats_that_name_no_code(self, tmp_path: Path) -> None:
+        # The tail is dominated by these, and a name-matching clamp fed prose
+        # suppresses findings on coincidence rather than on evidence.
+        (tmp_path / "django.po").write_text('msgid "Widget"\nmsgstr ""\n')
+        (tmp_path / "LICENSE.txt").write_text("Redistribution of Widget is permitted.\n")
+        traverser = FileTraverser(tmp_path)
+        list(traverser.traverse())
+
+        assert traverser.stats.skipped_unknown_language == 2
+        assert traverser.stats.unknown_language_files == []
+
+    def test_does_not_consume_the_size_skip_budget(self, tmp_path: Path) -> None:
+        # The two lists are separate so hundreds of unparsed docs cannot
+        # truncate the oversized-source records, which are shown to the user.
+        for i in range(traverser_mod._MAX_SKIPPED_SOURCE_PATHS + 5):
+            (tmp_path / f"doc{i}.rst").write_text("text\n")
+        big = tmp_path / "huge.py"
+        big.write_bytes(b"x = 1\n" * 500_000)  # over the source ceiling
+
+        traverser = FileTraverser(tmp_path, max_file_size_kb=500)
+        list(traverser.traverse())
+
+        assert [s.path for s in traverser.stats.skipped_source_files] == ["huge.py"]
+        assert traverser.stats.skipped_source_files_truncated is False
+        assert len(traverser.stats.unknown_language_files) == 55
+
+    def test_caps_the_list_and_flags_truncation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(traverser_mod, "_MAX_UNKNOWN_LANGUAGE_PATHS", 3)
+        for i in range(6):
+            (tmp_path / f"doc{i}.rst").write_text("text\n")
+
+        traverser = FileTraverser(tmp_path)
+        list(traverser.traverse())
+
+        assert len(traverser.stats.unknown_language_files) == 3
+        assert traverser.stats.unknown_language_files_truncated is True
+        # The count stays exact whatever the cap does to the names.
+        assert traverser.stats.skipped_unknown_language == 6

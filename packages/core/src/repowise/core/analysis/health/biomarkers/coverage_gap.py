@@ -13,6 +13,7 @@ does nothing — the absence-of-coverage case is the
 
 from __future__ import annotations
 
+from ....test_paths import is_test_related_path
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -31,7 +32,7 @@ class CoverageGapDetector:
             return []
         if ctx.total_coverable_lines <= 0:
             return []
-        if _looks_like_test_path(ctx.file_path):
+        if is_test_related_path(ctx.file_path, ctx.language):
             return []
 
         cov = ctx.line_coverage_pct
@@ -69,32 +70,6 @@ class CoverageGapDetector:
                 reason=(f"{uncovered}/{total} lines uncovered ({cov:.0f}% line coverage)"),
             )
         ]
-
-
-def _looks_like_test_path(path: str) -> bool:
-    p = path.replace("\\", "/").lower()
-    return (
-        "/test/" in p
-        or "/tests/" in p
-        or "/__tests__/" in p
-        or p.startswith(("test/", "tests/", "__tests__/"))
-        or p.endswith(
-            (
-                "_test.py",
-                "_test.go",
-                ".test.ts",
-                ".test.tsx",
-                ".test.js",
-                ".test.mts",
-                ".test.cts",
-                ".spec.ts",
-                ".spec.js",
-                ".spec.mts",
-                ".spec.cts",
-            )
-        )
-        or p.rsplit("/", 1)[-1].startswith("test_")
-    )
 
 
 BIOMARKER = CoverageGapDetector()

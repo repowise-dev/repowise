@@ -11,6 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from repowise.core.ids import ExternalSystemId, file_path_of, render
+from repowise.core.ingestion.models import CONTAINMENT_EDGE_TYPES
 from repowise.core.persistence import (
     ExternalSystem,
     GraphEdge,
@@ -57,13 +59,10 @@ _ENTRY_POINT_NAMES = frozenset(
     }
 )
 
-_SYMBOL_EDGE_TYPES = frozenset(
-    {
-        "contains",
-        "defines",
-        "has_method",
-    }
-)
+# "contains" used to sit here too. It is a knowledge-graph *export* label
+# derived from defines/has_method, never a persisted edge_type, so it matched
+# nothing.
+_SYMBOL_EDGE_TYPES = CONTAINMENT_EDGE_TYPES
 
 _EXT_MAP = {
     ".py": "python",
@@ -104,7 +103,7 @@ async def _external_views(
         row = by_name[name]
         views.append(
             ExternalSystemView(
-                id=f"ext:{name}",
+                id=render(ExternalSystemId(name)),
                 name=name,
                 display_name=row.display_name or name,
                 category=row.category,
@@ -156,17 +155,62 @@ def _percentile_ranks(values: list[float]) -> dict[int, float]:
 
 
 def _load_knowledge_graph(path: str) -> dict | None:
+    """Read the curated knowledge-graph artifact, or ``None`` if unusable.
+
+    The file is user-visible and hand-editable, so a trailing comma in it
+    must not become a 500 on the architecture view — returning ``None``
+    drops through to the community/directory rungs of the layer cascade.
+
+    Parsing is not enough: ``"broken"`` and ``[]`` are valid JSON, and the
+    readers below expect an object, so the shape is checked here rather than
+    at every ``.get`` that follows.
+    """
     if not path or not os.path.isfile(path):
         return None
-    with open(path) as f:
-        return json.load(f)
+    try:
+        # Explicit utf-8: a bare open() decodes with the locale codec, so on a
+        # default Windows install a non-ASCII knowledge graph cost the whole
+        # C4 architecture view via the handler below.
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        logger.warning("kg_file_unreadable path=%s", path, exc_info=True)
+        return None
+    if not isinstance(data, dict):
+        logger.warning("kg_file_not_an_object path=%s found=%s", path, type(data).__name__)
+        return None
+    return data
 
 
-def _sub_groups_from_raw(raw_sub_groups: list[dict] | None, node_ids: set[str]) -> list[dict]:
+def _entries(raw: object) -> list[dict]:
+    """The dict entries of a curated list, dropping anything that is not one.
+
+    Every list in the artifact is hand-editable, so a scalar where an object
+    belongs is a shape a user can produce. Skipping the bad entry keeps the
+    rest of their curation.
+    """
+    if not isinstance(raw, list):
+        return []
+    return [entry for entry in raw if isinstance(entry, dict)]
+
+
+def _file_paths(node_ids: object) -> list[str]:
+    """Curated KG node ids to repo-relative file paths.
+
+    KG ids carry a ``file:`` prefix the dependency graph does not use, and a
+    layer's member list can also hold non-file ids — those resolve to nothing
+    and are dropped rather than passed through as if they were paths.
+    """
+    if not isinstance(node_ids, list):
+        return []
+    return [p for p in (file_path_of(str(nid)) for nid in node_ids) if p]
+
+
+def _sub_groups_from_raw(raw_sub_groups: object, node_ids: set[str]) -> list[dict]:
     """Map curated subGroups to plain dicts, dropping ids absent from the graph."""
     groups: list[dict] = []
-    for sg in raw_sub_groups or []:
-        mapped = [nid.removeprefix("file:") for nid in sg.get("nodeIds", sg.get("node_ids", []))]
+    for sg in _entries(raw_sub_groups):
+        mapped = _file_paths(sg.get("nodeIds", sg.get("node_ids", [])))
         matched = [nid for nid in mapped if nid in node_ids]
         if matched:
             groups.append(
@@ -184,9 +228,8 @@ def _layers_from_knowledge_graph(
     node_ids: set[str],
 ) -> list[dict]:
     layers = []
-    for i, layer in enumerate(kg.get("layers", [])):
-        raw_ids = layer.get("nodeIds", [])
-        mapped = [nid.removeprefix("file:") for nid in raw_ids]
+    for i, layer in enumerate(_entries(kg.get("layers"))):
+        mapped = _file_paths(layer.get("nodeIds"))
         matched = [nid for nid in mapped if nid in node_ids]
         layers.append(
             {
@@ -218,11 +261,13 @@ def _layers_from_communities(
         if cid in meta:
             with contextlib.suppress(json.JSONDecodeError, TypeError):
                 cm = json.loads(meta[cid])
+        # The writer stores only ``label`` and ``cohesion`` in this blob;
+        # there is no description to read back.
         layers.append(
             {
                 "id": f"layer:community-{cid}",
-                "name": cm.get("name", f"Community {cid}"),
-                "description": cm.get("description", ""),
+                "name": cm.get("label") or f"Community {cid}",
+                "description": "",
                 "node_ids": groups[cid],
             }
         )
@@ -248,8 +293,8 @@ def _layers_from_directories(nodes: list[GraphNode]) -> list[dict]:
 
 def _tour_from_knowledge_graph(kg: dict) -> list[ArchTourStep]:
     steps = []
-    for entry in kg.get("tour", []):
-        node_ids = [nid.removeprefix("file:") for nid in entry.get("nodeIds", [])]
+    for entry in _entries(kg.get("tour")):
+        node_ids = _file_paths(entry.get("nodeIds"))
         target_path = entry.get("target_path")
         if not node_ids and target_path:
             # Curated steps address one file by path, not a nodeIds list.
@@ -275,7 +320,7 @@ def _layers_from_db(db_layers: list, node_ids: set[str]) -> list[dict]:
     layers = []
     for i, row in enumerate(db_layers):
         raw_ids = json.loads(row.node_ids_json) if row.node_ids_json else []
-        mapped = [nid.removeprefix("file:") for nid in raw_ids]
+        mapped = _file_paths(raw_ids)
         matched = [nid for nid in mapped if nid in node_ids]
         raw_sub_groups_json = getattr(row, "sub_groups_json", None)
         raw_sub_groups = json.loads(raw_sub_groups_json) if raw_sub_groups_json else []
@@ -296,7 +341,7 @@ def _tour_from_db(db_steps: list) -> list[ArchTourStep]:
     steps = []
     for row in db_steps:
         node_ids = json.loads(row.node_ids_json) if row.node_ids_json else []
-        node_ids = [nid.removeprefix("file:") for nid in node_ids]
+        node_ids = _file_paths(node_ids)
         target_path = getattr(row, "target_path", None)
         if not node_ids and target_path:
             node_ids = [target_path]
@@ -405,9 +450,22 @@ async def build_architecture_view(
     edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
     all_edges: list[GraphEdge] = list(edge_result.scalars())
 
+    # The edges this view actually returns. Degree is counted from the same
+    # list the arrows are drawn from: counting every row instead made one
+    # response disagree with itself, because a file's out-degree included the
+    # `defines` edge to each symbol it declares and none of those are shown
+    # when symbols are excluded.
+    view_edges = [
+        e
+        for e in all_edges
+        if (include_symbols or e.edge_type not in _SYMBOL_EDGE_TYPES)
+        and e.source_node_id in node_id_set
+        and e.target_node_id in node_id_set
+    ]
+
     in_degree: dict[str, int] = defaultdict(int)
     out_degree: dict[str, int] = defaultdict(int)
-    for e in all_edges:
+    for e in view_edges:
         out_degree[e.source_node_id] += 1
         in_degree[e.target_node_id] += 1
 
@@ -543,16 +601,12 @@ async def build_architecture_view(
 
     # -- Build ArchEdges --
     arch_edges: list[ArchEdge] = []
-    for e in all_edges:
-        if not include_symbols and e.edge_type in _SYMBOL_EDGE_TYPES:
-            continue
-        if e.source_node_id not in node_id_set or e.target_node_id not in node_id_set:
-            continue
+    for e in view_edges:
         arch_edges.append(
             ArchEdge(
                 source=e.source_node_id,
                 target=e.target_node_id,
-                edge_type=e.edge_type or "imports",
+                edge_type=e.edge_type,
                 direction="forward",
                 weight=e.confidence,
                 confidence=e.confidence,

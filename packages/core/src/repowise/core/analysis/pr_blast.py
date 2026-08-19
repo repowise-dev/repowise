@@ -23,6 +23,7 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.models import NON_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.models import GitMetadata, GraphNode
 
 
@@ -54,7 +55,14 @@ class PRBlastRadiusAnalyzer:
 
         # 2. Transitive affected files
         transitive_affected = await self._transitive_affected(changed_files, max_depth)
-        all_affected_paths = list(changed_set | {e["path"] for e in transitive_affected})
+        # Sorted, because this list is cut before it is shown. ``test_gaps``
+        # preserves this order and ``get_risk``'s PR directive renders three of
+        # it as ``missing_tests``, the third line an agent is told to read.
+        # A bare set union is hash-ordered, so which three appeared varied
+        # between processes on identical input. The scale is a PR's own changed
+        # files, not the whole affected set — ``directives`` filters to those
+        # before cutting — so this is a handful of paths, reported stably.
+        all_affected_paths = sorted(changed_set | {e["path"] for e in transitive_affected})
 
         # 3. Co-change warnings
         cochange_warnings = await self._cochange_warnings(changed_files, changed_set)
@@ -65,7 +73,11 @@ class PRBlastRadiusAnalyzer:
         # 5. Test gaps
         test_gaps = await self._find_test_gaps(all_affected_paths)
 
-        # 6. Overall risk score (0-10)
+        # 6. Guarding tests — the tests the per-test coverage map proves execute
+        #    the changed files (the "run these to validate" answer).
+        guarding_tests = await self._guarding_tests(changed_files)
+
+        # 7. Overall risk score (0-10)
         overall_risk_score = self._compute_overall_risk(direct_risks, transitive_affected)
 
         return {
@@ -74,6 +86,7 @@ class PRBlastRadiusAnalyzer:
             "cochange_warnings": cochange_warnings,
             "recommended_reviewers": recommended_reviewers,
             "test_gaps": test_gaps,
+            "guarding_tests": guarding_tests,
             "overall_risk_score": overall_risk_score,
         }
 
@@ -128,32 +141,50 @@ class PRBlastRadiusAnalyzer:
         """Compute file-level risk: centrality * (1 + temporal_hotspot_score)."""
         return centrality * (1.0 + temporal_hotspot_score)
 
-    async def _transitive_affected(
-        self, changed_files: list[str], max_depth: int
-    ) -> list[dict]:
+    async def _transitive_affected(self, changed_files: list[str], max_depth: int) -> list[dict]:
         """BFS over reverse graph edges (source_node_id -> target_node_id direction).
 
         We want files that *import* the changed files (i.e. are affected when a
-        changed file changes).  In graph_edges, an edge means
+        changed file changes).  In graph_edges, a dependency edge means
         ``source imports target``, so we look for rows where
         ``target_node_id IN (frontier)`` and collect the ``source_node_id``
         values — those are the files that depend on our changed set.
+
+        Not every row is a dependency edge, though, which is what the sentence
+        above used to assume. ``co_changes`` rows live in the same table, so an
+        unfiltered BFS treated "these two files tend to change together" as
+        "this file imports that one" and walked through it, then walked
+        through *that* file's co-change partners at the next depth. On this
+        repository a PR touching ``core/__init__.py`` reached five co-change
+        rows and two real importers at depth 1, and since ``will_break`` is
+        capped at five and sorted by depth, the noise crowded out the answer.
+        Those partners are already reported, correctly labelled, by
+        :meth:`_cochange_warnings`.
         """
         visited: dict[str, int] = {}  # path -> depth at which it was first reached
-        frontier = list(set(changed_files))
+        # Sorted, not just deduped. This walk's output is cut twice downstream
+        # — ``will_break`` takes 15 of it, and that is the first field
+        # ``get_risk``'s PR directive tells an agent to read — so the order
+        # inside a depth band decides what an agent is shown. A hash-ordered
+        # seed plus an unordered ``SELECT DISTINCT`` made that order vary
+        # between processes on identical input.
+        frontier = sorted(set(changed_files))
 
         for depth in range(1, max_depth + 1):
             if not frontier:
                 break
             # SQLite / SQLAlchemy compatible IN query via text()
             placeholders = ",".join(f":p{i}" for i in range(len(frontier)))
+            excluded = ",".join(f":e{i}" for i in range(len(NON_DEPENDENCY_EDGE_TYPES)))
             params: dict[str, Any] = {"repo_id": self._repo_id}
             params.update({f"p{i}": v for i, v in enumerate(frontier)})
+            params.update({f"e{i}": v for i, v in enumerate(sorted(NON_DEPENDENCY_EDGE_TYPES))})
             rows = await self._session.execute(
                 text(
                     f"SELECT DISTINCT source_node_id FROM graph_edges "
                     f"WHERE repository_id = :repo_id "
-                    f"AND target_node_id IN ({placeholders})"
+                    f"AND target_node_id IN ({placeholders}) "
+                    f"AND edge_type NOT IN ({excluded})"
                 ),
                 params,
             )
@@ -164,7 +195,12 @@ class PRBlastRadiusAnalyzer:
                     next_frontier.append(src)
             frontier = next_frontier
 
-        return [{"path": p, "depth": d} for p, d in sorted(visited.items(), key=lambda x: x[1])]
+        # Depth first, then path: a sort on depth alone is stable, so files
+        # sharing a depth kept the row order the query happened to return.
+        return [
+            {"path": p, "depth": d}
+            for p, d in sorted(visited.items(), key=lambda item: (item[1], item[0]))
+        ]
 
     async def _cochange_warnings(
         self, changed_files: list[str], changed_set: set[str]
@@ -288,6 +324,54 @@ class PRBlastRadiusAnalyzer:
                 gaps.append(path)
 
         return gaps
+
+    async def _guarding_tests(self, changed_files: list[str]) -> dict:
+        """Tests the per-test coverage map proves execute the *changed* files.
+
+        The inverse of ``test_gaps``: instead of "which changed file lacks a
+        test", this answers "which recorded tests actually exercise this
+        change" - the coverage-backed "run these to validate" list, keyed by
+        test id (a pytest-runnable node id when the report carried node-id
+        contexts). Reuses the Phase 1 reverse index ``tests_covering``.
+
+        Scoped to the changed files, NOT the transitively-affected set: the
+        Phase 3 gate showed that affected (importing) files are covered
+        overwhelmingly by the same mega parametrized suites, so an
+        affected-file run-list is near-useless noise. The actionable set is the
+        tests that execute the code you actually edited. Line precision is not
+        available here (get_risk takes file paths, not a diff), so this is
+        file-level; ``repowise impacted-tests`` gives the line-level answer from
+        a real diff.
+
+        Returns ``{map_present, tests_to_run, by_file}``. ``map_present`` is
+        False when no per-test map is ingested at all - the honest "unknown",
+        distinct from "this change has no guarding tests".
+        """
+        empty = {"map_present": False, "tests_to_run": [], "by_file": {}}
+        if not changed_files:
+            return empty
+
+        from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering
+
+        summary = await get_test_coverage_summary(self._session, self._repo_id)
+        if summary.get("pair_count", 0) == 0:
+            return empty
+
+        by_file: dict[str, list[str]] = {}
+        all_ids: set[str] = set()
+        for path in changed_files:
+            rows = await tests_covering(self._session, self._repo_id, path, lines=None)
+            if not rows:
+                continue
+            ids = sorted({r["test_id"] for r in rows})
+            by_file[path] = ids
+            all_ids.update(ids)
+
+        return {
+            "map_present": True,
+            "tests_to_run": sorted(all_ids),
+            "by_file": by_file,
+        }
 
     @staticmethod
     def _compute_overall_risk(

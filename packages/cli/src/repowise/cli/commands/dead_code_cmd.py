@@ -14,11 +14,18 @@ from repowise.cli.helpers import (
     run_async,
     silence_logs_for_machine_output,
 )
+from repowise.cli.output import notice_console
+from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
 
 
 @click.command("dead-code")
 @click.argument("path", required=False, type=click.Path(exists=True))
-@click.option("--min-confidence", default=0.4, type=float, help="Minimum confidence threshold.")
+@click.option(
+    "--min-confidence",
+    default=RISK_CAP_CONFIDENCE,
+    type=float,
+    help="Minimum confidence threshold.",
+)
 @click.option(
     "--safe-only",
     is_flag=True,
@@ -39,7 +46,7 @@ from repowise.cli.helpers import (
 @click.option(
     "--include-internals/--no-include-internals",
     default=False,
-    help="Detect unused private/internal symbols (higher false-positive rate, off by default).",
+    help="Detect unused private symbols (higher false-positive rate, off by default).",
 )
 @click.option(
     "--include-zombie-packages/--no-include-zombie-packages",
@@ -104,7 +111,8 @@ def dead_code_command(
         no_workspace_flag=no_workspace,
         repo_alias=repo_alias,
     )
-    target.notice(console, command="dead-code")
+    notices = notice_console(fmt)
+    target.notice(notices, command="dead-code")
 
     if target.is_workspace:
         if target.repo_filter is not None:
@@ -117,14 +125,12 @@ def dead_code_command(
             if primary is None:
                 raise click.ClickException("Workspace has no primary repo configured.")
             repo_path = primary
-            console.print(
-                "[dim]  (Tip: pass --repo <alias> to analyze a different repo.)[/dim]"
-            )
+            notices.print("[dim]  (Tip: pass --repo <alias> to analyze a different repo.)[/dim]")
     else:
         assert target.repo_path is not None
         repo_path = target.repo_path
 
-    console.print(f"[bold]repowise dead-code[/bold] — {repo_path}")
+    notices.print(f"[bold]repowise dead-code[/bold] — {repo_path}")
 
     # Ingest — honor the persisted submodule flags so the analyzed file set
     # matches what `init` indexed (a flagless traverser on a submodule-indexed
@@ -146,13 +152,27 @@ def dead_code_command(
         include_nested_repos=include_nested_repos,
     )
 
+    # Kept alongside the parse so the analyzer's marker prepasses reuse these
+    # bytes instead of re-reading the repo four more times.
+    source_map: dict[str, bytes] = {}
     for fi in file_infos:
         try:
             source = PathlibPath(fi.abs_path).read_bytes()
             parsed = parser.parse_file(fi, source)
             graph_builder.add_file(parsed)
+            source_map[fi.path] = source
         except Exception:
             pass
+
+    from repowise.core.ingestion import wire_tsconfig_resolver
+
+    wire_tsconfig_resolver(
+        graph_builder,
+        repo_path,
+        include_submodules=include_submodules,
+        include_nested_repos=include_nested_repos,
+    )
+    graph_builder.set_source_map(source_map)
     graph_builder.build()
 
     # Framework-aware synthetic edges (Django, Laravel, TYPO3, ...). Without
@@ -163,8 +183,14 @@ def dead_code_command(
 
         tech_items = detect_tech_stack(repo_path)
         graph_builder.add_framework_edges([item.name for item in tech_items])
-    except Exception:
-        pass
+    except Exception as fw_exc:
+        # Silence here is the worst of the three sites: the comment above says
+        # these edges exist to stop false positives, so a swallowed failure
+        # hands the user a longer report and calls it the answer.
+        notices.print(
+            f"[yellow]Framework edge detection skipped: {fw_exc}; "
+            "convention-loaded files may report as unreachable.[/yellow]"
+        )
 
     # Git metadata (best effort)
     git_meta_map: dict = {}
@@ -192,7 +218,23 @@ def dead_code_command(
         config["detect_unused_internals"] = kind == "unused_internal"
         config["detect_zombie_packages"] = kind == "zombie_package"
 
-    analyzer = DeadCodeAnalyzer(graph_builder.graph(), git_meta_map)
+    # parsed_files powers the source-scan rescues (dynamic-import markers,
+    # bundler resolve.alias targets, export-alias maps) — without it those
+    # classes false-positive on the CLI path while init stays clean.
+    analyzer = DeadCodeAnalyzer(
+        graph_builder.graph(),
+        git_meta_map,
+        parsed_files=graph_builder._parsed_files,
+        source_map=source_map,
+        repo_root=repo_path,
+        unindexed_source_files=[
+            (skipped.path, skipped.reason)
+            for skipped in (
+                *traverser.stats.skipped_source_files,
+                *traverser.stats.unknown_language_files,
+            )
+        ],
+    )
     report = analyzer.analyze(config)
 
     findings = report.findings
@@ -226,6 +268,12 @@ def dead_code_command(
             safe = " (cleanup-ready)" if f.safe_to_delete else ""
             name = f"`{f.symbol_name}`" if f.symbol_name else f"`{f.file_path}`"
             click.echo(f"- [{f.kind.value}] {name} — {f.reason} ({f.confidence:.0%}){safe}")
+        if report.hidden_below_threshold:
+            click.echo(
+                f"\n> {report.hidden_below_threshold} finding(s) hidden below threshold "
+                f"(confidence < {min_confidence:.2g}); "
+                f"pass `--min-confidence 0.0` to see them."
+            )
         return
 
     # Table format (default)
@@ -250,7 +298,21 @@ def dead_code_command(
         )
 
     console.print(table)
-    console.print(
-        f"\nCleanup-candidate lines: [bold]{report.deletable_lines:,}[/bold] "
-        f"(confidence: {report.confidence_summary})"
+    # confidence_summary is a {"high": N, ...} dict; interpolating it printed a
+    # raw Python repr, braces and quotes included, at the end of an otherwise
+    # formatted report.
+    tiers = ", ".join(
+        f"{tier} {count}"
+        for tier in ("high", "medium", "low")
+        if (count := report.confidence_summary.get(tier, 0))
     )
+    console.print(
+        f"\nCleanup-candidate lines: [bold]{report.deletable_lines:,}[/bold]"
+        + (f" ({tiers} confidence)" if tiers else "")
+    )
+    if report.hidden_below_threshold:
+        console.print(
+            f"[dim]{report.hidden_below_threshold} finding(s) hidden below "
+            f"threshold (confidence < {min_confidence:.2g}); "
+            f"pass --min-confidence 0.0 to see them.[/dim]"
+        )

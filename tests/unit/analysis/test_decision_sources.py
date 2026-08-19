@@ -1,4 +1,4 @@
-"""Deterministic (LLM-free) extraction from ADRs and CHANGELOGs (Phase 1B)."""
+"""Deterministic (LLM-free) extraction from ADRs (Phase 1B)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from repowise.core.analysis.decision_extractor import (
     DecisionExtractor,
     enabled_source_names,
 )
+from repowise.core.analysis.decision_provenance import RETIRED_SOURCES
 
 _NYGARD_ADR = """\
 # 1. Use PostgreSQL for primary storage
@@ -96,55 +97,89 @@ async def test_discover_adrs_maps_superseded_status_from_frontmatter(tmp_path):
     assert "Adopt gRPC" in d.decision
 
 
-async def test_mine_changelog_extracts_decision_sections(tmp_path):
-    (tmp_path / "CHANGELOG.md").write_text(_CHANGELOG, encoding="utf-8")
 
-    ex = DecisionExtractor(repo_path=tmp_path)  # no provider → raw bullets
-    decisions = await ex.mine_changelog()
+class TestAdrDiscoveryHonorsIgnoreFiles:
+    """A path git cannot see must not become a decision record.
 
-    texts = [d.decision for d in decisions]
-    assert any("Migrate the auth layer" in t for t in texts)
-    assert any("Drop support for the legacy XML" in t for t in texts)
-    # "Added" section is intentionally excluded — it is not a structural decision.
-    assert not any("dashboard widget" in t for t in texts)
-    assert all(d.source == "changelog" for d in decisions)
+    The loose ``*adr*.md`` scan read the whole tree with no ignore handling, so
+    a scratch dir excluded locally shipped ``active`` records whose evidence
+    file no clone of the repo contains. ``fs_walk`` alone does not fix this: it
+    prunes junk dirs and nested repos but reads no ignore files.
+    """
 
+    async def test_gitignored_dir_contributes_no_adr(self, tmp_path):
+        (tmp_path / ".gitignore").write_text("scratch/\n", encoding="utf-8")
+        scratch = tmp_path / "scratch" / "notes"
+        scratch.mkdir(parents=True)
+        (scratch / "adr-postgres.md").write_text(_NYGARD_ADR, encoding="utf-8")
 
-async def test_mine_changelog_finds_changelog_under_docs(tmp_path):
-    # Many projects keep the changelog under docs/ rather than at the root.
-    docs = tmp_path / "docs"
-    docs.mkdir()
-    (docs / "CHANGELOG.md").write_text(_CHANGELOG, encoding="utf-8")
+        decisions = await DecisionExtractor(repo_path=tmp_path).discover_adrs()
 
-    ex = DecisionExtractor(repo_path=tmp_path)  # no provider → raw bullets
-    decisions = await ex.mine_changelog()
+        assert decisions == []
 
-    texts = [d.decision for d in decisions]
-    assert any("Migrate the auth layer" in t for t in texts)
-    assert all(d.source == "changelog" for d in decisions)
+    async def test_info_exclude_dir_contributes_no_adr(self, tmp_path):
+        """``.git/info/exclude`` is the local-only half, and the half that leaked.
+
+        It is what hides ``local-stash/`` in this project's own checkout, where
+        the miner stored four records citing a bench file nobody else has.
+        """
+        info = tmp_path / ".git" / "info"
+        info.mkdir(parents=True)
+        (info / "exclude").write_text("local-stash/\n", encoding="utf-8")
+        stash = tmp_path / "local-stash" / "bench"
+        stash.mkdir(parents=True)
+        (stash / "adr-postgres.md").write_text(_NYGARD_ADR, encoding="utf-8")
+
+        decisions = await DecisionExtractor(repo_path=tmp_path).discover_adrs()
+
+        assert decisions == []
+
+    async def test_ignored_file_inside_a_conventional_dir_is_skipped(self, tmp_path):
+        """The conventional dirs were globbed, not walked, so they leaked too."""
+        (tmp_path / ".gitignore").write_text("docs/adr/local-*.md\n", encoding="utf-8")
+        adr_dir = tmp_path / "docs" / "adr"
+        adr_dir.mkdir(parents=True)
+        (adr_dir / "local-postgres.md").write_text(_NYGARD_ADR, encoding="utf-8")
+
+        decisions = await DecisionExtractor(repo_path=tmp_path).discover_adrs()
+
+        assert decisions == []
+
+    async def test_tracked_adr_is_still_discovered(self, tmp_path):
+        """Ablation partner: the ignore layer must not swallow everything."""
+        (tmp_path / ".gitignore").write_text("scratch/\n", encoding="utf-8")
+        adr_dir = tmp_path / "docs" / "adr"
+        adr_dir.mkdir(parents=True)
+        (adr_dir / "0001-use-postgres.md").write_text(_NYGARD_ADR, encoding="utf-8")
+
+        decisions = await DecisionExtractor(repo_path=tmp_path).discover_adrs()
+
+        assert len(decisions) == 1
+        assert "Use PostgreSQL" in decisions[0].title
 
 
 async def test_extract_all_runs_deterministic_sources_and_gates(tmp_path):
     adr_dir = tmp_path / "docs" / "adr"
     adr_dir.mkdir(parents=True)
     (adr_dir / "0001-use-postgres.md").write_text(_NYGARD_ADR, encoding="utf-8")
+    # A changelog the retired miner would once have mined; nothing reads it now.
     (tmp_path / "CHANGELOG.md").write_text(_CHANGELOG, encoding="utf-8")
 
     ex = DecisionExtractor(repo_path=tmp_path)
     report = await ex.extract_all()
 
     assert report.by_source["adr"] == 1
-    assert report.by_source["changelog"] >= 2
     # All survive the gate (deterministic fields are verbatim).
     sources = {d.source for d in report.decisions}
     assert "adr" in sources
-    assert "changelog" in sources
     adr = next(d for d in report.decisions if d.source == "adr")
     assert adr.verification == "exact"
-    # The repo-wide code_comment harvest was removed (#751); extract_all must
-    # neither run it nor report it.
-    assert "code_comment" not in report.by_source
-    assert not any(d.source == "code_comment" for d in report.decisions)
+    # Retired sources must neither run nor be reported, however tempting the
+    # files sitting in the repo are. One list, so a fourth removal is covered
+    # here the day it lands.
+    for retired in RETIRED_SOURCES:
+        assert retired not in report.by_source
+        assert not any(d.source == retired for d in report.decisions)
 
 
 async def test_extract_all_honors_enabled_sources(tmp_path):
@@ -163,8 +198,6 @@ async def test_extract_all_honors_enabled_sources(tmp_path):
     assert set(seen) == {"adr", "inline_marker"}
     assert set(report.by_source) == {"adr", "inline_marker"}
     assert report.by_source["adr"] == 1
-    # The changelog file exists but its source was disabled.
-    assert not any(d.source == "changelog" for d in report.decisions)
 
 
 def test_enabled_source_names_defaults_and_overrides():
@@ -172,16 +205,16 @@ def test_enabled_source_names_defaults_and_overrides():
     assert enabled_source_names(None) == SOURCE_NAMES
     assert enabled_source_names({}) == SOURCE_NAMES
 
-    cfg = {"decisions": {"sources": {"comment": False, "changelog": False}}}
+    cfg = {"decisions": {"sources": {"comment": False, "pr": False}}}
     enabled = enabled_source_names(cfg)
     assert "comment" not in enabled
-    assert "changelog" not in enabled
+    assert "pr" not in enabled
     assert "adr" in enabled and "inline_marker" in enabled
 
-    # Unknown / stale keys (e.g. the removed code_comment) are ignored.
-    assert enabled_source_names({"decisions": {"sources": {"code_comment": False}}}) == (
-        SOURCE_NAMES
-    )
+    # Stale keys naming a retired source are ignored rather than breaking a
+    # config written before the removal.
+    for retired in RETIRED_SOURCES:
+        assert enabled_source_names({"decisions": {"sources": {retired: False}}}) == SOURCE_NAMES
     # Malformed sections never break extraction.
     assert enabled_source_names({"decisions": "nope"}) == SOURCE_NAMES
     assert enabled_source_names({"decisions": {"sources": "nope"}}) == SOURCE_NAMES

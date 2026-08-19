@@ -17,17 +17,28 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+from typing import ClassVar
+
+from repowise.core.providers.embedding.base import resolve_embedding_timeout
 
 
 class OpenRouterEmbedder:
     """OpenRouter embedding adapter implementing the repowise Embedder protocol.
 
     Args:
-        api_key: OpenRouter API key. Falls back to OPENROUTER_API_KEY env var.
-        model:   Embedding model name. Default: "google/gemini-embedding-001".
+        api_key:    OpenRouter API key. Falls back to OPENROUTER_API_KEY env var.
+        model:      Embedding model name. Default: "google/gemini-embedding-001".
+        dimensions: Override the declared output width. Useful when an
+                    OpenRouter-compatible endpoint returns a different number of
+                    dimensions than the built-in ``_DIMS`` table records for that
+                    model. Falls back to REPOWISE_EMBEDDING_DIMS, then ``_DIMS``.
+                    Note: this overrides only the *declared* width that the vector
+                    store trusts — it does not add a ``dimensions`` parameter to the
+                    API request. Use it to correct a wrong ``_DIMS`` entry when the
+                    model's real output differs.
     """
 
-    _DIMS: dict[str, int] = {
+    _DIMS: ClassVar[dict[str, int]] = {
         "google/gemini-embedding-001": 768,
         "openai/text-embedding-3-small": 1536,
         "openai/text-embedding-3-large": 3072,
@@ -39,7 +50,8 @@ class OpenRouterEmbedder:
         self,
         api_key: str | None = None,
         model: str = "google/gemini-embedding-001",
-        timeout: float = _DEFAULT_TIMEOUT,
+        timeout: float | None = None,
+        dimensions: int | None = None,
     ) -> None:
         self._api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
         if not self._api_key:
@@ -55,12 +67,23 @@ class OpenRouterEmbedder:
                 f"or pick a known model: {known}."
             )
         self._model = model
-        self._timeout = timeout
+        self._timeout = resolve_embedding_timeout(
+            timeout, self._DEFAULT_TIMEOUT, provider_env="OPENROUTER_EMBEDDING_TIMEOUT"
+        )
+        # Resolve declared width: explicit arg > REPOWISE_EMBEDDING_DIMS > _DIMS table.
+        if dimensions is None:
+            env = os.environ.get("REPOWISE_EMBEDDING_DIMS")
+            if env:
+                try:
+                    dimensions = int(env)
+                except ValueError:
+                    raise ValueError("dimensions must be a positive integer") from None
+        self._dimensions = dimensions if dimensions is not None else self._DIMS[model]
         self._client: object | None = None
 
     @property
     def dimensions(self) -> int:
-        return self._DIMS[self._model]
+        return self._dimensions
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts using OpenRouter.
@@ -73,6 +96,7 @@ class OpenRouterEmbedder:
 
         model = self._model
         timeout = self._timeout
+        expected_dimensions = self._dimensions
 
         def _embed_sync() -> list[list[float]]:
             import openai
@@ -85,6 +109,15 @@ class OpenRouterEmbedder:
                 )
             response = self._client.embeddings.create(model=model, input=texts)  # type: ignore[union-attr]
             raw_vectors = [list(item.embedding) for item in response.data]
+            widths = {len(v) for v in raw_vectors}
+            if widths and widths != {expected_dimensions}:
+                actual = min(widths - {expected_dimensions})
+                raise ValueError(
+                    f"OpenRouterEmbedder declared {expected_dimensions}-dimensional vectors but the API"
+                    f" returned {actual} (model={model!r}). Update"
+                    f" OpenRouterEmbedder._DIMS[{model!r}] = {actual} to match the server's"
+                    f" real output."
+                )
             return [_l2_normalize(v) for v in raw_vectors]
 
         return await asyncio.to_thread(_embed_sync)

@@ -232,6 +232,47 @@ def test_crossfn_across_files(tmp_path):
     assert h.path[-1].endswith("db.py::fetch_one")
 
 
+def test_crossfn_through_star_import_barrel(tmp_path):
+    """The persist.py:884 shape: a loop calls a DB wrapper that is imported
+    lazily from a package whose ``__init__`` re-exports it via ``from .x import
+    *``, and the wrapper's bare name is shadowed by a same-named method (so the
+    global-unique tier cannot rescue it). The wildcard re-export must be
+    followed for the loop -> wrapper -> sink edge to resolve; without that the
+    cross-function N+1 is silently dropped.
+    """
+    files = {
+        "pkg/crud.py": (
+            "from sqlalchemy import select\n\n\n"
+            "def upsert_one(session, rid):\n"
+            "    return session.execute(select(rid))\n"
+        ),
+        # package barrel re-exports the leaf via a star import
+        "pkg/__init__.py": "from pkg.crud import *\n",
+        # a same-named method elsewhere defeats the Tier-3 global-unique match,
+        # so only the followed barrel edge can resolve the call.
+        "stores.py": (
+            "class Store:\n"
+            "    def upsert_one(self, session, rid):\n"
+            "        return None\n"
+        ),
+        "service.py": (
+            "def persist_all(session, ids):\n"
+            "    from pkg import upsert_one\n"
+            "    for rid in ids:\n"
+            "        upsert_one(session, rid)\n"
+        ),
+    }
+    walked, graph = _build(tmp_path, files)
+    res = collect_crossfn_io_in_loop(walked, graph)
+    hits = [h for hs in res.values() for h in hs]
+    assert len(hits) == 1, f"star-barrel N+1 must be caught; got {hits}"
+    h = hits[0]
+    assert h.function == "persist_all"
+    assert h.detail == "db"
+    assert h.path[0].endswith("service.py::persist_all")
+    assert h.path[-1].endswith("pkg/crud.py::upsert_one")
+
+
 def test_crossfn_pure_helper_is_not_flagged(tmp_path):
     """A loop calling a helper that does NO I/O produces no cross-fn finding."""
     src = "def square(x):\n    return x * x\n\n\ndef run(xs):\n    return [square(x) for x in xs]\n"

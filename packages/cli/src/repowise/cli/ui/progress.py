@@ -2,13 +2,61 @@
 
 from __future__ import annotations
 
+import contextlib
+import re
+from collections.abc import Callable
 from typing import Any
 
 from rich.console import Console
 from rich.progress import ProgressColumn, Task
 from rich.text import Text
 
-from repowise.cli.ui.brand import ERR, OK, WARN
+from repowise.cli.ui.brand import ERR, WARN, print_phase_header
+
+# Top-level stage → (phase number, title, subtitle). The pipeline announces the
+# stage; how it is numbered and worded is the screen's business, and the screen
+# is the only side that knows generation and persistence follow.
+#
+# The keys are spelled out rather than imported from
+# ``repowise.core.pipeline.progress``: that module's package eagerly imports the
+# orchestrator, which every other CLI call site is careful to defer into a
+# function body, and paying ~170ms of pipeline import on ``repowise --help`` or
+# on each post-commit hook run to read two string constants is a bad trade.
+# ``test_init_ux`` pins these against the core constants so they cannot drift.
+_STAGE_HEADERS: dict[str, tuple[int, str, str]] = {
+    "ingestion": (
+        1,
+        "Ingestion",
+        "Walking the tree, parsing files, building the dependency graph",
+    ),
+    "analysis": (2, "Analysis", "Dead code, code health, architectural decisions"),
+}
+
+
+# Credential shapes that turn up inside provider exception text. OpenAI and
+# Anthropic auth errors quote the offending key back ("Incorrect API key
+# provided: sk-abc…"), and several pipeline warnings interpolate ``str(exc)``
+# verbatim. That was transient terminal output; once the warnings are also
+# written to ``.repowise/state.json`` it becomes a secret at rest, in the one
+# file agents and MCP tools read back.
+_SECRET_PATTERNS = (
+    re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"),  # OpenAI / Anthropic
+    re.compile(r"\bAIza[A-Za-z0-9_-]{10,}"),  # Google
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{10,}"),  # GitHub
+)
+
+
+def redact_secrets(text: str) -> str:
+    """Blank anything key-shaped in *text*.
+
+    Deliberately conservative: it matches issuer-prefixed shapes rather than
+    "any long token", because over-matching would eat the file paths and hashes
+    that make these messages useful. A key in an unrecognised format still gets
+    through, so this reduces exposure rather than guaranteeing its absence.
+    """
+    for pattern in _SECRET_PATTERNS:
+        text = pattern.sub("[redacted]", text)
+    return text
 
 
 class MaybeCountColumn(ProgressColumn):
@@ -33,25 +81,34 @@ class MaybeCountColumn(ProgressColumn):
 # Rich progress callback — implements core ProgressCallback protocol
 # ---------------------------------------------------------------------------
 
+# Every phase the pipeline emits needs an entry here: the fallback prints the
+# raw internal id (``knowledge_graph.skeleton...``) beside proper sentences.
+# ``…`` throughout, matching the CLI-authored status lines these interleave with.
 _PHASE_LABELS: dict[str, str] = {
-    "traverse": "Scanning & filtering files...",
-    "parse": "Parsing files...",
-    "tsconfig": "Indexing tsconfig path aliases...",
-    "graph": "Building dependency graph...",
+    "traverse": "Scanning & filtering files…",
+    "parse": "Parsing files…",
+    "tsconfig": "Indexing tsconfig path aliases…",
+    "graph": "Building dependency graph…",
     "graph.imports": "  ↳ Resolving imports",
     "graph.heritage": "  ↳ Resolving inheritance",
     "graph.calls": "  ↳ Resolving call edges",
+    "graph.type_refs": "  ↳ Resolving type references",
     "dynamic_hints": "  ↳ Wiring dynamic hints",
     "graph.metrics": "  ↳ Computing graph metrics (PageRank, betweenness)",
     "graph.communities": "  ↳ Detecting communities",
     "graph.flows": "  ↳ Tracing execution flows",
-    "external_systems": "Parsing external dependency manifests...",
-    "git": "Indexing file history...",
-    "co_change": "Analyzing co-changes...",
-    "dead_code": "Detecting dead code...",
-    "decisions": "Extracting decisions...",
-    "generation": "Generating pages...",
-    "onboarding": "Curating onboarding docs...",
+    "external_systems": "Parsing external dependency manifests…",
+    "git": "Indexing file history…",
+    "co_change": "Analyzing co-changes…",
+    "dead_code": "Detecting dead code…",
+    "health": "Scoring code health…",
+    "decisions": "Extracting decisions…",
+    "knowledge_graph.skeleton": "Building the knowledge graph…",
+    "knowledge_graph.enrich": "  ↳ Naming layers and building the tour",
+    "generation": "Generating pages…",
+    "generation.llm": "  ↳ Writing pages that need the model",
+    "onboarding": "Curating onboarding docs…",
+    "persist": "Saving to the database…",
 }
 
 
@@ -67,13 +124,60 @@ class RichProgressCallback:
             result = run_async(run_pipeline(..., progress=callback))
     """
 
-    def __init__(self, progress: Any, console: Console) -> None:
+    def __init__(self, progress: Any, console: Console, *, total_phases: int | None = None) -> None:
         self._progress = progress
         self._console = console
         self._tasks: dict[str, Any] = {}
+        # Every warning this callback rendered, in order. Printing is enough
+        # for a human watching, but agent-driven mode is the primary path and
+        # nobody is watching there: a run that degraded and a run that did not
+        # both exit 0 and both write a state.json that looks identical.
+        # ``init`` persists this list so the degradation is recoverable after
+        # the terminal output is gone. ``update`` already reports a ``degraded``
+        # list for the same reason; this is the missing half on the init side.
+        #
+        # Ceiling: this instance covers the index+analysis run. The generation
+        # phase builds its own callback, so its warnings are not collected here.
+        self.warnings: list[str] = []
+        # Set only by the single-repo init flow, which is the one screen that
+        # numbers its phases. The workspace flow prints its own per-repo header
+        # and would otherwise draw a "Phase 1 of 4" rule for every repo.
+        self._total_phases = total_phases
+
+    def _print_above_live(self, emit: Callable[[], None]) -> None:
+        """Run *emit* outside the Live region so its output lands cleanly
+        above the progress bars instead of interleaving with still-rendering
+        spinners (issue: phase summary lines interleaved with bars).
+        """
+        live = getattr(self._progress, "live", None)
+        if live is not None:
+            try:
+                with live._lock:
+                    emit()
+                self._progress.refresh()
+                return
+            except Exception:
+                pass
+        emit()
+
+    def on_stage(self, stage: str) -> None:
+        """Render a top-level stage as the same phase rule the CLI uses.
+
+        Phases 1 and 2 used to arrive as small green ``on_message`` lines while
+        3 and 4 got full-width rules, so the first separator a first-time user
+        ever saw read "Phase 3 of 4".
+        """
+        total = self._total_phases
+        meta = _STAGE_HEADERS.get(stage)
+        if total is None or meta is None:
+            return
+        num, title, subtitle = meta
+        self._print_above_live(
+            lambda: print_phase_header(self._progress.console, num, total, title, subtitle)
+        )
 
     def on_phase_start(self, phase: str, total: int | None) -> None:
-        label = _PHASE_LABELS.get(phase, f"{phase}...")
+        label = _PHASE_LABELS.get(phase, f"{phase}…")
         # If phase already has a task, update its total and make visible
         if phase in self._tasks:
             self._progress.update(self._tasks[phase], total=total, visible=True)
@@ -102,8 +206,14 @@ class RichProgressCallback:
             pass
 
     def on_message(self, level: str, text: str) -> None:
-        style_map = {"info": OK, "warning": WARN, "error": ERR}
+        # ``info`` is deliberately unstyled. It carries neutral facts ("Scanned
+        # 12,431 files", "Languages: …"), and rendering those in the same green
+        # as "✓ Database updated" made green mean "the pipeline said something"
+        # rather than "this succeeded".
+        style_map = {"warning": WARN, "error": ERR}
         style = style_map.get(level, "")
+        if level in style_map:
+            self.warnings.append(redact_secrets(text))
         # Insight lines (indented with →) get special formatting
         if text.lstrip().startswith("→"):
             line = f"  [dim]{text}[/dim]"
@@ -112,24 +222,10 @@ class RichProgressCallback:
         else:
             line = f"  {text}"
 
-        # Print under the Live lock so the line lands cleanly above the
-        # progress region instead of interleaving with still-rendering
-        # spinners (issue: phase summary lines interleaved with bars).
-        live = getattr(self._progress, "live", None)
-        if live is not None:
-            try:
-                with live._lock:
-                    self._progress.console.print(line)
-                self._progress.refresh()
-                return
-            except Exception:
-                pass
-        self._progress.console.print(line)
+        self._print_above_live(lambda: self._progress.console.print(line))
 
     def set_cost(self, total_cost: float) -> None:
         """Update the live cost display on all active progress tasks."""
         for task_id in self._tasks.values():
-            try:
+            with contextlib.suppress(Exception):
                 self._progress.update(task_id, cost=total_cost)
-            except Exception:
-                pass

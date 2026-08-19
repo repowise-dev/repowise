@@ -53,7 +53,7 @@ export function RefactoringPlanCard({
       className={`group relative flex flex-col overflow-hidden rounded-2xl border bg-[var(--color-bg-surface)] transition-all ${
         highlighted
           ? "border-[var(--color-accent-primary)] ring-1 ring-[var(--color-accent-primary)]/30"
-          : "border-[var(--color-border-default)] hover:border-[var(--color-border-strong)] hover:shadow-sm"
+          : "border-[var(--color-border-default)] hover:border-[var(--color-border-hover)] hover:shadow-sm"
       }`}
     >
       {/* type-colored rail — the at-a-glance differentiator */}

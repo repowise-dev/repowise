@@ -56,6 +56,7 @@ def _result(
     *,
     vector_store=None,
     authoritative_page_types: set[str] | None = None,
+    preserved_page_ids: set[str] | None = None,
 ) -> SimpleNamespace:
     """A minimal PipelineResult stand-in for the ``index_done`` branch.
 
@@ -74,6 +75,7 @@ def _result(
         git_metadata_list=[],
         knowledge_graph_result=None,
         authoritative_page_types=authoritative_page_types or set(),
+        preserved_page_ids=preserved_page_ids or set(),
     )
 
 
@@ -225,3 +227,54 @@ async def test_persist_result_curated_zero_modules_sweeps_stale(tmp_path):
         assert "layer_page:layer:Data" in ids
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_persist_result_keeps_pages_a_resume_skipped(tmp_path):
+    """Issue #1089, through the path the reporter would have taken.
+
+    A provider outage kills part of an init. `repowise init --resume`
+    regenerates the missing pages and skips the ones already written, so the
+    skipped ones are absent from ``generated_pages``. They must survive the
+    sweep, keep their vector embedding, and become searchable — the resume
+    exists to protect exactly this content, and a page nobody can find is not
+    protected in any sense the user would recognise.
+    """
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    kept_id = "module_page:community-1"
+    await _seed_stale_module_page(repo_path, kept_id)
+
+    # No FTS row is seeded on purpose. A run killed mid-generation flushes
+    # pages to SQL and nothing else, so this is the state a resume actually
+    # finds: the page exists and search has never heard of it. Seeding one here
+    # would assert against a situation the broken flow never produces.
+    store = InMemoryVectorStore(MockEmbedder())
+    regenerated = _generated_page("module_page", "community-2")
+    await store.embed_batch([(kept_id, "kept body about widgets", {})])
+
+    await persist_result(
+        _result("r", [regenerated], vector_store=store, preserved_page_ids={kept_id}),
+        repo_path,
+    )
+
+    engine, sf, _ = await open_repo_db(repo_path, repo_name="r")
+    try:
+        async with get_session(sf) as session:
+            ids = (
+                (await session.execute(select(Page.id).where(Page.page_type == "module_page")))
+                .scalars()
+                .all()
+            )
+        assert set(ids) == {kept_id, "module_page:community-2"}
+
+        # Backfilled from SQL: the seeded row's content is "stale body", which
+        # is all a resume has to go on for a page it did not generate.
+        fts = FullTextSearch(engine)
+        await fts.ensure_index()
+        hits = {r.page_id for r in await fts.search("body", limit=10)}
+        assert kept_id in hits
+    finally:
+        await engine.dispose()
+
+    assert kept_id in await store.list_page_ids()

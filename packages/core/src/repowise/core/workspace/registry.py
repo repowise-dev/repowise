@@ -7,6 +7,7 @@ Provides ``RepoContext`` (per-repo resources) and ``RepoRegistry``
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Callable
@@ -168,7 +169,7 @@ class RepoRegistry:
         )
         from repowise.core.persistence.search import FullTextSearch
         from repowise.core.persistence.vector_store import InMemoryVectorStore
-        from repowise.core.providers.embedding.base import MockEmbedder
+        from repowise.core.providers.embedding.base import KeylessEmbedder
 
         db_url = get_db_url(f"sqlite:///{db_path.as_posix()}")
 
@@ -187,7 +188,7 @@ class RepoRegistry:
         # Seed placeholder vector stores.
         # decision_store is repointed to the shared page store — decisions are
         # embedded under the "decision:" namespace, no separate LanceDB table.
-        embedder = self._embedder_factory() if self._embedder_factory else MockEmbedder()
+        embedder = self._embedder_factory() if self._embedder_factory else KeylessEmbedder()
         vector_store: Any = InMemoryVectorStore(embedder=embedder)
 
         vs_ready = asyncio.Event()
@@ -281,10 +282,8 @@ class RepoRegistry:
         task = self._vs_tasks.pop(alias, None)
         if task is not None and not task.done():
             task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
-            except (asyncio.CancelledError, Exception):
-                pass
 
         try:
             if ctx._engine is not None:

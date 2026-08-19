@@ -5,9 +5,9 @@ prompts — Anthropic's API caches prompts > 1024 tokens and charges ~10% of
 the normal input price on cache hits.
 
 Recommended models (as of 2026):
+    - claude-haiku-4-5   — fastest and cheapest (default; ample for doc pages)
+    - claude-sonnet-4-6  — best quality/cost ratio
     - claude-opus-4-6    — highest quality, most expensive
-    - claude-sonnet-4-6  — best quality/cost ratio (default)
-    - claude-haiku-4-5   — fastest, cheapest (good for low-value pages)
 """
 
 from __future__ import annotations
@@ -34,10 +34,12 @@ from repowise.core.providers.llm.base import (
     RateLimitError,
     ensure_reasoning_supported,
     fallback_model_option,
+    normalize_stop_reason,
     parse_retry_after,
     provider_retry_stop,
     provider_retry_wait,
     provider_should_retry,
+    temperature_kwargs,
 )
 from repowise.core.rate_limiter import RateLimiter
 from repowise.core.reasoning import ReasoningMode
@@ -105,7 +107,7 @@ class AnthropicProvider(BaseProvider):
 
     Args:
         api_key:      Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
-        model:        Model identifier. Defaults to claude-sonnet-4-6.
+        model:        Model identifier. Defaults to claude-haiku-4-5.
         base_url:     Optional custom API base URL (for proxies/self-hosted endpoints).
         rate_limiter: Optional pre-configured RateLimiter. If None, no rate limiting
                       is applied (useful when the caller manages concurrency via semaphore).
@@ -114,7 +116,7 @@ class AnthropicProvider(BaseProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "claude-sonnet-4-6",
+        model: str = "claude-haiku-4-5",
         base_url: str | None = None,
         rate_limiter: RateLimiter | None = None,
         cost_tracker: CostTracker | None = None,
@@ -202,9 +204,9 @@ class AnthropicProvider(BaseProvider):
             response = await self._client.messages.create(
                 model=self._model,
                 max_tokens=max_tokens,
-                temperature=temperature,
                 system=system_param,
                 messages=messages_param,
+                **temperature_kwargs(self._model, temperature),
             )
         except _AnthropicRateLimitError as exc:
             raise RateLimitError(
@@ -219,6 +221,7 @@ class AnthropicProvider(BaseProvider):
             raise ProviderError("anthropic", str(exc), status_code=exc.status_code) from exc
 
         cached = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+        stop_reason, provider_stop_reason = normalize_stop_reason(response.stop_reason)
 
         text_content = ""
         for block in response.content:
@@ -231,6 +234,8 @@ class AnthropicProvider(BaseProvider):
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
             cached_tokens=cached,
+            stop_reason=stop_reason,
+            provider_stop_reason=provider_stop_reason,
             usage={
                 "input_tokens": response.usage.input_tokens,
                 "output_tokens": response.usage.output_tokens,
@@ -261,7 +266,7 @@ class AnthropicProvider(BaseProvider):
                     model=self._model,
                     input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
-                    operation="doc_generation",
+                    operation=self._cost_tracker.operation,
                     file_path=None,
                 )
 
@@ -299,9 +304,9 @@ class AnthropicProvider(BaseProvider):
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "system": system_prompt,
             "messages": anthropic_messages,
+            **temperature_kwargs(self._model, temperature),
         }
         if anthropic_tools:
             kwargs["tools"] = anthropic_tools

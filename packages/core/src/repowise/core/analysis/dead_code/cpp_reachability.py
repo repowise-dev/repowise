@@ -38,10 +38,16 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any
 
+from ...ingestion.languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
+from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
+
 # File extensions this module rescues. The C/C++ tree-sitter grammar
-# tag covers all of these; the resolver shares them too.
+# tag covers all of these; the resolver shares them too. Include fragments
+# count as headers here: like a header, a fragment has no importer of its
+# own beyond the translation unit that pastes it in.
 _CPP_HEADER_EXTS: tuple[str, ...] = (
     ".h", ".hpp", ".hxx", ".hh", ".h++", ".inc",
+    *sorted(INCLUDE_FRAGMENT_EXTENSIONS),
 )
 _CPP_SOURCE_EXTS: tuple[str, ...] = (
     ".c", ".cc", ".cpp", ".cxx", ".c++", ".C",
@@ -66,14 +72,7 @@ _CPP_ENTRY_FUNCTION_NAMES: frozenset[str] = frozenset({
 # Edge types that count as "this symbol is used by something". A header
 # whose declared symbols carry any of these inbound edges is live, even
 # without a file-level ``imports`` edge from the consumer.
-_SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset({
-    "calls",
-    "method_implements",
-    "reads",
-    "extends",
-    "implements",
-    "type_use",
-})
+_SYMBOL_USE_EDGE_TYPES: frozenset[str] = REACHABILITY_USE_EDGE_TYPES
 
 
 def is_cpp_path(path: str) -> bool:
@@ -227,7 +226,4 @@ def is_cpp_file_reachable(
         # of the same TU.
         return True
 
-    if has_conditional_pair:
-        return True
-
-    return False
+    return bool(has_conditional_pair)

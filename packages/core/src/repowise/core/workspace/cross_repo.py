@@ -20,7 +20,9 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from typing import Any
 
+from ..fsutils import atomic_write_text
 from .config import WorkspaceConfig, ensure_workspace_data_dir
 
 _log = logging.getLogger("repowise.workspace.cross_repo")
@@ -187,6 +189,13 @@ class CrossRepoOverlay:
     co_changes: list[CrossRepoCoChange] = field(default_factory=list)
     package_deps: list[CrossRepoPackageDep] = field(default_factory=list)
     repo_summaries: dict[str, dict] = field(default_factory=dict)
+    #: How many pairs cleared the strength/session thresholds before
+    #: ``_MAX_EDGES`` / ``_MAX_EDGES_PER_REPO_PAIR`` trimmed ``co_changes``.
+    #: Equal to ``len(co_changes)`` when nothing was dropped. Not a count of
+    #: every pair in git history: ``_MAX_FILES_PER_SESSION_SIDE`` bounds each
+    #: session before pairing, so pairs involving an evicted file are in
+    #: neither number.
+    total_co_changes: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -195,16 +204,19 @@ class CrossRepoOverlay:
             "co_changes": [asdict(c) for c in self.co_changes],
             "package_deps": [asdict(d) for d in self.package_deps],
             "repo_summaries": self.repo_summaries,
+            "total_co_changes": self.total_co_changes or len(self.co_changes),
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> CrossRepoOverlay:
+        co_changes = [CrossRepoCoChange(**c) for c in data.get("co_changes", [])]
         return cls(
             version=data.get("version", 1),
             generated_at=data.get("generated_at", ""),
-            co_changes=[CrossRepoCoChange(**c) for c in data.get("co_changes", [])],
+            co_changes=co_changes,
             package_deps=[CrossRepoPackageDep(**d) for d in data.get("package_deps", [])],
             repo_summaries=data.get("repo_summaries", {}),
+            total_co_changes=data.get("total_co_changes", len(co_changes)),
         )
 
 
@@ -383,7 +395,7 @@ def detect_cross_repo_co_changes(
     commit_limit: int = _DEFAULT_COMMIT_LIMIT,
     min_score: float = _MIN_CROSS_REPO_SCORE,
     min_sessions: int = _MIN_CO_SESSIONS,
-) -> list[CrossRepoCoChange]:
+) -> tuple[list[CrossRepoCoChange], int]:
     """Find files across repos that the same author changes in the same
     work sessions.
 
@@ -401,9 +413,14 @@ def detect_cross_repo_co_changes(
        recent work that also touched the partner"
     6. Keep pairs with >= min_sessions co-sessions and strength >= min_score,
        cap per repo pair, then globally
+
+    Returns the capped list and the number of pairs that cleared step 6's
+    thresholds before capping, so the caller can say how much it is showing.
+    That total is measured after step 3's per-session file cap, so it bounds
+    what this miner scored, not what git history contains.
     """
     if len(repo_paths) < 2:
-        return []
+        return [], 0
 
     now_ts = time.time()
     window_seconds = time_window_hours * 3600
@@ -429,7 +446,7 @@ def detect_cross_repo_co_changes(
     repo_commits = _drop_ubiquitous_files(filtered)
 
     if len(repo_commits) < 2:
-        return []
+        return [], 0
 
     # Step 3: Group all commits by author identity, tagged with repo alias
     author_commits: dict[str, list[tuple[str, _GitCommit]]] = defaultdict(list)
@@ -543,7 +560,15 @@ def detect_cross_repo_co_changes(
         capped.append(r)
         if len(capped) >= _MAX_EDGES:
             break
-    return capped
+    if len(capped) < len(results):
+        _log.info(
+            "Co-change mining kept %d of %d qualifying pairs (caps: %d total, %d per repo pair)",
+            len(capped),
+            len(results),
+            _MAX_EDGES,
+            _MAX_EDGES_PER_REPO_PAIR,
+        )
+    return capped, len(results)
 
 
 # ---------------------------------------------------------------------------
@@ -565,7 +590,15 @@ def _resolve_target_repo(
             ):
                 return alias
     except Exception:
-        pass
+        # A manifest reference that cannot be resolved to a path is the one
+        # way this returns None without having compared anything, so it is
+        # worth distinguishing from "resolved fine, matched no repo".
+        _log.warning(
+            "Could not resolve manifest reference %r relative to %s",
+            relative_ref,
+            source_repo_path,
+            exc_info=True,
+        )
     return None
 
 
@@ -767,10 +800,78 @@ def _scan_go_mod(
     return results
 
 
+_CSPROJ_SKIP_DIRS = frozenset(
+    {"bin", "obj", ".vs", "packages", "node_modules", ".git", "TestResults"}
+)
+
+
+@dataclass
+class _CsprojIndex:
+    """Every ``.csproj`` in the workspace, walked and parsed exactly once.
+
+    ``_scan_csproj`` needs two things: the assembly-name → repo-alias map
+    (built from *all* repos) and the current repo's own project files. Built
+    per repo, the map is rebuilt identically for every alias, so an R-repo
+    workspace walked R*R + R trees and re-parsed every project file R times.
+    The map depends only on ``repo_paths``, never on the alias being scanned,
+    so hoisting it here is a pure de-duplication: same inputs, same map, R
+    walks instead of R*R + R.
+    """
+
+    # Parsed once and shared; ElementTree instances are only ever read.
+    trees: dict[Path, Any] = field(default_factory=dict)
+    by_repo: dict[str, list[Path]] = field(default_factory=dict)
+    assembly_to_repo: dict[str, str] = field(default_factory=dict)
+
+
+def _walk_csproj(repo_root: Path, index: _CsprojIndex) -> list[Path]:
+    """Walk one repo for ``.csproj`` files, parsing each into *index.trees*."""
+    from xml.etree import ElementTree as ET
+
+    from repowise.core.fs_walk import iter_glob
+
+    found: list[Path] = []
+    # Each *selected* workspace repo is walked from its own root; iter_glob's
+    # nested-git pruning keeps any physically-nested unselected repo out.
+    for csproj in iter_glob(repo_root, "*.csproj"):
+        if any(part in _CSPROJ_SKIP_DIRS for part in csproj.parts):
+            continue
+        try:
+            index.trees[csproj] = ET.parse(csproj)
+        except (ET.ParseError, OSError):
+            continue
+        found.append(csproj)
+    return found
+
+
+def _assembly_name(tree: Any, csproj: Path) -> str:
+    """The project's assembly name, defaulting to the filename minus extension."""
+    for elem in tree.getroot().iter():
+        tag = elem.tag.split("}", 1)[1] if elem.tag.startswith("{") else elem.tag
+        if tag == "AssemblyName" and elem.text:
+            return elem.text.strip()
+    return csproj.stem
+
+
+def _index_csproj_files(repo_paths: dict[str, Path]) -> _CsprojIndex:
+    """Walk each repo once, parse each ``.csproj`` once, build the assembly map."""
+    index = _CsprojIndex()
+    # Insertion order matches the previous per-alias rebuild, so a name
+    # defined in two repos still resolves to the last repo in repo_paths.
+    for alias, path in repo_paths.items():
+        found = _walk_csproj(path, index)
+        for csproj in found:
+            index.assembly_to_repo[_assembly_name(index.trees[csproj], csproj)] = alias
+        index.by_repo[alias] = found
+    return index
+
+
 def _scan_csproj(
     repo_path: Path,
     repo_paths: dict[str, Path],
     alias: str,
+    *,
+    csproj_index: _CsprojIndex | None = None,
 ) -> list[CrossRepoPackageDep]:
     """Scan every .csproj for cross-repo references.
 
@@ -787,42 +888,28 @@ def _scan_csproj(
        in a separate repo.
 
     Skips ``bin``/``obj``/``packages``/``.vs``/``TestResults`` build outputs.
-    """
-    from xml.etree import ElementTree as ET
 
-    from repowise.core.fs_walk import iter_glob
+    ``csproj_index`` lets a caller scanning several repos share one walk;
+    omitted, the scan builds its own and behaves exactly as a standalone call.
+    """
+    index = csproj_index if csproj_index is not None else _index_csproj_files(repo_paths)
+
+    own = index.by_repo.get(alias)
+    if own is None or repo_paths.get(alias) != repo_path:
+        # The index does not describe this exact tree — *alias* is absent from
+        # repo_paths, or the caller passed a repo_path that disagrees with it.
+        # Walk the tree we were actually handed, and leave assembly_to_repo
+        # alone: it is defined by repo_paths, and folding this repo's own
+        # names into it would let them shadow a sibling that legitimately
+        # owns the same assembly name.
+        own = _walk_csproj(repo_path, index)
+
+    assembly_to_repo = index.assembly_to_repo
 
     results: list[CrossRepoPackageDep] = []
-    skip = {"bin", "obj", ".vs", "packages", "node_modules", ".git", "TestResults"}
 
-    # Pre-compute the assembly-name → repo-alias map so we can resolve
-    # internal-NuGet references in a second pass. Each *selected* workspace
-    # repo is walked from its own root; iter_glob's nested-git pruning keeps
-    # any physically-nested unselected repo out of the scan.
-    assembly_to_repo: dict[str, str] = {}
-    for sib_alias, sib_path in repo_paths.items():
-        for csproj in iter_glob(sib_path, "*.csproj"):
-            if any(part in skip for part in csproj.parts):
-                continue
-            try:
-                tree = ET.parse(csproj)
-            except (ET.ParseError, OSError):
-                continue
-            assembly_name = csproj.stem  # default: filename minus extension
-            for elem in tree.getroot().iter():
-                tag = elem.tag.split("}", 1)[1] if elem.tag.startswith("{") else elem.tag
-                if tag == "AssemblyName" and elem.text:
-                    assembly_name = elem.text.strip()
-                    break
-            assembly_to_repo[assembly_name] = sib_alias
-
-    for csproj in iter_glob(repo_path, "*.csproj"):
-        if any(part in skip for part in csproj.parts):
-            continue
-        try:
-            tree = ET.parse(csproj)
-        except (ET.ParseError, OSError):
-            continue
+    for csproj in own:
+        tree = index.trees[csproj]
         try:
             rel_manifest = csproj.relative_to(repo_path).as_posix()
         except ValueError:
@@ -868,19 +955,29 @@ def detect_package_dependencies(
     results: list[CrossRepoPackageDep] = []
     seen: set[tuple[str, str, str]] = set()  # (source, target, kind)
 
+    # One walk per repo, shared across every alias. The .csproj scan is the
+    # only manifest scanner that walks the tree rather than reading a fixed
+    # root file, and it needs a workspace-wide view, so building its index
+    # per repo re-walked every tree once per repo.
+    csproj_index = _index_csproj_files(repo_paths)
+
     for alias, path in repo_paths.items():
         for scanner in (
             _scan_package_json,
             _scan_pyproject_toml,
             _scan_cargo_toml,
             _scan_go_mod,
-            _scan_csproj,
         ):
             for dep in scanner(path, repo_paths, alias):
                 key = (dep.source_repo, dep.target_repo, dep.kind)
                 if key not in seen:
                     seen.add(key)
                     results.append(dep)
+        for dep in _scan_csproj(path, repo_paths, alias, csproj_index=csproj_index):
+            key = (dep.source_repo, dep.target_repo, dep.kind)
+            if key not in seen:
+                seen.add(key)
+                results.append(dep)
 
     return results
 
@@ -924,9 +1021,10 @@ def save_overlay(overlay: CrossRepoOverlay, workspace_root: Path) -> Path:
     """Save overlay to ``.repowise-workspace/cross_repo_edges.json``."""
     data_dir = ensure_workspace_data_dir(workspace_root)
     out_path = data_dir / CROSS_REPO_EDGES_FILENAME
-    out_path.write_text(
-        json.dumps(overlay.to_dict(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    # Atomic: the MCP enricher reads these artifacts from a separate
+    # process and must never observe a half-written file.
+    atomic_write_text(
+        out_path, json.dumps(overlay.to_dict(), indent=2, ensure_ascii=False)
     )
     return out_path
 
@@ -1001,7 +1099,9 @@ async def run_cross_repo_analysis(
     # Co-change detection (CPU-bound git subprocess calls)
     import asyncio
 
-    co_changes = await asyncio.to_thread(detect_cross_repo_co_changes, repo_paths)
+    co_changes, total_co_changes = await asyncio.to_thread(
+        detect_cross_repo_co_changes, repo_paths
+    )
 
     # Package dependency detection (file I/O)
     package_deps = await asyncio.to_thread(detect_package_dependencies, repo_paths)
@@ -1015,6 +1115,7 @@ async def run_cross_repo_analysis(
         co_changes=co_changes,
         package_deps=package_deps,
         repo_summaries=repo_summaries,
+        total_co_changes=total_co_changes,
     )
 
     # Persist

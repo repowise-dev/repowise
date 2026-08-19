@@ -106,6 +106,48 @@ async def test_hedged_row_is_upgraded_on_resynthesis(setup_mcp, factory, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_cached_empty_answer_row_is_bypassed(setup_mcp, factory, session, monkeypatch):
+    """A legacy cached gated payload (empty answer) never serves from cache.
+
+    Older versions cached the gated best_guesses payload, pinning a retrieval
+    miss until TTL and hiding every later improvement to the miss path. The
+    write side no longer stores empty answers; the read side must retire the
+    rows that predate that fix.
+    """
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+    from repowise.server.mcp_server.tool_answer.answer import _hash_question
+    from repowise.server.mcp_server.tool_answer.config import _ANSWER_SCHEMA_VERSION
+
+    _patch_retrieval(monkeypatch, answer_mod)
+
+    res = await session.execute(select(Repository))
+    repo = res.scalars().first()
+    # Legacy row: current schema version (so the schema gate passes) but the
+    # old empty-answer gated shape.
+    session.add(AnswerCache(
+        repository_id=repo.id,
+        question_hash=_hash_question(QUESTION),
+        question=QUESTION,
+        payload_json=_json.dumps({
+            "answer": "",
+            "confidence": "low",
+            "fallback_targets": ["src/auth/service.py"],
+            "_schema_version": _ANSWER_SCHEMA_VERSION,
+        }),
+        provider_name="mock",
+        model_name="mock-1",
+    ))
+    await session.commit()
+
+    direct = _Provider("Auth flows through src/auth/service.py via AuthService.check().")
+    _patch_provider(monkeypatch, answer_mod, direct)
+    result = await get_answer(QUESTION)
+    assert direct.calls == 1, "empty-answer cache row must be bypassed"
+    assert "AuthService.check" in result["answer"]
+
+
+@pytest.mark.asyncio
 async def test_cache_bypassed_when_indexed_commit_changes(setup_mcp, factory, session, monkeypatch):
     """A row stamped at commit A is bypassed once the repo is indexed at B."""
     import repowise.server.mcp_server.tool_answer.answer as answer_mod

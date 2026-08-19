@@ -21,7 +21,6 @@ class FilePageContext:
     symbols: list[dict[str, Any]]
     imports: list[str]
     exports: list[str]
-    file_source_snippet: str
     pagerank_score: float
     betweenness_score: float
     community_id: int
@@ -53,8 +52,8 @@ class FilePageContext:
     decision_records: list[dict] = field(default_factory=list)
     # KG layer context (populated when knowledge graph available)
     kg_layer_name: str = ""
-    # Stable slug id of the layer (``layer:<slug>``) — used to join a file
-    # page to its layer page; ``kg_layer_name`` is the mutable display label.
+    # Stable slug id of the layer (``layer:<slug>``) — the key the docs tree
+    # groups on; ``kg_layer_name`` is the mutable display label, never a key.
     kg_layer_id: str = ""
     kg_layer_description: str = ""
     kg_layer_role: str = ""
@@ -62,6 +61,13 @@ class FilePageContext:
     kg_tour_step: dict | None = None
     kg_tags: list[str] = field(default_factory=list)
     kg_node_summary: str = ""
+    # The words the file's own source uses, bounded and ordered
+    # most-distinguishing first. See ``context/file_vocabulary.py`` for what
+    # goes in it and why, including why it is not the repo-level vocabulary in
+    # ``concept_tree/vocabulary.py``. Empty when the file yields nothing, in
+    # which case the template drops the section rather than rendering an empty
+    # heading.
+    file_vocabulary: str = ""
 
 
 @dataclass
@@ -81,7 +87,12 @@ class SymbolSpotlightContext:
 
 @dataclass
 class ModulePageContext:
-    module_path: str
+    # The page's display title. A concept group spans several directories and
+    # is named for what it does, so this is prose ("Ingestion Pipeline") and
+    # not a path. Same split as the layer name/id pair on a file page: what
+    # the reader sees is separate from what the page is keyed by, and only the
+    # key is stable across regenerations.
+    title: str
     language: str
     total_symbols: int
     public_symbols: int
@@ -90,6 +101,36 @@ class ModulePageContext:
     dependents: list[str]
     pagerank_mean: float
     files: list[str]
+    # One sentence saying what this page covers and what it deliberately does
+    # NOT, computed by the outline planner to keep adjacent pages from
+    # describing each other. Rendered as guidance so the opener situates the
+    # page against its siblings; the page itself does not echo it verbatim.
+    scope: str = ""
+    # A rollup page summarises a subsystem directory whose detail lives on the
+    # child concept pages below it, rather than owning files of its own.
+    is_rollup: bool = False
+    # Child concept pages this rollup sits above: [{"title", "path", "summary"}].
+    child_pages: list[dict] = field(default_factory=list)
+    # Git-derived subsystem health, aggregated over the page's member files.
+    # All degrade to zero/empty when no git metadata is available, so the
+    # template renders nothing rather than a wrong number.
+    hotspot_count: int = 0
+    stable_count: int = 0
+    # Files maintained by effectively one person (bus_factor <= 1): a
+    # single-maintainer risk a reader cannot see from the code alone.
+    single_owner_files: int = 0
+    # Other modules this one changes together with in history but does not
+    # import: [{"path", "count"}]. Coupling the import graph does not show.
+    coupled_modules: list[dict] = field(default_factory=list)
+    # Bug-fix history: total fix commits across members and the file that drew
+    # the most, so the page can name where the defects have clustered.
+    bugfix_total: int = 0
+    most_fixed_file: dict = field(default_factory=dict)
+    # The directories the page covers, shallowest first. The title says what
+    # the page is about; this says where it lives, which is what a reader
+    # needs to go and look. Derived from the members rather than passed in, so
+    # it cannot disagree with them.
+    directories: list[str] = field(default_factory=list)
     # Graph intelligence enrichment
     file_summaries: dict[str, str] = field(default_factory=dict)
     community_label: str = ""
@@ -102,22 +143,6 @@ class ModulePageContext:
     # Top files inside the module by PageRank, for the "key files" section.
     key_files: list[dict] = field(default_factory=list)
     top_owners: list[dict] = field(default_factory=list)
-
-
-@dataclass
-class LayerPageContext:
-    layer_name: str
-    layer_description: str
-    file_count: int
-    # Stable slug id (``layer:<slug>``) — the layer page's target_path and
-    # page_id derive from this, never from the mutable ``layer_name``.
-    layer_id: str = ""
-    key_files: list[dict] = field(default_factory=list)
-    deps_out: list[dict] = field(default_factory=list)
-    deps_in: list[dict] = field(default_factory=list)
-    tour_steps: list[dict] = field(default_factory=list)
-    entry_points: list[str] = field(default_factory=list)
-    edge_connectors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -157,6 +182,11 @@ class RepoOverviewContext:
     # Phase 2: third-party dependencies + headline architectural decisions
     external_systems: list[dict] = field(default_factory=list)
     decision_records: list[dict] = field(default_factory=list)
+    # Per-package file counts and observed languages, largest first. Counted
+    # from the run's own parsed files rather than written by the model, so the
+    # table they feed reads the same on every render. Empty when the repository
+    # has no packages to tabulate.
+    package_stats: list[dict] = field(default_factory=list)
 
 
 @dataclass

@@ -13,6 +13,7 @@ rather than retrieval scores alone:
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 
@@ -49,7 +50,9 @@ class TestHedgeMarkers:
     def test_curly_apostrophe_hedge_detected(self) -> None:
         # LLMs routinely emit the curly U+2019; the markers use plain ASCII.
         # Without normalization this hedged answer rides through as high.
-        assert _answer_is_hedged("I can\u2019t determine why the threshold is 1.2 from the excerpts.")
+        assert _answer_is_hedged(
+            "I can\u2019t determine why the threshold is 1.2 from the excerpts."
+        )
 
 
 class TestValueQuestionShape:
@@ -67,7 +70,7 @@ class TestValueQuestionShape:
 
 
 class TestUngroundedNumbers:
-    HITS = [
+    HITS: ClassVar[list[dict]] = [
         {
             "title": "constants",
             "summary": "Co-change tuning constants.",
@@ -123,9 +126,12 @@ class TestDistinctiveTerms:
         # Sentence-initial / markdown-header words are prose, not mechanisms.
         # A leading capital alone must not register as a frame term (the live
         # over-fire that flagged Because/Determine/Mechanism/Short/Since/What).
-        assert _distinctive_terms(
-            "## What happens. Because the Mechanism is Short, Determine it Since When."
-        ) == set()
+        assert (
+            _distinctive_terms(
+                "## What happens. Because the Mechanism is Short, Determine it Since When."
+            )
+            == set()
+        )
 
     def test_internal_caps_and_acronyms_kept(self) -> None:
         terms = _distinctive_terms("It wraps WikiSymbol over an HTTP transport.")
@@ -141,7 +147,7 @@ class TestDistinctiveTerms:
 
 
 class TestFrameTermGrounding:
-    HITS = [
+    HITS: ClassVar[list[dict]] = [
         {
             "title": "enrichment",
             "summary": "Caller/callee rollup for symbol context.",
@@ -183,6 +189,77 @@ class TestFrameTermGrounding:
             self.HITS,
         )
         assert ungrounded == []
+
+
+class TestLeanHigh:
+    """REPOWISE_ANSWER_LEAN_HIGH strips re-read evidence from mainline
+    high-confidence answers only — never grounded fast paths, never <high,
+    and only when the flag is on."""
+
+    from repowise.server.mcp_server.tool_answer.answer import _LEAN_HIGH_DROP_KEYS
+
+    def _payload(self, **over) -> dict:
+        base = {
+            "answer": "Retries are gated by MIN_COUNT.",
+            "citations": ["pkg/alpha/one.py"],
+            "confidence": "high",
+            "fallback_targets": ["pkg/alpha/two.py"],
+            "note": "High confidence.",
+            "symbol_bodies": [{"path": "pkg/alpha/one.py", "source": "..."}],
+            "quotes": [{"path": "pkg/alpha/one.py", "quote": "MIN_COUNT = 2"}],
+            "flow_path": ["a", "b"],
+            "best_guesses": [{"file": "pkg/alpha/one.py"}],
+            "code_rationale": [{"path": "pkg/alpha/one.py", "comment": "why"}],
+        }
+        base.update(over)
+        return base
+
+    _HOW_Q = "How does retry gating work?"
+    _WHY_Q = "Why are retries gated by MIN_COUNT?"
+
+    def test_flag_on_high_strips_evidence_keeps_core(self, monkeypatch) -> None:
+        from repowise.server.mcp_server.tool_answer.answer import _apply_lean_high
+
+        monkeypatch.setenv("REPOWISE_ANSWER_LEAN_HIGH", "1")
+        out = _apply_lean_high(self._payload(), self._HOW_Q)
+        for k in self._LEAN_HIGH_DROP_KEYS:
+            assert k not in out
+        for k in ("answer", "citations", "confidence", "fallback_targets", "note"):
+            assert k in out
+
+    def test_grounded_fast_path_untouched(self, monkeypatch) -> None:
+        from repowise.server.mcp_server.tool_answer.answer import _apply_lean_high
+
+        monkeypatch.setenv("REPOWISE_ANSWER_LEAN_HIGH", "1")
+        out = _apply_lean_high(self._payload(grounding="exact_symbol"), self._HOW_Q)
+        for k in self._LEAN_HIGH_DROP_KEYS:
+            assert k in out
+
+    def test_why_question_untouched(self, monkeypatch) -> None:
+        # A why-answer's rationale is grounded in the very evidence lean-high
+        # would strip, so why-questions are exempt even at high confidence.
+        from repowise.server.mcp_server.tool_answer.answer import _apply_lean_high
+
+        monkeypatch.setenv("REPOWISE_ANSWER_LEAN_HIGH", "1")
+        out = _apply_lean_high(self._payload(), self._WHY_Q)
+        for k in self._LEAN_HIGH_DROP_KEYS:
+            assert k in out
+
+    def test_medium_untouched(self, monkeypatch) -> None:
+        from repowise.server.mcp_server.tool_answer.answer import _apply_lean_high
+
+        monkeypatch.setenv("REPOWISE_ANSWER_LEAN_HIGH", "1")
+        out = _apply_lean_high(self._payload(confidence="medium"), self._HOW_Q)
+        for k in self._LEAN_HIGH_DROP_KEYS:
+            assert k in out
+
+    def test_flag_off_untouched(self, monkeypatch) -> None:
+        from repowise.server.mcp_server.tool_answer.answer import _apply_lean_high
+
+        monkeypatch.delenv("REPOWISE_ANSWER_LEAN_HIGH", raising=False)
+        out = _apply_lean_high(self._payload(), self._HOW_Q)
+        for k in self._LEAN_HIGH_DROP_KEYS:
+            assert k in out
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +388,12 @@ async def test_expanded_hedge_marker_downgrades_through_pipeline(setup_mcp, monk
 
     result = await get_answer("What is the default value of min_count_policy?")
     assert result["confidence"] == "low"
-    assert result["retrieval"] == []
+    # A hedge now hands the agent the ranked candidates to read instead of an
+    # empty block: the whole point of the call is to say WHERE the answer is when
+    # the prose could not ground it. The list stays lean (no per-hit docstring
+    # dump) so the token cost the empty payload was protecting is preserved.
+    assert result["retrieval"], "hedged answer should still surface its ranked hits"
+    assert all("path" in h for h in result["retrieval"])
 
 
 @pytest.mark.asyncio
@@ -458,9 +540,7 @@ async def test_hedged_but_named_body_served_holds_medium(setup_mcp, monkeypatch,
 
     (tmp_path / "pkg" / "alpha").mkdir(parents=True)
     (tmp_path / "pkg" / "alpha" / "one.py").write_text(
-        "def min_count_policy() -> int:\n"
-        "    # gate retries at the floor\n"
-        "    return MIN_COUNT\n",
+        "def min_count_policy() -> int:\n    # gate retries at the floor\n    return MIN_COUNT\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
@@ -669,10 +749,24 @@ def test_union_bodies_inlines_all_defs_under_budget(tmp_path):
     b = _write(tmp_path, "b/y.py", "def _sev(corr):\n    return corr < 0.1\n")
     union = {
         "_sev": [
-            {"name": "_sev", "kind": "function", "file_path": a, "start_line": 1, "end_line": 2,
-             "qualified_name": "_sev", "parent_name": None},
-            {"name": "_sev", "kind": "function", "file_path": b, "start_line": 1, "end_line": 2,
-             "qualified_name": "_sev", "parent_name": None},
+            {
+                "name": "_sev",
+                "kind": "function",
+                "file_path": a,
+                "start_line": 1,
+                "end_line": 2,
+                "qualified_name": "_sev",
+                "parent_name": None,
+            },
+            {
+                "name": "_sev",
+                "kind": "function",
+                "file_path": b,
+                "start_line": 1,
+                "end_line": 2,
+                "qualified_name": "_sev",
+                "parent_name": None,
+            },
         ]
     }
     bodies, more = build_homonym_union_bodies(tmp_path, union)
@@ -691,10 +785,24 @@ def test_union_bodies_overflow_lists_remainder_as_pointers(tmp_path):
     b = _write(tmp_path, "b/y.py", "def _sev(corr):\n    return corr < 0.1\n")
     union = {
         "_sev": [
-            {"name": "_sev", "kind": "function", "file_path": a, "start_line": 1, "end_line": 2,
-             "qualified_name": "_sev", "parent_name": None},
-            {"name": "_sev", "kind": "function", "file_path": b, "start_line": 1, "end_line": 2,
-             "qualified_name": "_sev", "parent_name": None},
+            {
+                "name": "_sev",
+                "kind": "function",
+                "file_path": a,
+                "start_line": 1,
+                "end_line": 2,
+                "qualified_name": "_sev",
+                "parent_name": None,
+            },
+            {
+                "name": "_sev",
+                "kind": "function",
+                "file_path": b,
+                "start_line": 1,
+                "end_line": 2,
+                "qualified_name": "_sev",
+                "parent_name": None,
+            },
         ]
     }
     bodies, more = build_homonym_union_bodies(tmp_path, union, char_budget=5)
@@ -729,7 +837,9 @@ def test_union_defers_only_when_prose_and_many_defs():
         _union("_severity_for", 4),
     )
     # Bare symbol lookup (prose does not dominate) still unions at any count.
-    assert not union_defers_to_synthesis("provider_name", {"provider_name"}, _union("provider_name", 12))
+    assert not union_defers_to_synthesis(
+        "provider_name", {"provider_name"}, _union("provider_name", 12)
+    )
     # No union → nothing to defer.
     assert not union_defers_to_synthesis(q_prose, {"provider_name"}, {})
 
@@ -767,7 +877,9 @@ async def test_prose_mention_of_generic_method_synthesizes(setup_mcp, monkeypatc
     _patch_anchor_union(monkeypatch, answer_mod, _union("to_dict", 12))
     _patch_provider(monkeypatch, answer_mod, "The page is serialized in pkg/alpha/one.py.")
 
-    result = await get_answer("How is a parsed file turned into a dict with to_dict before it is stored?")
+    result = await get_answer(
+        "How is a parsed file turned into a dict with to_dict before it is stored?"
+    )
     assert result.get("grounding") != "exact_symbol"
     assert "symbol_bodies" not in result or len(result.get("symbol_bodies") or []) < 12
 
@@ -796,9 +908,50 @@ async def test_small_union_still_answers_by_union(setup_mcp, monkeypatch, tmp_pa
     _patch_anchor_union(monkeypatch, answer_mod, {"render_widget": defs})
     _patch_provider(monkeypatch, answer_mod, "unused — union short-circuits before synthesis")
 
-    result = await get_answer("How does render_widget build its output?")
+    # A naming/lookup question ("what are the definitions") is exactly what the
+    # union-of-bodies reply is for; it must still short-circuit.
+    result = await get_answer("What are the definitions of render_widget in this repo?")
     assert result.get("grounding") == "exact_symbol"
     assert len(result["symbol_bodies"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_mechanism_question_defers_union_to_synthesis(setup_mcp, monkeypatch, tmp_path):
+    """A "how does X work" question that merely NAMES a small-union symbol defers
+    to synthesis instead of dumping bodies with grounding=exact_symbol — the
+    mechanism it asks about may live in a different file the union never sees."""
+    import repowise.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    (tmp_path / "pkg").mkdir(parents=True)
+    defs = []
+    for i in range(3):
+        (tmp_path / "pkg" / f"f{i}.py").write_text(
+            f"class C:\n    def render_widget(self):\n        return {i}\n",
+            encoding="utf-8",
+        )
+        defs.append(
+            {"file_path": f"pkg/f{i}.py", "name": "render_widget", "start_line": 2, "end_line": 3}
+        )
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+
+    # Same question is asked twice (flag on then off); bypass the answer cache
+    # so the second call re-synthesizes under the flipped flag instead of
+    # replaying the first call's cached payload.
+    monkeypatch.setenv("REPOWISE_ANSWER_DISABLE_CACHE", "on")
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=False)
+    _patch_anchor_union(monkeypatch, answer_mod, {"render_widget": defs})
+    _patch_provider(monkeypatch, answer_mod, "render_widget builds output by returning an index.")
+
+    result = await get_answer("How does render_widget build its output?")
+    # Deferred: synthesis ran, so grounding is NOT the exact_symbol union dump.
+    assert result.get("grounding") != "exact_symbol"
+
+    # Flag off restores the legacy union short-circuit for the same question.
+    monkeypatch.setenv("REPOWISE_ANSWER_UNION_MECHANISM_DEFER", "off")
+    result_off = await get_answer("How does render_widget build its output?")
+    assert result_off.get("grounding") == "exact_symbol"
 
 
 # ---------------------------------------------------------------------------
@@ -837,13 +990,18 @@ async def test_hedged_answer_surfaces_code_rationale(setup_mcp, monkeypatch, tmp
 
 
 @pytest.mark.asyncio
-async def test_gated_answer_surfaces_code_rationale(setup_mcp, monkeypatch, tmp_path):
-    """Ambiguous retrieval (gated, no synthesis) → still mine source rationale."""
+async def test_non_dominant_answer_surfaces_code_rationale(setup_mcp, monkeypatch, tmp_path):
+    """Ambiguous retrieval → synthesize AND fold in mined source rationale.
+
+    Under the always-synthesize default a non-dominant retrieval no longer
+    abstains: synthesis runs (capped at medium), and the ambiguous-retrieval
+    fold-in still mines the candidate source for the rationale comment.
+    """
     import repowise.server.mcp_server as mcp_mod
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
     from repowise.server.mcp_server import get_answer
 
-    # Two near-tied hits (4.0 vs 3.8) → dominance gate fails → best_guesses path.
+    # Two near-tied hits (4.0 vs 3.8) → non-dominant → medium ceiling + evidence.
     async def _fake_retrieve(question, ctx):
         return [
             {"page_id": "file_page:pkg/alpha/one.py", "score": 4.0},
@@ -861,6 +1019,7 @@ async def test_gated_answer_surfaces_code_rationale(setup_mcp, monkeypatch, tmp_
 
     monkeypatch.setattr(answer_mod, "_hybrid_retrieve", _fake_retrieve)
     monkeypatch.setattr(answer_mod, "_hydrate_hits", _fake_hydrate)
+    _patch_provider(monkeypatch, answer_mod, "Uploads chunk at 8MB (pkg/alpha/one.py).")
 
     (tmp_path / "pkg" / "alpha").mkdir(parents=True)
     (tmp_path / "pkg" / "alpha" / "one.py").write_text(
@@ -872,10 +1031,75 @@ async def test_gated_answer_surfaces_code_rationale(setup_mcp, monkeypatch, tmp_
     monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
 
     result = await get_answer("why do uploads chunk at 8mb")
-    assert result["confidence"] == "low"
-    assert "best_guesses" in result  # confirms we hit the gated path
+    assert result["confidence"] == "medium"  # non-dominant ceiling
+    assert result["answer"], "non-dominant retrieval now carries synthesized prose"
+    assert "best_guesses" in result  # ambiguous-retrieval evidence folded in
     assert "code_rationale" in result
     assert any("OOMs" in r["comment"] for r in result["code_rationale"])
+
+
+@pytest.mark.asyncio
+async def test_non_dominant_best_guesses_carry_candidate_excerpts(setup_mcp, monkeypatch, tmp_path):
+    """Ambiguous-retrieval evidence carries page content inline, not just pointers.
+
+    A pointers-only reply makes the agent re-acquire all content natively
+    (observed as an 8-15 call Grep/Read spree in agent transcripts), so the
+    non-dominant reply ships the top candidates' actual page content beside
+    the synthesized prose.
+
+    **Once, not twice.** ``best_guesses`` and ``retrieval`` used to slice the
+    same 1,500-character page excerpt for the same file — 21.3% of one measured
+    payload, duplicated byte for byte — so the guess copy is dropped wherever
+    ``retrieval`` already carries it. The content requirement above is
+    unchanged and is what the second half of this test pins: the excerpt is
+    still in the response, in exactly one place.
+    """
+    import repowise.server.mcp_server as mcp_mod
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    async def _fake_retrieve(question, ctx):
+        return [
+            {"page_id": "file_page:pkg/alpha/one.py", "score": 4.0},
+            {"page_id": "file_page:pkg/alpha/two.py", "score": 3.8},
+        ]
+
+    async def _fake_hydrate(hits, ctx, *, scope=None):
+        for h in hits:
+            h["target_path"] = h["page_id"].removeprefix("file_page:")
+            h["title"] = h["target_path"]
+            h["summary"] = "Module summary."
+            h["snippet"] = ""
+            h["page_type"] = "file_page"
+        return hits
+
+    async def _fake_excerpts(hits, ctx=None):
+        for h in hits:
+            h["excerpt"] = f"Page content for {h['target_path']}: chunking rationale..."
+        return 0
+
+    monkeypatch.setattr(answer_mod, "_hybrid_retrieve", _fake_retrieve)
+    monkeypatch.setattr(answer_mod, "_hydrate_hits", _fake_hydrate)
+    monkeypatch.setattr(answer_mod, "_attach_page_excerpts", _fake_excerpts)
+    _patch_provider(monkeypatch, answer_mod, "Uploads chunk at 8MB (pkg/alpha/one.py).")
+    (tmp_path / "pkg" / "alpha").mkdir(parents=True)
+    (tmp_path / "pkg" / "alpha" / "one.py").write_text("CHUNK = 8\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+
+    result = await get_answer("why do uploads chunk at 8mb")
+    assert result["confidence"] == "medium"  # non-dominant ceiling
+    assert result["answer"]
+    top = result["best_guesses"][0]
+    assert top["file"] == "pkg/alpha/one.py"
+    assert top["why_relevant"]
+    # The content is in the response exactly once: dropped from the guess
+    # because retrieval carries the identical slab for the same file.
+    assert "excerpt" not in top
+    carried = [r.get("excerpt", "") for r in result["retrieval"]]
+    assert any(e.startswith("Page content for pkg/alpha/one.py") for e in carried)
+    # The reply names the ambiguity and points at best_guesses to verify.
+    assert "best_guesses" in result["note"]
+    assert "ambiguous" in result["note"]
 
 
 # ---------------------------------------------------------------------------
@@ -902,7 +1126,7 @@ async def test_why_answer_with_unsupported_frame_downgrades_to_medium(setup_mcp,
     result = await get_answer("why is the caller list limited the way it is")
     assert result["confidence"] == "medium"
     assert "PageRank" in result["note"]
-    assert "Frame-grounding" in result["note"]
+    assert "Claim-support gate" in result["note"]
     assert "next_action_hint" in result
 
 
@@ -917,8 +1141,7 @@ async def test_why_answer_with_grounded_frame_stays_high(setup_mcp, monkeypatch)
     _patch_provider(
         monkeypatch,
         answer_mod,
-        "The caller list is limited because MIN_COUNT bounds the retries "
-        "(pkg/alpha/one.py).",
+        "The caller list is limited because MIN_COUNT bounds the retries (pkg/alpha/one.py).",
     )
 
     result = await get_answer("why is the caller list limited the way it is")
@@ -927,22 +1150,30 @@ async def test_why_answer_with_grounded_frame_stays_high(setup_mcp, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_frame_gate_scoped_to_why_questions(setup_mcp, monkeypatch):
-    """A mechanism (non-why) question with the same ungrounded term is NOT
-    gated — only rationale claims get the frame check."""
+async def test_claim_support_gate_covers_mechanism_questions(setup_mcp, monkeypatch):
+    """The claim-support gate covers "how" mechanism questions, not only "why".
+    A mechanism answer that names an ungrounded term (PageRank, absent from every
+    retrieved excerpt) is downgraded high→medium — the "right file, wrong function
+    inside it" failure. Flag off restores the why-only scope (question stays
+    high)."""
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
     from repowise.server.mcp_server import get_answer
 
+    monkeypatch.setenv("REPOWISE_ANSWER_DISABLE_CACHE", "on")
     _patch_pipeline(monkeypatch, answer_mod, with_symbols=True)
     _patch_provider(
         monkeypatch,
         answer_mod,
-        "The caller list is bounded by the PageRank centrality cap "
-        "(pkg/alpha/one.py).",
+        "The caller list is bounded by the PageRank centrality cap (pkg/alpha/one.py).",
     )
 
     result = await get_answer("how does the caller list get bounded")
-    assert result["confidence"] == "high"
+    assert result["confidence"] == "medium"
+    assert "PageRank" in result["note"]
+
+    monkeypatch.setenv("REPOWISE_ANSWER_CLAIM_SUPPORT_GATE", "off")
+    result_off = await get_answer("how does the caller list get bounded")
+    assert result_off["confidence"] == "high"
 
 
 @pytest.mark.asyncio
@@ -957,8 +1188,7 @@ async def test_frame_gated_answer_surfaces_code_rationale(setup_mcp, monkeypatch
     _patch_provider(
         monkeypatch,
         answer_mod,
-        "The caller list is limited because the PageRank cap applies "
-        "(pkg/alpha/one.py).",
+        "The caller list is limited because the PageRank cap applies (pkg/alpha/one.py).",
     )
     (tmp_path / "pkg" / "alpha").mkdir(parents=True)
     (tmp_path / "pkg" / "alpha" / "one.py").write_text(
@@ -973,3 +1203,26 @@ async def test_frame_gated_answer_surfaces_code_rationale(setup_mcp, monkeypatch
     assert result["confidence"] == "medium"
     assert "code_rationale" in result
     assert any("floods the synthesis context" in r["comment"] for r in result["code_rationale"])
+
+
+# ---------------------------------------------------------------------------
+# Page-content excerpt enrichment
+# ---------------------------------------------------------------------------
+
+
+class TestPageExcerptEnrichment:
+    """_attach_page_excerpts must run its real query against the real Page
+    model — a silently-swallowed AttributeError here shipped pointers-only
+    gated payloads and re-opened the 8-15 call fallback spree the excerpts
+    exist to prevent."""
+
+    async def test_excerpts_attached_from_real_page_rows(self, factory, populated_db):
+        from repowise.server.mcp_server.tool_answer.retrieval import (
+            _attach_page_excerpts,
+        )
+
+        hits = [{"page_id": "repo_overview:test-repo", "score": 1.0}]
+        ctx = SimpleNamespace(session_factory=factory)
+        missing = await _attach_page_excerpts(hits, ctx)
+        assert hits[0].get("excerpt", "").startswith("# Test Repo")
+        assert missing == 0

@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 # so a malformed header degrades to ``label=None`` instead of dropping the whole
 # release. ``.*\S`` keeps the captured label trimmed of trailing whitespace.
 _RELEASE_RE = re.compile(
-    r"^##\s*\[(?P<version>\d+\.\d+(?:\.\d+)?)\]\s*(?:[-–—]\s*(?P<label>.*\S)?)?\s*$"  # noqa: RUF001
+    r"^##\s*\[(?P<version>\d+\.\d+(?:\.\d+)?)\]\s*(?:[-–—]\s*(?P<label>.*\S)?)?\s*$"
 )
 _SECTION_RE = re.compile(r"^###\s+(?P<name>.+?)\s*$")
 _BULLET_RE = re.compile(r"^[-*]\s+(?P<text>.+?)\s*$")

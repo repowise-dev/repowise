@@ -14,10 +14,12 @@ No edits to the walker. A language absent here ⇒ the perf pass is silent for i
 
 from __future__ import annotations
 
+from . import cpp as _cpp
 from . import csharp as _csharp
 from . import dart as _dart
 from . import go as _go
 from . import java as _java
+from . import kotlin as _kotlin
 from . import python as _python
 from . import ruby as _ruby
 from . import rust as _rust
@@ -32,6 +34,9 @@ _REGISTER: tuple[tuple[str, BasePerfDialect], ...] = (
     ("python", _python.DIALECT),
     ("typescript", _ts_js.DIALECT),
     ("tsx", _ts_js.DIALECT),
+    # SFC <script> blocks are TS/JS and reach the pass as a TS buffer.
+    ("svelte", _ts_js.DIALECT),
+    ("vue", _ts_js.DIALECT),
     ("javascript", _ts_js.DIALECT),
     ("jsx", _ts_js.DIALECT),
     ("java", _java.DIALECT),
@@ -41,6 +46,11 @@ _REGISTER: tuple[tuple[str, BasePerfDialect], ...] = (
     ("dart", _dart.DIALECT),
     ("scala", _scala.DIALECT),
     ("ruby", _ruby.DIALECT),
+    ("kotlin", _kotlin.DIALECT),
+    ("cpp", _cpp.DIALECT),
+    # NB: "c" shares the C++ grammar but has no ``LanguageNodeMap`` at all
+    # (``get_language_map("c")`` is ``None``), so the health pass never reaches
+    # a dialect for it. Registering it here would be dead configuration.
 )
 
 for _tag, _dialect in _REGISTER:

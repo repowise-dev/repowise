@@ -10,7 +10,12 @@
  *   - artifact panel state (artifacts list + open boolean).
  *
  * The shell is stateless apart from the textarea input value and renders
- * messages, the empty-state suggestion chips, the input area, and slots.
+ * messages, the empty-state suggestions, the input area, and slots.
+ *
+ * Chat is a reading surface: the transcript sits on `--color-bg-root` and the
+ * one chrome row above it on `--color-bg-surface`. There is exactly one chrome
+ * row — the page used to stack its own repo header on top of this one, under a
+ * breadcrumb, so three hairlines ran before the first word of content.
  */
 
 import {
@@ -33,11 +38,14 @@ import type { SourceReference } from "./source-citations";
 const DEFAULT_SUGGESTIONS = [
   "Give me an overview of this codebase",
   "What are the highest-risk files to modify?",
-  "Show me the architecture diagram",
+  "Score the change risk of HEAD",
   "What dead code can be safely removed?",
   "What architectural decisions have been made?",
   "Search for authentication-related code",
 ];
+
+const MICRO_LABEL =
+  "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
 export interface ChatInterfaceProps {
   /** Identifier forwarded to `ChatMessage` for source-citation hrefs. */
@@ -81,7 +89,8 @@ export interface ChatInterfaceProps {
   /** Override default suggestion chips. */
   suggestions?: string[];
   /** Orientation line under the empty-state subtitle — index status, page
-   *  counts, last sync. Keeps the blank page honest about what's loaded. */
+   *  counts, branch, last sync. Keeps the blank page honest about what's
+   *  loaded, and is the only figure on it, so it is not buried. */
   statusSlot?: ReactNode;
   /** Disables the composer (e.g. no chat provider configured). */
   sendDisabled?: boolean;
@@ -180,24 +189,24 @@ export function ChatInterface({
 
   return (
     <div className="flex h-full flex-col min-h-0">
-      {/* Header bar — the single home for model + history (both empty and
-          active states), so the controls don't render twice. */}
+      {/* The one chrome row. */}
       {(historySlot || modelSelectorSlot) && (
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--color-border-default)] shrink-0 bg-[var(--color-bg-surface)]/95 backdrop-blur-sm">
-          <div className="flex items-center gap-2">{historySlot}</div>
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between gap-2 px-[var(--page-pad)] py-2.5 border-b border-[var(--color-border-default)] shrink-0 bg-[var(--color-bg-surface)]">
+          <div className="flex min-w-0 items-center gap-2">{historySlot}</div>
+          <div className="flex items-center gap-2 shrink-0">
             {totalArtifactCount > 0 && (
               <Button
                 variant="ghost"
                 size="sm"
                 className={cn(
-                  "h-8 text-xs gap-1.5",
+                  "h-8 text-xs gap-1.5 tabular-nums",
                   artifactPulse &&
                     "animate-pulse text-[var(--color-accent-primary)]",
                 )}
                 onClick={() => setArtifactPanelOpen(true)}
               >
                 <PanelRight className="h-4 w-4" />
+                <span className="sr-only sm:not-sr-only">Artifacts</span>
                 {totalArtifactCount}
               </Button>
             )}
@@ -209,44 +218,53 @@ export function ChatInterface({
       {/* Message list or empty state */}
       <div className="flex-1 min-h-0 relative">
         {isEmpty ? (
-          <div className="flex flex-col items-center justify-center h-full gap-10 px-4">
-            <div className="text-center space-y-3">
-              <div className="flex items-center justify-center mb-6">
-                <BrandMark
-                  darkSrc={emptyStateLogoSrc}
-                  size={48}
-                  className="drop-shadow-[0_0_8px_rgba(245,149,32,0.18)]"
-                />
+          // Scrolls: at 390x667 the mark, heading, status and six suggestions
+          // exceed the viewport, and the old centred flex column clipped them.
+          // Top-anchored rather than centred — vertical centring would need a
+          // height Radix's `display:table` viewport wrapper does not pass down,
+          // and the section style reads left-aligned everywhere else anyway.
+          <ScrollArea className="h-full">
+            <div className="mx-auto flex max-w-2xl flex-col gap-10 px-[var(--page-pad)] py-14">
+              <div className="space-y-4">
+                <BrandMark darkSrc={emptyStateLogoSrc} size={40} />
+                <h2 className="text-[22px] font-semibold text-[var(--color-text-primary)]">
+                  Ask anything about {repoName ?? "this codebase"}
+                </h2>
+                <p className="text-base text-[var(--color-text-secondary)] leading-relaxed">
+                  Explore architecture, assess risk, search code, trace
+                  dependencies, and understand decisions. Every answer cites the
+                  pages it read.
+                </p>
+                {statusSlot && (
+                  <p className="font-mono text-xs text-[var(--color-text-tertiary)] tabular-nums">
+                    {statusSlot}
+                  </p>
+                )}
               </div>
-              <h2 className="text-xl font-semibold text-[var(--color-text-primary)]">
-                Ask anything about {repoName ?? "this codebase"}
-              </h2>
-              <p className="text-sm text-[var(--color-text-secondary)] max-w-md leading-relaxed">
-                Explore architecture, assess risk, search code, trace
-                dependencies, and understand decisions.
-              </p>
-              {statusSlot && (
-                <div className="text-xs text-[var(--color-text-tertiary)]">
-                  {statusSlot}
-                </div>
-              )}
-            </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-w-xl w-full">
-              {suggestions.map((s) => (
-                <button
-                  key={s}
-                  className="text-left text-sm text-[var(--color-text-secondary)] rounded-xl border border-[var(--color-border-default)] px-4 py-3 hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-hover)] transition-colors"
-                  onClick={() => handleSuggestion(s)}
-                >
-                  {s}
-                </button>
-              ))}
+              {/* Hairline rows, not a grid of bordered boxes. A suggestion is
+                  not a discrete object you act on repeatedly; it is a list. */}
+              <div>
+                <p className={cn(MICRO_LABEL, "mb-1")}>Start with</p>
+                <ul className="border-t border-[var(--color-border-default)]">
+                  {suggestions.map((s) => (
+                    <li key={s}>
+                      <button
+                        className="group flex w-full items-center gap-3 border-b border-[var(--color-border-default)] py-3 text-left text-[15px] text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent-primary)]"
+                        onClick={() => handleSuggestion(s)}
+                      >
+                        <span className="flex-1 min-w-0">{s}</span>
+                        <Send className="h-3.5 w-3.5 shrink-0 opacity-0 transition-opacity group-hover:opacity-100" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </div>
-          </div>
+          </ScrollArea>
         ) : (
           <ScrollArea className="h-full">
-            <div className="px-4 py-6 space-y-5 max-w-3xl mx-auto">
+            <div className="px-[var(--page-pad)] py-10 space-y-10 max-w-3xl mx-auto">
               {messages.map((m) => (
                 <ChatMessage
                   key={m.id}
@@ -269,10 +287,11 @@ export function ChatInterface({
         )}
       </div>
 
-      {/* Input area */}
+      {/* Input area. The composer keeps its elevation: it is a genuinely
+          interactive surface, which is what rule 1 reserves elevation for. */}
       <div
         className={cn(
-          "shrink-0 px-4 py-4",
+          "shrink-0 px-[var(--page-pad)] pb-5 pt-4",
           !isEmpty && "border-t border-[var(--color-border-default)]",
         )}
       >
@@ -298,11 +317,11 @@ export function ChatInterface({
                   void handleSubmit();
                 }
               }}
-              placeholder="Ask anything about this codebase..."
+              placeholder="Ask a question, or paste a file path"
               aria-label="Chat message"
               disabled={sendDisabled}
               rows={1}
-              className="flex-1 resize-none bg-transparent text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] outline-none leading-6 max-h-36 overflow-y-auto"
+              className="flex-1 resize-none bg-transparent text-[15px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] outline-none leading-6 max-h-36 overflow-y-auto"
               style={{ scrollbarWidth: "none" }}
             />
             <Button
@@ -321,7 +340,7 @@ export function ChatInterface({
             </Button>
           </div>
           {isEmpty && (
-            <p className="text-center text-xs text-[var(--color-text-tertiary)] mt-2.5">
+            <p className={cn(MICRO_LABEL, "mt-2.5 text-center")}>
               Shift+Enter for newline · Enter to send
             </p>
           )}

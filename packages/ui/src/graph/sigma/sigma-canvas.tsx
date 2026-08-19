@@ -16,14 +16,11 @@ import type { Signal } from "../context";
 import type {
   GraphNode as GraphNodeResponse,
   GraphLink as GraphEdgeResponse,
-  ModuleNode as ModuleNodeResponse,
-  ModuleEdge as ModuleEdgeResponse,
 } from "@repowise-dev/types/graph";
 import { useSigmaRenderer } from "./use-sigma";
 import { useFA2Layout } from "./use-fa2-layout";
 import { useElkSigmaLayout } from "./use-elk-sigma-layout";
 import { SigmaControls } from "./sigma-controls";
-import { SigmaMinimap } from "./sigma-minimap";
 import { DepthRings } from "./depth-rings";
 
 export interface SigmaCanvasProps {
@@ -32,7 +29,6 @@ export interface SigmaCanvasProps {
   layoutMode: "force" | "hierarchical" | "radial";
   viewMode: ViewMode;
   selectedNodeId: string | null;
-  hoveredNodeId: string | null;
   highlightedPath: Set<string>;
   highlightedEdges: Set<string>;
   searchDimmedNodes: Set<string> | null;
@@ -44,10 +40,7 @@ export interface SigmaCanvasProps {
   graphTheme: "light" | "dark";
   fileNodes?: GraphNodeResponse[] | undefined;
   fileEdges?: GraphEdgeResponse[] | undefined;
-  moduleNodes?: ModuleNodeResponse[] | undefined;
-  moduleEdges?: ModuleEdgeResponse[] | undefined;
   onNodeClick?: ((nodeId: string, nodeType: string) => void) | undefined;
-  onNodeHover?: ((nodeId: string | null) => void) | undefined;
   onNodeContextMenu?:
     | ((event: MouseEvent, nodeId: string, nodeType: string) => void)
     | undefined;
@@ -85,7 +78,6 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
       container,
       graph: props.graph,
       selectedNodeId: props.selectedNodeId,
-      hoveredNodeId: props.hoveredNodeId,
       highlightedPath: props.highlightedPath,
       highlightedEdges: props.highlightedEdges,
       searchDimmedNodes: props.searchDimmedNodes,
@@ -110,22 +102,17 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
       enabled: props.layoutMode === "hierarchical",
       fileNodes: props.fileNodes,
       fileEdges: props.fileEdges,
-      moduleNodes: props.moduleNodes,
-      moduleEdges: props.moduleEdges,
-      viewMode: props.viewMode,
       onSkipped: props.onLayoutSkipped,
     });
 
     // Keep callback refs up to date so Sigma event handlers always use latest props
     const onNodeClickRef = useRef(props.onNodeClick);
     const onStageClickRef = useRef(props.onStageClick);
-    const onNodeHoverRef = useRef(props.onNodeHover);
     const onNodeContextMenuRef = useRef(props.onNodeContextMenu);
     const onNodeDoubleClickRef = useRef(props.onNodeDoubleClick);
     useEffect(() => {
       onNodeClickRef.current = props.onNodeClick;
       onStageClickRef.current = props.onStageClick;
-      onNodeHoverRef.current = props.onNodeHover;
       onNodeContextMenuRef.current = props.onNodeContextMenu;
       onNodeDoubleClickRef.current = props.onNodeDoubleClick;
     });
@@ -144,14 +131,15 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
         onStageClickRef.current?.();
       };
 
-      const handleEnterNode = ({ node }: { node: string }) => {
-        onNodeHoverRef.current?.(node);
-        if (container)
-          container.style.cursor = "pointer";
+      // Cursor affordance only. Sigma draws its own hover highlight, so hover
+      // never needs to reach React — an `onNodeHover` callback used to publish
+      // it into shell state that nothing read, re-rendering the whole shell on
+      // every hover transition.
+      const handleEnterNode = () => {
+        if (container) container.style.cursor = "pointer";
       };
 
       const handleLeaveNode = () => {
-        onNodeHoverRef.current?.(null);
         if (container) container.style.cursor = "grab";
       };
 
@@ -213,7 +201,7 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
           // For the constellation, paint the dark canvas on the wrapper and keep
           // the sigma container transparent so the depth-ring underlay shows.
           hasDepthRings && props.graphTheme === "dark"
-            ? { background: "var(--color-bg-canvas)" }
+            ? { background: "var(--color-bg-root)" }
             : undefined
         }
       >
@@ -224,9 +212,14 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
           ref={containerCallback}
           className="w-full h-full relative z-[1]"
           style={{
+            // `--color-bg-canvas` aliases `--color-bg-inset`, which the July
+            // ramp move took to #0a0a0b — darker than the page. The canvas is
+            // the subject, so it takes the page plane (rule 8), matching the
+            // knowledge-graph canvas. Light mode is unchanged: it was already
+            // transparent, which is why only dark looked wrong.
             background:
               !hasDepthRings && props.graphTheme === "dark"
-                ? "var(--color-bg-canvas)"
+                ? "var(--color-bg-root)"
                 : "transparent",
             cursor: "grab",
           }}
@@ -242,9 +235,7 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
           }
           isLayoutRunning={props.layoutMode === "force" ? isLayoutRunning : isElkComputing}
           onToggleLayout={props.layoutMode === "force" ? toggleLayout : undefined}
-          graphTheme={props.graphTheme}
         />
-        <SigmaMinimap sigma={sigma} graphTheme={props.graphTheme} />
       </div>
     );
   },

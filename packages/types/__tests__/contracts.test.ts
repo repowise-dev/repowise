@@ -11,6 +11,8 @@
  *   - DeadCodeFinding: optional enrichment fields stay optional so canonical
  *     artifacts still satisfy the contract without them.
  *   - DecisionRecord: status + source are union literals, not bare strings.
+ *   - Episode: tier excludes the per-machine transcript tier, and a summary
+ *     never grows a body.
  *   - Hotspot key shape: canonical Hotspot uses `file_path`, not `path`, so
  *     raw entries with a `path` key must adapt before assignment.
  */
@@ -22,11 +24,17 @@ import type {
   GraphPathArtifact,
   DeadCodeArtifact,
   DiagramArtifact,
+  RiskReportArtifact,
   GenericArtifact,
 } from "../src/chat.js";
 import type { GraphLink } from "../src/graph.js";
 import type { DeadCodeFinding } from "../src/dead-code.js";
 import type { DecisionRecord, DecisionStatus } from "../src/decisions.js";
+import type {
+  EpisodeDetail,
+  EpisodeSummary,
+  EpisodeTier,
+} from "../src/episodes.js";
 import type { Hotspot } from "../src/git.js";
 import type {
   HeritageKind,
@@ -42,10 +50,12 @@ import {
 
 describe("ChatArtifact discriminated union", () => {
   it("narrows on .type to the per-variant data shape", () => {
-    // Mirrors backend reality (`backend/app/routers/chat.py:_tool_*`):
-    // - get_dependency_path → { type: "graph", data: { path, distance, explanation } }
-    // - get_dead_code       → { type: "dead_code", data: { high_confidence, ... } }
-    // - get_architecture_diagram → { type: "diagram", data: { mermaid_syntax, ... } }
+    // Live chat registry (packages/server/.../chat_tools.py): get_overview,
+    // get_context, get_risk, get_change_risk, get_why, search_codebase,
+    // get_dead_code — risk_report covers get_risk + get_change_risk.
+    // Legacy wire variants still narrow for stored SSE history:
+    // - graph   ← removed chat tool get_dependency_path (MCP opt-in remains)
+    // - diagram ← removed chat tool get_architecture_diagram
     const narrow = (a: KnownChatArtifact) => {
       if (a.type === "graph") {
         expectTypeOf(a).toEqualTypeOf<GraphPathArtifact>();
@@ -57,6 +67,8 @@ describe("ChatArtifact discriminated union", () => {
       } else if (a.type === "diagram") {
         expectTypeOf(a).toEqualTypeOf<DiagramArtifact>();
         expectTypeOf(a.data.mermaid_syntax).toEqualTypeOf<string>();
+      } else if (a.type === "risk_report") {
+        expectTypeOf(a).toEqualTypeOf<RiskReportArtifact>();
       }
     };
     expectTypeOf(narrow).toBeFunction();
@@ -108,9 +120,13 @@ describe("DeadCodeFinding optional enrichment", () => {
 });
 
 describe("DecisionRecord literal unions", () => {
-  it("constrains status to the four-literal union", () => {
+  it("constrains status to the five-literal union", () => {
+    // `dismissed` belongs here: the engine has always accepted it and treats it
+    // differently from `deprecated` — skipped on re-extraction, hidden from
+    // listings — and its absence is what left the UI sending `deprecated` for
+    // a dismissal.
     expectTypeOf<DecisionStatus>().toEqualTypeOf<
-      "proposed" | "active" | "deprecated" | "superseded"
+      "proposed" | "active" | "deprecated" | "dismissed" | "superseded"
     >();
     expectTypeOf<DecisionRecord["status"]>().toEqualTypeOf<DecisionStatus>();
   });
@@ -166,9 +182,20 @@ describe("SecurityFinding canonical shape", () => {
       severity: "high",
       snippet: null,
       detected_at: "2026-05-02T00:00:00Z",
+      line_number: 42,
+      line_verified: true,
+      commit_at: null,
     };
     expectTypeOf(f.snippet).toEqualTypeOf<string | null>();
     expectTypeOf(f.detected_at).toEqualTypeOf<string>();
+  });
+
+  it("a line is nullable and always paired with its verification flag", () => {
+    // Both required: an optional line_verified would let a consumer read a
+    // drifted line as confirmed by omitting the flag.
+    expectTypeOf<SecurityFinding["line_number"]>().toEqualTypeOf<number | null>();
+    expectTypeOf<SecurityFinding["line_verified"]>().toEqualTypeOf<boolean>();
+    expectTypeOf<SecurityFinding["commit_at"]>().toEqualTypeOf<string | null>();
   });
 });
 
@@ -216,5 +243,32 @@ describe("C4 io_kind parity", () => {
       is_dev_dep: false,
     };
     expect(untyped.io_kind).toBeNull();
+  });
+});
+
+describe("Episode tier is an allowlist, not a bare string", () => {
+  it("excludes the per-machine transcript tier", () => {
+    // The engine has a third tier. It never crosses HTTP, and the type is
+    // where that stays true for a consumer: widening this to `string` would
+    // let a component render a session somebody else's laptop recorded.
+    expectTypeOf<EpisodeTier>().toEqualTypeOf<"structural" | "git">();
+    expectTypeOf<EpisodeSummary["tier"]>().toEqualTypeOf<EpisodeTier>();
+    expectTypeOf<EpisodeDetail["tier"]>().toEqualTypeOf<EpisodeTier>();
+  });
+
+  it("keeps a summary bodyless and a detail's verdict non-null", () => {
+    // A summary that grew a `body` would mean a list route started paying
+    // for one; `still_true` non-optional on a detail is what makes the
+    // checked verdict impossible to forget to render.
+    expectTypeOf<Extract<keyof EpisodeSummary, "body">>().toEqualTypeOf<never>();
+    // Indexed rather than `keyof`, which survives both optionality and a
+    // widening to `unknown` and so only ever catches outright deletion.
+    expectTypeOf<EpisodeDetail["body"]>().toEqualTypeOf<string>();
+    expectTypeOf<EpisodeDetail["still_true"]>().toEqualTypeOf<string>();
+    expectTypeOf<EpisodeDetail["current"]>().toEqualTypeOf<boolean>();
+    // Required-but-nullable, not optional: the engine field has a default and
+    // pydantic serializes defaults, so the key is always on the wire. A
+    // consumer discriminating "unchecked" by key presence would never see it.
+    expectTypeOf<EpisodeSummary["still_true"]>().toEqualTypeOf<string | null>();
   });
 });

@@ -89,20 +89,6 @@ def _env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in _TRUTHY
 
 
-def is_enabled() -> bool:
-    """Return whether telemetry may currently be sent.
-
-    Mirrors the CLI's opt-out precedence: ``DO_NOT_TRACK`` and
-    ``REPOWISE_TELEMETRY_DISABLED`` are hard offs; otherwise enabled unless the
-    user explicitly stored a disable via ``repowise telemetry disable``.
-    """
-    if _env_truthy("DO_NOT_TRACK"):
-        return False
-    if _env_truthy("REPOWISE_TELEMETRY_DISABLED"):
-        return False
-    return _load_state().get("telemetry_enabled") is not False
-
-
 def debug_mode() -> bool:
     """``REPOWISE_TELEMETRY_DEBUG`` prints the payload to stderr instead of sending."""
     return _env_truthy("REPOWISE_TELEMETRY_DEBUG")

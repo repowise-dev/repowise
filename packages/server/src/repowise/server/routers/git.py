@@ -14,16 +14,27 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.change_risk import (
-    ChangeFeatures,
+    SCORE_MEASURES,
+    SCORE_UNIT,
+    FixHistoryUnavailableError,
     RiskNormalizer,
-    baseline_scores,
+    baseline_samples,
+    change_features_from_stored,
+    change_fix_density,
     extract_range_features,
+    fix_density_percentile,
+    fix_pressure,
+    hot_files,
+    range_anchor,
+    review_priority_classification,
     score_change,
+    scores_excluding,
 )
 from repowise.core.ingestion.git_indexer._constants import (
     EVOLUTION_CATEGORIES,
     classify_commit_category,
 )
+from repowise.core.ingestion.git_indexer.identity import author_identity_key
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import GitCommit, GitMetadata, Repository
 from repowise.server.deps import get_db_session, verify_api_key
@@ -37,6 +48,8 @@ from repowise.server.schemas import (
     CommitEvolutionResponse,
     CommitResponse,
     CommitStatsResponse,
+    FixHistoryFileResponse,
+    FixHistoryResponse,
     GitMetadataResponse,
     GitSummaryResponse,
     HotspotResponse,
@@ -44,6 +57,7 @@ from repowise.server.schemas import (
     Paginated,
     ReviewerSuggestionsResponse,
     RiskDriverResponse,
+    RiskHistogramBucket,
     RiskRangeResponse,
 )
 from repowise.server.services.reviewer_suggestions import suggest_reviewers
@@ -66,8 +80,8 @@ router = APIRouter(
 
 
 def _hotspot_from_row(r: GitMetadata) -> HotspotResponse:
-    # churn_percentile is stored on a 0–1 scale (rank / total) but every UI
-    # consumer treats it as a percentile rank in 0–100. Normalize here so
+    # churn_percentile is stored on a 0-1 scale (rank / total) but every UI
+    # consumer treats it as a percentile rank in 0-100. Normalize here so
     # the API contract is unambiguous and the dashboard ChurnBar / scatter
     # / hotspots-mini render correctly without per-component hacks.
     churn_pct = (r.churn_percentile or 0.0) * 100.0
@@ -98,6 +112,8 @@ def _hotspot_from_row(r: GitMetadata) -> HotspotResponse:
         # Normalize 0-1 -> 0-100 to match churn_percentile.
         change_entropy_pct=(r.change_entropy_pct or 0.0) * 100.0,
         prior_defect_count=r.prior_defect_count or 0,
+        bug_magnet=bool(r.bug_magnet),
+        last_fix_at=r.last_fix_at,
         original_path=r.original_path,
     )
 
@@ -107,23 +123,38 @@ def _commit_risk(r: GitCommit):
     stored ``change_risk_score`` exactly. Returns None for unscored rows."""
     if r.change_risk_score is None:
         return None
-    feats = ChangeFeatures(
-        la=r.lines_added or 0,
-        ld=r.lines_deleted or 0,
-        nf=r.files_changed or 0,
-        nd=r.dirs_changed or 0,
-        ns=r.subsystems_changed or 0,
-        entropy=r.entropy or 0.0,
+    feats = change_features_from_stored(
+        la=r.lines_added,
+        ld=r.lines_deleted,
+        nf=r.files_changed,
+        nd=r.dirs_changed,
+        ns=r.subsystems_changed,
+        entropy=r.entropy,
         exp=r.author_experience,
-        is_fix=bool(r.is_fix),
-        author=r.author_name or "",
-        subject=r.subject or "",
+        is_fix=r.is_fix,
+        author=r.author_name,
+        subject=r.subject,
         ref=r.sha,
     )
     return score_change(feats)
 
 
-def _commit_fields(r: GitCommit, normalizer: RiskNormalizer) -> dict:
+async def _author_commit_counts(session: AsyncSession, repo_id: str) -> dict[str, int]:
+    """Commits per author in the index, keyed by folded identity.
+
+    One grouped query per request rather than a per-row lookup, and folded in
+    Python so it matches the tally that produced ``author_experience`` exactly.
+    """
+    counts: dict[str, int] = {}
+    for name, email, count in await crud.get_author_commit_counts(session, repo_id):
+        key = author_identity_key(name, email)
+        counts[key] = counts.get(key, 0) + int(count or 0)
+    return counts
+
+
+def _commit_fields(
+    r: GitCommit, normalizer: RiskNormalizer, author_counts: dict[str, int] | None = None
+) -> dict:
     """Shared CommitResponse field map (raw row + repo-relative normalization)."""
     risk = _commit_risk(r)
     top_driver = risk.top_drivers[0].label if risk and risk.top_drivers else None
@@ -147,17 +178,26 @@ def _commit_fields(r: GitCommit, normalizer: RiskNormalizer) -> dict:
         "review_priority": normalizer.priority(r.change_risk_score),
         "top_driver": top_driver,
         "author_experience": r.author_experience,
+        "author_commit_count": (
+            author_counts.get(author_identity_key(r.author_name, r.author_email))
+            if author_counts is not None
+            else None
+        ),
         "agent_name": r.agent_name,
         "agent_autonomy_tier": r.agent_autonomy_tier,
         "agent_confidence": r.agent_confidence,
     }
 
 
-def _commit_from_row(r: GitCommit, normalizer: RiskNormalizer) -> CommitResponse:
-    return CommitResponse(**_commit_fields(r, normalizer))
+def _commit_from_row(
+    r: GitCommit, normalizer: RiskNormalizer, author_counts: dict[str, int] | None = None
+) -> CommitResponse:
+    return CommitResponse(**_commit_fields(r, normalizer, author_counts))
 
 
-def _commit_detail_from_row(r: GitCommit, normalizer: RiskNormalizer) -> CommitDetailResponse:
+def _commit_detail_from_row(
+    r: GitCommit, normalizer: RiskNormalizer, author_counts: dict[str, int] | None = None
+) -> CommitDetailResponse:
     """Map a commit row to its detail view, recomputing the risk-driver
     breakdown from the persisted Kamei features + author experience.
 
@@ -169,14 +209,14 @@ def _commit_detail_from_row(r: GitCommit, normalizer: RiskNormalizer) -> CommitD
     drivers = [
         RiskDriverResponse(
             feature=d.feature,
-            value=None if d.value != d.value else d.value,  # drop NaN (unknown feature)
+            value=d.value,  # already None for an unknown feature
             contribution=d.contribution,
             label=d.label,
         )
         for d in (risk.top_drivers if risk else [])
     ]
     return CommitDetailResponse(
-        **_commit_fields(r, normalizer),
+        **_commit_fields(r, normalizer, author_counts),
         drivers=drivers,
         agent_channel=r.agent_channel,
     )
@@ -189,7 +229,7 @@ async def get_commits(
     authorship: str = Query("all", pattern="^(all|agent|human)$"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> Paginated[CommitResponse]:
     """Per-commit change-risk feed — the review-priority queue.
 
@@ -204,7 +244,8 @@ async def get_commits(
         session, repo_id, limit=limit, offset=offset, sort=sort, authorship=authorship
     )
     normalizer = RiskNormalizer.from_scores(await crud.get_commit_risk_scores(session, repo_id))
-    items = [_commit_from_row(r, normalizer) for r in rows]
+    author_counts = await _author_commit_counts(session, repo_id)
+    items = [_commit_from_row(r, normalizer, author_counts) for r in rows]
     next_offset = offset + limit if offset + limit < total else None
     return Paginated[CommitResponse](
         items=items,
@@ -217,7 +258,7 @@ async def get_commits(
 @router.get("/{repo_id}/commits/agent-trend", response_model=AgentTrendResponse)
 async def get_agent_trend(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> AgentTrendResponse:
     """Monthly agent-vs-human commit volume across the indexed window.
 
@@ -274,7 +315,7 @@ async def get_agent_trend(
 @router.get("/{repo_id}/commits/stats", response_model=CommitStatsResponse)
 async def get_commit_stats(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> CommitStatsResponse:
     """Repo-wide commit aggregates for the headline stat cards.
 
@@ -308,14 +349,40 @@ async def get_commit_stats(
         fix_commit_count=int(fix_count or 0),
         agent_commit_count=int(agent_count or 0),
         avg_entropy=float(avg_entropy or 0.0),
+        risk_histogram=_risk_histogram(normalizer.scores),
+        moderate_cut=normalizer.moderate_cut,
+        high_cut=normalizer.high_cut,
     )
+
+
+_HISTOGRAM_BINS = 20  # 0.5-wide bins across the 0-10 raw change-risk score
+
+
+def _risk_histogram(sorted_scores: list[float]) -> list[RiskHistogramBucket]:
+    """Bin the repo's raw change-risk scores for the distribution chart.
+
+    Reuses the score list already fetched for the normalizer, so this costs no
+    extra query. The top bin is closed on the right so a perfect 10.0 lands
+    somewhere instead of falling off the end.
+    """
+    if not sorted_scores:
+        return []
+    width = 10.0 / _HISTOGRAM_BINS
+    counts = [0] * _HISTOGRAM_BINS
+    for s in sorted_scores:
+        idx = min(_HISTOGRAM_BINS - 1, max(0, int(s / width)))
+        counts[idx] += 1
+    return [
+        RiskHistogramBucket(start=i * width, end=(i + 1) * width, count=c)
+        for i, c in enumerate(counts)
+    ]
 
 
 @router.get("/{repo_id}/commits/evolution", response_model=CommitEvolutionResponse)
 async def get_commit_evolution(
     repo_id: str,
     granularity: str = Query("auto", pattern="^(auto|month|week)$"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> CommitEvolutionResponse:
     """The repo's development "story arc" — commit-category mix over time.
 
@@ -392,21 +459,22 @@ async def get_commit_evolution(
 async def get_commit(
     repo_id: str,
     sha: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> CommitDetailResponse:
     """A single commit (by full sha or unique prefix) with its risk breakdown."""
     row = await crud.get_git_commit(session, repo_id, sha)
     if row is None:
         raise HTTPException(status_code=404, detail="Commit not found")
     normalizer = RiskNormalizer.from_scores(await crud.get_commit_risk_scores(session, repo_id))
-    return _commit_detail_from_row(row, normalizer)
+    author_counts = await _author_commit_counts(session, repo_id)
+    return _commit_detail_from_row(row, normalizer, author_counts)
 
 
 @router.get("/{repo_id}/git-metadata", response_model=GitMetadataResponse)
 async def get_git_metadata(
     repo_id: str,
     file_path: str = Query(..., description="Relative file path"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> GitMetadataResponse:
     """Get git metadata for a specific file."""
     meta = await crud.get_git_metadata(session, repo_id, file_path)
@@ -422,7 +490,7 @@ async def get_hotspots(
     repo_id: str,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> Paginated[HotspotResponse]:
     """Return the highest-churn files (hotspots), paginated.
 
@@ -463,7 +531,7 @@ async def get_ownership(
     granularity: str = Query("module", description="file or module"),
     limit: int = Query(500, ge=1, le=5000),
     offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> Paginated[OwnershipEntry]:
     """Ownership breakdown for a repository, paginated.
 
@@ -531,7 +599,7 @@ async def get_co_changes(
     repo_id: str,
     file_path: str = Query(..., description="Relative file path"),
     min_count: int = Query(3, ge=1),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Get files that frequently change together with the given file."""
     meta = await crud.get_git_metadata(session, repo_id, file_path)
@@ -556,7 +624,7 @@ async def get_reviewer_suggestions(
     repo_id: str,
     paths: list[str] = Query(..., description="Repeat ?paths= for each changed file"),
     limit: int = Query(10, ge=1, le=50),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> ReviewerSuggestionsResponse:
     """Suggest reviewers for a PR touching the given file paths.
 
@@ -570,7 +638,7 @@ async def get_reviewer_suggestions(
 
 async def _resolve_local_repo(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> Repository:
     """Resolve a repository with a usable local checkout, or raise 404."""
     repo = await crud.get_repository(session, repo_id)
@@ -604,7 +672,7 @@ def get_risk_range(
         ge=0,
         description="Recent commits to sample for the repo-relative percentile (0 skips it)",
     ),
-    repo: Repository = Depends(_resolve_local_repo),  # noqa: B008
+    repo: Repository = Depends(_resolve_local_repo),
 ) -> RiskRangeResponse:
     """Score a ``base..head`` git range's defect risk from its live diff shape.
 
@@ -630,7 +698,10 @@ def get_risk_range(
     percentile: float | None = None
     priority: str | None = None
     if baseline:
-        scores = baseline_scores(local_path, head, baseline, (), "")
+        # Same anchor rule as the CLI/MCP scorer, so both surfaces rank a range
+        # against the history it forked from rather than against its own commits.
+        samples = baseline_samples(local_path, range_anchor(local_path, base, head), baseline, ())
+        scores = scores_excluding(samples, "")
         if len(scores) >= _MIN_BASELINE:
             normalizer = RiskNormalizer.from_scores(scores)
             # Rank with experience unknown, matching the baseline (diff-shape
@@ -639,14 +710,34 @@ def get_risk_range(
             percentile = normalizer.percentile(rank_score)
             priority = normalizer.priority(rank_score)
 
+    # Read at the fork point, matching the CLI/MCP scorer: the record predates
+    # the change rather than counting fixes the range itself brought in.
+    try:
+        pressure = fix_pressure(local_path, range_anchor(local_path, base, head))
+        fix_available = True
+    except FixHistoryUnavailableError:
+        pressure, fix_available = {}, False
+    density = change_fix_density(pressure, features.file_churn)
+
     return RiskRangeResponse(
         base=base,
         head=head,
+        fix_history=FixHistoryResponse(
+            available=fix_available,
+            density=round(density, 3),
+            percentile=fix_density_percentile(pressure, density),
+            files=[
+                FixHistoryFileResponse(path=path, churn=churn, fix_pressure=p)
+                for path, churn, p in hot_files(pressure, features.file_churn)
+            ],
+        ),
         score=risk.score,
-        probability=risk.probability,
-        level=risk.level,
+        score_measures=SCORE_MEASURES,
+        score_unit=SCORE_UNIT,
         risk_percentile=percentile,
         review_priority=priority,
+        classification=review_priority_classification(priority),
+        fallback_band=risk.level if priority is None else None,
         is_fix=features.is_fix,
         features=ChangeFeaturesResponse(
             la=features.la,
@@ -660,7 +751,7 @@ def get_risk_range(
         drivers=[
             RiskDriverResponse(
                 feature=d.feature,
-                value=None if d.value != d.value else d.value,  # drop NaN (unknown feature)
+                value=d.value,  # already None for an unknown feature
                 contribution=d.contribution,
                 label=d.label,
             )
@@ -673,7 +764,7 @@ def get_risk_range(
 async def get_git_summary(
     repo_id: str,
     top_owners_limit: int = Query(25, ge=1, le=200),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> GitSummaryResponse:
     """Aggregate git health signals for a repository.
 
@@ -687,7 +778,7 @@ async def get_git_summary(
 
     hotspot_count = sum(1 for m in all_meta if m.is_hotspot)
     stable_count = sum(1 for m in all_meta if m.is_stable)
-    # Normalize to 0–100 to match the rest of the HTTP API contract.
+    # Normalize to 0-100 to match the rest of the HTTP API contract.
     avg_churn = (
         sum(m.churn_percentile for m in all_meta) / len(all_meta) * 100.0 if all_meta else 0.0
     )

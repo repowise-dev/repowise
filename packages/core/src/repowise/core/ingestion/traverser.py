@@ -18,15 +18,20 @@ from __future__ import annotations
 import configparser
 import os
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import pathspec
 import structlog
+from pathspec.patterns.gitwildmatch import GitWildMatchPattern, GitWildMatchPatternError
 
+from ..entry_candidacy import conventional_entry_stems, not_an_execution_start
+from ..test_paths import is_test_related_path
 from .languages.registry import REGISTRY as _LANG_REGISTRY
+from .languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from .models import (
     EXTENSION_TO_LANGUAGE,
     SPECIAL_FILENAMES,
@@ -39,6 +44,34 @@ from .models import (
 # ---------------------------------------------------------------------------
 # Traversal statistics
 # ---------------------------------------------------------------------------
+
+
+class _OversizeSkip(NamedTuple):
+    """Outcome of the second-tier size check.
+
+    ``is_source`` is what decides whether the skip is worth telling the user
+    about: a dropped 12 MB video is noise, a dropped 600 KB module is the bug
+    this type exists to surface.
+    """
+
+    reason: str
+    is_source: bool
+
+
+class SkippedSourceFile(NamedTuple):
+    """A file with a real parser that traversal dropped on size.
+
+    Carried as a record rather than folded into ``skipped_oversized`` because
+    the count alone is what let this hide: "39 oversized" reads as lockfiles
+    and images, so nobody looks, and a dropped entry point is indistinguishable
+    from a dropped video. The path is the actionable part, and ``reason``
+    separates "genuinely too big to parse" from "we think this is minified",
+    which are different user actions.
+    """
+
+    path: str
+    size_kb: int
+    reason: str  # "over_max_size" | "minified"
 
 
 @dataclass
@@ -60,9 +93,80 @@ class TraversalStats:
     skipped_submodule: int = 0
     skipped_nested_repo: int = 0
     lang_counts: dict[str, int] = field(default_factory=dict)
+    nested_repo_paths: list[str] = field(default_factory=list)
+    """Repo-relative paths of the nested git repos behind ``skipped_nested_repo``.
+
+    The counter alone cannot say *which* directories are separate checkouts,
+    which is what makes the fact actionable ("run git from inside them"). Capped
+    at :data:`_MAX_NESTED_REPO_PATHS` — a memory bound on a pathological tree,
+    not a threshold: the count stays exact either way.
+    """
+    nested_repo_paths_truncated: bool = False
+    """True once the cap above dropped a name, so a reader can say "at least"."""
+    skipped_source_files: list[SkippedSourceFile] = field(default_factory=list)
+    """Parseable source files dropped on size — the subset worth naming.
+
+    Mirrors :attr:`nested_repo_paths`: capped at
+    :data:`_MAX_SKIPPED_SOURCE_PATHS` so a pathological tree cannot grow this
+    without bound, while ``skipped_oversized`` stays exact.
+    """
+    skipped_source_files_truncated: bool = False
+    """True once the cap above dropped a name, so a reader can say "at least"."""
+    unknown_language_files: list[SkippedSourceFile] = field(default_factory=list)
+    """Reference-bearing files dropped for having no language spec.
+
+    Kept apart from :attr:`skipped_source_files` rather than folded into it,
+    for two reasons that both cut the same way. That list is capped at 50 and
+    these run to hundreds per repo, so sharing it would truncate the size-skip
+    records instantly and destroy the signal they exist for; and it is rendered
+    to the user file by file during ingestion, where naming every unparsed
+    `.rst` would bury the one dropped entry point it was built to surface.
+    So this list is fed to the dead-code analyzer and deliberately not to that
+    report.
+    """
+    unknown_language_files_truncated: bool = False
+    """True once the cap above dropped a name, so a reader can say "at least"."""
 
 
 log = structlog.get_logger(__name__)
+
+#: Cap on the nested-repo names retained in :class:`TraversalStats`.
+_MAX_NESTED_REPO_PATHS = 50
+
+#: Cap on the skipped-source records retained in :class:`TraversalStats`.
+_MAX_SKIPPED_SOURCE_PATHS = 50
+
+#: Cap on the unknown-language records retained in :class:`TraversalStats`.
+#: Ten times the one above because this list is machine-read rather than
+#: printed, and the widest repo measured contributes 275. The cost of reading
+#: them is bounded separately, by the analyzer's own scan budget.
+_MAX_UNKNOWN_LANGUAGE_PATHS = 500
+
+#: Extensions worth remembering when language detection fails: formats whose
+#: job is to name code, so a symbol appearing in one is evidence the symbol is
+#: reached from somewhere the index cannot see. Doc-include formats carry
+#: ``literalinclude``/``<code-block src=…>`` directives; ``.api`` files are
+#: binary-compatibility dumps listing every symbol a downstream consumer may
+#: bind to; the markup formats bind handlers and types by name.
+#:
+#: An allowlist rather than a blocklist because the unknown-language tail is
+#: dominated by formats that mention no code at all — translation catalogues,
+#: licence text, vector art and dotfiles are 3,335 of the 4,277 files across
+#: the measurement corpus, and feeding those to a name-matching clamp would
+#: suppress findings on coincidence.
+#: Only extensions with no language spec belong here — one that has a spec is
+#: parsed and indexed already, so listing it would be dead weight.
+_REFERENCE_BEARING_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".api",  # also matches Kotlin's .klib.api
+        ".cshtml",
+        ".properties",
+        ".razor",
+        ".rst",
+        ".topic",
+        ".xml",
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Blocklists
@@ -71,6 +175,11 @@ log = structlog.get_logger(__name__)
 _BLOCKED_DIRS: frozenset[str] = frozenset(
     {
         ".git",
+        # Repowise's own state dir. Its contents change between init and any
+        # later update (state.json, caches), so indexing it makes the
+        # update-built graph diverge from the init-built one and defeats the
+        # structure-keyed centrality cache.
+        ".repowise",
         ".hg",
         ".svn",
         "node_modules",
@@ -111,8 +220,8 @@ _BLOCKED_DIRS: frozenset[str] = frozenset(
         # test files can be indexed safely. Their content is needed to
         # answer questions about test helpers and fixtures. Files under
         # these directories are still tagged is_test=True via
-        # _is_test_file() so downstream consumers can filter them when
-        # appropriate.
+        # is_test_related_path() so downstream consumers can filter them
+        # when appropriate.
         #
         # The following ARE still blocked because they typically hold
         # binary fixtures, generated artifacts, or browser-driven test
@@ -160,6 +269,12 @@ _BLOCKED_FILENAME_PATTERNS: list[str] = [
     "*.lock",
 ]
 
+#: ``_BLOCKED_FILENAME_PATTERNS`` compiled once. Matched against a bare
+#: filename, so it is equally usable from :func:`is_candidate_source_path`.
+_BLOCKED_FILENAME_SPEC: pathspec.PathSpec = pathspec.PathSpec.from_lines(
+    "gitwildmatch", _BLOCKED_FILENAME_PATTERNS
+)
+
 # Generated file markers (checked in first 512 bytes)
 _GENERATED_MARKERS: tuple[str, ...] = (
     "Code generated",
@@ -173,16 +288,28 @@ _GENERATED_MARKERS: tuple[str, ...] = (
 _GENERATED_SUFFIXES: tuple[str, ...] = tuple(_LANG_REGISTRY.generated_suffixes())
 
 # Manifest files that indicate a package root (for monorepo detection)
-_MANIFEST_FILES: frozenset[str] = frozenset(
-    {"pyproject.toml", "package.json", "Cargo.toml", "go.mod"}
-)
+# Registry-derived, so registering a language grants its repos monorepo
+# detection with no edit here. This was a hardcoded four (pyproject.toml,
+# package.json, Cargo.toml, go.mod), which is why a Maven, Ruby or Scala
+# monorepo reported no packages at all. .NET still does: its package file is
+# the ``.csproj`` glob, which an exact-filename list cannot express.
+_MANIFEST_FILES: frozenset[str] = _LANG_REGISTRY.package_manifest_filenames()
 
 # Entry-point evidence, all registry-derived: exact filenames (Main.kt,
 # config.ru), "*"-prefixed filename suffixes (OTP's <name>_app.erl), and
 # the flag-stem set. The historical
 # extra {run.py, server.py} patterns were dropped — the run/server stems
 # already cover them.
-_ENTRY_POINT_STEMS: frozenset[str] = _LANG_REGISTRY.entry_flag_stems()
+#
+# The flag stems and the stems the wiki surfaces rank by were two hand-kept
+# sets that disagreed both ways: this one lacked bootstrap/cli/entry, and the
+# ranking set lacks run/start. Union, not replacement, so neither side loses a
+# stem it already had. The ranking set is the registry's stems minus the glue
+# stems, which keeps one asymmetry deliberately: ``index`` is entry *evidence*
+# here (a package's ``index.ts`` is a real front door) and glue to the ranker,
+# which must not let a resolver's nested ``index.py`` outrank a ``main.py``.
+# ``not_an_execution_start`` below is what drops the deep ones.
+_ENTRY_POINT_STEMS: frozenset[str] = _LANG_REGISTRY.entry_flag_stems() | conventional_entry_stems()
 
 _ENTRY_POINT_NAMES: frozenset[str] = frozenset(
     p for p in _LANG_REGISTRY.entry_point_names() if not p.startswith("*")
@@ -192,21 +319,52 @@ _ENTRY_POINT_NAME_SUFFIXES: tuple[str, ...] = tuple(
     sorted(p[1:] for p in _LANG_REGISTRY.entry_point_names() if p.startswith("*"))
 )
 
-# Default file-size limit
+# Test-file conventions live in ``core.test_paths`` - the same code answers the
+# question at query time, so the flag stored here and the fallback the MCP
+# tools use can never disagree (#1103).
+
+# Default file-size limit, applied to files we have no AST parser for:
+# lockfiles, changelogs, JSON fixtures, images, videos. For those, size is the
+# only signal available and 500 KB is generous.
 _DEFAULT_MAX_FILE_SIZE_BYTES: int = 500 * 1024  # 500 KB
+
+# Ceiling for files a parser *can* read. The 500 KB limit above was applied to
+# every file before any language check, so a repo's largest hand-written
+# modules were dropped with no page, no symbols and no wiki entry — on
+# NousResearch/hermes-agent that silently removed the CLI, the gateway, the web
+# server and the state layer: 6 files, 103,664 lines, 2,640 symbols (#1237).
+#
+# Why 2 MB and not "no limit": tree-sitter's peak cost is linear in source
+# size at roughly **95 MB of peak RSS per MB of source** (measured 502 KB ->
+# 95 MB, 1.36 MB -> 182 MB, 6.5 MB -> 669 MB, 46 MB -> 4,411 MB). The parse
+# pool runs up to ``_MAX_PARSE_WORKERS`` (8) of these concurrently, so the cap
+# is really a memory budget: 2 MB bounds one worker at ~230 MB and the pool at
+# ~1.8 GB. Lifting it to 46 MB would be 4.4 GB *per worker*, and vendored
+# tree-sitter grammars ship `parser.c` files of exactly that size — one repo in
+# the corpus (codebase-memory-mcp) carries 268 of them, the largest 104 MB,
+# which would want ~10 GB in a single worker.
+_SOURCE_MAX_FILE_SIZE_BYTES: int = 2 * 1024 * 1024  # 2 MB
+
+# A minified bundle has a real parser and a source extension, so neither the
+# language check nor the size ceiling excludes it — but it is machine-written,
+# yields junk symbols, and is exactly what the 500 KB limit used to catch by
+# accident. Mean line length separates the two cleanly: hand-written source in
+# the corpus runs 25-60 bytes/line (the hermes six: 41-50), while minified
+# JavaScript runs 1,200+ and a single-line JSON blob runs into the millions.
+# 200 leaves a wide margin over the widest real source measured.
+_MINIFIED_MEAN_LINE_BYTES: int = 200
+
+# Only the head of the file is read to decide: a minified bundle has no
+# newlines to find, so a sample answers the question as well as the whole file
+# and bounds the read on a file we are about to reject anyway.
+_MINIFIED_SAMPLE_BYTES: int = 256 * 1024
 
 # Languages for which generated-file detection is skipped.  These files have
 # no AST parsing anyway, so reading 512 bytes to check for generated markers
 # adds no value.
 # Languages for which generated-file detection is skipped — same as parser's
 # passthrough set (no AST parsing, so reading 512 bytes for markers is pointless).
-_SKIP_GENERATED_CHECK: frozenset[str] = frozenset(
-    spec.tag
-    for spec in _LANG_REGISTRY.all_specs()
-    if spec.is_passthrough
-    and (not spec.is_code or spec.is_infra)
-    and spec.tag not in ("openapi", "unknown")
-)
+_SKIP_GENERATED_CHECK: frozenset[str] = _LANG_REGISTRY.unparseable_data_languages()
 
 
 class FileTraverser:
@@ -214,7 +372,11 @@ class FileTraverser:
 
     Args:
         repo_root: Absolute path to the repository root.
-        max_file_size_kb: Skip files larger than this.  Default: 500 KB.
+        max_file_size_kb: Skip files larger than this *when nothing can parse
+            them* (lockfiles, changelogs, JSON fixtures, images, video).
+            Default: 500 KB. Files whose language has an AST parser are bounded
+            instead by :data:`_SOURCE_MAX_FILE_SIZE_BYTES`, a memory budget
+            this argument cannot raise.
         extra_ignore_filename: Name of an additional gitignore-syntax file.
             Defaults to ``.repowiseIgnore``.
         extra_exclude_patterns: Additional gitignore-style patterns to exclude
@@ -245,13 +407,11 @@ class FileTraverser:
         self.repo_root = repo_root.resolve()
         self.max_file_size_bytes = max_file_size_kb * 1024
         self._extra_ignore_filename = extra_ignore_filename
-        self._gitignore = _load_gitignore_spec(self.repo_root)
+        self._gitignore = load_gitignore_spec(self.repo_root)
         self._extra_ignore = _load_extra_ignore_spec(self.repo_root, extra_ignore_filename)
-        self._blocked_patterns = pathspec.PathSpec.from_lines(
-            "gitwildmatch", _BLOCKED_FILENAME_PATTERNS
-        )
+        self._blocked_patterns = _BLOCKED_FILENAME_SPEC
         patterns = extra_exclude_patterns or []
-        self._extra_exclude = pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+        self._extra_exclude = _compile_gitignore(patterns)
         # Per-directory ignore cache: absolute dir path -> PathSpec built from
         # that directory's nested .gitignore + .repowiseIgnore.
         # Pre-seed root: its .gitignore is matched full-path via self._gitignore
@@ -266,6 +426,14 @@ class FileTraverser:
         self._submodule_paths: frozenset[str] = _parse_gitmodules(self.repo_root)
         self._include_submodules = include_submodules
         self._include_nested_repos = include_nested_repos
+        # Console-script tables are read lazily: collecting them walks the
+        # tree parsing every pyproject.toml, which measured at 2.0s of a 2.3s
+        # construction on this repo — and callers that only want the boundary
+        # test (:meth:`package_root_dirs`, :meth:`dir_chain_skipped`) never
+        # need them. Building one per `repowise update` is the reason this is
+        # not eager.
+        self._console_scripts: ConsoleScriptTables | None = None
+        self._console_scripts_prune_nested = not (include_submodules or include_nested_repos)
         self.stats = TraversalStats()
         self._count_lock = threading.Lock()
         log.info(
@@ -276,6 +444,36 @@ class FileTraverser:
             submodules_skipped=0 if include_submodules else len(self._submodule_paths),
             include_nested_repos=include_nested_repos,
         )
+
+    # ------------------------------------------------------------------
+    # Console scripts (lazy — see __init__)
+    # ------------------------------------------------------------------
+
+    def _console_script_tables(self) -> ConsoleScriptTables:
+        """Dotted-module targets of pyproject console scripts, read once.
+
+        A CLI entry module (``repowise-augment =
+        "repowise.cli.augment_hook:main"``) has no in-repo importer, so
+        without this it reads as unreachable unless its filename happens to
+        match an entry-stem heuristic.
+        """
+        if self._console_scripts is None:
+            self._console_scripts = _collect_console_scripts(
+                self.repo_root, prune_nested_git=self._console_scripts_prune_nested
+            )
+        return self._console_scripts
+
+    @property
+    def _console_script_names(self) -> frozenset[str]:
+        return self._console_script_tables().names
+
+    @property
+    def _console_script_modules(self) -> frozenset[str]:
+        return self._console_script_tables().modules
+
+    @property
+    def _distributions(self) -> frozenset[str]:
+        return self._console_script_tables().distributions
 
     # ------------------------------------------------------------------
     # Public API
@@ -374,7 +572,7 @@ class FileTraverser:
                     lines.extend(
                         ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines()
                     )
-            self._dir_ignore_cache[key] = pathspec.PathSpec.from_lines("gitwildmatch", lines)
+            self._dir_ignore_cache[key] = _compile_gitignore(lines)
         return self._dir_ignore_cache[key]
 
     def _should_skip_dir(
@@ -401,6 +599,10 @@ class FileTraverser:
         # to the gitignore/exclude checks below).
         if not self._include_nested_repos and not is_submodule and _is_nested_git_repo(abs_path):
             self.stats.skipped_nested_repo += 1
+            if len(self.stats.nested_repo_paths) < _MAX_NESTED_REPO_PATHS:
+                self.stats.nested_repo_paths.append(rel_str)
+            else:
+                self.stats.nested_repo_paths_truncated = True
             log.debug("Skipping nested git repo", path=rel_str)
             return True
         if self._gitignore.match_file(rel_str + "/"):
@@ -416,6 +618,28 @@ class FileTraverser:
     # Internal: FileInfo construction
     # ------------------------------------------------------------------
 
+    def _oversize_skip_reason(self, abs_path: Path, size_bytes: int) -> _OversizeSkip | None:
+        """This traverser's size verdict for one file. See :func:`size_verdict`."""
+        return size_verdict(abs_path, size_bytes, max_file_size_bytes=self.max_file_size_bytes)
+
+    def _record_skipped_source(
+        self,
+        records: list[SkippedSourceFile],
+        cap: int,
+        rel_str: str,
+        size_bytes: int,
+        reason: str,
+    ) -> bool:
+        """Note a skipped file by name. Caller holds ``_count_lock``.
+
+        Returns False once ``cap`` is reached, so each caller can raise its own
+        truncation flag.
+        """
+        if len(records) >= cap:
+            return False
+        records.append(SkippedSourceFile(rel_str, size_bytes // 1024, reason))
+        return True
+
     def _build_file_info(self, abs_path: Path) -> FileInfo | None:
         try:
             stat = abs_path.stat()
@@ -426,11 +650,29 @@ class FileTraverser:
         rel_path = abs_path.relative_to(self.repo_root)
         rel_str = rel_path.as_posix()
 
-        # Size limit
-        if size_bytes > self.max_file_size_bytes:
+        # Size limit. Two ceilings, because one number cannot serve both jobs:
+        # keeping multi-megabyte blobs out, and keeping a repo's biggest real
+        # module in. The lookup that separates them is a dict hit with no I/O
+        # (see :func:`_language_from_name_or_ext`), so this stays as cheap as
+        # the single comparison it replaces and a 12 MB video is still
+        # rejected on its stat alone.
+        if (reason := self._oversize_skip_reason(abs_path, size_bytes)) is not None:
             with self._count_lock:
                 self.stats.skipped_oversized += 1
-            log.debug("Skipping oversized file", path=rel_str, size_kb=size_bytes // 1024)
+                if reason.is_source and not self._record_skipped_source(
+                    self.stats.skipped_source_files,
+                    _MAX_SKIPPED_SOURCE_PATHS,
+                    rel_str,
+                    size_bytes,
+                    reason.reason,
+                ):
+                    self.stats.skipped_source_files_truncated = True
+            log.debug(
+                "Skipping oversized file",
+                path=rel_str,
+                size_kb=size_bytes // 1024,
+                reason=reason.reason,
+            )
             return None
 
         # Blocked extension
@@ -478,11 +720,41 @@ class FileTraverser:
             if language == "unknown":
                 with self._count_lock:
                     self.stats.skipped_unknown_language += 1
+                    # Keep the path even though nothing here can parse it. A
+                    # later pass reads these off disk to ask whether a symbol
+                    # it is about to call dead is named in one; discarding the
+                    # path made that question unanswerable for every format
+                    # without a parser, which is where a docs tree that embeds
+                    # its samples by path lives. Records no language and builds
+                    # no FileInfo, so the graph is untouched either way.
+                    if abs_path.suffix.lower() in _REFERENCE_BEARING_EXTENSIONS and (
+                        not self._record_skipped_source(
+                            self.stats.unknown_language_files,
+                            _MAX_UNKNOWN_LANGUAGE_PATHS,
+                            rel_str,
+                            size_bytes,
+                            "unknown_language",
+                        )
+                    ):
+                        self.stats.unknown_language_files_truncated = True
                 return None
 
         # Generated file detection: only meaningful for code files.  Skipping
         # for data/markup files avoids a 512-byte read per file with no benefit.
-        if language not in _SKIP_GENERATED_CHECK and _is_generated(abs_path):
+        #
+        # An include fragment is exempt even when generated. This skip exists to
+        # keep machine-written *modules* out of the index, and a .inl is not a
+        # module: it is text pasted into a hand-written translation unit, so
+        # dropping it deletes edges from code nobody generated. A generated
+        # binding table is often the only reason the macros it invokes have call
+        # sites at all, and skipping it reported those macros as unused (#1600).
+        # Parsing generated modules without documenting them is a wider question
+        # than this exemption, and is left alone.
+        if (
+            language not in _SKIP_GENERATED_CHECK
+            and abs_path.suffix.lower() not in INCLUDE_FRAGMENT_EXTENSIONS
+            and _is_generated(abs_path)
+        ):
             with self._count_lock:
                 self.stats.skipped_generated += 1
             log.debug("Skipping generated file", path=rel_str)
@@ -496,13 +768,11 @@ class FileTraverser:
             size_bytes=size_bytes,
             git_hash="",
             last_modified=datetime.fromtimestamp(stat.st_mtime),
-            is_test=_is_test_file(rel_str, filename),
+            is_test=is_test_related_path(rel_str, language),
             is_config=_is_config_file(language),
             is_api_contract=_is_api_contract(abs_path, language),
-            is_entry_point=(
-                filename in _ENTRY_POINT_NAMES
-                or filename.endswith(_ENTRY_POINT_NAME_SUFFIXES)
-                or _stem_is_entry_point(abs_path)
+            is_entry_point=_is_entry_point(
+                rel_str, filename, abs_path, language, self._console_script_modules
             ),
         )
 
@@ -537,7 +807,7 @@ class FileTraverser:
                 rel_pkg = rel_pkg_path.as_posix()
                 if rel_pkg in seen_paths:
                     continue
-                if self._dir_chain_skipped(rel_pkg_path):
+                if self.dir_chain_skipped(rel_pkg_path):
                     continue
                 seen_paths.add(rel_pkg)
                 lang = _primary_language_in(pkg_dir, prune_nested_git=prune_nested)
@@ -557,17 +827,41 @@ class FileTraverser:
         packages.sort(key=lambda p: p.path)
         return packages, len(packages) > 1
 
-    def _dir_chain_skipped(self, rel_dir: Path) -> bool:
+    def package_root_dirs(self) -> set[str]:
+        """Every directory holding a package manifest, at any depth.
+
+        Shares :func:`.package_roots.scan_package_roots` with health's module
+        attribution, and this traverser's own skip semantics, so the two agree
+        on what a package is. Distinct from :meth:`get_repo_structure`'s
+        ``packages``, which stops at depth 2 and pays for language and
+        entry-point detection per package.
+        """
+        from .package_roots import scan_package_roots
+
+        return scan_package_roots(self.repo_root, is_pruned=self.dir_chain_skipped)
+
+    def dir_chain_skipped(self, rel_dir: Path) -> bool:
         """True if *rel_dir* (or any ancestor) would be pruned by ``_walk``.
 
         Reuses :meth:`_should_skip_dir` level by level so monorepo package
         detection has exactly the same boundary semantics as file traversal
         (blocked dirs, submodules, nested git repos, gitignore/excludes).
+
+        That includes each level's *nested* ignore spec, which this used to
+        omit: ``_should_skip_dir`` takes the containing directory's spec as an
+        argument and got ``None`` here, so a directory ignored by a nested
+        ``.gitignore`` was reported as walkable even though ``_walk`` prunes
+        it. On this repo that let ``packages/vscode/.vscode-test`` — a
+        downloaded VS Code archive ignored by ``packages/vscode/.gitignore`` —
+        through, carrying 500 vendored ``package.json`` files with it.
         """
         cur = Path()
         for part in rel_dir.parts:
+            parent_abs = self.repo_root / cur
             cur = cur / part
-            if self._should_skip_dir(part, cur, self.repo_root / cur):
+            if self._should_skip_dir(
+                part, cur, self.repo_root / cur, self._get_dir_ignore(parent_abs)
+            ):
                 return True
         return False
 
@@ -621,6 +915,68 @@ def _is_binary(abs_path: Path) -> bool:
         return True
 
 
+def size_verdict(
+    abs_path: Path,
+    size_bytes: int,
+    *,
+    max_file_size_bytes: int = _DEFAULT_MAX_FILE_SIZE_BYTES,
+) -> _OversizeSkip | None:
+    """Whether this file is excluded on size, and why. None means "index it".
+
+    Which ceiling applies depends on whether anything can actually read the
+    file. A parserless file (lockfile, changelog, image, video) is bounded by
+    *max_file_size_bytes*, the caller-facing knob. A file whose language has a
+    parser is bounded by :data:`_SOURCE_MAX_FILE_SIZE_BYTES`, which is
+    deliberately *not* configurable: it is a memory budget (~95 MB of peak RSS
+    per MB of source, times an 8-worker parse pool), not a preference, so
+    raising the knob must not be able to lift it.
+
+    Shared with the MCP layer so that "why is this file missing" is answered by
+    the same code that made it missing, rather than a second copy that can
+    drift.
+    """
+    language = _language_from_name_or_ext(abs_path)
+    # No parser, so there is nothing to gain by reading it and size is the only
+    # signal available. Pre-existing behaviour, unchanged.
+    if language is None or language in _SKIP_GENERATED_CHECK:
+        if size_bytes > max_file_size_bytes:
+            return _OversizeSkip("over_max_size", is_source=False)
+        return None
+    if size_bytes > _SOURCE_MAX_FILE_SIZE_BYTES:
+        return _OversizeSkip("over_max_size", is_source=True)
+    # Only files the old cap would have dropped are worth the sample read;
+    # below it a minified bundle is small enough to be harmless.
+    if size_bytes > max_file_size_bytes:
+        minified = _looks_minified(abs_path)
+        if minified is None:
+            return _OversizeSkip("unreadable", is_source=True)
+        if minified:
+            return _OversizeSkip("minified", is_source=True)
+    return None
+
+
+def _looks_minified(abs_path: Path) -> bool | None:
+    """Return True if the file's mean line length says it is machine-packed.
+
+    Reads only the head: a minified file's defining property is that it has
+    almost no newlines, so the sample is representative by construction.
+
+    Returns ``None`` when the file could not be read. The file still has to be
+    skipped, but reporting an unreadable file as "looks minified" would send
+    the user to check a bundler when the real problem is permissions.
+    """
+    try:
+        with open(abs_path, "rb") as f:
+            sample = f.read(_MINIFIED_SAMPLE_BYTES)
+    except OSError:
+        return None
+    if not sample:
+        return False
+    # +1 so a file with no trailing newline is not divided by zero, and a
+    # single-line file measures its own full length.
+    return len(sample) / (sample.count(b"\n") + 1) > _MINIFIED_MEAN_LINE_BYTES
+
+
 def _is_generated(abs_path: Path) -> bool:
     """Return True if the file appears to be auto-generated."""
     name = abs_path.name
@@ -633,16 +989,6 @@ def _is_generated(abs_path: Path) -> bool:
         return any(marker.upper() in header_upper for marker in _GENERATED_MARKERS)
     except OSError:
         return False
-
-
-def _is_test_file(rel_path: str, filename: str) -> bool:
-    stem = Path(filename).stem.lower()
-    if stem.startswith("test_") or stem.endswith("_test"):
-        return True
-    if stem.startswith("spec_") or stem.endswith("_spec"):
-        return True
-    path_lower = rel_path.lower()
-    return "/test/" in path_lower or "/tests/" in path_lower or "/spec/" in path_lower
 
 
 def _is_config_file(language: LanguageTag) -> bool:
@@ -662,6 +1008,138 @@ def _is_api_contract(abs_path: Path, language: LanguageTag) -> bool:
 def _stem_is_entry_point(abs_path: Path) -> bool:
     stem = abs_path.stem.lower()
     return stem in _ENTRY_POINT_STEMS
+
+
+def _is_entry_point(
+    rel_str: str,
+    filename: str,
+    abs_path: Path,
+    language: str,
+    console_script_modules: frozenset[str],
+) -> bool:
+    """Whether this file gets ``FileInfo.is_entry_point``.
+
+    Two kinds of evidence, and only one of them can be wrong about the file's
+    nature. A conventional filename or stem is a *guess from the name*, and
+    names lie: ``api/server.json`` is data, ``resolvers/dotnet/index.py``
+    dispatches. ``not_an_execution_start`` is the shared correction for exactly
+    that, so the same rule that keeps those two off the wiki's orientation list
+    keeps them from being flagged in the first place — which matters because
+    the flag, not the list, is what exempts a file from dead-code detection
+    (``RepoStructure.entry_points`` is a projection of this flag, so it is
+    filtered by the same change).
+
+    A ``[project.scripts]`` target is not a guess: ``pyproject.toml`` names the
+    module a console launcher imports at runtime. Overriding named evidence
+    with a filename heuristic is how a real entry point becomes a dead-code
+    finding, so that limb is checked outside the gate. The post-traversal
+    stampers (``graph_warmups``, ``framework_edges``) are evidence of the same
+    kind — a Go ``func main()``, a ``package.json`` ``exports`` map, Spring
+    classpath scanning — and are deliberately left alone for the same reason.
+    """
+    named_entry = (
+        filename in _ENTRY_POINT_NAMES
+        or filename.endswith(_ENTRY_POINT_NAME_SUFFIXES)
+        or _stem_is_entry_point(abs_path)
+    )
+    if named_entry and not not_an_execution_start(rel_str, language):
+        return True
+    return _is_console_script_target(rel_str, console_script_modules)
+
+
+class ConsoleScriptTables(NamedTuple):
+    """What one pass over the repo's ``pyproject.toml`` files yields."""
+
+    names: frozenset[str]
+    """Launcher names an installer drops in the environment's script dir."""
+    modules: frozenset[str]
+    """Dotted module targets, used for entry-point detection."""
+    distributions: frozenset[str]
+    """``[project].name`` values — the distributions this repo installs as."""
+
+
+def _collect_console_scripts(
+    repo_root: Path, *, prune_nested_git: bool = True
+) -> ConsoleScriptTables:
+    """Console-script names, module targets and distribution names.
+
+    Reads ``[project.scripts]``, ``[project.gui-scripts]``, and every
+    ``[project.entry-points.*]`` group from each ``pyproject.toml`` in the
+    repo. Values look like ``"repowise.cli.augment_hook:main"`` — the part
+    before the colon names the module a console launcher imports at runtime;
+    the key is the launcher an installer drops in the environment's script
+    directory, and ``[project].name`` is the distribution it installs as.
+    All three come out of the same read: entry-point detection wants the
+    modules, shadowed-launcher detection wants the names and needs the
+    distribution to tell this repo's editable install from a dependency's.
+    Best-effort: unparsable files are skipped.
+    """
+    import tomllib
+
+    from repowise.core.fs_walk import iter_glob
+
+    names: set[str] = set()
+    modules: set[str] = set()
+    distributions: set[str] = set()
+    try:
+        config_files = list(
+            iter_glob(repo_root, ("pyproject.toml",), prune_nested_git=prune_nested_git)
+        )
+    except OSError:
+        return ConsoleScriptTables(frozenset(), frozenset(), frozenset())
+    for config_file in config_files:
+        try:
+            data = tomllib.loads(config_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        project = data.get("project")
+        if not isinstance(project, dict):
+            continue
+        dist = project.get("name")
+        if isinstance(dist, str) and dist.strip():
+            distributions.add(dist.strip())
+        # Only [project.scripts] / [project.gui-scripts] produce a launcher on
+        # PATH; other entry-point groups are plugin registrations, so their
+        # keys are collected as modules only.
+        launcher_groups = [project.get("scripts"), project.get("gui-scripts")]
+        groups = list(launcher_groups)
+        entry_points = project.get("entry-points")
+        if isinstance(entry_points, dict):
+            groups.extend(entry_points.values())
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            is_launcher = any(group is g for g in launcher_groups)
+            for name, target in group.items():
+                if is_launcher and isinstance(name, str) and name.strip():
+                    names.add(name.strip())
+                if isinstance(target, str):
+                    module = target.split(":", 1)[0].strip()
+                    if module:
+                        modules.add(module)
+    return ConsoleScriptTables(frozenset(names), frozenset(modules), frozenset(distributions))
+
+
+def _is_console_script_target(rel_path: str, modules: frozenset[str]) -> bool:
+    """True when *rel_path* is the file a console-script module target names.
+
+    The repo-relative path is compared as a dot-boundary suffix because the
+    dotted module omits source-root prefixes (``src/``, ``packages/*/src/``).
+    Single-segment module names must match exactly — a bare ``main`` target
+    must not blanket-flag every ``main.py``-adjacent path suffix.
+    """
+    if not modules or not rel_path.endswith(".py"):
+        return False
+    dotted = rel_path[: -len(".py")]
+    if dotted.endswith("/__init__"):
+        dotted = dotted[: -len("/__init__")]
+    dotted = dotted.replace("/", ".")
+    for module in modules:
+        if dotted == module:
+            return True
+        if "." in module and dotted.endswith("." + module):
+            return True
+    return False
 
 
 def _primary_language_in(directory: Path, *, prune_nested_git: bool = True) -> LanguageTag:
@@ -735,13 +1213,79 @@ def _parse_gitmodules(repo_root: Path) -> frozenset[str]:
         return frozenset()
 
 
-def _load_gitignore_spec(repo_root: Path) -> pathspec.PathSpec:
+def is_candidate_source_path(rel_path: str) -> bool:
+    """Whether *rel_path* is shaped like a file this repo would index.
+
+    Path-shape only: the directory blocklist, the blocked extensions/filename
+    patterns, and the known-language extension map. No disk access, no
+    gitignore, no binary/size/generated checks — so a ``True`` answer means
+    "worth handing to the pipeline", never "will be indexed". :class:`FileTraverser`
+    still applies the full test on the files it walks.
+
+    It exists for the two change sources that only ever see a path: the
+    working-tree diff (untracked files, which ``git`` reports without
+    consulting our blocklists) and the file watcher (which must not wake an
+    update for ``.git/index.lock`` or a ``node_modules`` write). Both were
+    reading the blocklists' intent by hand and drifting from it.
+
+    One known false negative: an extensionless script that :class:`FileTraverser`
+    accepts by shebang is rejected here, because deciding that means reading the
+    file and this must stay a pure path test. Such a file is indexed on a full
+    run and by any commit that touches it; only the two path-only sources above
+    miss it.
+    """
+    parts = Path(rel_path.replace("\\", "/")).parts
+    if not parts:
+        return False
+    if any(part in _BLOCKED_DIRS for part in parts[:-1]):
+        return False
+
+    name = parts[-1]
+    if name in SPECIAL_FILENAMES:
+        return True
+
+    suffix = Path(name).suffix.lower()
+    if suffix in _BLOCKED_EXTENSIONS:
+        return False
+    if _BLOCKED_FILENAME_SPEC.match_file(name):
+        return False
+    return suffix in EXTENSION_TO_LANGUAGE
+
+
+def _compile_gitignore(lines: Iterable[str]) -> pathspec.PathSpec:
+    """Build a gitwildmatch ``PathSpec``, tolerating malformed patterns.
+
+    Git itself accepts ignore lines that ``pathspec`` rejects — e.g. a trailing
+    backslash like ``.godot\\`` (a real pattern found in Godot ``.gitignore``
+    files). ``PathSpec.from_lines`` raises ``GitWildMatchPatternError`` on the
+    first such line, which would abort ingestion of the entire repository over
+    one stray line that ``git status`` handles without complaint. Compile each
+    line independently and skip (with a warning) only the offending ones, so the
+    rest of the ignore file still applies.
+    """
+    patterns: list[GitWildMatchPattern] = []
+    for line in lines:
+        if not line:
+            continue
+        try:
+            patterns.append(GitWildMatchPattern(line))
+        except GitWildMatchPatternError:
+            log.warning("skipping malformed gitignore pattern", pattern=line)
+    return pathspec.PathSpec(patterns)
+
+
+def load_gitignore_spec(repo_root: Path) -> pathspec.PathSpec:
     """Root ignore spec: ``.gitignore`` merged with ``.git/info/exclude``.
 
     ``info/exclude`` is git's local-only ignore file — paths excluded there
     (scratch dirs, private checkouts) are invisible to ``git status`` and
     must be equally invisible to the index, or local-only files leak into
     the graph, blast-radius lists, and generated docs.
+
+    Public because :mod:`repowise.core.fs_walk` deliberately does not read
+    ignore files — every repo-wide scan that must respect them (the index
+    traversal here, ADR discovery in the decision extractor) pairs a pruned
+    walk with this spec.
     """
     lines: list[str] = []
     for ignore_file in (
@@ -750,7 +1294,7 @@ def _load_gitignore_spec(repo_root: Path) -> pathspec.PathSpec:
     ):
         if ignore_file.exists():
             lines.extend(ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines())
-    return pathspec.PathSpec.from_lines("gitwildmatch", lines)
+    return _compile_gitignore(lines)
 
 
 def _load_extra_ignore_spec(repo_root: Path, filename: str) -> pathspec.PathSpec:
@@ -758,4 +1302,4 @@ def _load_extra_ignore_spec(repo_root: Path, filename: str) -> pathspec.PathSpec
     lines: list[str] = []
     if ignore_file.exists():
         lines = ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines()
-    return pathspec.PathSpec.from_lines("gitwildmatch", lines)
+    return _compile_gitignore(lines)

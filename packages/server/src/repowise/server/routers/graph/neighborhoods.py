@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.models import TEMPORAL_EDGE_TYPES
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     GitMetadata,
@@ -40,7 +41,7 @@ async def ego_graph(
     repo_id: str,
     node_id: str = Query(..., description="Center node ID"),
     hops: int = Query(2, ge=1, le=3),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> EgoGraphResponse:
     """Return the N-hop neighborhood of a given node."""
@@ -49,7 +50,16 @@ async def ego_graph(
     except ImportError:
         raise HTTPException(status_code=501, detail="networkx not available") from None
 
-    edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
+    # Temporal edges are excluded from the traversal for the reason
+    # `get_dependency_path` gives: a co-change edge is history, not a
+    # reference, so it makes an unrelated file a 1-hop neighbour. Containment
+    # stays — it is the only bridge from the file layer to the symbol layer.
+    edge_result = await session.execute(
+        select(GraphEdge).where(
+            GraphEdge.repository_id == repo_id,
+            GraphEdge.edge_type.notin_(TEMPORAL_EDGE_TYPES),
+        )
+    )
     edges = edge_result.scalars().all()
 
     graph: nx.DiGraph = nx.DiGraph()
@@ -67,6 +77,10 @@ async def ego_graph(
             raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
         graph.add_node(node_id)
 
+    # Counted on the graph this endpoint returns rather than from the edge
+    # rows, so a temporal edge cannot inflate it. Not identical to the length
+    # of `links`: nx.DiGraph collapses a pair joined by two edge types (an
+    # `imports` and a `type_use` to the same file) into one arc.
     inbound_count = graph.in_degree(node_id)
     outbound_count = graph.out_degree(node_id)
 
@@ -113,7 +127,7 @@ async def ego_graph(
 @router.get("/{repo_id}/entry-points", response_model=GraphExportResponse)
 async def entry_points_graph(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> GraphExportResponse:
     """Return the subgraph reachable within 3 hops from entry-point nodes."""
@@ -122,7 +136,15 @@ async def entry_points_graph(
     except ImportError:
         raise HTTPException(status_code=501, detail="networkx not available") from None
 
-    edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
+    # Same exclusion as /ego, and it matters more here: this walks three hops
+    # from every entry point, so one co-change edge pulls its whole
+    # neighbourhood into "reachable from an entry point".
+    edge_result = await session.execute(
+        select(GraphEdge).where(
+            GraphEdge.repository_id == repo_id,
+            GraphEdge.edge_type.notin_(TEMPORAL_EDGE_TYPES),
+        )
+    )
     edges = edge_result.scalars().all()
 
     graph: nx.DiGraph = nx.DiGraph()
@@ -175,7 +197,7 @@ async def entry_points_graph(
 @router.get("/{repo_id}/dead-nodes", response_model=DeadCodeGraphResponse)
 async def dead_code_graph(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> DeadCodeGraphResponse:
     """Return dead-code nodes plus their 1-hop neighbors."""
@@ -304,7 +326,7 @@ async def hot_files_graph(
     repo_id: str,
     days: int = Query(30, description="Time window in days: 7, 30, or 90"),
     limit: int = Query(25, ge=1, le=100),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> HotFilesGraphResponse:
     """Return the most-committed files plus their 1-hop outgoing neighbors."""

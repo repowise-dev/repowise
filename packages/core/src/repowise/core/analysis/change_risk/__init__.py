@@ -9,24 +9,64 @@ and is a natural pre-merge / PR gate.
 
 from __future__ import annotations
 
-from .baseline import baseline_scores
+from .baseline import baseline_samples, scores_excluding
 from .features import (
+    WORKING_TREE_REF,
     ChangeFeatures,
+    change_features_from_stored,
     extract_commit_features,
     extract_range_features,
+    extract_worktree_features,
     features_from_file_changes,
+    working_tree_is_dirty,
 )
-from .model import ChangeRisk, RiskDriver, score_change
-from .normalize import RiskNormalizer
+from .fix_history import (
+    FixHistoryUnavailableError,
+    change_fix_density,
+    clear_fix_pressure_cache,
+    fix_density_percentile,
+    fix_pressure,
+    hot_files,
+)
+from .model import SCORE_MEASURES, SCORE_UNIT, ChangeRisk, RiskDriver, score_change
+from .normalize import RiskNormalizer, review_priority_classification
+from .service import (
+    ChangeRiskResult,
+    change_risk_payload,
+    normalize_extensions,
+    range_anchor,
+    riskignore_patterns,
+    score_live_change,
+)
 
 __all__ = [
+    "SCORE_MEASURES",
+    "SCORE_UNIT",
+    "WORKING_TREE_REF",
     "ChangeFeatures",
     "ChangeRisk",
+    "ChangeRiskResult",
+    "FixHistoryUnavailableError",
     "RiskDriver",
     "RiskNormalizer",
-    "baseline_scores",
+    "baseline_samples",
+    "change_features_from_stored",
+    "change_fix_density",
+    "change_risk_payload",
+    "clear_fix_pressure_cache",
     "extract_commit_features",
     "extract_range_features",
+    "extract_worktree_features",
     "features_from_file_changes",
+    "fix_density_percentile",
+    "fix_pressure",
+    "hot_files",
+    "normalize_extensions",
+    "range_anchor",
+    "review_priority_classification",
+    "riskignore_patterns",
     "score_change",
+    "score_live_change",
+    "scores_excluding",
+    "working_tree_is_dirty",
 ]

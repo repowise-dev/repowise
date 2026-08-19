@@ -155,6 +155,123 @@ async def test_update_path_essential_tier_skips_co_change_walk(tmp_path) -> None
     assert meta["co_change_partners_json"] == "[]"
 
 
+# ---------------------------------------------------------------------------
+# Idle-file decay refresh (#728): an update must rewrite the time-decayed
+# history fields for *unchanged* files too, or their scores can only ratchet
+# downward and never recover as the anchor advances.
+# ---------------------------------------------------------------------------
+
+
+def _commit_dated(repo, tmp_path, files: dict[str, str], msg: str, date: str):
+    for name, content in files.items():
+        (tmp_path / name).write_text(content)
+    repo.index.add(list(files))
+    return repo.index.commit(msg, author_date=date, commit_date=date)
+
+
+def _build_repo_idle(tmp_path):
+    """a.py + b.py churn together, then only b.py keeps changing."""
+    import git as gitpython
+
+    repo = gitpython.Repo.init(tmp_path)
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Alice")
+        cw.set_value("user", "email", "alice@example.com")
+    for i in range(3):
+        _commit_dated(
+            repo,
+            tmp_path,
+            {"a.py": "x\n" * (i + 2), "b.py": f"y = {i}\n"},
+            f"feat: joint change {i} touching both modules",
+            "2024-01-01T00:00:00",
+        )
+    for i in range(4):
+        _commit_dated(
+            repo, tmp_path, {"b.py": f"y = {i + 9}\n"}, f"chore: b only {i}", "2024-01-05T00:00:00"
+        )
+    repo.close()
+
+
+async def test_idle_decay_refresh_matches_full_index(tmp_path, monkeypatch) -> None:
+    """The idle refresh must write exactly what a fresh full index would — the
+    correct decayed value — for an unchanged file, using decay-only keys."""
+    import json
+
+    from repowise.core.ingestion.git_indexer.file_history import DECAY_REFRESH_KEYS
+
+    monkeypatch.setenv("REPOWISE_GIT_WINDOW_ANCHOR", "head")
+    _build_repo_idle(tmp_path)
+
+    full = GitIndexer(tmp_path, tier=GitIndexTier.FULL)
+    _summary, full_meta = await full.index_repo("repo1")
+    full_by_path = {m["file_path"]: m for m in full_meta}
+
+    sink: dict[str, dict] = {}
+    upd = GitIndexer(tmp_path, tier=GitIndexTier.FULL)
+    changed = await upd.index_changed_files(
+        ["b.py"], all_files={"a.py", "b.py"}, idle_decay_sink=sink
+    )
+
+    # Only idle files land in the sink; changed files stay on the normal path.
+    assert set(sink) == {"a.py"}
+    assert {m["file_path"] for m in changed} == {"b.py"}
+
+    idle = sink["a.py"]
+    # Decay-only: never carries full-history columns the upsert would clobber.
+    assert set(idle) == set(DECAY_REFRESH_KEYS) | {"file_path"}
+
+    full_a = full_by_path["a.py"]
+    assert idle["temporal_hotspot_score"] == pytest.approx(
+        full_a["temporal_hotspot_score"], rel=1e-3
+    )
+    assert idle["commit_count_90d"] == full_a["commit_count_90d"]
+    assert idle["lines_added_90d"] == full_a["lines_added_90d"]
+    assert json.loads(idle["co_change_partners_json"]) == json.loads(
+        full_a["co_change_partners_json"]
+    )
+
+
+async def test_idle_decay_refresh_recovers_as_anchor_advances(tmp_path, monkeypatch) -> None:
+    """The reported symptom: leave a churny file alone and its decayed score
+    must shrink as new (unrelated) commits advance the anchor."""
+    import git as gitpython
+
+    monkeypatch.setenv("REPOWISE_GIT_WINDOW_ANCHOR", "head")
+
+    repo = gitpython.Repo.init(tmp_path)
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Alice")
+        cw.set_value("user", "email", "alice@example.com")
+    # a.py churns hard in January.
+    for i in range(4):
+        _commit_dated(
+            repo, tmp_path, {"a.py": "x\n" * (i + 5)}, f"feat: churn a {i}", "2024-01-01T00:00:00"
+        )
+    _commit_dated(repo, tmp_path, {"b.py": "y = 0\n"}, "feat: add b", "2024-01-02T00:00:00")
+    repo.close()
+
+    # Score a.py at the January anchor.
+    early = GitIndexer(tmp_path, tier=GitIndexTier.FULL)
+    _s, early_meta = await early.index_repo("repo1")
+    early_a = {m["file_path"]: m for m in early_meta}["a.py"]["temporal_hotspot_score"]
+
+    # Six months later, only b.py changes — a.py is idle.
+    repo = gitpython.Repo(tmp_path)
+    for i in range(3):
+        _commit_dated(
+            repo, tmp_path, {"b.py": f"y = {i + 1}\n"}, f"chore: b {i}", "2024-07-01T00:00:00"
+        )
+    repo.close()
+
+    sink: dict[str, dict] = {}
+    upd = GitIndexer(tmp_path, tier=GitIndexTier.FULL)
+    await upd.index_changed_files(["b.py"], all_files={"a.py", "b.py"}, idle_decay_sink=sink)
+
+    assert sink["a.py"]["temporal_hotspot_score"] < early_a, (
+        "idle file's decayed score must recover (shrink) as the anchor advances"
+    )
+
+
 def test_thread_repo_pool_reuses_per_thread_and_closes(tmp_path) -> None:
     _build_repo(tmp_path)
     indexer = GitIndexer(tmp_path)

@@ -15,11 +15,12 @@ import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from repowise.core.fs_walk import iter_glob
+from repowise.core.fs_walk import glob_via
+from repowise.core.ingestion.source_text import decode_source
 
 if TYPE_CHECKING:
     from .context import ResolverContext
@@ -163,10 +164,7 @@ def _module_dir(repo_path: Path, module_name: str, overrides: dict[str, str]) ->
 
 def _is_test_source_set(name: str) -> bool:
     lower = name.lower()
-    for marker in _TEST_SOURCESET_MARKERS:
-        if marker in lower:
-            return True
-    return False
+    return any(marker in lower for marker in _TEST_SOURCESET_MARKERS)
 
 
 def _detect_source_sets_from_dirs(module_dir: Path) -> list[SourceSet]:
@@ -254,20 +252,17 @@ def _detect_plugins(module_dir: Path) -> frozenset[str]:
 # Package extraction (cached per file)
 # ---------------------------------------------------------------------------
 
-@lru_cache(maxsize=8192)
-def _extract_file_info(abs_path: str) -> tuple[str, tuple[str, ...], bool, bool]:
+def _extract_text_info(
+    abs_path: str, text: str | None
+) -> tuple[str, tuple[str, ...], bool, bool]:
     """Return (package_decl, top_level_types, is_module_info, is_package_info).
 
-    Reads the file once and caches the result. Cheap line scan, no AST.
+    Cheap line scan, no AST. *text* of None means the file was unreadable.
     """
-    path = Path(abs_path)
-    name = path.name
+    name = Path(abs_path).name
     is_module_info = name == "module-info.java"
     is_package_info = name == "package-info.java"
-
-    try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
+    if text is None:
         return "", (), is_module_info, is_package_info
 
     package = ""
@@ -276,15 +271,25 @@ def _extract_file_info(abs_path: str) -> tuple[str, tuple[str, ...], bool, bool]
         package = pkg_match.group(1)
 
     top_level: list[str] = []
-    _TYPE_DECL_RE = re.compile(
+    type_decl_re = re.compile(
         r"^\s*(?:public\s+|private\s+|protected\s+|internal\s+|abstract\s+|final\s+|sealed\s+|open\s+|data\s+)*"
         r"(?:class|interface|enum|object|record|annotation)\s+(\w+)",
         re.MULTILINE,
     )
-    for m in _TYPE_DECL_RE.finditer(text):
+    for m in type_decl_re.finditer(text):
         top_level.append(m.group(1))
 
     return package, tuple(top_level), is_module_info, is_package_info
+
+
+@lru_cache(maxsize=8192)
+def _extract_file_info(abs_path: str) -> tuple[str, tuple[str, ...], bool, bool]:
+    """:func:`_extract_text_info` for a file the source map did not have."""
+    try:
+        text: str | None = Path(abs_path).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        text = None
+    return _extract_text_info(abs_path, text)
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +297,11 @@ def _extract_file_info(abs_path: str) -> tuple[str, tuple[str, ...], bool, bool]
 # ---------------------------------------------------------------------------
 
 def build_jvm_gradle_index(
-    repo_path: Path | None, *, prune_nested_git: bool = True
+    repo_path: Path | None,
+    *,
+    prune_nested_git: bool = True,
+    snapshot: Any | None = None,
+    source_map: dict[str, bytes] | None = None,
 ) -> JvmGradleIndex:
     """Walk Gradle config + JVM sources to build the package-resolution index."""
     index = JvmGradleIndex()
@@ -307,9 +316,10 @@ def build_jvm_gradle_index(
         modules.extend(mods)
         project_dir_overrides.update(ovr)
 
-    if not modules:
-        if (repo_path / "build.gradle").is_file() or (repo_path / "build.gradle.kts").is_file():
-            modules = [""]
+    if not modules and (
+        (repo_path / "build.gradle").is_file() or (repo_path / "build.gradle.kts").is_file()
+    ):
+        modules = [""]
 
     resolved_repo = repo_path.resolve()
 
@@ -353,14 +363,23 @@ def build_jvm_gradle_index(
                     continue
                 rel_roots.append(rel)
 
-                for jvm_file in iter_glob(root_path, "*", prune_nested_git=prune_nested_git):
+                for jvm_file in glob_via(
+                    snapshot, root_path, "*", prune_nested_git=prune_nested_git
+                ):
                     if jvm_file.suffix not in _JVM_EXTENSIONS or not jvm_file.is_file():
                         continue
                     try:
                         rel_file = jvm_file.relative_to(resolved_repo).as_posix()
                     except ValueError:
                         continue
-                    package, _types, _is_mod, _is_pkg = _extract_file_info(str(jvm_file.resolve()))
+                    abs_file = str(jvm_file.resolve())
+                    data = source_map.get(rel_file) if source_map is not None else None
+                    if data is not None:
+                        package, _types, _is_mod, _is_pkg = _extract_text_info(
+                            abs_file, decode_source(data)
+                        )
+                    else:
+                        package, _types, _is_mod, _is_pkg = _extract_file_info(abs_file)
                     if not package:
                         continue
                     index.package_to_files.setdefault(package, []).append(rel_file)
@@ -379,17 +398,22 @@ def build_jvm_gradle_index(
     return index
 
 
-def get_or_build_jvm_gradle_index(ctx: "ResolverContext") -> JvmGradleIndex:
+def get_or_build_jvm_gradle_index(ctx: ResolverContext) -> JvmGradleIndex:
     """Return the cached JvmGradleIndex, building it on first access."""
     cached = getattr(ctx, "_jvm_gradle_index", None)
     if cached is not None:
         return cached
-    index = build_jvm_gradle_index(ctx.repo_path, prune_nested_git=ctx.prune_nested_git)
+    index = build_jvm_gradle_index(
+        ctx.repo_path,
+        prune_nested_git=ctx.prune_nested_git,
+        snapshot=getattr(ctx, "walk_snapshot", None),
+        source_map=getattr(ctx, "source_map", None),
+    )
     ctx._jvm_gradle_index = index  # type: ignore[attr-defined]
     return index
 
 
-def resolve_via_jvm_gradle_index(module_path: str, ctx: "ResolverContext") -> str | None:
+def resolve_via_jvm_gradle_index(module_path: str, ctx: ResolverContext) -> str | None:
     """Resolve an FQN to a single file via the Gradle index."""
     index = get_or_build_jvm_gradle_index(ctx)
     matches = index.lookup_class(module_path)
@@ -423,12 +447,12 @@ def build_kotlin_index(repo_path: Path | None) -> KotlinProjectIndex:
     return KotlinProjectIndex(_inner=build_jvm_gradle_index(repo_path))
 
 
-def get_or_build_kotlin_index(ctx: "ResolverContext") -> KotlinProjectIndex:
+def get_or_build_kotlin_index(ctx: ResolverContext) -> KotlinProjectIndex:
     """Back-compat: return a KotlinProjectIndex wrapping the JVM Gradle index."""
     jvm_index = get_or_build_jvm_gradle_index(ctx)
     return KotlinProjectIndex(_inner=jvm_index)
 
 
-def resolve_via_kotlin_index(module_path: str, ctx: "ResolverContext") -> str | None:
+def resolve_via_kotlin_index(module_path: str, ctx: ResolverContext) -> str | None:
     """Back-compat: resolve via the JVM Gradle index."""
     return resolve_via_jvm_gradle_index(module_path, ctx)

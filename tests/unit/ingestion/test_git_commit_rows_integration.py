@@ -63,6 +63,48 @@ async def test_index_repo_collects_commit_rows(tmp_path) -> None:
     assert fix["files_changed"] == 2
 
 
+def test_list_reachable_shas_excludes_abandoned_branch_commits(tmp_path) -> None:
+    """Rows for a squash-merged branch have to be prunable.
+
+    An update run while a feature branch is checked out persists that branch's
+    shas. Once it is squash-merged onto main those commits are unreachable and
+    no full index would ever produce them again, so they have to come back as
+    not-reachable or they inflate every commit-level count forever.
+    """
+    import git as gitpython
+
+    repo = gitpython.Repo.init(tmp_path)
+    _commit(repo, tmp_path / "a.py", "x = 1\n", "feat: add a")
+    main = repo.head.commit.hexsha
+
+    repo.git.checkout("-b", "feature")
+    _commit(repo, tmp_path / "b.py", "y = 2\n", "feat: add b")
+    abandoned = repo.head.commit.hexsha
+    repo.git.checkout(main)
+
+    reachable = GitIndexer(tmp_path).list_reachable_shas()
+
+    assert reachable is not None
+    assert main in reachable
+    assert abandoned not in reachable
+
+
+def test_list_reachable_shas_returns_none_on_a_shallow_clone(tmp_path) -> None:
+    """Unknown history must never be read as "these rows are orphans"."""
+    import git as gitpython
+
+    origin_path = tmp_path / "origin"
+    origin_path.mkdir()
+    origin = gitpython.Repo.init(origin_path)
+    _commit(origin, origin_path / "a.py", "x = 1\n", "feat: add a")
+    _commit(origin, origin_path / "b.py", "y = 2\n", "feat: add b")
+
+    clone_path = tmp_path / "shallow"
+    gitpython.Repo.clone_from(origin_path.as_uri(), clone_path, depth=1)
+
+    assert GitIndexer(clone_path).list_reachable_shas() is None
+
+
 @pytest.mark.asyncio
 async def test_capture_new_commit_rows_bounds_by_since_ts(tmp_path) -> None:
     """The incremental capture walks the same commit index but drops commits at

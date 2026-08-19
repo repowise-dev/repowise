@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ..type_names import bare_type_name
 from .base import DynamicEdge, DynamicHintExtractor
 
 _SKIP_DIRS = {"bin", "obj", ".vs", "node_modules", ".git", "packages"}
@@ -127,11 +128,8 @@ class DotNetDynamicHints(DynamicHintExtractor):
                 if rel not in bucket:
                     bucket.append(rel)
 
-        def _short(name: str) -> str:
-            return name.rsplit(".", 1)[-1]
-
         def _files_for(name: str) -> list[str]:
-            return type_to_files.get(_short(name), [])
+            return type_to_files.get(bare_type_name(name), [])
 
         for cs, text in cs_files:
             try:

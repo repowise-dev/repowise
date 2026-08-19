@@ -61,6 +61,8 @@ def edge_response(e: GraphEdge) -> GraphEdgeResponse:
         source=e.source_node_id,
         target=e.target_node_id,
         imported_names=_parse_imported_names(e.imported_names_json),
+        edge_type=e.edge_type,
+        confidence=e.confidence,
     )
 
 

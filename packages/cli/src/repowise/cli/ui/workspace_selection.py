@@ -11,13 +11,32 @@ from rich.table import Table
 from repowise.cli.ui.brand import BRAND_STYLE, OK, WARN
 
 
+def _display_path(repo: Any, root: Any) -> str:
+    """Where this repo sits, relative to the workspace root.
+
+    ``repo.path.name`` is the leaf directory, which for almost every repo is
+    the string already in the Repository column — and on a workspace with two
+    ``api`` directories under different parents, the one column that would tell
+    them apart showed the same text twice.
+    """
+    if root is None:
+        return repo.path.name
+    try:
+        return repo.path.relative_to(root).as_posix()
+    except ValueError:
+        # Outside the root (a symlinked or explicitly added repo).
+        return str(repo.path)
+
+
 def interactive_repo_select(
     console: Console,
     repos: list[Any],
+    root: Any = None,
 ) -> list[Any]:
     """Display discovered repos and let the user pick which ones to index.
 
     *repos* is a list of :class:`~repowise.core.workspace.scanner.DiscoveredRepo`.
+    *root* is the workspace root, used to render each repo's path relative to it.
     Returns the selected subset in original order.
     """
     # Build display table
@@ -37,11 +56,14 @@ def interactive_repo_select(
         status = f"[{OK}]indexed[/]" if repo.has_repowise else "[dim]new[/dim]"
         if repo.is_submodule:
             status += " [dim](submodule)[/dim]"
-        table.add_row(f"[{idx}]", repo.name, str(repo.path.name), status)
+        table.add_row(f"[{idx}]", repo.name, _display_path(repo, root), status)
 
     console.print()
     console.print(table)
     console.print()
+    # Ranges and 'none' are supported; they used to be discoverable only by
+    # typing something invalid first.
+    console.print("  [dim]Numbers (1,2,3), ranges (1-3), 'all' or 'none'.[/dim]")
 
     # Selection prompt with retry
     while True:
@@ -57,7 +79,7 @@ def interactive_repo_select(
         if raw == "none":
             return []
 
-        selected = _parse_selection(raw, len(repos))
+        selected = parse_selection(raw, len(repos))
         if selected is not None:
             return [repos[i] for i in selected]
 
@@ -66,11 +88,15 @@ def interactive_repo_select(
         )
 
 
-def _parse_selection(raw: str, count: int) -> list[int] | None:
+def parse_selection(raw: str, count: int) -> list[int] | None:
     """Parse a comma-separated selection string into zero-based indices.
 
     Supports: ``"1,2,3"``, ``"1-3"``, ``"1,3-5"``, ``"1-3,5"``.
     Returns ``None`` on invalid input.
+
+    Shared with the agent multiselect, which uses the same numbers-and-ranges
+    grammar. One parser means one set of accepted spellings across the CLI's
+    list prompts rather than two that drift.
     """
     indices: list[int] = []
     for part in raw.split(","):
@@ -119,6 +145,12 @@ def interactive_primary_select(
     if len(repos) == 1:
         return repos[0].alias
 
+    console.print()
+    console.print("  [bold]Primary repository[/bold]")
+    console.print(
+        "  [dim]The primary repo is what MCP tools and the dashboard open by default.\n"
+        "  You can change it later in repowise.workspace.yaml.[/dim]"
+    )
     console.print()
     for idx, repo in enumerate(repos, 1):
         console.print(f"  [{BRAND_STYLE}][{idx}][/] {repo.name}")

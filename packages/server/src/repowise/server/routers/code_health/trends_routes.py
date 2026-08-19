@@ -14,12 +14,16 @@ from repowise.server.deps import get_db_session
 from ._router import router
 from .serializers import _file_trend_to_dict
 
+# How many per-file movements the trend response carries. Paired with
+# ``file_deltas_total`` so a caller can always tell a full list from a slice.
+FILE_DELTA_LIMIT: int = 50
+
 
 @router.get("/api/repos/{repo_id}/health/files/trend")
 async def file_health_trend(
     repo_id: str,
     file_path: str = Query(..., description="File path to chart over time"),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """A single file's score-over-time series from the snapshot history.
 
@@ -36,7 +40,7 @@ async def file_health_trend(
 async def health_trend(
     repo_id: str,
     limit: int = Query(20, ge=1, le=50),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
@@ -62,7 +66,14 @@ async def health_trend(
             if d == 0:
                 continue
             file_deltas.append({"file_path": p, "before": before, "after": after, "delta": d})
-        file_deltas.sort(key=lambda r: r["delta"])
+        # Largest movement first, in either direction. Sorting ascending and
+        # slicing made the block the N biggest *drops*: improvements only
+        # survived the cut while fewer than ``FILE_DELTA_LIMIT`` files had
+        # regressed, so the one render that most wants to show progress — the
+        # index after a cleanup — is the one that hides it. The client
+        # (``TrendSlopeChart``) already ranks by absolute delta before drawing,
+        # so this is also the order it was asking for.
+        file_deltas.sort(key=lambda r: (-abs(r["delta"]), r["file_path"]))
 
     return {
         "history": recent_kpis(snapshots, limit=limit),
@@ -85,6 +96,9 @@ async def health_trend(
             }
             for a in summary.alerts
         ],
-        "file_deltas": file_deltas[:50],
+        "file_deltas": file_deltas[:FILE_DELTA_LIMIT],
+        # The true count behind the slice, so the UI can say "N of M" instead
+        # of presenting a truncated list as the whole story.
+        "file_deltas_total": len(file_deltas),
         "snapshot_count": len(snapshots),
     }

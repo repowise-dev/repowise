@@ -13,27 +13,18 @@ Public API kept stable for existing callers:
 """
 
 from .approx import approximate_generation_plan
-from .coverage import (
-    DEFAULT_COVERAGE_OPTIONS,
-    RECOMMENDED_COVERAGE,
-    CoverageOption,
-    compute_coverage_options,
-)
-from .estimator import estimate_cost
+from .estimator import STRUCTURAL_PAGE_TYPES, estimate_cost
 from .plans import build_generation_plan
 from .pricing import _lookup_cost
 from .types import CostEstimate, CostRange, PageTypePlan
 
 __all__ = [
+    "STRUCTURAL_PAGE_TYPES",
     "CostEstimate",
     "CostRange",
-    "CoverageOption",
-    "DEFAULT_COVERAGE_OPTIONS",
     "PageTypePlan",
-    "RECOMMENDED_COVERAGE",
     "_lookup_cost",
     "approximate_generation_plan",
     "build_generation_plan",
-    "compute_coverage_options",
     "estimate_cost",
 ]

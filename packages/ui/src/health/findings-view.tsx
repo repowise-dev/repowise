@@ -37,6 +37,7 @@ import {
   type FindingStatus,
   type RefactoringTarget,
 } from "./refactoring-target-list";
+import type { RefactoringTargetFinding } from "./refactoring-card";
 import { FilterSelect, FilterChip, ViewToggle } from "./code-health-controls";
 import { ImpactEffortQuadrant } from "./impact-effort-quadrant";
 import { biomarkerLabel } from "./biomarker-glossary";
@@ -118,6 +119,28 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
   const [view, setView] = useState<QueueView>("queue");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [promptTarget, setPromptTarget] = useState<RefactoringTarget | null>(null);
+
+  // The targets list no longer ships `all_findings` — it cost 1.8 MB per
+  // request to serve two click-gated consumers. Both fetch here instead.
+  // `limit` is generous: this is one file's findings, and the worst file in a
+  // large repo carries a few hundred.
+  const loadFindings = async (filePath: string) =>
+    (await adapter.listFindings({
+      file_path: filePath,
+      limit: 1000,
+    })) as RefactoringTargetFinding[];
+
+  // The prompt promises the agent "every marker", so hydrate before opening
+  // rather than letting the builder fall back to the primary finding alone.
+  const openPrompt = async (t: RefactoringTarget) => {
+    setPromptTarget(t);
+    try {
+      setPromptTarget({ ...t, all_findings: await loadFindings(t.file_path) });
+    } catch {
+      // Leave the un-hydrated target in place: the builder degrades to the
+      // primary finding, which is better than no prompt at all.
+    }
+  };
 
   const queueKey = useMemo(
     () =>
@@ -372,7 +395,8 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
                         targets={g.targets}
                         onSelect={(t) => setSelectedFile(t.file_path)}
                         onStatusChange={handleStatus}
-                        onGeneratePrompt={(t) => setPromptTarget(t)}
+                        onGeneratePrompt={(t) => void openPrompt(t)}
+                        onLoadFindings={loadFindings}
                       />
                     </section>
                   ))}
@@ -407,7 +431,7 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
                     setOffset(0);
                   }}
                   placeholder="Filter path…"
-                  className="text-xs pl-7 pr-2 py-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] w-56 focus:outline-none focus:border-[var(--color-border-strong)]"
+                  className="text-xs pl-7 pr-2 py-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] w-56 focus:outline-none focus:border-[var(--color-border-hover)]"
                 />
               </div>
               <FilterChip active={onlyHotspots} onClick={() => { setOnlyHotspots((v) => !v); setOffset(0); }}>

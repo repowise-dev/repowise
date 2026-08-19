@@ -87,11 +87,6 @@ export const THEME = {
   },
 } as const;
 
-/** Edge color for a relation type, falling back to the muted default. */
-export function edgeColor(edgeType: string): string {
-  return THEME.edge[edgeType] ?? "var(--color-text-tertiary)";
-}
-
 export const KEYFRAMES = {
   accentPulse: `
 @keyframes accentPulse {

@@ -1,21 +1,19 @@
 "use client";
 
 /**
- * Static legend for the Live System Map: what the edge colours/glyphs mean
- * (by kind), what the dash patterns mean (by match confidence), and the node
- * health scale. Reads the same registries the map renders from, so the two can
- * never drift.
+ * Key for the Live System Map: what the edge colours/glyphs mean (by kind), what
+ * the dash patterns mean (by match confidence), and the node health scale. Reads
+ * the same registries the map renders from, so the two can never drift.
+ *
+ * Rendered as a hairline caption row under the canvas, not as a card on it — a
+ * key is a caption, and the diagram is the thing the reader came for.
  */
 
 import { EDGE_KIND_ORDER, SYSTEM_EDGE_KINDS } from "./edge-kinds";
 
-function Row({ children }: { children: React.ReactNode }) {
-  return <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>{children}</div>;
-}
-
 function Item({ swatch, label }: { swatch: React.ReactNode; label: string }) {
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10.5, color: "var(--color-text-secondary)" }}>
+    <span className="inline-flex items-center gap-1.5 text-[10.5px] text-[var(--color-text-secondary)]">
       {swatch}
       {label}
     </span>
@@ -36,42 +34,31 @@ function dashLine(dash: string, label: string) {
   );
 }
 
+function Dot({ color }: { color: string }) {
+  return <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: color }} />;
+}
+
 export function SystemMapLegend() {
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 6,
-        padding: "8px 10px",
-        background: "var(--color-bg-surface)",
-        border: "1px solid var(--color-border-default)",
-        borderRadius: 8,
-        maxWidth: 460,
-      }}
-    >
-      <Row>
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-[var(--color-border-subtle)] px-1 pt-2">
+      <div className="flex flex-wrap items-center gap-2.5">
         {EDGE_KIND_ORDER.map((kind) => {
           const s = SYSTEM_EDGE_KINDS[kind];
           const Icon = s.icon;
           return <Item key={kind} label={s.label} swatch={<Icon size={11} style={{ color: s.color }} aria-hidden />} />;
         })}
-      </Row>
-      <Row>
+      </div>
+      <div className="flex flex-wrap items-center gap-2.5">
         {dashLine("none", "Exact / manual")}
         {dashLine("6 4", "Candidate")}
         {dashLine("2 4", "Inferred (co-change)")}
-      </Row>
-      <Row>
-        <span style={{ fontSize: 10.5, color: "var(--color-text-tertiary)" }}>Node ring = repo health:</span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2.5">
+        <span className="text-[10.5px] text-[var(--color-text-tertiary)]">Node ring = repo health:</span>
         <Item swatch={<Dot color="var(--color-risk-low)" />} label="healthy" />
         <Item swatch={<Dot color="var(--color-risk-medium)" />} label="moderate" />
         <Item swatch={<Dot color="var(--color-risk-high)" />} label="at risk" />
-      </Row>
+      </div>
     </div>
   );
-}
-
-function Dot({ color }: { color: string }) {
-  return <span style={{ width: 10, height: 10, borderRadius: "50%", background: color, display: "inline-block" }} />;
 }

@@ -15,7 +15,6 @@ from repowise.core.ingestion.dynamic_hints.xaml import (
     _extract_type_references,
 )
 
-
 _CSPROJ = """<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>

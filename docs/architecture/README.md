@@ -12,6 +12,7 @@ curious; you don't need them to *use* repowise (start with
 | [language-support.md](language-support.md) | The language pipeline internals and the step-by-step recipe for adding a new language |
 | [graph-algorithms.md](graph-algorithms.md) | The graph algorithms (PageRank, betweenness, Tarjan SCC, Louvain, shortest path) with the math and complexity |
 | [chat.md](chat.md) | The Codebase Chat feature: schema, `ChatProvider` protocol, SSE streaming, the agentic loop, and per-provider notes |
+| [structurizr-export.md](structurizr-export.md) | Exporting the architecture as Structurizr DSL: the two-file model, health and layer tags, and how to render it |
 | [editor-files.md](editor-files.md) | How `CLAUDE.md` / `AGENTS.md` generation works (no LLM: pure DB + filesystem derivation) and how to add a new editor file |
 | [pluggable-storage.md](pluggable-storage.md) | Extension guide for authoring storage / graph / job-store plugins and adding CLI subcommands or MCP tools |
 

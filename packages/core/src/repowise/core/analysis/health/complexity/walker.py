@@ -115,8 +115,14 @@ def walk_file(
         return FileComplexity(functions=[], classes=[], file_nloc=_count_file_nloc(source))
 
     try:
+        from repowise.core.ingestion.sfc_source import prepare_source
+
         parser = Parser(grammar)
-        tree = parser.parse(source)
+        # SFCs reach the TS grammar as a markup-blanked buffer at
+        # byte-identical offsets, so every offset below (including the NLOC
+        # slices, which read the ORIGINAL bytes) stays valid. Pascal gets its
+        # project-file sanitizer the same way. No-op elsewhere.
+        tree = parser.parse(prepare_source(language, source, path=abs_path))
     except Exception as exc:
         log.debug("complexity_walker_parse_failed", path=abs_path, error=str(exc))
         return FileComplexity(functions=[], classes=[], file_nloc=_count_file_nloc(source))

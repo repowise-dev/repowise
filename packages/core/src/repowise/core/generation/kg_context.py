@@ -8,10 +8,13 @@ neighbor list, and optional tour step reference.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import structlog
+
+from repowise.core.ids import file_path_of
 
 logger = structlog.get_logger(__name__)
 
@@ -70,9 +73,14 @@ class KnowledgeGraphContext:
 
     def _load(self, path: Path, repo_root: Path | None = None) -> None:
         try:
-            with open(path) as f:
-                kg = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
+            # Explicit utf-8: a bare open() decodes with the locale codec,
+            # which is cp1252 on a default Windows install. An undefined byte
+            # (0x81/0x8D/0x8F/0x90/0x9D) raises UnicodeDecodeError, and since
+            # that is a ValueError rather than an OSError it escaped the
+            # handler below and took the whole generation run down. Matches
+            # analysis/knowledge_graph.py, which loads the same artifact.
+            kg = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
             logger.warning("kg_context_load_failed", path=str(path), error=str(e))
             return
 
@@ -183,6 +191,24 @@ class KnowledgeGraphContext:
         """Curated wiki modules from the KG artifact (empty when uncurated)."""
         return self._modules if self._loaded else []
 
+    def iter_import_edges(self) -> Iterator[tuple[str, str]]:
+        """Yield (source_file, target_file) for every file->file imports edge.
+
+        Feeds the deterministic architecture-diagram builder, which aggregates
+        these into module- and layer-level dependency counts. Empty when the KG
+        isn't loaded.
+        """
+        if not self._loaded:
+            return
+        for edges in self._edges_by_source.values():
+            for e in edges:
+                if e.get("type") != "imports":
+                    continue
+                src = e.get("source", "")
+                tgt = e.get("target", "")
+                if src.startswith("file:") and tgt.startswith("file:"):
+                    yield src[5:], tgt[5:]
+
     def get_tour(self) -> list[dict]:
         return self._tour if self._loaded else []
 
@@ -203,7 +229,7 @@ class KnowledgeGraphContext:
         for node_id in layer_node_ids:
             for e in self._edges_by_source.get(node_id, []):
                 if e.get("type") == "imports" and e["target"] not in layer_node_ids:
-                    target_path = e["target"].removeprefix("file:")
+                    target_path = file_path_of(e["target"]) or e["target"]
                     target_layer = self._file_to_layer.get(target_path, {})
                     if target_layer:
                         name = target_layer.get("name", "Unknown")
@@ -211,7 +237,7 @@ class KnowledgeGraphContext:
 
             for e in self._edges_by_target.get(node_id, []):
                 if e.get("type") == "imports" and e["source"] not in layer_node_ids:
-                    source_path = e["source"].removeprefix("file:")
+                    source_path = file_path_of(e["source"]) or e["source"]
                     source_layer = self._file_to_layer.get(source_path, {})
                     if source_layer:
                         name = source_layer.get("name", "Unknown")

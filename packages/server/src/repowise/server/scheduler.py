@@ -134,7 +134,7 @@ def setup_scheduler(
                         continue
 
                     # Enqueue a sync job
-                    await crud.upsert_generation_job(
+                    job = await crud.upsert_generation_job(
                         session,
                         repository_id=repo.id,
                         status="pending",

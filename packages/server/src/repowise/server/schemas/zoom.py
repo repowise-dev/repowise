@@ -43,6 +43,10 @@ class ZoomNodeResponse(BaseModel):
     layout: ZoomRectResponse | None = None
     summary: str = ""
     language: str | None = None
+    # Code-health score (0..10, higher = healthier), matching the /files treemap.
+    # None when the file/subtree was unscored (health is sparse); the renderer
+    # reads that as neutral.
+    health_score: float | None = None
     is_entry_point: bool = False
     is_hotspot: bool = False
     is_dead: bool = False

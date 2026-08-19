@@ -301,7 +301,7 @@ function TileShell({
     "relative flex w-full flex-col rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-4 text-left transition-colors";
   if (onClick) {
     return (
-      <div className={`${cls} hover:border-[var(--color-border-strong)]`}>
+      <div className={`${cls} hover:border-[var(--color-border-hover)]`}>
         {children}
         <button
           type="button"

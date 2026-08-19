@@ -59,6 +59,9 @@ export interface DistillSavings {
   missed_events: number;
   missed_tokens_est: number;
   missed_window_days: number;
+  /** Full re-reads of unchanged files a targeted get_symbol would have replaced. */
+  reread_events: number;
+  reread_tokens_est: number;
 }
 
 // ---------------------------------------------------------------------------

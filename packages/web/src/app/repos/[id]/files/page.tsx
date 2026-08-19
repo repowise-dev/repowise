@@ -17,7 +17,7 @@ export default async function FilesIndexPage({
       maxWidth="wide"
       icon={<Files className="h-5 w-5 text-[var(--color-accent-primary)]" />}
       title="Files"
-      description="Every indexed file, ranked by importance and browsable by folder. Drill into the map or filter the table to jump straight to a file."
+      description="Drill the map to see how the tree is shaped and where health is thin, then filter the table to find a specific file."
     >
       <FilesExplorer repoId={id} />
     </PageShell>

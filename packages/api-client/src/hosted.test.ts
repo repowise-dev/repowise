@@ -7,6 +7,7 @@ import {
   mapHostedPage,
   mapHostedRepo,
   mapHostedSearchResult,
+  toPageSummary,
 } from "./hosted";
 
 // ---------------------------------------------------------------------------
@@ -145,6 +146,30 @@ describe("mapHostedPage", () => {
   it("falls back to page_id when the id alias is absent (old snapshots)", () => {
     expect(mapHostedPage({ page_id: "p1" }, "r").id).toBe("p1");
   });
+
+  it("promotes the layer stamp so it survives the summary trim", () => {
+    // The docs tree groups modules under their layer from this stamp and is
+    // drawn from a summary listing, which drops `metadata` wholesale. Left
+    // inside the blob the stamp would vanish, and every layer group with it.
+    const page = mapHostedPage(
+      {
+        page_id: "module_page:src/api",
+        page_type: "module_page",
+        target_path: "src/api",
+        metadata: { layer_id: "layer:api", layer_name: "API Surface" },
+      },
+      "repo-1",
+    );
+    expect(page.layer_id).toBe("layer:api");
+    expect(page.layer_name).toBe("API Surface");
+    expect(toPageSummary(page).layer_id).toBe("layer:api");
+  });
+
+  it("reports no layer rather than an empty one when nothing stamped it", () => {
+    const page = mapHostedPage({ page_id: "p1", metadata: {} }, "r");
+    expect(page.layer_id).toBeNull();
+    expect(page.layer_name).toBeNull();
+  });
 });
 
 describe("mapHostedDeadCodeFinding", () => {
@@ -246,6 +271,46 @@ describe("request wiring", () => {
     expect(res).toMatchObject({ total: 0, offset: 0, limit: 10, files: [] });
   });
 
+  it("keeps the server's total when the route returns the envelope", async () => {
+    // The bare-array era could only report the page size, so a 3k-file repo
+    // capped at 500 reported 500 files.
+    const row = { file_path: "a.ts", score: 5, nloc: 10 };
+    const { p } = provider([
+      REPOS_ROUTE,
+      ["/health/files", { total: 3013, offset: 0, limit: 2000, files: [row] }],
+    ]);
+    const res = await p.listHealthFiles("repo-1", { limit: 10 });
+    expect(res.total).toBe(3013);
+    expect(res.files).toHaveLength(1);
+  });
+
+  it("still reads an older deployment's bare array", async () => {
+    const rows = [
+      { file_path: "a.ts", score: 5, nloc: 10 },
+      { file_path: "b.ts", score: 6, nloc: 20 },
+    ];
+    const { p } = provider([REPOS_ROUTE, ["/health/files", rows]]);
+    const res = await p.listHealthFiles("repo-1", { limit: 10 });
+    expect(res.total).toBe(2);
+    expect(res.files).toHaveLength(2);
+  });
+
+  it("recounts the total when it narrows the set client-side", async () => {
+    // A module filter is applied here, not by the server, so the server's
+    // total would overstate what the caller actually receives.
+    const row = (file_path: string) => ({ file_path, score: 5, nloc: 10 });
+    const { p } = provider([
+      REPOS_ROUTE,
+      [
+        "/health/files",
+        { total: 3013, offset: 0, limit: 2000, files: [row("src/a.ts"), row("web/b.ts")] },
+      ],
+    ]);
+    const res = await p.listHealthFiles("repo-1", { limit: 10, module: "src/" });
+    expect(res.total).toBe(1);
+    expect(res.files.map((f) => f.file_path)).toEqual(["src/a.ts"]);
+  });
+
   it("surfaces API errors as ApiClientError with the detail", async () => {
     const { impl } = makeFetch([REPOS_ROUTE]);
     const p = createHostedProvider({ baseUrl: "https://api.example.dev", fetch: impl });
@@ -278,6 +343,34 @@ describe("docs", () => {
     expect(all).toHaveLength(2);
     expect(all[0]!.repository_id).toBe("repo-1");
     expect(calls.filter((c) => c.url.includes("/docs"))).toHaveLength(1);
+  });
+
+  it("serves summaries with the heavy fields actually removed", async () => {
+    const { p } = provider([
+      REPOS_ROUTE,
+      [
+        "/docs",
+        {
+          ...DOCS_BODY,
+          pages: [
+            {
+              id: "overview",
+              page_type: "overview",
+              title: "Overview",
+              content: "a body",
+              metadata: { layer_order: ["ui"] },
+            },
+          ],
+        },
+      ],
+    ]);
+
+    const [summary] = await p.listAllPages("repo-1", { fields: "summary" });
+
+    expect(summary).not.toHaveProperty("content");
+    expect(summary).not.toHaveProperty("metadata");
+    expect(summary!.title).toBe("Overview");
+    expect(summary!.content_chars).toBe("a body".length);
   });
 
   it("listPages filters by page_type and slices", async () => {

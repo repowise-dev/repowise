@@ -85,20 +85,54 @@ def test_lean_profile_workspace_adds_list_repos():
 
 
 def test_lean_profile_full_registry():
-    """Against the real registry, lean is exactly the five agent-lean tools."""
-    import repowise.server.mcp_server  # noqa: F401  (registers the tools)
+    """Against the real registry, lean is exactly the agent-lean tools."""
     from repowise.core.registry import mcp_tool_registry
+    from repowise.server.mcp_server import ensure_full_surface
     from repowise.server.mcp_server._tool_selection import LEAN_TOOLS
 
+    ensure_full_surface()  # tool modules import lazily
     enabled = resolve_enabled_tools(
         mcp_tool_registry.entries(), is_workspace=False, override="lean"
     )
     assert enabled == LEAN_TOOLS
+    assert "get_change_risk" not in enabled
 
     workspace = resolve_enabled_tools(
         mcp_tool_registry.entries(), is_workspace=True, override="lean"
     )
     assert workspace == LEAN_TOOLS | {"list_repos"}
+
+
+def test_conformance_and_refactoring_are_opt_in():
+    """generate_refactoring_code and get_conformance are off the default surface.
+
+    Both must be named explicitly to appear; get_conformance stays workspace-gated
+    even when opted in.
+    """
+    from repowise.core.registry import mcp_tool_registry
+    from repowise.server.mcp_server import ensure_full_surface
+
+    ensure_full_surface()  # tool modules import lazily
+    entries = mcp_tool_registry.entries()
+
+    single = resolve_enabled_tools(entries, is_workspace=False)
+    workspace = resolve_enabled_tools(entries, is_workspace=True)
+    for surface in (single, workspace):
+        assert "generate_refactoring_code" not in surface
+        assert "get_conformance" not in surface
+
+    opted_ws = resolve_enabled_tools(
+        entries, is_workspace=True, override="+generate_refactoring_code,+get_conformance"
+    )
+    assert {"generate_refactoring_code", "get_conformance"} <= opted_ws
+
+    # In single-repo mode refactoring can be opted in, but conformance can't:
+    # it needs the workspace graph, so an explicit mention is ignored there.
+    opted_single = resolve_enabled_tools(
+        entries, is_workspace=False, override="+generate_refactoring_code,+get_conformance"
+    )
+    assert "generate_refactoring_code" in opted_single
+    assert "get_conformance" not in opted_single
 
 
 def test_workspace_only_named_explicitly_is_dropped_single_repo():

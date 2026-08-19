@@ -123,7 +123,12 @@ export function ArchCanvas({
 
         {hiddenEdgeCount > 0 && (
           <div
-            className="absolute bottom-4 left-14 z-10 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)]/90 px-3 py-1 text-xs text-[var(--color-text-secondary)]"
+            // `--color-bg-glass` is the chip ground on every canvas. This chip
+            // asked for `--color-bg-secondary`, which no stylesheet defines, so
+            // it has been painting transparent — and it survived because it
+            // only ever renders on top of a diagram, which is exactly how the
+            // stale glass token hid for a month.
+            className="absolute bottom-4 left-14 z-10 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-glass)] px-3 py-1 text-xs text-[var(--color-text-secondary)]"
             title="Weakest aggregated connections are hidden to keep the view legible. Drill in to see them."
           >
             +{hiddenEdgeCount} weaker link{hiddenEdgeCount === 1 ? "" : "s"} hidden

@@ -50,48 +50,11 @@ def _strip_quotes(value: str) -> str:
 
 
 def _save_key_to_dotenv(repo_path: Path, env_var: str, value: str) -> None:
-    """Append or update a key in ``<repo>/.repowise/.env``."""
-    env_dir = repo_path / ".repowise"
-    env_dir.mkdir(parents=True, exist_ok=True)
-    env_file = env_dir / ".env"
+    """Append or update a key in ``<repo>/.repowise/.env``.
 
-    # Read existing lines
-    existing_lines: list[str] = []
-    found = False
-    if env_file.exists():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if stripped.startswith(f"{env_var}="):
-                existing_lines.append(f"{env_var}={value}")
-                found = True
-            else:
-                existing_lines.append(line)
+    Thin wrapper over the shared core writer so the CLI and the server persist
+    keys through one implementation (see ``core.repo_config.save_repo_env_key``).
+    """
+    from repowise.core.repo_config import save_repo_env_key
 
-    if not found:
-        existing_lines.append(f"{env_var}={value}")
-
-    env_file.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")
-
-    # Ensure .repowise/.env is gitignored
-    _ensure_gitignored(repo_path)
-
-
-def _ensure_gitignored(repo_path: Path) -> None:
-    """Add ``.repowise/.env`` to ``.gitignore`` if not already present."""
-    gitignore = repo_path / ".gitignore"
-    pattern = ".repowise/.env"
-
-    if gitignore.exists():
-        content = gitignore.read_text(encoding="utf-8")
-        if pattern in content:
-            return
-        # Append to existing file
-        if not content.endswith("\n"):
-            content += "\n"
-        content += f"\n# repowise API keys (local)\n{pattern}\n"
-        gitignore.write_text(content, encoding="utf-8")
-    else:
-        gitignore.write_text(
-            f"# repowise API keys (local)\n{pattern}\n",
-            encoding="utf-8",
-        )
+    save_repo_env_key(repo_path, env_var, value)

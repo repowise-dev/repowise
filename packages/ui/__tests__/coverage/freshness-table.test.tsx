@@ -57,6 +57,11 @@ describe("FreshnessTable", () => {
     expect(screen.getByText("stale.ts")).toBeInTheDocument();
   });
 
+  it("offers only freshness tabs, no provenance filter", () => {
+    render(<FreshnessTable pages={[makePage()]} />);
+    expect(screen.queryByRole("tab", { name: /Auto/ })).not.toBeInTheDocument();
+  });
+
   it("invokes onRegenerate with the page id when the button is clicked", async () => {
     const onRegenerate = vi.fn().mockResolvedValue(undefined);
     render(
@@ -74,5 +79,11 @@ describe("FreshnessTable", () => {
     expect(
       screen.queryByRole("button", { name: "Regenerate" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("never renders selection checkboxes or a select-all affordance", () => {
+    render(<FreshnessTable pages={[makePage()]} />);
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.queryByText(/template pages/)).not.toBeInTheDocument();
   });
 });

@@ -11,15 +11,34 @@ export interface FileTrendChartProps {
   bare?: boolean;
 }
 
+/** The score floor. Below it the visible score stops moving; see `plotted`. */
+const SCORE_FLOOR = 1;
+
+/**
+ * The value actually drawn for a point: the score with the floor undone where
+ * the server recorded how deep the file is, and the plain score otherwise.
+ *
+ * Two files 12.9 and 9.1 points deep both print 1.0, so a floored file's line
+ * is flat however much of the work gets done — which is the opposite of the
+ * feedback someone who just did that work needs. Plotting the unclamped value
+ * is identical for every file the floor never touches, so there is one code
+ * path rather than a mode.
+ */
+const plotted = (p: FileHealthTrend["points"][number]) => p.unclamped_score ?? p.score;
+
 /**
  * A single file's score trajectory over the snapshot history — the per-file
- * counterpart to the repo-level `TrendChart`. Purpose-built for one 0-10
- * series (rather than overloading the 3-KPI chart): a fixed 0-10 Y axis, a
- * delta chip, and a declining flag. Silent ("no history yet") when the file
- * has fewer than two snapshots, matching the silent-on-thin-history contract.
+ * counterpart to the repo-level `TrendChart`. Purpose-built for one series
+ * (rather than overloading the 3-KPI chart): a 0-10 Y axis that extends
+ * downward only when a file has sunk below the floor, a delta chip, and a
+ * declining flag. Silent ("no history yet") when the file has fewer than two
+ * snapshots, matching the silent-on-thin-history contract.
  */
 export function FileTrendChart({ trend, height = 140, bare = false }: FileTrendChartProps) {
   const points = trend?.points ?? [];
+  const belowFloor = points.some((p) => plotted(p) < SCORE_FLOOR);
+  // Equal to `delta` unless the floor is in play, so it needs no branch.
+  const delta = trend?.unclamped_delta ?? trend?.delta;
 
   const body =
     points.length < 2 ? (
@@ -28,7 +47,16 @@ export function FileTrendChart({ trend, height = 140, bare = false }: FileTrendC
         least two <code>repowise</code> runs.
       </div>
     ) : (
-      <Chart points={points} height={height} />
+      <>
+        <Chart points={points} height={height} />
+        {belowFloor && (
+          <p className="text-[11px] leading-snug text-[var(--color-text-tertiary)]">
+            This file scores below the {SCORE_FLOOR.toFixed(1)} floor, so its
+            displayed score cannot move. The line shows the score before the
+            floor is applied, which is what improvements here shift first.
+          </p>
+        )}
+      </>
     );
 
   if (bare) return body;
@@ -47,9 +75,9 @@ export function FileTrendChart({ trend, height = 140, bare = false }: FileTrendC
                 Declining
               </span>
             )}
-            {trend?.delta != null && trend.delta !== 0 && (
-              <span className={`text-xs font-semibold tabular-nums ${deltaColor(trend.delta)}`}>
-                {formatDelta(trend.delta)} vs. previous
+            {delta != null && delta !== 0 && (
+              <span className={`text-xs font-semibold tabular-nums ${deltaColor(delta)}`}>
+                {formatDelta(delta)} vs. previous
               </span>
             )}
           </div>
@@ -76,15 +104,29 @@ function Chart({
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
 
+  const values = points.map(plotted);
+  // 0-10 normally. A file below the floor is plotted on its real depth, which
+  // can be negative, so the domain drops to the next whole point beneath it —
+  // never above 0, so the usual chart is pixel-identical to before.
+  const yMin = Math.min(0, Math.floor(Math.min(...values)));
+  const yMax = 10;
+  const ticks = yMin < 0 ? [yMin, 0, 5, 10] : [0, 5, 10];
+  // Gated on the same condition as the explanatory caption above. Keying the
+  // marker off `yMin < 0` instead left a file 9 to 10 points deep — unclamped
+  // inside [0, 1) — captioned as below the floor with no floor drawn.
+  const showFloor = Math.min(...values) < SCORE_FLOOR;
+
   const xScale = (i: number) =>
     points.length === 1 ? padL + plotW / 2 : padL + (i / (points.length - 1)) * plotW;
-  const yScale = (v: number) => padT + ((10 - v) / 10) * plotH;
+  const yScale = (v: number) => padT + ((yMax - v) / (yMax - yMin)) * plotH;
 
-  const coords = points.map((p, i) => [xScale(i), yScale(p.score)] as const);
+  const coords = values.map((v, i) => [xScale(i), yScale(v)] as const);
   const line = coords.map(([x, y], i) => (i === 0 ? `M${x},${y}` : `L${x},${y}`)).join(" ");
 
   const last = points[points.length - 1]!;
   const first = points[0]!;
+  // Banded on the score the product shows elsewhere, not on the plotted depth,
+  // so the end dot's colour matches the file's stated score.
   const endColor = scoreTextColor(last.score);
 
   const fmtDate = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString() : "");
@@ -98,7 +140,7 @@ function Chart({
         role="img"
         aria-label="File health score over time"
       >
-        {[0, 5, 10].map((v) => (
+        {ticks.map((v) => (
           <g key={v}>
             <line
               x1={padL}
@@ -120,6 +162,31 @@ function Chart({
             </text>
           </g>
         ))}
+        {/* The floor, drawn only when the line crosses it — otherwise it would
+            be a second axis rule at the bottom of every ordinary chart. */}
+        {showFloor && (
+          <>
+            <line
+              x1={padL}
+              x2={W - padR}
+              y1={yScale(SCORE_FLOOR)}
+              y2={yScale(SCORE_FLOOR)}
+              stroke="var(--color-error)"
+              strokeOpacity={0.45}
+              strokeDasharray="3 3"
+            />
+            <text
+              x={W - padR}
+              y={yScale(SCORE_FLOOR) - 3}
+              fontSize={9}
+              textAnchor="end"
+              fill="var(--color-error)"
+              opacity={0.7}
+            >
+              score floor
+            </text>
+          </>
+        )}
         <path d={line} stroke="var(--color-accent-primary)" strokeWidth={1.8} fill="none" />
         {coords.map(([x, y], i) => (
           <circle key={i} cx={x} cy={y} r={2.2} fill="var(--color-accent-primary)" />

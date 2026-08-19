@@ -61,14 +61,47 @@
   (value_arguments) @call.arguments
 ) @call.site
 
-; Member call: obj.method(args)
+; Member call: obj.method(args) — and self-dispatch: this.method(args).
+; See typescript.scm for why ``this`` rides an alternation in the receiver slot
+; instead of a second pattern.
 (call_expression
   (navigation_expression
-    (identifier) @call.receiver
+    [(identifier) (this_expression)] @call.receiver
     (identifier) @call.target
   )
   (value_arguments) @call.arguments
 ) @call.site
+
+; ---------------------------------------------------------------------------
+; Callable references — a function named without being called
+; ---------------------------------------------------------------------------
+; The operator is matched literally because the installed grammar gives
+; ``Foo::bar`` and ``Foo.bar`` the same node shape, and the token is the only
+; thing separating them. ``::`` also precedes a property (``Foo::name``) and
+; the reserved ``::class``; neither is filtered here, because the symbol kind
+; settles it at resolution and no symbol is ever named ``class``.
+
+; Qualified: list.map(Foo::bar), register(A::process)
+(navigation_expression
+  (identifier) @reference.receiver
+  "::"
+  (identifier) @reference.name
+)
+
+; Bound to the enclosing instance: val f = this::handle
+(navigation_expression
+  (this_expression) @reference.receiver
+  "::"
+  (identifier) @reference.name
+)
+
+; Unqualified: list.map(::transform). Also catches a qualified spelling whose
+; receiver the grammar parsed as a type rather than an expression, which then
+; arrives receiver-less and so reaches only top-level functions. A ceiling in
+; the safe direction: it costs an edge, it cannot invent one.
+(callable_reference
+  (identifier) @reference.name
+)
 
 ; ---------------------------------------------------------------------------
 ; Type references — drive file-level ``type_use`` edges

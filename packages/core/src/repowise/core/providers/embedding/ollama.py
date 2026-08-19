@@ -12,6 +12,8 @@ from typing import Any
 
 import httpx
 
+from repowise.core.providers.embedding.base import resolve_embedding_timeout
+
 _DEFAULT_BASE_URL = "http://localhost:11434"
 _DEFAULT_MODEL = "embeddinggemma"
 _DEFAULT_TIMEOUT = 30.0
@@ -74,13 +76,8 @@ class OllamaEmbedder:
         )
         self._requested_dimensions = dimensions or (int(env_dimensions) if env_dimensions else None)
         self._dimensions = self._requested_dimensions or _infer_dimensions(self._model)
-        env_timeout = os.environ.get("OLLAMA_EMBEDDING_TIMEOUT") or os.environ.get(
-            "REPOWISE_EMBEDDING_TIMEOUT"
-        )
-        self._timeout = (
-            timeout
-            if timeout is not None
-            else (float(env_timeout) if env_timeout else _DEFAULT_TIMEOUT)
+        self._timeout = resolve_embedding_timeout(
+            timeout, _DEFAULT_TIMEOUT, provider_env="OLLAMA_EMBEDDING_TIMEOUT"
         )
 
     @property
@@ -112,6 +109,24 @@ class OllamaEmbedder:
         if len(raw_vectors) != len(texts):
             raise ValueError(
                 f"Ollama returned {len(raw_vectors)} embeddings for {len(texts)} inputs."
+            )
+        widths = {len(v) for v in raw_vectors}
+        if widths and widths != {self._dimensions}:
+            actual = min(widths - {self._dimensions})
+            if self._requested_dimensions is not None:
+                hint = (
+                    f"Set OLLAMA_EMBEDDING_DIMS={actual} (or REPOWISE_EMBEDDING_DIMS={actual})"
+                    f" to match the server's native output."
+                )
+            else:
+                hint = (
+                    f"The dimension was inferred from the model name ({self._model!r})."
+                    f" Set OLLAMA_EMBEDDING_DIMS={actual} to override the inferred value."
+                )
+            raise ValueError(
+                f"OllamaEmbedder declared {self._dimensions}-dimensional vectors but the "
+                f"server returned {actual} (model={self._model!r}). "
+                f"The server likely ignored the 'dimensions' parameter. {hint}"
             )
 
         return [_l2_normalize([float(value) for value in vector]) for vector in raw_vectors]

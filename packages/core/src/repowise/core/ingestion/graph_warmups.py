@@ -20,8 +20,11 @@ module stays language-agnostic.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
+
+from .languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 
 if TYPE_CHECKING:
     from .models import ParsedFile
@@ -32,6 +35,16 @@ if TYPE_CHECKING:
 # cache its result on ``ctx`` (the resolvers already use a per-context
 # attribute cache); the dispatcher does not inspect the return value.
 Warmup = Callable[["ResolverContext"], None]
+
+# Paths the export-macro rescan reads. Include fragments belong here: a
+# template implementation in a .inl carries the same project export macro as
+# the header that declares it, and missing it leaves the symbol marked
+# non-exported, which is what the dead-code pass then acts on.
+_CPP_MACRO_SCAN_EXTS: tuple[str, ...] = (
+    ".h", ".hpp", ".hxx", ".hh", ".h++", ".inc",
+    ".c", ".cc", ".cpp", ".cxx", ".c++",
+    *sorted(INCLUDE_FRAGMENT_EXTENSIONS),
+)
 
 
 def _warmup_jvm(ctx: ResolverContext) -> None:
@@ -133,8 +146,7 @@ def _warmup_cpp(ctx: ResolverContext) -> None:
 
     if macros:
         for path, parsed in parsed_files.items():
-            if not path.endswith((".h", ".hpp", ".hxx", ".hh", ".h++", ".inc",
-                                  ".c", ".cc", ".cpp", ".cxx", ".c++")):
+            if not path.endswith(_CPP_MACRO_SCAN_EXTS):
                 continue
             for sym in parsed.symbols:
                 sig = sym.signature or ""
@@ -158,7 +170,7 @@ def _warmup_cpp(ctx: ResolverContext) -> None:
                                 node["visibility"] = "public"
                         break
 
-    _mark_cpp_entry_point_files(parsed_files, graph)
+    _mark_cpp_entry_point_files(parsed_files, graph, getattr(ctx, "source_map", None))
 
 
 # Tokens whose presence means the surrounding TU wires itself into a
@@ -188,25 +200,46 @@ _CPP_ENTRY_MARKERS = (
 )
 
 
-def _mark_cpp_entry_point_files(parsed_files: dict, graph: Any) -> None:
+def _read_warmup_source(
+    path: str,
+    parsed: Any,
+    source_map: dict[str, bytes] | None,
+) -> str | None:
+    """Text of *path* for a marker scan, from *source_map* if it has it.
+
+    Neither ``ParsedFile`` nor ``FileInfo`` carries the source, so before
+    ``source_map`` existed these scans always re-opened the file. Decoding
+    matches what the disk fallback below does (utf-8 / replace) so a hit and
+    a miss can never disagree about the same bytes. Returns None when the
+    file is unavailable, which the callers treat as "no markers".
+    """
+    if source_map is not None:
+        data = source_map.get(path)
+        if data is not None:
+            return data.decode("utf-8", errors="replace")
+    abs_path = getattr(parsed.file_info, "abs_path", None)
+    if not abs_path:
+        return None
+    try:
+        with open(abs_path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _mark_cpp_entry_point_files(
+    parsed_files: dict,
+    graph: Any,
+    source_map: dict[str, bytes] | None = None,
+) -> None:
     """Stamp ``is_entry_point=True`` on TU file nodes matching an entry marker."""
     for path, parsed in parsed_files.items():
         lang = parsed.file_info.language
         if lang not in ("cpp", "c"):
             continue
-        # The parser already loaded the source; reuse it via the
-        # ParsedFile (avoids a second filesystem read).
-        src = getattr(parsed, "source", None) or getattr(parsed.file_info, "source", None)
+        src = _read_warmup_source(path, parsed, source_map)
         if src is None:
-            # ParsedFile doesn't always carry the source — fall back to disk.
-            abs_path = getattr(parsed.file_info, "abs_path", None)
-            if not abs_path:
-                continue
-            try:
-                with open(abs_path, encoding="utf-8", errors="replace") as f:
-                    src = f.read()
-            except OSError:
-                continue
+            continue
         if not any(tok in src for tok in _CPP_ENTRY_MARKERS):
             continue
         node = graph.nodes.get(path)
@@ -234,18 +267,14 @@ def _warmup_swift(ctx: ResolverContext) -> None:
 
     graph = getattr(ctx, "graph", None)
     parsed_files = getattr(ctx, "parsed_files", None) or {}
+    source_map = getattr(ctx, "source_map", None)
     if graph is None:
         return
     for path, parsed in parsed_files.items():
         if parsed.file_info.language != "swift":
             continue
-        abs_path = getattr(parsed.file_info, "abs_path", None)
-        if not abs_path:
-            continue
-        try:
-            with open(abs_path, encoding="utf-8", errors="replace") as f:
-                src = f.read()
-        except OSError:
+        src = _read_warmup_source(path, parsed, source_map)
+        if src is None:
             continue
         if not _SWIFT_ENTRY_RE.search(src):
             continue
@@ -308,21 +337,15 @@ def _warmup_typescript(ctx: ResolverContext) -> None:
     # MDX-only consumers (docs sites that import TSX components into
     # ``.mdx``) and custom vitest layouts (``runtime-tests/**``) — both
     # invisible to the TS parser, both real entry points.
-    try:
+    with contextlib.suppress(Exception):
         entry_paths |= find_mdx_import_targets(ctx)
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         entry_paths |= find_vitest_include_targets(ctx)
-    except Exception:
-        pass
     # ``package.json`` ``scripts.*`` references: benchmark / bench-runner /
     # rollup-input paths that ship as live code but are never imported
     # by the main entry graph.
-    try:
+    with contextlib.suppress(Exception):
         entry_paths |= find_npm_script_entry_targets(ctx)
-    except Exception:
-        pass
     for path in entry_paths:
         node = graph.nodes.get(path)
         if node is None:
@@ -416,18 +439,14 @@ def run_warmups(
         # underlying index — only fire start/done once per phase name and
         # rely on the warmup's own idempotency for the second invocation.
         if phase_name in fired_phases:
-            try:
+            with contextlib.suppress(Exception):
                 warmup(ctx)
-            except Exception:
-                pass
             continue
         fired_phases.add(phase_name)
         if progress is not None:
             progress.on_phase_start(phase_name, None)
-        try:
+        with contextlib.suppress(Exception):  # warmup failures must not abort the build
             warmup(ctx)
-        except Exception:  # warmup failures must not abort the build
-            pass
         if progress is not None:
             done = getattr(progress, "on_phase_done", None)
             if callable(done):

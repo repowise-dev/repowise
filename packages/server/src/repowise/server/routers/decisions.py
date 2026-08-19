@@ -11,6 +11,7 @@ from repowise.core.persistence.models import DecisionEvidence
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import (
     DecisionCodeEdge,
+    DecisionCountsResponse,
     DecisionCreate,
     DecisionEvidenceResponse,
     DecisionGraphEdge,
@@ -41,13 +42,22 @@ async def list_decisions(
     include_proposed: bool = Query(True),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    sort: str = Query(
+        "priority",
+        pattern="^(priority|recent)$",
+        description="priority: confirmed rules first, then likeliest proposals. recent: newest first.",
+    ),
+    session: AsyncSession = Depends(get_db_session),
 ) -> list[DecisionRecordResponse]:
     """List architectural decision records for a repository.
 
     Each row carries an ``evidence_preview`` (the top-ranked evidence row's
     verbatim quote) plus the total ``evidence_count``, so the table can show
     provenance without N+1 calls to the per-decision /evidence endpoint.
+
+    Defaults to ``sort=priority``. Newest-first buried every confirmed
+    decision under the unreviewed proposals the indexer had just mined, so
+    page one was entirely machine guesses.
     """
     decisions = await crud.list_decisions(
         session,
@@ -59,6 +69,7 @@ async def list_decisions(
         include_proposed=include_proposed,
         limit=limit,
         offset=offset,
+        sort=sort,
     )
     items = [DecisionRecordResponse.from_orm(d) for d in decisions]
 
@@ -99,7 +110,7 @@ async def list_decisions(
 )
 async def decision_health(
     repo_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Get decision health summary: stale, proposed, ungoverned hotspots."""
     summary = await crud.get_decision_health_summary(session, repo_id)
@@ -114,13 +125,48 @@ async def decision_health(
 
 
 @router.get(
+    "/api/repos/{repo_id}/decisions/counts",
+    response_model=DecisionCountsResponse,
+)
+async def decision_counts(
+    repo_id: str,
+    source: str | None = Query(None, description="Filter by source"),
+    tag: str | None = Query(None, description="Filter by tag"),
+    module: str | None = Query(None, description="Filter by module path"),
+    include_proposed: bool = Query(True),
+    session: AsyncSession = Depends(get_db_session),
+) -> DecisionCountsResponse:
+    """Counts by status, as a grouped COUNT rather than a page of rows.
+
+    Declared above ``/{decision_id}`` on purpose: FastAPI matches in
+    declaration order, so a literal sub-path below it would be swallowed by
+    the parameterised route and "counts" would be looked up as a decision id.
+    """
+    counts = await crud.count_decisions_by_status(
+        session,
+        repo_id,
+        source=source,
+        tag=tag,
+        module=module,
+        include_proposed=include_proposed,
+    )
+    return DecisionCountsResponse(
+        total=counts["total"],
+        active=counts["active"],
+        proposed=counts["proposed"],
+        superseded=counts["superseded"],
+        deprecated=counts["deprecated"],
+    )
+
+
+@router.get(
     "/api/repos/{repo_id}/decisions/graph",
     response_model=DecisionGraphResponse,
 )
 async def get_decision_graph(
     repo_id: str,
     limit: int = Query(200, ge=1, le=500),
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> DecisionGraphResponse:
     """Return the full decision graph for a repository.
 
@@ -173,7 +219,7 @@ async def get_decision_graph(
 async def get_decision(
     repo_id: str,
     decision_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> DecisionRecordResponse:
     """Get a single decision record by ID."""
     rec = await crud.get_decision(session, decision_id)
@@ -188,7 +234,7 @@ async def get_decision(
 async def list_decision_evidence(
     repo_id: str,
     decision_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Return provenance evidence rows for a single decision record.
 
@@ -210,7 +256,7 @@ async def list_decision_evidence(
 async def get_decision_lineage(
     repo_id: str,
     decision_id: str,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Return the lineage chain for a decision (root → … → current).
 
@@ -233,7 +279,7 @@ async def get_decision_lineage(
 async def create_decision(
     repo_id: str,
     body: DecisionCreate,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> DecisionRecordResponse:
     """Create a new decision record (e.g. from CLI capture via API)."""
     rec = await crud.upsert_decision(
@@ -263,7 +309,7 @@ async def patch_decision(
     repo_id: str,
     decision_id: str,
     body: DecisionStatusUpdate,
-    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),
 ) -> DecisionRecordResponse:
     """Update a decision record.
 

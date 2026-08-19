@@ -1,10 +1,9 @@
 """Post-generation grounding check for onboarding pages.
 
-Onboarding prose is grounded ONLY by prompt instruction ("do not invent
-file paths or symbol names"). Nothing verified the model obeyed, so a
-fabricated citation - a file the payload never mentioned, a symbol that
-does not exist - reached the reader as an authoritative backticked
-reference.
+Onboarding prose is grounded in its structured context and, when configured,
+explicit repository evidence. A fabricated citation - a file neither input
+mentioned, or a symbol neither input establishes - must not reach the reader
+as an authoritative backticked reference.
 
 This module closes that gap deterministically. It collects the paths and
 symbols actually present in a subkind's context object, then scans the
@@ -32,6 +31,7 @@ cleaned on their next docs update even when the prompt is unchanged.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
 from typing import Any
 
@@ -58,6 +58,7 @@ _CODE_EXTENSIONS = frozenset(
         "scala",
         "rb",
         "php",
+        "proto",
         "cs",
         "cpp",
         "cc",
@@ -79,22 +80,149 @@ _CODE_EXTENSIONS = frozenset(
         "mm",
     }
 )
-
+_DOCUMENT_EXTENSIONS = frozenset(
+    {
+        "adoc",
+        "asciidoc",
+        "cfg",
+        "conf",
+        "ini",
+        "json",
+        "md",
+        "mdx",
+        "rst",
+        "toml",
+        "txt",
+        "yaml",
+        "yml",
+    }
+)
+_EXTENSIONLESS_PATH_NAMES = frozenset(
+    {
+        "containerfile",
+        "copying",
+        "dockerfile",
+        "gemfile",
+        "justfile",
+        "license",
+        "makefile",
+        "notice",
+        "procfile",
+        "rakefile",
+        "readme",
+    }
+)
+_REPOSITORY_DIRECTORY_NAMES = frozenset(
+    {
+        ".github",
+        "app",
+        "apps",
+        "config",
+        "deploy",
+        "docs",
+        "examples",
+        "include",
+        "lib",
+        "packages",
+        "scripts",
+        "src",
+        "test",
+        "tests",
+        "tools",
+    }
+)
 # A bare identifier, optionally dotted or ``::``-qualified (e.g. ``LanguageSpec``,
 # ``get_session``, ``foo.Bar.baz``, ``path.py::Name``).
+_QUALIFIER = r"(?:\.|::|#|/|:)"
+_COMMON_TLDS = frozenset({"ai", "app", "com", "dev", "io", "net", "org"})
+_COMMAND_PREFIXES = frozenset({"cargo", "make", "npm", "pnpm", "poe", "uv", "yarn"})
+_HTTP_METHODS = frozenset({"CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"})
 _IDENT = re.compile(
-    r"^[A-Za-z_][A-Za-z0-9_]*(?:(?:\.|::)[A-Za-z_][A-Za-z0-9_]*)+$|^[A-Za-z_][A-Za-z0-9_]*$"
+    rf"^[A-Za-z_][A-Za-z0-9_]*(?:{_QUALIFIER}[A-Za-z_][A-Za-z0-9_]*)+$"
+    r"|^[A-Za-z_][A-Za-z0-9_]*$"
 )
+
+
+def _looks_like_external_reference(token: str) -> bool:
+    """Recognize URL, route, host, and command shapes before code classification."""
+    if token.startswith("/") or "://" in token or any(char.isspace() for char in token):
+        return True
+    parts = token.split("/")
+    first = parts[0]
+    if re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", first, re.IGNORECASE):
+        raw_tld = first.rsplit(".", 1)[-1]
+        if len(parts) > 1 or raw_tld.lower() in _COMMON_TLDS or raw_tld.isupper():
+            return True
+    if ":" in first and "::" not in first:
+        command = first.split(":", 1)[0].lower()
+        if command in _COMMAND_PREFIXES:
+            return True
+    if re.fullmatch(r"[^:]+:\d+", first) or first.upper() in _HTTP_METHODS:
+        return True
+    if len(parts) == 1:
+        return False
+    versioned = any(re.fullmatch(r"v\d+", part, re.IGNORECASE) for part in parts)
+    versioned_repository_path = first.lower() in _REPOSITORY_DIRECTORY_NAMES or (
+        bool(re.fullmatch(r"v\d+", first, re.IGNORECASE))
+        and len(parts) > 1
+        and parts[1].lower() in _REPOSITORY_DIRECTORY_NAMES
+    )
+    return first.lower() in {"localhost", "user", "users"} or (
+        versioned and not versioned_repository_path
+    )
 
 
 def _looks_like_path(token: str) -> bool:
     """True when *token* is shaped like a source file path we can verify."""
+    if _looks_like_external_reference(token):
+        return False
     head = token.split("::", 1)[0]
     head = head.split("#", 1)[0].strip()
+    name = head.rsplit("/", 1)[-1]
+    if "/" in head:
+        if head.startswith("/") or "://" in head or any(char.isspace() for char in head):
+            return False
+        parts = head.split("/")
+        first = parts[0]
+        if ("." in first and not first.startswith(".")) or ":" in first:
+            return False
+        if not all(part not in {"", ".", ".."} for part in parts):
+            return False
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        if name.startswith(".") or name.lower() in _EXTENSIONLESS_PATH_NAMES:
+            return True
+        if "." in name:
+            ext = name.rsplit(".", 1)[-1].lower()
+            return ext in _CODE_EXTENSIONS or ext in _DOCUMENT_EXTENSIONS
+        # Extensionless slash tokens are inherently ambiguous with HTTP routes.
+        # Validate them only under conventional repository directories; exact
+        # configured evidence paths are recognized separately.
+        return first.lower() in _REPOSITORY_DIRECTORY_NAMES or (
+            bool(re.fullmatch(r"v\d+", first, re.IGNORECASE))
+            and len(parts) > 1
+            and parts[1].lower() in _REPOSITORY_DIRECTORY_NAMES
+        )
+    if (
+        name.startswith(".")
+        or head.lower() in _EXTENSIONLESS_PATH_NAMES
+        or ("#" in token and "." in head)
+    ):
+        return True
     if "." not in head:
         return False
     ext = head.rsplit(".", 1)[-1].lower()
-    return ext in _CODE_EXTENSIONS
+    return ext in _CODE_EXTENSIONS or ext in _DOCUMENT_EXTENSIONS
+
+
+def _looks_like_evidence_path(token: str, evidence: Mapping[str, str] | None) -> bool:
+    """Recognize exact or sibling paths under configured evidence directories."""
+    head = token.split("::", 1)[0].split("#", 1)[0].strip()
+    if not evidence:
+        return False
+    if head in evidence:
+        return True
+    parent = head.rpartition("/")[0]
+    return bool(parent and any(path.rpartition("/")[0] == parent for path in evidence))
 
 
 def _looks_like_symbol(token: str) -> bool:
@@ -105,7 +233,19 @@ def _looks_like_symbol(token: str) -> bool:
     """
     if not _IDENT.match(token):
         return False
-    if "." in token or "::" in token:
+    if _looks_like_external_reference(token):
+        return False
+    if ":" in token and "::" not in token and not token[:1].isupper():
+        return False
+    if "/" in token:
+        owner = token.split("/", 1)[0]
+        if (
+            owner[:1].islower()
+            or owner.upper() in _HTTP_METHODS
+            or re.fullmatch(r"v\d+", owner, re.IGNORECASE)
+        ):
+            return False
+    if re.search(_QUALIFIER, token):
         return True
     if "_" in token:
         return True
@@ -132,6 +272,27 @@ def _iter_strings(obj: Any, _depth: int = 0) -> Any:
             yield from _iter_strings(item, _depth + 1)
 
 
+def _normalize_token(token: str) -> str:
+    """Remove surrounding prose punctuation without stripping a leading dot path."""
+    return token.strip().strip(",;:()[]{}<>\"'").rstrip(".")
+
+
+def _collect_token(token: str, known_paths: set[str], known_symbols: set[str]) -> None:
+    token = _normalize_token(token)
+    if not token:
+        return
+    if _looks_like_path(token):
+        head = token.split("::", 1)[0].split("#", 1)[0].strip()
+        known_paths.add(token)
+        known_paths.add(head)
+        known_paths.add(head.rsplit("/", 1)[-1])
+    if _looks_like_symbol(token):
+        known_symbols.add(token)
+        for part in re.split(_QUALIFIER, token):
+            if part:
+                known_symbols.add(part)
+
+
 def collect_known(ctx: Any) -> tuple[set[str], set[str]]:
     """Collect the known paths and symbols from a subkind context object.
 
@@ -144,24 +305,40 @@ def collect_known(ctx: Any) -> tuple[set[str], set[str]]:
     known_paths: set[str] = set()
     known_symbols: set[str] = set()
     for s in _iter_strings(ctx):
-        token = s.strip()
-        if not token:
-            continue
-        if _looks_like_path(token):
-            head = token.split("::", 1)[0].split("#", 1)[0].strip()
-            known_paths.add(head)
-            known_paths.add(head.rsplit("/", 1)[-1])
-        # A string can carry both a path and a symbol vocabulary; also mine
-        # bare identifiers as known symbols.
-        if _looks_like_symbol(token):
-            known_symbols.add(token)
-            for part in re.split(r"\.|::", token):
-                if part:
-                    known_symbols.add(part)
+        _collect_token(s, known_paths, known_symbols)
     return known_paths, known_symbols
 
 
+def _evidence_grounded(
+    token: str,
+    *,
+    is_path: bool,
+    evidence: Mapping[str, str] | None,
+) -> bool:
+    """Require the complete evidence-derived citation to occur verbatim.
+
+    Context matching intentionally permits abbreviations, but applying that
+    policy to free-form evidence lets an unrelated qualifier borrow a shared
+    basename or member. Evidence therefore has the stricter contract promised
+    by the prompt: the complete normalized citation must be in the included
+    excerpt (or exactly name the included file).
+    """
+    if not evidence:
+        return False
+    normalized = _normalize_token(token)
+    if is_path:
+        head = normalized.split("::", 1)[0].split("#", 1)[0].strip()
+        if normalized == head and head in evidence:
+            return True
+    boundary_chars = r"A-Za-z0-9_./:#-"
+    pattern = re.compile(rf"(?<![{boundary_chars}]){re.escape(normalized)}(?![{boundary_chars}])")
+    return any(pattern.search(text) is not None for text in evidence.values())
+
+
 def _path_grounded(token: str, known_paths: set[str]) -> bool:
+    normalized = _normalize_token(token)
+    if "::" in normalized or "#" in normalized:
+        return normalized in known_paths
     head = token.split("::", 1)[0].split("#", 1)[0].strip()
     if head in known_paths:
         return True
@@ -174,15 +351,14 @@ def _path_grounded(token: str, known_paths: set[str]) -> bool:
 
 
 def _symbol_grounded(token: str, known_symbols: set[str]) -> bool:
-    if token in known_symbols:
-        return True
-    # Grounded if any qualified segment is known (``Registry.get`` grounds on
-    # ``Registry``; a member of a known concept is acceptable).
-    parts = [p for p in re.split(r"\.|::", token) if p]
-    return any(p in known_symbols for p in parts)
+    return token in known_symbols
 
 
-def check_grounding(content: str, ctx: Any) -> tuple[str, list[str]]:
+def check_grounding(
+    content: str,
+    ctx: Any,
+    evidence: Mapping[str, str] | None = None,
+) -> tuple[str, list[str]]:
     """Strip ungrounded path/symbol citations from *content*.
 
     Returns ``(cleaned_content, ungrounded_tokens)``. Each ungrounded token
@@ -198,14 +374,19 @@ def check_grounding(content: str, ctx: Any) -> tuple[str, list[str]]:
 
     def replace(match: re.Match[str]) -> str:
         token = match.group(1).strip()
-        is_path = _looks_like_path(token)
+        if _looks_like_external_reference(token):
+            return match.group(0)
+        is_path = _looks_like_path(token) or _looks_like_evidence_path(token, evidence)
         is_symbol = (not is_path) and _looks_like_symbol(token)
         if not is_path and not is_symbol:
             return match.group(0)
-        grounded = (
+        grounded_in_context = (
             _path_grounded(token, known_paths)
             if is_path
             else _symbol_grounded(token, known_symbols)
+        )
+        grounded = grounded_in_context or _evidence_grounded(
+            token, is_path=is_path, evidence=evidence
         )
         if grounded:
             return match.group(0)

@@ -1,7 +1,8 @@
 "use client";
 
 /**
- * Toolbar dropdown to export the current C4 view as SVG, PNG, or Mermaid.
+ * Toolbar dropdown to export the current C4 view as SVG, PNG, Mermaid,
+ * Structurizr DSL, or JSON.
  *
  * SVG/PNG are built locally from the React Flow layout (svg-exporter +
  * png-exporter). Mermaid is fetched from the host because the backend has
@@ -26,6 +27,17 @@ export interface C4ExportMenuProps {
   title?: string;
   /** Host-provided fetcher for the Mermaid source. Hidden if omitted. */
   fetchMermaid?: () => Promise<string>;
+  /**
+   * Host-provided fetcher for the Structurizr DSL. Hidden if omitted.
+   *
+   * Called with `standalone: true` for a complete `workspace { … }` and
+   * `false` for a bare `model { … }` fragment — the menu offers both, and a
+   * host that ignores the flag will serve the same file for both entries.
+   * Whichever comes back carries its own header comment explaining what it is
+   * and how to open it, so someone who downloads it without reading any docs
+   * still knows what they have.
+   */
+  fetchStructurizr?: (options: { standalone: boolean }) => Promise<string>;
   /** Disabled when the diagram is empty / still loading. */
   disabled?: boolean;
   /** Architecture view data for JSON export. JSON option hidden if omitted. */
@@ -44,6 +56,7 @@ export function C4ExportMenu({
   fileNameStem,
   title,
   fetchMermaid,
+  fetchStructurizr,
   disabled,
   architectureView,
   activeFilters,
@@ -102,6 +115,25 @@ export function C4ExportMenu({
     triggerDownload(new Blob([json], { type: "application/json;charset=utf-8" }), `${fileNameStem}-architecture.json`);
     setOpen(false);
   }, [architectureView, activeFilters, activePersona, fileNameStem]);
+
+  const onStructurizr = useCallback(
+    async (standalone: boolean) => {
+      if (!fetchStructurizr) return;
+      setStatus("working");
+      try {
+        const text = await fetchStructurizr({ standalone });
+        triggerDownload(
+          new Blob([text], { type: "text/plain;charset=utf-8" }),
+          standalone ? "workspace.dsl" : "repowise-model.dsl",
+        );
+        setStatus("idle");
+        setOpen(false);
+      } catch {
+        setStatus("error");
+      }
+    },
+    [fetchStructurizr],
+  );
 
   const onMermaidDownload = useCallback(async () => {
     if (!fetchMermaid) return;
@@ -176,6 +208,27 @@ export function C4ExportMenu({
               />
             </>
           )}
+          {fetchStructurizr && (
+            <>
+              <Divider />
+              {/* Workspace first: whoever is exporting from a diagram in a
+                  browser is unlikely to already keep a workspace.dsl, and the
+                  fragment does not open on its own. The hints say which is
+                  which without making anyone read the file to find out. */}
+              <MenuItem
+                icon={<FileType2 size={12} />}
+                label="Structurizr workspace (.dsl)"
+                hint="Opens as-is — includes default views"
+                onClick={() => void onStructurizr(true)}
+              />
+              <MenuItem
+                icon={<FileType2 size={12} />}
+                label="Structurizr model fragment"
+                hint="For a workspace.dsl you already have"
+                onClick={() => void onStructurizr(false)}
+              />
+            </>
+          )}
           {architectureView && activeFilters && activePersona && (
             <>
               <Divider />
@@ -200,10 +253,13 @@ export function C4ExportMenu({
 function MenuItem({
   icon,
   label,
+  hint,
   onClick,
 }: {
   icon: React.ReactNode;
   label: string;
+  /** Second line, for a choice whose label cannot carry the whole distinction. */
+  hint?: string;
   onClick: () => void;
 }) {
   return (
@@ -213,7 +269,9 @@ function MenuItem({
       onClick={onClick}
       style={{
         display: "flex",
-        alignItems: "center",
+        // Top rather than centre: with a hint the icon should sit on the
+        // label's line, not float in the middle of a two-line block.
+        alignItems: hint ? "flex-start" : "center",
         gap: 8,
         width: "100%",
         padding: "6px 10px",
@@ -228,8 +286,25 @@ function MenuItem({
       onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-border-subtle)")}
       onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
     >
-      {icon}
-      {label}
+      <span style={{ display: "flex", paddingTop: hint ? 2 : 0 }}>{icon}</span>
+      {hint ? (
+        <span style={{ display: "block" }}>
+          {label}
+          <span
+            style={{
+              display: "block",
+              marginTop: 2,
+              fontSize: 10,
+              lineHeight: 1.35,
+              color: "var(--color-text-secondary)",
+            }}
+          >
+            {hint}
+          </span>
+        </span>
+      ) : (
+        label
+      )}
     </button>
   );
 }

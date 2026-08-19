@@ -44,6 +44,20 @@ def test_create_job_status_is_pending(tmp_path):
     assert cp.status == "pending"
 
 
+def test_create_job_serializes_public_evidence_mapping_shape(tmp_path):
+    js = _make_system(tmp_path)
+    config = GenerationConfig(
+        source_evidence_files={"repo_overview": ("README.md",)},
+    )
+
+    job_id = js.create_job(".", config, "mock", "mock-model-1")
+    snapshot = js.get_checkpoint(job_id).config_snapshot
+
+    assert snapshot["source_evidence_files"] == {"repo_overview": ["README.md"]}
+    restored = GenerationConfig(**snapshot)
+    assert restored.source_evidence_files == {"repo_overview": ("README.md",)}
+
+
 # ---------------------------------------------------------------------------
 # start_job
 # ---------------------------------------------------------------------------

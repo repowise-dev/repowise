@@ -56,5 +56,31 @@ SPEC = LanguageSpec(
             "Serializable",
         }
     ),
+    builtin_types=frozenset(
+        {
+            # Kotlin primitives (kotlin package, auto-imported)
+            "Boolean", "Byte", "Short", "Int", "Long", "Float", "Double", "Char",
+            "String", "Unit", "Nothing", "Any", "Number",
+            "Array", "IntArray", "LongArray", "ByteArray", "ShortArray",
+            "FloatArray", "DoubleArray", "CharArray", "BooleanArray",
+            "List", "MutableList", "ArrayList",
+            "Map", "MutableMap", "HashMap", "LinkedHashMap",
+            "Set", "MutableSet", "HashSet", "LinkedHashSet",
+            "Collection", "MutableCollection",
+            "Iterable", "MutableIterable", "Iterator", "MutableIterator",
+            "Sequence", "Pair", "Triple", "Result",
+            "Comparable", "Comparator",
+            "Throwable", "Exception", "RuntimeException", "Error",
+            "IllegalArgumentException", "IllegalStateException",
+            "NullPointerException", "UnsupportedOperationException",
+            "IndexOutOfBoundsException", "ClassCastException",
+            "Lazy", "Regex", "Range", "IntRange", "LongRange", "CharRange",
+            "Enum", "Annotation",
+            # kotlin.io / kotlin.text / kotlin.collections ubiquitous
+            "Reader", "Writer", "BufferedReader", "BufferedWriter",
+            # Coroutines + JVM common
+            "Object", "Function", "Runnable", "Class", "Void",
+        }
+    ),
     color_hex="#A97BFF",
 )

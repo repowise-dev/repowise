@@ -60,7 +60,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
 
         embedder_name = _resolve_embedder(None)
 
-    embedder_impl = build_embedder(embedder_name)
+    embedder_impl = build_embedder(embedder_name, repo_path)
     if isinstance(embedder_impl, MockEmbedder) and requested_embedder != "mock":
         console.print(
             "[red]No real embedder available. Set a real embedder key, configure Ollama, or pass --embedder mock for test vectors.[/red]"
@@ -112,8 +112,13 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         return
 
     # --- Embed and upsert pages in batches ---
+    # The recipe is shared with generation and ``doctor --repair`` so a page
+    # reindexed here gets the same vector it would have got from any of them.
+    from repowise.core.persistence.vector_store import embed_item
+
     indexed = 0
     failed = 0
+    below_floor = 0
 
     with Progress(
         SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
@@ -160,20 +165,35 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
             batch = pages[i : i + batch_size]
             items = []
             for page in batch:
-                text = f"{page.title}\n{page.content}" if page.content else page.title or ""
-                if not text.strip():
-                    continue  # embedders reject empty input; nothing to index
-                items.append(
-                    (
-                        page.id,
-                        text,
-                        {
-                            "title": page.title or "",
-                            "page_type": page.page_type or "",
-                            "target_path": page.target_path or "",
-                        },
-                    )
+                if not (page.title or "").strip():
+                    # The shared recipe refuses a blank title, and it is right
+                    # to: the row would be unfindable by name. Here that must
+                    # not abort a whole reindex over one bad row, so the page
+                    # is skipped and counted like any other failure.
+                    failed += 1
+                    warned += 1
+                    if warned <= 3:
+                        console.print(
+                            f"[yellow]  Warning: skipped {page.id}: no title to index it by"
+                            "[/yellow]"
+                        )
+                    continue
+                item = embed_item(
+                    page.id,
+                    title=page.title,
+                    page_type=page.page_type or "",
+                    target_path=page.target_path or "",
+                    summary=page.summary or "",
+                    content=page.content or "",
                 )
+                if item is None:
+                    # Below the information floor. Not a failure — the page is
+                    # deliberately kept out of the index and is counted apart
+                    # from the ones that broke, because a reindex reporting
+                    # them together would read as an embedder losing rows.
+                    below_floor += 1
+                    continue
+                items.append(item)
             await _embed_slice(items)
             progress.advance(task, advance=len(batch))
 
@@ -181,7 +201,12 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         # decision: namespace, batched like the pages. Uses embed_batch
         # directly (which raises on failure) rather than the ingest-side
         # best-effort wrapper, so the indexed/failed counters stay honest.
-        progress.update(task, description="Indexing decisions...")
+        # Only when there are any. Set unconditionally, this relabelled a bar
+        # that had just finished the pages, so a repo with no decisions ended
+        # its reindex reading "Indexing decisions... 186/186" — 186 pages
+        # reported as decisions that were never indexed.
+        if decisions:
+            progress.update(task, description="Indexing decisions...")
         for i in range(0, len(decisions), batch_size):
             batch = decisions[i : i + batch_size]
             items = [
@@ -203,8 +228,28 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     await vector_store.close()
     await engine.dispose()
 
+    # Record the embedder we actually built the table with. Without this, a
+    # repo indexed keyless keeps `embedder: mock` in config.yaml, and the next
+    # `repowise update` builds a mock store, writes 8-wide vectors into the
+    # 1536-wide table this run just built, and LanceDB resolves the mismatch by
+    # dropping the table — every page and decision vector gone, silently. The
+    # reindex undone by a routine update.
+    #
+    # Only when something was actually written: the pin describes the table, so
+    # a run where every item failed has nothing to describe, and claiming
+    # otherwise would point later writers at a width the table does not have.
+    if indexed:
+        from repowise.cli.helpers import save_config_partial
+
+        save_config_partial(Path(repo_path), embedder=embedder_name)
+
     console.print(
         f"\n[bold green]Done![/bold green] Indexed {indexed} items"
         + (f" ({failed} failed)" if failed else "")
+        # Named separately from failures, and only when it happened: a count
+        # folded into "failed" would read as an embedder losing rows, and a
+        # standing "0 held back" would read as a problem on every run that
+        # never had one.
+        + (f" ({below_floor} held back as too thin to index)" if below_floor else "")
         + f" -> {lance_dir}"
     )

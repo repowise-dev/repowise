@@ -214,3 +214,104 @@ async def test_cross_language_anchor_dropped(session, repo_id):
     paths = {h.get("target_path") for h in combined}
     assert sym_py in paths  # in-language endpoint injected
     assert sym_ts not in paths  # off-language same-name match dropped
+
+
+def test_plumbing_covers_test_material_by_the_shared_rules():
+    """Tests bridge unrelated files, so none of them make a flow endpoint.
+
+    The substring list this replaced anchored on ``/tests/``, so a repo whose
+    suite sits at the root had its whole test tree treated as ordinary source
+    and eligible for injection (#1103).
+    """
+    from repowise.server.mcp_server._flow_path import _is_plumbing
+
+    assert _is_plumbing("tests/unit/server/test_flow_path.py")  # root-level suite
+    assert _is_plumbing("myapp/tests.py")
+    assert _is_plumbing("Foo.Tests/Bar.cs")
+    assert _is_plumbing("packages/core/tests/conftest.py")  # support bridges too
+    assert _is_plumbing("pkg/server/__init__.py")  # re-export glue, unchanged
+    # Production code that merely spells "test" is a legitimate endpoint.
+    assert not _is_plumbing("src/analysis/missing_test_signal.py")
+    assert not _is_plumbing("src/latest/api.py")
+
+
+# --- determinism -----------------------------------------------------------
+#
+# Found by the #1510 payload oracle: the same build, same question, same index
+# produced `flow_path` with two equal-length paths in opposite orders, one
+# ordering per run. Adjacency was a dict of sets and BFS walked it, so which of
+# several shortest paths was found moved with the per-process string hash seed —
+# and a nondeterministic ordering can be frozen into the answer cache.
+
+
+def test_adjacency_neighbours_come_back_ordered():
+    """Sets dedupe; the walk needs an order, so the dict hands out sorted lists."""
+    import asyncio
+
+    from repowise.server.mcp_server._flow_path import _load_file_adjacency
+
+    class _Res:
+        def all(self):
+            return [
+                ("a.py", "z.py", "imports", 1.0),
+                ("a.py", "b.py", "imports", 1.0),
+                ("a.py", "m.py", "imports", 1.0),
+            ]
+
+    class _Session:
+        async def execute(self, _stmt):
+            return _Res()
+
+    adj = asyncio.run(_load_file_adjacency(_Session(), "r1"))
+    assert adj["a.py"] == ["b.py", "m.py", "z.py"]
+
+
+def test_bfs_breaks_a_shortest_path_tie_the_same_way_every_time():
+    """A diamond: two 3-hop routes from `a` to `d`. The ordered walk picks one.
+
+    Asserted against the neighbour order rather than "runs twice agree", which a
+    single process cannot demonstrate — the seed is fixed for its lifetime.
+    """
+    from repowise.server.mcp_server._flow_path import _bfs_path
+
+    adj = {
+        "a.py": ["b.py", "c.py"],
+        "b.py": ["a.py", "d.py"],
+        "c.py": ["a.py", "d.py"],
+        "d.py": ["b.py", "c.py"],
+    }
+    assert _bfs_path(adj, "a.py", "d.py", 4) == ["a.py", "b.py", "d.py"]
+
+    # The walk is bidirectional and the sides alternate, so on a 2-hop diamond
+    # it is the BACKWARD frontier that reaches the meeting point first. Flip
+    # `d`'s neighbours and the chosen route flips with it — which is the point:
+    # the result follows the walk order, and the walk order is now fixed.
+    flipped = {**adj, "d.py": ["c.py", "b.py"]}
+    assert _bfs_path(flipped, "a.py", "d.py", 4) == ["a.py", "c.py", "d.py"]
+
+
+async def test_the_anchor_cap_keeps_what_retrieval_ranked(session, repo_id):
+    """Determinism must not become an alphabetical bias.
+
+    Eight anchors against a cap of six. The one file retrieval ranked sorts LAST
+    alphabetically, so it survives the cap only if rank is what decides.
+    """
+    stems = ["alpha", "beta", "gamma", "delta"]
+    ranked = "zzz/delta.py"
+    paths_seeded = [_ANSWER, ranked] + [f"{d}/{s}.py" for s in stems for d in ("aaa", "mmm")]
+    for path in dict.fromkeys(paths_seeded):
+        session.add(_page(repo_id, path))
+    session.add(_symbol(repo_id, "get_answer", _ANSWER))
+    session.add(_edge(repo_id, _ANSWER, ranked, "imports"))
+    await session.commit()
+
+    hits = [{"target_path": _ANSWER, "score": 5.0}, {"target_path": ranked, "score": 4.0}]
+    _combined, paths = await expand_via_flow_path(
+        session,
+        repo_id,
+        hits,
+        "how does get_answer reach alpha beta gamma delta",
+        {"get_answer"},
+    )
+
+    assert [_ANSWER, ranked] in paths

@@ -352,7 +352,7 @@ def _render(raw_lines: list[str], diags: list[_Diag], trailing: list[str]) -> st
                 seen[ln] = len(out)
                 out.append(ln)
     for idx, extra in repeats.items():
-        out[idx] = f"{out[idx]}  (×{extra + 1})"  # noqa: RUF001
+        out[idx] = f"{out[idx]}  (×{extra + 1})"
     if errors or incidental:
         out.append("")
 
@@ -367,7 +367,7 @@ def _render(raw_lines: list[str], diags: list[_Diag], trailing: list[str]) -> st
         shown = anchors[:_MAX_ANCHORS]
         more = f", +{len(anchors) - len(shown)} more" if len(anchors) > len(shown) else ""
         loc = f"  [{', '.join(shown)}{more}]" if shown else ""
-        out.append(f"  {rule} ×{len(ds)}{fix_note} — {msg}{loc}")  # noqa: RUF001
+        out.append(f"  {rule} ×{len(ds)}{fix_note} — {msg}{loc}")
 
     if trailing:
         out.append("")
@@ -383,5 +383,5 @@ def _render(raw_lines: list[str], diags: list[_Diag], trailing: list[str]) -> st
             rescued[ln] = rescued.get(ln, 0) + 1
     if rescued:
         out.append("")
-        out.extend(ln if n == 1 else f"{ln}  (×{n})" for ln, n in rescued.items())  # noqa: RUF001
+        out.extend(ln if n == 1 else f"{ln}  (×{n})" for ln, n in rescued.items())
     return "\n".join(out)

@@ -125,10 +125,27 @@ export function getLayoutDuration(nodeCount: number): number {
   return 8000;
 }
 
-// ---- Synchronous pre-settle (small graphs: settle before first paint) ----
+// ---- Community seeding (file graphs) ----
+
+/**
+ * Diameter of a community's seeding disc, per sqrt(member count), in graph
+ * units. Scaling with sqrt keeps node density inside a community roughly
+ * constant: the old fixed `sqrt(nodeCount) * 3` gave a 776-file community and a
+ * 5-file one the same box, which is why 65% of discs overlapped something on
+ * first paint.
+ *
+ * Measured on this repo's real 1,500-node export, at k=20 with a disc
+ * distribution: 20.4% of nodes overlapping (was 65.3%) at cluster separation
+ * 20.8 (was 23.2). A square box scores marginally better on separation at equal
+ * overlap, but draws communities as squares — the whole page reads in circles.
+ */
+export const SEED_JITTER_PER_SQRT_MEMBER = 20;
+
+// ---- Synchronous pre-settle (module graphs: settle before first paint) ----
 
 /** Above this, settling synchronously would risk a main-thread jank — the
- *  animated FA2 worker takes over instead. */
+ *  animated FA2 worker takes over instead. Applies to module graphs only; file
+ *  graphs ship their seed as the final layout (see buildFileGraph). */
 export const PRESETTLE_MAX_NODES = 800;
 
 /** Sync FA2 iteration budget, scaled down as graphs grow. ~400 iterations on
@@ -151,7 +168,20 @@ export const NOVERLAP_SETTINGS = {
 
 // ---- Edge rendering thresholds ----
 
-export const CURVED_EDGE_THRESHOLD = 3000;
+/**
+ * Above this many EDGES, drop the per-edge curvature and draw straight arrows.
+ *
+ * This was compared against the node count, not the edge count, while governing
+ * how edges draw — so with the export capped at 1,500 nodes it could never fire
+ * and every edge drew as a curved arrow. Now measured against what it actually
+ * costs: `curvedArrow` carries a per-edge curvature and a heavier program than
+ * `arrow`.
+ *
+ * The straight variant is "arrow", never "line" — `line` has no arrowhead, and
+ * direction is the whole point of a dependency edge (#1145 added those heads
+ * deliberately).
+ */
+export const CURVED_EDGE_THRESHOLD = 8000;
 
 // ---- Label rendering ----
 
@@ -161,11 +191,21 @@ export const LABEL_DENSITY = 0.15;
 export const LABEL_GRID_CELL_SIZE = 80;
 export const LABEL_RENDERED_SIZE_THRESHOLD = 6;
 
-/** Sparser labels on large graphs to keep repaint cheap. */
+/**
+ * Sparser labels on large graphs to keep repaint cheap.
+ *
+ * Both thresholds used to step at 2,000 nodes while the export was capped at
+ * 1,500 — so neither could ever fire, and the "large graph" branch was dead on
+ * every repo. They step at 1,200 now, which is inside the default page, and the
+ * ladder has a second rung so a "load more" to the 3,000 ceiling still thins
+ * out rather than jumping straight to the densest setting it has.
+ */
 export function getLabelDensity(nodeCount: number): number {
-  return nodeCount > 2000 ? 0.07 : LABEL_DENSITY;
+  if (nodeCount > 2500) return 0.05;
+  return nodeCount > 1200 ? 0.07 : LABEL_DENSITY;
 }
 
 export function getLabelRenderedSizeThreshold(nodeCount: number): number {
-  return nodeCount > 2000 ? 8 : LABEL_RENDERED_SIZE_THRESHOLD;
+  if (nodeCount > 2500) return 10;
+  return nodeCount > 1200 ? 8 : LABEL_RENDERED_SIZE_THRESHOLD;
 }

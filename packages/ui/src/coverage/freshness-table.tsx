@@ -30,14 +30,17 @@ export interface FreshnessTableProps {
   onRegenerate?: (pageId: string) => Promise<void>;
 }
 
-export function FreshnessTable({ pages, onRegenerate }: FreshnessTableProps) {
+export function FreshnessTable({
+  pages,
+  onRegenerate,
+}: FreshnessTableProps) {
   const [filter, setFilter] = useState<Filter>("all");
   const [regenerating, setRegenerating] = useState<Set<string>>(new Set());
 
   // The filter is a set of discrete status toggle buttons, not a free-text
   // search input, so there are no rapid keystroke updates to debounce — each
   // click is a single discrete state change. We only need to memoize the
-  // derived data so the four count scans and the filter scan don't re-run on
+  // derived data so the count scans and the filter scan don't re-run on
   // unrelated re-renders (e.g. per-row regenerate state changes).
   const counts = useMemo<Record<Filter, number>>(() => {
     let fresh = 0;
@@ -51,13 +54,10 @@ export function FreshnessTable({ pages, onRegenerate }: FreshnessTableProps) {
     return { all: pages.length, fresh, stale, outdated };
   }, [pages]);
 
-  const filtered = useMemo(
-    () =>
-      filter === "all"
-        ? pages
-        : pages.filter((p) => p.freshness_status === filter),
-    [pages, filter],
-  );
+  const filtered = useMemo(() => {
+    if (filter === "all") return pages;
+    return pages.filter((p) => p.freshness_status === filter);
+  }, [pages, filter]);
 
   const handleRegenerate = async (pageId: string) => {
     if (!onRegenerate) return;
@@ -75,27 +75,30 @@ export function FreshnessTable({ pages, onRegenerate }: FreshnessTableProps) {
 
   return (
     <div className="space-y-4">
-      <div role="tablist" aria-label="Freshness filter" className="flex items-center gap-1">
-        {(["all", "fresh", "stale", "outdated"] as Filter[]).map((f) => {
-          const count = counts[f];
-          return (
-            <button
-              key={f}
-              role="tab"
-              aria-selected={filter === f}
-              onClick={() => setFilter(f)}
-              className={cn(
-                "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                filter === f
-                  ? "bg-[var(--color-bg-surface)] text-[var(--color-text-primary)] shadow-sm"
-                  : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
-              )}
-            >
-              {f === "all" ? "All" : statusLabel(f as FreshnessStatus)}
-              <span className="ml-1 text-[var(--color-text-tertiary)]">({count})</span>
-            </button>
-          );
-        })}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div role="tablist" aria-label="Filter pages" className="flex flex-wrap items-center gap-1">
+          {(["all", "fresh", "stale", "outdated"] as Filter[]).map((f) => {
+            const count = counts[f];
+            const label = f === "all" ? "All" : statusLabel(f as FreshnessStatus);
+            return (
+              <button
+                key={f}
+                role="tab"
+                aria-selected={filter === f}
+                onClick={() => setFilter(f)}
+                className={cn(
+                  "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                  filter === f
+                    ? "bg-[var(--color-bg-surface)] text-[var(--color-text-primary)] shadow-sm"
+                    : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
+                )}
+              >
+                {label}
+                <span className="ml-1 text-[var(--color-text-tertiary)]">({count})</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {filtered.length === 0 ? (
@@ -133,12 +136,18 @@ export function FreshnessTable({ pages, onRegenerate }: FreshnessTableProps) {
           }
           renderRow={(page) => {
             const status = page.freshness_status as FreshnessStatus;
+            // No `group` either: the underline was its only consumer. The
+            // hover ground stays — on a five-column table it is how you keep
+            // your place across the row, and unlike an underline on the path
+            // it does not name a target to follow.
             return (
-              <tr
-                className="group border-b border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0"
-              >
+              <tr className="border-b border-[var(--color-table-divider)] hover:bg-[var(--color-bg-elevated)] transition-colors last:border-0">
                 <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-text-primary)] min-w-[220px] max-w-[480px]">
-                  <div className="truncate group-hover:underline underline-offset-2" title={page.target_path}>{page.target_path}</div>
+                  {/* No `group-hover:underline`: the row has no href and no
+                      onSelect, so the underline promised a navigation that
+                      could never happen. The row's one verb is Regenerate, in
+                      the action column. */}
+                  <div className="truncate" title={page.target_path}>{page.target_path}</div>
                   {(() => { const TypeIcon = getPageTypeIcon(page.page_type); return (
                     <div className="flex items-center gap-1 truncate text-[var(--color-text-tertiary)]" title={page.page_type}>
                       <TypeIcon className="h-3 w-3 shrink-0" />
