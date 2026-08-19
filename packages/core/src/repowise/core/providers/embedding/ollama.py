@@ -12,6 +12,8 @@ from typing import Any
 
 import httpx
 
+from repowise.core.providers.embedding.base import resolve_embedding_timeout
+
 _DEFAULT_BASE_URL = "http://localhost:11434"
 _DEFAULT_MODEL = "embeddinggemma"
 _DEFAULT_TIMEOUT = 30.0
@@ -69,33 +71,20 @@ class OllamaEmbedder:
         self._base_url = _normalize_base_url(
             base_url or os.environ.get("OLLAMA_BASE_URL") or _DEFAULT_BASE_URL
         )
-        from repowise.core.providers.embedding.base import EmbedderConfigError, parse_numeric_env
-
-        env_dims_name = "OLLAMA_EMBEDDING_DIMS" if os.environ.get("OLLAMA_EMBEDDING_DIMS") else "REPOWISE_EMBEDDING_DIMS"
-        env_dimensions = os.environ.get(env_dims_name)
-        
-        if dimensions is not None:
-            if dimensions <= 0:
-                raise EmbedderConfigError(f"Invalid dimensions: {dimensions!r} (must be a positive integer)")
-            self._requested_dimensions = dimensions
-        elif env_dimensions:
-            self._requested_dimensions = parse_numeric_env(env_dimensions, env_dims_name, is_int=True)
+        env_dimensions = os.environ.get("OLLAMA_EMBEDDING_DIMS") or os.environ.get(
+            "REPOWISE_EMBEDDING_DIMS"
+        )
+        if env_dimensions:
+            from repowise.core.providers.embedding.base import parse_numeric_env
+            env_name = "OLLAMA_EMBEDDING_DIMS" if "OLLAMA_EMBEDDING_DIMS" in os.environ else "REPOWISE_EMBEDDING_DIMS"
+            env_dimensions_parsed = parse_numeric_env(env_dimensions, env_name, is_int=True)
         else:
-            self._requested_dimensions = None
-
+            env_dimensions_parsed = None
+        self._requested_dimensions = dimensions or env_dimensions_parsed
         self._dimensions = self._requested_dimensions or _infer_dimensions(self._model)
-
-        env_timeout_name = "OLLAMA_EMBEDDING_TIMEOUT" if os.environ.get("OLLAMA_EMBEDDING_TIMEOUT") else "REPOWISE_EMBEDDING_TIMEOUT"
-        env_timeout = os.environ.get(env_timeout_name)
-
-        if timeout is not None:
-            if timeout <= 0:
-                raise EmbedderConfigError(f"Invalid timeout: {timeout!r} (must be a positive number)")
-            self._timeout = timeout
-        elif env_timeout:
-            self._timeout = parse_numeric_env(env_timeout, env_timeout_name)
-        else:
-            self._timeout = _DEFAULT_TIMEOUT
+        self._timeout = resolve_embedding_timeout(
+            timeout, _DEFAULT_TIMEOUT, provider_env="OLLAMA_EMBEDDING_TIMEOUT"
+        )
 
     @property
     def dimensions(self) -> int:
@@ -126,6 +115,24 @@ class OllamaEmbedder:
         if len(raw_vectors) != len(texts):
             raise ValueError(
                 f"Ollama returned {len(raw_vectors)} embeddings for {len(texts)} inputs."
+            )
+        widths = {len(v) for v in raw_vectors}
+        if widths and widths != {self._dimensions}:
+            actual = min(widths - {self._dimensions})
+            if self._requested_dimensions is not None:
+                hint = (
+                    f"Set OLLAMA_EMBEDDING_DIMS={actual} (or REPOWISE_EMBEDDING_DIMS={actual})"
+                    f" to match the server's native output."
+                )
+            else:
+                hint = (
+                    f"The dimension was inferred from the model name ({self._model!r})."
+                    f" Set OLLAMA_EMBEDDING_DIMS={actual} to override the inferred value."
+                )
+            raise ValueError(
+                f"OllamaEmbedder declared {self._dimensions}-dimensional vectors but the "
+                f"server returned {actual} (model={self._model!r}). "
+                f"The server likely ignored the 'dimensions' parameter. {hint}"
             )
 
         return [_l2_normalize([float(value) for value in vector]) for vector in raw_vectors]
