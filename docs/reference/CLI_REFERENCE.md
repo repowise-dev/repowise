@@ -834,9 +834,15 @@ index lookup.
 know, and always says which path fired:
 
 - a changed file with per-test coverage -> the exact covering tests (`via: coverage`);
-- a changed file with no coverage rows -> a filename-pattern **guess** at its paired test, labelled as a guess (never presented as coverage-backed);
-- a new file with neither coverage nor a paired test -> reported as "unknown, run the full suite" (never implied as "no tests needed");
-- no map ingested at all -> a prompt to run `repowise coverage add` on a report with contexts first.
+- a changed file that is itself a test -> itself (`via: changed-test`);
+- a changed file with no coverage rows, but a test reaching it in the import graph -> those test files (`via: import-graph`), in a table headed "NOT coverage-backed";
+- neither of those, but a name-shaped match -> that file (`via: filename-pattern`), in the same table;
+- none of the above -> reported as "unknown, run the full suite" (never implied as "no tests needed");
+- no map ingested at all -> a prompt to run `repowise coverage add` on a report with contexts first, alongside whatever the graph could infer.
+
+The `via` marker is not decoration. `coverage` is proof that a test executed the
+changed lines; the other two are candidates that over-claim, and passing them
+does not clear the change.
 
 The map only exists when coverage was ingested from a report that carries
 per-test contexts (a coverage.py `.coverage` written with dynamic contexts, or a

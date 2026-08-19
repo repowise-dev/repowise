@@ -44,23 +44,22 @@ async def get_risk(
     and security findings. Consult before editing a bug-fixed or busy file. Pass
     changed_files for PR mode: the response leads with a directive block
     (will_break, missing_cochanges, missing_tests, tests_to_run) — read it
-    first. tests_to_run is coverage-backed: the tests the per-test map proves
-    exercise the changed files, empty when no coverage map is ingested. To
-    score a commit or ``base..head`` range instead, use ``get_change_risk``.
+    first. tests_to_run_basis backs the run-list: measured (a coverage map
+    proves those tests run the changed files) or inferred (test files the import
+    graph shows reaching them; candidates, no ingest needed). To score a commit
+    or ``base..head`` range instead, use ``get_change_risk``.
 
     defect_profile appears only on files with counted bug fixes: how many landed
     in the trailing 6 months, how long ago the last one was, a bug_magnet flag
     for sustained recent fix pressure, and top_symbols. Read top_symbols as
     "mostly here" rather than exact — symbol spans are current-tree while each
     fix's line ranges are numbered on its own parent commit. Nothing names the
-    commit that introduced a bug. global_hotspots ranks the same way: fix
-    history first, churn as fallback.
+    commit that introduced a bug. global_hotspots ranks the same way.
 
     episodes counts the dated records bound to a target — what happened here and
     why, evidenced by a commit or a filesystem fact. It appears only when there
     is at least one, and get_why serves the bodies. A directory target
-    aggregates everything beneath it, so compare the numbers within a kind of
-    target, not across kinds.
+    aggregates everything beneath it, so compare within a kind of target.
 
     Args:
         targets: file paths to assess.

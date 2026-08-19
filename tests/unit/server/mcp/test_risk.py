@@ -150,19 +150,41 @@ async def test_get_risk_pr_directive_surfaces_coverage_backed_tests_to_run(setup
         "tests/test_service.py::test_login",
         "tests/test_service.py::test_logout",
     ]
+    # The graph also reaches this file, and must not dilute a measured answer.
+    assert directive["tests_to_run_basis"] == "measured"
     assert "coverage-backed test(s) guard the change" in directive["summary"]
 
 
 @pytest.mark.asyncio
-async def test_get_risk_pr_directive_tests_to_run_empty_without_map(setup_mcp):
-    """No per-test map -> tests_to_run is an empty list, never invented."""
+async def test_get_risk_pr_directive_falls_back_to_the_graph_without_a_map(setup_mcp):
+    """No per-test map -> the import graph answers, labelled as inferred.
+
+    The fixture records ``tests/test_service.py`` importing ``service.py``. That
+    is not proof it executes it, so the ids are test *files* and the basis says
+    ``inferred``; what it replaces is an empty list on every repo that has never
+    ingested a coverage report.
+    """
     from repowise.server.mcp_server import get_risk
 
     result = await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
     directive = result["directive"]
 
-    assert directive["tests_to_run"] == []
+    assert directive["tests_to_run"] == ["tests/test_service.py"]
+    assert directive["tests_to_run_basis"] == "inferred"
+    assert "inferred, not coverage-proven" in directive["summary"]
     assert "coverage-backed test(s) guard the change" not in directive["summary"]
+
+
+@pytest.mark.asyncio
+async def test_get_risk_pr_directive_names_no_tests_when_nothing_reaches(setup_mcp):
+    """Neither map nor graph -> an empty list and a ``none`` basis, not a guess."""
+    from repowise.server.mcp_server import get_risk
+
+    result = await get_risk(["src/db/models.py"], changed_files=["src/db/models.py"])
+    directive = result["directive"]
+
+    assert directive["tests_to_run"] == []
+    assert directive["tests_to_run_basis"] == "none"
 
 
 # ---- _classify_risk_type small-team calibration (issue #361) ---------------

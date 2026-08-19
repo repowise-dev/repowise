@@ -11,6 +11,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A test-to-code map that needs no coverage report.** The per-test map only
+  ever existed if you ingested a coverage report with contexts, so on most
+  repositories `tests_to_run` was empty, `impacted_tests` said "run the full
+  suite", and `untested_hotspot` fell back to matching filenames. The dependency
+  graph already records which test files import which source files, and that
+  relation now answers when the measured one cannot. It is labelled `inferred`
+  everywhere, never blended with measured coverage, and never turned into a
+  percentage. Nothing is stored: it is a bounded walk over rows already indexed,
+  measured at 27 ms once per health run on a 3,700-file repository.
+
+  New fields: `tests_to_run_basis` on `get_risk`'s directive
+  (`measured` / `inferred` / `none`), `basis` and a `status: "inferred"` on
+  `get_change_risk`'s `impacted_tests`, and a `via` marker on every
+  `repowise impacted-tests` candidate.
+
+### Changed
+
+- **`untested_hotspot` stops accusing files that six tests import.** With no
+  coverage ingested it fired on any hotspot without a *paired test file*, which
+  is a filename convention, so a suite that names its tests for behaviour
+  satisfied nothing. A test reaching the file in the import graph now suppresses
+  it too. On this repository five of the six worst bug-magnet files had no test
+  named for them and read as untested; the sixth, `analysis/health/engine.py`,
+  was called tested because the convention matched `distill/test_engine.py` on
+  basename alone. The same floor now runs under `get_risk`'s `missing_tests`,
+  which had two separate filename heuristics that disagreed.
+
+  Measured on repowise's own index: 74 of its 110 standing `untested_hotspot`
+  findings are cleared, 18 of them graded critical. The persisted
+  `has_test_file` widens to match, so the file table stops labelling those same
+  files "untested" while the biomarker says nothing.
+
+  Both stored values are wrong on an index built before this, so
+  `HEALTH_ANALYZER_VERSION` moves to 2 and the next `repowise update` with
+  changed files re-scores health rather than waiting out the decay timer.
+
+- **`repowise impacted-tests --format json` renames `guessed_tests` to
+  `inferred_tests`.** The bucket no longer holds only filename guesses, so the
+  old name described the wrong thing; each entry carries `via`
+  (`import-graph` or `filename-pattern`) to say which tier answered.
+
 ---
 
 ## [0.44.0] — 2026-08-18

@@ -431,7 +431,7 @@ Modification risk assessment for files or a set of changed files.
 
 > **Scales.** Ratios derived from ownership or percentile columns are 0-1 (`hotspot_score`, `owner_pct`, `recent_owner_pct`); coverage and gap fields are 0-100 (`coverage_pct`, `branch_coverage_pct`, `share_of_repo_gap_pct`, `change_entropy_pct`, `churn_percentile`). The `_pct` suffix alone does not tell you which — check this table. Every emitted float is rounded to 4 significant digits.
 
-When `changed_files` is passed, the response leads with a `directive` block. Its core lists are the local blast radius: `will_break` (production files that depend on the diff and are likely to break), `will_break_tests` (test files impacted the same way, kept separate so a burst of broken tests doesn't crowd production impact out of the capped list), `missing_cochanges` (historical co-changers absent from the diff), `missing_tests` (changed files without test coverage), and `tests_to_run` (the positive complement of `missing_tests`: the tests the per-test coverage map proves execute the changed files, as pytest-runnable ids to validate the change; empty until a coverage map is ingested with `repowise coverage add`). In workspace mode that directive also carries the cross-repo fallout of the changed repo:
+When `changed_files` is passed, the response leads with a `directive` block. Its core lists are the local blast radius: `will_break` (production files that depend on the diff and are likely to break), `will_break_tests` (test files impacted the same way, kept separate so a burst of broken tests doesn't crowd production impact out of the capped list), `missing_cochanges` (historical co-changers absent from the diff), `missing_tests` (changed files without test coverage), and `tests_to_run` (the positive complement of `missing_tests`: the tests that exercise the changed files, as pytest-runnable arguments). Read `tests_to_run_basis` beside it, because the ids alone do not say where they came from: `measured` means the per-test coverage map proves those tests execute the changed files; `inferred` means the import graph shows those test *files* reaching the change, which is a candidate list rather than proof and needs no coverage ingest; `none` means neither source knows of a test, which is unknown and not "untested". The two are never mixed in one list. In workspace mode that directive also carries the cross-repo fallout of the changed repo:
 
 - `will_break_consumers`: services in *other* repos that depend on this one (structural impact), each with `repo`, `service`, `distance`, `score`, and the edge kinds carrying the impact.
 - `missing_cross_repo_cochanges`: services in other repos that historically co-change with this one but aren't in the diff.
@@ -488,10 +488,14 @@ execute the change's changed *lines* (line-precise, so a narrower set than
 `truncated` reporting any overflow. Its `missing_tests` buckets flag
 `untested_changes` (covered file, uncovered change), `stale_test_candidates`
 (covered lines whose guarding test file is absent from the diff), `covered`, and
-`no_coverage_data` (files absent from the map). When no map is ingested,
-`status` is `no_map` and the change is reported as unknown ("run the full
-suite"), never as untested. Build the map with `coverage run --contexts=test`
-followed by `repowise coverage add`.
+`no_coverage_data` (files absent from the map). When no map is ingested the
+change is never reported as untested: `status` becomes `inferred` when the
+import graph can name test files reaching the change (candidates, file-level, no
+line attribution, and `missing_tests` stays empty because reaching cannot speak
+to lines), and `no_map` ("run the full suite") when it cannot. `basis` carries
+the same distinction in one word: `measured`, `inferred`, or absent. Build the
+measured map with `coverage run --contexts=test` followed by
+`repowise coverage add`.
 
 When the changed files carry counted bug fixes, the response also holds
 `prior_fixes`: per file, how many past bug-fix commits touched it
