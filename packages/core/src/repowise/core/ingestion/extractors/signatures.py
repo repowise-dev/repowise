@@ -15,7 +15,14 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         for f in fields:
             n = def_node.child_by_field_name(f)
             if n is not None:
-                return f" -> {node_text(n, src)}"
+                text = node_text(n, src)
+                # TypeScript/JavaScript's return_type is a type_annotation
+                # node whose text already carries a leading colon (": string"),
+                # unlike Python ("int"), Rust ("i32"), or Go ("string"). Strip
+                # it so we never emit a doubled " -> : type".
+                if text.startswith(":"):
+                    text = text[1:].lstrip()
+                return f" -> {text}"
         return ""
 
     if node_type == "function_definition":
