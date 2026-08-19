@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-from tree_sitter import Language, Parser
-
 import tree_sitter_typescript
+from tree_sitter import Language, Parser
 
 from repowise.core.ingestion.extractors.signatures import build_signature
 
