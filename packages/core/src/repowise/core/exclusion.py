@@ -129,6 +129,18 @@ def is_excluded(path: str | None, spec: Any) -> bool:
     return cached
 
 
+def is_any_excluded(paths: list[str], spec: Any) -> bool:
+    """True if *any* path in *paths* matches *spec*.
+
+    The batch form of :func:`is_excluded` for the common "does this set
+    contain something excluded?" question (e.g. a decision's affected files,
+    or a page's source list). Short-circuits on the first hit, so it pays the
+    match cost of at most one excluded path rather than the whole list. An
+    empty *paths* is not excluded, matching ``any()`` over an empty iterable.
+    """
+    return any(is_excluded(p, spec) for p in paths)
+
+
 def decision_is_excluded(decision_row: Any, spec: Any) -> bool:
     """True when a DecisionRecord is anchored entirely in excluded paths.
 
