@@ -470,12 +470,12 @@ Per language, nine languages, both sides read:
 wrong.** That is the number we plan against, and rust, java and cpp are where it
 concentrates.
 
-**Four of nine cells separate. Five are ties and we report them as ties** — at n=30 the
+**Four of nine cells separate. Five are ties and we report them as ties.** At n=30 the
 interval runs about ±16 points near 60%, so a point-estimate gap inside two overlapping
 intervals is not a win. C++ is a tie despite looking like a 23-point lead.
 
 **One repository goes clearly to them.** On `seastar` CodeGraph reads 6/10 against our
-4/10 — the only repository in the audit, on any language, where they beat us on a clear
+4/10, the only repository in the audit, on any language, where they beat us on a clear
 margin. Our misses there are chained calls on an untyped receiver; they infer the
 callee's declared return type and validate against it, so a failed inference costs them
 an edge instead of buying them a wrong one. On `aria2` both sides read 10/10 and they
@@ -484,6 +484,14 @@ resolve 24,950 distinct call edges to our 9,486. Precision is not the only readi
 Cells were measured at different commits, and the staleness runs **conservative**: every
 resolver change in between only removes wrong edges and gained zero, so 84.8% is a floor.
 No cell was measured on the 0.44.0 release; the full table pins a commit per cell.
+
+**All 540 graded rows are published**, one file per cell, each row carrying the call site,
+the declaration the tool bound it to, the verdict and the reason it was given. A script in
+the same directory rebuilds every table above from them and fails if it disagrees. One cell
+of the eighteen, rust on our side, ships the 30 sites that were read without their per-row
+verdicts, because that cell was re-read on a fresh draw and the verdicts of that read were
+never written down; the file says so on every row.
+**[graph/experiments/g1-edge-precision/rows](https://github.com/repowise-dev/repowise-bench/tree/master/graph/experiments/g1-edge-precision/rows)**.
 
 ---
 
@@ -576,6 +584,24 @@ no page here publishes a coverage number without a precision number beside it.
   test binaries only.
 - The two variants of a repository answer different questions. Report both or say
   which one you used.
+- **Two oracle languages, and the programme stops at two.** C#, Java, Kotlin and
+  C++ each need a toolchain installed and a working build per repository, none of
+  which exists on the measurement machine. Rust has the toolchain and no sound
+  call-graph tool exists for it. Python, Ruby and PHP admit no oracle even in
+  principle. So section 7 is the permanent method on those languages rather than
+  a stopgap, and nothing here should be read as a claim about them.
+- **The TypeScript cells exclude test files, and the with-tests variants are
+  void.** A test file imports its own package by name, the pinned corpus has no
+  dependencies installed, and roughly a third of call sites go unresolvable,
+  which takes the unjudged bucket past three quarters. Both variants were run and
+  neither is quoted anywhere. Installing the dependency trees would fix it and
+  would also have to go to a scratch copy, since `node_modules/` inside the
+  corpus changes what every tool walks.
+- **codebase-memory-mcp is priced on these two languages only.** It has no
+  precision figure of any kind on the other nine languages where it leads our
+  coverage, and it was never entered into the section 7 audit in either
+  direction. The finding that its coverage lead is bought with wrong edges is
+  measured on Go and TypeScript and carried by inference elsewhere.
 
 Full method, per-cell artifacts, the twenty hand-confirmed identities the protocol
 required, and the graded pre-registration including the two predictions that
@@ -588,7 +614,9 @@ missed:
 
 Beyond the ones stated in each section:
 
-- **Every number here is Python or Go.** A JavaScript/TypeScript corpus
+- **Every retrieval number here is Python or Go.** The graph sections are wider,
+  at nine languages hand-graded and two compiler-graded, and they are the only
+  sections that are. A JavaScript/TypeScript corpus
   (`mui/material-ui`, six tools, a 12x size range) is built and half graded, but
   **its sealed half is unrun and nothing from it is quoted here.** Publishing the
   development half is what that split exists to prevent, so the row arrives when the

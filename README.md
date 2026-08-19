@@ -144,7 +144,8 @@ from the CLI or right in the dashboard with the cost shown before you confirm.
 during doc generation needs a provider.)
 
 Full detail on every layer: **[docs/layers/INTELLIGENCE_LAYERS.md →](docs/layers/INTELLIGENCE_LAYERS.md)**
-How the graph resolves an edge, and how much to trust one:
+How the graph sees a call, how it resolves one, how much to trust the result, and
+what a compiler says when it grades the whole thing:
 **[docs/layers/GRAPH.md →](docs/layers/GRAPH.md)**
 
 ---
@@ -652,7 +653,7 @@ agent over MCP.
 | **Index time, django** *([measured](docs/BENCHMARKS.md#6-indexing-time-the-row-we-lose))* | ⚠️ **366.8s**, slowest here | ✅ **16.4s** | not measured | n/a, cloud |
 | | *one-time; updates after it are incremental* | | | |
 | **Call-edge precision** *([measured](docs/BENCHMARKS.md#7-edge-precision), 540 rows hand-graded from source)* | ✅ **84.8%** | 57.0% | not measured | not measured |
-| **Call-edge precision, judged by a compiler** *([measured](docs/BENCHMARKS.md#8-the-same-question-against-an-answer-key-we-do-not-control), 7 cells, 37,853 edges)* | ✅ **most precise arm in 7 of 7** | behind in 7 of 7 | not measured | not measured |
+| **Call-edge precision, judged by a compiler** *([measured](docs/BENCHMARKS.md#8-the-same-question-against-an-answer-key-we-do-not-control), 7 cells, 37,853 edges)* | ✅ **most precise arm in 7 of 7** | lower in 7, separating in 5 | not measured | not measured |
 | Generated documentation | ✅ | ❌ | ❌ | ✅ |
 | Proactive agent hooks | ✅ Claude + Codex | ❌ | ❌ | ❌ |
 | Auto-generated AI instructions (`CLAUDE.md`, `AGENTS.md`) | ✅ | ❌ | ❌ | ❌ |

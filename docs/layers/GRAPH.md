@@ -14,9 +14,12 @@ that **every edge carries its own evidence**.
   <img src="https://img.shields.io/badge/19-languages-F59520?style=flat-square&labelColor=0A0A0A" alt="19 languages" />
   <img src="https://img.shields.io/badge/22-framework_detectors-7F52FF?style=flat-square&labelColor=0A0A0A" alt="22 framework detectors" />
   <img src="https://img.shields.io/badge/0-LLM_calls-1E293B?style=flat-square&labelColor=0A0A0A" alt="zero LLM calls" />
+  <img src="https://img.shields.io/badge/most_precise-in_7_of_7_compiler_graded_cells-DC2626?style=flat-square&labelColor=0A0A0A" alt="most precise arm in 7 of 7 compiler-graded cells" />
 </p>
 
 **Contents:** [The problem with a plain arrow](#the-problem-with-a-plain-arrow) ·
+[Two stages, and they fail differently](#two-stages-and-they-fail-differently) ·
+[How good is it, and how we know](#how-good-is-it-and-how-we-know) ·
 [What is in the graph](#what-is-in-the-graph) ·
 [Every edge says how it got there](#every-edge-says-how-it-got-there) ·
 [Typing the receiver](#typing-the-receiver) ·
@@ -53,6 +56,138 @@ looks like an answer.
 
 repowise does (3) where it can, falls back to (2) where it must, and **labels
 which one happened, every time**.
+
+---
+
+## Two stages, and they fail differently
+
+An edge is two claims made by two different pieces of machinery, and the reason
+to keep them apart is that they break in opposite directions.
+
+**Stage one: capture.** Before anything can be resolved, the parser has to
+notice that a call was written at all. That is a tree-sitter query per language,
+listing the source shapes that count as a call site:
+
+```scheme
+; queries/go.scm -- Method call: obj.Method(args)
+(call_expression
+  function: (selector_expression
+    operand: (identifier) @call.receiver
+    field: (field_identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+```
+
+There is one of those files per language, and a shape that is not in it is a
+call the graph will never contain. Go alone lists a plain call, a method call, a
+package-qualified call, a chained call and a function passed as an argument, and
+that last one is captured deliberately as a *reference* rather than a call,
+because passing a handler is not invoking it.
+
+A shape no query matches is invisible. Not low confidence, not unresolved:
+**absent**. Nothing downstream can recover it, because nothing downstream knows
+the call was there.
+
+**Stage two: resolution.** Given a captured site, work out what the name points
+at. `repo.save(draft)` hands you the name `save` and a receiver spelled `repo`,
+and the job is to turn that into one declaration in one file. This is where the
+29 origins below live, and it is the `user.save()` problem from the section
+above.
+
+| | fails when | costs you | how you find out |
+|---|---|---|---|
+| **capture** | nobody wrote a query for that call shape | **recall.** the edge does not exist | nothing internal can tell you, so it takes an outside answer key |
+| **resolution** | the receiver cannot be typed, or the name is ambiguous | **precision** if it guesses, **recall** if it declines | the origin on the edge names the strategy that answered, so a wrong class is found and fixed once rather than per call site |
+
+That asymmetry sets the whole design. A missed capture is silent, so it is
+measured against a compiler rather than against ourselves. A bad resolution is
+loud, so every edge is stamped with the strategy that produced it and nothing is
+allowed to launder a guess into a fact.
+
+**And at the bottom of the ladder repowise declines rather than guesses.** That
+is a choice with a price, paid in the recall column below, and it is the right
+way round: a missing arrow looks like missing information, a wrong arrow looks
+like an answer.
+
+---
+
+## How good is it, and how we know
+
+Two readings of the same question, and we graded only one of them.
+
+### The one we did not grade
+
+On Go the answer key is the **Go team's own RTA call graph** from
+`golang.org/x/tools`, computed over the fully type-checked program. On TypeScript
+it is the **`tsc` checker's own resolution** of every call site. We wrote
+neither, we can tune neither, and anyone with the toolchain can regenerate both.
+
+Seven cells, five repositories, three tools, **37,853 oracle edges**. Of the call
+edges we emit, the share the compiler confirms runs **0.943 to 0.992** per cell,
+and we are **the most precise of the three tools in all seven**. In three cells
+our interval clears both competitors at once; against each competitor taken
+singly it is five of seven. The rest are ties and are published as ties.
+
+**Two languages, and only two.** C#, Java, Kotlin and C++ each need a toolchain
+installed and a working build per repository, and nobody has done that here.
+Python, Ruby and PHP can never have an oracle at all, because what a call
+resolves to can change at runtime. That is a fact about those languages rather
+than a gap in the harness, and it is why the hand-graded reading below is
+permanent rather than a stopgap.
+
+[The cells, the method and the graded pre-registration](../BENCHMARKS.md#8-the-same-question-against-an-answer-key-we-do-not-control)
+
+### The one we did
+
+Nine languages, 30 call edges per language per tool, every row opened in its own
+file with its imports and enclosing scope, then the target declaration opened
+too. **229 of 270 correct for us, 154 of 270 for CodeGraph 1.5.0**, intervals
+disjoint. Four of the nine cells separate and five are ties, reported as ties.
+
+Read our own number the other way round: **roughly fifteen percent of our call
+edges are wrong**, concentrated in java, rust and cpp. That is the figure to plan
+against, and it is a floor rather than a best case, because every resolver change
+since the earliest rows were graded only removes wrong edges.
+
+**The two readings agree.** On Go the hand grade says 96.7% for us and the
+compiler says 97.6%, over roughly 1,600 edges rather than 30 rows. A person
+reading source and a type checker landing within about a point of each other is
+the strongest available evidence that the hand-graded half is accurate rather
+than self-serving, and it is the result here we care about most.
+
+[The nine cells, and all 540 graded rows with the reason each was given](../BENCHMARKS.md#7-edge-precision)
+
+### The column we lose
+
+Recall is the other half of the same question, and we do not lead it.
+
+Across the five Go cells our recall runs 0.32 to 0.96 and **we lead none of
+them**; codebase-memory-mcp leads four and CodeGraph the fifth. On cross-file
+coverage over 35 repositories the same tool separates from us on 15 and we
+separate on none.
+
+The oracle explains the trade rather than excusing it. **That tool recovers more
+of the true call graph and emits far more that is not in it**: on the largest Go
+repository measured, more than a third of what it emits is a call the compiler
+says does not exist. Coverage rewards drawing edges and never asks whether they
+are real, which is why no page in that benchmark prints a coverage number without
+a precision number beside it.
+
+Where our own miss actually goes, decomposed on one cell rather than waved at.
+On syft without tests we miss **3,846 of the oracle's 7,898 edges**, and
+**44% of that miss is dynamic dispatch alone, with a further 39% dispatch with a
+closure at one end**. The two buckets overlap, so neither is the whole gap. Interface dispatch is the ceiling and
+nobody in the comparison has cleared it: of 3,303 dispatch edges we match 12,
+CodeGraph 35, codebase-memory-mcp 81, at 6.5 distinct possible targets per call
+site. Matching that recall means emitting six edges where one is right, which is
+the behaviour the precision table charges the other tool for.
+
+The obvious cheap fix was priced and refused: giving Go `func` literals a symbol
+would recover **50** static edges on that cell, not the 1,309 the raw closure
+count suggests, because the rest need the dispatch ceiling cleared first.
+
+[Both tables, the recall decomposition and what it would cost to close](https://github.com/repowise-dev/repowise-bench/tree/master/graph/experiments/g4-oracle-anchored)
 
 ---
 
@@ -269,24 +404,19 @@ graph, which is why the graph is reproducible and why indexing needs no API key.
 - **Method-level dead-code detection is not shipped**, for any language. It was
   measured, precision failed, and shipping it would have meant confidently
   recommending deletions that were wrong.
-- **Roughly fifteen percent of our call edges are wrong.** Hand-graded from
-  source, 270 rows across nine languages: 84.8% correct overall, and the misses
-  concentrate in java, rust and cpp, which read 20/30, 22/30 and 23/30
-  respectively. That figure is a floor rather than a best case, because the
-  resolver changes made since the earliest rows were graded only remove wrong
-  edges. Method, per-language and per-repository splits, and the same audit run
-  against a competitor, are in the [graph-quality
-  benchmark](https://github.com/repowise-dev/repowise-bench/tree/master/graph/experiments/g1-edge-precision).
-- **A compiler agrees with that figure, and adds the column we lose.** On Go and
-  TypeScript the same edges were judged against the Go team's own RTA call graph
-  and the `tsc` checker's own resolution, answer keys we neither wrote nor can
-  tune. Precision there is 0.94 to 0.99 per cell and we are the most precise of
-  three tools in all seven; recall is 0.32 to 0.96 and **we lead none of the Go
-  cells**. Most of what we miss is interface dispatch, where the fan-out is 6.5
-  distinct targets per call site and matching it would mean emitting edges we
-  cannot stand behind. The [oracle-anchored
-  cells](https://github.com/repowise-dev/repowise-bench/tree/master/graph/experiments/g4-oracle-anchored)
-  decompose the miss.
+- **Roughly fifteen percent of our call edges are wrong**, and **we lead no
+  recall cell**. Both are measured, both are above under [how good is it, and how
+  we know](#how-good-is-it-and-how-we-know), and neither is buried down here.
+- **The compiler-graded reading covers two languages.** Go and TypeScript are the
+  only ones with an oracle, so on the other seventeen the precision figure is the
+  hand-graded one, at 30 rows per language. That is a smaller n and a method we
+  ran ourselves; the two agree to within a point where both exist, which is the
+  reason to trust the half where only one does.
+- **A competitor's coverage lead is only priced on two languages too.** The tool
+  that beats us on cross-file coverage across 35 repositories has an
+  oracle-anchored precision figure on go and typescript alone. That its extra
+  edges are mostly wrong is measured there and inferred elsewhere, and the
+  benchmark says so rather than generalising quietly.
 
 ---
 
@@ -298,3 +428,5 @@ graph, which is why the graph is reproducible and why indexing needs no API key.
 - [DEAD_CODE.md](DEAD_CODE.md) · how reachability becomes a confidence-tiered report
 - [CHANGE_RISK.md](CHANGE_RISK.md) · how the graph feeds a per-change risk score
 - [reference/COMPUTED_GLOSSARY.md](../reference/COMPUTED_GLOSSARY.md) · every derived metric, defined
+- [BENCHMARKS.md §7](../BENCHMARKS.md#7-edge-precision) and [§8](../BENCHMARKS.md#8-the-same-question-against-an-answer-key-we-do-not-control) · the precision numbers on this page, with their sample sizes and intervals
+- [repowise-bench/graph](https://github.com/repowise-dev/repowise-bench/tree/master/graph) · the harnesses, the five arms, the graded rows and the pre-registrations behind all of it
