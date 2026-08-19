@@ -169,6 +169,37 @@ async def test_a_repo_with_no_tests_at_all_says_none_not_inferred(
     assert "inferred" not in body
 
 
+async def test_a_caller_can_decline_the_graph_fallback(client, session, tmp_path):
+    """The tab badge asks for one row and no modules because it wants one number.
+
+    The fallback costs a read of every call edge plus every health metric, which
+    is the right price for the tab and the wrong one for the badge above it. A
+    declined response omits ``basis`` rather than claiming ``none``: the graph
+    was not consulted, which is not the same as the graph having nothing to say.
+    """
+    repo = await create_test_repo(client, tmp_path)
+    await save_health_metrics(session, repo["id"], [_metric("src/a.py")])
+    await _seed_graph(
+        session,
+        repo["id"],
+        nodes={"tests/test_a.py": True, "src/a.py": False},
+        edges=_calls("tests/test_a.py", "src/a.py"),
+    )
+    await session.commit()
+
+    body = await _get(
+        client, repo["id"], limit=1, module_limit=0, include_inferred="false"
+    )
+
+    assert "inferred" not in body
+    assert "basis" not in body
+    assert body["summary"]["file_count"] == 0
+
+    # And the same repo answers in full when the tab asks.
+    full = await _get(client, repo["id"])
+    assert full["basis"] == "inferred"
+
+
 # ------------------------------------------------------------------ #
 # The two bases never share a field
 # ------------------------------------------------------------------ #

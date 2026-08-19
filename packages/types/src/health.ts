@@ -607,9 +607,11 @@ export interface HealthCoverageResponse {
    */
   modules_total?: number;
   /**
-   * Which signal answered. Optional because the hosted backend does not send it
-   * yet; absent reads as `measured`, which is what every caller assumed before
-   * this field existed.
+   * Which signal answered, when the response determined one. Absent means it did
+   * not: an older backend that predates the field, or a caller that passed
+   * `include_inferred=false` and so never consulted the graph. That is why a
+   * declined response omits it rather than reporting `"none"` — not consulted
+   * and nothing to say are different states.
    */
   basis?: CoverageBasis;
   /**

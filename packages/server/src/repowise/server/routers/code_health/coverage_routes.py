@@ -56,6 +56,7 @@ async def health_coverage(
     file_path: str | None = Query(None),
     limit: int = Query(500, ge=1, le=5000),
     module_limit: int = Query(1000, ge=0, le=5000),
+    include_inferred: bool = Query(True),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Coverage summary + per-file rows.
@@ -73,6 +74,14 @@ async def health_coverage(
     ``modules_total`` is always the full count, so a trimmed rollup can never be
     read as the whole repo. ``module_limit=0`` returns none of them, for callers
     that want the summary and nothing else.
+
+    ``include_inferred=false`` declines the graph-inferred fallback. It is not a
+    third cap: the fallback costs a read of every call edge in the repository
+    plus every health metric, which is the right price for the tab and the wrong
+    one for the tab *badge*, whose whole point is that it asks for one file row
+    and no modules. A declined response omits ``basis`` rather than reporting
+    ``"none"`` - the graph was not consulted, which is not the same as the graph
+    having nothing to say.
     """
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
@@ -88,6 +97,13 @@ async def health_coverage(
     if not all_rows:
         # No report was ever ingested. The graph can still answer "does a test
         # reach this", so answer that instead of an empty measured shape.
+        if not include_inferred:
+            return {
+                "summary": _empty_summary(),
+                "files": [],
+                "modules": [],
+                "modules_total": 0,
+            }
         return await _inferred_coverage(session, repo_id, limit)
     summary = await crud.get_coverage_summary(session, repo_id, rows=all_rows)
     if summary.get("ingested_at") is not None:
