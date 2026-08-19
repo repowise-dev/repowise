@@ -281,9 +281,10 @@ def _has_paired_test_file(rel_path: str, path_basenames: set[str]) -> bool:
     """
     p = Path(rel_path)
     stem = p.stem
+    test_suffix = ".exs" if p.suffix == ".ex" else p.suffix
     candidates = {
         f"test_{stem}.py",
-        f"{stem}_test.py",
+        f"{stem}_test{test_suffix}",
         f"{stem}.test.ts",
         f"{stem}.test.tsx",
         f"{stem}.test.js",
@@ -293,7 +294,6 @@ def _has_paired_test_file(rel_path: str, path_basenames: set[str]) -> bool:
         f"{stem}.spec.js",
         f"{stem}.spec.mts",
         f"{stem}.spec.cts",
-        f"{stem}_test.go",
     }
     return not candidates.isdisjoint(path_basenames)
 

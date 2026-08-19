@@ -10,12 +10,12 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.engine import _has_paired_test_file, _path_basenames
 from repowise.core.persistence.models import (
     GitMetadata,
     GraphNode,
     Repository,
 )
-from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
 from repowise.server.mcp_server._helpers import (
     filter_dicts_by_key,
 )
@@ -195,8 +195,6 @@ async def _check_test_gap(session: AsyncSession, repo_id: str, target: str) -> b
 
     Test files themselves (is_test=True) are never a gap.
     """
-    import os
-
     from repowise.core.persistence.crud import covered_source_files
 
     # Test files don't need tests — skip the check entirely
@@ -226,31 +224,14 @@ async def _check_test_gap(session: AsyncSession, repo_id: str, target: str) -> b
     except Exception:
         pass
 
-    base = os.path.splitext(os.path.basename(target))[0]
-    ext = os.path.splitext(target)[1].lstrip(".")
-    # Build a LIKE pattern broad enough to catch test_<base>, <base>_test,
-    # <base>.spec.*. Escaped whole: the underscores are ours and meant
-    # literally, and *base* is a filename, where an underscore is the norm.
-    # Unescaped, "%test_my_module%" also matches "testXmyXmodule", and a false
-    # hit here reports a file as tested when nothing tests it.
-    patterns = [
-        f"%{escape_like(f'test_{base}')}%",
-        f"%{escape_like(f'{base}_test')}%",
-        f"%{escape_like(f'{base}.spec.{ext}')}%",
-    ]
-    for pat in patterns:
-        res = await session.execute(
-            select(GraphNode)
-            .where(
-                GraphNode.repository_id == repo_id,
-                GraphNode.is_test == True,  # noqa: E712
-                GraphNode.node_id.like(pat, escape=LIKE_ESCAPE),
-            )
-            .limit(1)
+    test_nodes = await session.execute(
+        select(GraphNode.node_id).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.is_test == True,  # noqa: E712
         )
-        if res.scalar_one_or_none() is not None:
-            return False
-    return True
+    )
+    test_basenames = _path_basenames(set(test_nodes.scalars()))
+    return not _has_paired_test_file(target, test_basenames)
 
 
 async def _get_security_signals(session: AsyncSession, repo_id: str, target: str) -> list[dict]:
