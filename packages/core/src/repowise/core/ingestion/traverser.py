@@ -978,17 +978,26 @@ def _looks_minified(abs_path: Path) -> bool | None:
 
 
 def _is_generated(abs_path: Path) -> bool:
-    """Return True if the file appears to be auto-generated."""
+    """Return True if the file appears to be auto-generated.
+
+    A generated-file banner is a header convention: it sits on the first line
+    or two, never buried in a paragraph. Requiring the marker within the first
+    two lines keeps the check off ordinary prose — ``AUTO-GENERATED`` (and the
+    other markers) occur naturally in docblocks that explain a routing or
+    build convention, and substring-matching the whole 512-byte header silently
+    dropped hand-written files from the index.
+    """
     name = abs_path.name
     if any(name.endswith(sfx) for sfx in _GENERATED_SUFFIXES):
         return True
     try:
         with open(abs_path, encoding="utf-8", errors="ignore") as f:
             header = f.read(512)
-        header_upper = header.upper()
-        return any(marker.upper() in header_upper for marker in _GENERATED_MARKERS)
     except OSError:
         return False
+    # Only the first two lines count as a banner. A marker on line 3+ is prose.
+    banner = "\n".join(header.splitlines()[:2]).upper()
+    return any(marker.upper() in banner for marker in _GENERATED_MARKERS)
 
 
 def _is_config_file(language: LanguageTag) -> bool:
