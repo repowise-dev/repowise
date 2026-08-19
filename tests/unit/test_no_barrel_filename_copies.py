@@ -17,13 +17,27 @@ _KNOWN: frozenset[str] = frozenset(
 
 _PACKAGES = pathlib.Path(__file__).resolve().parents[2] / "packages"
 _HOME = "packages/core/src/repowise/core/analysis/dead_code/file_reachability.py"
-_BARREL_MARKERS = {"__init__.py", "index.ts", "index.js", "mod.rs"}
+_BARREL_MARKERS = {
+    "index.ts",
+    "index.tsx",
+    "index.js",
+    "index.jsx",
+    "index.mts",
+    "index.cts",
+    "index.mjs",
+    "index.cjs",
+    "__init__.py",
+    "mod.rs",
+}
 
 
 def _check_assignment(node: ast.AST) -> list[str]:
-    if (isinstance(node, ast.Assign) and any(
-        isinstance(target, ast.Name) and target.id == "BARREL_FILENAMES" for target in node.targets
-    )) or (
+    if (
+        isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "BARREL_FILENAMES" for target in node.targets
+        )
+    ) or (
         isinstance(node, ast.AnnAssign)
         and isinstance(node.target, ast.Name)
         and node.target.id == "BARREL_FILENAMES"
