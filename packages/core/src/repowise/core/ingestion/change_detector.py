@@ -74,6 +74,7 @@ class AffectedPages:
     regenerate: list[str]  # page IDs to fully regenerate
     rename_patch: list[str]  # pages that only need a symbol rename text patch
     decay_only: list[str]  # pages to mark stale without immediate regeneration
+    stale_due_to_budget: int = 0  # pages skipped due to cascade budget cap
 
 
 def compute_adaptive_budget(file_diffs: list[FileDiff], total_files: int) -> int:
@@ -337,12 +338,14 @@ class ChangeDetector:
         decay_only = (
             all_pages_needing_regen[cascade_budget:] + sorted(two_hop) + sorted(co_change_decay)
         )
+        stale_due_to_budget = max(0, len(all_pages_needing_regen) - cascade_budget)
         rename_patch = [p for p in rename_candidates if p in regenerate]
 
         return AffectedPages(
             regenerate=regenerate,
             rename_patch=rename_patch,
             decay_only=decay_only,
+            stale_due_to_budget=stale_due_to_budget,
         )
 
     # ------------------------------------------------------------------
