@@ -1077,7 +1077,7 @@ class CallResolver:
                     if cand in self._parsed_files:
                         cand_syms = self._file_symbols.get(cand, {})
                         if method_name in cand_syms:
-                            return ResolvedCall(caller_id, cand_syms[method_name], 0.88, call.line)
+                            return ResolvedCall(caller_id, cand_syms[method_name], 0.88, call.line, "module_alias")
 
         # Strategy 1c: Rust crate-scoped reference (e.g. typst_html::module)
         # The receiver is a crate name, the target is a symbol in that crate's lib.rs
