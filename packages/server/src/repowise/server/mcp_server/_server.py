@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from repowise.core.persistence.database import (
@@ -562,6 +563,46 @@ def create_mcp_server(
 #: two deep in practice; the cap only stops a pathological cycle from hanging.
 _MAX_GROUP_DEPTH = 10
 
+#: Host values FastMCP's own default construction already treats as local.
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+#: ``allowed_hosts``/``allowed_origins`` patterns for the loopback callers a
+#: non-loopback bind should still accept (e.g. an SSH tunnel or a client
+#: running on the same box as the server).
+_LOOPBACK_ALLOWLIST_PATTERNS = ("127.0.0.1:*", "localhost:*", "[::1]:*")
+
+
+def _configure_transport_security(host: str) -> None:
+    """Widen the DNS-rebinding ``Host`` allowlist to match ``--host``.
+
+    ``FastMCP`` builds ``mcp.settings.transport_security`` at import time,
+    before any CLI ``--host`` is known, so it bakes in an allowlist scoped to
+    loopback only. ``run_mcp`` rebinds the socket via ``mcp.settings.host``
+    later, but nothing updated the allowlist to match — so every request to a
+    non-loopback ``--host`` failed ``Host`` header validation with
+    ``421 Misdirected Request`` no matter what host was actually given.
+
+    A loopback host needs no change (FastMCP's default already covers it). A
+    wildcard bind (``0.0.0.0``/``::``) can't be matched by any single ``Host``
+    value, so the check is disabled rather than left permanently failing.
+    Anything else gets an allowlist scoped to that host plus loopback.
+    """
+    if host in _LOOPBACK_HOSTS:
+        return
+    if host in ("0.0.0.0", "::"):
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
+        )
+        return
+    mcp.settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[f"{host}:*", *_LOOPBACK_ALLOWLIST_PATTERNS],
+        allowed_origins=[
+            f"http://{host}:*",
+            *(f"http://{p}" for p in _LOOPBACK_ALLOWLIST_PATTERNS),
+        ],
+    )
+
 
 def _run_transport(transport: str) -> None:
     """Run the server, raising the cause of a task-group failure rather than the group.
@@ -612,6 +653,7 @@ def run_mcp(
     if transport == "sse":
         mcp.settings.host = host
         mcp.settings.port = port
+        _configure_transport_security(host)
         if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
             _log.warning(
                 "SECURITY WARNING: MCP server (sse) is binding to %s without "
@@ -623,6 +665,7 @@ def run_mcp(
     elif transport == "streamable-http":
         mcp.settings.host = host
         mcp.settings.port = port
+        _configure_transport_security(host)
         if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
             _log.warning(
                 "SECURITY WARNING: MCP server (streamable-http) is binding to %s without "
