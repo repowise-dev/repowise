@@ -44,7 +44,7 @@ DEFAULT_WINDOW_TOKENS = 50
 DEFAULT_MIN_LINES = 6
 
 
-@dataclass
+@dataclass(slots=True)
 class ClonePair:
     """One verified clone region between two files (or two regions in
     the same file)."""
@@ -253,6 +253,11 @@ def detect_clones(
     )
     if cache is not None:
         cache.save()
+        # The persisted form holds another representation of every token
+        # stream and window. Collision verification only needs the returned
+        # per-file kinds, so release the cache's owning dictionaries before
+        # allocating the repo-wide hash index and clone-pair lists.
+        cache.release_memory()
         log.debug(
             "duplication_token_cache",
             hits=cache.hits,
@@ -262,6 +267,9 @@ def detect_clones(
         return DuplicationReport(diagnostics=diag.as_log_fields())
 
     bucket = index_by_hash(all_windows)
+    # Every WindowHash is now owned by a bucket. Keeping the flat list too
+    # adds millions of redundant references at the scan's high-water mark.
+    del all_windows
     raw_pairs = _pairs_from_buckets(bucket, per_file_kinds, window_tokens, lim, diag)
 
     if cache is not None and cache_dir is not None:
@@ -276,6 +284,11 @@ def detect_clones(
             raw_pairs,
             all_paths,
         )
+
+    # Neither structure participates in merge/finalize/aggregation. Drop
+    # them before those stages allocate their output lists so freed arenas
+    # can be reused inside this phase rather than growing the process again.
+    del bucket, per_file_kinds
 
     final = _finalize_pairs(_merge_adjacent_pairs(raw_pairs), min_lines, meta_map)
     pairs_by_file, duplication_pct = _aggregate(final, per_file_nloc)

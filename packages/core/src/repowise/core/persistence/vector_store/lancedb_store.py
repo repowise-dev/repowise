@@ -9,6 +9,11 @@ from ._base import STORED_SNIPPET_CHARS, VectorStore, iter_embed_chunks
 
 __all__ = ["STORED_SNIPPET_CHARS", "LanceDBVectorStore"]
 
+# DataFusion expands every literal in a large ``IN`` filter into native query
+# state. A several-thousand-path generation level can otherwise commit
+# gigabytes before returning even though the selected result is small.
+_SUMMARY_PATH_BATCH_SIZE = 100
+
 # ``STORED_SNIPPET_CHARS`` — how much of a page's content each row keeps — is
 # defined with the embed recipe and re-exported here so the historical import
 # path keeps working.
@@ -356,10 +361,11 @@ class LanceDBVectorStore(VectorStore):
         return {"summary": summary, "key_exports": []}
 
     async def get_page_summaries_by_paths(self, paths: list[str]) -> dict[str, dict]:
-        """One ``IN``-filtered scan instead of one filtered query per path.
+        """Read summaries with bounded ``IN``-filtered scans.
 
         Mirrors the single-path semantics (first row per path wins, empty
-        summaries dropped, ``key_exports`` not stored in this schema).
+        summaries dropped, ``key_exports`` not stored in this schema). Batches
+        bound DataFusion's native query-plan allocation for large levels.
         """
         if not paths:
             return {}
@@ -367,22 +373,25 @@ class LanceDBVectorStore(VectorStore):
         if self._table is None:
             return {}
 
-        try:
-            rows = (
-                await self._table.query()  # type: ignore[union-attr]
-                .where(_paths_in_filter(paths))
-                .select(["target_path", "content_snippet"])
-                .to_list()
-            )
-        except Exception:
-            return {}
-
         out: dict[str, dict] = {}
-        for r in rows:
-            tp = str(r.get("target_path") or "")
-            if not tp or tp in out:
-                continue
-            summary = str(r.get("content_snippet") or "")[:_SNIPPET_LEN]
-            if summary:
-                out[tp] = {"summary": summary, "key_exports": []}
+        unique_paths = list(dict.fromkeys(paths))
+        for index in range(0, len(unique_paths), _SUMMARY_PATH_BATCH_SIZE):
+            batch = unique_paths[index : index + _SUMMARY_PATH_BATCH_SIZE]
+            try:
+                rows = (
+                    await self._table.query()  # type: ignore[union-attr]
+                    .where(_paths_in_filter(batch))
+                    .select(["target_path", "content_snippet"])
+                    .to_list()
+                )
+            except Exception:
+                return {}
+
+            for row in rows:
+                target_path = str(row.get("target_path") or "")
+                if not target_path or target_path in out:
+                    continue
+                summary = str(row.get("content_snippet") or "")[:_SNIPPET_LEN]
+                if summary:
+                    out[target_path] = {"summary": summary, "key_exports": []}
         return out
