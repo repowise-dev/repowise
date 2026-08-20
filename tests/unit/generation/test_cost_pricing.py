@@ -41,6 +41,13 @@ def test_unknown_model_still_falls_back() -> None:
     assert get_model_pricing("totally-made-up-model-9000") == _FALLBACK_PRICING
 
 
+def test_minimax_pricing_is_case_insensitive() -> None:
+    expected = {"input": 0.6, "output": 2.4}
+    assert get_model_pricing("MiniMax-M3") == expected
+    assert get_model_pricing("minimax-m3") == expected
+    assert get_model_pricing("minimax/MINIMAX-M3") == expected
+
+
 def test_dated_opus_variant_prices_at_opus_tier_not_sonnet_fallback() -> None:
     # An Opus session id the exact table misses (dated / future point release)
     # must resolve to the Opus tier, not the Sonnet-priced fallback — otherwise

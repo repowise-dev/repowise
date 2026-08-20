@@ -98,6 +98,14 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "requires_key": True,
     },
     {
+        "id": "minimax",
+        "name": "MiniMax",
+        "default_model": "MiniMax-M3",
+        "models": ["MiniMax-M3", "MiniMax-M2.7"],
+        "env_keys": ["MINIMAX_API_KEY"],
+        "requires_key": True,
+    },
+    {
         "id": "ollama",
         "name": "Ollama (Local)",
         "default_model": "qwen3.5:4b",
