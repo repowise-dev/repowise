@@ -7,6 +7,14 @@ scheduler) and shutdown (cleanup).
 
 from __future__ import annotations
 
+# Same reason as the CLI entry point, and it matters more here: a server is
+# long-lived, so a BLAS workspace sized to the host's core count is held for
+# the process's whole life rather than one index (issue #1394).
+from repowise.core.blas_threads import limit_blas_threads
+
+limit_blas_threads()
+
+# ruff: noqa: E402 — the BLAS pin above is only effective before these run.
 import logging
 import os
 from collections.abc import AsyncGenerator
