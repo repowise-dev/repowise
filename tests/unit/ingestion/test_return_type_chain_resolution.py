@@ -1,0 +1,103 @@
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+
+import pytest
+
+from repowise.core.ingestion.call_resolver import CallResolver
+from repowise.core.ingestion.models import FileInfo, ParsedFile
+from repowise.core.ingestion.parser import parse_file
+
+
+def _parse(tmp_path: Path, path: str, language: str, source: str) -> dict[str, ParsedFile]:
+    absolute = tmp_path / path
+    absolute.write_text(source, encoding="utf-8")
+    info = FileInfo(
+        path=path,
+        abs_path=str(absolute),
+        language=language,  # type: ignore[arg-type]
+        size_bytes=len(source),
+        git_hash="",
+        last_modified=datetime.now(),
+        is_test=False,
+        is_config=False,
+        is_api_contract=False,
+        is_entry_point=False,
+    )
+    return {path: parse_file(info, source.encode())}
+
+
+@pytest.mark.parametrize(
+    ("path", "language", "source", "outer"),
+    [
+        (
+            "Example.java",
+            "java",
+            "class Product { void run() {} }\nclass Wrong { void run() {} }\n"
+            "class Use {\n Product make() { return new Product(); }\n void go() { make().run(); }\n}",
+            "run",
+        ),
+        (
+            "example.cpp",
+            "cpp",
+            "struct Product { void run() {} };\nstruct Wrong { void run() {} };\n"
+            "Product make() { return Product(); }\nvoid use() { make().run(); }",
+            "run",
+        ),
+        (
+            "Example.cs",
+            "csharp",
+            "class Product { public void Run() {} }\nclass Wrong { public void Run() {} }\n"
+            "class Use {\n Product Make() { return new Product(); }\n void Go() { Make().Run(); }\n}",
+            "Run",
+        ),
+        (
+            "example.ts",
+            "typescript",
+            "class Product { run() {} }\nclass Wrong { run() {} }\n"
+            "function make(): Product { return new Product(); }\nfunction use() { make().run(); }",
+            "run",
+        ),
+    ],
+)
+def test_return_type_chain_retargets_to_declared_type(
+    tmp_path: Path, path: str, language: str, source: str, outer: str
+) -> None:
+    parsed = _parse(tmp_path, path, language, source)
+    call = next(c for c in parsed[path].calls if c.target_name == outer and c.receiver_call)
+
+    control = CallResolver(
+        parsed, {}, repo_path=str(tmp_path), return_type_chain_languages=frozenset()
+    )
+    treatment = CallResolver(
+        parsed, {}, repo_path=str(tmp_path), return_type_chain_languages=frozenset({language})
+    )
+    before = control.resolve_file(path, [call])
+    after = treatment.resolve_file(path, [call])
+
+    assert not any(edge.origin.startswith("return_type_") for edge in before)
+    assert len(after) == 1
+    assert after[0].callee_id.endswith("::Product::" + outer)
+    assert after[0].origin.startswith("return_type_")
+
+
+def test_known_return_type_can_refuse_a_bare_name_fallback(tmp_path: Path) -> None:
+    source = (
+        "class Product {} class Wrong { void run() {} } "
+        "class Use { Product make() { return new Product(); } void go() { make().run(); } }"
+    )
+    parsed = _parse(tmp_path, "Example.java", "java", source)
+    call = next(
+        c for c in parsed["Example.java"].calls if c.target_name == "run" and c.receiver_call
+    )
+
+    before = CallResolver(parsed, {}, return_type_chain_languages=frozenset()).resolve_file(
+        "Example.java", [call]
+    )
+    after = CallResolver(parsed, {}, return_type_chain_languages=frozenset({"java"})).resolve_file(
+        "Example.java", [call]
+    )
+
+    assert len(before) == 1
+    assert after == []

@@ -51,6 +51,7 @@ from .models import (
     ResolutionOrigin,
     symbol_id_language,
 )
+from .return_types import declared_return_type, normalize_return_type
 
 log = structlog.get_logger(__name__)
 
@@ -164,6 +165,10 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
 _SOURCE_CACHE_FILES = 4
 _BODY_TYPE_CACHE_ENTRIES = 2048
 
+# Phase admission is intentionally explicit. P16 lands the behavior-preserving
+# substrate with no language enabled; later phases add only measured lanes.
+PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset()
+
 
 @dataclass(frozen=True, slots=True)
 class ResolvedCall:
@@ -197,11 +202,17 @@ class CallResolver:
         repo_path: str | None = None,
         import_maps: Any | None = None,
         heritage_parents: dict[str, set[str]] | None = None,
+        return_type_chain_languages: frozenset[str] | None = None,
     ) -> None:
         # {type symbol id: parent type symbol ids}, from the caller's already
         # resolved heritage. Absent when the resolver is built standalone, in
         # which case the inherited tier simply never fires.
         self._heritage_parents: dict[str, set[str]] = heritage_parents or {}
+        self._return_type_chain_languages = (
+            PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
+            if return_type_chain_languages is None
+            else return_type_chain_languages
+        )
         self._ancestors: dict[str, tuple[str, ...]] = {}
         # Per-file symbol index: {file_path: {symbol_name: symbol_id}}
         self._file_symbols: dict[str, dict[str, str]] = {}
@@ -216,6 +227,12 @@ class CallResolver:
 
         # Global symbol index: {name: [symbol_ids]} — for Tier 3
         self._global_symbols: dict[str, list[str]] = defaultdict(list)
+        self._symbols_by_id = {
+            symbol.id: symbol for parsed in parsed_files.values() for symbol in parsed.symbols
+        }
+        self._known_type_names = frozenset(
+            symbol.name for symbol in self._symbols_by_id.values() if symbol.kind in _TYPE_KINDS
+        )
 
         # Symbols in the index above that are data members, not callables
         # (bug 90). Held as an id set rather than a full id→kind map because
@@ -342,9 +359,7 @@ class CallResolver:
                 # so x's names are reachable as ``ns.name`` and are NOT this
                 # file's own exports. Flattening them makes a bare ``name``
                 # resolve into a nested namespace it was never in.
-                if any(
-                    b.local_name == "*" and b.exported_name for b in imp.bindings
-                ):
+                if any(b.local_name == "*" and b.exported_name for b in imp.bindings):
                     continue
                 resolved = imp.resolved_file
                 if resolved != path:
@@ -806,6 +821,7 @@ class CallResolver:
                     caller_symbol_id=f"{file_path}::__module__",
                     line=call.line,
                     argument_count=call.argument_count,
+                    receiver_call=call.receiver_call,
                 )
 
             resolved = self._resolve_one(file_path, call)
@@ -819,12 +835,75 @@ class CallResolver:
         caller_id = call.caller_symbol_id
         assert caller_id is not None
 
+        language = self._language_of(file_path) or ""
+        if call.receiver_call is not None and language in self._return_type_chain_languages:
+            handled, resolved = self._resolve_return_typed_chain(
+                file_path, call, caller_id, language
+            )
+            if handled:
+                return resolved
+
         # --- Method call with receiver: receiver.method() ---
         if call.receiver_name:
             return self._resolve_member_call(file_path, call, caller_id)
 
         # --- Free function call: function() ---
         return self._resolve_free_call(file_path, call, caller_id)
+
+    def _resolve_return_typed_chain(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+        language: str,
+    ) -> tuple[bool, ResolvedCall | None]:
+        """Resolve or reject a chained outer call using the inner return type.
+
+        ``handled`` distinguishes a proven refusal from missing evidence. A
+        known repository type that does not declare the outer method disproves
+        the legacy bare-name fallback; an absent/external type leaves legacy
+        behavior untouched.
+        """
+
+        inner = call.receiver_call
+        assert inner is not None
+        inner_call = CallSite(
+            target_name=inner.target_name,
+            receiver_name=inner.receiver_name,
+            caller_symbol_id=caller_id,
+            line=call.line,
+            argument_count=inner.argument_count,
+        )
+        resolved_inner = self._resolve_one(file_path, inner_call)
+        if resolved_inner is None:
+            return False, None
+
+        symbol = self._symbols_by_id.get(resolved_inner.callee_id)
+        if symbol is None:
+            return False, None
+        if symbol.kind in _TYPE_KINDS:
+            type_name = symbol.name
+        else:
+            raw_return = declared_return_type(symbol.signature or "")
+            type_name = normalize_return_type(raw_return, language) if raw_return else None
+        if type_name is None:
+            return False, None
+
+        found = self._typed_receiver_target(file_path, call, caller_id, type_name)
+        if found is None:
+            return (type_name in self._known_type_names), None
+        sym_id, tier = found
+        return True, self._return_typed_call(caller_id, sym_id, tier, call.line)
+
+    def _return_typed_call(self, caller_id: str, sym_id: str, tier: str, line: int) -> ResolvedCall:
+        """Stamp an edge whose receiver is the inner callee's return type."""
+        if tier == "same_file":
+            return ResolvedCall(caller_id, sym_id, 0.93, line, "return_type_same_file")
+        if tier == "same_package":
+            return ResolvedCall(caller_id, sym_id, 0.90, line, "return_type_same_package")
+        if tier == "import":
+            return ResolvedCall(caller_id, sym_id, 0.88, line, "return_type_import")
+        return ResolvedCall(caller_id, sym_id, 0.75, line, "return_type_global")
 
     def _member_shaped_sites(self, file_path: str) -> set[tuple[int, str]]:
         """``(line, target)`` pairs at which this file also records a receiver.
@@ -989,9 +1068,7 @@ class CallResolver:
         ):
             sym_id = self._inherited_method(caller_id, target_name)
             if sym_id is not None:
-                return ResolvedCall(
-                    caller_id, sym_id, 0.90, call.line, "enclosing_inherited"
-                )
+                return ResolvedCall(caller_id, sym_id, 0.90, call.line, "enclosing_inherited")
 
         return None
 
@@ -1270,9 +1347,7 @@ class CallResolver:
                 exported = (binding.exported_name if binding else None) or type_name
                 declaring = self._barrel_origins.get(bound, {}).get(exported)
                 if declaring is not None and declaring != bound:
-                    sym_id = self._file_methods.get(declaring, {}).get(
-                        (exported, call.target_name)
-                    )
+                    sym_id = self._file_methods.get(declaring, {}).get((exported, call.target_name))
             return None if sym_id is None else (sym_id, "import")
 
         # Bound to something outside the repo and there is no edge to find,
@@ -1337,9 +1412,7 @@ class CallResolver:
         # Third scope: a module-level def a framework decorator turned into an
         # instance. Neither of the two above can see it — it is not in the body
         # and not a field.
-        from_framework = (
-            type_name is None and unbound and language in FRAMEWORK_DECORATOR_LANGUAGES
-        )
+        from_framework = type_name is None and unbound and language in FRAMEWORK_DECORATOR_LANGUAGES
         if from_framework:
             # The type lookup is a dict hit and the shadowing scan reads the
             # whole file, so the cheap half decides first: only a receiver this
@@ -1362,9 +1435,7 @@ class CallResolver:
             return self._field_typed_call(caller_id, sym_id, tier, call.line)
         return self._body_typed_call(caller_id, sym_id, tier, call.line)
 
-    def _body_typed_call(
-        self, caller_id: str, sym_id: str, tier: str, line: int
-    ) -> ResolvedCall:
+    def _body_typed_call(self, caller_id: str, sym_id: str, tier: str, line: int) -> ResolvedCall:
         """Stamp an edge whose receiver was typed from the calling body."""
         if tier == "same_file":
             return ResolvedCall(caller_id, sym_id, 0.93, line, "receiver_typed_same_file")
@@ -1374,9 +1445,7 @@ class CallResolver:
             return ResolvedCall(caller_id, sym_id, 0.88, line, "receiver_typed_import")
         return ResolvedCall(caller_id, sym_id, 0.75, line, "receiver_typed_global")
 
-    def _field_typed_call(
-        self, caller_id: str, sym_id: str, tier: str, line: int
-    ) -> ResolvedCall:
+    def _field_typed_call(self, caller_id: str, sym_id: str, tier: str, line: int) -> ResolvedCall:
         """Stamp an edge whose receiver was typed from the enclosing class."""
         if tier == "same_file":
             return ResolvedCall(caller_id, sym_id, 0.93, line, "receiver_field_same_file")
@@ -1464,9 +1533,7 @@ class CallResolver:
 
         parsed = self._parsed_files.get(file_path)
         symbols = parsed.symbols if parsed else ()
-        class_spans = {
-            s.id: (s.start_line, s.end_line) for s in symbols if s.kind in _TYPE_KINDS
-        }
+        class_spans = {s.id: (s.start_line, s.end_line) for s in symbols if s.kind in _TYPE_KINDS}
         by_class = types_by_class(
             self._declarations_for(file_path, language),
             class_spans,
@@ -1477,9 +1544,7 @@ class CallResolver:
         self._field_types[file_path] = by_class
         return by_class
 
-    def _bound_names_in(
-        self, file_path: str, caller_id: str, language: str
-    ) -> frozenset[str]:
+    def _bound_names_in(self, file_path: str, caller_id: str, language: str) -> frozenset[str]:
         """Every name the calling body binds, however it was bound."""
         key = (file_path, caller_id)
         names = self._bound_names.get(key)
@@ -1538,9 +1603,7 @@ class CallResolver:
             self._framework_types[file_path] = types
         return types
 
-    def _framework_type_of(
-        self, file_path: str, receiver_name: str, language: str
-    ) -> str | None:
+    def _framework_type_of(self, file_path: str, receiver_name: str, language: str) -> str | None:
         """The framework type of *receiver_name*, where this file can see it.
 
         Declared here, or imported here by name. A decorated def in a file the
@@ -1598,9 +1661,7 @@ class CallResolver:
         text = ""
         if parsed is not None:
             try:
-                text = Path(parsed.file_info.abs_path).read_text(
-                    encoding="utf-8", errors="ignore"
-                )
+                text = Path(parsed.file_info.abs_path).read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 text = ""
 

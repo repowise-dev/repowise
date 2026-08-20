@@ -1,0 +1,1234 @@
+{
+  "buckets": {
+    "predicted_added": 132,
+    "predicted_agree": 3193,
+    "predicted_refused": 3220,
+    "predicted_retargeted": 2067,
+    "refused_ambiguous_pair": 2151,
+    "refused_external_type": 4670,
+    "refused_inner_unresolved": 3935,
+    "refused_no_return_type": 52,
+    "structural_sites": 19420
+  },
+  "examples": {
+    "predicted_added": [
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 76,
+        "target": "getIfPresent"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 143,
+        "target": "recordMisses"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 144,
+        "target": "recordHits"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 189,
+        "target": "recordLoadFailure"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 213,
+        "target": "recordLoadFailure"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 223,
+        "target": "recordLoadFailure"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 232,
+        "target": "recordLoadSuccess"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 235,
+        "target": "recordLoadFailure"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 240,
+        "target": "recordMisses"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 269,
+        "target": "recordLoadFailure"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 271,
+        "target": "recordLoadSuccess"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 276,
+        "target": "recordLoadFailure"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 288,
+        "target": "recordLoadFailure"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 421,
+        "target": "replace"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 430,
+        "target": "replace"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 454,
+        "target": "computeIfAbsent"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 461,
+        "target": "recordHits"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 501,
+        "target": "compute"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 685,
+        "target": "recordHits"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 686,
+        "target": "recordMisses"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 695,
+        "target": "get"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncCache.java",
+        "line": 1050,
+        "target": "recordHits"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncLoadingCache.java",
+        "line": 286,
+        "target": "recordLoadFailure"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncLoadingCache.java",
+        "line": 316,
+        "target": "recordLoadFailure"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncLoadingCache.java",
+        "line": 318,
+        "target": "recordLoadSuccess"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalAsyncLoadingCache.java",
+        "line": 322,
+        "target": "recordLoadFailure"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalLoadingCache.java",
+        "line": 93,
+        "target": "recordMisses"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalLoadingCache.java",
+        "line": 144,
+        "target": "recordLoadFailure"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalLoadingCache.java",
+        "line": 167,
+        "target": "recordLoadFailure"
+      },
+      {
+        "file": "caffeine/src/main/java/com/github/benmanes/caffeine/cache/LocalLoadingCache.java",
+        "line": 169,
+        "target": "recordLoadSuccess"
+      }
+    ],
+    "predicted_agree": [
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/CaffeineMapAcceptanceTestCase.java",
+        "line": 37,
+        "target": "build"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/CaffeineMapAcceptanceTestCase.java",
+        "line": 49,
+        "target": "maximumSize"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/CaffeineMapAcceptanceTestCase.java",
+        "line": 49,
+        "target": "expireAfterWrite"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/UnifiedMapAcceptanceTest.java",
+        "line": 55,
+        "target": "compareTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 193,
+        "target": "weigher"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 219,
+        "target": "expireAfter"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 300,
+        "target": "weigher"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ComputeFrayTest.java",
+        "line": 132,
+        "target": "expireAfter"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ComputeFrayTest.java",
+        "line": 305,
+        "target": "evictionListener"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/EvictionFrayTest.java",
+        "line": 263,
+        "target": "weigher"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/EvictionFrayTest.java",
+        "line": 290,
+        "target": "weigher"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/EvictionFrayTest.java",
+        "line": 414,
+        "target": "weigher"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ExpirationFrayTest.java",
+        "line": 172,
+        "target": "expireAfter"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ExpirationFrayTest.java",
+        "line": 209,
+        "target": "expireAfter"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ExpirationFrayTest.java",
+        "line": 240,
+        "target": "expireAfter"
+      },
+      {
+        "file": "caffeine/src/googleTest/java/com/github/benmanes/caffeine/cache/CacheBuilderSpecTest.java",
+        "line": 66,
+        "target": "initialCapacity"
+      },
+      {
+        "file": "caffeine/src/googleTest/java/com/github/benmanes/caffeine/cache/CacheBuilderSpecTest.java",
+        "line": 289,
+        "target": "recordStats"
+      },
+      {
+        "file": "caffeine/src/googleTest/java/com/github/benmanes/caffeine/cache/CacheBuilderSpecTest.java",
+        "line": 325,
+        "target": "initialCapacity"
+      },
+      {
+        "file": "caffeine/src/googleTest/java/com/github/benmanes/caffeine/cache/CacheBuilderSpecTest.java",
+        "line": 346,
+        "target": "initialCapacity"
+      },
+      {
+        "file": "caffeine/src/googleTest/java/com/github/benmanes/caffeine/cache/CacheBuilderSpecTest.java",
+        "line": 422,
+        "target": "initialCapacity"
+      },
+      {
+        "file": "caffeine/src/jctoolsTest/java/com/github/benmanes/caffeine/cache/NBHM_Tester2.java",
+        "line": 85,
+        "target": "doesNotContainKey"
+      },
+      {
+        "file": "caffeine/src/jctoolsTest/java/com/github/benmanes/caffeine/cache/NBHM_Tester2.java",
+        "line": 98,
+        "target": "doesNotContainKey"
+      },
+      {
+        "file": "caffeine/src/jctoolsTest/java/com/github/benmanes/caffeine/cache/NBHM_Tester2.java",
+        "line": 102,
+        "target": "doesNotContainKey"
+      },
+      {
+        "file": "caffeine/src/jctoolsTest/java/com/github/benmanes/caffeine/cache/NBHM_Tester2.java",
+        "line": 107,
+        "target": "doesNotContainKey"
+      },
+      {
+        "file": "caffeine/src/jctoolsTest/java/com/github/benmanes/caffeine/cache/NBHM_Tester2.java",
+        "line": 111,
+        "target": "doesNotContainKey"
+      },
+      {
+        "file": "caffeine/src/jctoolsTest/java/com/github/benmanes/caffeine/cache/NBHM_Tester2.java",
+        "line": 116,
+        "target": "doesNotContainKey"
+      },
+      {
+        "file": "caffeine/src/jctoolsTest/java/com/github/benmanes/caffeine/cache/NBHM_Tester2.java",
+        "line": 135,
+        "target": "initialCapacity"
+      },
+      {
+        "file": "caffeine/src/jctoolsTest/java/com/github/benmanes/caffeine/cache/NBHM_Tester2.java",
+        "line": 352,
+        "target": "containsEntry"
+      },
+      {
+        "file": "caffeine/src/jctoolsTest/java/com/github/benmanes/caffeine/cache/NBHM_Tester2.java",
+        "line": 353,
+        "target": "containsEntry"
+      },
+      {
+        "file": "caffeine/src/jctoolsTest/java/com/github/benmanes/caffeine/cache/QueueSanityTest.java",
+        "line": 64,
+        "target": "hasSize"
+      }
+    ],
+    "predicted_refused": [
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 55,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 154,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 155,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 156,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 187,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 208,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 213,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 294,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 322,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 344,
+        "target": "refresh"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 357,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/BufferDrainFrayTest.java",
+        "line": 64,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/BufferDrainFrayTest.java",
+        "line": 65,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/BufferDrainFrayTest.java",
+        "line": 92,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/BufferDrainFrayTest.java",
+        "line": 120,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/BufferDrainFrayTest.java",
+        "line": 143,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/BufferDrainFrayTest.java",
+        "line": 174,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ComputeFrayTest.java",
+        "line": 63,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ComputeFrayTest.java",
+        "line": 93,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ComputeFrayTest.java",
+        "line": 127,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ComputeFrayTest.java",
+        "line": 157,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ComputeFrayTest.java",
+        "line": 176,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ComputeFrayTest.java",
+        "line": 177,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ComputeFrayTest.java",
+        "line": 204,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ComputeFrayTest.java",
+        "line": 229,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ComputeFrayTest.java",
+        "line": 255,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ComputeFrayTest.java",
+        "line": 296,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ComputeFrayTest.java",
+        "line": 297,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ComputeFrayTest.java",
+        "line": 330,
+        "target": "isEqualTo"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ComputeFrayTest.java",
+        "line": 368,
+        "target": "isEqualTo"
+      }
+    ],
+    "predicted_retargeted": [
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 40,
+        "target": "executor"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 48,
+        "target": "getIfPresent"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 55,
+        "target": "getIfPresent"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 60,
+        "target": "executor"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 74,
+        "target": "cleanUp"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 76,
+        "target": "getIfPresent"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 85,
+        "target": "executor"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 104,
+        "target": "cleanUp"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 106,
+        "target": "estimatedSize"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 111,
+        "target": "executor"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 125,
+        "target": "cleanUp"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 127,
+        "target": "getIfPresent"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 135,
+        "target": "executor"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 151,
+        "target": "getIfPresent"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 152,
+        "target": "getIfPresent"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 153,
+        "target": "getIfPresent"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 154,
+        "target": "getIfPresent"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 155,
+        "target": "getIfPresent"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 156,
+        "target": "getIfPresent"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 161,
+        "target": "executor"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 187,
+        "target": "getIfPresent"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 193,
+        "target": "executor"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 200,
+        "target": "cleanUp"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 206,
+        "target": "cleanUp"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 208,
+        "target": "getIfPresent"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 209,
+        "target": "policy"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 209,
+        "target": "eviction"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 211,
+        "target": "asMap"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 219,
+        "target": "executor"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 219,
+        "target": "maximumSize"
+      }
+    ],
+    "refused_ambiguous_pair": [
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 106,
+        "target": "isAtMost"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 128,
+        "target": "isNotNull"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 151,
+        "target": "isNotNull"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 152,
+        "target": "isNotNull"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 153,
+        "target": "isNotNull"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 236,
+        "target": "isNotNull"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 241,
+        "target": "isNull"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 323,
+        "target": "isAtMost"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/AsyncCacheFrayTest.java",
+        "line": 356,
+        "target": "isAtMost"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/BufferDrainFrayTest.java",
+        "line": 90,
+        "target": "isNotNull"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/BufferDrainFrayTest.java",
+        "line": 91,
+        "target": "isNotNull"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/BufferDrainFrayTest.java",
+        "line": 119,
+        "target": "isAtMost"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/BufferDrainFrayTest.java",
+        "line": 167,
+        "target": "isNotNull"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ComputeFrayTest.java",
+        "line": 156,
+        "target": "isNull"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ComputeFrayTest.java",
+        "line": 254,
+        "target": "isAtMost"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ComputeFrayTest.java",
+        "line": 367,
+        "target": "isAtMost"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/EvictionFrayTest.java",
+        "line": 112,
+        "target": "isNull"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/EvictionFrayTest.java",
+        "line": 144,
+        "target": "isAtMost"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/EvictionFrayTest.java",
+        "line": 202,
+        "target": "isAtMost"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/EvictionFrayTest.java",
+        "line": 254,
+        "target": "isAtMost"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/EvictionFrayTest.java",
+        "line": 284,
+        "target": "isAtMost"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/EvictionFrayTest.java",
+        "line": 311,
+        "target": "isAtMost"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/EvictionFrayTest.java",
+        "line": 407,
+        "target": "isAtMost"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/EvictionFrayTest.java",
+        "line": 441,
+        "target": "isAtMost"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ExpirationFrayTest.java",
+        "line": 107,
+        "target": "isNotNull"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ExpirationFrayTest.java",
+        "line": 134,
+        "target": "isNotNull"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ExpirationFrayTest.java",
+        "line": 165,
+        "target": "isAtMost"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ExpirationFrayTest.java",
+        "line": 202,
+        "target": "isNull"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ExpirationFrayTest.java",
+        "line": 229,
+        "target": "isNull"
+      },
+      {
+        "file": "caffeine/src/frayTest/java/com/github/benmanes/caffeine/cache/ExpirationFrayTest.java",
+        "line": 230,
+        "target": "isNotNull"
+      }
+    ],
+    "refused_external_type": [
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/CaffeineMapAcceptanceTestCase.java",
+        "line": 37,
+        "target": "initialCapacity"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/CaffeineMapAcceptanceTestCase.java",
+        "line": 42,
+        "target": "build"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/ConcurrentHashMapAcceptanceTest.java",
+        "line": 73,
+        "target": "add"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/ConcurrentHashMapAcceptanceTest.java",
+        "line": 77,
+        "target": "toMap"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 75,
+        "target": "toMap"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 103,
+        "target": "toReversed"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 203,
+        "target": "withKeyValue"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 204,
+        "target": "withKeyValue"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 205,
+        "target": "withKeyValue"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 230,
+        "target": "withMap"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 237,
+        "target": "add"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTestCase.java",
+        "line": 49,
+        "target": "shuffleThis"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTestCase.java",
+        "line": 79,
+        "target": "shuffleThis"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/MapIterableTestCase.java",
+        "line": 111,
+        "target": "makeString"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/MapIterableTestCase.java",
+        "line": 119,
+        "target": "reduce"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/MapIterableTestCase.java",
+        "line": 119,
+        "target": "makeString"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/MapIterableTestCase.java",
+        "line": 120,
+        "target": "reduce"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/MapIterableTestCase.java",
+        "line": 136,
+        "target": "isEmpty"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/MapIterableTestCase.java",
+        "line": 137,
+        "target": "isEmpty"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/MapIterableTestCase.java",
+        "line": 142,
+        "target": "notEmpty"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/MapIterableTestCase.java",
+        "line": 143,
+        "target": "notEmpty"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/MapIterableTestCase.java",
+        "line": 270,
+        "target": "flipUniqueValues"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/MapIterableTestCase.java",
+        "line": 487,
+        "target": "containsAllArguments"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/MapIterableTestCase.java",
+        "line": 488,
+        "target": "containsAllArguments"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/MapIterableTestCase.java",
+        "line": 501,
+        "target": "flip"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/MapIterableTestCase.java",
+        "line": 509,
+        "target": "flip"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/MapIterableTestCase.java",
+        "line": 756,
+        "target": "toSet"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/MapIterableTestCase.java",
+        "line": 827,
+        "target": "contains"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/MapIterableTestCase.java",
+        "line": 829,
+        "target": "getFirst"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/MapIterableTestCase.java",
+        "line": 838,
+        "target": "contains"
+      }
+    ],
+    "refused_inner_unresolved": [
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/CollidingInt.java",
+        "line": 56,
+        "target": "compareTo"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/CollidingInt.java",
+        "line": 60,
+        "target": "compareTo"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/ConcurrentHashMapAcceptanceTest.java",
+        "line": 74,
+        "target": "asSynchronized"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/ConcurrentHashMapAcceptanceTest.java",
+        "line": 77,
+        "target": "groupBy"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/ConcurrentHashMapAcceptanceTest.java",
+        "line": 193,
+        "target": "size"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/ConcurrentHashMapAcceptanceTest.java",
+        "line": 194,
+        "target": "size"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/ConcurrentHashMapAcceptanceTest.java",
+        "line": 195,
+        "target": "size"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/ConcurrentHashMapAcceptanceTest.java",
+        "line": 202,
+        "target": "size"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/ConcurrentHashMapAcceptanceTest.java",
+        "line": 209,
+        "target": "size"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/ConcurrentHashMapAcceptanceTest.java",
+        "line": 216,
+        "target": "size"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/UnifiedMapAcceptanceTest.java",
+        "line": 299,
+        "target": "hashCode"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/UnifiedMapAcceptanceTest.java",
+        "line": 301,
+        "target": "hashCode"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/UnifiedMapAcceptanceTest.java",
+        "line": 304,
+        "target": "hashCode"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/UnifiedMapAcceptanceTest.java",
+        "line": 308,
+        "target": "hashCode"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/UnifiedMapAcceptanceTest.java",
+        "line": 310,
+        "target": "hashCode"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/UnifiedMapAcceptanceTest.java",
+        "line": 313,
+        "target": "hashCode"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/UnifiedMapAcceptanceTest.java",
+        "line": 904,
+        "target": "getKey"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/acceptance/UnifiedMapAcceptanceTest.java",
+        "line": 951,
+        "target": "getKey"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 75,
+        "target": "groupBy"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 103,
+        "target": "collect"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 142,
+        "target": "contains"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 143,
+        "target": "contains"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 144,
+        "target": "contains"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 151,
+        "target": "remove"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 152,
+        "target": "remove"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 153,
+        "target": "remove"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 175,
+        "target": "remove"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 178,
+        "target": "remove"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 186,
+        "target": "removeAll"
+      },
+      {
+        "file": "caffeine/src/eclipseTest/java/com/github/benmanes/caffeine/eclipse/mutable/ConcurrentHashMapTest.java",
+        "line": 190,
+        "target": "removeAll"
+      }
+    ],
+    "refused_no_return_type": [
+      {
+        "file": "caffeine/src/jmh/java/com/github/benmanes/caffeine/cache/MemoryBenchmark.java",
+        "line": 218,
+        "target": "dataAlign"
+      },
+      {
+        "file": "examples/indexable/src/test/java/com/github/benmanes/caffeine/examples/indexable/IndexedCacheTest.java",
+        "line": 79,
+        "target": "equals"
+      },
+      {
+        "file": "examples/indexable/src/test/java/com/github/benmanes/caffeine/examples/indexable/IndexedCacheTest.java",
+        "line": 80,
+        "target": "equals"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/parser/TraceFormat.java",
+        "line": 141,
+        "target": "toUpperCase"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/Policy.java",
+        "line": 47,
+        "target": "trim"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 76,
+        "target": "type"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 76,
+        "target": "required"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 78,
+        "target": "type"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 78,
+        "target": "required"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 80,
+        "target": "type"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 80,
+        "target": "required"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 82,
+        "target": "type"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 82,
+        "target": "required"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 84,
+        "target": "type"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 84,
+        "target": "required"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 86,
+        "target": "type"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 86,
+        "target": "required"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 88,
+        "target": "type"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 88,
+        "target": "required"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 93,
+        "target": "type"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 93,
+        "target": "characteristic"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 96,
+        "target": "characteristic"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 99,
+        "target": "type"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 99,
+        "target": "characteristic"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 115,
+        "target": "type"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 119,
+        "target": "type"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 123,
+        "target": "type"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/PolicyStats.java",
+        "line": 127,
+        "target": "type"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/Registry.java",
+        "line": 111,
+        "target": "apply"
+      },
+      {
+        "file": "simulator/src/main/java/com/github/benmanes/caffeine/cache/simulator/policy/Registry.java",
+        "line": 248,
+        "target": "getAnnotation"
+      }
+    ]
+  },
+  "files": 668,
+  "language": "java",
+  "repo": "C:\\Users\\ragha\\Desktop\\repowise\\test-repos\\caffeine"
+}

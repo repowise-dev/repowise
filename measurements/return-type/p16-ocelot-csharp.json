@@ -1,0 +1,799 @@
+{
+  "buckets": {
+    "predicted_added": 4,
+    "predicted_agree": 448,
+    "predicted_refused": 25,
+    "predicted_retargeted": 39,
+    "refused_ambiguous_pair": 3,
+    "refused_external_type": 77,
+    "refused_inner_unresolved": 2323,
+    "refused_no_return_type": 1,
+    "structural_sites": 2920
+  },
+  "examples": {
+    "predicted_added": [
+      {
+        "file": "unit/Configuration/Builder/UpstreamPathTemplateBuilderTests.cs",
+        "line": 14,
+        "target": "WithPriority"
+      },
+      {
+        "file": "unit/Configuration/Builder/UpstreamPathTemplateBuilderTests.cs",
+        "line": 68,
+        "target": "WithPriority"
+      },
+      {
+        "file": "unit/Configuration/Builder/UpstreamPathTemplateBuilderTests.cs",
+        "line": 86,
+        "target": "WithPriority"
+      },
+      {
+        "file": "unit/Configuration/Builder/UpstreamPathTemplateBuilderTests.cs",
+        "line": 105,
+        "target": "WithPriority"
+      }
+    ],
+    "predicted_agree": [
+      {
+        "file": "acceptance/Configuration/ConfigurationReloadTests.cs",
+        "line": 38,
+        "target": "UntilAsync"
+      },
+      {
+        "file": "acceptance/Requester/MessageInvokerPoolTests.cs",
+        "line": 20,
+        "target": "WithHttpHandlerOptions"
+      },
+      {
+        "file": "acceptance/Requester/MessageInvokerPoolTests.cs",
+        "line": 20,
+        "target": "WithLoadBalancerKey"
+      },
+      {
+        "file": "acceptance/Requester/MessageInvokerPoolTests.cs",
+        "line": 20,
+        "target": "WithUpstreamPathTemplate"
+      },
+      {
+        "file": "acceptance/Requester/MessageInvokerPoolTests.cs",
+        "line": 20,
+        "target": "Build"
+      },
+      {
+        "file": "src/Configuration/Creator/DefaultMetadataCreator.cs",
+        "line": 22,
+        "target": "WithSeparators"
+      },
+      {
+        "file": "src/Configuration/Creator/DefaultMetadataCreator.cs",
+        "line": 22,
+        "target": "WithTrimChars"
+      },
+      {
+        "file": "src/Configuration/Creator/DefaultMetadataCreator.cs",
+        "line": 22,
+        "target": "WithStringSplitOption"
+      },
+      {
+        "file": "src/Configuration/Creator/DefaultMetadataCreator.cs",
+        "line": 22,
+        "target": "WithNumberStyle"
+      },
+      {
+        "file": "src/Configuration/Creator/DefaultMetadataCreator.cs",
+        "line": 22,
+        "target": "WithCurrentCulture"
+      },
+      {
+        "file": "src/Configuration/Creator/DynamicRoutesCreator.cs",
+        "line": 81,
+        "target": "WithCacheOptions"
+      },
+      {
+        "file": "src/Configuration/Creator/DynamicRoutesCreator.cs",
+        "line": 81,
+        "target": "WithDownstreamHttpVersion"
+      },
+      {
+        "file": "src/Configuration/Creator/DynamicRoutesCreator.cs",
+        "line": 81,
+        "target": "WithDownstreamHttpVersionPolicy"
+      },
+      {
+        "file": "src/Configuration/Creator/DynamicRoutesCreator.cs",
+        "line": 81,
+        "target": "WithDownstreamScheme"
+      },
+      {
+        "file": "src/Configuration/Creator/DynamicRoutesCreator.cs",
+        "line": 81,
+        "target": "WithHttpHandlerOptions"
+      },
+      {
+        "file": "src/Configuration/Creator/DynamicRoutesCreator.cs",
+        "line": 81,
+        "target": "WithLoadBalancerKey"
+      },
+      {
+        "file": "src/Configuration/Creator/DynamicRoutesCreator.cs",
+        "line": 81,
+        "target": "WithLoadBalancerOptions"
+      },
+      {
+        "file": "src/Configuration/Creator/DynamicRoutesCreator.cs",
+        "line": 81,
+        "target": "WithMetadata"
+      },
+      {
+        "file": "src/Configuration/Creator/DynamicRoutesCreator.cs",
+        "line": 81,
+        "target": "WithQosOptions"
+      },
+      {
+        "file": "src/Configuration/Creator/DynamicRoutesCreator.cs",
+        "line": 81,
+        "target": "WithRateLimitOptions"
+      },
+      {
+        "file": "src/Configuration/Creator/DynamicRoutesCreator.cs",
+        "line": 81,
+        "target": "WithServiceName"
+      },
+      {
+        "file": "src/Configuration/Creator/DynamicRoutesCreator.cs",
+        "line": 81,
+        "target": "WithServiceNamespace"
+      },
+      {
+        "file": "src/Configuration/Creator/DynamicRoutesCreator.cs",
+        "line": 81,
+        "target": "WithTimeout"
+      },
+      {
+        "file": "src/Configuration/Creator/DynamicRoutesCreator.cs",
+        "line": 81,
+        "target": "Build"
+      },
+      {
+        "file": "src/Configuration/Creator/ServiceProviderConfigurationCreator.cs",
+        "line": 19,
+        "target": "WithHost"
+      },
+      {
+        "file": "src/Configuration/Creator/ServiceProviderConfigurationCreator.cs",
+        "line": 19,
+        "target": "WithPort"
+      },
+      {
+        "file": "src/Configuration/Creator/ServiceProviderConfigurationCreator.cs",
+        "line": 19,
+        "target": "WithType"
+      },
+      {
+        "file": "src/Configuration/Creator/ServiceProviderConfigurationCreator.cs",
+        "line": 19,
+        "target": "WithToken"
+      },
+      {
+        "file": "src/Configuration/Creator/ServiceProviderConfigurationCreator.cs",
+        "line": 19,
+        "target": "WithConfigurationKey"
+      },
+      {
+        "file": "src/Configuration/Creator/ServiceProviderConfigurationCreator.cs",
+        "line": 19,
+        "target": "WithPollingInterval"
+      }
+    ],
+    "predicted_refused": [
+      {
+        "file": "acceptance/GzipTests.cs",
+        "line": 17,
+        "target": "WithMethods"
+      },
+      {
+        "file": "acceptance/Routing/RoutingTests.cs",
+        "line": 147,
+        "target": "WithMethods"
+      },
+      {
+        "file": "acceptance/Routing/RoutingTests.cs",
+        "line": 149,
+        "target": "WithMethods"
+      },
+      {
+        "file": "acceptance/Routing/RoutingTests.cs",
+        "line": 318,
+        "target": "WithMethods"
+      },
+      {
+        "file": "acceptance/Routing/RoutingTests.cs",
+        "line": 584,
+        "target": "WithMethods"
+      },
+      {
+        "file": "acceptance/Routing/RoutingTests.cs",
+        "line": 585,
+        "target": "WithMethods"
+      },
+      {
+        "file": "acceptance/Routing/RoutingTests.cs",
+        "line": 659,
+        "target": "WithMethods"
+      },
+      {
+        "file": "acceptance/Routing/RoutingTests.cs",
+        "line": 661,
+        "target": "WithMethods"
+      },
+      {
+        "file": "acceptance/Routing/UpstreamHostTests.cs",
+        "line": 15,
+        "target": "WithUpstreamHost"
+      },
+      {
+        "file": "acceptance/Routing/UpstreamHostTests.cs",
+        "line": 32,
+        "target": "WithUpstreamHost"
+      },
+      {
+        "file": "acceptance/Routing/UpstreamHostTests.cs",
+        "line": 33,
+        "target": "WithUpstreamHost"
+      },
+      {
+        "file": "acceptance/Routing/UpstreamHostTests.cs",
+        "line": 50,
+        "target": "WithUpstreamHost"
+      },
+      {
+        "file": "acceptance/Routing/UpstreamHostTests.cs",
+        "line": 51,
+        "target": "WithUpstreamHost"
+      },
+      {
+        "file": "acceptance/Routing/UpstreamHostTests.cs",
+        "line": 68,
+        "target": "WithUpstreamHost"
+      },
+      {
+        "file": "acceptance/Routing/UpstreamHostTests.cs",
+        "line": 69,
+        "target": "WithUpstreamHost"
+      },
+      {
+        "file": "acceptance/Routing/UpstreamHostTests.cs",
+        "line": 85,
+        "target": "WithUpstreamHost"
+      },
+      {
+        "file": "testing/Boxing/FileRouteExtensions.cs",
+        "line": 13,
+        "target": "Out"
+      },
+      {
+        "file": "testing/Boxing/FileRouteExtensions.cs",
+        "line": 17,
+        "target": "Out"
+      },
+      {
+        "file": "testing/Boxing/FileRouteExtensions.cs",
+        "line": 21,
+        "target": "Out"
+      },
+      {
+        "file": "testing/Boxing/FileRouteExtensions.cs",
+        "line": 25,
+        "target": "Out"
+      },
+      {
+        "file": "testing/Boxing/FileRouteExtensions.cs",
+        "line": 29,
+        "target": "Out"
+      },
+      {
+        "file": "testing/Boxing/FileRouteExtensions.cs",
+        "line": 33,
+        "target": "Out"
+      },
+      {
+        "file": "testing/Boxing/FileRouteExtensions.cs",
+        "line": 38,
+        "target": "Out"
+      },
+      {
+        "file": "testing/Boxing/FileRouteExtensions.cs",
+        "line": 42,
+        "target": "Out"
+      },
+      {
+        "file": "testing/Boxing/FileRouteExtensions.cs",
+        "line": 46,
+        "target": "Out"
+      }
+    ],
+    "predicted_retargeted": [
+      {
+        "file": "acceptance/Requester/MessageInvokerPoolTests.cs",
+        "line": 24,
+        "target": "Build"
+      },
+      {
+        "file": "src/Configuration/Creator/DefaultMetadataCreator.cs",
+        "line": 22,
+        "target": "Build"
+      },
+      {
+        "file": "src/Configuration/Creator/ServiceProviderConfigurationCreator.cs",
+        "line": 19,
+        "target": "Build"
+      },
+      {
+        "file": "src/DownstreamRouteFinder/Finder/DiscoveryDownstreamRouteFinder.cs",
+        "line": 49,
+        "target": "Build"
+      },
+      {
+        "file": "unit/Authorization/AuthorizationMiddlewareTests.cs",
+        "line": 93,
+        "target": "Build"
+      },
+      {
+        "file": "unit/Configuration/DownstreamRouteTests.cs",
+        "line": 51,
+        "target": "Build"
+      },
+      {
+        "file": "unit/Configuration/ServiceProviderConfigurationCreatorTests.cs",
+        "line": 28,
+        "target": "Build"
+      },
+      {
+        "file": "unit/Configuration/Builder/UpstreamPathTemplateBuilderTests.cs",
+        "line": 14,
+        "target": "Build"
+      },
+      {
+        "file": "unit/Configuration/Builder/UpstreamPathTemplateBuilderTests.cs",
+        "line": 47,
+        "target": "Build"
+      },
+      {
+        "file": "unit/Configuration/Builder/UpstreamPathTemplateBuilderTests.cs",
+        "line": 68,
+        "target": "Build"
+      },
+      {
+        "file": "unit/Configuration/Builder/UpstreamPathTemplateBuilderTests.cs",
+        "line": 86,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamRouteFinder/DownstreamRouteProviderFactoryTests.cs",
+        "line": 61,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamRouteFinder/DownstreamRouteProviderFactoryTests.cs",
+        "line": 63,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamRouteFinder/DownstreamRouteProviderFactoryTests.cs",
+        "line": 78,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamRouteFinder/DownstreamRouteProviderFactoryTests.cs",
+        "line": 93,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamRouteFinder/DownstreamRouteProviderFactoryTests.cs",
+        "line": 108,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamRouteFinder/DownstreamRouteProviderFactoryTests.cs",
+        "line": 123,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamRouteFinder/DownstreamRouteProviderFactoryTests.cs",
+        "line": 138,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamRouteFinder/DownstreamRouteProviderFactoryTests.cs",
+        "line": 154,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 227,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 257,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 285,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 313,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 336,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 342,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 366,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 402,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 426,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 458,
+        "target": "Build"
+      },
+      {
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 492,
+        "target": "Build"
+      }
+    ],
+    "refused_ambiguous_pair": [
+      {
+        "file": "acceptance/Routing/RoutingBasedOnHeadersTests.cs",
+        "line": 417,
+        "target": "WithKey"
+      },
+      {
+        "file": "acceptance/Routing/RoutingTests.cs",
+        "line": 16,
+        "target": "WithPriority"
+      },
+      {
+        "file": "acceptance/Routing/RoutingTests.cs",
+        "line": 622,
+        "target": "WithPriority"
+      }
+    ],
+    "refused_external_type": [
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 50,
+        "target": "Given"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 372,
+        "target": "Replace"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 373,
+        "target": "Replace"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 490,
+        "target": "AddSingletonDefinedAggregator"
+      },
+      {
+        "file": "acceptance/CancelRequestTests.cs",
+        "line": 35,
+        "target": "ContinueWith"
+      },
+      {
+        "file": "acceptance/HttpDelegatingHandlersTests.cs",
+        "line": 120,
+        "target": "AddDelegatingHandler"
+      },
+      {
+        "file": "acceptance/Authentication/AuthenticationTests.cs",
+        "line": 137,
+        "target": "ContinueWith"
+      },
+      {
+        "file": "acceptance/Configuration/ConfigurationMergeTests.cs",
+        "line": 66,
+        "target": "AddJsonFile"
+      },
+      {
+        "file": "acceptance/Requester/PayloadTooLargeTests.cs",
+        "line": 62,
+        "target": "UseUrls"
+      },
+      {
+        "file": "acceptance/ServiceDiscovery/DynamicRoutingTests.cs",
+        "line": 49,
+        "target": "ToList"
+      },
+      {
+        "file": "acceptance/ServiceDiscovery/DynamicRoutingTests.cs",
+        "line": 148,
+        "target": "BDDfy"
+      },
+      {
+        "file": "acceptance/ServiceDiscovery/DynamicRoutingTests.cs",
+        "line": 227,
+        "target": "Then"
+      },
+      {
+        "file": "acceptance/ServiceDiscovery/DynamicRoutingTests.cs",
+        "line": 229,
+        "target": "Then"
+      },
+      {
+        "file": "acceptance/ServiceDiscovery/DynamicRoutingTests.cs",
+        "line": 231,
+        "target": "Then"
+      },
+      {
+        "file": "acceptance/ServiceDiscovery/DynamicRoutingTests.cs",
+        "line": 562,
+        "target": "AddQualityOfService"
+      },
+      {
+        "file": "acceptance/WebSockets/ClientWebSocketTests.cs",
+        "line": 48,
+        "target": "ThenIfNot"
+      },
+      {
+        "file": "acceptance/WebSockets/ClientWebSocketTests.cs",
+        "line": 48,
+        "target": "BDDfy"
+      },
+      {
+        "file": "acceptance/WebSockets/ClientWebSocketTests.cs",
+        "line": 99,
+        "target": "ThenIfNot"
+      },
+      {
+        "file": "acceptance/WebSockets/ClientWebSocketTests.cs",
+        "line": 99,
+        "target": "BDDfy"
+      },
+      {
+        "file": "samples/GraphQL/Program.cs",
+        "line": 29,
+        "target": "AddDelegatingHandler"
+      },
+      {
+        "file": "samples/Kubernetes/ApiGateway/Program.cs",
+        "line": 53,
+        "target": "AddKubernetes"
+      },
+      {
+        "file": "samples/OpenTracing/Program.cs",
+        "line": 15,
+        "target": "AddOpenTracing"
+      },
+      {
+        "file": "samples/ServiceFabric/ApiGateway/WebCommunicationListener.cs",
+        "line": 72,
+        "target": "GetAwaiter"
+      },
+      {
+        "file": "src/Authorization/ClaimsAuthorizer.cs",
+        "line": 42,
+        "target": "Match"
+      },
+      {
+        "file": "src/Configuration/Creator/RouteKeyCreator.cs",
+        "line": 29,
+        "target": "AppendNext"
+      },
+      {
+        "file": "src/Configuration/Creator/RouteKeyCreator.cs",
+        "line": 33,
+        "target": "IfEmpty"
+      },
+      {
+        "file": "src/Configuration/Creator/UpstreamHeaderTemplatePatternCreator.cs",
+        "line": 34,
+        "target": "Matches"
+      },
+      {
+        "file": "src/Configuration/Parser/ClaimToThingConfigurationParser.cs",
+        "line": 30,
+        "target": "IsMatch"
+      },
+      {
+        "file": "src/Configuration/Parser/ClaimToThingConfigurationParser.cs",
+        "line": 41,
+        "target": "IsMatch"
+      },
+      {
+        "file": "src/Configuration/Repository/FileConfigurationPoller.cs",
+        "line": 138,
+        "target": "GetAwaiter"
+      }
+    ],
+    "refused_inner_unresolved": [
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 50,
+        "target": "And"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 50,
+        "target": "When"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 50,
+        "target": "Then"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 50,
+        "target": "BDDfy"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 82,
+        "target": "Given"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 82,
+        "target": "And"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 82,
+        "target": "When"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 82,
+        "target": "Then"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 82,
+        "target": "BDDfy"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 105,
+        "target": "Given"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 105,
+        "target": "And"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 105,
+        "target": "When"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 105,
+        "target": "Then"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 105,
+        "target": "BDDfy"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 127,
+        "target": "Given"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 127,
+        "target": "And"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 127,
+        "target": "When"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 127,
+        "target": "Then"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 127,
+        "target": "BDDfy"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 149,
+        "target": "Given"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 149,
+        "target": "And"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 149,
+        "target": "When"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 149,
+        "target": "Then"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 149,
+        "target": "BDDfy"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 171,
+        "target": "Given"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 171,
+        "target": "And"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 171,
+        "target": "When"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 171,
+        "target": "Then"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 171,
+        "target": "BDDfy"
+      },
+      {
+        "file": "acceptance/AggregateTests.cs",
+        "line": 193,
+        "target": "Given"
+      }
+    ],
+    "refused_no_return_type": [
+      {
+        "file": "src/Configuration/DownstreamRoute.cs",
+        "line": 152,
+        "target": "Replace"
+      }
+    ]
+  },
+  "files": 754,
+  "language": "csharp",
+  "repo": "C:\\Users\\ragha\\Desktop\\repowise\\test-repos\\Ocelot"
+}

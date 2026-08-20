@@ -1,0 +1,1094 @@
+{
+  "buckets": {
+    "predicted_added": 350,
+    "predicted_agree": 63,
+    "predicted_refused": 327,
+    "predicted_retargeted": 2,
+    "refused_ambiguous_pair": 30,
+    "refused_external_type": 169,
+    "refused_inner_unresolved": 2720,
+    "refused_no_return_type": 344,
+    "structural_sites": 4005
+  },
+  "examples": {
+    "predicted_added": [
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 364,
+        "target": "then"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 376,
+        "target": "then"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 380,
+        "target": "then"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 373,
+        "target": "then"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 433,
+        "target": "then"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 545,
+        "target": "then"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 594,
+        "target": "then"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 610,
+        "target": "then"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 626,
+        "target": "then"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 821,
+        "target": "then"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 881,
+        "target": "then"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 1309,
+        "target": "then"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 1327,
+        "target": "then"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 1339,
+        "target": "then"
+      },
+      {
+        "file": "apps/io_tester/ioinfo.cc",
+        "line": 51,
+        "target": "then"
+      },
+      {
+        "file": "apps/io_tester/ioinfo.cc",
+        "line": 53,
+        "target": "then"
+      },
+      {
+        "file": "apps/iotune/iotune.cc",
+        "line": 529,
+        "target": "finally"
+      },
+      {
+        "file": "apps/iotune/iotune.cc",
+        "line": 526,
+        "target": "then_wrapped"
+      },
+      {
+        "file": "apps/iotune/iotune.cc",
+        "line": 559,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/memcache.cc",
+        "line": 935,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/memcache.cc",
+        "line": 966,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/memcache.cc",
+        "line": 1407,
+        "target": "finally"
+      },
+      {
+        "file": "apps/rpc_tester/rpc_tester.cc",
+        "line": 444,
+        "target": "then"
+      },
+      {
+        "file": "apps/rpc_tester/rpc_tester.cc",
+        "line": 808,
+        "target": "forward_to"
+      },
+      {
+        "file": "demos/file_demo.cc",
+        "line": 133,
+        "target": "finally"
+      },
+      {
+        "file": "demos/file_demo.cc",
+        "line": 245,
+        "target": "then"
+      },
+      {
+        "file": "demos/file_demo.cc",
+        "line": 246,
+        "target": "then"
+      },
+      {
+        "file": "demos/rpc_demo.cc",
+        "line": 216,
+        "target": "then"
+      },
+      {
+        "file": "demos/rpc_demo.cc",
+        "line": 229,
+        "target": "then"
+      },
+      {
+        "file": "demos/rpc_demo.cc",
+        "line": 232,
+        "target": "then"
+      }
+    ],
+    "predicted_agree": [
+      {
+        "file": "apps/rpc_tester/rpc_tester.cc",
+        "line": 808,
+        "target": "discard_result"
+      },
+      {
+        "file": "include/seastar/core/semaphore.hh",
+        "line": 771,
+        "target": "then"
+      },
+      {
+        "file": "include/seastar/core/semaphore.hh",
+        "line": 805,
+        "target": "then"
+      },
+      {
+        "file": "src/core/file.cc",
+        "line": 741,
+        "target": "whitelisted"
+      },
+      {
+        "file": "src/core/file.cc",
+        "line": 742,
+        "target": "whitelisted"
+      },
+      {
+        "file": "src/core/file.cc",
+        "line": 772,
+        "target": "whitelisted"
+      },
+      {
+        "file": "src/core/file.cc",
+        "line": 774,
+        "target": "whitelisted"
+      },
+      {
+        "file": "src/core/file.cc",
+        "line": 776,
+        "target": "whitelisted"
+      },
+      {
+        "file": "src/core/file.cc",
+        "line": 1221,
+        "target": "whitelisted"
+      },
+      {
+        "file": "src/core/file.cc",
+        "line": 1295,
+        "target": "whitelisted"
+      },
+      {
+        "file": "src/core/file.cc",
+        "line": 1397,
+        "target": "whitelisted"
+      },
+      {
+        "file": "src/core/file.cc",
+        "line": 1403,
+        "target": "whitelisted"
+      },
+      {
+        "file": "src/core/file.cc",
+        "line": 1409,
+        "target": "whitelisted"
+      },
+      {
+        "file": "src/core/file.cc",
+        "line": 1415,
+        "target": "whitelisted"
+      },
+      {
+        "file": "src/core/reactor.cc",
+        "line": 1484,
+        "target": "whitelisted"
+      },
+      {
+        "file": "src/core/reactor.cc",
+        "line": 2686,
+        "target": "mallocs"
+      },
+      {
+        "file": "src/core/reactor.cc",
+        "line": 2688,
+        "target": "frees"
+      },
+      {
+        "file": "src/core/reactor.cc",
+        "line": 2689,
+        "target": "cross_cpu_frees"
+      },
+      {
+        "file": "src/core/reactor.cc",
+        "line": 2690,
+        "target": "live_objects"
+      },
+      {
+        "file": "src/core/reactor.cc",
+        "line": 2692,
+        "target": "total_memory"
+      },
+      {
+        "file": "src/core/reactor.cc",
+        "line": 2693,
+        "target": "allocated_memory"
+      },
+      {
+        "file": "src/core/reactor.cc",
+        "line": 2694,
+        "target": "reclaims"
+      },
+      {
+        "file": "src/core/reactor.cc",
+        "line": 2695,
+        "target": "failed_allocations"
+      },
+      {
+        "file": "src/core/reactor.cc",
+        "line": 2696,
+        "target": "large_allocations"
+      },
+      {
+        "file": "src/core/reactor.cc",
+        "line": 3952,
+        "target": "whitelisted"
+      },
+      {
+        "file": "src/core/reactor_backend.cc",
+        "line": 1308,
+        "target": "whitelisted"
+      },
+      {
+        "file": "src/core/reactor_backend.cc",
+        "line": 1312,
+        "target": "whitelisted"
+      },
+      {
+        "file": "src/core/reactor_backend.cc",
+        "line": 1327,
+        "target": "whitelisted"
+      },
+      {
+        "file": "src/core/reactor_backend.cc",
+        "line": 1331,
+        "target": "whitelisted"
+      },
+      {
+        "file": "src/http/client.cc",
+        "line": 195,
+        "target": "discard_result"
+      }
+    ],
+    "predicted_refused": [
+      {
+        "file": "apps/httpd/main.cc",
+        "line": 132,
+        "target": "get"
+      },
+      {
+        "file": "apps/httpd/main.cc",
+        "line": 157,
+        "target": "get"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 1259,
+        "target": "get"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 1266,
+        "target": "get"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 1303,
+        "target": "get"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 1315,
+        "target": "get"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 1333,
+        "target": "get"
+      },
+      {
+        "file": "apps/rpc_tester/rpc_tester.cc",
+        "line": 963,
+        "target": "get"
+      },
+      {
+        "file": "demos/file_demo.cc",
+        "line": 199,
+        "target": "get"
+      },
+      {
+        "file": "demos/scheduling_group_demo.cc",
+        "line": 81,
+        "target": "get"
+      },
+      {
+        "file": "demos/scheduling_group_demo.cc",
+        "line": 158,
+        "target": "get"
+      },
+      {
+        "file": "demos/scheduling_group_demo.cc",
+        "line": 173,
+        "target": "get"
+      },
+      {
+        "file": "demos/tcp_sctp_server_demo.cc",
+        "line": 220,
+        "target": "get"
+      },
+      {
+        "file": "demos/tls_echo_server_demo.cc",
+        "line": 70,
+        "target": "get"
+      },
+      {
+        "file": "demos/udp_server_demo.cc",
+        "line": 96,
+        "target": "get"
+      },
+      {
+        "file": "include/seastar/util/closeable.hh",
+        "line": 57,
+        "target": "close"
+      },
+      {
+        "file": "include/seastar/util/closeable.hh",
+        "line": 57,
+        "target": "get"
+      },
+      {
+        "file": "include/seastar/util/closeable.hh",
+        "line": 126,
+        "target": "stop"
+      },
+      {
+        "file": "src/core/metrics.cc",
+        "line": 117,
+        "target": "set_config"
+      },
+      {
+        "file": "src/core/metrics.cc",
+        "line": 122,
+        "target": "set_relabel_configs"
+      },
+      {
+        "file": "src/core/metrics.cc",
+        "line": 136,
+        "target": "set_metric_family_configs"
+      },
+      {
+        "file": "src/core/metrics.cc",
+        "line": 362,
+        "target": "internalize_labels"
+      },
+      {
+        "file": "src/core/metrics.cc",
+        "line": 366,
+        "target": "add_registration"
+      },
+      {
+        "file": "src/core/metrics.cc",
+        "line": 429,
+        "target": "remove_registration"
+      },
+      {
+        "file": "src/core/metrics.cc",
+        "line": 433,
+        "target": "get_value_map"
+      },
+      {
+        "file": "src/core/metrics.cc",
+        "line": 440,
+        "target": "metadata"
+      },
+      {
+        "file": "src/core/reactor.cc",
+        "line": 903,
+        "target": "name"
+      },
+      {
+        "file": "src/core/reactor.cc",
+        "line": 4072,
+        "target": "name"
+      },
+      {
+        "file": "src/core/scollectd.cc",
+        "line": 532,
+        "target": "remove_polled"
+      },
+      {
+        "file": "src/core/scollectd.cc",
+        "line": 561,
+        "target": "start"
+      }
+    ],
+    "predicted_retargeted": [
+      {
+        "file": "src/core/memory.cc",
+        "line": 2736,
+        "target": "free_memory"
+      },
+      {
+        "file": "src/core/reactor.cc",
+        "line": 2691,
+        "target": "free_memory"
+      }
+    ],
+    "refused_ambiguous_pair": [
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 668,
+        "target": "count"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 669,
+        "target": "count"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 827,
+        "target": "count"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 909,
+        "target": "count"
+      },
+      {
+        "file": "include/seastar/core/loop.hh",
+        "line": 241,
+        "target": "value"
+      },
+      {
+        "file": "include/seastar/core/metrics.hh",
+        "line": 607,
+        "target": "set_type"
+      },
+      {
+        "file": "include/seastar/core/metrics.hh",
+        "line": 621,
+        "target": "set_type"
+      },
+      {
+        "file": "include/seastar/core/metrics.hh",
+        "line": 635,
+        "target": "set_type"
+      },
+      {
+        "file": "include/seastar/core/metrics.hh",
+        "line": 649,
+        "target": "set_type"
+      },
+      {
+        "file": "src/core/disk_params.cc",
+        "line": 88,
+        "target": "count"
+      },
+      {
+        "file": "src/core/metrics.cc",
+        "line": 126,
+        "target": "get_relabel_configs"
+      },
+      {
+        "file": "src/core/metrics.cc",
+        "line": 140,
+        "target": "get_metric_family_configs"
+      },
+      {
+        "file": "src/core/metrics.cc",
+        "line": 441,
+        "target": "functions"
+      },
+      {
+        "file": "src/core/prometheus.cc",
+        "line": 1067,
+        "target": "get_labels"
+      },
+      {
+        "file": "src/core/reactor_backend.cc",
+        "line": 1825,
+        "target": "value"
+      },
+      {
+        "file": "src/core/reactor_backend.cc",
+        "line": 2442,
+        "target": "value"
+      },
+      {
+        "file": "src/core/reactor_backend.cc",
+        "line": 2468,
+        "target": "value"
+      },
+      {
+        "file": "src/core/resource.cc",
+        "line": 197,
+        "target": "value"
+      },
+      {
+        "file": "src/core/scollectd.cc",
+        "line": 528,
+        "target": "add_polled"
+      },
+      {
+        "file": "src/core/scollectd.cc",
+        "line": 537,
+        "target": "send_notification"
+      },
+      {
+        "file": "src/core/scollectd.cc",
+        "line": 542,
+        "target": "send_metric"
+      },
+      {
+        "file": "src/net/dns.cc",
+        "line": 456,
+        "target": "do_sendv"
+      },
+      {
+        "file": "src/net/inet_address.cc",
+        "line": 283,
+        "target": "bytes"
+      },
+      {
+        "file": "src/net/inet_address.cc",
+        "line": 292,
+        "target": "bytes"
+      },
+      {
+        "file": "src/net/inet_address.cc",
+        "line": 297,
+        "target": "bytes"
+      },
+      {
+        "file": "src/util/file.cc",
+        "line": 116,
+        "target": "then"
+      },
+      {
+        "file": "src/util/file.cc",
+        "line": 122,
+        "target": "then"
+      },
+      {
+        "file": "src/util/log.cc",
+        "line": 340,
+        "target": "short_name"
+      },
+      {
+        "file": "tests/unit/rpc_test.cc",
+        "line": 207,
+        "target": "stop"
+      },
+      {
+        "file": "tests/unit/scheduling_group_test.cc",
+        "line": 303,
+        "target": "name"
+      }
+    ],
+    "refused_external_type": [
+      {
+        "file": "apps/httpd/main.cc",
+        "line": 114,
+        "target": "get"
+      },
+      {
+        "file": "apps/httpd/main.cc",
+        "line": 128,
+        "target": "get"
+      },
+      {
+        "file": "apps/httpd/main.cc",
+        "line": 153,
+        "target": "get"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 410,
+        "target": "then"
+      },
+      {
+        "file": "apps/iotune/iotune.cc",
+        "line": 933,
+        "target": "string"
+      },
+      {
+        "file": "apps/memcached/memcache.cc",
+        "line": 219,
+        "target": "data"
+      },
+      {
+        "file": "apps/memcached/memcache.cc",
+        "line": 445,
+        "target": "time_since_epoch"
+      },
+      {
+        "file": "apps/memcached/memcache.cc",
+        "line": 522,
+        "target": "time_since_epoch"
+      },
+      {
+        "file": "apps/memcached/memcache.cc",
+        "line": 1190,
+        "target": "data"
+      },
+      {
+        "file": "apps/memcached/memcache.cc",
+        "line": 1211,
+        "target": "data"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 70,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 84,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 98,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 106,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 115,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 120,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 126,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 131,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 136,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 149,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 160,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 171,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 182,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 193,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 204,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 215,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 241,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 247,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 253,
+        "target": "then"
+      },
+      {
+        "file": "apps/memcached/tests/test_ascii_parser.cc",
+        "line": 266,
+        "target": "then"
+      }
+    ],
+    "refused_inner_unresolved": [
+      {
+        "file": "apps/httpd/main.cc",
+        "line": 63,
+        "target": "remainder"
+      },
+      {
+        "file": "apps/httpd/main.cc",
+        "line": 82,
+        "target": "default_value"
+      },
+      {
+        "file": "apps/httpd/main.cc",
+        "line": 84,
+        "target": "default_value"
+      },
+      {
+        "file": "apps/httpd/main.cc",
+        "line": 86,
+        "target": "default_value"
+      },
+      {
+        "file": "apps/httpd/main.cc",
+        "line": 87,
+        "target": "default_value"
+      },
+      {
+        "file": "apps/httpd/main.cc",
+        "line": 88,
+        "target": "default_value"
+      },
+      {
+        "file": "apps/httpd/main.cc",
+        "line": 100,
+        "target": "get"
+      },
+      {
+        "file": "apps/httpd/main.cc",
+        "line": 112,
+        "target": "get"
+      },
+      {
+        "file": "apps/httpd/main.cc",
+        "line": 118,
+        "target": "handle_exception"
+      },
+      {
+        "file": "apps/httpd/main.cc",
+        "line": 118,
+        "target": "get"
+      },
+      {
+        "file": "apps/httpd/main.cc",
+        "line": 135,
+        "target": "get"
+      },
+      {
+        "file": "apps/httpd/main.cc",
+        "line": 136,
+        "target": "get"
+      },
+      {
+        "file": "apps/httpd/main.cc",
+        "line": 137,
+        "target": "get"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 72,
+        "target": "time_since_epoch"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 72,
+        "target": "count"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 121,
+        "target": "discard_result"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 348,
+        "target": "then"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 380,
+        "target": "handle_exception_type"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 380,
+        "target": "finally"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 376,
+        "target": "finally"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 612,
+        "target": "then"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 639,
+        "target": "find"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 640,
+        "target": "end"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 1200,
+        "target": "finally"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 1207,
+        "target": "then"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 1216,
+        "target": "get_io_stats"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 1230,
+        "target": "get"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 1246,
+        "target": "default_value"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 1247,
+        "target": "default_value"
+      },
+      {
+        "file": "apps/io_tester/io_tester.cc",
+        "line": 1248,
+        "target": "default_value"
+      }
+    ],
+    "refused_no_return_type": [
+      {
+        "file": "apps/iotune/iotune.cc",
+        "line": 198,
+        "target": "get"
+      },
+      {
+        "file": "apps/iotune/iotune.cc",
+        "line": 501,
+        "target": "then"
+      },
+      {
+        "file": "apps/iotune/iotune.cc",
+        "line": 505,
+        "target": "then"
+      },
+      {
+        "file": "apps/iotune/iotune.cc",
+        "line": 510,
+        "target": "then"
+      },
+      {
+        "file": "apps/iotune/iotune.cc",
+        "line": 847,
+        "target": "get"
+      },
+      {
+        "file": "apps/iotune/iotune.cc",
+        "line": 945,
+        "target": "get"
+      },
+      {
+        "file": "apps/memcached/memcache.cc",
+        "line": 1509,
+        "target": "has_per_core_namespace"
+      },
+      {
+        "file": "apps/seawreck/seawreck.cc",
+        "line": 131,
+        "target": "then"
+      },
+      {
+        "file": "demos/block_discard_demo.cc",
+        "line": 52,
+        "target": "then"
+      },
+      {
+        "file": "demos/file_demo.cc",
+        "line": 179,
+        "target": "get"
+      },
+      {
+        "file": "demos/http_client_demo.cc",
+        "line": 85,
+        "target": "get"
+      },
+      {
+        "file": "demos/line_count_demo.cc",
+        "line": 65,
+        "target": "then"
+      },
+      {
+        "file": "demos/scheduling_group_demo.cc",
+        "line": 143,
+        "target": "get"
+      },
+      {
+        "file": "demos/scheduling_group_demo.cc",
+        "line": 144,
+        "target": "get"
+      },
+      {
+        "file": "demos/scheduling_group_demo.cc",
+        "line": 145,
+        "target": "get"
+      },
+      {
+        "file": "demos/scheduling_group_demo.cc",
+        "line": 146,
+        "target": "get"
+      },
+      {
+        "file": "demos/scheduling_group_demo.cc",
+        "line": 147,
+        "target": "get"
+      },
+      {
+        "file": "demos/scheduling_group_demo.cc",
+        "line": 148,
+        "target": "get"
+      },
+      {
+        "file": "demos/websocket_server_demo.cc",
+        "line": 69,
+        "target": "handle_exception"
+      },
+      {
+        "file": "include/seastar/core/sharded.hh",
+        "line": 454,
+        "target": "begin"
+      },
+      {
+        "file": "include/seastar/core/sharded.hh",
+        "line": 454,
+        "target": "end"
+      },
+      {
+        "file": "include/seastar/core/sharded.hh",
+        "line": 470,
+        "target": "begin"
+      },
+      {
+        "file": "include/seastar/core/sharded.hh",
+        "line": 470,
+        "target": "end"
+      },
+      {
+        "file": "src/core/app-template.cc",
+        "line": 190,
+        "target": "positional"
+      },
+      {
+        "file": "src/core/file.cc",
+        "line": 143,
+        "target": "to_file"
+      },
+      {
+        "file": "src/core/reactor.cc",
+        "line": 1402,
+        "target": "skip_all"
+      },
+      {
+        "file": "src/core/reactor.cc",
+        "line": 4963,
+        "target": "socket"
+      },
+      {
+        "file": "src/core/reactor.cc",
+        "line": 4967,
+        "target": "make_unbound_datagram_channel"
+      },
+      {
+        "file": "src/core/reactor.cc",
+        "line": 4971,
+        "target": "make_bound_datagram_channel"
+      },
+      {
+        "file": "src/net/dns.cc",
+        "line": 1295,
+        "target": "as_posix_sockaddr"
+      }
+    ]
+  },
+  "files": 527,
+  "language": "cpp",
+  "repo": "C:\\Users\\ragha\\Desktop\\repowise\\test-repos\\seastar"
+}
