@@ -271,6 +271,10 @@ async def health_tests_reaching(
     file) from the weaker ``import-graph`` (a test only imports it), so the file
     page can say which claim it is making.
 
+    ``tests`` is capped at ``MAX_TESTS_PER_TARGET``; ``total`` is what the walk
+    found and ``truncated`` says whether the two differ. A file reached by 124
+    tests would otherwise report 50 as though that were the number.
+
     Always inferred; there is no measured form of this question, because a
     coverage report attributes lines to tests and this attributes files. A file
     nothing reaches returns ``basis: "none"`` rather than an empty ``inferred``
@@ -287,6 +291,8 @@ async def health_tests_reaching(
         "reached": False,
         "tests": [],
         "via": None,
+        "total": 0,
+        "truncated": False,
     }
     try:
         found = await tests_reaching_by_tier(session, repo_id, [file_path])
@@ -295,10 +301,15 @@ async def health_tests_reaching(
     reached = found.get(file_path)
     if reached is None or not reached.tests:
         return empty
+    total = reached.total or len(reached.tests)
     return {
         "file_path": file_path,
         "basis": "inferred",
         "reached": True,
         "tests": reached.tests,
         "via": reached.via,
+        # The walk's own count, which ``tests`` may be a trimmed alphabetical
+        # slice of. Without it a caller renders the cap as the answer.
+        "total": total,
+        "truncated": total > len(reached.tests),
     }

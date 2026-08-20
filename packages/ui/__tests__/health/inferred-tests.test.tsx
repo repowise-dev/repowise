@@ -253,6 +253,23 @@ describe("TestsReachingList", () => {
     expect(screen.getByText(/framework hook/)).toBeInTheDocument();
   });
 
+  it("names the true total when the list was cut, not the length shown", async () => {
+    // The cap is an alphabetical slice, so printing tests.length would state
+    // the cap as the answer and hide which evidence was dropped.
+    render(
+      <TestsReachingList
+        filePath="src/a.py"
+        cacheKey="k5"
+        fetcher={async () => answer({ total: 124, truncated: true })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("124 test files")).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/listing 2 of 124, cut alphabetically/)).toBeInTheDocument();
+  });
+
   it("renders nothing when the host has not wired the endpoint", () => {
     const { container } = render(
       <TestsReachingList filePath="src/a.py" cacheKey="k4" />,

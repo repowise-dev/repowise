@@ -589,10 +589,18 @@ export interface TestsReachingFile {
   file_path: string;
   basis: CoverageBasis;
   reached: boolean;
-  /** Empty when `reached` is false. Capped server-side. */
+  /**
+   * Empty when `reached` is false, and capped server-side. Render `total`
+   * beside it, never `tests.length` on its own: the cut is alphabetical, so a
+   * trimmed list states a cap as if it were the answer.
+   */
   tests: string[];
   /** Null when `reached` is false. */
   via: ReachedVia | null;
+  /** How many tests the walk found, before the cap trimmed `tests`. */
+  total?: number;
+  /** Whether `tests` is a trimmed slice of `total`. */
+  truncated?: boolean;
 }
 
 export interface HealthCoverageResponse {

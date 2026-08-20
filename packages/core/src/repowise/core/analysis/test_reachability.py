@@ -210,10 +210,18 @@ class CallGraphView:
 
 @dataclass(frozen=True)
 class ReachedBy:
-    """Tests reaching one target, and which tier found them."""
+    """Tests reaching one target, and which tier found them.
+
+    ``total`` is how many the walk actually found, before
+    ``MAX_TESTS_PER_TARGET`` trimmed ``tests``. A surface that prints
+    ``len(tests)`` as the answer is stating a cap as a measurement, and the cut
+    is alphabetical, so *which* ones survive is arbitrary. Carry the total and
+    say the bound.
+    """
 
     tests: list[str]
     via: ReachedVia
+    total: int = 0
 
 
 def _file_of(symbol_id: str) -> str:
@@ -390,7 +398,7 @@ async def tests_reaching_by_tier(
     if call_depth >= 1:
         found = await _call_reaching(session, repo_id, seeds, test_files, call_depth)
         for seed, tests in found.items():
-            out[seed] = ReachedBy(_cut(tests), "call-graph")
+            out[seed] = ReachedBy(_cut(tests), "call-graph", len(tests))
 
     unanswered = [seed for seed in seeds if seed not in out]
     if unanswered and import_depth >= 1:
@@ -398,7 +406,7 @@ async def tests_reaching_by_tier(
             session, repo_id, unanswered, test_files, import_depth
         )
         for seed, tests in found.items():
-            out[seed] = ReachedBy(_cut(tests), "import-graph")
+            out[seed] = ReachedBy(_cut(tests), "import-graph", len(tests))
     return out
 
 

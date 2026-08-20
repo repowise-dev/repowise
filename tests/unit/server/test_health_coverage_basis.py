@@ -364,6 +364,8 @@ async def test_the_file_endpoint_names_the_tests_and_the_tier(
         "reached": True,
         "tests": ["tests/test_a.py"],
         "via": "call-graph",
+        "total": 1,
+        "truncated": False,
     }
 
 
@@ -435,6 +437,53 @@ async def test_an_unreliable_call_edge_does_not_count_as_reaching(
 
     detail = await _reaching(client, repo["id"], "src/a.py")
     assert detail["basis"] == "none"
+
+
+async def test_the_file_endpoint_says_when_the_list_was_cut(
+    client, session, tmp_path, monkeypatch
+):
+    """``tests`` is capped; the count beside it must not be.
+
+    The cut is ``sorted(tests)[:cap]``, so a surface printing ``len(tests)``
+    reports the cap as the answer and shows an arbitrary alphabetical slice of
+    the evidence. Measured on this repository, one file is reached by 124 tests
+    and would have rendered as 50.
+    """
+    import repowise.core.analysis.test_reachability as tr
+
+    monkeypatch.setattr(tr, "MAX_TESTS_PER_TARGET", 2)
+    repo = await create_test_repo(client, tmp_path)
+    tests = [f"tests/test_{i}.py" for i in range(5)]
+    edges = [e for t in tests for e in _calls(t, "src/a.py")]
+    await _seed_graph(
+        session,
+        repo["id"],
+        nodes={**{t: True for t in tests}, "src/a.py": False},
+        edges=edges,
+    )
+    await session.commit()
+
+    body = await _reaching(client, repo["id"], "src/a.py")
+
+    assert len(body["tests"]) == 2
+    assert body["total"] == 5
+    assert body["truncated"] is True
+
+
+async def test_an_uncut_list_is_not_marked_truncated(client, session, tmp_path):
+    repo = await create_test_repo(client, tmp_path)
+    await _seed_graph(
+        session,
+        repo["id"],
+        nodes={"tests/test_a.py": True, "src/a.py": False},
+        edges=_calls("tests/test_a.py", "src/a.py"),
+    )
+    await session.commit()
+
+    body = await _reaching(client, repo["id"], "src/a.py")
+
+    assert body["total"] == 1
+    assert body["truncated"] is False
 
 
 async def test_the_file_endpoint_404s_for_an_unknown_repo(client):

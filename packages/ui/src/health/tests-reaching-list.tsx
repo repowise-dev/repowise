@@ -69,7 +69,11 @@ export function TestsReachingList({
     );
   }
 
-  const count = data.tests.length;
+  // The walk's count, not the length of what survived the cap. A file reached by
+  // 124 tests ships 50 of them, and printing that 50 as the answer would be a
+  // silent truncation of exactly the kind this tab exists to avoid.
+  const count = data.total ?? data.tests.length;
+  const shown = data.tests.length;
 
   return (
     <div className="flex flex-col gap-2">
@@ -106,6 +110,9 @@ export function TestsReachingList({
       <p className="border-t border-[var(--color-border-default)] pt-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
         {data.via === "call-graph" ? "call graph" : "import graph"} · no report
         needed
+        {count > shown
+          ? ` · listing ${shown} of ${count}, cut alphabetically`
+          : ""}
       </p>
     </div>
   );
