@@ -111,11 +111,14 @@ PROVIDER_AUTODETECT_ORDER: tuple[str, ...] = (
     "anthropic",
     "openai",
     "openrouter",
-    "edenai",
     "ollama",
     "gemini",
     "deepseek",
     "kimi",
+    # A provider adding itself appends: autodetect order is de facto precedence,
+    # and an unrelated EDENAI_API_KEY in the environment must not silently take
+    # over from a provider the user was already resolving to.
+    "edenai",
 )
 
 # An env var set to "" or whitespace means "not set". CI systems and agent

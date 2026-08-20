@@ -589,28 +589,36 @@ export LITELLM_API_KEY="..."
 repowise init --provider litellm --model azure/gpt-4
 ```
 
-### Eden AI (many models, one key)
+### Eden AI (hosted, with an EU endpoint)
 
-[Eden AI](https://www.edenai.co/) is an EU-headquartered gateway exposing models
-from many vendors (Mistral, GPT, Claude, Gemini, Cohere, DeepSeek, Llama) through
-a single OpenAI-compatible endpoint. Models use `vendor/model` form. The live
-catalogue is public and needs no authentication at
-<https://api.edenai.run/v3/models>, with the embedding models at
-<https://api.edenai.run/v3/embeddings/models>.
+[Eden AI](https://www.edenai.co/) is a hosted gateway with an EU endpoint, so
+inference can stay in the EU without self-hosting anything. That is the reason to
+reach for it here: every other hosted provider in this list terminates in the US,
+and the alternatives for a team working under a DPA are Ollama or LiteLLM on your
+own infrastructure.
+
+Point at the EU endpoint with `EDENAI_BASE_URL`. It covers the embedder as well,
+since both read the same variable:
 
 ```bash
 export EDENAI_API_KEY="..."
-repowise init --provider edenai --model mistral/mistral-small-latest
-repowise init --provider edenai --model openai/gpt-5-mini --reasoning low
-```
-
-For data residency / GDPR-sensitive workloads, point at the EU endpoint. It
-applies to the embedder too, since both read `EDENAI_BASE_URL`:
-
-```bash
 export EDENAI_BASE_URL="https://api.eu.edenai.run/v3"
 repowise init --provider edenai --model mistral/mistral-small-latest
 ```
+
+Without that variable, requests go to the global endpoint:
+
+```bash
+export EDENAI_API_KEY="..."
+repowise init --provider edenai --model openai/gpt-5-mini --reasoning low
+```
+
+Beyond residency it is also an aggregator: one key reaches many vendors (Mistral,
+GPT, Claude, Gemini, Cohere, DeepSeek, Llama) through a single
+OpenAI-compatible endpoint, with models addressed as `vendor/model`. The live
+catalogue is public and needs no authentication at
+<https://api.edenai.run/v3/models>, with the embedding models at
+<https://api.edenai.run/v3/embeddings/models>.
 
 The same key also selects `edenai` as the embedder for semantic search. Its
 default is `amazon/amazon.titan-embed-text-v2:0`, chosen because it is served
@@ -635,7 +643,7 @@ order:
 
 1. `REPOWISE_PROVIDER` environment variable
 2. `provider` in `.repowise/config.yaml`
-3. API key env vars: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `EDENAI_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY`
+3. API key env vars: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY` → `EDENAI_API_KEY`
 
 ---
 
