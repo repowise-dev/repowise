@@ -917,32 +917,30 @@ async def get_health(
 ) -> dict:
     """Code-health scores and findings — self-check a file before/after editing.
 
-    No ``targets`` → repo dashboard, led by a ``directive`` naming the one file
-    to fix first. With ``targets`` → per-file scores + findings. Rank by
-    ``weighted_deficit`` (score-points x NLOC), not ``score``, which floors at
-    1.0; ``share_of_repo_gap_pct`` is the same quantity as a percentage.
+    No ``targets`` → dashboard led by a ``directive`` naming the first file to
+    fix. With ``targets`` → per-file scores and findings. Rank by
+    ``weighted_deficit`` (score-points x NLOC), not ``score``;
+    ``share_of_repo_gap_pct`` expresses the same quantity as a percentage.
 
     Per file: ``score`` is defect risk *and* the headline — there is no
     ``defect_score`` — beside ``maintainability_score`` / ``performance_score``
     (never blended in).
 
     Args:
-        targets: file paths or ``module:<name>``. Empty → dashboard. A target
-            matching nothing is named in ``unresolved`` with a reason (so empty
-            ``findings`` means healthy); it survives any ``only``.
+        targets: file paths or ``module:<name>``. Empty → dashboard. Unmatched
+            targets appear in ``unresolved`` and survive any ``only``.
         include: ``biomarkers`` | ``refactoring`` | ``trend`` | ``coverage`` |
             ``accuracy`` | ``signals`` | ``churn_complexity`` |
             ``performance``/``defect``/``maintainability`` (dimension).
-            ``performance`` also adds the causal ``performance_opportunities``
-            head, while raw findings remain available for line inspection. Only
-            *adds*, and the ranked lists compose — pair with ``only``, e.g.
-            ``include=['refactoring'], only=['refactoring_plans']``. Over-cap
-            responses are trimmed (``_meta.truncated_to_fit``).
-        only: keep just these top-level keys; ``["directive"]`` is cheapest and
-            ``*_total`` siblings survive. Only the three block names
-            alias (``biomarkers``/``accuracy``/``refactoring``); the dimension
-            names ``performance``/``defect``/``maintainability`` and ``signals``
-            do not, and land in ``unknown_only_keys``.
+            ``performance`` also adds causal ``performance_opportunities``;
+            raw findings remain available for line inspection. This only adds
+            blocks; pair it with ``only`` to project the response. Over-budget
+            responses set ``_meta.truncated_to_fit``.
+        only: top-level keys to keep; ``["directive"]`` is cheapest and
+            ``*_total`` siblings survive. The block names ``biomarkers``,
+            ``accuracy`` and ``refactoring`` alias. Dimension names
+            ``performance``, ``defect`` and ``maintainability`` do not;
+            unknown keys are reported.
         repo: usually omitted.
         limit: max rows per ranked list (max 50, ``0`` for none).
     """
