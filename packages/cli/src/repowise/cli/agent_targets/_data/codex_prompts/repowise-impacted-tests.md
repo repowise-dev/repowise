@@ -41,8 +41,8 @@ repowise impacted-tests main..HEAD --format list | xargs pytest
   headed "NOT coverage-backed", each carrying a `via` marker: `changed-test`
   (the changed file is itself a test), `call-graph` or `import-graph` (a test
   file that reaches it, no ingest needed), or `filename-pattern` (a name-shaped
-  guess). Report
-  them as candidates. Only `via: coverage` proves a test executed the change.
+  guess). Report them as candidates. Only `via: coverage` proves a test
+  executed the change.
 - A file none of those can speak to is "unknown, run the full suite".
 - For a whole-change defect-risk score, use `/prompts:repowise-risk`. For per-file
   blast radius / `tests_to_run`, use the `get_risk` MCP tool.
