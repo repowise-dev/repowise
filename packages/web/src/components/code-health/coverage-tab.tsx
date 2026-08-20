@@ -11,6 +11,7 @@ import { CoverageView, type CodeHealthAdapter } from "@repowise-dev/ui/health";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import {
   getHealthCoverage,
+  getTestsReaching,
   getHealthOverview,
   getRefactoringTargets,
   listHealthFiles,
@@ -31,6 +32,7 @@ export function CoverageTab({ repoId: id }: { repoId: string }) {
     updateFindingStatus: (findingId, status) =>
       updateFindingStatus(id, findingId, status),
     getCoverage: (opts) => getHealthCoverage(id, opts),
+    getTestsReaching: (path) => getTestsReaching(id, path),
     fileHref: (path) => fileEntityPath(prefix, path),
     navigate: (href) => router.push(href),
     renderFileDrawer: () => null,

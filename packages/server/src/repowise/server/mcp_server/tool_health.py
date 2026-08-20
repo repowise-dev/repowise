@@ -13,6 +13,7 @@ from sqlalchemy import select
 from repowise.core.analysis.health.biomarkers import continuous_biomarkers
 from repowise.core.analysis.health.churn_complexity import churn_complexity_points
 from repowise.core.analysis.health.complexity.languages import LANGUAGE_MAPS
+from repowise.core.analysis.health.coverage import decay_since, measurement_ref
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
 from repowise.core.analysis.health.grading import HEALTHY_MIN, band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
@@ -471,6 +472,58 @@ def _serialize_metric(
     }
 
 
+def _attach_coverage_decay(
+    payload: list[dict[str, Any]], rows: list[Any], repo_path: str
+) -> None:
+    """Add a ``decay`` block to each coverage row, in place.
+
+    The stored percentage is a measurement taken at one commit and never
+    recomputed, so on a file under active development it can describe code that
+    no longer exists. ``decay`` says how much of that measurement still holds:
+    ``confirmed`` covered lines are unchanged since the report, ``invalidated``
+    ones have moved and are now unknown rather than uncovered.
+
+    Targeted mode only. Dashboard mode declines ``covered_lines_json`` at the
+    read (see the load above), and re-reading every blob to compute drift for a
+    list nobody drilled into would undo that saving.
+
+    Silent when the measurement cannot be placed in history, when git cannot
+    read the range, or when the report predates every commit. A missing block
+    means "not checked", which is why it is absent rather than zero: a zero
+    would read as a freshness claim.
+    """
+    if not rows:
+        return
+    first = rows[0]
+    ref = measurement_ref(
+        repo_path,
+        getattr(first, "ingested_commit_sha", None),
+        getattr(first, "ingested_at", None),
+    )
+    if ref is None:
+        return
+    covered_by_file = {
+        entry["file_path"]: set(entry.get("covered_lines") or [])
+        for entry in payload
+        if entry.get("covered_lines")
+    }
+    decays = decay_since(repo_path, ref, covered_by_file)
+    if not decays:
+        return
+    for entry in payload:
+        d = decays.get(entry["file_path"])
+        if d is None:
+            continue
+        entry["decay"] = {
+            "measured_lines": d.measured,
+            "confirmed_lines": d.confirmed,
+            "invalidated_lines": d.invalidated,
+            "drift_pct": d.drift_pct,
+            "stale": d.is_stale,
+            "measured_at_commit": ref[:12],
+        }
+
+
 def _serialize_coverage_row(row: Any, *, covered_lines: bool = True) -> dict[str, Any]:
     """One coverage row. ``covered_lines=False`` omits the per-line array.
 
@@ -605,9 +658,14 @@ def _directive(
         "reason": lead.get("primary_reason") or f"scores {round(top.score, 2)}",
         # Points the repo headline recovers if this one file reaches Healthy,
         # and what share of the total gap that is — the "few files, not the
-        # long tail" argument made concrete for a single file.
+        # long tail" argument made concrete for a single file. The denominator
+        # is the *gross* deficit of all below-target files (not the net gap,
+        # which healthy files cushion): per-file shares are then bounded by
+        # 100% and sum to 100% by construction (issue #1437).
         "recovers_points": recovers,
-        "share_of_repo_gap_pct": (round(100.0 * recovers / gap_points, 1) if gap_points else None),
+        "share_of_repo_gap_pct": (
+            round(100.0 * recovers / gap_points, 1) if gap_points else None
+        ),
         "then": [m.file_path for m in by_leverage[1:3]],
         # Projected, not bare. ``include`` adds a block without subtracting the
         # dashboard, and five ranked lists at the default ``limit`` compose: the
@@ -672,12 +730,26 @@ def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
     """How few files must reach 8.0 for the *weighted average* to reach 8.0.
 
     Answers what the bare KPI cannot: the NLOC-weighted average is held down by a
-    *few large low-scoring files*, not the long tail. The gap here is the **net**
-    points the average needs (``8.0 * total_nloc - Σ score*nloc``) — healthy files
-    already sit above 8.0 and cushion it, so this is smaller than the gross
-    all-files-healthy deficit and is the number that matches the goal "move the
-    average". ``files_to_reach_target`` is the punchline: lift the worst-deficit N
-    files to 8.0 and the headline crosses 8.0. Pure over the metrics in hand.
+    *few large low-scoring files*, not the long tail. Two gaps are computed and
+    kept deliberately distinct:
+
+    - ``weighted_gap_points`` — the **net** points the average needs
+      (``8.0 * total_nloc - Σ score*nloc``). Healthy files already sit above 8.0
+      and cushion it, so this is smaller than the gross all-files-healthy
+      deficit and is the number that matches the goal "move the average".
+      ``files_to_reach_target`` is the punchline: lift the worst-deficit N files
+      to 8.0 and the headline crosses 8.0. This can be 0 or negative on a
+      mostly-healthy repo (the average is already above 8.0).
+    - ``weighted_gross_gap_points`` — the **gross** deficit,
+      ``Σ max(8.0 - score, 0) * nloc`` over files below 8.0. This is the
+      denominator ``share_of_repo_gap_pct`` uses: it is positive whenever any
+      file is below target (unlike the net gap), so a share is meaningful even
+      when the average is already healthy, and per-file shares sum to exactly
+      100% by construction. The net gap is not used there precisely because
+      healthy files cushion it — one large low file could then read as closing
+      more than the whole remaining gap (issue #1437).
+
+    Pure over the metrics in hand.
     """
     total_nloc = sum(max(m.nloc, 1) for m in metrics)
     weighted_sum = sum(m.score * max(m.nloc, 1) for m in metrics)
@@ -690,11 +762,13 @@ def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
         ),
         reverse=True,
     )
-    if net_gap <= 0 or not below:
+    gross_gap = sum(below)
+    if not below:
         return {
             "target_score": HEALTHY_MIN,
             "weighted_gap_points": 0,
-            "files_below_target": len(below),
+            "weighted_gross_gap_points": 0,
+            "files_below_target": 0,
             "files_to_reach_target": 0,
             "files_for_half_gap": 0,
         }
@@ -707,15 +781,23 @@ def _gap_analysis(metrics: list[HealthFileMetric]) -> dict[str, Any]:
                 return i
         return len(below)
 
+    # ``files_to_reach_target`` needs the net gap to mean "the headline crosses
+    # 8.0". When the net gap is <= 0 (average already healthy) there is nothing
+    # to reach, so those fields are 0 — but the gross gap is still reported
+    # because per-file shares are meaningful whenever any file is below target.
+    reachable = max(net_gap, 0)
     return {
         "target_score": HEALTHY_MIN,
         # Net weighted points the average must recover to reach 8.0.
-        "weighted_gap_points": round(net_gap),
+        "weighted_gap_points": round(max(net_gap, 0)),
+        # Gross deficit of all below-target files: the share_of_repo_gap_pct
+        # denominator (see docstring for why it is not the net gap).
+        "weighted_gross_gap_points": round(gross_gap),
         "files_below_target": len(below),
         # The reframe: lift this many worst-deficit files to 8.0 and the weighted
         # average reaches 8.0; half that gap needs even fewer.
-        "files_to_reach_target": _files_for(net_gap),
-        "files_for_half_gap": _files_for(0.5 * net_gap),
+        "files_to_reach_target": _files_for(reachable),
+        "files_for_half_gap": _files_for(0.5 * reachable),
     }
 
 
@@ -1448,7 +1530,7 @@ async def get_health(
             "directive": _directive(
                 by_leverage,
                 leads,
-                gap.get("weighted_gap_points") or 0,
+                gap.get("weighted_gross_gap_points") or 0,
                 plan_biomarkers_by_path,
                 plan_count_by_path,
             ),
@@ -1472,7 +1554,11 @@ async def get_health(
             # one place ``weighted_deficit`` gets a denominator. The bare number
             # is score-points x NLOC and answers "which is bigger" but never "is
             # this worth doing"; the same quantity as a share of the repo's total
-            # gap does, and it is the unit ``directive`` already speaks.
+            # gap does, and it is the unit ``directive`` already speaks. The
+            # denominator is the gross deficit of all below-target files, so a
+            # share is bounded by 100% and the rows sum to 100% by construction
+            # — the net gap would let healthy files cushion the total and push a
+            # single large file over 100% (issue #1437).
             "high_leverage_files": [
                 {
                     **_serialize_metric(
@@ -1483,10 +1569,10 @@ async def get_health(
                             100.0
                             * max(HEALTHY_MIN - m.score, 0.0)
                             * max(m.nloc, 1)
-                            / gap["weighted_gap_points"],
+                            / gap["weighted_gross_gap_points"],
                             1,
                         )
-                        if gap.get("weighted_gap_points")
+                        if gap.get("weighted_gross_gap_points")
                         else None
                     ),
                 }
@@ -1626,6 +1712,7 @@ async def get_health(
         # detail is available in targeted mode.
         if scoped:
             coverage_payload = [_serialize_coverage_row(r) for r in coverage_rows]
+            _attach_coverage_decay(coverage_payload, coverage_rows, str(ctx.path))
         else:
             # Built narrow, not built wide and subtracted from. These rows came
             # back without the column at all (see the read above).

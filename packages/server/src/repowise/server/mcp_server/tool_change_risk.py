@@ -48,29 +48,30 @@ async def get_change_risk(
     """Score a live commit, ``base..head`` range, or uncommitted work.
 
     Use this for a pre-merge read on a commit or PR range. Distinct from
-    ``get_risk``, which assesses indexed files and PR blast radius. Both filters
+    ``get_risk``, which assesses indexed files and PR blast radius. The filters
     below also apply to the baseline behind the repository percentile.
 
     Lead with ``fix_history``: the recency-weighted bug-fix record of the files
-    touched, ``files`` naming where the pressure sits. It is what separates a
-    surgical edit to a file that keeps breaking from a bulk rename of files that
-    never have. ``score`` measures diff size and spread, not where the change
-    lands (see ``score_measures``); calibrated per commit, so a PR-sized change
-    reads high by construction. ``risk_percentile`` ranks that diff shape against
-    recent commits.
+    touched, ``files`` naming where the pressure sits. It separates a surgical
+    edit to a file that keeps breaking from a bulk rename of files that never
+    have. ``score`` measures diff size and spread, not where the change lands
+    (see ``score_measures``); calibrated per commit, so a PR-sized change reads
+    high by construction. ``risk_percentile`` ranks that shape against recent
+    commits.
 
-    ``impacted_tests`` names the tests a coverage map proves execute the changed
-    *lines*, with ``missing_tests`` for lines no test covers; ``status`` is
-    ``no_map`` (unknown — run the full suite), never "untested", when no map is
-    ingested. ``prior_fixes`` asks the index the same question git answered
-    above, counting only fixes whose lines overlap this diff.
+    ``impacted_tests`` names the tests for this change; ``missing_tests`` the
+    uncovered lines. ``basis``: ``measured`` = a coverage map proves those tests
+    run the changed *lines*; ``inferred`` = test files the graph shows
+    reaching it (candidates, file-level, no ingest needed). No map is never
+    "untested": ``status`` ``no_map`` means run the suite. ``prior_fixes``
+    counts past fixes whose lines overlap this diff.
 
     Args:
         revspec: Commit or ``base..head`` range to score. Omit it to score the
             uncommitted change, or ``HEAD`` when the working tree is clean.
-        repo: Repository alias in workspace mode; omit for the default repository.
-        extensions: File suffixes to count, for example ``[".py", ".ts"]``.
-        exclude_patterns: Gitignore-style paths to omit, for example ``["tests/", "*.md"]``.
+        repo: Repository alias in workspace mode; omit for the default.
+        extensions: File suffixes to count, e.g. ``[".py", ".ts"]``.
+        exclude_patterns: Gitignore-style paths to omit, e.g. ``["tests/"]``.
         baseline: Recent commits to sample for percentile ranking; 0 disables it.
     """
     if repo == "all":
@@ -418,6 +419,64 @@ def _overlap_count(changed_lines_now: set[int], old_ranges_json: str) -> int:
     return hits
 
 
+async def _inferred_impacted(
+    session: Any, repo_id: str, changed_files: list[str]
+) -> dict[str, Any]:
+    """Graph-inferred candidates for a repo with no coverage map.
+
+    "Run the full suite" is correct but useless on the repositories that have
+    no coverage report, which is most of them. The dependency graph can narrow
+    it: a test file that reaches a changed file is worth running first. That is
+    a candidate list and is labelled one - ``basis`` is ``"inferred"`` and
+    ``map_present`` stays False, so nothing here can be read as the line-precise
+    measured answer.
+
+    Deliberately file-level and line-blind. Reaching carries no line
+    attribution, so ``missing_tests`` stays empty rather than being filled from
+    a signal that cannot speak to lines - the distinction this whole block
+    exists to keep.
+    """
+    from repowise.core.analysis.test_reachability import tests_reaching
+
+    hint = (
+        "Inferred from the dependency graph, not measured. For the line-precise "
+        "answer build the map with `coverage run --contexts=test` then "
+        "`repowise coverage add`."
+    )
+    try:
+        reaching = await tests_reaching(session, repo_id, changed_files)
+    except Exception:
+        reaching = {}
+    tests = sorted({t for group in reaching.values() for t in group})
+    if not tests:
+        return _empty_impacted(
+            "no_map",
+            "No per-test coverage map ingested and no test reaches the changed files "
+            "in the graph; run the full suite. " + hint,
+        )
+    total = len(tests)
+    block = _empty_impacted("inferred", "")
+    block.update(
+        {
+            "basis": "inferred",
+            "tests": tests[:_IMPACTED_TESTS_LIMIT],
+            "total": total,
+            "truncated": total > _IMPACTED_TESTS_LIMIT,
+            "summary": (
+                f"{total} test file(s) reach the changed files in the graph"
+                + (
+                    f"; showing first {_IMPACTED_TESTS_LIMIT}"
+                    if total > _IMPACTED_TESTS_LIMIT
+                    else ""
+                )
+                + ". "
+                + hint
+            ),
+        }
+    )
+    return block
+
+
 async def _impacted_tests_block(
     ctx: Any,
     changed: dict[str, set[int]],
@@ -450,11 +509,7 @@ async def _impacted_tests_block(
             repo_id = (await _get_repo(session)).id
             report = await detect_missing_tests(session, repo_id, changed)
             if report.map_empty:
-                return _empty_impacted(
-                    "no_map",
-                    "No per-test coverage map ingested; run the full suite. Build the map "
-                    "with `coverage run --contexts=test` then `repowise coverage add`.",
-                )
+                return await _inferred_impacted(session, repo_id, sorted(changed))
             all_ids: set[str] = set()
             for source_file, lines in changed.items():
                 for row in await tests_covering(session, repo_id, source_file, lines=lines):
@@ -466,6 +521,7 @@ async def _impacted_tests_block(
     total = len(tests)
     return {
         "status": "map_present",
+        "basis": "measured",
         "map_present": True,
         "tests": tests[:_IMPACTED_TESTS_LIMIT],
         "total": total,

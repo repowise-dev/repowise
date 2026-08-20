@@ -237,7 +237,9 @@ async def test_generate_invokes_codex_exec_with_stdin(monkeypatch, tmp_path):
     args = list(captured["args"])
     assert args[:6] == [codex_cmd, "exec", "--ephemeral", "--sandbox", "read-only", "--json"]
     assert args[args.index("--cd") + 1] == str(tmp_path.resolve())
-    assert args[args.index("--config") + 1] == 'model_reasoning_effort="low"'
+    configs = [args[i + 1] for i, a in enumerate(args) if a == "--config"]
+    assert "project_doc_max_bytes=0" in configs
+    assert 'model_reasoning_effort="low"' in configs
     assert args[args.index("--model") + 1] == "gpt-5.5"
     assert args[-1] == "-"
     assert captured["kwargs"]["stdin"] == asyncio.subprocess.PIPE
@@ -264,7 +266,9 @@ async def test_generate_passes_supported_codex_reasoning_effort(monkeypatch, tmp
     )
 
     args = list(captured["args"])
-    assert args[args.index("--config") + 1] == 'model_reasoning_effort="xhigh"'
+    configs = [args[i + 1] for i, a in enumerate(args) if a == "--config"]
+    assert "project_doc_max_bytes=0" in configs
+    assert 'model_reasoning_effort="xhigh"' in configs
 
 
 async def test_generate_passes_unknown_model_effort_without_catalog_block(
@@ -291,7 +295,9 @@ async def test_generate_passes_unknown_model_effort_without_catalog_block(
     )
 
     args = list(captured["args"])
-    assert args[args.index("--config") + 1] == 'model_reasoning_effort="max"'
+    configs = [args[i + 1] for i, a in enumerate(args) if a == "--config"]
+    assert "project_doc_max_bytes=0" in configs
+    assert 'model_reasoning_effort="max"' in configs
     assert args[args.index("--model") + 1] == "future-codex"
 
 

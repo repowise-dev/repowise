@@ -138,6 +138,15 @@ def _is_bodiless_cpp_type(language: str, node_type: str, def_node: Node) -> bool
     """
     if language not in ("cpp", "c"):
         return False
+    if node_type == "template_declaration":
+        # ``template <typename T> class Foo;``. The wrapper carries no ``body``
+        # field of its own — the inner specifier does — so asking the wrapper
+        # would call every template a declaration. Ask the type it wraps.
+        inner = next(
+            (c for c in def_node.children if c.type in _CPP_TYPE_SPECIFIER_NODES),
+            None,
+        )
+        return inner is not None and inner.child_by_field_name("body") is None
     if node_type not in _CPP_TYPE_SPECIFIER_NODES:
         return False
     if def_node.child_by_field_name("body") is not None:

@@ -37,6 +37,10 @@ from ...ingestion.git_indexer.function_blame import (
 from ...ingestion.package_roots import module_for as _module_for
 from ...ingestion.package_roots import package_roots_from_paths as _package_roots
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
+from ..test_reachability import (
+    call_graph_from_graph,
+    files_reached_by_tests,
+)
 from .biomarkers import FileContext, detect_all
 from .biomarkers.base import HasEdge
 from .complexity import FileComplexity, FunctionComplexity, walk_file
@@ -83,7 +87,14 @@ log = structlog.get_logger(__name__)
 #
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
-HEALTH_ANALYZER_VERSION = 1
+#
+# 2: ``untested_hotspot`` gained a second test signal, and the persisted
+# ``has_test_file`` widened to match it. Both stored values are wrong on an
+# index built before that, and wrong in the direction that accuses a tested
+# file, so they should not wait out the decay timer.
+# 3: that signal moved from the import graph to the call graph, so the same two
+# values are wrong again on an index stamped 2 - this time in both directions.
+HEALTH_ANALYZER_VERSION = 3
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.
@@ -288,35 +299,6 @@ def _has_paired_test_file(rel_path: str, path_basenames: set[str]) -> bool:
     return not candidates.isdisjoint(path_basenames)
 
 
-def _has_importing_test_file(file_path: str, graph: Any) -> bool:
-    """True if a file recognised as a test (``is_test`` on the import graph
-    node) directly imports *file_path*.
-
-    ``_has_paired_test_file`` only catches a test whose own name embeds the
-    target's stem, which assumes a one-test-file-per-source-file
-    convention. Some ecosystems have no such convention at all: a single
-    Delphi/FPC console test *program* commonly exercises several units
-    together (``TestDualPanelCmdLine.dpr`` directly ``uses``/``in``-imports
-    ``uDualPanelCmd.pas``, ``uInputLine.pas``, ``uVfsTypes.pas``, ...), so
-    no test file's name ever embeds any one of those units' stems. The
-    import graph already has this edge — ingestion resolves a project
-    file's ``uses``/``in`` clauses the same as any other import — so this
-    reads it back instead of re-parsing file content. Language-agnostic:
-    the same check would also catch e.g. a Python integration test module
-    that imports several modules under one file with no per-module test
-    name, which name-pairing misses identically.
-    """
-    if graph is None or file_path not in graph:
-        return False
-    try:
-        for pred in graph.predecessors(file_path):
-            if graph.nodes[pred].get("is_test", False):
-                return True
-    except Exception:
-        return False
-    return False
-
-
 class HealthAnalyzer:
     """Pure-Python health analyzer. No LLM, no network."""
 
@@ -353,6 +335,29 @@ class HealthAnalyzer:
         # only the manifests the traverser emitted.
         self.repo_root = repo_root
         self._package_roots_cache: set[str] | None = None
+        self._tests_reach_cache: set[str] | None = None
+
+    def _files_reached_by_tests(self) -> set[str]:
+        """Non-test files that some test file can execute into, per the call graph.
+
+        The graph-backed half of "is this file tested". Computed once per
+        analyzer over the whole file set (one multi-source walk, not one per
+        file), because every ``_evaluate_file`` call asks the same question of
+        the same graph.
+
+        Inferred, and it over-claims: a call edge says control *can* reach the
+        file, not that a given run did. Consumers must use it only as a floor -
+        "something tests this" - never as a coverage quantity. See
+        ``analysis.test_reachability``.
+        """
+        if self._tests_reach_cache is None:
+            test_files = {
+                pf.file_info.path for pf in self.parsed_files if pf.file_info.is_test
+            }
+            self._tests_reach_cache = files_reached_by_tests(
+                call_graph_from_graph(self.graph), test_files
+            )
+        return self._tests_reach_cache
 
     def _package_boundaries(self, analyzed_paths: set[str]) -> set[str]:
         """Package roots for this repo, decided once per analyzer.
@@ -944,8 +949,13 @@ class HealthAnalyzer:
             has_test_file=_has_paired_test_file(file_path, path_basenames)
             or pf.file_info.is_test
             or _coverage_is_test_file(file_path)
-            or fcx.has_inline_tests
-            or _has_importing_test_file(file_path, self.graph),
+            or fcx.has_inline_tests,
+            # Kept separate from ``has_test_file`` on purpose. That flag means
+            # "a file named like this one's test exists"; this one means "the
+            # call graph records a test reaching this file". They disagree
+            # often, and collapsing them would leave no way to say which signal
+            # answered, or that one of them over-claims.
+            reached_by_tests=file_path in self._files_reached_by_tests(),
             module=module,
             function_metrics=fn_metrics,
             class_metrics=fcx.classes,
@@ -987,7 +997,15 @@ class HealthAnalyzer:
             max_ccn=max_ccn,
             max_nesting=max_nesting,
             nloc=nloc,
-            has_test_file=ctx.has_test_file,
+            # The stored field answers "does something test this file" - that is
+            # how the MCP payload documents it and how every UI renders it
+            # ("has tests" / "untested"). So it carries the union, not just the
+            # naming convention. Keeping it filename-only left the file table
+            # labelling a file untested while ``untested_hotspot`` stayed
+            # silent about it, which is the same disagreement issue #1740 is
+            # about, one layer further out. The two inputs stay separable on
+            # ``FileContext`` and in the biomarker's ``details``.
+            has_test_file=ctx.has_test_file or ctx.reached_by_tests,
             module=module,
             line_coverage_pct=line_cov,
             branch_coverage_pct=branch_cov,

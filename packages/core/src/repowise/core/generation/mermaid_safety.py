@@ -346,6 +346,27 @@ def sanitize_mermaid(markdown: str) -> str:
     return _MERMAID_FENCE_RE.sub(_replace, markdown)
 
 
+_HEADING_LINE_RE = re.compile(r"(?m)^#{1,6}\s")
+
+
+def strip_leading_preamble(markdown: str) -> str:
+    """Drop agent narration before the first markdown heading.
+
+    Pages always start with ``# ...``. Text before that is tool-use chatter.
+    If there is no heading, or stripping would empty the page, return input
+    unchanged so clean output stays byte-identical.
+    """
+    if not markdown:
+        return markdown
+    match = _HEADING_LINE_RE.search(markdown)
+    if match is None or match.start() == 0:
+        return markdown
+    trimmed = markdown[match.start() :]
+    if not trimmed.strip():
+        return markdown
+    return trimmed
+
+
 def sanitize_pages(pages: list) -> int:
     """Run :func:`sanitize_mermaid` over a list of ``GeneratedPage``.
 
@@ -357,11 +378,12 @@ def sanitize_pages(pages: list) -> int:
         content = getattr(page, "content", None)
         if not content:
             continue
-        fixed = sanitize_mermaid(content)
+        fixed = strip_leading_preamble(content)
+        fixed = sanitize_mermaid(fixed)
         if fixed != content:
             page.content = fixed
             changed += 1
     return changed
 
 
-__all__ = ["sanitize_mermaid", "sanitize_pages"]
+__all__ = ["sanitize_mermaid", "sanitize_pages", "strip_leading_preamble"]

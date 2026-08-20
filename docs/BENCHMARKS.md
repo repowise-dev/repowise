@@ -6,8 +6,10 @@ pre-registrations and every graded cell live in
 **[repowise-bench](https://github.com/repowise-dev/repowise-bench)**, which is also
 where the depth is: this page is the summary, that repository is the evidence.
 
-**Read this page in one minute:** the two charts below are the two results that
-matter. Everything after them is the sample size, the caveat and the row we lose.
+**Read this page in one minute:** the two charts below are the two retrieval
+results, and [§8](#8-the-same-question-against-an-answer-key-we-do-not-control)
+is the graph result, where a compiler rather than we decided who was right.
+Everything else is the sample size, the caveat and the row we lose.
 
 | Layer | Measured against | Result |
 |---|---|---|
@@ -17,6 +19,8 @@ matter. Everything after them is the sample size, the caveat and the row we lose
 | Command-output compression | RTK | [§4](#4-command-output-compression) **not measured head to head** |
 | Code health and defect prediction | CodeScene | [§5](#5-code-health-predicts-defects) **we win** on recall and effort-aware ranking, p=0.003 |
 | Indexing time | CodeGraph, Graphify, code-review-graph | [§6](#6-indexing-time-the-row-we-lose) **we lose**, 22x, because we build four more layers in the same pass |
+| Are the call edges true | CodeGraph | [§7](#7-edge-precision) **we win**, 84.8% against 57.0%, 540 rows hand-graded from source |
+| The same question, judged by a compiler | CodeGraph, codebase-memory-mcp, Graphify, code-review-graph | [§8](#8-the-same-question-against-an-answer-key-we-do-not-control) **no tool that finds as much of the graph gets more of it right**, 7 of 7 cells, and the recall column we lose |
 | Documentation generation | DeepWiki, Google Code Wiki, Swimm | **not measured** |
 | PR review | CodeRabbit, Greptile | **not measured** |
 
@@ -436,11 +440,237 @@ finding against us.
 
 ---
 
+## 7. Edge precision
+
+Every other row on this page counts things. This one asks whether they are **true**.
+
+A resolver that guesses aggressively wins a coverage table and a raw edge count while
+sending its reader to the wrong function. So we hand-graded call edges from source, on
+both sides, by the same method: 30 rows per language per tool, seed 2026, stratified by
+resolution strategy, every row read with its imports and enclosing scope open.
+
+| | correct / n | 95% CI |
+|---|---|---|
+| **repowise** | **229/270 = 84.8%** | [80.0, 88.6] |
+| **CodeGraph 1.5.0** | **154/270 = 57.0%** | [51.1, 62.8] |
+
+Per language, nine languages, both sides read:
+
+| Language | repowise | CodeGraph | |
+|---|---|---|---|
+| typescript | 29/30 | 7/30 | separates |
+| go | 29/30 | 29/30 | tie |
+| csharp | 28/30 | 20/30 | separates |
+| python | 28/30 | 19/30 | separates |
+| kotlin | 27/30 | 13/30 | separates |
+| swift | 23/30 | 19/30 | tie |
+| cpp | 23/30 | 16/30 | tie |
+| rust | 22/30 | 13/30 | tie |
+| java | 20/30 | 18/30 | tie |
+
+**Read our number the other way round: roughly fifteen percent of our call edges are
+wrong.** That is the number we plan against, and rust, java and cpp are where it
+concentrates.
+
+**Four of nine cells separate. Five are ties and we report them as ties.** At n=30 the
+interval runs about ±16 points near 60%, so a point-estimate gap inside two overlapping
+intervals is not a win. C++ is a tie despite looking like a 23-point lead.
+
+**One repository goes clearly to them.** On `seastar` CodeGraph reads 6/10 against our
+4/10, the only repository in the audit, on any language, where they beat us on a clear
+margin. Our misses there are chained calls on an untyped receiver; they infer the
+callee's declared return type and validate against it, so a failed inference costs them
+an edge instead of buying them a wrong one. On `aria2` both sides read 10/10 and they
+resolve 24,950 distinct call edges to our 9,486. Precision is not the only reading.
+
+Cells were measured at different commits, and the staleness runs **conservative**: every
+resolver change in between only removes wrong edges and gained zero, so 84.8% is a floor.
+No cell was measured on the 0.44.0 release; the full table pins a commit per cell.
+
+**All 540 graded rows are published**, one file per cell, each row carrying the call site,
+the declaration the tool bound it to, the verdict and the reason it was given. A script in
+the same directory rebuilds every table above from them and fails if it disagrees. One cell
+of the eighteen, rust on our side, ships the 30 sites that were read without their per-row
+verdicts, because that cell was re-read on a fresh draw and the verdicts of that read were
+never written down; the file says so on every row.
+**[graph/experiments/g1-edge-precision/rows](https://github.com/repowise-dev/repowise-bench/tree/master/graph/experiments/g1-edge-precision/rows)**.
+
+---
+
+## 8. The same question, against an answer key we do not control
+
+Section 7 is hand-graded, by us, on both sides. That is the strongest form of a
+weak thing: **every graph-quality number in this field, ours included, is scored
+against something the publisher controls.** A tool that is confidently wrong in a
+consistent way scores well and the reader has no way to check.
+
+So we re-asked the question with the answer key taken out of our hands. On Go the
+oracle is the **Go team's own RTA call graph** from
+`golang.org/x/tools/go/callgraph/rta`, over the fully type-checked program. On
+TypeScript it is the **`tsc` type checker's own resolution** of every call site.
+We did not write either one, we cannot tune either one, and anyone with the
+toolchain can regenerate both. Five tools, seven cells, five repositories,
+**37,853 oracle edges**.
+
+### Why precision alone is not the claim, and neither is recall
+
+Two numbers, and you need both, because each one on its own has a cheap way to
+win.
+
+- **Recall** is the share of the real call graph a tool found. Draw an edge
+  between everything and you score 1.000.
+- **Precision** is the share of a tool's edges that are real. Draw one edge you
+  are sure of and you score 1.000.
+
+Both failure modes are in the table below, measured, not hypothetical. One tool
+draws 12,533 edges on syft and more than a third of them are calls the compiler
+says do not exist. Another scores the highest precision on this whole page,
+0.997, from a graph containing **17% of the calls in the repository**: on
+gitleaks it stored 4,367 call rows of which 76 resolve to anything, and a graph
+that small is very hard to be wrong in and not much use to walk.
+
+**So the only meaningful reading is the pair**, and it is the pair we claim:
+
+> **In all seven cells, no tool that recovers as much of the call graph as we do
+> gets more of it right.**
+
+That sentence names no threshold, which is what makes it worth something. It
+cannot be tuned by picking a cutoff, and adding a competitor can only break it.
+Two competitors were added to this experiment after it was first written, and it
+held in all seven cells.
+
+**Precision: of the call edges a tool emits, the share the compiler confirms.**
+
+| cell | repowise | CodeGraph 1.5.0 | codebase-memory-mcp 0.10.8 | Graphify 0.9.31 | code-review-graph 2.3.7 |
+|---|---|---|---|---|---|
+| cobra (with tests) | 0.972 | 0.929 | 0.912 | 0.971 | **0.997** |
+| gitleaks (no tests) | 0.976 | 0.972 | 0.934 | **0.997** | 0.759 |
+| gitleaks (with tests) | 0.974 | 0.971 | 0.922 | **0.995** | 0.800 |
+| syft (no tests) | 0.943 | 0.872 | 0.635 | 0.771 | **0.968** |
+| syft (with tests) | 0.950 | 0.864 | 0.673 | 0.802 | **0.966** |
+| zod (no tests) | **0.992** | 0.729 | 0.987 | 0.825 | 0.932 |
+| hono (no tests) | 0.977 | 0.805 | 0.949 | 0.980 | 0.966 |
+
+**Recall: of the edges the compiler has, the share the tool found.**
+
+| cell | repowise | CodeGraph | codebase-memory-mcp | Graphify | code-review-graph |
+|---|---|---|---|---|---|
+| cobra (with tests) | 0.684 | **0.763** | 0.743 | 0.433 | 0.174 |
+| gitleaks (no tests) | 0.955 | 0.920 | **0.967** | 0.886 | 0.026 |
+| gitleaks (with tests) | 0.914 | 0.895 | **0.945** | 0.832 | 0.032 |
+| syft (no tests) | 0.513 | 0.508 | **0.542** | 0.447 | 0.201 |
+| syft (with tests) | 0.322 | 0.338 | **0.361** | 0.273 | 0.086 |
+| zod (no tests) | **0.703** | 0.373 | 0.694 | 0.248 | 0.652 |
+| hono (no tests) | **0.731** | 0.684 | 0.686 | 0.688 | 0.691 |
+
+Read a row across both tables and the trade is visible in every one. The tools
+above us on precision are below us on recall, every time. The tool above us on
+recall is below us on precision, every time. **Nobody is above us on both, in any
+cell.** Intervals, per-cell artifacts and the full method are linked at the end
+of this section; ties are ties and are marked as ties there.
+
+**The weaker readings, so nobody has to infer them.** We are the most precise arm
+outright in one cell of seven and tied for it in one more. We are beaten on
+precision in five, by code-review-graph on cobra and both syft cells and by
+Graphify on both gitleaks cells. Against the two tools this experiment started
+with, CodeGraph and codebase-memory-mcp, we are the most precise in seven of
+seven, and that narrower claim should always carry its label.
+
+This also does something section 7 cannot: it removes the n=30 ceiling.
+Hand-grading caps a precision estimate at roughly ±13 points near a 95% rate. An
+oracle grades every edge, so n becomes the size of the repository.
+
+**The two methods agree.** On Go, section 7 read 29/30 = 96.7% by hand for us and
+29/30 = 96.7% for CodeGraph. The Go compiler, over roughly 1,600 edges on the same
+repository, says 97.6% and 97.2%. Two unrelated methods, one person reading source
+and one type checker, land within about a point on both arms. That is the result
+we care about most and it is not a competitive one.
+
+### The column we lose
+
+We lead recall in the two TypeScript cells and in **none of the five Go cells**,
+where codebase-memory-mcp leads four and CodeGraph the fifth. On cross-file
+coverage over 35 repositories, codebase-memory-mcp separates from us on 15 and we
+separate on none. Those are real losses and they are not softened here.
+
+What the oracle adds is the price of that lead rather than an excuse for ours: on
+syft, more than a third of what that tool emits is a call the Go compiler says
+does not exist. Coverage rewards drawing edges and never asks whether they are
+real, which is why no page in that benchmark publishes a coverage number without
+a precision number beside it.
+
+**Where our own miss goes**, decomposed rather than waved at. On syft without
+tests we miss 3,846 of the oracle's 7,898 edges: 44% of that miss is dynamic
+dispatch alone and a further 39% is dispatch with a closure at one end, and the
+two buckets overlap so neither is the whole gap. Interface dispatch is the
+ceiling and nobody in the comparison has cleared it, at 6.5 distinct possible
+targets per call site. Matching that recall means emitting six edges where one is
+right, which is the behaviour the precision table charges other tools for.
+
+**Do not compare recall across rows.** It swings from 0.03 to 0.97, driven by how
+many entry points the oracle had (4 on gitleaks, 268 on syft-with-tests), not by
+tool quality. Only within-row comparisons carry meaning and a pooled recall over
+these cells would be meaningless.
+
+### Limits
+
+- **Two languages, seven cells, five repositories.** This is not a nine-language
+  claim and must not be quoted as one. Section 7 is the nine-language number.
+- **A contradicted edge is very strong evidence, not proof.** RTA is unsound under
+  reflection and `go:linkname`, so a genuinely dynamic edge can land in that
+  bucket. It applies to all five arms equally and the gaps are far too large to
+  be explained by it, which is why the metric is named *precision against the
+  oracle* rather than precision.
+- **Edges the oracle cannot speak about are charged to nobody** and reported at
+  full size. That bucket is 0.4% to 11.1% of a tool's output on the Go cells and
+  16% to 46% on the TypeScript ones, where dependencies are not installed in the
+  pinned corpus.
+- **A library has no `main`, so RTA has no roots**; cobra is analysed through its
+  test binaries only.
+- The two variants of a repository answer different questions. Report both or say
+  which one you used.
+- **Two oracle languages, and the programme stops at two.** C#, Java, Kotlin and
+  C++ each need a toolchain installed and a working build per repository, none of
+  which exists on the measurement machine. Rust has the toolchain and no sound
+  call-graph tool exists for it. Python, Ruby and PHP admit no oracle even in
+  principle. So section 7 is the permanent method on those languages rather than
+  a stopgap, and nothing here should be read as a claim about them.
+- **The TypeScript cells exclude test files, and the with-tests variants are
+  void.** A test file imports its own package by name, the pinned corpus has no
+  dependencies installed, and roughly a third of call sites go unresolvable,
+  which takes the unjudged bucket past three quarters. Both variants were run and
+  neither is quoted anywhere. Installing the dependency trees would fix it and
+  would also have to go to a scratch copy, since `node_modules/` inside the
+  corpus changes what every tool walks.
+- **The three competitors here are priced on these two languages only.**
+  codebase-memory-mcp, Graphify and code-review-graph have no precision figure of
+  any kind on the other nine languages in the coverage bench, and none of the
+  three was ever entered into the section 7 audit in either direction. Section 7
+  is a two-tool claim and section 8 a five-tool one, and neither transfers to the
+  other's languages.
+- **Two of the five arms are read through an adapter we wrote**, and both now beat
+  us on precision in some cell, so the reading matters. Graphify tags 93% of its
+  call edges `INFERRED` rather than AST-certain and we score all of them, which is
+  the choice least favourable to us. code-review-graph stores unresolved callees
+  beside resolved ones and we score only the resolved, which is the choice most
+  favourable to it: on gitleaks that is 76 edges out of 4,367 stored rows. Both
+  choices are argued in the benchmark and a reader who disagrees can recompute
+  either from the artifacts.
+
+Full method, per-cell artifacts, the twenty hand-confirmed identities the protocol
+required, and the graded pre-registration including the two predictions that
+missed:
+**[graph/experiments/g4-oracle-anchored](https://github.com/repowise-dev/repowise-bench/tree/master/graph/experiments/g4-oracle-anchored)**.
+
+---
+
 ## Limits
 
 Beyond the ones stated in each section:
 
-- **Every number here is Python or Go.** A JavaScript/TypeScript corpus
+- **Every retrieval number here is Python or Go.** The graph sections are wider,
+  at nine languages hand-graded and two compiler-graded, and they are the only
+  sections that are. A JavaScript/TypeScript corpus
   (`mui/material-ui`, six tools, a 12x size range) is built and half graded, but
   **its sealed half is unrun and nothing from it is quoted here.** Publishing the
   development half is what that split exists to prevent, so the row arrives when the
@@ -464,6 +694,11 @@ Beyond the ones stated in each section:
 - **§4 has no head-to-head and one row that needs re-measuring.**
 - **§5's signal is weak among files of similar size**, and a prior-defects baseline
   still beats us on Popt by 0.085 even while losing on AUC.
+- **§7 was graded by us on both sides.** That is what §8 exists to check, and the two
+  agree where both exist, but only §8 has an answer key we did not produce.
+- **§7 and §8 measure precision, which is one of two halves.** We lead no recall cell
+  in §8 and lose cross-file coverage on 15 of 35 repositories in the same bench. A
+  precision win is a claim about the edges a tool draws, never about how many.
 
 ---
 
@@ -520,6 +755,7 @@ one above it.
 | Level | What is there |
 |---|---|
 | **[head-to-head](https://github.com/repowise-dev/repowise-bench/tree/master/head-to-head)** | Who wins what, the build-cost curve, and what each index can rank at all |
+| **[graph/](https://github.com/repowise-dev/repowise-bench/tree/master/graph)** | The graph-quality bench: edge precision hand-graded on both sides across nine languages against one competitor, precision and recall against a compiler oracle on Go and TypeScript against two, and cross-file coverage, adversarial invariance and build cost across five |
 | **[arms/](https://github.com/repowise-dev/repowise-bench/tree/master/head-to-head/arms)** | One page per competitor: what it is, what it serves, and every setup trap. Four of six have a step that produces a clean zero when missed |
 | **[THE\_LOOP.md](https://github.com/repowise-dev/repowise-bench/blob/master/head-to-head/THE_LOOP.md)** | The method and all nine gates, each named with the failure that created it |
 | **[configs/arms.yaml](https://github.com/repowise-dev/repowise-bench/blob/master/configs/arms.yaml)** | Every launch command, allowlisted tool and exclusion with its reason. Read this if you think an arm was set up unfairly |
@@ -532,7 +768,7 @@ a competitor is a YAML block, no Python and no runner change. See
 [CONTRIBUTING.md](https://github.com/repowise-dev/repowise-bench/blob/master/CONTRIBUTING.md).
 
 Tool versions as measured: CodeGraph 1.5.0, Graphify 0.9.31, Serena 1.6.2.dev0,
-code-review-graph 2.3.7, cocoindex as of 2026-08-09.
+code-review-graph 2.3.7, cocoindex as of 2026-08-09, codebase-memory-mcp 0.10.8.
 
 ## See also
 

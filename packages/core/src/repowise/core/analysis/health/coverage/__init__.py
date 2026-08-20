@@ -9,6 +9,14 @@ from .contexts import (
     parse_coverage_sqlite,
     parse_lcov_contexts,
 )
+from .decay import (
+    STALE_DRIFT_PCT,
+    STALE_MIN_MEASURED,
+    CoverageDecay,
+    decay_for_file,
+    decay_since,
+    measurement_ref,
+)
 from .detector import detect_format, is_test_file, paired_test_file, parse
 from .discovery import (
     CoverageConfig,
@@ -30,17 +38,23 @@ from .model import (
 from .repowise_json import parse_repowise_json
 
 __all__ = [
+    "STALE_DRIFT_PCT",
+    "STALE_MIN_MEASURED",
     "ContextCoverageReport",
     "CoverageConfig",
+    "CoverageDecay",
     "CoverageReport",
     "FileCoverage",
     "ResolvedCoverage",
     "ResolvedTestCoverage",
     "TestCoverage",
     "build_coverage_map",
+    "decay_for_file",
+    "decay_since",
     "detect_format",
     "discover_artifacts",
     "is_test_file",
+    "measurement_ref",
     "normalize_report_path",
     "paired_test_file",
     "parse",

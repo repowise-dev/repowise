@@ -7,8 +7,9 @@ the per-test test-to-code map built by ``repowise coverage add``. The output is
 
 Honest about what it knows:
   - a changed file with per-test coverage -> the exact covering tests;
-  - a changed file with no coverage rows -> a filename-pattern *guess* at its
-    paired test, clearly labelled as a guess;
+  - a changed file with no coverage rows -> candidate tests the dependency
+    graph shows reaching it, or failing that a filename-pattern guess, each
+    labelled with which one answered and none of them claimed as coverage;
   - a new file with neither -> "unknown, run the full suite" (never implied
     as "no tests needed").
 
@@ -132,8 +133,8 @@ def _empty_result(changed_files: int) -> dict:
         "map_empty": False,
         "changed_files": changed_files,
         "covered": {},  # test_id -> {test_file, source_files: [...]}
-        "guessed": [],  # {source_file, test_file}
-        "unknown": [],  # source_file (no coverage, no paired test)
+        "inferred": [],  # {source_file, test_file, via}
+        "unknown": [],  # source_file (nothing knows of a test for it)
     }
 
 
@@ -144,40 +145,101 @@ async def _resolve_impacted(
     repo_keys: set[str],
     out: dict,
 ) -> dict:
-    """Classify each changed file: covered tests, guessed test, or unknown.
+    """Classify each changed file: covered tests, inferred tests, or unknown.
 
     Mutates and returns *out*. Split from ``_collect`` (which owns the DB
     bootstrap) so the diff -> lines -> tests path is testable against a seeded
     ``test_coverage`` table.
+
+    Three tiers, and the output says which one answered for every file, because
+    they are not interchangeable:
+
+    ``covered``
+        Recorded per-test coverage intersecting the changed *lines*. The only
+        tier that knows about lines, and the only one that proves execution.
+    ``inferred``
+        No coverage row, so fall back to naming candidates. A changed file that
+        is itself a test is its own candidate (``via="changed-test"``) - it used
+        to be reported as a file with no test, which is true and useless. Then
+        the dependency graph, which reports which tier answered: a test whose
+        calls reach the file (``via="call-graph"``) or, only where no call edge
+        does, a test that imports it (``via="import-graph"``). Both are recorded
+        edges, and they find suites whose tests are named for behaviour rather
+        than for the file. The filename pattern answers when the graph is silent
+        (``via="filename-pattern"``). All are file-level and all over-claim;
+        none may be read as coverage.
+    ``unknown``
+        Nothing said anything. Run the full suite.
     """
     from repowise.core.analysis.health.coverage import paired_test_file
+    from repowise.core.analysis.test_reachability import (
+        load_test_files,
+        tests_reaching_by_tier,
+    )
     from repowise.core.persistence.crud import tests_covering
 
     covered: dict[str, dict] = out["covered"]
+    uncovered: list[str] = []
     for source_file, lines in sorted(changed.items()):
         rows = await tests_covering(session, repo_id, source_file, lines=lines)
-        if rows:
-            for r in rows:
-                entry = covered.setdefault(
-                    r["test_id"],
-                    {"test_file": r["test_file"], "source_files": []},
-                )
-                if source_file not in entry["source_files"]:
-                    entry["source_files"].append(source_file)
+        if not rows:
+            uncovered.append(source_file)
             continue
-        # No per-test rows for this file: fall back to a filename guess.
+        for r in rows:
+            entry = covered.setdefault(
+                r["test_id"],
+                {"test_file": r["test_file"], "source_files": []},
+            )
+            if source_file not in entry["source_files"]:
+                entry["source_files"].append(source_file)
+
+    if not uncovered:
+        return out
+
+    # One walk for every uncovered file rather than one per file: the seed set
+    # is what makes this cheap, and splitting it would run the same query once
+    # per changed path.
+    try:
+        reaching = await tests_reaching_by_tier(session, repo_id, uncovered)
+        test_files = await load_test_files(session, repo_id)
+    except Exception:
+        reaching, test_files = {}, set()
+
+    for source_file in uncovered:
+        if source_file in test_files:
+            out["inferred"].append(
+                {
+                    "source_file": source_file,
+                    "test_file": source_file,
+                    "via": "changed-test",
+                }
+            )
+            continue
+        reached = reaching.get(source_file)
+        if reached:
+            out["inferred"].extend(
+                {"source_file": source_file, "test_file": t, "via": reached.via}
+                for t in reached.tests
+            )
+            continue
         guess = paired_test_file(source_file, repo_keys)
         if guess:
-            out["guessed"].append({"source_file": source_file, "test_file": guess})
+            out["inferred"].append(
+                {
+                    "source_file": source_file,
+                    "test_file": guess,
+                    "via": "filename-pattern",
+                }
+            )
         else:
             out["unknown"].append(source_file)
     return out
 
 
 def _machine_test_ids(result: dict) -> list[str]:
-    """Test ids for --format list: covered node ids + guessed test files."""
+    """Test ids for --format list: covered node ids + inferred test files."""
     ids = list(result["covered"].keys())
-    ids += [g["test_file"] for g in result["guessed"]]
+    ids += [g["test_file"] for g in result["inferred"]]
     # Dedup while preserving order.
     seen: set[str] = set()
     return [i for i in ids if not (i in seen or seen.add(i))]
@@ -201,9 +263,7 @@ def _render(result: dict, fmt: str) -> None:
                         }
                         for tid, info in result["covered"].items()
                     ],
-                    "guessed_tests": [
-                        {**g, "via": "filename-pattern-guess"} for g in result["guessed"]
-                    ],
+                    "inferred_tests": result["inferred"],
                     "unknown_files": result["unknown"],
                 },
                 indent=2,
@@ -221,8 +281,9 @@ def _render(result: dict, fmt: str) -> None:
             err_console.print("[yellow]No index - run `repowise init`.[/yellow]")
         elif result["unknown"]:
             err_console.print(
-                f"[yellow]{len(result['unknown'])} changed file(s) have no coverage and "
-                f"no paired test; run the full suite to be safe.[/yellow]"
+                f"[yellow]{len(result['unknown'])} changed file(s) have no coverage, no "
+                f"test reaching them in the graph and no paired test; run the full suite "
+                f"to be safe.[/yellow]"
             )
         return
 
@@ -245,7 +306,7 @@ def _render_table(result: dict) -> None:
             "[yellow]No test-to-code map ingested.[/yellow] Run "
             "[cyan]repowise coverage add[/cyan] on a coverage.py report written with "
             "[cyan]coverage run --contexts=test[/cyan] to get exact impacted tests. "
-            "Falling back to filename-pattern guesses below."
+            "Falling back to the dependency graph and filename patterns below."
         )
 
     covered = result["covered"]
@@ -263,22 +324,28 @@ def _render_table(result: dict) -> None:
     elif not result["map_empty"]:
         console.print("[dim]No recorded test covers the changed lines directly.[/dim]")
 
-    if result["guessed"]:
-        gtable = Table(title="Filename-pattern guesses (NOT coverage-backed)")
+    if result["inferred"]:
+        gtable = Table(title="Inferred tests (NOT coverage-backed)")
         gtable.add_column("Changed file")
-        gtable.add_column("Guessed test", style="yellow")
-        for g in result["guessed"]:
-            gtable.add_row(g["source_file"], g["test_file"])
+        gtable.add_column("Candidate test", style="yellow")
+        gtable.add_column("From", style="dim")
+        for g in result["inferred"]:
+            gtable.add_row(g["source_file"], g["test_file"], g["via"])
         console.print(gtable)
+        files = len({g["source_file"] for g in result["inferred"]})
         console.print(
-            f"[yellow]{len(result['guessed'])} file(s)[/yellow] had no coverage; guessed "
-            "their test by filename. Verify these actually exercise the change."
+            f"[yellow]{len(result['inferred'])} candidate(s)[/yellow] for {files} file(s) with "
+            "no coverage. [dim]changed-test[/dim] = the changed file is itself a test; "
+            "[dim]call-graph[/dim] = a test whose calls reach this file; "
+            "[dim]import-graph[/dim] = a test that only imports it; "
+            "[dim]filename-pattern[/dim] = a name-shaped guess. None proves execution - "
+            "verify they exercise the change."
         )
 
     if result["unknown"]:
         console.print(
-            f"[red]{len(result['unknown'])} changed file(s)[/red] have no coverage and no "
-            "paired test - run the full suite to be safe:"
+            f"[red]{len(result['unknown'])} changed file(s)[/red] have no coverage, no test "
+            "reaching them in the graph and no paired test - run the full suite to be safe:"
         )
         for path in result["unknown"]:
             console.print(f"  [red]{path}[/red]")

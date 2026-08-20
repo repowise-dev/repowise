@@ -369,10 +369,202 @@ async def test_get_health_dashboard_leads_with_a_directive(setup_mcp, health_dat
     assert d["fix_first"] == "src/auth/service.py"
     assert d["reason"] == "authenticate has cyclomatic complexity 15"
     assert d["recovers_points"] == 700  # (8.0 - 4.5) * 200
-    # 700 of the repo's 675 net gap points: the healthy file's surplus is
-    # credited in the denominator, so one file can exceed 100%.
-    assert d["share_of_repo_gap_pct"] == pytest.approx(103.7)
+    # The only below-target file holds the whole gross deficit (700/700), so
+    # the share is 100% by construction — the net gap (675) is not the
+    # denominator, since healthy files would cushion it (issue #1437).
+    assert d["share_of_repo_gap_pct"] == pytest.approx(100.0)
     assert d["then"] == []  # only one below-target file in the fixture
+
+
+@pytest.mark.asyncio
+async def test_directive_share_bounded_when_gross_exceeds_net_gap(
+    session, setup_mcp
+):
+    """Regression guard for #1437: the share uses the gross deficit of all
+    below-target files as its denominator, so it is bounded by 100% and sums to
+    100% by construction — the net gap (which healthy files cushion) would let
+    a single file read as closing more than the whole remaining gap."""
+    from repowise.core.persistence.crud import save_health_metrics
+    from repowise.server.mcp_server import get_health
+
+    rid = setup_mcp
+    await save_health_metrics(
+        session,
+        rid,
+        [
+            # One big low file: gross deficit (8.0 - 3.0) * 400 = 2000.
+            {
+                "file_path": "src/legacy/blob.py",
+                "score": 3.0,
+                "max_ccn": 20,
+                "max_nesting": 6,
+                "nloc": 400,
+                "has_test_file": False,
+                "module": "legacy",
+                "defect_score": 3.0,
+                "maintainability_score": 4.0,
+                "performance_score": 8.0,
+            },
+            # Many small healthy files: surplus 8.5-8.0 = 0.5 * 100 each.
+            *[
+                {
+                    "file_path": f"src/ok/module{i}.py",
+                    "score": 8.5,
+                    "max_ccn": 3,
+                    "max_nesting": 1,
+                    "nloc": 100,
+                    "has_test_file": True,
+                    "module": "ok",
+                    "defect_score": 8.5,
+                    "maintainability_score": 9.0,
+                    "performance_score": 10.0,
+                }
+                for i in range(4)
+            ],
+        ],
+    )
+
+    result = await get_health()
+    d = result["directive"]
+    # Net gap = 8.0*800 - (3.0*400 + 8.5*400) = 6400 - 4600 = 1800, and the
+    # single below-target file owns the whole gross deficit: 2000/2000 = 100%.
+    assert d["recovers_points"] == 2000
+    assert d["share_of_repo_gap_pct"] == pytest.approx(100.0)
+    # The gross gap is the reported denominator.
+    assert result["gap_analysis"]["weighted_gross_gap_points"] == 2000
+    assert result["gap_analysis"]["weighted_gap_points"] == 1800
+
+
+@pytest.mark.asyncio
+async def test_directive_absent_when_no_file_below_target(
+    session, setup_mcp
+):
+    """When no file is below the Healthy floor there is no gross gap, nothing to
+    recommend, and no share to report — the directive is absent entirely."""
+    from repowise.core.persistence.crud import save_health_metrics
+    from repowise.server.mcp_server import get_health
+
+    rid = setup_mcp
+    await save_health_metrics(
+        session,
+        rid,
+        [
+            {
+                "file_path": "src/ok/module.py",
+                "score": 8.5,
+                "max_ccn": 3,
+                "max_nesting": 1,
+                "nloc": 100,
+                "has_test_file": True,
+                "module": "ok",
+                "defect_score": 8.5,
+                "maintainability_score": 9.0,
+                "performance_score": 10.0,
+            }
+        ],
+    )
+
+    result = await get_health()
+    # No file is below the Healthy floor, so there is nothing to recommend and
+    # no gross gap to share — the directive is absent entirely.
+    assert result["directive"] is None
+    assert result["gap_analysis"]["weighted_gross_gap_points"] == 0
+
+
+@pytest.mark.asyncio
+async def test_high_leverage_rows_sum_to_100_with_negative_net_gap(
+    session, setup_mcp
+):
+    """The microdot scenario from #1437: several files below target against a
+    negative net gap. The gross gap is the denominator, so rows are distinct,
+    each bounded by 100%, and they sum to 100% by construction — whereas the
+    net gap (0, since the average is above 8.0) would report nothing at all."""
+    from repowise.core.persistence.crud import save_health_metrics
+    from repowise.server.mcp_server import get_health
+
+    rid = setup_mcp
+    await save_health_metrics(
+        session,
+        rid,
+        [
+            # Three below-target files of different sizes.
+            {
+                "file_path": "src/a/big.py",
+                "score": 6.0,
+                "max_ccn": 10,
+                "max_nesting": 4,
+                "nloc": 400,
+                "has_test_file": False,
+                "module": "a",
+                "defect_score": 6.0,
+                "maintainability_score": 7.0,
+                "performance_score": 9.0,
+            },
+            {
+                "file_path": "src/b/mid.py",
+                "score": 7.0,
+                "max_ccn": 6,
+                "max_nesting": 3,
+                "nloc": 200,
+                "has_test_file": False,
+                "module": "b",
+                "defect_score": 7.0,
+                "maintainability_score": 8.0,
+                "performance_score": 9.5,
+            },
+            {
+                "file_path": "src/c/small.py",
+                "score": 7.5,
+                "max_ccn": 4,
+                "max_nesting": 2,
+                "nloc": 100,
+                "has_test_file": True,
+                "module": "c",
+                "defect_score": 7.5,
+                "maintainability_score": 8.5,
+                "performance_score": 10.0,
+            },
+            # One healthy file, large enough that the weighted average is
+            # already above 8.0 (negative net gap — the microdot shape).
+            {
+                "file_path": "src/d/ok.py",
+                "score": 9.0,
+                "max_ccn": 2,
+                "max_nesting": 1,
+                "nloc": 1200,
+                "has_test_file": True,
+                "module": "d",
+                "defect_score": 9.0,
+                "maintainability_score": 9.5,
+                "performance_score": 10.0,
+            },
+        ],
+    )
+
+    result = await get_health()
+    gap = result["gap_analysis"]
+    rows = result["high_leverage_files"]
+    assert len(rows) == 3
+
+    # Gross deficits: (8-6)*400=800, (8-7)*200=200, (8-7.5)*100=50 → 1050.
+    assert gap["weighted_gross_gap_points"] == 1050
+    # Net gap is negative: 8*1900 - (6*400+7*200+7.5*100+9*1200) = 15200 - 15350.
+    assert gap["weighted_gap_points"] == 0
+    # Rows are distinct (ranking survives) and bounded, summing to 100%.
+    shares = {r["file_path"]: r["share_of_repo_gap_pct"] for r in rows}
+    assert shares == pytest.approx(
+        {
+            "src/a/big.py": round(100.0 * 800 / 1050, 1),
+            "src/b/mid.py": round(100.0 * 200 / 1050, 1),
+            "src/c/small.py": round(100.0 * 50 / 1050, 1),
+        }
+    )
+    assert len({v for v in shares.values()}) == 3  # distinct, not collapsed
+    assert sum(shares.values()) == pytest.approx(100.0, abs=0.1)
+    # The directive quotes the same lead-file share.
+    assert result["directive"]["share_of_repo_gap_pct"] == pytest.approx(
+        shares["src/a/big.py"], abs=0.1
+    )
 
 
 @pytest.mark.asyncio
@@ -1252,13 +1444,14 @@ async def test_high_leverage_rows_carry_share_of_repo_gap(setup_mcp, health_data
     from repowise.server.mcp_server import get_health
 
     result = await get_health()
-    gap = result["gap_analysis"]["weighted_gap_points"]
+    gap = result["gap_analysis"]["weighted_gross_gap_points"]
     rows = result["high_leverage_files"]
     assert rows, "fixture must have at least one file below the healthy band"
     for row in rows:
-        assert row["share_of_repo_gap_pct"] == pytest.approx(
-            round(100.0 * row["weighted_deficit"] / gap, 1), abs=0.11
-        )
+        expected = round(100.0 * row["weighted_deficit"] / gap, 1)
+        # Shares are bounded by 100% and sum to 100% by construction: the gross
+        # deficit of all below-target files is the denominator (issue #1437).
+        assert row["share_of_repo_gap_pct"] == pytest.approx(expected, abs=0.11)
     # The lead file's share is the same number the directive quotes. Not exact
     # equality: `_directive` rounds `recovers_points` to an integer before
     # dividing, the row divides the raw deficit, so the two agree to the

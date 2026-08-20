@@ -11,6 +11,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A test-to-code map that needs no coverage report.** The per-test map only
+  ever existed if you ingested a coverage report with contexts, so on most
+  repositories `tests_to_run` was empty, `impacted_tests` said "run the full
+  suite", and `untested_hotspot` fell back to matching filenames. The call graph
+  already records which test can execute into which source file, and that
+  relation now answers when the measured one cannot. It is labelled `inferred`
+  everywhere, never blended with measured coverage, and never turned into a
+  percentage. Nothing is stored: it is a bounded walk over rows already indexed,
+  measured at 63 ms once per health run on a 3,700-file repository.
+
+  The call graph is the primary signal and the import graph the weaker fallback,
+  which is a measured choice rather than a preference. Dogfooded against a real
+  `coverage run --contexts=test` over a slice where per-test attribution is
+  complete, with both sides seeing the same 37 test files: walking imports one
+  hop scored 72.1% precision at 19.5% recall, walking calls three hops scored
+  91.7% at 27.7%, and dropping the one call-resolution strategy that only
+  matches a name repo-wide (`global_unique`) took that to 95.7% at no cost to
+  recall. Unioning the two is worse than either lead, so the import tier is
+  spent only on the files the call graph says nothing about, where it answers
+  one more of them at no loss of precision.
+
+  New fields: `tests_to_run_basis` on `get_risk`'s directive
+  (`measured` / `inferred` / `none`), `basis` and a `status: "inferred"` on
+  `get_change_risk`'s `impacted_tests`, and a `via` marker on every
+  `repowise impacted-tests` candidate saying which tier answered.
+
+### Changed
+
+- **`untested_hotspot` stops accusing files that the tests run.** With no
+  coverage ingested it fired on any hotspot without a *paired test file*, which
+  is a filename convention, so a suite that names its tests for behaviour
+  satisfied nothing. A test whose calls reach the file now suppresses it too. On
+  this repository five of the six worst bug-magnet files had no test named for
+  them and read as untested; the sixth, `analysis/health/engine.py`, was called
+  tested because the convention matched `distill/test_engine.py` on basename
+  alone. The same floor now runs under `get_risk`'s `missing_tests`, which had
+  two separate filename heuristics that disagreed.
+
+  Measured on repowise's own index, against the 80 standing `untested_hotspot`
+  findings the filename convention leaves behind: the call graph clears 32 of
+  them, 22 graded high and 3 critical, where a one-hop import walk clears 11.
+  The persisted `has_test_file` widens to match, so the file table stops
+  labelling those same files "untested" while the biomarker says nothing.
+
+  Both stored values are wrong on an index built before this, so
+  `HEALTH_ANALYZER_VERSION` moves to 3 and the next `repowise update` with
+  changed files re-scores health rather than waiting out the decay timer.
+
+- **`repowise impacted-tests --format json` renames `guessed_tests` to
+  `inferred_tests`.** The bucket no longer holds only filename guesses, so the
+  old name described the wrong thing; each entry carries `via` (`call-graph`,
+  `import-graph` or `filename-pattern`) to say which tier answered.
+
+---
+
+## [0.44.0] — 2026-08-18
+
+The theme this cycle is the call graph knowing who the receiver is. A call written `user.save()` only becomes an edge if something can say what `user` is, and for most languages nothing could: the resolver matched the bare name against every symbol in the repo and guessed. Receiver typing now runs for Go, Kotlin, Swift, C#, Java, Python, PHP and Luau, and resolution follows re-export chains. On microdot, a small pure-Python repo with none of the languages that gained most, call edges went from 876 to 1,371. Dead code got the matching precision pass, and updates now carry both onto an index built by an older version, which they previously did not. Expect the first `repowise update` after upgrading to run long, once.
+
+### Added
+
+- **Receiver typing across eight languages.** A call's receiver is typed from its declaration in Go (#1674), Kotlin (#1687), Swift (#1688) and C# (#1680), from the enclosing class for a bare call plus PHP and Luau receivers (#1630), from a field's declaring class (#1642), from a local's declaration (#1639), from assignments in a Python function body (#1643), from a Java call on its own field (#1658), and from a framework decorator that retyped it (#1684). Three more receiver shapes a bare-name match had been guessing at are now captured directly (#1686).
+- **Resolution follows re-exports.** A call resolves through the name a module publishes (#1682), a method on a type imported through a re-export (#1664), and a namespace member through the whole re-export chain (#1672).
+- **`dispatches_to` edges** link a base method to the implementations that answer for it (#1649), and a framework-wired symbol to the symbol it is wired to (#1654).
+- **Every call edge records the strategy that resolved it** (#1628), and the web UI says how each edge got into the graph (#1652). An execution flow now says why it stopped instead of just stopping (#1650).
+- **Security findings carry a verified line and a commit date** (#1668).
+- **Pascal is registered in the complexity, duplication and dataflow dialects**, so health scores it like the other 18 languages (#1629).
+
+### Changed
+
+- **The file detail page is ported onto the design language** (#1621) and gained inbound and outbound navigation (#1622).
+- **The workspace System Map moves its chrome off the canvas**, and the per-repo view works (#1616).
+- **Dead code surfaces staleness on the web** and drops the package column (#1669).
+- **`this.method()` self-dispatch is recorded in six languages** (#1617).
+- **Export aliases are read from the parser** rather than a second scan of the file (#1683).
+
+### Fixed
+
+- **An extraction change now reaches unchanged files.** An incremental update rewrote only the git-changed files' rows in `graph_edges`, which is right for a content change and wrong for a parser change: the latter alters every file's edges at once. The build that wrote a repo's edges is now recorded, and a mismatch widens the reconcile to the whole parsed set once before re-stamping. Without this, none of this release's graph work would reach an existing index short of a full re-index. (#1619)
+- **Dead-code analysis no longer skips itself on update.** Stored commit timestamps came back without a timezone while freshly read ones carried one, so ageing a package raised `TypeError`, a broad catch turned it into a one-line warning, and every finding silently kept its previous verdict. Present since 0.40.0. (#1702)
+- **Symbols reached by a framework or a container** (#1673), **wired in by a registration decorator** (#1681), or **named by a docs build or an API dump** (#1677) are no longer reported as dead.
+- **Every use of a private symbol counts**, not only a call (#1662). Only genuinely narrow scopes stay in the uncalled-symbol pool (#1646), and a top-tier confidence means the checks behind it ran (#1666).
+- **C and C++**: a forward-declared type is not an unused export (#1700), nor is a template forward declaration (#1703); a call edge attaches to the definition rather than the header declaration (#1626); a function named but never called counts as a use (#1627); `.inl` / `.ipp` / `.tpp` (#1625) and `.hh` are recognised as C++, and `.inc` is reassigned from Pascal (#1693).
+- **Every language gives one answer for a type's bare name** (#1634). A struct field is not callable, so the bare-name tier no longer offers one (#1692), and Rust type positions are filed as `type_use` rather than calls (#1690).
+- **Inheritance is emitted for JavaScript classes** (#1636) and Go interface embedding (#1641). C# resolves inherited calls again (#1651), captures generic method calls (#1637), and records the visibility a declaration actually has (#1644).
+- **A third-party JVM import no longer takes a same-named repo class** (#1659). A Go method whose receiver is unexported is typed (#1676). A workspace package that publishes only from a build directory binds correctly (#1670).
+- **A method passed as a value is separated from a method called** (#1661).
+- **MCP**: four tools answered a bad argument with a reassuring negative instead of an error (#1671); `get_context` counted a subclass and a fixture as callers (#1663); raw doubles and two different scales shipped under one key (#1631). The symbol page made the same subclass mistake (#1660).
+- **A failed framework pass is reported** rather than swallowed (#1645).
+- **`repowise update --full` runs under the single-flight lock** (#1529), and the incremental hotspot gate reuses the persisted function-modification p80 (#1532).
+- **ADR discovery no longer mines paths git cannot see** (#1614), the security history scanner actually scans (#1667), and fix history ignores the shallow-clone boundary (#1633).
+
+### Performance
+
+- **Graph build stops re-reading the repository** (#1648), and each language gets a call-strategy seam that rejects unresolvable names first (#1632).
+- **The file page stops reading the whole repo to render one file** (#1618).
+- **Workspace `.csproj` scanning walks each repo once** (#1615).
+
+### Documentation
+
+- The language-support pages are rewritten, a graph layer page is added, and the claims that pointed at them are corrected (#1689).
+
 ---
 
 ## [0.43.0] — 2026-08-15

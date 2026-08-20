@@ -180,11 +180,20 @@ def _compute_impact_surface(
 async def _check_test_gap(session: AsyncSession, repo_id: str, target: str) -> bool:
     """Return True if *target* has no test, coverage-backed where the map has data.
 
-    A file with a per-test coverage row (from ``repowise coverage add``) is
-    coverage-*proven* tested, so it is never a gap. Where the map has no data for
-    the file, fall back to the filename pattern (test_<name>, <name>_test,
-    <name>.spec.*) - an honest "unknown", never asserted as untested. Test files
-    themselves (is_test=True) are never a gap.
+    Three signals, in descending order of what they can prove, and the file is a
+    gap only when all three stay silent - the same ladder ``pr_blast``
+    ``_find_test_gaps`` uses, because the two answered this question differently
+    and a reader has no way to tell which one they are looking at.
+
+    1. A per-test coverage row (from ``repowise coverage add``) is
+       execution-proof: never a gap.
+    2. A test file reaching it in the dependency graph is evidence, not proof,
+       but a recorded edge rather than a guess - it catches the suites whose
+       tests are named for behaviour rather than for the file under test.
+    3. Otherwise the filename pattern (test_<name>, <name>_test, <name>.spec.*)
+       - an honest "unknown", never asserted as untested.
+
+    Test files themselves (is_test=True) are never a gap.
     """
     import os
 
@@ -206,6 +215,16 @@ async def _check_test_gap(session: AsyncSession, repo_id: str, target: str) -> b
     # Coverage proves a test exercises this file: not a gap.
     if await covered_source_files(session, repo_id, {target}):
         return False
+
+    # The graph records a test reaching it: not a gap either. Degrades to "no
+    # signal" rather than raising - a failed walk must not become an accusation.
+    from repowise.core.analysis.test_reachability import tests_reaching
+
+    try:
+        if await tests_reaching(session, repo_id, [target]):
+            return False
+    except Exception:
+        pass
 
     base = os.path.splitext(os.path.basename(target))[0]
     ext = os.path.splitext(target)[1].lstrip(".")

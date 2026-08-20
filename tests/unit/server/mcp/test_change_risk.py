@@ -214,6 +214,7 @@ async def test_impacted_tests_line_precise_hit_and_miss(tmp_path, monkeypatch) -
 
     it = result["impacted_tests"]
     assert it["status"] == "map_present"
+    assert it["basis"] == "measured"
     assert it["map_present"] is True
     # app.py line 3 is covered -> its test is named; other/new are not covering.
     assert it["tests"] == ["tests/test_app.py::test_app"]
@@ -250,12 +251,65 @@ async def test_impacted_tests_no_map_is_unknown_not_untested(tmp_path, monkeypat
     result = await module.get_change_risk(baseline=0)
 
     it = result["impacted_tests"]
+    # Nothing is seeded in the graph either, so neither tier can speak.
     assert it["status"] == "no_map"
     assert it["map_present"] is False
     assert it["tests"] == []
     # Honest degradation: no untested claim, a "run the suite" summary instead.
     assert it["missing_tests"]["untested_changes"] == []
     assert "run the full suite" in it["summary"]
+
+
+@pytest.mark.asyncio
+async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, monkeypatch) -> None:
+    """No coverage map, but the graph knows a test imports the changed file.
+
+    Replaces a bare "run the full suite" with a candidate list on every repo
+    that never ingested a report. Labelled ``inferred`` and file-level: reaching
+    carries no line attribution, so ``missing_tests`` stays empty rather than
+    being filled from a signal that cannot speak to lines.
+    """
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], repo)
+    _commit(repo, {"src/app.py": "a\nb\n"}, "chore: seed")
+    _commit(repo, {"src/app.py": "a\nb\nc\n"}, "feat: add line")
+
+    factory = await _factory_with_repo(None)
+    async with factory() as s:
+        for path, is_test in (("tests/test_round_trips.py", True), ("src/app.py", False)):
+            s.add(
+                GraphNode(repository_id="repo1", node_id=path, node_type="file", is_test=is_test)
+            )
+        s.add(
+            GraphEdge(
+                repository_id="repo1",
+                source_node_id="tests/test_round_trips.py",
+                target_node_id="src/app.py",
+                edge_type="imports",
+            )
+        )
+        await s.commit()
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo), session_factory=factory)
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    it = (await module.get_change_risk(baseline=0))["impacted_tests"]
+
+    assert it["status"] == "inferred"
+    assert it["basis"] == "inferred"
+    assert it["map_present"] is False
+    assert it["tests"] == ["tests/test_round_trips.py"]
+    assert it["missing_tests"]["untested_changes"] == []
+    # Answered by the import tier: there is no call edge here, which is exactly
+    # when the weaker tier is allowed to speak.
+    assert "reach the changed files in the graph" in it["summary"]
+    assert "not measured" in it["summary"]
 
 
 @pytest.mark.asyncio

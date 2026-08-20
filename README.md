@@ -144,7 +144,8 @@ from the CLI or right in the dashboard with the cost shown before you confirm.
 during doc generation needs a provider.)
 
 Full detail on every layer: **[docs/layers/INTELLIGENCE_LAYERS.md →](docs/layers/INTELLIGENCE_LAYERS.md)**
-How the graph resolves an edge, and how much to trust one:
+How the graph sees a call, how it resolves one, how much to trust the result, and
+what a compiler says when it grades the whole thing:
 **[docs/layers/GRAPH.md →](docs/layers/GRAPH.md)**
 
 ---
@@ -651,6 +652,8 @@ agent over MCP.
 | **Output tokens vs a bare agent** *([measured](docs/BENCHMARKS.md#2-what-changes-in-a-real-agent-loop), n=43)* | ✅ **-31.6%** | -24.4% | -14.8% | not measured |
 | **Index time, django** *([measured](docs/BENCHMARKS.md#6-indexing-time-the-row-we-lose))* | ⚠️ **366.8s**, slowest here | ✅ **16.4s** | not measured | n/a, cloud |
 | | *one-time; updates after it are incremental* | | | |
+| **Call-edge precision** *([measured](docs/BENCHMARKS.md#7-edge-precision), 540 rows hand-graded from source)* | ✅ **84.8%** | 57.0% | not measured | not measured |
+| **Call-edge precision, judged by a compiler** *([measured](docs/BENCHMARKS.md#8-the-same-question-against-an-answer-key-we-do-not-control), 5 tools, 7 cells, 37,853 edges)* | ✅ **nothing that finds as much gets more of it right**, 7 of 7 | lower precision in 7, and lower recall in 5 | not measured | not measured |
 | Generated documentation | ✅ | ❌ | ❌ | ✅ |
 | Proactive agent hooks | ✅ Claude + Codex | ❌ | ❌ | ❌ |
 | Auto-generated AI instructions (`CLAUDE.md`, `AGENTS.md`) | ✅ | ❌ | ❌ | ❌ |
@@ -663,6 +666,25 @@ CodeGraph builds its index **22x faster than we do**, and if a call graph is all
 you need, that is the right trade. With prose generation on, which is what a
 default `repowise init` actually costs, it is **135x**. Graphify and
 code-review-graph were in the same measured field and are on the benchmarks page.
+
+The precision row cuts the other way and is worth stating as plainly: of the call
+edges we draw, **about fifteen percent are wrong**, and on `seastar` CodeGraph
+grades better than we do. Nine languages were read on both sides, four separate,
+five are statistical ties.
+
+The compiler row exists because we graded the hand-read one ourselves. On Go and
+TypeScript the answer key is the Go team's own RTA call graph and the `tsc`
+checker's own resolution, which we neither wrote nor can tune.
+
+**Read that row carefully, because it is a claim about two numbers.** Precision
+alone is easy to win by drawing almost nothing, and two of the five tools score
+above us that way, one of them at 0.997 from a graph holding 17% of the calls in
+the repository. Recall alone is easy to win by drawing everything, and the tool
+that leads it emits, on the largest repository measured, more than a third of its
+edges as calls that do not exist. What we claim is the pair: **in all seven cells,
+no tool that recovers as much of the call graph as we do gets more of it right.**
+The column we lose is still there and is still ours to lose: **the tool with the
+highest recall in every Go cell is not us.**
 
 <sub>Measured against CodeGraph 1.5.0, Graphify 0.9.31, Serena 1.6.2.dev0,
 code-review-graph 2.3.7, on repowise `081a59fa` (between v0.37.0 and v0.38.0),

@@ -59,7 +59,7 @@ type TabId = (typeof TABS)[number];
 const TAB_LABELS: Record<TabId, string> = {
   triage: "Overview",
   findings: "Findings",
-  coverage: "Coverage",
+  coverage: "Tests",
   "dead-code": "Dead code",
   security: "Security",
   impact: "Blast radius",
@@ -211,7 +211,15 @@ export default function CodeHealthPage() {
   // to anyone who asks for it.
   const { data: coverage } = useSWR<HealthCoverageResponse>(
     `code-health-coverage-summary:${repoId}`,
-    () => getHealthCoverage(repoId, { limit: 1, module_limit: 0 }),
+    () =>
+      getHealthCoverage(repoId, {
+        limit: 1,
+        module_limit: 0,
+        // And declines the graph fallback, which would read every call edge in
+        // the repo to answer a question this badge cannot render anyway: the
+        // inferred basis has no percentage to show.
+        include_inferred: false,
+      }),
     { revalidateOnFocus: false },
   );
   const coveragePct = coverage?.summary.line_coverage_pct;

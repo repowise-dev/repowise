@@ -265,6 +265,7 @@ def _run_generation_phase(
     skip_infra: bool,
     embedder_name_resolved: str,
     resume: bool,
+    test_run: bool,
 ) -> tuple[bool, bool]:
     """Run the LLM generation phase for a single-repo init.
 
@@ -392,6 +393,7 @@ def _run_generation_phase(
         embedder_name_resolved=embedder_name_resolved,
         resume=resume,
         verbose=True,
+        test_run=test_run,
     )
     return False, False
 
@@ -1405,6 +1407,7 @@ def init_command(
             # file. Resuming against it would skip the entire model run and
             # say nothing, so a template wiki is never a run to continue.
             resume=resume and _prior_docs_mode != "deterministic",
+            test_run=test_run,
         )
         if gen_stop:
             return

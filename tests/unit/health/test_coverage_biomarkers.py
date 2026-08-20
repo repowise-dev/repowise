@@ -17,6 +17,7 @@ def _ctx(
     path: str = "src/example.py",
     dependents: int = 0,
     has_test_file: bool = False,
+    reached_by_tests: bool = False,
     git_meta: dict | None = None,
     line_cov: float | None = None,
     branch_cov: float | None = None,
@@ -28,6 +29,7 @@ def _ctx(
         language="python",
         nloc=100,
         has_test_file=has_test_file,
+        reached_by_tests=reached_by_tests,
         module=None,
         git_meta=git_meta or {},
         dependents_count=dependents,
@@ -173,3 +175,53 @@ def test_coverage_gradient_silent_at_full_coverage() -> None:
 def test_coverage_gradient_skips_test_files() -> None:
     ctx = _ctx(path="tests/test_thing.py", line_cov=10.0)
     assert CoverageGradientDetector().detect(ctx) == []
+
+
+# ---------------------------------------------------------------------------
+# untested_hotspot: the graph-backed half of the no-coverage fallback
+# ---------------------------------------------------------------------------
+
+
+def _uncovered_hotspot(**kw) -> FileContext:
+    """A file that fires untested_hotspot on every axis except the test signal."""
+    return _ctx(git_meta={"is_hotspot": True}, dependents=10, line_cov=None, **kw)
+
+
+def test_untested_hotspot_fires_when_nothing_says_a_test_touches_it() -> None:
+    assert len(UntestedHotspotDetector().detect(_uncovered_hotspot())) == 1
+
+
+def test_a_test_reaching_it_in_the_graph_suppresses_the_finding() -> None:
+    """The live false positive: no test is *named* for the file, but six import it.
+
+    Suites that name their tests for behaviour satisfy no naming convention, so
+    ``has_test_file`` stays False and this used to fire on files the graph
+    records several test files importing.
+    """
+    ctx = _uncovered_hotspot(has_test_file=False, reached_by_tests=True)
+    assert UntestedHotspotDetector().detect(ctx) == []
+
+
+def test_either_signal_alone_is_enough() -> None:
+    # Asserting "nothing tests this" is the one accusation this biomarker makes,
+    # so the bar for making it is no evidence from either source.
+    for kw in ({"has_test_file": True}, {"reached_by_tests": True}):
+        assert UntestedHotspotDetector().detect(_uncovered_hotspot(**kw)) == []
+
+
+def test_reachability_does_not_override_a_real_coverage_number() -> None:
+    """Measured coverage decides on its own; the inferred signal never blends in.
+
+    Reaching cannot speak to how much of a file runs, so a file the graph
+    reaches and coverage measures at 12% is still an untested hotspot.
+    """
+    ctx = _ctx(
+        git_meta={"is_hotspot": True},
+        dependents=10,
+        line_cov=12.0,
+        total_lines=50,
+        reached_by_tests=True,
+    )
+    results = UntestedHotspotDetector().detect(ctx)
+    assert len(results) == 1
+    assert results[0].details["reached_by_tests"] is True

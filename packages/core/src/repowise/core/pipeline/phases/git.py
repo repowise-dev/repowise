@@ -12,7 +12,7 @@ from typing import Any
 import structlog
 
 from repowise.core.ingestion.git_indexer import GitIndexTier
-from repowise.core.pipeline.progress import ProgressCallback
+from repowise.core.pipeline.progress import ProgressCallback, emit_warning
 
 from ._common import _phase_done
 
@@ -85,6 +85,9 @@ async def _run_git_indexing(
             # per-file git walk that keeps running afterwards (audit #29).
             _phase_done(progress, "co_change")
 
+        def _on_warning(text: str) -> None:
+            emit_warning(progress, text)
+
         git_summary, git_metadata_list = await git_indexer.index_repo(
             "",
             on_start=_on_start,
@@ -92,6 +95,7 @@ async def _run_git_indexing(
             on_co_change_start=_on_co_change_start,
             on_commit_done=_on_commit_done,
             on_co_change_done=_on_co_change_done,
+            on_warning=_on_warning,
         )
         git_meta_map = {m["file_path"]: m for m in git_metadata_list}
         _phase_done(progress, "git")

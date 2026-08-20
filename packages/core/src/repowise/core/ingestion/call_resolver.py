@@ -31,6 +31,7 @@ from typing import Any
 
 import structlog
 
+from .language_data import get_builtin_methods
 from .languages.receiver_types import (
     FRAMEWORK_DECORATOR_LANGUAGES,
     IMPLICIT_FIELD_LANGUAGES,
@@ -946,8 +947,15 @@ class CallResolver:
         # and a method both declare, firing the tier where it used to refuse —
         # measured at +916 new 0.50-confidence edges on goose, on the one tier
         # hand-read at 28.6% precision.
+        #
+        # A std-library name is refused the same way, and for the same reason
+        # one rung up: the name is in scope in every file without an import,
+        # so the repo symbol that happens to share it is not what the call
+        # site named. `Ok(())` and a chained `.unwrap()` are the shape.
         candidates = self._global_symbols.get(target_name, [])
         if len(candidates) == 1 and candidates[0] != caller_id:
+            if target_name in get_builtin_methods(self._language_of(file_path) or ""):
+                return None
             if candidates[0] in self._non_callable_ids:
                 # Refused here rather than by falling through, so "this tier
                 # can lose an edge but never gain one" is true of the control

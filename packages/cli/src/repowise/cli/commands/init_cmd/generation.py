@@ -258,6 +258,7 @@ def run_repo_generation(
     embedder_name_resolved: str,
     resume: bool,
     verbose: bool,
+    test_run: bool = False,
 ) -> list[Any]:
     """Generate wiki pages for one repo and enrich its knowledge graph.
 
@@ -357,6 +358,7 @@ def run_repo_generation(
                     if getattr(result, "knowledge_graph_result", None) is not None
                     else None
                 ),
+                test_run=test_run,
             )
         )
 

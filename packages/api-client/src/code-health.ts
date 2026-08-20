@@ -10,6 +10,7 @@ import type {
   HealthFilesResponse,
   HealthFinding,
   HealthCoverageResponse,
+  TestsReachingFile,
   HealthFileBreakdownResponse,
   HealthOverviewResponse,
   HealthTrendResponse,
@@ -104,11 +105,26 @@ export async function updateFindingStatus(
 
 export async function getHealthCoverage(
   repoId: string,
-  opts?: { file_path?: string; limit?: number; module_limit?: number },
+  opts?: {
+    file_path?: string;
+    limit?: number;
+    module_limit?: number;
+    include_inferred?: boolean;
+  },
 ): Promise<HealthCoverageResponse> {
   return apiGet<HealthCoverageResponse>(
     `/api/repos/${repoId}/health/coverage`,
     opts,
+  );
+}
+
+export async function getTestsReaching(
+  repoId: string,
+  filePath: string,
+): Promise<TestsReachingFile> {
+  return apiGet<TestsReachingFile>(
+    `/api/repos/${repoId}/health/tests-reaching`,
+    { file_path: filePath },
   );
 }
 
