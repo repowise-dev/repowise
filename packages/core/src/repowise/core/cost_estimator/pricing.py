@@ -56,6 +56,7 @@ _COST_TABLE_PREFIX: dict[str, tuple[float, float]] = {
     "gemini": (0.00025, 0.0015),
     "llama": (0.0, 0.0),
     "mock": (0.0, 0.0),
+    "claude_cli/": (0.0, 0.0),
     "codex_cli/": (0.0, 0.0),
     "opencode/": (0.0, 0.0),
 }
@@ -66,8 +67,9 @@ def _lookup_cost(model_name: str) -> tuple[float, float]:
     lower = model_name.lower()
     # OpenRouter/LiteLLM slugs carry a routing prefix (`google/gemini-3.5-flash-lite`)
     # that hides the model from every entry below, which priced them at zero.
-    # `codex_cli/` and `opencode/` are genuinely free, so they keep their prefixes.
-    if "/" in lower and not lower.startswith(("codex_cli/", "opencode/")):
+    # `claude_cli/`, `codex_cli/` and `opencode/` are genuinely free (subscription
+    # billing out of band), so they keep their prefixes.
+    if "/" in lower and not lower.startswith(("claude_cli/", "codex_cli/", "opencode/")):
         lower = lower.rsplit("/", 1)[-1]
     if lower in _COST_TABLE_EXACT:
         return _COST_TABLE_EXACT[lower]

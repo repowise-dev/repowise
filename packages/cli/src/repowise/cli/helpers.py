@@ -982,9 +982,10 @@ def resolve_provider(
         "No provider configured. Use --provider, set REPOWISE_PROVIDER, "
         "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / "
         "OLLAMA_BASE_URL / GEMINI_API_KEY / GOOGLE_API_KEY / DEEPSEEK_API_KEY / "
-        "KIMI_API_KEY / LITELLM_API_KEY. Use REPOWISE_PROVIDER=codex_cli to use "
-        "an authenticated Codex CLI subscription, or REPOWISE_PROVIDER=opencode "
-        "to use opencode."
+        "KIMI_API_KEY / LITELLM_API_KEY. Use REPOWISE_PROVIDER=claude_cli to use "
+        "an authenticated Claude Code CLI subscription, REPOWISE_PROVIDER=codex_cli "
+        "to use an authenticated Codex CLI subscription, or "
+        "REPOWISE_PROVIDER=opencode to use opencode."
     )
 
 
@@ -1083,6 +1084,16 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
     }
 
     if provider_name:
+        if provider_name == "claude_cli":
+            import shutil
+
+            if not shutil.which("claude"):
+                warnings.append(
+                    "Provider 'claude_cli' requires the Claude Code CLI. "
+                    "Install it with: npm install -g @anthropic-ai/claude-code"
+                )
+            return warnings
+
         if provider_name == "codex_cli":
             if not _is_codex_cli_available():
                 warnings.append(
