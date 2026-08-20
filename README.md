@@ -146,8 +146,9 @@ layers and renders every wiki page from your code's structure, with no API key a
 no spend. Convert any part of it to LLM-written prose whenever you want, one page,
 one directory, or a ranked coverage slice at a time, and pay only for what you pick,
 from the CLI or right in the dashboard with the cost shown before you confirm.
-(Seven of the eight decision sources are deterministic too; only the one harvested
-during doc generation needs a provider.)
+(Six of the seven decision sources are deterministic too; only comment
+archaeology, which reads rationale prose on high-centrality code, needs a
+provider.)
 
 Full detail on every layer: **[docs/layers/INTELLIGENCE_LAYERS.md →](docs/layers/INTELLIGENCE_LAYERS.md)**
 How the graph sees a call, how it resolves one, how much to trust the result, and
@@ -216,21 +217,19 @@ That fallback fails in both directions, and this repo is the proof. Five of its
 six worst bug-magnet files have no test named for them and read as untested while
 the graph names 3 to 23 test files each. The sixth is worse: matching on basename
 paired the *health* engine with the *distill* engine's tests and called it tested.
-**74 of 110 standing untested-hotspot findings clear once the graph is consulted**,
-18 of them critical.
 
 ```bash
 repowise impacted-tests main..HEAD   # only the tests this diff actually exercises
 repowise health                      # untested hotspots, now graph-aware
 ```
 
-<sub>The two tiers are never averaged: rows are stamped <code>basis: "measured"</code>
-or <code>"inferred"</code>, measured wins outright where both can answer, and the
-inferred tier may never produce a percentage because importing a module over-claims
-what a test body touches. Sound as a floor, unsound as a quantity, and labelled so.
-The one-hop default was measured rather than chosen, against a real
-<code>coverage run --contexts=test</code>: <strong>93.1% run-list precision at a
-96.8% hit rate</strong>, against 73.8% at two hops.
+<sub>Dogfooded against a real <code>coverage run --contexts=test</code>:
+<strong>95.7% precision</strong> on what reaches a file and <strong>97.5% on the
+run list</strong>, at a 100% hit rate, against 72.1% and 94.8% for the one-hop
+import walk this replaced. The two tiers are never averaged: rows are stamped
+<code>basis: "measured"</code> or <code>"inferred"</code>, measured wins outright
+where both can answer, and the inferred tier may never produce a percentage.
+Sound as a floor, unsound as a quantity, and labelled so.
 <a href="docs/layers/TEST_INTELLIGENCE.md"><strong>Test intelligence →</strong></a></sub>
 
 ---

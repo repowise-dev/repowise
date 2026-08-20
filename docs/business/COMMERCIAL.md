@@ -41,21 +41,23 @@ scale, in a regulated or security-sensitive environment**:
 
 All of the following ship in `pip install repowise` today, free for internal use.
 
-- **Five intelligence layers**: Graph (tree-sitter AST across 19 languages, two-tier
-  dependency graph, call resolution, heritage extraction, Leiden communities,
-  PageRank / betweenness / SCC), Git (hotspots, ownership, co-change pairs, bus
-  factor, significant commits, contributor profiles, module health), Documentation
-  (a wiki page per module and file, freshness scoring, hybrid search), Decision
-  (architectural decision records linked to graph nodes, staleness tracking), and
-  Code Health (49 deterministic detectors, 1–10 score per file, coverage
-  ingestion, trend alerts).
+- **[Five intelligence layers](../layers/INTELLIGENCE_LAYERS.md)**: Graph
+  (tree-sitter AST across 19 languages, two-tier dependency graph, call
+  resolution, heritage extraction, Leiden communities, PageRank / betweenness /
+  SCC), Git (hotspots, ownership, co-change pairs, bus factor, significant
+  commits, contributor profiles, module health), Documentation (a wiki page per
+  module and file, freshness scoring, hybrid search), Decision (architectural
+  decision records linked to graph nodes, staleness tracking), and Code Health
+  (49 deterministic detectors, 1–10 score per file, coverage ingestion, trend
+  alerts). Full detail on each, and what every layer costs to build:
+  **[INTELLIGENCE_LAYERS.md](../layers/INTELLIGENCE_LAYERS.md)**.
 - **Zero LLM calls in every analysis layer.** Graph, git, code health, change
   risk, dead code and the PR bot make no model calls at all, and the whole wiki
   renders from code structure with no API key (`repowise init --no-prose`).
   Model-written prose is opt-in, priced before you confirm it, and runs on your
-  own key or fully offline through Ollama. Seven of the eight decision sources
-  are deterministic as well; only the one harvested during doc generation needs a
-  provider.
+  own key or fully offline through Ollama. Six of the seven decision sources are
+  deterministic as well; only comment archaeology, which reads rationale prose on
+  high-centrality code, needs a provider.
 - **Ten task-shaped MCP tools**: `get_overview`, `get_answer`, `get_context`,
   `get_symbol`, `search_codebase`, `get_risk`, `get_change_risk`, `get_why`,
   `get_dead_code`, `get_health`, plus `list_repos` for workspace routing.
@@ -77,20 +79,13 @@ All of the following ship in `pip install repowise` today, free for internal use
   Security (local pattern scan), Knowledge Map, and the workspace views.
 - **Dead-code detection**: pure graph traversal, confidence-tiered, framework-aware
   (ASP.NET, Django, FastAPI, Flask, Rails, Laravel), dynamic-import aware.
-- **Test intelligence, from both a coverage report and the call graph.** Coverage
-  ingestion is a product category of its own (Codecov, Coveralls), and Repowise
-  ingests the same LCOV / Cobertura / Clover reports, reports how much of a
-  measurement still holds as the code moves under it, and crosses coverage with
-  hotspots to find untested risk. It then does the half a coverage service
-  structurally cannot: **answer "which tests reach this file" and "which tests does
-  this diff exercise" with no report at all**, walking the call graph the index
-  already holds. A coverage service only ever sees the report, so when there is no
-  report there is no answer; Repowise has the graph. The two tiers are labelled
-  `basis: "measured"` and `basis: "inferred"` and never averaged, the inferred tier
-  may never emit a percentage, and empty means *unknown* rather than "no tests".
-  On this repository the graph clears **74 of 110** standing untested-hotspot
-  findings that filename matching had produced. Zero LLM calls, no CI integration
-  required. ([TEST_INTELLIGENCE.md](../layers/TEST_INTELLIGENCE.md))
+- **Test intelligence, from a coverage report and from the call graph.** Ingests
+  LCOV / Cobertura / Clover like a coverage service, then does the half a coverage
+  service structurally cannot: answers *which tests reach this file* and *which
+  tests does this diff exercise* **with no report at all**, at **95.7% and 97.5%
+  precision** measured against a real `coverage run --contexts=test`. Measured and
+  inferred rows are labelled and never averaged. Zero LLM calls, no CI integration.
+  ([TEST_INTELLIGENCE.md](../layers/TEST_INTELLIGENCE.md))
 - **Privacy** (self-hosted): source never leaves your infrastructure, BYOK or fully
   offline via Ollama. Anonymous, opt-out usage telemetry (command names and coarse
   environment only, never code, paths or repo names) can be turned off with
