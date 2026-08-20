@@ -20,7 +20,7 @@ your agent in under five minutes, with no API key.
 | **Living in an editor** | [VS Code extension](agent/VSCODE.md) | [Codex](agent/CODEX.md) · [opencode](agent/OPENCODE.md) |
 | **A team lead watching what ships** | [Change risk](layers/CHANGE_RISK.md) | [Code health](layers/CODE_HEALTH.md) · [Bug history](layers/BUG_HISTORY.md) |
 | **Running many repos** | [Workspaces](scale/WORKSPACES.md) | [Worktrees](scale/WORKTREES.md) · [Auto-sync](scale/AUTO_SYNC.md) |
-| **Evaluating repowise to buy it** | [Commercial](business/COMMERCIAL.md) | [Security & compliance](business/SECURITY_COMPLIANCE.md) · [Benchmarks](BENCHMARKS.md) |
+| **Evaluating repowise to buy it** | [Commercial](business/COMMERCIAL.md) | [Security & compliance](business/SECURITY_COMPLIANCE.md) · [Benchmarks](BENCHMARKS.md) · [Roadmap](../ROADMAP.md) |
 | **Contributing** | [Architecture](architecture/README.md) | [CONTRIBUTING](../.github/CONTRIBUTING.md) |
 
 ---
@@ -86,7 +86,7 @@ your agent in under five minutes, with no API key.
 
 | Doc | What it covers |
 |-----|----------------|
-| [BENCHMARKS.md](BENCHMARKS.md) | Agent-efficiency, distillation, and defect-prediction results, each with what it does not show |
+| [BENCHMARKS.md](BENCHMARKS.md) | Every published number with its sample size and its test: call-graph precision judged by a compiler we do not control, retrieval against the agent-context field, defect prediction against CodeScene, distillation, and the rows we lose |
 
 ## Teams & business
 
@@ -94,6 +94,7 @@ your agent in under five minutes, with no API key.
 |-----|----------------|
 | [business/COMMERCIAL.md](business/COMMERCIAL.md) | Hosted tier, enterprise (on-prem, SSO/SCIM), and commercial licensing |
 | [business/SECURITY_COMPLIANCE.md](business/SECURITY_COMPLIANCE.md) | What leaves your machine, what gets stored, and the answers your security team wants |
+| [ROADMAP.md](../ROADMAP.md) | What we are building next, what we are not building, and why there are no dates on it |
 
 ## Architecture & internals
 

@@ -19,7 +19,7 @@ models. Specific pricing figures are provided in a separate proposal.
 ## 1. Who the commercial license is for
 
 The open-source distribution covers the full developer-experience surface: the five
-intelligence layers, the eleven MCP tools, multi-repo workspaces, the local dashboard,
+intelligence layers, the ten MCP tools, multi-repo workspaces, the local dashboard,
 auto-sync, and auto-generated `CLAUDE.md`. That is everything an engineer or a team
 needs to make their AI coding agents codebase-aware.
 
@@ -45,17 +45,24 @@ All of the following ship in `pip install repowise` today, free for internal use
   dependency graph, call resolution, heritage extraction, Leiden communities,
   PageRank / betweenness / SCC), Git (hotspots, ownership, co-change pairs, bus
   factor, significant commits, contributor profiles, module health), Documentation
-  (LLM-generated wiki, freshness scoring, RAG search), Decision (architectural
-  decision records linked to graph nodes, staleness tracking), and Code Health
-  (49 deterministic detectors, 1–10 score per file, coverage ingestion, trend
-  alerts).
+  (a wiki page per module and file, freshness scoring, hybrid search), Decision
+  (architectural decision records linked to graph nodes, staleness tracking), and
+  Code Health (49 deterministic detectors, 1–10 score per file, coverage
+  ingestion, trend alerts).
+- **Zero LLM calls in every analysis layer.** Graph, git, code health, change
+  risk, dead code and the PR bot make no model calls at all, and the whole wiki
+  renders from code structure with no API key (`repowise init --no-prose`).
+  Model-written prose is opt-in, priced before you confirm it, and runs on your
+  own key or fully offline through Ollama. Seven of the eight decision sources
+  are deterministic as well; only the one harvested during doc generation needs a
+  provider.
 - **Ten task-shaped MCP tools**: `get_overview`, `get_answer`, `get_context`,
   `get_symbol`, `search_codebase`, `get_risk`, `get_change_risk`, `get_why`,
-  `get_dead_code`, `get_health`. Benchmarked at **−33.5 % cost per question**
-  against a bare agent, cheaper on 13 of 15 questions (n=15, p=0.007), and
-  **−49 % to −70 % tool calls** across paired runs on `pallets/flask` and
-  `scikit-learn`. See [docs/BENCHMARKS.md](../BENCHMARKS.md) for the sample
-  sizes, the tests, and the runs where the cost saving did not replicate.
+  `get_dead_code`, `get_health`, plus `list_repos` for workspace routing.
+  Measured at **−31.6 % of the agent's own output tokens** against a bare agent
+  on 43 questions (p < 0.0001), leaner on 37 of 44, reached in 3.8 tool calls
+  where the bare agent needed 7.2. See [docs/BENCHMARKS.md](../BENCHMARKS.md) for
+  the sample sizes, all three agent harnesses, and the rows where we lose.
 - **Multi-repo workspace intelligence**: cross-repo co-changes, API contract
   extraction (HTTP / gRPC / topics) with provider↔consumer matching, package
   dependency mapping, federated MCP queries (`repo="all"`), workspace dashboard and
@@ -92,6 +99,21 @@ sit at Good tier,
 and Luau is partial. SQL/dbt, shell, HTML, and the config formats are handled by
 dedicated extractors on top of that.
 
+Below those rungs the ladder continues rather than stopping: **7 languages at
+Lightweight** (Elixir, Clojure, Haskell, Lean 4, Erlang, F#, HTML) get a real
+file-to-file import graph with no symbol-level claims, and **9 at Structural**
+(Objective-C, R, Zig, Julia, Elm, OCaml, Crystal, Nim, D) get the full git
+intelligence layer: blame, hotspots, co-change, ownership and bug history. That
+is **35 languages** an estate can be scored on today, and the rung is stated per
+language rather than averaged into a support claim. Full ladder:
+[LANGUAGE_SUPPORT.md](../layers/LANGUAGE_SUPPORT.md).
+
+**Languages are never gated.** Every one of them ships in the AGPL distribution,
+including the ones still climbing. What is on the way up, **COBOL** among them,
+is on the public [roadmap](../../ROADMAP.md#languages). Where you need a language
+or framework that is not there, §5.4 covers having it built and maintained by us
+as a commercial line item, and the result still ships to everyone under AGPL.
+
 For estates built on a particular stack, the relevant Full-tier capabilities are
 worth calling out. For **.NET**, as one example:
 
@@ -122,7 +144,7 @@ the items that matter most to you can be prioritized.
 | Capability | Open Source (AGPL) | Commercial License |
 |------------|:------------------:|:------------------:|
 | Five intelligence layers | ✅ | ✅ |
-| Eleven MCP tools | ✅ | ✅ |
+| Ten task-shaped MCP tools (plus `list_repos`) | ✅ | ✅ |
 | Multi-repo workspaces | ✅ | ✅ |
 | Full-tier language support (incl. C# / .NET) | ✅ | ✅ |
 | Local dashboard (incl. local security pattern scan) | ✅ | ✅ |
