@@ -5,7 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from repowise.core.ingestion.call_resolver import CallResolver
+from repowise.core.ingestion.call_resolver import (
+    PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES,
+    CallResolver,
+)
 from repowise.core.ingestion.models import FileInfo, ParsedFile
 from repowise.core.ingestion.parser import parse_file
 
@@ -156,3 +159,48 @@ def test_cpp_future_get_can_refuse_a_bare_name_fallback(tmp_path: Path) -> None:
 
     assert len(before) == 1
     assert after == []
+
+
+@pytest.mark.parametrize(
+    ("language", "product_source", "use_source", "outer"),
+    [
+        (
+            "csharp",
+            "class Product { public void Run() {} }",
+            "class Use { Product Make() { return new Product(); } void Go() { Make().Run(); } }",
+            "Run",
+        ),
+        (
+            "typescript",
+            "export class Product { run() {} }",
+            "function make(): Product { return null as any; } function use() { make().run(); }",
+            "run",
+        ),
+    ],
+)
+def test_unbound_global_return_type_preserves_legacy_fallback(
+    tmp_path: Path,
+    language: str,
+    product_source: str,
+    use_source: str,
+    outer: str,
+) -> None:
+    extension = "cs" if language == "csharp" else "ts"
+    parsed = {}
+    parsed.update(_parse(tmp_path, f"Product.{extension}", language, product_source))
+    parsed.update(_parse(tmp_path, f"Use.{extension}", language, use_source))
+    use_path = f"Use.{extension}"
+    call = next(c for c in parsed[use_path].calls if c.target_name == outer and c.receiver_call)
+
+    before = CallResolver(parsed, {}, return_type_chain_languages=frozenset()).resolve_file(
+        use_path, [call]
+    )
+    after = CallResolver(
+        parsed, {}, return_type_chain_languages=frozenset({language})
+    ).resolve_file(use_path, [call])
+
+    assert after == before
+
+
+def test_only_audited_cpp_lane_is_enabled_by_default() -> None:
+    assert frozenset({"cpp"}) == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES

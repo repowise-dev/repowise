@@ -1,0 +1,42 @@
+{
+  "base": "4b8cdd97",
+  "decisions": {
+    "java": {
+      "decision": "measured_refusal",
+      "production_enabled": false,
+      "reason": "Both bounded treatments failed source-read precision."
+    },
+    "cpp": {
+      "decision": "ship_narrowly",
+      "family": "future<T>.get()",
+      "production_enabled": true,
+      "added": 0,
+      "retargeted": 0,
+      "refused": 285,
+      "lost": 0,
+      "audit": "30/30 correct wrong-edge removals"
+    },
+    "csharp": {
+      "decision": "measured_refusal",
+      "production_enabled": false,
+      "added": 0,
+      "retargeted": 0,
+      "refused": 0,
+      "lost": 0,
+      "metadata_only": 393,
+      "reason": "No edge identity changed in the narrow treatment."
+    },
+    "typescript": {
+      "decision": "measured_refusal",
+      "production_enabled": false,
+      "added": 0,
+      "retargeted": 0,
+      "refused": 0,
+      "lost": 0,
+      "metadata_only": 4,
+      "tsconfig_configs": 11,
+      "reason": "The wired narrow treatment changed no edge identity."
+    }
+  },
+  "production_lanes": ["cpp"]
+}

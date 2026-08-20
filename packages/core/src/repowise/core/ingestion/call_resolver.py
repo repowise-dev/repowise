@@ -929,6 +929,11 @@ class CallResolver:
                 return False, None
             if found is None:
                 return (type_name in self._known_type_names), None
+        elif language in ("csharp", "typescript"):
+            # These lanes require a file or import/re-export identity.  A
+            # repository-global simple type name is not a language binding.
+            if found is None or found[1] == "global":
+                return False, None
         elif found is None:
             return (type_name in self._known_type_names), None
 

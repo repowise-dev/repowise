@@ -1,0 +1,493 @@
+{
+  "limit": 30,
+  "measurement": "measurements\\return-type\\p18-ocelot-csharp-treatment.json",
+  "samples": {
+    "added": [],
+    "lost": [],
+    "metadata_only": [
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithMetadata",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithMetadata",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "src/Configuration/Creator/StaticRoutesCreator.cs",
+        "line": 120,
+        "source": "var route = new DownstreamRouteBuilder()",
+        "target": "WithMetadata"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithDownstreamScheme",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithDownstreamScheme",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 678,
+        "source": "var downstreamRoute = new DownstreamRouteBuilder()",
+        "target": "WithDownstreamScheme"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithRateLimitOptions",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithRateLimitOptions",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/DownstreamRouteFinder/DiscoveryDownstreamRouteFinderTests.cs",
+        "line": 69,
+        "source": "var downstreamRoute = new DownstreamRouteBuilder()",
+        "target": "WithRateLimitOptions"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 678,
+        "source": "var downstreamRoute = new DownstreamRouteBuilder()",
+        "target": "Build"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/Multiplexing/SimpleJsonResponseAggregatorTests.cs",
+        "line": 106,
+        "source": "var georgeDownstreamRoute = new DownstreamRouteBuilder().WithKey(\"George\").Build();",
+        "target": "Build"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/DownstreamRouteFinder/DiscoveryDownstreamRouteFinderTests.cs",
+        "line": 323,
+        "source": "var dRoute2 = new DownstreamRouteBuilder()",
+        "target": "Build"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithUpstreamHttpMethod",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithUpstreamHttpMethod",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/DownstreamPathManipulation/ClaimsToDownstreamPathMiddlewareTests.cs",
+        "line": 43,
+        "source": "var route = new DownstreamRouteBuilder()",
+        "target": "WithUpstreamHttpMethod"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithDelegatingHandlers",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithDelegatingHandlers",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/Requester/DelegatingHandlerFactoryTests.cs",
+        "line": 153,
+        "source": "var route = new DownstreamRouteBuilder()",
+        "target": "WithDelegatingHandlers"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/Authentication/AuthenticationMiddlewareTests.cs",
+        "line": 277,
+        "source": "var route = new DownstreamRouteBuilder()",
+        "target": "Build"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/Requester/MessageInvokerCacheKeyTests.cs",
+        "line": 40,
+        "source": "var route4 = new DownstreamRouteBuilder()",
+        "target": "Build"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithHttpHandlerOptions",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithHttpHandlerOptions",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/DownstreamRouteFinder/DiscoveryDownstreamRouteFinderTests.cs",
+        "line": 69,
+        "source": "var downstreamRoute = new DownstreamRouteBuilder()",
+        "target": "WithHttpHandlerOptions"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithUpstreamHttpMethod",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithUpstreamHttpMethod",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 491,
+        "source": "var downstreamRoute = new DownstreamRouteBuilder()",
+        "target": "WithUpstreamHttpMethod"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/Requester/MessageInvokerCacheKeyTests.cs",
+        "line": 104,
+        "source": "var route1 = new DownstreamRouteBuilder()",
+        "target": "Build"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 70,
+        "source": "var downstreamRoute = new DownstreamRouteBuilder()",
+        "target": "Build"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/Authentication/AuthenticationMiddlewareTests.cs",
+        "line": 168,
+        "source": "GivenTheDownStreamRouteIs(new DownstreamRouteBuilder()",
+        "target": "Build"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithDownstreamHttpVersionPolicy",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithDownstreamHttpVersionPolicy",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "src/DownstreamRouteFinder/Finder/DiscoveryDownstreamRouteFinder.cs",
+        "line": 52,
+        "source": "var routeBuilder = new DownstreamRouteBuilder()",
+        "target": "WithDownstreamHttpVersionPolicy"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/LoadBalancer/LoadBalancerFactoryTests.cs",
+        "line": 113,
+        "source": "var route = new DownstreamRouteBuilder()",
+        "target": "Build"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithDownstreamScheme",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithDownstreamScheme",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 160,
+        "source": "var downstreamRoute = new DownstreamRouteBuilder()",
+        "target": "WithDownstreamScheme"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithDownstreamScheme",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithDownstreamScheme",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 529,
+        "source": "var downstreamRoute = new DownstreamRouteBuilder()",
+        "target": "WithDownstreamScheme"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithLoadBalancerKey",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithLoadBalancerKey",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "src/DownstreamRouteFinder/Finder/DiscoveryDownstreamRouteFinder.cs",
+        "line": 52,
+        "source": "var routeBuilder = new DownstreamRouteBuilder()",
+        "target": "WithLoadBalancerKey"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithLoadBalancerKey",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithLoadBalancerKey",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/LoadBalancer/LeastConnectionCreatorTests.cs",
+        "line": 26,
+        "source": "var route = new DownstreamRouteBuilder()",
+        "target": "WithLoadBalancerKey"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithRequestIdKey",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithRequestIdKey",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/RequestId/RequestIdMiddlewareTests.cs",
+        "line": 45,
+        "source": "var route = new DownstreamRouteBuilder()",
+        "target": "WithRequestIdKey"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 44,
+        "source": "var downstreamRoute = new DownstreamRouteBuilder()",
+        "target": "Build"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithUpstreamHttpMethod",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithUpstreamHttpMethod",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/QueryStrings/ClaimsToQueryStringMiddlewareTests.cs",
+        "line": 44,
+        "source": "var route = new DownstreamRouteBuilder()",
+        "target": "WithUpstreamHttpMethod"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithMetadata",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithMetadata",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "src/DownstreamRouteFinder/Finder/DiscoveryDownstreamRouteFinder.cs",
+        "line": 73,
+        "source": "routeBuilder",
+        "target": "WithMetadata"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/Headers/HttpHeadersTransformationMiddlewareTests.cs",
+        "line": 85,
+        "source": "var dRoute = new DownstreamRouteBuilder()",
+        "target": "Build"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::Build",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/Multiplexing/MultiplexingMiddlewareTests.cs",
+        "line": 303,
+        "source": "new DownstreamRouteBuilder().WithKey(\"comments\").Build(),",
+        "target": "Build"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithUpstreamHttpMethod",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithUpstreamHttpMethod",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/RequestId/RequestIdMiddlewareTests.cs",
+        "line": 95,
+        "source": "var route = new DownstreamRouteBuilder()",
+        "target": "WithUpstreamHttpMethod"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithDownstreamPathTemplate",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithDownstreamPathTemplate",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "unit/DownstreamUrlCreator/DownstreamUrlCreatorMiddlewareTests.cs",
+        "line": 365,
+        "source": "var downstreamRoute = new DownstreamRouteBuilder()",
+        "target": "WithDownstreamPathTemplate"
+      },
+      {
+        "after": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithCacheOptions",
+          "confidence": 0.88,
+          "origin": "return_type_import"
+        },
+        "before": {
+          "callee": "src/Configuration/Builder/DownstreamRouteBuilder.cs::DownstreamRouteBuilder::WithCacheOptions",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "src/DownstreamRouteFinder/Finder/DiscoveryDownstreamRouteFinder.cs",
+        "line": 52,
+        "source": "var routeBuilder = new DownstreamRouteBuilder()",
+        "target": "WithCacheOptions"
+      }
+    ],
+    "refused": [],
+    "retargeted": []
+  },
+  "seed": 20260821
+}

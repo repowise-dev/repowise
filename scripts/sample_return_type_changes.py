@@ -19,7 +19,7 @@ def main() -> None:
     payload = json.loads(args.measurement.read_text(encoding="utf-8"))
     rng = random.Random(args.seed)
     samples = {}
-    for bucket in ("added", "retargeted", "refused", "lost"):
+    for bucket in ("added", "retargeted", "refused", "lost", "metadata_only"):
         rows = payload.get("rows", {}).get(bucket, [])
         samples[bucket] = rows if len(rows) <= args.limit else rng.sample(rows, args.limit)
     result = {

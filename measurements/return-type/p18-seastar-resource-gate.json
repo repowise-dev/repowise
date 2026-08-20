@@ -1,0 +1,59 @@
+{
+  "control": {
+    "call_edges": 6480,
+    "call_hash": "9ce4646c0262064a31ee08f778c048465d2f03eccc297d12a8a896b4328d11f2",
+    "dead_code": {
+      "unreachable_file": 1,
+      "unused_export": 547,
+      "unused_internal": 16,
+      "zombie_package": 1
+    },
+    "export_bytes": 9790129,
+    "export_hash": "f33c962d4f2a7475940edfe6c7d7deb1b8826db0394d2b2f93f25cb7e082f884",
+    "median_ms_per_file": 8.075659582568102,
+    "peak_bytes": [
+      31173084,
+      30396503,
+      30626966
+    ],
+    "seconds": [
+      4.457722900027875,
+      4.2262347000068985,
+      4.25587260001339
+    ]
+  },
+  "delta": {
+    "call_edges": -16,
+    "export_bytes": -4631,
+    "median_peak_bytes": 3890400,
+    "median_time_percent": 7.2052932216214005
+  },
+  "files": 527,
+  "iterations": 3,
+  "language": "cpp",
+  "repo": "C:\\Users\\ragha\\Desktop\\repowise\\test-repos\\seastar",
+  "treatment": {
+    "call_edges": 6464,
+    "call_hash": "2b8c5cc9b8427048c024e3a4039a72ac2f8627a301584f1c2fbe723ef3ba88fa",
+    "dead_code": {
+      "unreachable_file": 1,
+      "unused_export": 547,
+      "unused_internal": 16,
+      "zombie_package": 1
+    },
+    "export_bytes": 9785498,
+    "export_hash": "163ef73b2f7f4ff59862cf88f4b59758c07ec0e2bd5225defacaffeb8e809ddf",
+    "median_ms_per_file": 8.6575345350721,
+    "peak_bytes": [
+      34517366,
+      34259447,
+      34522407
+    ],
+    "seconds": [
+      4.562520699982997,
+      4.196855499991216,
+      4.697438000002876
+    ]
+  },
+  "treatment_deterministic": true
+}

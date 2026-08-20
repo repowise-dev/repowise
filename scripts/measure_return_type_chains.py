@@ -19,6 +19,7 @@ from repowise.core.ingestion.models import ParsedFile
 from repowise.core.ingestion.parser import parse_file
 from repowise.core.ingestion.return_types import declared_return_type, normalize_return_type
 from repowise.core.ingestion.traverser import FileTraverser
+from repowise.core.ingestion.tsconfig_resolver import wire_tsconfig_resolver
 
 _TYPE_KINDS = frozenset({"class", "struct", "interface", "enum", "trait", "impl"})
 
@@ -77,6 +78,8 @@ def _resolved_edges(
         for parsed_file in parsed.values():
             builder.add_file(parsed_file)
         builder.set_source_map(sources)
+        if "typescript" in {pf.file_info.language for pf in parsed.values()}:
+            wire_tsconfig_resolver(builder, repo)
         builder.build()
     finally:
         resolver_module.CallResolver._resolve_one = original
@@ -162,6 +165,8 @@ def compare(repo: Path, language: str) -> dict[str, object]:
     parsed, sources = _parse_repo(repo, language)
     before = _resolved_edges(repo, parsed, sources, frozenset())
     after = _resolved_edges(repo, parsed, sources, frozenset({language}))
+    symbols = {symbol.id: symbol for pf in parsed.values() for symbol in pf.symbols}
+    known_types = {symbol.name for symbol in symbols.values() if symbol.kind in _TYPE_KINDS}
     structural = {
         (path, call.line, call.target_name)
         for path, pf in parsed.items()
@@ -173,6 +178,44 @@ def compare(repo: Path, language: str) -> dict[str, object]:
     }
     counts: Counter[str] = Counter()
     rows: dict[str, list[dict[str, object]]] = defaultdict(list)
+    producer_kinds: Counter[str] = Counter()
+    return_shapes: Counter[str] = Counter()
+    identities: Counter[str] = Counter()
+    for path, pf in parsed.items():
+        for call in pf.calls:
+            if call.receiver_call is None:
+                continue
+            inner = call.receiver_call
+            inner_edge = before.get((path, call.line, inner.target_name))
+            symbol = symbols.get(str(inner_edge["callee"])) if inner_edge else None
+            if symbol is None:
+                producer_kinds["unresolved"] += 1
+                return_shapes["unavailable"] += 1
+                identities["unavailable"] += 1
+                continue
+            if symbol.kind in _TYPE_KINDS:
+                producer_kinds["constructor"] += 1
+                return_shapes["named"] += 1
+                identities["repository_declared"] += 1
+                continue
+            producer_kinds["method"] += 1
+            raw = declared_return_type(symbol.signature or "")
+            if raw is None:
+                return_shapes["missing"] += 1
+                identities["unavailable"] += 1
+                continue
+            generic = "<" in raw and ">" in raw
+            nullable = raw.rstrip().endswith("?")
+            if generic and nullable:
+                return_shapes["generic_nullable"] += 1
+            elif generic:
+                return_shapes["generic"] += 1
+            elif nullable:
+                return_shapes["nullable"] += 1
+            else:
+                return_shapes["named"] += 1
+            normalized = normalize_return_type(raw, language)
+            identities["repository_declared" if normalized in known_types else "external"] += 1
     for key in sorted(before.keys() | after.keys()):
         old = before.get(key)
         new = after.get(key)
@@ -206,6 +249,11 @@ def compare(repo: Path, language: str) -> dict[str, object]:
         "language": language,
         "files": len(parsed),
         "counts": dict(sorted(counts.items())),
+        "shape_counts": {
+            "producer_kind": dict(sorted(producer_kinds.items())),
+            "return_shape": dict(sorted(return_shapes.items())),
+            "identity": dict(sorted(identities.items())),
+        },
         "rows": dict(sorted(rows.items())),
     }
 
