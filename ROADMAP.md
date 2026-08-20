@@ -46,7 +46,9 @@ ladder covers **35 languages, 19 of them parsed to a full AST**.
 | **ABAP** | Exploring | The same argument as COBOL, in SAP estates. |
 | **RPG / AS400** | Exploring | Named alongside COBOL often enough to track. |
 | **Fortran** | Exploring | Scientific and engineering codebases with long lifespans and thin documentation. |
-| **Objective-C** | Planned | Currently Structural, meaning git history only. The grammar is mature, so this is a climb up the ladder rather than new ground. |
+| **Apex** | Planned | Salesforce estates, where the org is often the least documented system a company runs. Apex is Java-shaped, and Lightning Web Components are already covered as JavaScript and HTML. |
+| **Ada** | Exploring | Defense and aerospace, long-lived and thinly documented, and usually in the same estates asking about COBOL. |
+| **Objective-C** | Planned | Currently Structural, meaning history only. The grammar is mature, so this is a climb up the ladder rather than new ground. |
 | **Elixir**, **F#** | Planned | Currently Lightweight, meaning file-to-file imports. Both grammars are already on PyPI, so these are AST upgrades rather than new ground. |
 | **Template dialects** (Django/Jinja, ERB, Blade, Thymeleaf, Go templates) | Planned | Today they parse cleanly as HTML and yield nothing, because `{% extends "base.html" %}` is plain text to an HTML parser. A stated ceiling, not an oversight. |
 
@@ -69,6 +71,39 @@ it in public. Commercial customers can have a language or framework built and
 maintained by us as a line item, which is
 [GA today](docs/business/COMMERCIAL.md#54-enterprise-operations), and the result
 still ships to everyone under AGPL.
+
+---
+
+## Source control beyond git
+
+Plenty of the code most worth indexing has never been near a git remote. It sits
+in Perforce, in Subversion, or on a mainframe under a change-management system
+older than most of the people maintaining it.
+
+**A repository with no git at all already indexes today.** Only one of the five
+layers is derived from history; the graph, documentation, decisions and
+code-health layers are all computed from the working tree. Point `repowise init`
+at a plain directory, an export, or a Perforce or SVN workspace and those four
+build normally. What is missing is the history-derived half: hotspots, ownership,
+co-change, bus factor, bug history, and change risk, all of which need a commit
+log to mine.
+
+Closing that gap means teaching the history layer to read something other than
+`git log`. The signals above it do not care where the history came from once it
+is normalized into changes, authors, timestamps and touched files, which is the
+shape every one of these systems has.
+
+| System | Status | Shape of the work |
+|---|---|---|
+| **Perforce Helix Core** | Planned | Changelists map to commits almost directly, and `p4 filelog` and `p4 annotate` cover history and blame. Common in games, hardware, embedded and anywhere the repo carries large binaries. |
+| **Subversion** | Planned | Revisions map cleanly; `svn log` and `svn blame` are close analogues. Still the system of record in a lot of long-lived estates. |
+| **TFVC (Azure DevOps)** | Exploring | Changesets, for shops on Azure DevOps that never moved to its git repos. |
+| **Mercurial** | Exploring | Changesets map cleanly, and the work is small. Ordered by demand rather than difficulty. |
+| **CA Endevor SCM** (Broadcom) | Exploring | Not a commit DAG. Endevor tracks elements moving through a stage and environment promotion hierarchy, so the practical shape is an export to a filesystem plus a history adapter that reads element history rather than a log. Pairs with the COBOL estates above. |
+| **ChangeMan ZMF** (OpenText) | Exploring | The same argument, with packages instead of elements. |
+
+**Ask, do not guess, if your system is not listed.** The seam is the same for all
+of them, and what decides the order is which ones customers actually run.
 
 ---
 

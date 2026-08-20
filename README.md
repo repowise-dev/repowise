@@ -848,6 +848,13 @@ matched producer to consumer so a breaking change is caught before it ships,
 cross-repo co-change, and one federated MCP endpoint that answers across all of
 it. *(Estate-scale dashboards: [in development](ROADMAP.md#multi-repo-and-workspace).)*
 
+**Not on git?** Only the history layer needs a commit log. Point `repowise init`
+at a plain directory, an export, or a Perforce or SVN workspace and the graph,
+documentation, decisions and code-health layers all build normally; what is
+missing is hotspots, ownership, co-change and bug history until the history layer
+learns to read your system.
+*([Perforce, SVN, Endevor and ChangeMan on the roadmap →](ROADMAP.md#source-control-beyond-git))*
+
 **Everything above is labelled GA, in development, or planned, line by line, in
 [COMMERCIAL.md](docs/business/COMMERCIAL.md).** Some of it is shipping today and
 some of it is not, and a comparison table that blurred the two would not survive
