@@ -688,10 +688,6 @@ class ASTParser:
 
             # Visibility
             modifier_texts = [_node_text(m, src) for m in modifier_nodes]
-            if def_node.parent and def_node.parent.type == "decorated_definition":
-                for sibling in def_node.parent.children:
-                    if sibling.type == "decorator":
-                        modifier_texts.append(_node_text(sibling, src))
 
             # Rust: outer attributes (#[...]) are preceding siblings of the item
             rust_attrs: list[str] = []
