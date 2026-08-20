@@ -78,7 +78,11 @@ def test_return_type_chain_retargets_to_declared_type(
     expected_type: str,
 ) -> None:
     parsed = _parse(tmp_path, path, language, source)
-    call = next(c for c in parsed[path].calls if c.target_name == outer and c.receiver_call)
+    call = next(
+        c
+        for c in parsed[path].calls
+        if c.target_name == outer and getattr(c, "receiver_call", None)
+    )
 
     control = CallResolver(
         parsed, {}, repo_path=str(tmp_path), return_type_chain_languages=frozenset()
@@ -102,7 +106,9 @@ def test_java_unknown_member_preserves_legacy_fallback(tmp_path: Path) -> None:
     )
     parsed = _parse(tmp_path, "Example.java", "java", source)
     call = next(
-        c for c in parsed["Example.java"].calls if c.target_name == "run" and c.receiver_call
+        c
+        for c in parsed["Example.java"].calls
+        if c.target_name == "run" and getattr(c, "receiver_call", None)
     )
 
     before = CallResolver(parsed, {}, return_type_chain_languages=frozenset()).resolve_file(
@@ -127,7 +133,7 @@ def test_java_ambiguous_overload_return_preserves_legacy_fallback(tmp_path: Path
     call = next(
         c
         for c in parsed["Example.java"].calls
-        if c.target_name == "run" and c.receiver_call and c.line == 7
+        if c.target_name == "run" and getattr(c, "receiver_call", None) and c.line == 7
     )
 
     before = CallResolver(parsed, {}, return_type_chain_languages=frozenset()).resolve_file(
@@ -147,7 +153,9 @@ def test_cpp_future_get_can_refuse_a_bare_name_fallback(tmp_path: Path) -> None:
     )
     parsed = _parse(tmp_path, "example.cpp", "cpp", source)
     call = next(
-        c for c in parsed["example.cpp"].calls if c.target_name == "get" and c.receiver_call
+        c
+        for c in parsed["example.cpp"].calls
+        if c.target_name == "get" and getattr(c, "receiver_call", None)
     )
 
     before = CallResolver(parsed, {}, return_type_chain_languages=frozenset()).resolve_file(
@@ -190,7 +198,11 @@ def test_unbound_global_return_type_preserves_legacy_fallback(
     parsed.update(_parse(tmp_path, f"Product.{extension}", language, product_source))
     parsed.update(_parse(tmp_path, f"Use.{extension}", language, use_source))
     use_path = f"Use.{extension}"
-    call = next(c for c in parsed[use_path].calls if c.target_name == outer and c.receiver_call)
+    call = next(
+        c
+        for c in parsed[use_path].calls
+        if c.target_name == outer and getattr(c, "receiver_call", None)
+    )
 
     before = CallResolver(parsed, {}, return_type_chain_languages=frozenset()).resolve_file(
         use_path, [call]

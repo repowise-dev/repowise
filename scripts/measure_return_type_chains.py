@@ -102,14 +102,15 @@ def measure(repo: Path, language: str) -> dict[str, object]:
     seen: set[tuple[str, int, str]] = set()
     for path, pf in parsed.items():
         for call in pf.calls:
-            if call.receiver_call is None:
+            receiver_call = getattr(call, "receiver_call", None)
+            if receiver_call is None:
                 continue
             key = (path, call.line, call.target_name)
             if key in seen:
                 continue
             seen.add(key)
             buckets["structural_sites"] += 1
-            inner = call.receiver_call
+            inner = receiver_call
             inner_edge = baseline.get((path, call.line, inner.target_name))
             inner_id = str(inner_edge["callee"]) if inner_edge else None
             if inner_id is None:
@@ -171,7 +172,7 @@ def compare(repo: Path, language: str) -> dict[str, object]:
         (path, call.line, call.target_name)
         for path, pf in parsed.items()
         for call in pf.calls
-        if call.receiver_call is not None
+        if getattr(call, "receiver_call", None) is not None
     }
     source_lines = {
         path: source.decode("utf-8", "replace").splitlines() for path, source in sources.items()
@@ -183,9 +184,10 @@ def compare(repo: Path, language: str) -> dict[str, object]:
     identities: Counter[str] = Counter()
     for path, pf in parsed.items():
         for call in pf.calls:
-            if call.receiver_call is None:
+            receiver_call = getattr(call, "receiver_call", None)
+            if receiver_call is None:
                 continue
-            inner = call.receiver_call
+            inner = receiver_call
             inner_edge = before.get((path, call.line, inner.target_name))
             symbol = symbols.get(str(inner_edge["callee"])) if inner_edge else None
             if symbol is None:

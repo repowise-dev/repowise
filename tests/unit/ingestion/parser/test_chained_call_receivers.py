@@ -53,7 +53,9 @@ def test_chained_call_carries_structural_inner_call(
     receiver: str,
 ) -> None:
     parsed = parser.parse_file(_make_file_info(path, language), source)
-    call = next(c for c in parsed.calls if c.target_name == outer and c.receiver_call)
+    call = next(
+        c for c in parsed.calls if c.target_name == outer and getattr(c, "receiver_call", None)
+    )
 
     assert call.receiver_name is None
     assert call.receiver_call is not None

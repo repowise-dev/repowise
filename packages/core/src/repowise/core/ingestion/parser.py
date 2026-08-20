@@ -1205,7 +1205,6 @@ class ASTParser:
         )
 
         calls: list[CallSite] = []
-        seen: dict[tuple[int, str, str | None], int] = {}
 
         for capture_dict in matches:
             site_nodes = capture_dict.get("call.site", [])
@@ -1235,9 +1234,6 @@ class ASTParser:
                 else None
             )
 
-            dedup_key = (line, target_name, receiver_name)
-            existing_index = seen.get(dedup_key)
-
             arg_count: int | None = None
             if arg_nodes:
                 arg_node = arg_nodes[0]
@@ -1245,24 +1241,30 @@ class ASTParser:
 
             caller_id = _find_enclosing_symbol(line, symbol_ranges)
 
-            call = CallSite(
-                target_name=target_name,
-                receiver_name=receiver_name,
-                caller_symbol_id=caller_id,
-                line=line,
-                argument_count=arg_count,
-                receiver_call=receiver_call,
+            calls.append(
+                CallSite(
+                    target_name=target_name,
+                    receiver_name=receiver_name,
+                    caller_symbol_id=caller_id,
+                    line=line,
+                    argument_count=arg_count,
+                )
             )
-            if existing_index is not None:
-                # The broad bare-call query commonly matches first. Preserve a
-                # single site, but let the structural chained match enrich it.
-                if calls[existing_index].receiver_call is None and receiver_call is not None:
-                    calls[existing_index] = call
-                continue
-            seen[dedup_key] = len(calls)
-            calls.append(call)
+            if receiver_call is not None:
+                # CallSite remains open for orthogonal evidence payloads so
+                # contributor fields can compose at the dataclass boundary.
+                calls[-1].receiver_call = receiver_call  # type: ignore[attr-defined]
 
-        return calls
+        deduplicated: dict[tuple[int, str, str | None], CallSite] = {}
+        for call in calls:
+            key = (call.line, call.target_name, call.receiver_name)
+            existing = deduplicated.get(key)
+            if existing is None or (
+                getattr(existing, "receiver_call", None) is None
+                and getattr(call, "receiver_call", None) is not None
+            ):
+                deduplicated[key] = call
+        return list(deduplicated.values())
 
     def _extract_references(
         self,
