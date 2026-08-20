@@ -81,9 +81,24 @@ def test_old_index_without_call_lines_uses_labelled_name_fallback():
     graph = nx.DiGraph()
     _symbol(graph, "a.py::owner", "a.py", "owner", 1, 5)
     _symbol(graph, "b.py::load", "b.py", "load", 1, 5)
+    _symbol(graph, "c.py::load", "c.py", "load", 1, 5)
     graph.add_edge("a.py::owner", "b.py::load", edge_type="calls")
+    graph.add_edge("a.py::owner", "c.py::load", edge_type="dispatches_to")
 
     assert ExecutionGraphIndex(graph).resolve_call_targets("a.py::owner", 4, "load") == (
         ("b.py::load",),
         "name-fallback",
+    )
+
+
+def test_refreshed_caller_does_not_fallback_for_an_unresolved_call_site():
+    graph = nx.DiGraph()
+    _symbol(graph, "a.py::owner", "a.py", "owner", 1, 8)
+    _symbol(graph, "db.py::load", "db.py", "load", 1, 5)
+    # db.load() resolved outside the loop; obj.load() at line 6 did not resolve.
+    graph.add_edge("a.py::owner", "db.py::load", edge_type="calls", call_lines=[3])
+
+    assert ExecutionGraphIndex(graph).resolve_call_targets("a.py::owner", 6, "load") == (
+        (),
+        "call-site",
     )

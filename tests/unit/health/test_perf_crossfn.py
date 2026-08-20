@@ -389,6 +389,29 @@ def test_call_site_identity_prevents_same_name_first_hop_collision():
     )
 
 
+def test_unresolved_loop_call_does_not_reuse_same_name_outside_loop():
+    graph = nx.DiGraph()
+    for node_id, path, name in (
+        ("owner.py::run", "owner.py", "run"),
+        ("db.py::load", "db.py", "load"),
+    ):
+        graph.add_node(
+            node_id, node_type="symbol", name=name, file_path=path, start_line=1, end_line=8
+        )
+    # db.load() resolved outside the loop; obj.load() at line 6 did not resolve.
+    graph.add_edge("owner.py::run", "db.py::load", edge_type="calls", call_lines=[3])
+    owner = FileComplexity(
+        functions=[], classes=[], perf_fn_facts=[PerfFnFacts("run", 1, (("load", 6),), None)]
+    )
+    db_sink = FileComplexity(
+        functions=[], classes=[], perf_fn_facts=[PerfFnFacts("load", 1, (), "db")]
+    )
+
+    assert collect_crossfn_io_in_loop(
+        [(_pf("owner.py"), owner), (_pf("db.py"), db_sink)], graph
+    ) == {}
+
+
 def test_dispatch_edge_connects_a_resolved_call_to_its_sink():
     graph = nx.DiGraph()
     for node_id, path, name in (

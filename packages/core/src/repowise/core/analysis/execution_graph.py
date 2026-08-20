@@ -80,6 +80,8 @@ class ExecutionGraphIndex:
     __slots__ = (
         "_by_caller_line",
         "_by_file_line",
+        "_call_only",
+        "_callers_with_site_metadata",
         "_ranges",
         "calls",
         "declares",
@@ -102,6 +104,7 @@ class ExecutionGraphIndex:
         self.name: dict[str, str] = {}
         forward: dict[str, list[str]] = {}
         reverse: dict[str, list[str]] = {}
+        call_only: dict[str, list[str]] = {}
         declaration_map: dict[str, list[str]] = {}
         by_caller_line: dict[tuple[str, int], list[str]] = {}
         by_file_line_candidates: dict[tuple[str, int], list[str]] = {}
@@ -109,6 +112,8 @@ class ExecutionGraphIndex:
         reverse_seen: set[tuple[str, str]] = set()
         declaration_seen: set[tuple[str, str]] = set()
         caller_line_seen: set[tuple[tuple[str, int], str]] = set()
+        call_only_seen: set[tuple[str, str]] = set()
+        callers_with_site_metadata: set[str] = set()
         ranges: dict[str, list[tuple[int, int, str]]] = {}
 
         if graph is not None:
@@ -148,6 +153,9 @@ class ExecutionGraphIndex:
                     reverse_seen if deduplicate_graph else None,
                     by_caller_line,
                     caller_line_seen if deduplicate_graph else None,
+                    call_only,
+                    call_only_seen if deduplicate_graph else None,
+                    callers_with_site_metadata,
                     source,
                     target,
                     edge_type,
@@ -162,6 +170,7 @@ class ExecutionGraphIndex:
             for target in sorted(set(targets)):
                 _append_unique(forward, source, target, forward_seen)
                 _append_unique(reverse, target, source, reverse_seen)
+                _append_unique(call_only, source, target, call_only_seen)
         for source, target, edge_type, origin, call_lines in edge_rows:
             self._ingest_edge(
                 declaration_map,
@@ -172,6 +181,9 @@ class ExecutionGraphIndex:
                 reverse_seen,
                 by_caller_line,
                 caller_line_seen,
+                call_only,
+                call_only_seen,
+                callers_with_site_metadata,
                 source,
                 target,
                 edge_type,
@@ -184,6 +196,8 @@ class ExecutionGraphIndex:
         self.calls = self.forward
         self.reverse = {key: tuple(values) for key, values in reverse.items()}
         self._by_caller_line = {key: tuple(values) for key, values in by_caller_line.items()}
+        self._call_only = {key: tuple(values) for key, values in call_only.items()}
+        self._callers_with_site_metadata = frozenset(callers_with_site_metadata)
         self._by_file_line = {key: min(values) for key, values in by_file_line_candidates.items()}
         self._ranges = {path: tuple(values) for path, values in ranges.items()}
         self.in_degree = {node: len(callers) for node, callers in self.reverse.items()}
@@ -198,6 +212,9 @@ class ExecutionGraphIndex:
         reverse_seen: set[tuple[str, str]] | None,
         by_caller_line: dict[tuple[str, int], list[str]],
         caller_line_seen: set[tuple[tuple[str, int], str]] | None,
+        call_only: dict[str, list[str]],
+        call_only_seen: set[tuple[str, str]] | None,
+        callers_with_site_metadata: set[str],
         source: str,
         target: str,
         edge_type: str | None,
@@ -212,8 +229,10 @@ class ExecutionGraphIndex:
         _append_unique(forward, source, target, forward_seen)
         _append_unique(reverse, target, source, reverse_seen)
         if edge_type == "calls":
+            _append_unique(call_only, source, target, call_only_seen)
             for line in call_lines:
                 if isinstance(line, int) and line > 0:
+                    callers_with_site_metadata.add(source)
                     _append_unique(by_caller_line, (source, line), target, caller_line_seen)
 
     def resolve_function(self, path: str, func_start: int) -> str | None:
@@ -246,9 +265,16 @@ class ExecutionGraphIndex:
         if at_site:
             named = tuple(node for node in at_site if self.name.get(node) == target_name)
             return named, "call-site"
+        if caller in self._callers_with_site_metadata:
+            # A refreshed caller can legitimately contain an unresolved site.
+            # Falling back here would let a different same-named call fabricate
+            # a target for it.  Only callers with no site facts are legacy.
+            return (), "call-site"
         return (
             tuple(
-                node for node in self.forward.get(caller, ()) if self.name.get(node) == target_name
+                node
+                for node in self._call_only.get(caller, ())
+                if self.name.get(node) == target_name
             ),
             "name-fallback",
         )
