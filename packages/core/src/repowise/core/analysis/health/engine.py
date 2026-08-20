@@ -49,14 +49,17 @@ from .perf import (
     CallGraphIndex,
     PerfRanker,
     apply_perf_promotions,
+    build_performance_opportunities,
     collect_blocking_io_under_lock,
     collect_centrality_gated,
     collect_crossfn_io_in_loop,
+    link_performance_findings,
 )
 from .refactoring import (
     RefactoringContext,
     RefactoringSuggestion,
     detect_refactorings,
+    performance_fix_suggestions,
     rank_suggestions,
 )
 from .refactoring.graph_signals import build_file_scc_index, build_methods_by_file
@@ -93,7 +96,10 @@ log = structlog.get_logger(__name__)
 # values are wrong again on an index stamped 2 - this time in both directions.
 # 4: performance now uses reliable execution edges and exact call-site identity,
 # so cross-function findings produced by the calls-only graph must be refreshed.
-HEALTH_ANALYZER_VERSION = 4
+# 5: raw performance findings gain stable causal linkage and structured
+# performance-fix plans; incremental execution slices widen to preserve those
+# interprocedural interpretations.
+HEALTH_ANALYZER_VERSION = 5
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.
@@ -121,8 +127,6 @@ def _log_duplication_diagnostics(report: DuplicationReport) -> None:
         )
     ):
         log.debug("health_duplication_limits", **diag)
-
-
 
 
 def _read_source_lines(abs_path: str) -> list[str] | None:
@@ -305,6 +309,7 @@ class HealthAnalyzer:
         self,
         graph: Any,  # networkx.DiGraph
         git_meta_map: dict[str, dict] | None = None,
+        performance_git_meta_map: dict[str, dict] | None = None,
         parsed_files: list[Any] | None = None,
         coverage_map: dict[str, dict[str, Any]] | None = None,
         module_map: dict[str, str] | None = None,
@@ -313,6 +318,7 @@ class HealthAnalyzer:
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
+        self.performance_git_meta_map = performance_git_meta_map or self.git_meta_map
         self.parsed_files = list(parsed_files or [])
         # Per-file coverage keyed by repo-relative POSIX path. Each value
         # is ``{line_coverage_pct, branch_coverage_pct, covered_lines,
@@ -357,13 +363,9 @@ class HealthAnalyzer:
         ``analysis.test_reachability``.
         """
         if self._tests_reach_cache is None:
-            test_files = {
-                pf.file_info.path for pf in self.parsed_files if pf.file_info.is_test
-            }
+            test_files = {pf.file_info.path for pf in self.parsed_files if pf.file_info.is_test}
             index = self._execution_graph()
-            self._tests_reach_cache = files_reached_by_tests(
-                index or CallGraphIndex(), test_files
-            )
+            self._tests_reach_cache = files_reached_by_tests(index or CallGraphIndex(), test_files)
         return self._tests_reach_cache
 
     def _package_boundaries(self, analyzed_paths: set[str]) -> set[str]:
@@ -557,6 +559,17 @@ class HealthAnalyzer:
         else:
             kpis = {}
 
+        self._mark_perf_entry_reachability(findings)
+        link_performance_findings(findings)
+        opportunities = build_performance_opportunities(findings)
+        if refactoring_enabled and "performance_fix" not in disabled_refactorings:
+            suggestions.extend(
+                performance_fix_suggestions(
+                    opportunities,
+                    nloc_by_file={metric.file_path: metric.nloc for metric in metrics},
+                    min_confidence=refactoring_min_confidence,
+                )
+            )
         suggestions = rank_suggestions(
             suggestions, centrality=self._refactoring_centrality(suggestions)
         )
@@ -740,6 +753,17 @@ class HealthAnalyzer:
         else:
             kpis = {}
 
+        self._mark_perf_entry_reachability(findings)
+        link_performance_findings(findings)
+        opportunities = build_performance_opportunities(findings)
+        if refactoring_enabled and "performance_fix" not in disabled_refactorings:
+            suggestions.extend(
+                performance_fix_suggestions(
+                    opportunities,
+                    nloc_by_file={metric.file_path: metric.nloc for metric in metrics},
+                    min_confidence=refactoring_min_confidence,
+                )
+            )
         suggestions = rank_suggestions(
             suggestions, centrality=self._refactoring_centrality(suggestions)
         )
@@ -805,7 +829,7 @@ class HealthAnalyzer:
                 ):
                     for path, hits in src.items():
                         by_file.setdefault(path, []).extend(hits)
-            ranker = PerfRanker(index, self.git_meta_map)
+            ranker = PerfRanker(index, self.performance_git_meta_map)
             for path, hits in collect_centrality_gated(walked, ranker).items():
                 by_file.setdefault(path, []).extend(hits)
             for _pf, fcx in walked:
@@ -815,6 +839,29 @@ class HealthAnalyzer:
         except Exception as exc:
             log.debug("health_crossfn_perf_failed", error=str(exc))
             return
+
+    def _mark_perf_entry_reachability(self, findings: list[HealthFindingData]) -> None:
+        """Stamp reliable entry reachability without walking once per row."""
+        index = self._execution_graph()
+        if index is None or self.graph is None:
+            return
+        entry_files: set[str] = set()
+        try:
+            for node_id, data in self.graph.nodes(data=True):
+                if data.get("node_type") == "file" and data.get("is_entry_point"):
+                    entry_files.add(node_id)
+        except Exception:
+            return
+        seeds = {symbol for path in entry_files for symbol in index.declares.get(path, ())}
+        if not seeds:
+            return
+        reachable = index.forward_reachable(seeds)
+        for finding in findings:
+            if finding.dimension != "performance":
+                continue
+            path = finding.details.get("path")
+            if isinstance(path, list) and path:
+                finding.details["reliable_entry_reachability"] = path[0] in reachable
 
     def _function_blame_rows(self, walked: list[tuple[Any, FileComplexity]]) -> list[dict]:
         """Build the per-function blame rollup from the walked files + the

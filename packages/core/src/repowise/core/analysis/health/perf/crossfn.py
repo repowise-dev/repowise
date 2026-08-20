@@ -154,7 +154,7 @@ def _hits_for_function(
     for target_name, call_line in fact.loop_call_targets:
         if target_name in seen:
             continue
-        targets, _basis = index.resolve_call_targets(a_sid, call_line, target_name)
+        targets, basis = index.resolve_call_targets(a_sid, call_line, target_name)
         for callee in targets:
             info = reach.get(callee)
             if info is None:
@@ -171,6 +171,7 @@ def _hits_for_function(
                     function=fact.function,
                     detail=kind,
                     path=(a_sid, *chain),
+                    resolution_basis=basis,
                 )
             )
             break

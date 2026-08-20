@@ -102,3 +102,49 @@ def test_refreshed_caller_does_not_fallback_for_an_unresolved_call_site():
         (),
         "call-site",
     )
+
+
+def test_affected_files_covers_changed_caller_and_changed_sink_in_one_bounded_walk():
+    graph = nx.DiGraph()
+    for path, name in (("caller.py", "run"), ("helper.py", "load"), ("sink.py", "fetch")):
+        sid = f"{path}::{name}"
+        _symbol(graph, sid, path, name, 1, 10)
+        graph.add_edge(path, sid, edge_type="defines")
+    graph.add_edge("caller.py::run", "helper.py::load", edge_type="calls", confidence=0.9)
+    graph.add_edge("helper.py::load", "sink.py::fetch", edge_type="dispatches_to", confidence=0.9)
+    index = ExecutionGraphIndex(graph)
+
+    assert index.affected_files({"caller.py"}) == {"caller.py", "helper.py", "sink.py"}
+    assert index.affected_files({"sink.py"}) == {"caller.py", "helper.py", "sink.py"}
+
+
+def test_affected_files_does_not_cross_unreliable_edges():
+    graph = nx.DiGraph()
+    for path, name in (("caller.py", "run"), ("sink.py", "fetch")):
+        sid = f"{path}::{name}"
+        _symbol(graph, sid, path, name, 1, 10)
+        graph.add_edge(path, sid, edge_type="defines")
+    graph.add_edge(
+        "caller.py::run",
+        "sink.py::fetch",
+        edge_type="calls",
+        confidence=0.9,
+        resolution_origin="global_unique",
+    )
+    assert ExecutionGraphIndex(graph).affected_files({"sink.py"}) == {"sink.py"}
+
+
+def test_affected_files_changed_caller_includes_siblings_of_reached_sink():
+    graph = nx.DiGraph()
+    for path in ("a.py", "b.py", "sink.py"):
+        sid = f"{path}::run"
+        _symbol(graph, sid, path, "run", 1, 10)
+        graph.add_edge(path, sid, edge_type="defines")
+    graph.add_edge("a.py::run", "sink.py::run", edge_type="calls", confidence=0.9)
+    graph.add_edge("b.py::run", "sink.py::run", edge_type="calls", confidence=0.9)
+
+    assert ExecutionGraphIndex(graph).affected_files({"a.py"}) == {
+        "a.py",
+        "b.py",
+        "sink.py",
+    }

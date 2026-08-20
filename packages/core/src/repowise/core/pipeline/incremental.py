@@ -379,6 +379,70 @@ async def load_stored_git_meta(
         return None
 
 
+async def load_stored_performance_callers(
+    repo_path: Any,
+    changed_paths: set[str],
+    *,
+    log: LogFn | None = None,
+) -> set[str] | None:
+    """Load callers whose persisted performance paths touched changed files.
+
+    The current graph cannot retain an edge to a deleted or renamed symbol.
+    One bounded store read supplies that old-side reverse evidence so partial
+    analysis can remove stale caller findings. ``None`` means the store was
+    unavailable and therefore must not widen authoritative persistence scope.
+    """
+    log = log or _noop_log
+    if not changed_paths:
+        return set()
+    if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
+        return None
+    try:
+        import json
+
+        from sqlalchemy import select
+
+        from repowise.core.persistence import create_engine, get_session
+        from repowise.core.persistence.crud import get_repository_by_path
+        from repowise.core.persistence.database import (
+            create_session_factory,
+            resolve_db_url,
+        )
+        from repowise.core.persistence.models import HealthFinding
+
+        engine = create_engine(resolve_db_url(repo_path))
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                repo = await get_repository_by_path(session, str(repo_path))
+                if repo is None:
+                    return None
+                rows = (
+                    await session.execute(
+                        select(HealthFinding.file_path, HealthFinding.details_json).where(
+                            HealthFinding.repository_id == repo.id,
+                            HealthFinding.status == "open",
+                            HealthFinding.dimension == "performance",
+                        )
+                    )
+                ).all()
+        finally:
+            await engine.dispose()
+        callers: set[str] = set()
+        for file_path, details_json in rows:
+            try:
+                path = json.loads(details_json or "{}").get("path", ())
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if any(
+                isinstance(node, str) and node.split("::", 1)[0] in changed_paths for node in path
+            ):
+                callers.add(file_path)
+        return callers
+    except Exception as exc:
+        log(f"[yellow]Stored performance callers unavailable: {exc}[/yellow]")
+        return None
+
+
 async def load_stored_function_mod_p80(repo_path: Any, *, log: LogFn | None = None) -> int | None:
     """Load the repo-wide p80 of per-function modification counts.
 
@@ -438,6 +502,7 @@ def run_partial_analysis(
     *,
     source_map: dict[str, bytes] | None = None,
     stored_git_meta: dict[str, dict] | None = None,
+    stored_performance_callers: set[str] | None = None,
     repo_function_mod_p80: int | None = None,
     log: LogFn | None = None,
 ) -> tuple[Any, Any]:
@@ -449,15 +514,18 @@ def run_partial_analysis(
     *source_map* is ingestion's ``{path: raw bytes}`` for this rebuild; the
     dead-code prepasses read it instead of re-reading the repo from disk.
 
-    *stored_git_meta* is the persisted per-file git metadata, supplied to the
-    dead-code analyzer *only*. ``git_meta_map`` holds this run's freshly
+    *stored_git_meta* is the persisted per-file git metadata. ``git_meta_map`` holds this run's freshly
     indexed rows, which on an incremental update means the changed files and
     nothing else; every other file would otherwise be scored against an empty
     dict and land on the ``commit_count_90d == 0`` rung of the confidence
-    ladder at 0.7 / ``safe_to_delete=True``. It is deliberately NOT merged into
-    ``git_meta_map`` itself: the partial health analysis reads that map's
-    entries as a repo-wide aggregate, so widening it there would silently move
-    health scores (the same reason the idle-decay rows are kept out of it).
+    ladder at 0.7 / ``safe_to_delete=True``. It is supplied whole to dead-code
+    and to performance ranking, but deliberately not merged into health's
+    general ``git_meta_map``: widening that aggregate would silently move
+    nonperformance scores (the same reason idle-decay rows stay out of it).
+
+    *stored_performance_callers* is the old-side caller set recovered in one
+    store read. It keeps deletion and rename updates authoritative when the
+    rebuilt graph can no longer contain the removed execution edge.
 
     *repo_function_mod_p80* is the repo-wide 80th percentile of per-function
     modification counts, loaded from the persisted ``git_function_blame``
@@ -478,18 +546,37 @@ def run_partial_analysis(
     # but only files in ``changed_paths`` produce new findings/metrics.
     partial_health_report = None
     try:
+        # Performance is interprocedural. Recompute one bounded bidirectional
+        # execution closure so a changed caller can still see an unchanged sink
+        # and an unchanged caller can react to a changed sink. The index is
+        # built once; this is a multi-source walk, not one walk per finding.
+        from repowise.core.analysis.execution_graph import ExecutionGraphIndex
         from repowise.core.analysis.health import HealthAnalyzer
         from repowise.core.analysis.health.config import HealthConfig
 
+        _health_changed = {
+            fd.path for fd in file_diffs if fd.status in ("added", "modified", "renamed")
+        }
+        parsed_paths = {pf.file_info.path for pf in parsed_files}
+        execution_index = ExecutionGraphIndex(graph_builder.graph())
+        _performance_changed = execution_index.affected_files(_health_changed) & parsed_paths
+        if stored_performance_callers is not None:
+            historical_callers = stored_performance_callers & parsed_paths
+            _performance_changed |= (
+                execution_index.affected_files(historical_callers) & parsed_paths
+            )
+        _health_scope = _health_changed | _performance_changed
         _health_analyzer = HealthAnalyzer(
             graph_builder.graph(),
             git_meta_map=git_meta_map,
+            # Only centrality-gated performance reads this merged map. Other
+            # health signals keep the established change-scoped git semantics.
+            performance_git_meta_map={**(stored_git_meta or {}), **git_meta_map},
             parsed_files=parsed_files,
             duplication_cache_dir=Path(repo_path) / ".repowise",
             repo_root=repo_path,
         )
-        _health_changed = {fd.path for fd in file_diffs if fd.status in ("added", "modified")}
-        if _health_changed:
+        if _health_scope:
             _hcfg = HealthConfig.load(repo_path)
             _analyzer_config = (
                 _hcfg.to_analyzer_config([pf.file_info.path for pf in parsed_files])
@@ -498,11 +585,38 @@ def run_partial_analysis(
             )
             partial_health_report = _health_analyzer.analyze(
                 _analyzer_config,
-                changed_files=_health_changed,
+                changed_files=_health_scope,
                 repo_function_mod_p80=repo_function_mod_p80,
             )
+            # The closure exists only to refresh interprocedural performance.
+            # Preserve the historical changed-file scope for every other
+            # dimension, metric, blame row, and refactoring detector.
+            partial_health_report.authoritative_paths = set(_health_changed)
+            partial_health_report.performance_authoritative_paths = set(_performance_changed)
+            partial_health_report.metrics = [
+                metric
+                for metric in partial_health_report.metrics
+                if metric.file_path in _health_changed
+            ]
+            partial_health_report.findings = [
+                finding
+                for finding in partial_health_report.findings
+                if finding.file_path in _health_changed or finding.dimension == "performance"
+            ]
+            partial_health_report.refactoring_suggestions = [
+                suggestion
+                for suggestion in partial_health_report.refactoring_suggestions
+                if suggestion.file_path in _health_changed
+                or suggestion.refactoring_type == "performance_fix"
+            ]
+            partial_health_report.function_blame_rows = [
+                row
+                for row in partial_health_report.function_blame_rows
+                if row.get("file_path") in _health_changed
+            ]
             log(
-                f"Health analysis (partial): [cyan]{len(_health_changed)} files[/cyan], "
+                f"Health analysis (partial): [cyan]{len(_health_changed)} changed[/cyan], "
+                f"[cyan]{len(_performance_changed)} performance-affected[/cyan], "
                 f"[yellow]{len(partial_health_report.findings)} findings[/yellow]"
             )
     except Exception as exc:
@@ -752,27 +866,51 @@ async def persist_partial_health(session: Any, repo_id: str, report: Any) -> Non
         upsert_refactoring_suggestions,
     )
 
-    changed_paths = sorted({m.file_path for m in report.metrics or []})
-    if not changed_paths:
+    changed_paths = sorted(
+        set(getattr(report, "authoritative_paths", None) or ())
+        or {m.file_path for m in report.metrics or []}
+    )
+    performance_paths = sorted(
+        set(getattr(report, "performance_authoritative_paths", None) or ()) - set(changed_paths)
+    )
+    if not changed_paths and not performance_paths:
         return
-    await upsert_health_metrics(
-        session,
-        repo_id,
-        report.metrics or [],
-        analyzed_commit=await _analyzed_commit(session, repo_id),
-    )
-    await upsert_health_findings(
-        session, repo_id, list(report.findings or []), file_paths=changed_paths
-    )
+    if changed_paths:
+        await upsert_health_metrics(
+            session,
+            repo_id,
+            report.metrics or [],
+            analyzed_commit=await _analyzed_commit(session, repo_id),
+        )
+        await upsert_health_findings(
+            session, repo_id, list(report.findings or []), file_paths=changed_paths
+        )
+    if performance_paths:
+        await upsert_health_findings(
+            session,
+            repo_id,
+            list(report.findings or []),
+            file_paths=performance_paths,
+            dimension="performance",
+        )
     # Refactoring suggestions for the changed files only (unchanged files keep
     # theirs). Scoped delete-then-insert across the full changed-file set, so a
     # file that became clean has its stale suggestions removed.
-    await upsert_refactoring_suggestions(
-        session,
-        repo_id,
-        list(getattr(report, "refactoring_suggestions", None) or []),
-        file_paths=changed_paths,
-    )
+    if changed_paths:
+        await upsert_refactoring_suggestions(
+            session,
+            repo_id,
+            list(getattr(report, "refactoring_suggestions", None) or []),
+            file_paths=changed_paths,
+        )
+    if performance_paths:
+        await upsert_refactoring_suggestions(
+            session,
+            repo_id,
+            list(getattr(report, "refactoring_suggestions", None) or []),
+            file_paths=performance_paths,
+            refactoring_type="performance_fix",
+        )
     # Per-function blame rollup for the changed files (keeps git_function_blame
     # current between full indexes; FULL git tier only — empty otherwise).
     fn_blame_rows = getattr(report, "function_blame_rows", None)
@@ -1236,7 +1374,6 @@ async def persist_incremental_index(
             repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
             repo_id = repo.id
 
-
             # Delete rows of pages retired since this index was built. This
             # path never regenerates a repo-wide page, so nothing else here
             # would ever visit one to notice it should be gone, and for a user
@@ -1253,9 +1390,7 @@ async def persist_incremental_index(
                 # regenerates a cycle page, so asking the rebuilt graph whether
                 # the cycle still exists is the only way a fixed cycle's page
                 # can ever be retired for a user who only runs `update`.
-                swept_page_ids += await sweep_absent_cycle_pages(
-                    session, repo_id, graph_builder
-                )
+                swept_page_ids += await sweep_absent_cycle_pages(session, repo_id, graph_builder)
             except Exception as exc:
                 _skip("Retired page sweep", exc)
 

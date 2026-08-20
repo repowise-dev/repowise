@@ -82,6 +82,33 @@ def test_trace_skips_test_nodes():
         assert not any("tests/" in node for node in flow.trace)
 
 
+def test_trace_uses_dispatch_edges_and_rejects_unreliable_origins():
+    graph = _chain_graph()
+    graph.remove_edge("src/app.py::a", "src/app.py::b")
+    graph.add_edge(
+        "src/app.py::a",
+        "src/app.py::b",
+        edge_type="dispatches_to",
+        confidence=0.9,
+        resolution_origin="framework",
+    )
+    graph.add_edge(
+        "src/app.py::a",
+        "src/app.py::c",
+        edge_type="calls",
+        confidence=1.0,
+        resolution_origin="global_unique",
+    )
+    report = trace_execution_flows(graph, {}, FlowConfig(min_flow_depth=1))
+    main_flow = next(flow for flow in report.flows if flow.entry_point_id == "src/app.py::main")
+    assert main_flow.trace[:4] == [
+        "src/app.py::main",
+        "src/app.py::a",
+        "src/app.py::b",
+        "src/app.py::c",
+    ]
+
+
 def test_min_flow_depth_filters_trivial_flows():
     """A lone single-call entry point is not reported as a flow by default."""
     g = nx.DiGraph()

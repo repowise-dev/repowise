@@ -240,6 +240,26 @@ def test_blast_radius_lists_external_referrers():
     assert br["import_rewrites"] == br["dependent_count"]  # python → shim language
 
 
+def test_blast_radius_does_not_count_noncall_execution_edges_as_callers():
+    g = _two_cluster_graph()
+    g.add_node(
+        "framework.py::binding",
+        node_type="symbol",
+        kind="function",
+        name="binding",
+        file_path="framework.py",
+    )
+    g.add_edge(
+        "framework.py::binding",
+        "big.py::alpha_0",
+        edge_type="framework_binds",
+        resolution_origin="framework",
+    )
+
+    plan = _detect(g, "big.py")[0]
+    assert "framework.py" not in plan.blast_radius["dependent_files"]
+
+
 def test_go_split_needs_no_import_rewrites():
     out = _detect(_two_cluster_graph("pkg/big.go"), "pkg/big.go", language="go")
     assert len(out) == 1

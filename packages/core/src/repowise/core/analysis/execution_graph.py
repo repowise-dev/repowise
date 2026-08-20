@@ -16,6 +16,7 @@ do not pay for their own graph build or sort.
 
 from __future__ import annotations
 
+import re
 from collections import deque
 from collections.abc import Callable, Hashable, Iterable, Mapping
 from dataclasses import dataclass
@@ -24,6 +25,13 @@ from typing import Any, Literal, TypeVar
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
 
 UNRELIABLE_EXECUTION_ORIGINS = frozenset({"global_unique"})
+_EXCLUDED_EXECUTION_PATHS = re.compile(
+    r"(test[s_/]|_test\.|\.test\.|\.spec\.|__tests__|conftest|"
+    r"fixture[s]?[/.]|mock[s]?[/.]|stub[s]?[/.]|fake[s]?[/.]|"
+    r"demo[_/.]|example[s]?[/.]|sample[s]?[/.]|benchmark[s]?[/.]|"
+    r"_bench\.|scripts?/)",
+    re.IGNORECASE,
+)
 CallTargetBasis = Literal["call-site", "name-fallback"]
 _KeyT = TypeVar("_KeyT", bound=Hashable)
 
@@ -43,6 +51,30 @@ def is_reliable_execution_edge(edge_type: str | None, resolution_origin: str | N
     return (
         edge_type in EXECUTION_EDGE_TYPES and resolution_origin not in UNRELIABLE_EXECUTION_ORIGINS
     )
+
+
+def is_reliable_call_edge(edge_type: str | None, resolution_origin: str | None = None) -> bool:
+    """Whether an edge is a resolved call, excluding weaker execution relations."""
+    return edge_type == "calls" and resolution_origin not in UNRELIABLE_EXECUTION_ORIGINS
+
+
+def is_walkable_execution_edge(
+    edge_type: str | None,
+    resolution_origin: str | None = None,
+    confidence: float | None = None,
+    *,
+    minimum_confidence: float = 0.5,
+) -> bool:
+    """Execution-flow edge policy shared by memory, DB, and export adapters."""
+    return (
+        is_reliable_execution_edge(edge_type, resolution_origin)
+        and float(confidence or 0.0) >= minimum_confidence
+    )
+
+
+def is_excluded_execution_path(path: str) -> bool:
+    """Whether a flow target is test/demo/fixture/tooling material."""
+    return bool(_EXCLUDED_EXECUTION_PATHS.search(path))
 
 
 def _append_unique(
@@ -279,6 +311,62 @@ class ExecutionGraphIndex:
             "name-fallback",
         )
 
+    def affected_files(
+        self,
+        changed_files: Iterable[str],
+        *,
+        forward_depth: int = 3,
+        reverse_depth: int = 4,
+    ) -> set[str]:
+        """Files whose bounded execution facts can change with *changed_files*.
+
+        Forward closure covers a changed caller with an unchanged sink; reverse
+        closure covers unchanged loop owners whose sink/helper changed.  Both
+        traversals are multi-source and visit each reached node once, avoiding
+        a graph walk per finding.
+        """
+        changed = set(changed_files)
+        seeds = {symbol for path in changed for symbol in self.declares.get(path, ())}
+        affected = set(changed)
+
+        def walk(adjacency: Mapping[str, Iterable[str]], start: set[str], depth: int) -> set[str]:
+            if depth <= 0 or not start:
+                return set(start)
+            seen = set(start)
+            queue: deque[tuple[str, int]] = deque((seed, 0) for seed in sorted(start))
+            while queue:
+                node, distance = queue.popleft()
+                affected.add(file_of_symbol(node))
+                if distance >= depth:
+                    continue
+                for neighbor in adjacency.get(node, ()):
+                    affected.add(file_of_symbol(neighbor))
+                    if neighbor not in seen:
+                        seen.add(neighbor)
+                        queue.append((neighbor, distance + 1))
+            return seen
+
+        forward_reached = walk(self.forward, seeds, forward_depth)
+        # Reverse from the entire reached frontier, not only the changed
+        # symbols. If A and B both call an unchanged sink, changing A must pull
+        # B into the recomputed causal group so its totals stay authoritative.
+        walk(self.reverse, forward_reached, reverse_depth)
+        return affected
+
+    def forward_reachable(self, seeds: Iterable[str], *, max_depth: int | None = None) -> set[str]:
+        """Reliable execution nodes reachable from all *seeds* in one BFS."""
+        reached = set(seeds)
+        queue: deque[tuple[str, int]] = deque((seed, 0) for seed in sorted(reached))
+        while queue:
+            node, depth = queue.popleft()
+            if max_depth is not None and depth >= max_depth:
+                continue
+            for target in self.forward.get(node, ()):
+                if target not in reached:
+                    reached.add(target)
+                    queue.append((target, depth + 1))
+        return reached
+
 
 @dataclass(frozen=True, slots=True)
 class ReachInfo:
@@ -344,7 +432,10 @@ __all__ = [
     "ExecutionGraphIndex",
     "ReachInfo",
     "file_of_symbol",
+    "is_excluded_execution_path",
+    "is_reliable_call_edge",
     "is_reliable_execution_edge",
+    "is_walkable_execution_edge",
     "module_node_id",
     "path_to_sink",
     "reachable_to_sink",

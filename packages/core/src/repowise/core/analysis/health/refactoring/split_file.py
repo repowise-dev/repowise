@@ -51,6 +51,8 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any
 
+from repowise.core.analysis.execution_graph import is_reliable_call_edge
+
 from ....test_paths import is_test_related_path
 from .models import RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, effort_bucket, register
@@ -452,7 +454,12 @@ class SplitFileDetector(RefactoringDetector):
             if owner not in node_set:
                 continue
             for _u, callee, edata in graph.out_edges(sid, data=True):
-                if edata.get("edge_type") != "calls" or callee == sid:
+                if (
+                    not is_reliable_call_edge(
+                        edata.get("edge_type"), edata.get("resolution_origin")
+                    )
+                    or callee == sid
+                ):
                     continue
                 if callee in owner_of:
                     cowner = owner_of[callee]
@@ -709,7 +716,9 @@ class SplitFileDetector(RefactoringDetector):
         dependent_files: set[str] = set()
         for sid in defined:
             for u, _v, edata in graph.in_edges(sid, data=True):
-                if edata.get("edge_type") != "calls":
+                if not is_reliable_call_edge(
+                    edata.get("edge_type"), edata.get("resolution_origin")
+                ):
                     continue
                 f = graph.nodes.get(u, {}).get("file_path")
                 if f and f != ctx.file_path:

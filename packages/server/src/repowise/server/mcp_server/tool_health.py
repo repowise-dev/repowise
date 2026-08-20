@@ -18,6 +18,7 @@ from repowise.core.analysis.health.defect_accuracy import compute_defect_accurac
 from repowise.core.analysis.health.grading import HEALTHY_MIN, band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
 from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
+from repowise.core.analysis.health.perf.opportunities import build_performance_opportunities
 from repowise.core.analysis.health.scoring import hotspot_health
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.suggestions import suggestion_for
@@ -196,7 +197,9 @@ def _serialize_finding(f: HealthFinding) -> dict[str, Any]:
     except Exception:
         details = {}
     dimension = getattr(f, "dimension", None) or "defect"
-    rank = {"perf_rank": _perf_rank(f.biomarker_type, details)} if dimension == "performance" else {}
+    rank = (
+        {"perf_rank": _perf_rank(f.biomarker_type, details)} if dimension == "performance" else {}
+    )
     return {
         "biomarker_type": f.biomarker_type,
         "severity": f.severity,
@@ -306,6 +309,7 @@ _TRUNCATION_MARKER_HEADROOM = 400
 # Dotted entries address one level of nesting; the flat ``result.get(k)`` scan
 # would never have found them.
 _TRIMMABLE_LISTS = (
+    "performance_opportunities",
     "refactoring_plans",
     "high_leverage_files",
     "worst_files",
@@ -472,9 +476,7 @@ def _serialize_metric(
     }
 
 
-def _attach_coverage_decay(
-    payload: list[dict[str, Any]], rows: list[Any], repo_path: str
-) -> None:
+def _attach_coverage_decay(payload: list[dict[str, Any]], rows: list[Any], repo_path: str) -> None:
     """Add a ``decay`` block to each coverage row, in place.
 
     The stored percentage is a measurement taken at one commit and never
@@ -663,9 +665,7 @@ def _directive(
         # which healthy files cushion): per-file shares are then bounded by
         # 100% and sum to 100% by construction (issue #1437).
         "recovers_points": recovers,
-        "share_of_repo_gap_pct": (
-            round(100.0 * recovers / gap_points, 1) if gap_points else None
-        ),
+        "share_of_repo_gap_pct": (round(100.0 * recovers / gap_points, 1) if gap_points else None),
         "then": [m.file_path for m in by_leverage[1:3]],
         # Projected, not bare. ``include`` adds a block without subtracting the
         # dashboard, and five ranked lists at the default ``limit`` compose: the
@@ -932,7 +932,9 @@ async def get_health(
             ``findings`` means healthy); it survives any ``only``.
         include: ``biomarkers`` | ``refactoring`` | ``trend`` | ``coverage`` |
             ``accuracy`` | ``signals`` | ``churn_complexity`` |
-            ``performance``/``defect``/``maintainability`` (dimension). Only
+            ``performance``/``defect``/``maintainability`` (dimension).
+            ``performance`` also adds the causal ``performance_opportunities``
+            head, while raw findings remain available for line inspection. Only
             *adds*, and the ranked lists compose — pair with ``only``, e.g.
             ``include=['refactoring'], only=['refactoring_plans']``. Over-cap
             responses are trimmed (``_meta.truncated_to_fit``).
@@ -974,6 +976,7 @@ async def get_health(
     # block that carries findings survives the projection.
     wants_findings = wants("findings") or wants("top_findings")
     wants_test_findings = wants("test_findings")
+    wants_performance_opportunities = wants("performance_opportunities")
     # Everything downstream of the test/production split, in one place.
     #
     # Keep this list exhaustive. The read it gates is not free (the column list
@@ -1129,6 +1132,14 @@ async def get_health(
             ]
             if "performance" in dimension_filter:
                 lite_cols.append(HealthFinding.details_json)
+            if wants_performance_opportunities:
+                lite_cols.extend(
+                    [
+                        HealthFinding.function_name,
+                        HealthFinding.line_start,
+                        HealthFinding.line_end,
+                    ]
+                )
             lite_rows = list(
                 (
                     await session.execute(
@@ -1706,6 +1717,16 @@ async def get_health(
             ],
             "recent": recent_kpis(snapshots, limit=10),
         }
+
+    if "performance" in include_set and wants_performance_opportunities:
+        opportunities = build_performance_opportunities(
+            [row for row in lead_rows if _in_dimensions(row, {"performance"})],
+            evidence_limit=8,
+        )
+        result["performance_opportunities"] = [
+            opportunity.as_dict() for opportunity in opportunities[:limit]
+        ]
+        result["performance_opportunities_total"] = len(opportunities)
 
     if "coverage" in include_set:
         # Drop the bulky covered-lines arrays from dashboard mode; full
