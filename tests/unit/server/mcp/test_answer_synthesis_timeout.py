@@ -136,6 +136,7 @@ def test_every_builtin_provider_has_a_deliberate_budget():
         "ollama": 120.0,
         "litellm": 120.0,
         "codex_cli": 180.0,
+        "devin_cli": 180.0,
         "opencode": 180.0,
     }
     assert set(expected) == set(_BUILTIN_PROVIDERS), (
@@ -147,9 +148,10 @@ def test_every_builtin_provider_has_a_deliberate_budget():
 
 def test_agent_cli_budget_stays_under_its_own_subprocess_ceiling():
     """The caller must give up before the subprocess does, or the error is wrong."""
-    from repowise.core.providers.llm import codex_cli, opencode
+    from repowise.core.providers.llm import codex_cli, devin_cli, opencode
 
     assert codex_cli.CodexCliProvider.interactive_timeout_s < codex_cli._EXEC_TIMEOUT_SECONDS
+    assert devin_cli.DevinCliProvider.interactive_timeout_s < devin_cli._EXEC_TIMEOUT_SECONDS
     assert opencode.OpenCodeProvider.interactive_timeout_s < opencode._EXEC_TIMEOUT_SECONDS
 
 

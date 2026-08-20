@@ -68,6 +68,8 @@ PROVIDER_DEFAULTS: dict[str, RateLimitConfig] = {
     "deepseek": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=5_000_000),
     "kimi": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=5_000_000),
     "edenai": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=2_000_000),
+    # Local Devin CLI (devin -p) — usage is controlled by the CLI, but keep a cap
+    "devin_cli": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=10_000_000),
 }
 
 
