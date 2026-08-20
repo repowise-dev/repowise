@@ -34,7 +34,7 @@ Languages land on a five-rung ladder rather than a yes/no list, because "do you
 support X" has five different useful answers. Each rung is defined, with what it
 buys you, in
 [docs/layers/LANGUAGE_SUPPORT.md](docs/layers/LANGUAGE_SUPPORT.md). Today that
-ladder covers **35 languages, 13 of them at the Full tier**.
+ladder covers **35 languages, 19 of them parsed to a full AST**.
 
 ### New languages
 

@@ -77,6 +77,20 @@ All of the following ship in `pip install repowise` today, free for internal use
   Security (local pattern scan), Knowledge Map, and the workspace views.
 - **Dead-code detection**: pure graph traversal, confidence-tiered, framework-aware
   (ASP.NET, Django, FastAPI, Flask, Rails, Laravel), dynamic-import aware.
+- **Test intelligence, from both a coverage report and the call graph.** Coverage
+  ingestion is a product category of its own (Codecov, Coveralls), and Repowise
+  ingests the same LCOV / Cobertura / Clover reports, reports how much of a
+  measurement still holds as the code moves under it, and crosses coverage with
+  hotspots to find untested risk. It then does the half a coverage service
+  structurally cannot: **answer "which tests reach this file" and "which tests does
+  this diff exercise" with no report at all**, walking the call graph the index
+  already holds. A coverage service only ever sees the report, so when there is no
+  report there is no answer; Repowise has the graph. The two tiers are labelled
+  `basis: "measured"` and `basis: "inferred"` and never averaged, the inferred tier
+  may never emit a percentage, and empty means *unknown* rather than "no tests".
+  On this repository the graph clears **74 of 110** standing untested-hotspot
+  findings that filename matching had produced. Zero LLM calls, no CI integration
+  required. ([TEST_INTELLIGENCE.md](../layers/TEST_INTELLIGENCE.md))
 - **Privacy** (self-hosted): source never leaves your infrastructure, BYOK or fully
   offline via Ollama. Anonymous, opt-out usage telemetry (command names and coarse
   environment only, never code, paths or repo names) can be turned off with
@@ -90,22 +104,26 @@ All of the following ship in `pip install repowise` today, free for internal use
 
 ## 3. First-class language coverage
 
-Repowise treats **13 languages at Full tier** (Python, TypeScript, JavaScript, Svelte,
-Vue, Java, Kotlin, Go, Rust, C++, **C#**, Scala, and Ruby) with AST parsing, import
-resolution, named bindings, call resolution, heritage extraction, multi-project
-workspace resolvers, framework-aware edges, per-language dynamic-hint extractors, and
-code-health markers. A further 5 languages (C, Swift, PHP, Dart, Object Pascal/Delphi)
-sit at Good tier,
-and Luau is partial. SQL/dbt, shell, HTML, and the config formats are handled by
-dedicated extractors on top of that.
+Repowise parses **19 languages to a full AST** and places **35 on a five-rung
+ladder**, so "do you support X" gets the rung as its answer rather than a yes or a
+no. Both numbers matter and neither is worth quoting alone.
 
-Below those rungs the ladder continues rather than stopping: **7 languages at
-Lightweight** (Elixir, Clojure, Haskell, Lean 4, Erlang, F#, HTML) get a real
-file-to-file import graph with no symbol-level claims, and **9 at Structural**
-(Objective-C, R, Zig, Julia, Elm, OCaml, Crystal, Nim, D) get the full git
-intelligence layer: blame, hotspots, co-change, ownership and bug history. That
-is **35 languages** an estate can be scored on today, and the rung is stated per
-language rather than averaged into a support claim. Full ladder:
+The 19 are the top three rungs. At **Full tier sit 13** (Python, TypeScript,
+JavaScript, Svelte, Vue, Java, Kotlin, Go, Rust, C++, **C#**, Scala, and Ruby) with
+AST parsing, import resolution, named bindings, call resolution, heritage
+extraction, multi-project workspace resolvers, framework-aware edges, per-language
+dynamic-hint extractors, and code-health markers. A further **5 at Good tier** (C,
+Swift, PHP, Dart, Object Pascal/Delphi) get all of that except the full health
+suite, and Luau is partial. SQL/dbt, shell, HTML, and the config formats are
+handled by dedicated extractors on top of that.
+
+Below the AST line the ladder continues rather than stopping: **7 at Lightweight**
+(Elixir, Clojure, Haskell, Lean 4, Erlang, F#, HTML) get a real file-to-file import
+graph with no symbol-level claims, and **9 at Structural** (Objective-C, R, Zig,
+Julia, Elm, OCaml, Crystal, Nim, D) get the git intelligence layer only: blame,
+hotspots, co-change, ownership and bug history, with no parsing. Stating the rung
+per language is deliberate, because a support claim that averages these together
+would not survive a technical evaluation. Full ladder:
 [LANGUAGE_SUPPORT.md](../layers/LANGUAGE_SUPPORT.md).
 
 **Languages are never gated.** Every one of them ships in the AGPL distribution,
@@ -150,6 +168,7 @@ the items that matter most to you can be prioritized.
 | Local dashboard (incl. local security pattern scan) | ✅ | ✅ |
 | Auto-sync (hooks, watcher, webhooks) | ✅ | ✅ |
 | Auto-generated CLAUDE.md | ✅ | ✅ |
+| Test intelligence (coverage ingestion **and** the graph-inferred test map) | ✅ | ✅ |
 | Local full-history secret scan (`repowise security scan --history`) | ✅ | ✅ |
 | Graph-aware enhanced security scanning | — | ✅ *(GA on hosted)* |
 | Language-specific security rulesets | — | ✅ *(dev)* |
