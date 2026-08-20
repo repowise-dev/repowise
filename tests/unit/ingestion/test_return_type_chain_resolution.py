@@ -216,3 +216,24 @@ def test_unbound_global_return_type_preserves_legacy_fallback(
 
 def test_only_audited_cpp_lane_is_enabled_by_default() -> None:
     assert frozenset({"cpp"}) == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
+
+
+def test_module_level_chain_keeps_structural_receiver(tmp_path: Path) -> None:
+    source = (
+        "class Product { run() {} }\n"
+        "function make(): Product { return new Product(); }\n"
+        "make().run();\n"
+    )
+    parsed = _parse(tmp_path, "example.ts", "typescript", source)
+    call = next(
+        c
+        for c in parsed["example.ts"].calls
+        if c.target_name == "run" and getattr(c, "receiver_call", None)
+    )
+
+    result = CallResolver(
+        parsed, {}, return_type_chain_languages=frozenset({"typescript"})
+    ).resolve_file("example.ts", [call])
+
+    assert result[0].caller_id == "example.ts::__module__"
+    assert result[0].callee_id.endswith("::Product::run")

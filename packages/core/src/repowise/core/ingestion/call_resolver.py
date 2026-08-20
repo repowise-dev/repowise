@@ -833,13 +833,7 @@ class CallResolver:
             if not call.caller_symbol_id:
                 # Module-level call — assign to synthetic __module__ symbol
                 receiver_call = getattr(call, "receiver_call", None)
-                module_call = CallSite(
-                    target_name=call.target_name,
-                    receiver_name=call.receiver_name,
-                    caller_symbol_id=f"{file_path}::__module__",
-                    line=call.line,
-                    argument_count=call.argument_count,
-                )
+                module_call = replace(call, caller_symbol_id=f"{file_path}::__module__")
                 if receiver_call is not None:
                     module_call.receiver_call = receiver_call  # type: ignore[attr-defined]
                 call = module_call
