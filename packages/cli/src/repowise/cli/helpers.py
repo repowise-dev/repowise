@@ -1120,6 +1120,22 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
                 )
             return warnings
 
+        if provider_name == "devin_acp":
+            import shutil
+
+            if not shutil.which("devin"):
+                warnings.append(
+                    "Provider 'devin_acp' requires the Devin CLI.\n"
+                    "  Install macOS/Linux/WSL: curl -fsSL https://cli.devin.ai/install.sh | bash\n"
+                    "  Install Windows:         irm https://static.devin.ai/cli/setup.ps1 | iex\n"
+                    "  Log in:                  devin auth login\n"
+                    "  Models:                  devin models list\n"
+                    "  Package:                 pip install agent-client-protocol\n"
+                    "  More:                    https://docs.devin.ai/cli\n"
+                    "  Usage:                   repowise init --provider devin_acp --model devin_acp/swe-1-7"
+                )
+            return warnings
+
         # Validate specific provider
         if provider_name not in provider_env_vars:
             warnings.append(f"Unknown provider '{provider_name}' - cannot validate configuration")

@@ -67,6 +67,8 @@ PROVIDER_DEFAULTS: dict[str, RateLimitConfig] = {
     "litellm": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=2_000_000),
     "deepseek": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=5_000_000),
     "kimi": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=5_000_000),
+    # Local Devin ACP (devin acp) — usage is controlled by the CLI, but keep a cap
+    "devin_acp": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=10_000_000),
 }
 
 

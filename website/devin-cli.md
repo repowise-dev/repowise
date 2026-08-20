@@ -7,7 +7,7 @@ nav_order: 5.7
 # Devin CLI Integration
 {: .no_toc }
 
-Use Repowise with Devin via the `devin_cli` LLM provider. No API keys — the Devin CLI manages authentication and billing.
+Use Repowise with Devin via the `devin_cli` or `devin_acp` LLM providers. No API keys — the Devin CLI manages authentication and billing.
 {: .fs-6 .fw-300 }
 
 ---
@@ -70,9 +70,43 @@ When you run `repowise init` interactively, the provider table includes `devin_c
 
 If Devin is not installed, the interactive prompt shows the install and login commands.
 
+## `devin_acp` provider
+
+`devin_acp` launches the Devin CLI in Agent Client Protocol mode for a full session and real token usage:
+
+```bash
+repowise init --provider devin_acp --yes
+```
+
+It runs:
+
+```bash
+devin acp
+```
+
+Repowise initializes the ACP connection, creates a session in the repository, switches Devin to `ask` mode (answer questions without editing files), optionally selects a specific model, and sends the combined prompt. It collects the streamed `agent_message_chunk` text and reads `PromptResponse.usage` for real input, output, and cached token counts.
+
+### Model selection
+
+`devin_acp/default` uses Devin's configured default model. To pick a specific model:
+
+```bash
+repowise init --provider devin_acp --model devin_acp/swe-1-7
+```
+
+Models can be listed with:
+
+```bash
+devin models list
+```
+
+### Requirements
+
+`devin_acp` requires the `agent-client-protocol` package. It is installed automatically with Repowise.
+
 ## Reasoning
 
-The `devin_cli` provider does not pass explicit reasoning effort flags. Devin selects the reasoning level through the model ID (for example, `claude-opus-5-low` vs `claude-opus-5-high`). Pick the model variant that matches the desired reasoning effort.
+The `devin_cli` and `devin_acp` providers do not pass explicit reasoning effort flags. Devin selects the reasoning level through the model ID (for example, `claude-opus-5-low` vs `claude-opus-5-high` for ACP, or the same model ID for `devin_cli`). Pick the model variant that matches the desired reasoning effort.
 
 ## Safety
 
@@ -84,13 +118,14 @@ The provider invokes Devin with:
 
 ## Comparison with other CLI providers
 
-| Aspect | `devin_cli` | `codex_cli` | `opencode` |
-|---|---|---|---|
-| CLI | `devin -p` | `codex exec` | `opencode run` |
-| Auth | `devin auth login` | `codex login` | OpenCode providers |
-| Output | plain text | JSONL | JSONL |
-| Model list | `devin models list --format json` | `codex debug models` | `opencode models` |
-| Key storage | No | No | No |
+| Aspect | `devin_cli` | `devin_acp` | `codex_cli` | `opencode` |
+|---|---|---|---|---|
+| CLI | `devin -p` | `devin acp` | `codex exec` | `opencode run` |
+| Auth | `devin auth login` | `devin auth login` | `codex login` | OpenCode providers |
+| Output | plain text | ACP `agent_message_chunk` | JSONL | JSONL |
+| Token usage | estimated | real | real | real |
+| Model list | `devin models list --format json` | `devin models list --format json` | `codex debug models` | `opencode models` |
+| Key storage | No | No | No | No |
 
 ## Official docs
 

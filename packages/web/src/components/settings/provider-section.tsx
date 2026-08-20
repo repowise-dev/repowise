@@ -19,7 +19,7 @@ import {
   type SaveState,
 } from "@repowise-dev/ui/settings";
 
-const PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "kimi", "opencode", "devin_cli", "ollama", "litellm", "mock"] as const;
+const PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "kimi", "opencode", "devin_cli", "devin_acp", "ollama", "litellm", "mock"] as const;
 const EMBEDDERS = ["mock", "gemini", "openai", "openrouter", "ollama"] as const;
 
 const MODEL_PLACEHOLDERS: Record<string, string> = {
@@ -30,6 +30,7 @@ const MODEL_PLACEHOLDERS: Record<string, string> = {
   kimi: "kimi-for-coding",
   opencode: "opencode/default",
   devin_cli: "devin_cli/default",
+  devin_acp: "devin_acp/default",
   ollama: "qwen3.5:4b",
   litellm: "groq/llama-3.1-70b-versatile",
   mock: "mock",
@@ -45,6 +46,7 @@ const PROVIDER_ENV_VARS: Record<string, { vars: string[]; installHint: string }>
   litellm: { vars: ["LITELLM_*"], installHint: "pip install litellm" },
   opencode: { vars: [], installHint: "curl -fsSL https://opencode.ai/install | bash" },
   devin_cli: { vars: [], installHint: "curl -fsSL https://cli.devin.ai/install.sh | bash" },
+  devin_acp: { vars: [], installHint: "curl -fsSL https://cli.devin.ai/install.sh | bash" },
   mock: { vars: [], installHint: "No key needed" },
 };
 

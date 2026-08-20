@@ -242,7 +242,7 @@ def _workspace_generation_provider_for_repo(provider: Any, repo_path: Path) -> A
     and returned unchanged.
     """
 
-    if provider.provider_name not in ("codex_cli", "devin_cli"):
+    if provider.provider_name not in ("codex_cli", "devin_cli", "devin_acp"):
         return provider
     return resolve_provider(provider.provider_name, provider.model_name, repo_path)
 

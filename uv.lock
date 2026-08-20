@@ -19,6 +19,18 @@ members = [
 ]
 
 [[package]]
+name = "agent-client-protocol"
+version = "0.12.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9d/95/2c28ca34e545ce0282e88272aa3a8abdf8f3f926a0492f567ea11acd071b/agent_client_protocol-0.12.1.tar.gz", hash = "sha256:9963ccb590ed96d7dc542c9c023e90676fc76b1c6562e21a9ee112f4fbcb0095", size = 130605, upload-time = "2026-08-16T14:08:22.545Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/21/61/0a2186c8ca53cf464767d4c4fb7fd9e23f48ce4547c2fa0d1c83a4d52410/agent_client_protocol-0.12.1-py3-none-any.whl", hash = "sha256:aaf3cc301ed87d9e2c4ccb91adfe1cd58784355f6ce7e513f50e7ca2391862ef", size = 85929, upload-time = "2026-08-16T14:08:21.307Z" },
+]
+
+[[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3054,6 +3066,7 @@ name = "repowise"
 version = "0.44.0"
 source = { editable = "." }
 dependencies = [
+    { name = "agent-client-protocol" },
     { name = "aiosqlite" },
     { name = "alembic" },
     { name = "anthropic" },
@@ -3138,6 +3151,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agent-client-protocol", specifier = ">=0.12.1" },
     { name = "aiosqlite", specifier = ">=0.20,<1" },
     { name = "alembic", specifier = ">=1.13,<2" },
     { name = "anthropic", specifier = ">=0.40,<1" },

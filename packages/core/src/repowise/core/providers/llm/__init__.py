@@ -20,6 +20,7 @@ Built-in providers:
     codex_cli  — local authenticated Codex CLI via codex exec
     opencode   — local opencode CLI via opencode run
     devin_cli  — local authenticated Devin CLI via devin -p
+    devin_acp  — local authenticated Devin CLI via devin acp (Agent Client Protocol)
     mock       — deterministic test provider
 """
 

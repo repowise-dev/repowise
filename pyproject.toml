@@ -99,6 +99,7 @@ dependencies = [
     "openai>=1.50,<3",
     "google-genai>=1.0,<2",
     "litellm>=1.84.0,<2",
+    "agent-client-protocol>=0.12.1",
 ]
 
 [project.optional-dependencies]
