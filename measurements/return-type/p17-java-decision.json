@@ -1,0 +1,33 @@
+{
+  "corpus": "caffeine",
+  "decision": "measured_refusal",
+  "language": "java",
+  "reason": "Two bounded treatments failed precision; the lane remains disabled.",
+  "attempts": [
+    {
+      "policy": "all repository type names, including global targets and terminal refusals",
+      "counts": {
+        "added": 41,
+        "retargeted": 1850,
+        "refused": 1655,
+        "lost": 0,
+        "metadata_only": 3173
+      },
+      "audit": "p17-caffeine-java-audit.json",
+      "failure": "The 30-row refusal sample included inherited, assertion, stream, and external APIs that must retain legacy behavior."
+    },
+    {
+      "policy": "same-file, exact-import, and JVM-package targets; no terminal refusals or global targets",
+      "counts": {
+        "added": 2,
+        "retargeted": 1842,
+        "refused": 0,
+        "lost": 0,
+        "metadata_only": 3140
+      },
+      "audit": "p17-caffeine-java-admitted-audit.json",
+      "failure": "The deterministic retarget sample exposed overload-dependent wrong targets, including assertThat(...).isEmpty()."
+    }
+  ],
+  "final_production_enabled": false
+}

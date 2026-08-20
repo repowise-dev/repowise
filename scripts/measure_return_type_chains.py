@@ -38,20 +38,37 @@ def _parse_repo(repo: Path, language: str) -> tuple[dict[str, ParsedFile], dict[
     return parsed, sources
 
 
-def _baseline(
-    repo: Path, parsed: dict[str, ParsedFile], sources: dict[str, bytes]
-) -> dict[tuple[str, int, str], str]:
-    """Record legacy results while the production return-type lanes are off."""
+def _resolved_edges(
+    repo: Path,
+    parsed: dict[str, ParsedFile],
+    sources: dict[str, bytes],
+    languages: frozenset[str],
+) -> dict[tuple[str, int, str], dict[str, object]]:
+    """Record one resolver run with an explicit language toggle."""
 
-    resolved: dict[tuple[str, int, str], str] = {}
+    resolved: dict[tuple[str, int, str], dict[str, object]] = {}
     original = resolver_module.CallResolver._resolve_one
     old_languages = resolver_module.PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
-    resolver_module.PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES = frozenset()
+    resolver_module.PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES = languages
+    depth = 0
 
     def recording(self, file_path, call):
-        result = original(self, file_path, call)
-        if result is not None:
-            resolved.setdefault((file_path, call.line, call.target_name), result.callee_id)
+        nonlocal depth
+        top_level = depth == 0
+        depth += 1
+        try:
+            result = original(self, file_path, call)
+        finally:
+            depth -= 1
+        if top_level and result is not None:
+            resolved.setdefault(
+                (file_path, call.line, call.target_name),
+                {
+                    "callee": result.callee_id,
+                    "origin": result.origin,
+                    "confidence": result.confidence,
+                },
+            )
         return result
 
     resolver_module.CallResolver._resolve_one = recording
@@ -69,7 +86,7 @@ def _baseline(
 
 def measure(repo: Path, language: str) -> dict[str, object]:
     parsed, sources = _parse_repo(repo, language)
-    baseline = _baseline(repo, parsed, sources)
+    baseline = _resolved_edges(repo, parsed, sources, frozenset())
     symbols = {symbol.id: symbol for pf in parsed.values() for symbol in pf.symbols}
     known_types = {symbol.name for symbol in symbols.values() if symbol.kind in _TYPE_KINDS}
     methods: dict[tuple[str, str], set[str]] = defaultdict(set)
@@ -90,7 +107,8 @@ def measure(repo: Path, language: str) -> dict[str, object]:
             seen.add(key)
             buckets["structural_sites"] += 1
             inner = call.receiver_call
-            inner_id = baseline.get((path, call.line, inner.target_name))
+            inner_edge = baseline.get((path, call.line, inner.target_name))
+            inner_id = str(inner_edge["callee"]) if inner_edge else None
             if inner_id is None:
                 bucket = "refused_inner_unresolved"
             else:
@@ -106,7 +124,8 @@ def measure(repo: Path, language: str) -> dict[str, object]:
                     bucket = "refused_external_type"
                 else:
                     candidates = methods.get((type_name, call.target_name), set())
-                    before = baseline.get(key)
+                    before_edge = baseline.get(key)
+                    before = str(before_edge["callee"]) if before_edge else None
                     if len(candidates) != 1:
                         bucket = (
                             "predicted_refused"
@@ -127,12 +146,67 @@ def measure(repo: Path, language: str) -> dict[str, object]:
                     {"file": path, "line": call.line, "target": call.target_name}
                 )
 
-    return {
+    result: dict[str, object] = {
         "repo": str(repo.resolve()),
         "language": language,
         "files": len(parsed),
         "buckets": dict(sorted(buckets.items())),
         "examples": dict(sorted(examples.items())),
+    }
+    return result
+
+
+def compare(repo: Path, language: str) -> dict[str, object]:
+    """Run control/treatment in one process and attribute every changed site."""
+
+    parsed, sources = _parse_repo(repo, language)
+    before = _resolved_edges(repo, parsed, sources, frozenset())
+    after = _resolved_edges(repo, parsed, sources, frozenset({language}))
+    structural = {
+        (path, call.line, call.target_name)
+        for path, pf in parsed.items()
+        for call in pf.calls
+        if call.receiver_call is not None
+    }
+    source_lines = {
+        path: source.decode("utf-8", "replace").splitlines() for path, source in sources.items()
+    }
+    counts: Counter[str] = Counter()
+    rows: dict[str, list[dict[str, object]]] = defaultdict(list)
+    for key in sorted(before.keys() | after.keys()):
+        old = before.get(key)
+        new = after.get(key)
+        if old == new:
+            continue
+        if old is None:
+            bucket = "added"
+        elif new is None:
+            bucket = "refused" if key in structural else "lost"
+        elif old["callee"] != new["callee"]:
+            bucket = "retargeted"
+        else:
+            # Origin/confidence-only movement is still explicit, but is not an
+            # edge-identity change and must not inflate add/retarget counts.
+            bucket = "metadata_only"
+        counts[bucket] += 1
+        path, line, target = key
+        lines = source_lines.get(path, [])
+        rows[bucket].append(
+            {
+                "file": path,
+                "line": line,
+                "target": target,
+                "source": lines[line - 1].strip() if 0 < line <= len(lines) else "",
+                "before": old,
+                "after": new,
+            }
+        )
+    return {
+        "repo": str(repo.resolve()),
+        "language": language,
+        "files": len(parsed),
+        "counts": dict(sorted(counts.items())),
+        "rows": dict(sorted(rows.items())),
     }
 
 
@@ -143,13 +217,21 @@ def main() -> None:
         "--language", required=True, choices=("java", "cpp", "csharp", "typescript")
     )
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--compare", action="store_true")
     args = parser.parse_args()
-    result = measure(args.repo.resolve(), args.language)
+    result = (
+        compare(args.repo.resolve(), args.language)
+        if args.compare
+        else measure(args.repo.resolve(), args.language)
+    )
     payload = json.dumps(result, indent=2, sort_keys=True)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(payload + "\n", encoding="utf-8")
-    print(payload)
+        summary_key = "counts" if args.compare else "buckets"
+        print(json.dumps({**result, "rows": None, "examples": None}.get(summary_key, {})))
+    else:
+        print(payload)
 
 
 if __name__ == "__main__":

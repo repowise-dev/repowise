@@ -1,0 +1,372 @@
+{
+  "limit": 30,
+  "measurement": "measurements\\return-type\\p17-seastar-cpp-treatment.json",
+  "samples": {
+    "added": [],
+    "lost": [],
+    "refused": [
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/execution_stage_test.cc",
+        "line": 296,
+        "source": "auto sg1 = seastar::create_scheduling_group(\"sg1\", 300).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/scheduling_group_test.cc",
+        "line": 440,
+        "source": "scheduling_group_key_create(key1_conf).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/io_queue_test.cc",
+        "line": 880,
+        "source": "auto sg0 = create_scheduling_group(\"a\", \"a\", 100, ssg).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/scheduling_group_test.cc",
+        "line": 419,
+        "source": "scheduling_group_key_create(sg_conf).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/io_queue_test.cc",
+        "line": 921,
+        "source": "auto sg1 = create_scheduling_group(\"b\", \"b\", 100, ssg).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/io_queue_test.cc",
+        "line": 857,
+        "source": "auto ssg = create_scheduling_supergroup(100).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "include/seastar/http/internal/content_source.hh::chunked_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/httpd_test.cc",
+        "line": 1597,
+        "source": "sstring body = util::read_entire_stream_contiguous(in).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/io_queue_test.cc",
+        "line": 864,
+        "source": "auto bw = run_and_check_bandwidth(tio, pc, bandwidth * 0.9).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/scheduling_group_test.cc",
+        "line": 225,
+        "source": "scheduling_group sg = create_scheduling_group(\"sg0\", 100).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/locking_test.cc",
+        "line": 54,
+        "source": "l.for_read().lock().get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "include/seastar/http/internal/content_source.hh::chunked_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/httpd_test.cc",
+        "line": 1388,
+        "source": "server.stop().get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/fstream_test.cc",
+        "line": 298,
+        "source": "auto out = make_file_output_stream(f).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "tests/unit/stream_reader_test.cc::test_source_impl::get",
+          "confidence": 0.95,
+          "origin": "same_file"
+        },
+        "file": "tests/unit/stream_reader_test.cc",
+        "line": 67,
+        "source": "auto all = read_entire_stream(strm).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/rest_api_httpd.cc",
+        "line": 88,
+        "source": "server->stop().get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/scheduling_group_test.cc",
+        "line": 247,
+        "source": "auto cleanup = defer([&] () noexcept { destroy_scheduling_group(sg).get(); });",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/futures_test.cc",
+        "line": 1245,
+        "source": "parallel_for_each(range, [&sum] (int v) {",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/socket_test.cc",
+        "line": 154,
+        "source": "seastar::sleep(std::chrono::milliseconds(250)).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/ipv6_test.cc",
+        "line": 83,
+        "source": "auto cc = connect(la).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "include/seastar/http/internal/content_source.hh::chunked_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/httpd_test.cc",
+        "line": 545,
+        "source": "write_request(output).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "tests/unit/sharded_test.cc::argument::get",
+          "confidence": 0.95,
+          "origin": "same_file"
+        },
+        "file": "tests/unit/sharded_test.cc",
+        "line": 99,
+        "source": "BOOST_REQUIRE_EQUAL(c.local().count_from(1).get(), this_smp_shard_count() + 1);",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "include/seastar/core/iostream.hh::data_source::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/tls_test.cc",
+        "line": 392,
+        "source": "do_for_each(prios, [&b, addr](const sstring& prio) {",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/rpc_test.cc",
+        "line": 1846,
+        "source": "rpc_test_env<>::do_with_thread(cfg, [] (rpc_test_env<>& env) {",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/fstream_test.cc",
+        "line": 123,
+        "source": "auto w = writer::make(std::move(f)).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/distributed_test.cc",
+        "line": 373,
+        "source": "destroy_smp_service_group(ssg3).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/distributed_test.cc",
+        "line": 359,
+        "source": "destroy_smp_service_group(ssg2).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/io_queue_test.cc",
+        "line": 849,
+        "source": "destroy_scheduling_group(sg).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "demos/tls_echo_server_demo.cc",
+        "line": 70,
+        "source": "stop_signal.wait().get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/io_queue_test.cc",
+        "line": 996,
+        "source": "auto sd = file_stat(\".\").get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/distributed_test.cc",
+        "line": 370,
+        "source": "destroy_smp_service_group(ssg1).get();",
+        "target": "get"
+      },
+      {
+        "after": null,
+        "before": {
+          "callee": "src/core/fstream.cc::pipe_data_source_impl::get",
+          "confidence": 0.85,
+          "origin": "import_merged"
+        },
+        "file": "tests/unit/execution_stage_test.cc",
+        "line": 297,
+        "source": "auto ksg1 = seastar::defer([&] () noexcept { seastar::destroy_scheduling_group(sg1).get(); });",
+        "target": "get"
+      }
+    ],
+    "retargeted": []
+  },
+  "seed": 20260821
+}

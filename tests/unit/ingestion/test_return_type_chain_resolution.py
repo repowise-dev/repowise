@@ -29,7 +29,7 @@ def _parse(tmp_path: Path, path: str, language: str, source: str) -> dict[str, P
 
 
 @pytest.mark.parametrize(
-    ("path", "language", "source", "outer"),
+    ("path", "language", "source", "outer", "expected_type"),
     [
         (
             "Example.java",
@@ -37,13 +37,16 @@ def _parse(tmp_path: Path, path: str, language: str, source: str) -> dict[str, P
             "class Product { void run() {} }\nclass Wrong { void run() {} }\n"
             "class Use {\n Product make() { return new Product(); }\n void go() { make().run(); }\n}",
             "run",
+            "Product",
         ),
         (
             "example.cpp",
             "cpp",
-            "struct Product { void run() {} };\nstruct Wrong { void run() {} };\n"
-            "Product make() { return Product(); }\nvoid use() { make().run(); }",
-            "run",
+            "template<typename T> struct future { T get() {} };\n"
+            "struct Wrong { int get() {} };\n"
+            "future<int> make() { return {}; }\nvoid use() { make().get(); }",
+            "get",
+            "future",
         ),
         (
             "Example.cs",
@@ -51,6 +54,7 @@ def _parse(tmp_path: Path, path: str, language: str, source: str) -> dict[str, P
             "class Product { public void Run() {} }\nclass Wrong { public void Run() {} }\n"
             "class Use {\n Product Make() { return new Product(); }\n void Go() { Make().Run(); }\n}",
             "Run",
+            "Product",
         ),
         (
             "example.ts",
@@ -58,11 +62,17 @@ def _parse(tmp_path: Path, path: str, language: str, source: str) -> dict[str, P
             "class Product { run() {} }\nclass Wrong { run() {} }\n"
             "function make(): Product { return new Product(); }\nfunction use() { make().run(); }",
             "run",
+            "Product",
         ),
     ],
 )
 def test_return_type_chain_retargets_to_declared_type(
-    tmp_path: Path, path: str, language: str, source: str, outer: str
+    tmp_path: Path,
+    path: str,
+    language: str,
+    source: str,
+    outer: str,
+    expected_type: str,
 ) -> None:
     parsed = _parse(tmp_path, path, language, source)
     call = next(c for c in parsed[path].calls if c.target_name == outer and c.receiver_call)
@@ -78,11 +88,11 @@ def test_return_type_chain_retargets_to_declared_type(
 
     assert not any(edge.origin.startswith("return_type_") for edge in before)
     assert len(after) == 1
-    assert after[0].callee_id.endswith("::Product::" + outer)
+    assert after[0].callee_id.endswith(f"::{expected_type}::{outer}")
     assert after[0].origin.startswith("return_type_")
 
 
-def test_known_return_type_can_refuse_a_bare_name_fallback(tmp_path: Path) -> None:
+def test_java_unknown_member_preserves_legacy_fallback(tmp_path: Path) -> None:
     source = (
         "class Product {} class Wrong { void run() {} } "
         "class Use { Product make() { return new Product(); } void go() { make().run(); } }"
@@ -97,6 +107,51 @@ def test_known_return_type_can_refuse_a_bare_name_fallback(tmp_path: Path) -> No
     )
     after = CallResolver(parsed, {}, return_type_chain_languages=frozenset({"java"})).resolve_file(
         "Example.java", [call]
+    )
+
+    assert len(before) == 1
+    assert after == before
+
+
+def test_java_ambiguous_overload_return_preserves_legacy_fallback(tmp_path: Path) -> None:
+    source = (
+        "class First { void run() {} }\nclass Second { void run() {} }\n"
+        "class Factory {\n First make(int value) { return new First(); }\n"
+        " Second make(String value) { return new Second(); }\n}\n"
+        "class Use { void go() { new Factory().make(1).run(); } }\n"
+    )
+    parsed = _parse(tmp_path, "Example.java", "java", source)
+    call = next(
+        c
+        for c in parsed["Example.java"].calls
+        if c.target_name == "run" and c.receiver_call and c.line == 7
+    )
+
+    before = CallResolver(parsed, {}, return_type_chain_languages=frozenset()).resolve_file(
+        "Example.java", [call]
+    )
+    after = CallResolver(parsed, {}, return_type_chain_languages=frozenset({"java"})).resolve_file(
+        "Example.java", [call]
+    )
+
+    assert after == before
+
+
+def test_cpp_future_get_can_refuse_a_bare_name_fallback(tmp_path: Path) -> None:
+    source = (
+        "template<typename T> struct future {}; struct Wrong { int get() {} }; "
+        "future<int> make() { return {}; } void use() { make().get(); }"
+    )
+    parsed = _parse(tmp_path, "example.cpp", "cpp", source)
+    call = next(
+        c for c in parsed["example.cpp"].calls if c.target_name == "get" and c.receiver_call
+    )
+
+    before = CallResolver(parsed, {}, return_type_chain_languages=frozenset()).resolve_file(
+        "example.cpp", [call]
+    )
+    after = CallResolver(parsed, {}, return_type_chain_languages=frozenset({"cpp"})).resolve_file(
+        "example.cpp", [call]
     )
 
     assert len(before) == 1

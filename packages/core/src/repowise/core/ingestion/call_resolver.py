@@ -51,7 +51,7 @@ from .models import (
     ResolutionOrigin,
     symbol_id_language,
 )
-from .return_types import declared_return_type, normalize_return_type
+from .return_types import declared_return_type, normalize_return_type, signature_parameter_count
 
 log = structlog.get_logger(__name__)
 
@@ -167,7 +167,7 @@ _BODY_TYPE_CACHE_ENTRIES = 2048
 
 # Phase admission is intentionally explicit. P16 lands the behavior-preserving
 # substrate with no language enabled; later phases add only measured lanes.
-PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset()
+PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES: frozenset[str] = frozenset({"cpp"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +230,23 @@ class CallResolver:
         self._symbols_by_id = {
             symbol.id: symbol for parsed in parsed_files.values() for symbol in parsed.symbols
         }
+        self._overload_return_types: dict[tuple[str, str | None, str, int | None], set[str]] = (
+            defaultdict(set)
+        )
+        for path, parsed in parsed_files.items():
+            for symbol in parsed.symbols:
+                raw_return = declared_return_type(symbol.signature or "")
+                normalized = (
+                    normalize_return_type(raw_return, symbol.language) if raw_return else None
+                )
+                if normalized is not None:
+                    key = (
+                        path,
+                        symbol.parent_name,
+                        symbol.name,
+                        signature_parameter_count(symbol.signature or ""),
+                    )
+                    self._overload_return_types[key].add(normalized)
         self._known_type_names = frozenset(
             symbol.name for symbol in self._symbols_by_id.values() if symbol.kind in _TYPE_KINDS
         )
@@ -886,12 +903,36 @@ class CallResolver:
         else:
             raw_return = declared_return_type(symbol.signature or "")
             type_name = normalize_return_type(raw_return, language) if raw_return else None
+            symbol_path = resolved_inner.callee_id.split("::", 1)[0]
+            overload_key = (
+                symbol_path,
+                symbol.parent_name,
+                symbol.name,
+                inner.argument_count,
+            )
+            if len(self._overload_return_types.get(overload_key, ())) > 1:
+                return False, None
         if type_name is None:
             return False, None
 
         found = self._typed_receiver_target(file_path, call, caller_id, type_name)
-        if found is None:
+        if language == "java":
+            # A simple type name is not repository-unique.  Java package and
+            # import binding settle its identity; the global tier does not.
+            if found is None or found[1] == "global":
+                return False, None
+        elif language == "cpp":
+            # P17 admits only the measured Seastar debt family.  Broader C++
+            # return-name matching remains probe evidence, not production
+            # behaviour.
+            if type_name != "future" or call.target_name != "get":
+                return False, None
+            if found is None:
+                return (type_name in self._known_type_names), None
+        elif found is None:
             return (type_name in self._known_type_names), None
+
+        assert found is not None
         sym_id, tier = found
         return True, self._return_typed_call(caller_id, sym_id, tier, call.line)
 
