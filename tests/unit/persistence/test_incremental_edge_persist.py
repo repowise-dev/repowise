@@ -145,6 +145,53 @@ async def test_incremental_edge_persist_leaves_unchanged_files_untouched(async_s
     assert ("c.py", "a.py", "imports") in after
 
 
+async def test_full_and_incremental_persist_retain_call_site_lines(async_session, tmp_path):
+    """Both graph write paths preserve the exact sites behind a collapsed call edge."""
+    repo = await insert_repo(async_session)
+    source = "def load():\n    pass\n\ndef run():\n    load()\n"
+    (tmp_path / "calls.py").write_text(source)
+    gb1, parsed1 = _build_graph(tmp_path)
+
+    await persist_ingestion(
+        SimpleNamespace(
+            parsed_files=parsed1,
+            graph_builder=gb1,
+            external_systems=[],
+            execution_flow_report=None,
+            source_map={},
+        ),
+        async_session,
+        repo.id,
+    )
+    await async_session.commit()
+
+    call_edge = (
+        await async_session.execute(
+            select(GraphEdge).where(
+                GraphEdge.repository_id == repo.id,
+                GraphEdge.edge_type == "calls",
+            )
+        )
+    ).scalar_one()
+    assert json.loads(call_edge.call_lines_json) == [5]
+
+    (tmp_path / "calls.py").write_text(source + "    load()\n")
+    gb2, parsed2 = _build_graph(tmp_path)
+    await persist_graph_nodes(async_session, repo.id, gb2)
+    await persist_incremental_edges(async_session, repo.id, gb2, parsed2, ["calls.py"])
+    await async_session.commit()
+
+    call_edge = (
+        await async_session.execute(
+            select(GraphEdge).where(
+                GraphEdge.repository_id == repo.id,
+                GraphEdge.edge_type == "calls",
+            )
+        )
+    ).scalar_one()
+    assert json.loads(call_edge.call_lines_json) == [5, 6]
+
+
 async def _stored_fingerprint(session, repo_id: str) -> str | None:
     return (
         await session.execute(

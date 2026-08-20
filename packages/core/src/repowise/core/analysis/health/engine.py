@@ -37,10 +37,7 @@ from ...ingestion.git_indexer.function_blame import (
 from ...ingestion.package_roots import module_for as _module_for
 from ...ingestion.package_roots import package_roots_from_paths as _package_roots
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
-from ..test_reachability import (
-    call_graph_from_graph,
-    files_reached_by_tests,
-)
+from ..test_reachability import files_reached_by_tests
 from .biomarkers import FileContext, detect_all
 from .biomarkers.base import HasEdge
 from .complexity import FileComplexity, FunctionComplexity, walk_file
@@ -94,7 +91,9 @@ log = structlog.get_logger(__name__)
 # file, so they should not wait out the decay timer.
 # 3: that signal moved from the import graph to the call graph, so the same two
 # values are wrong again on an index stamped 2 - this time in both directions.
-HEALTH_ANALYZER_VERSION = 3
+# 4: performance now uses reliable execution edges and exact call-site identity,
+# so cross-function findings produced by the calls-only graph must be refreshed.
+HEALTH_ANALYZER_VERSION = 4
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.
@@ -336,6 +335,13 @@ class HealthAnalyzer:
         self.repo_root = repo_root
         self._package_roots_cache: set[str] | None = None
         self._tests_reach_cache: set[str] | None = None
+        self._execution_graph_cache: CallGraphIndex | None = None
+
+    def _execution_graph(self) -> CallGraphIndex | None:
+        """Build the reliable execution index at most once per analysis."""
+        if self.graph is not None and self._execution_graph_cache is None:
+            self._execution_graph_cache = CallGraphIndex(self.graph)
+        return self._execution_graph_cache
 
     def _files_reached_by_tests(self) -> set[str]:
         """Non-test files that some test file can execute into, per the call graph.
@@ -354,8 +360,9 @@ class HealthAnalyzer:
             test_files = {
                 pf.file_info.path for pf in self.parsed_files if pf.file_info.is_test
             }
+            index = self._execution_graph()
             self._tests_reach_cache = files_reached_by_tests(
-                call_graph_from_graph(self.graph), test_files
+                index or CallGraphIndex(), test_files
             )
         return self._tests_reach_cache
 
@@ -772,7 +779,7 @@ class HealthAnalyzer:
         """Run the graph-dependent perf passes over the walked files, in place.
 
         Four sources of extra ``perf_hits``, all sharing one
-        :class:`CallGraphIndex` (built once over the resolved ``calls`` graph):
+        :class:`CallGraphIndex` (built once over reliable execution edges):
 
           1. cross-function ``io_in_loop`` / N+1 (PR4);
           2. cross-function ``blocking_io_under_lock`` (Phase 7b) — the lock→I/O
@@ -789,7 +796,7 @@ class HealthAnalyzer:
         ship a centrality-gated marker we cannot establish centrality for).
         """
         try:
-            index = CallGraphIndex(self.graph) if self.graph is not None else None
+            index = self._execution_graph()
             by_file: dict[str, list] = {}
             if self.graph is not None and index is not None:
                 for src in (
