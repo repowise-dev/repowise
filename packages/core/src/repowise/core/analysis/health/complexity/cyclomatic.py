@@ -197,7 +197,17 @@ def _is_flat_match(node: Node, lmap: LanguageNodeMap) -> bool:
     ``loop``, ``if_let``, ``while_let`` expressions, and no ``block``
     with multiple statements).  Flat matches contribute 1 CCN point for
     the match keyword itself but do NOT count each arm individually.
+
+    Python's ``match_statement`` is excluded: ``match``/``case`` in Python
+    is *pattern matching* — each ``case`` is a distinct branch point,
+    structurally the same decision as ``if``/``elif``. Suppressing its arms
+    like a C-style flat switch would report a ``match`` with N arms as ~N
+    points too low (measured: a 3-arm ``match`` gave CCN 2 while the
+    equivalent ``if``/``elif`` gave 4). Rust ``match_expression`` and other
+    languages' dispatch switches keep the flat behaviour.
     """
+    if node.type == "match_statement":
+        return False
     complex_types = lmap.branch_kinds | lmap.loop_kinds | lmap.switch_kinds
     cases = _collect_case_children(node, lmap)
     if not cases:
