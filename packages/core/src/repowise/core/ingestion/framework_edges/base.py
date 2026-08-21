@@ -163,12 +163,16 @@ def _build_ts_var_to_file(
     DSL back to the file that exports it, so a synthetic edge from the
     DSL call site to the handler module can be emitted. Pulling this
     builder up to ``base`` avoids three near-identical copies.
+
+    Keyed on ``local_names``, not ``imported_names``: the DSL names the
+    handler as this file sees it, so ``import { handler as apiHandler }``
+    has to answer to ``apiHandler``.
     """
     from ..resolvers import resolve_import
 
     var_to_file: dict[str, str] = {}
     for imp in parsed.imports:
-        for name in imp.imported_names:
+        for name in imp.local_names:
             resolved = resolve_import(
                 imp.module_path,
                 path,

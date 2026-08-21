@@ -229,6 +229,24 @@ class Import:
     bindings: list[NamedBinding] = field(default_factory=list)
     is_reexport: bool = False  # True for `pub use` (Rust) or re-export patterns
 
+    @property
+    def local_names(self) -> list[str]:
+        """The names this statement writes into the importing file's namespace.
+
+        ``imported_names`` carries names as they exist in the *source* module,
+        because that is what reachability matches against — under an alias
+        (``import { A as B }``, ``from m import a as b``) the two differ. A
+        caller that wants to recognise an identifier *as it appears in this
+        file* — a router DSL naming a handler, an exclusion list for call
+        resolution — must read the bindings instead, and this is that read.
+
+        Falls back to ``imported_names`` for the languages whose extractors
+        emit no bindings, where the two are the same list by construction. For
+        a re-export nothing is truly bound locally; the alias is returned,
+        being the token that appears in this file.
+        """
+        return [b.local_name for b in self.bindings] or list(self.imported_names)
+
 
 @dataclass
 class CallSite:
