@@ -23,6 +23,7 @@ from repowise.cli.helpers import (
     run_async,
 )
 from repowise.cli.output import emit_json, format_option, notice_console
+from repowise.core.workspace.update import get_head_commit
 
 
 def _resolve_coverage_repo(path: str | None, fmt: str = "table") -> Path:
@@ -176,7 +177,17 @@ def coverage_add(
                 )
                 return False
 
-            head_sha = getattr(repo_row, "head_commit", None)
+            # Stamp the *live* HEAD, not ``repo_row.head_commit``. An incremental
+            # ``repowise update`` advances the index and the working tree but
+            # never refreshes that stored column, so a coverage report produced
+            # from the current tree would otherwise be labelled with a stale
+            # initialisation-time commit (issue #1747). The row has the repo
+            # path, so resolve the current commit from disk — the same source
+            # the health pass uses.
+            head_sha = (
+                get_head_commit(Path(repo_path))
+                or getattr(repo_row, "head_commit", None)
+            )
 
             # --- Per-file aggregate coverage (lcov / cobertura / clover / json).
             agg_matched = 0

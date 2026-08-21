@@ -1178,12 +1178,19 @@ async def _rescore_health_from_db(
                 session, repo_id, report, analyzed_commit=get_head_commit(Path(repo_path))
             )
             if coverage_files:
+                # Stamp the live HEAD from disk, not the stored
+                # ``repo.head_commit`` column — an incremental update advances
+                # the tree without refreshing that field (issue #1747), so the
+                # stored value labels coverage with a stale commit.
+                live_head = get_head_commit(Path(repo_path)) or getattr(
+                    repo, "head_commit", None
+                )
                 await save_coverage_files(
                     session,
                     repo_id,
                     coverage_files,
                     source_format=coverage_format or "lcov",
-                    ingested_commit_sha=getattr(repo, "head_commit", None),
+                    ingested_commit_sha=live_head,
                 )
             await persist_graph_nodes(session, repo_id, graph_builder)
 
