@@ -38,6 +38,15 @@ _COST_TABLE_EXACT: dict[str, tuple[float, float]] = {
     "claude-opus-4-6": (0.005, 0.025),  # $5 / $25 per MTok
     "claude-sonnet-4-6": (0.003, 0.015),  # $3 / $15 per MTok
     "claude-haiku-4-5": (0.001, 0.005),  # $1 / $5 per MTok
+    # DeepSeek V4 — https://api-docs.deepseek.com/quick_start/pricing
+    "deepseek-v4-flash": (0.00027, 0.00110),  # $0.27 / $1.10 per MTok
+    "deepseek-v4-pro": (0.00055, 0.00219),  # $0.55 / $2.19 per MTok
+    "deepseek-chat": (0.00027, 0.00110),
+    "deepseek-reasoner": (0.00055, 0.00219),
+    # Kimi / Moonshot — https://platform.moonshot.cn/docs/pricing/chat
+    "kimi-for-coding": (0.0006, 0.0024),  # $0.60 / $2.40 per MTok
+    "kimi-k2.5": (0.0006, 0.0024),
+    "kimi-k2.6": (0.0006, 0.0024),
 }
 
 # Prefix fallbacks for unknown variants. No `gpt-5.6` catch-all: the 5.6
@@ -54,6 +63,21 @@ _COST_TABLE_PREFIX: dict[str, tuple[float, float]] = {
     "claude-haiku": (0.001, 0.005),
     "claude": (0.003, 0.015),
     "gemini": (0.00025, 0.0015),
+    # DeepSeek V4 family — https://api-docs.deepseek.com/quick_start/pricing
+    # deepseek-chat was the V3 alias; V4 Flash/Pro are the current names.
+    "deepseek-v4-pro": (0.00055, 0.00219),
+    "deepseek-v4-flash": (0.00027, 0.00110),
+    "deepseek-v4": (0.00027, 0.00110),
+    "deepseek-chat": (0.00027, 0.00110),
+    "deepseek-reasoner": (0.00055, 0.00219),
+    "deepseek": (0.00027, 0.00110),
+    # Kimi / Moonshot — https://platform.moonshot.cn/docs/pricing/chat
+    "kimi-k2.6": (0.0006, 0.0024),
+    "kimi-k2.5": (0.0006, 0.0024),
+    "kimi-k2": (0.0006, 0.0024),
+    "kimi-for-coding": (0.0006, 0.0024),
+    "kimi": (0.0006, 0.0024),
+    "moonshot": (0.0006, 0.0024),
     "llama": (0.0, 0.0),
     "mock": (0.0, 0.0),
     "codex_cli/": (0.0, 0.0),
