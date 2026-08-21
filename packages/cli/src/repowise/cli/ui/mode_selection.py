@@ -450,7 +450,7 @@ def _prompt_generation(
 
     # Embedder selection
     detected_embedder = _resolve_embedder_from_env()
-    embedder_choices = ["gemini", "openai", "openrouter", "ollama", "mock"]
+    embedder_choices = ["gemini", "openai", "openrouter", "ollama", "edenai", "mock"]
     result["embedder"] = click.prompt(
         "  Embedder for RAG",
         default=detected_embedder,

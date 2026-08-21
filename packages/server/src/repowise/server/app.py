@@ -129,8 +129,13 @@ def _build_embedder():
 
         model = os.environ.get("REPOWISE_EMBEDDING_MODEL", "google/gemini-embedding-001")
         return OpenRouterEmbedder(model=model)
+    if name == "edenai":
+        from repowise.core.providers.embedding.edenai import EdenAIEmbedder
+
+        model = os.environ.get("REPOWISE_EMBEDDING_MODEL", "amazon/amazon.titan-embed-text-v2:0")
+        return EdenAIEmbedder(model=model)
     logger.warning(
-        "embedder.mock_active: set REPOWISE_EMBEDDER=gemini, openai, openrouter, or ollama for real RAG"
+        "embedder.mock_active: set REPOWISE_EMBEDDER=gemini, openai, openrouter, ollama, or edenai for real RAG"
     )
     return KeylessEmbedder()
 

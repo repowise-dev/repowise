@@ -119,6 +119,24 @@ def test_ollama_resolves_without_api_key(monkeypatch):
     }
 
 
+def test_edenai_resolves_with_api_key(monkeypatch):
+    """Issue #1815: edenai is a documented embedder and must resolve, not
+    fall through to the keyless mock."""
+    from repowise.core.providers.embedding.edenai import EdenAIEmbedder
+
+    monkeypatch.setenv("REPOWISE_EMBEDDER", "edenai")
+    monkeypatch.setenv("EDENAI_API_KEY", "dummy")
+
+    embedder = _server._resolve_embedder()
+
+    assert isinstance(embedder, EdenAIEmbedder)
+    assert _state._embedder_status == {
+        "active": "edenai",
+        "requested": "edenai",
+        "degraded": False,
+    }
+
+
 def test_unknown_embedder_name_degrades(monkeypatch):
     """A typo'd / unknown embedder name surfaces as degraded, not silent mock."""
     monkeypatch.setenv("REPOWISE_EMBEDDER", "definitely-not-an-embedder")
