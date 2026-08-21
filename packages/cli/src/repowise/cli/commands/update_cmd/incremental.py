@@ -200,7 +200,10 @@ def _run_partial_analysis(
     Returns ``(partial_health_report, dead_code_report)`` — either may be
     ``None`` if its analysis failed (both are best-effort).
     """
-    from repowise.core.pipeline.incremental import run_partial_analysis
+    from repowise.core.pipeline.incremental import (
+        load_stored_coverage_map,
+        run_partial_analysis,
+    )
 
     return run_partial_analysis(
         repo_path,
@@ -212,5 +215,6 @@ def _run_partial_analysis(
         stored_git_meta=stored_git_meta,
         stored_performance_callers=stored_performance_callers,
         repo_function_mod_p80=repo_function_mod_p80,
+        coverage_map=run_async(load_stored_coverage_map(repo_path, log=console.print)),
         log=console.print,
     )

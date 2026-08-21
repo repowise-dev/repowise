@@ -430,6 +430,7 @@ async def _incremental_repo_update(
     # against an empty dict — which reads as "no commits in 90 days" and puts
     # the whole repo on the 0.7 / safe-to-delete rung of the confidence ladder.
     from ..pipeline.incremental import (
+        load_stored_coverage_map,
         load_stored_function_mod_p80,
         load_stored_git_meta,
         load_stored_performance_callers,
@@ -447,6 +448,10 @@ async def _incremental_repo_update(
     stored_performance_callers = await load_stored_performance_callers(
         repo_path, performance_changed_paths, log=_log.info
     )
+    # Preserve coverage across an incremental health re-score: without a
+    # coverage_map the changed files are re-scored as if no coverage existed
+    # and their stored line_coverage_pct is nulled (issue #1739).
+    stored_coverage_map = await load_stored_coverage_map(repo_path, log=_log.info)
 
     partial_health_report, dead_code_report = run_partial_analysis(
         repo_path,
@@ -458,6 +463,7 @@ async def _incremental_repo_update(
         stored_git_meta=stored_git_meta,
         stored_performance_callers=stored_performance_callers,
         repo_function_mod_p80=stored_function_mod_p80,
+        coverage_map=stored_coverage_map,
         log=_log.info,
     )
 

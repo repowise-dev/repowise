@@ -493,6 +493,70 @@ async def load_stored_function_mod_p80(repo_path: Any, *, log: LogFn | None = No
         return None
 
 
+async def load_stored_coverage_map(
+    repo_path: Any, *, log: LogFn | None = None
+) -> dict[str, dict]:
+    """Load the persisted coverage map for health scoring on an incremental run.
+
+    The incremental health pass re-scores changed files only, but if it builds
+    its ``HealthAnalyzer`` without a ``coverage_map`` every re-analyzed file is
+    scored as if no coverage had ever been ingested — and the partial-health
+    writer then overwrites the stored ``line_coverage_pct`` with ``None`` for
+    exactly the files that just changed, eroding coverage one file per update
+    (issue #1739).
+
+    Returns ``{path: coverage-dict}`` by reloading the persisted ``CoverageFile``
+    rows, mirroring ``_coverage_for_rescore`` in the CLI update path. Empty dict
+    when no coverage is stored, the store is unreadable, or the repository row
+    is missing — the analyzer then scores without coverage, matching the
+    established safe default.
+    """
+    log = log or _noop_log
+    import json
+
+    if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
+        return {}
+    try:
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+        )
+        from repowise.core.persistence.crud import (
+            get_repository_by_path,
+            load_coverage_for_repo,
+        )
+        from repowise.core.persistence.database import resolve_db_url
+
+        engine = create_engine(resolve_db_url(repo_path))
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                repo = await get_repository_by_path(session, str(repo_path))
+                if repo is None:
+                    return {}
+                rows = await load_coverage_for_repo(session, repo.id)
+        finally:
+            await engine.dispose()
+        coverage_map: dict[str, dict] = {}
+        for row in rows:
+            try:
+                covered = (
+                    json.loads(row.covered_lines_json) if row.covered_lines_json else []
+                )
+            except (ValueError, TypeError):
+                covered = []
+            coverage_map[row.file_path] = {
+                "line_coverage_pct": row.line_coverage_pct,
+                "branch_coverage_pct": row.branch_coverage_pct,
+                "covered_lines": covered,
+                "total_coverable_lines": row.total_coverable_lines or 0,
+            }
+        return coverage_map
+    except Exception as exc:
+        log(f"[yellow]Stored coverage unavailable: {exc}[/yellow]")
+        return {}
+
+
 def run_partial_analysis(
     repo_path: Any,
     graph_builder: Any,
@@ -504,6 +568,7 @@ def run_partial_analysis(
     stored_git_meta: dict[str, dict] | None = None,
     stored_performance_callers: set[str] | None = None,
     repo_function_mod_p80: int | None = None,
+    coverage_map: dict[str, dict] | None = None,
     log: LogFn | None = None,
 ) -> tuple[Any, Any]:
     """Run partial code-health + repo-wide dead-code analysis.
@@ -575,6 +640,7 @@ def run_partial_analysis(
             parsed_files=parsed_files,
             duplication_cache_dir=Path(repo_path) / ".repowise",
             repo_root=repo_path,
+            coverage_map=coverage_map,
         )
         if _health_scope:
             _hcfg = HealthConfig.load(repo_path)
