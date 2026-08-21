@@ -43,7 +43,7 @@ export interface ProviderValidationState {
 
 /** Providers that authenticate without an API key (local runtimes / CLIs).
  *  For these the key affordance is hidden — only reachability is validated. */
-const KEYLESS_PROVIDERS = new Set(["ollama", "opencode", "codex_cli", "mock"]);
+const KEYLESS_PROVIDERS = new Set(["ollama", "opencode", "codex_cli", "claude_cli", "mock"]);
 
 export interface ProviderSettingsProps {
   providers: ProviderOption[];

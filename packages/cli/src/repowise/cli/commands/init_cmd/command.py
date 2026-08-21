@@ -335,7 +335,8 @@ def _run_generation_phase(
         console.print(f"  Languages: {', '.join(lang_parts)}")
 
     # Warn when a local provider runs with default concurrency
-    if provider.provider_name in ("ollama", "codex_cli", "opencode") and concurrency > 4:
+    local_providers = ("ollama", "codex_cli", "claude_cli", "opencode")
+    if provider.provider_name in local_providers and concurrency > 4:
         console.print(
             f"  [{WARN}]Warning:[/] {provider.provider_name} is a local provider "
             f"running with concurrency={concurrency}. "
@@ -411,7 +412,7 @@ def _run_generation_phase(
     default=None,
     help=(
         "LLM provider name (anthropic, openai, openrouter, gemini, "
-        "deepseek, kimi, ollama, litellm, codex_cli, opencode, mock)."
+        "deepseek, kimi, ollama, litellm, codex_cli, claude_cli, opencode, mock)."
     ),
 )
 @click.option("--model", default=None, help="Model identifier override.")

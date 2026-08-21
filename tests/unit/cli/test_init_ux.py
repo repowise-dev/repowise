@@ -241,7 +241,12 @@ def test_an_unusable_ollama_url_says_so_instead_of_blaming_the_daemon(
 def test_the_keyless_providers_get_setup_help_instead_of_a_key_prompt() -> None:
     """Ollama used to be registered like a hosted provider, so selecting it
     asked for an API key it does not have and bounced forever on Enter."""
-    assert set(provider_selection._LOCAL_PROVIDER_SETUP) == {"codex_cli", "opencode", "ollama"}
+    assert set(provider_selection._LOCAL_PROVIDER_SETUP) == {
+        "codex_cli",
+        "claude_cli",
+        "opencode",
+        "ollama",
+    }
     for name, lines in provider_selection._LOCAL_PROVIDER_SETUP.items():
         rendered = "\n".join(lines()).lower()
         assert rendered.strip(), f"{name} has no setup help"
