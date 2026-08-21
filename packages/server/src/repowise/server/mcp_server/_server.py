@@ -98,6 +98,16 @@ def _persisted_embedder_key(name: str) -> str | None:
         return None
     canonical = env_vars[0]
 
+    # The process environment is the highest-precedence source, matching the
+    # CLI's resolver (cli/providers/keys.py): an exported key is an explicit
+    # override. The server used to skip this tier entirely, so on a machine
+    # with an exported credential it and the CLI disagreed about the same
+    # repo in the same shell (issue #1711).
+    for var in env_vars:
+        value = os.environ.get(var)
+        if value:
+            return value
+
     if _state._repo_path:
         try:
             # Reuse the reader get_answer already uses for the LLM credential,

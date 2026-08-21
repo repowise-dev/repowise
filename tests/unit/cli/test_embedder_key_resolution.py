@@ -313,6 +313,27 @@ def test_cli_and_mcp_resolve_the_same_key_for_the_same_repo(
     assert _server._persisted_embedder_key("openai") == expected
 
 
+def test_env_export_wins_in_both_cli_and_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #1711: an exported key is an explicit override on BOTH sides.
+
+    The server previously never consulted the process env, so on a machine with
+    an exported credential it resolved a different key (or none) than the CLI,
+    and the same repo in the same shell disagreed over MCP vs ``repowise
+    search``. The server now reads the env tier first, matching the CLI.
+    """
+    from repowise.server.mcp_server import _server, _state
+
+    _write_env(tmp_path, OPENAI_API_KEY="«redacted:sk-repo»")
+    _write_global_config(embedder="openai", embedder_api_key="«redacted:sk-global»")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-from-env")
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path), raising=False)
+
+    assert resolve_embedder_api_key("openai", tmp_path).key == "sk-from-env"
+    assert _server._persisted_embedder_key("openai") == "sk-from-env"
+
+
 def test_no_key_search_is_reported_for_a_keyless_backend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
