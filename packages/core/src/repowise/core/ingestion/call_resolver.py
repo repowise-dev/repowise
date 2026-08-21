@@ -230,6 +230,11 @@ class CallResolver:
         self._symbols_by_id = {
             symbol.id: symbol for parsed in parsed_files.values() for symbol in parsed.symbols
         }
+        self._symbol_paths_by_id = {
+            symbol.id: path
+            for path, parsed in parsed_files.items()
+            for symbol in parsed.symbols
+        }
         self._overload_return_types: dict[tuple[str, str | None, str, int | None], set[str]] = (
             defaultdict(set)
         )
@@ -901,7 +906,9 @@ class CallResolver:
         else:
             raw_return = declared_return_type(symbol.signature or "")
             type_name = normalize_return_type(raw_return, language) if raw_return else None
-            symbol_path = resolved_inner.callee_id.split("::", 1)[0]
+            symbol_path = self._symbol_paths_by_id.get(resolved_inner.callee_id)
+            if symbol_path is None:
+                return False, None
             overload_key = (
                 symbol_path,
                 symbol.parent_name,
