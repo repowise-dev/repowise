@@ -11,6 +11,7 @@ These tests build both graph shapes over the same small git repo and assert
 node/edge convergence plus equality of the centrality-cache signatures (the
 exact keys the cache hits on).
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -103,9 +104,7 @@ async def test_update_graph_converges_with_init_graph(tmp_path: Path) -> None:
 
     # The exact property the centrality cache keys on: identical file and
     # symbol subgraph signatures, so a first post-init update can hit.
-    assert subgraph_signature(init_gb.file_subgraph()) == subgraph_signature(
-        upd_gb.file_subgraph()
-    )
+    assert subgraph_signature(init_gb.file_subgraph()) == subgraph_signature(upd_gb.file_subgraph())
     assert subgraph_signature(init_gb.symbol_subgraph()) == subgraph_signature(
         upd_gb.symbol_subgraph()
     )
@@ -118,21 +117,20 @@ def test_dynamic_hint_failure_logs_warning_and_does_not_raise(tmp_path: Path) ->
     def capture_log(msg: str) -> None:
         logged_lines.append(msg)
 
-    # Empty repo with one dummy file
     (tmp_path / "main.py").write_text("x = 1\n")
 
     with patch(
         "repowise.core.ingestion.dynamic_hints.HintRegistry.extract_all",
         side_effect=RuntimeError("Simulated hint extraction crash"),
     ):
-        parsed_files, source_map, graph_builder, repo_structure, count = build_repo_graph(
+        _parsed_files, _source_map, graph_builder, _repo_structure, _count = build_repo_graph(
             repo_path=tmp_path,
             exclude_patterns=[],
             log=capture_log,
         )
 
-
     assert graph_builder is not None
-   
-    assert any("Dynamic hint extraction failed" in line and "Dynamic edges will be missing" in line for line in logged_lines)
-    
+    assert any(
+        "Dynamic hint extraction failed" in line and "missing from this update" in line
+        for line in logged_lines
+    )
