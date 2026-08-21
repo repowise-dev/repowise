@@ -19,7 +19,7 @@ from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER
 @click.argument("path", required=False, default=None)
 @click.option(
     "--embedder",
-    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "mock", "auto"]),
+    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "edenai", "mock", "auto"]),
     default="auto",
     help="Embedder to use. 'auto' detects from env vars / config.",
 )

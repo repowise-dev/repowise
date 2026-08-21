@@ -7,8 +7,11 @@ import type {
   HealthOverviewResponse,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
+  PerformanceOpportunityPage,
   TestsReachingFile,
 } from "@repowise-dev/types/health";
+import type { Paginated } from "@repowise-dev/types";
+import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 /** Subset of the findings list query the shared views need. */
 export interface CodeHealthFindingsQuery {
@@ -47,6 +50,17 @@ export interface CodeHealthAdapter {
 
   getOverview(limit: number): Promise<HealthOverviewResponse>;
   listFindings(opts?: CodeHealthFindingsQuery): Promise<HealthFinding[]>;
+  getPerformanceOpportunities?(opts?: {
+    context?: "production_tooling" | "test" | "all";
+    limit?: number;
+    offset?: number;
+  }): Promise<PerformanceOpportunityPage>;
+  getPerformanceOpportunityFindings?(
+    opportunityId: string,
+    opts?: { limit?: number; offset?: number },
+  ): Promise<Paginated<HealthFinding>>;
+  /** Fetch one exact canonical plan for the performance drawer. */
+  getRefactoringPlan?(planId: string): Promise<RefactoringPlan>;
   listFiles(opts?: HealthFilesQuery): Promise<HealthFilesResponse>;
   getHealthWorkQueue?(
     opts?: HealthWorkQueueQuery,
@@ -79,6 +93,8 @@ export interface CodeHealthAdapter {
   fileHref(path: string): string;
   /** Build an href to a symbol detail page, or `undefined` if not linkable. */
   symbolHref?(symbolId: string): string | undefined;
+  /** Exact stable-id handoff into the existing structured-plan page. */
+  refactoringPlanHref?(planId: string, opportunityId: string): string;
   /** Navigate to an href (host wires this to its router). */
   navigate(href: string): void;
 

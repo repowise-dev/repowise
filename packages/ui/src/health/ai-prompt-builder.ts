@@ -13,6 +13,7 @@
  */
 
 import { deadCodeRiskFactorLabel } from "@repowise-dev/types/dead-code";
+import type { PerformanceOpportunity } from "@repowise-dev/types/health";
 import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 import { biomarkerInfo, CATEGORY_LABEL } from "./biomarker-glossary";
@@ -1302,6 +1303,54 @@ export function buildCommitAiPrompt({
 // ─────────────────────────────────────────────────────────────────────
 // Refactoring plan prompt — hand a deterministic plan to a coding agent
 // ─────────────────────────────────────────────────────────────────────
+
+export interface BuildPerformanceOpportunityPromptOptions {
+  opportunity: PerformanceOpportunity;
+  flavor?: AiPromptFlavor;
+}
+
+/** An evidence-first handoff used only when no exact persisted plan is available. */
+export function buildPerformanceOpportunityPrompt({
+  opportunity,
+  flavor = "generic",
+}: BuildPerformanceOpportunityPromptOptions): string {
+  const evidence = opportunity.evidence.map((item) => {
+    const location = `${item.file_path}${item.line_start ? `:${item.line_start}` : ""}`;
+    const path = item.path.length ? `; path: ${item.path.join(" -> ")}` : "";
+    return `- \`${location}\`: ${item.reason} (${item.provenance}${path})`;
+  });
+  const intervention = opportunity.intervention_symbol
+    ? `Candidate shared intervention: \`${opportunity.intervention_symbol}\`.`
+    : "No shared intervention was proven.";
+
+  return [
+    FLAVOR_PREAMBLE[flavor],
+    "",
+    "## Causal performance opportunity",
+    "",
+    `- Stable opportunity ID: \`${opportunity.opportunity_id}\`.`,
+    `- Detector: \`${opportunity.biomarker_type}\`.`,
+    `- Execution context: ${opportunity.execution_context}.`,
+    `- Boundary: ${opportunity.boundary_kind ?? "unknown"}.`,
+    `- Confidence: ${opportunity.confidence}; provenance: ${opportunity.provenance}.`,
+    `- Scope: ${opportunity.affected_call_sites_total} affected call sites across ${opportunity.affected_files_total} files.`,
+    `- ${intervention}`,
+    `- Product status: ${opportunity.plan_reason}`,
+    "",
+    "## Evidence sampled by the analyzer",
+    "",
+    evidence.length ? evidence.join("\n") : "No resolved evidence paths were included in this page.",
+    "",
+    "## What to do",
+    "",
+    "1. Verify the repeated cost and caller-to-sink paths against the real code.",
+    "2. Determine whether one behavior-preserving intervention safely addresses the shared cause.",
+    "3. Identify the tests and commands that prove result equivalence and performance improvement.",
+    "4. If the evidence is insufficient or the intervention is unsafe, stop and explain the blocker instead of editing.",
+    "",
+    "Do not run commands or change files until the evidence and proposed validation have been reviewed.",
+  ].join("\n");
+}
 
 export interface BuildRefactoringPlanPromptOptions {
   plan: RefactoringPlan;

@@ -318,6 +318,50 @@ describe("request wiring", () => {
     // No route registered for health/overview: stub returns a 404 body.
     await expect(p.getHealthOverview("repo-1")).rejects.toBeInstanceOf(ApiClientError);
   });
+
+  it("passes bounded performance and refactoring paging through snapshot routes", async () => {
+    const envelope = { items: [], total: 0, has_more: false, next_offset: null };
+    const { p, calls } = provider([
+      REPOS_ROUTE,
+      ["/refactoring/plan-1", { id: "plan-1", refactoring_type: "performance_fix" }],
+      [
+        "/refactoring/targets/page",
+        { ...envelope, summary: { total: 0, by_type: [] }, structural_leads: [] },
+      ],
+      ["/health/performance-opportunities/opp-1/findings", envelope],
+      [
+        "/health/performance-opportunities",
+        {
+          ...envelope,
+          summary: {
+            total: 0,
+            production_total: 0,
+            tooling_total: 0,
+            test_total: 0,
+            with_plan_total: 0,
+            without_plan_total: 0,
+          },
+        },
+      ],
+    ]);
+
+    await p.getRefactoringPlansPage("repo-1", {
+      refactoringType: "performance_fix",
+      confidence: "high,medium",
+      sort: "canonical",
+      limit: 20,
+      offset: 40,
+    });
+    await p.getRefactoringPlan("repo-1", "plan-1");
+    await p.getPerformanceOpportunities("repo-1", { context: "test", limit: 20 });
+    await p.getPerformanceOpportunityFindings("repo-1", "opp-1", { limit: 50 });
+
+    expect(calls.at(-4)!.url).toContain("refactoring_type=performance_fix");
+    expect(calls.at(-4)!.url).toContain("offset=40");
+    expect(calls.at(-3)!.url).toContain("refactoring/plan-1");
+    expect(calls.at(-2)!.url).toContain("context=test");
+    expect(calls.at(-1)!.url).toContain("performance-opportunities/opp-1/findings");
+  });
 });
 
 // ---------------------------------------------------------------------------

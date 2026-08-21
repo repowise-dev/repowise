@@ -16,6 +16,7 @@
  */
 
 import type { C4IoKind } from "./external-systems.js";
+import type { Paginated } from "./pagination.js";
 
 /** Finding severity used across the health surface. */
 export type HealthSeverity = "low" | "medium" | "high" | "critical";
@@ -231,6 +232,66 @@ export interface HealthFinding {
   dimension?: HealthDimension;
 }
 
+export type PerformanceExecutionContext = "production" | "tooling" | "test";
+export type PerformanceOpportunityConfidence = "high" | "medium" | "low";
+
+export interface PerformanceOpportunityFix {
+  strategy: string;
+  safety: "proven" | "advisory";
+  rationale: string;
+}
+
+export interface PerformanceOpportunityEvidence {
+  finding_id: string;
+  file_path: string;
+  biomarker_type: string;
+  function_name: string | null;
+  line_start: number | null;
+  line_end: number | null;
+  reason: string;
+  path: string[];
+  provenance: string;
+}
+
+export interface PerformanceOpportunity {
+  opportunity_id: string;
+  biomarker_type: string;
+  biomarker_types: string[];
+  boundary_kind: C4IoKind | null;
+  execution_context: PerformanceExecutionContext;
+  terminal_sink: string | null;
+  shared_path_suffix: string[];
+  intervention_symbol: string | null;
+  affected_call_sites_total: number;
+  affected_files_total: number;
+  observations_total: number;
+  evidence: PerformanceOpportunityEvidence[];
+  evidence_truncated: boolean;
+  reliable_entry_reachability: boolean | null;
+  provenance: string;
+  confidence: PerformanceOpportunityConfidence;
+  rank_score: number;
+  rank_factors: Record<string, number>;
+  fix: PerformanceOpportunityFix | null;
+  /** Exact stored match. Never inferred from file, marker, or rank. */
+  plan_id: string | null;
+  plan_status: "available" | "no_safe_plan" | "not_persisted";
+  plan_reason: string;
+}
+
+export interface PerformanceOpportunitySummary {
+  total: number;
+  production_total: number;
+  tooling_total: number;
+  test_total: number;
+  with_plan_total: number;
+  without_plan_total: number;
+}
+
+export interface PerformanceOpportunityPage extends Paginated<PerformanceOpportunity> {
+  summary: PerformanceOpportunitySummary;
+}
+
 export interface HealthModuleRow {
   module: string;
   file_count: number;
@@ -260,7 +321,12 @@ export interface HealthOverviewSummary {
   worst_performer_path: string | null;
   worst_performer_score: number | null;
   open_findings: number;
-  severity_breakdown?: { critical: number; high: number; medium: number; low: number };
+  severity_breakdown?: {
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+  };
   /** Repo-level band derived from `average_health` (added in the band/distribution layer). */
   band?: HealthBand;
   /**
@@ -488,7 +554,12 @@ export interface HealthTrendResponse {
     message: string;
   }>;
   /** Largest movements first, in either direction, capped server-side. */
-  file_deltas: Array<{ file_path: string; before: number; after: number; delta: number }>;
+  file_deltas: Array<{
+    file_path: string;
+    before: number;
+    after: number;
+    delta: number;
+  }>;
   /**
    * How many files moved in total, before the cap. Optional: the hosted
    * backend does not send it, so consumers fall back to `file_deltas.length`.

@@ -409,6 +409,22 @@ goes.
 Methodology and raw data:
 [perf-detection](https://github.com/repowise-dev/repowise-bench/tree/master/perf-detection).
 
+### Product flow
+
+The web Code Health page has a dedicated **Performance** tab. It leads with a
+bounded list of causal opportunities rather than a flat wall of observations:
+the boundary and execution context, shared intervention, affected call-site and
+file totals, confidence, and resolution provenance. Production/tooling and test
+contexts are separate views. Expanding an opportunity shows caller-to-sink
+paths; raw findings remain canonical and load as a separately paged evidence
+drill-down.
+
+When the deterministic service can describe a safe intervention, the
+opportunity links by its exact stable `opportunity_id` to the matching
+`performance_fix` plan on the existing **Refactoring** page. It never guesses a
+nearby plan. When no safe plan exists, Code Health says so and keeps the raw
+evidence available.
+
 ## Refactoring targets
 
 ```bash
@@ -418,7 +434,7 @@ repowise health --refactoring-targets
 A score tells you a file is in trouble; a refactoring target names the fix.
 Repowise emits structured suggestions computed deterministically during the
 health pass from data it already has — the call graph, the cohesion model, the
-clone pairs, git co-change. No re-parse, no LLM, inside the same budget. Six
+clone pairs, git co-change. No re-parse, no LLM, inside the same budget. Seven
 detectors ship:
 
 | Type | What it names |
@@ -429,12 +445,15 @@ detectors ship:
 | **Move Method** | A feature-envy method and the class it actually belongs to |
 | **Break Cycle** | The minimal set of import edges to invert to break a dependency cycle |
 | **Split File** | The cohesive files an oversized module should decompose into, plus the import edits in every dependent |
+| **Performance Fix** | A proven shared intervention for a causal performance opportunity, with affected call sites and caller-to-sink paths |
 
 Each suggestion is structured data, not a string: a `plan`, the `evidence` that
 justifies it, the `impact_delta` it recovers, an `effort_bucket`, and a
 `blast_radius` of callers and co-changing files that must move with it. Ranking
-is graph-aware — `impact × centrality × blast_radius`, so a plan on a central hub
-outranks the same plan on a leaf.
+is graph-aware. The canonical recommendation service separates benefit and
+leverage from cost and risk; a larger blast radius raises cost and risk and is
+never presented as benefit. Performance plans retain detector-native benefit
+even though they intentionally recover zero defect-health points.
 
 ```python
 get_health(include=["refactoring"])           # ranked structured plans

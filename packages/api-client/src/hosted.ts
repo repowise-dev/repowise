@@ -31,12 +31,17 @@ import type {
   HealthWorkQueueResponse,
 } from "@repowise-dev/types/health";
 import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
-import type { RefactoringTargets } from "@repowise-dev/types/refactoring";
+import type { PerformanceOpportunityPage } from "@repowise-dev/types/health";
+import type {
+  RefactoringPlan,
+  RefactoringPlanPage,
+  RefactoringTargets,
+} from "@repowise-dev/types/refactoring";
 import type { StatsHighlights } from "@repowise-dev/types/stats";
 import type { SymbolDetailResponse } from "@repowise-dev/types/symbols";
 import { ApiClientError } from "./client";
 import type { ModuleHealthSortKey } from "./modules";
-import type { RefactoringTargetsParams } from "./refactoring";
+import type { RefactoringPageParams, RefactoringTargetsParams } from "./refactoring";
 import type {
   ArchitectureGraphResponse,
   CommunitySliceResponse,
@@ -362,6 +367,7 @@ export interface HostedProvider {
       file_path?: string;
       min_severity?: string;
       dimension?: string;
+      limit?: number;
     },
   ): Promise<HealthFinding[]>;
   listHealthFiles(repoId: string, opts?: HealthFilesQuery): Promise<HealthFilesResponse>;
@@ -384,6 +390,24 @@ export interface HostedProvider {
     repoId: string,
     opts?: RefactoringTargetsParams,
   ): Promise<RefactoringTargets>;
+  getRefactoringPlansPage(
+    repoId: string,
+    opts?: RefactoringPageParams,
+  ): Promise<RefactoringPlanPage>;
+  getRefactoringPlan(repoId: string, planId: string): Promise<RefactoringPlan>;
+  getPerformanceOpportunities(
+    repoId: string,
+    opts?: {
+      context?: "production_tooling" | "test" | "all";
+      limit?: number;
+      offset?: number;
+    },
+  ): Promise<PerformanceOpportunityPage>;
+  getPerformanceOpportunityFindings(
+    repoId: string,
+    opportunityId: string,
+    opts?: { limit?: number; offset?: number },
+  ): Promise<import("@repowise-dev/types").Paginated<HealthFinding>>;
   getChurnComplexity(repoId: string, opts?: { limit?: number }): Promise<ChurnComplexityResponse>;
 
   // Modules
@@ -668,7 +692,7 @@ export function createHostedProvider(config: HostedProviderConfig): HostedProvid
         biomarker: opts?.biomarker_type,
         file_path: opts?.file_path,
         dimension: opts?.dimension,
-        limit: 500,
+        limit: opts?.limit ?? 500,
       });
       let items = res.items ?? [];
       if (opts?.min_severity !== undefined && opts.min_severity in SEVERITY_ORDER) {
@@ -761,6 +785,29 @@ export function createHostedProvider(config: HostedProviderConfig): HostedProvid
         file_path: opts.filePath,
         view: opts.view,
       }),
+    getRefactoringPlansPage: (repoId, opts = {}) =>
+      snapGet(repoId, "/refactoring/targets/page", {
+        refactoring_type: opts.refactoringType,
+        min_confidence: opts.minConfidence,
+        file_path: opts.filePath,
+        view: opts.view,
+        search: opts.search,
+        confidence: opts.confidence,
+        effort: opts.effort,
+        sort: opts.sort,
+        limit: opts.limit,
+        offset: opts.offset,
+      }),
+    getRefactoringPlan: (repoId, planId) =>
+      snapGet(repoId, `/refactoring/${encodeURIComponent(planId)}`),
+    getPerformanceOpportunities: (repoId, opts = {}) =>
+      snapGet(repoId, "/health/performance-opportunities", opts),
+    getPerformanceOpportunityFindings: (repoId, opportunityId, opts = {}) =>
+      snapGet(
+        repoId,
+        `/health/performance-opportunities/${encodeURIComponent(opportunityId)}/findings`,
+        opts,
+      ),
     getChurnComplexity: (repoId, opts) => snapGet(repoId, "/health/churn-complexity", opts),
 
     listModuleHealth: (repoId, options = {}) => snapGet(repoId, "/modules/health", options),

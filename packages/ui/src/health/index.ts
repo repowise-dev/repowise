@@ -41,6 +41,7 @@ export * from "./severity-mark";
 export * from "./code-health-adapter";
 export * from "./triage-view";
 export * from "./findings-view";
+export * from "./performance-view";
 export * from "./coverage-view";
 export * from "./inferred-tests-view";
 export * from "./tests-reaching-list";
