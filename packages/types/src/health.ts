@@ -582,6 +582,13 @@ export interface InferredTestMap {
   files_reached: number;
   files_not_reached: number;
   test_file_count: number;
+  /**
+   * Present only when `basis` is `measured` (the hybrid shape): how many files
+   * carry a measured coverage row. On that shape `inferred` is scoped to the
+   * files *without* a measured row, so this lets the UI state the split
+   * (measured vs graph-answered) honestly. Absent on the pure-inferred shape.
+   */
+  measured_file_count?: number;
 }
 
 /** Which tests reach one file, and which tier found them. */
@@ -623,9 +630,13 @@ export interface HealthCoverageResponse {
    */
   basis?: CoverageBasis;
   /**
-   * Present only when `basis` is `inferred`. `summary`, `files` and `modules`
-   * are then empty: measured rows and inferred rows never share an array, so no
-   * consumer can render one through the other's code path by accident.
+   * Present only when `basis` is `inferred` (pure-inferred shape: `summary`,
+   * `files` and `modules` are empty so no consumer renders one through the
+   * other's code path) OR when `basis` is `measured` and the repo has files
+   * with no measured row (hybrid shape: the measured fields are populated, and
+   * `inferred` holds the graph answer for exactly the non-measured files).
+   * On the hybrid shape `measured_file_count` states the split. In both shapes
+   * the inferred map carries counts only — never a percentage.
    */
   inferred?: InferredTestMap;
 }
