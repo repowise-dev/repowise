@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +45,19 @@ from .phases.git import _run_git_indexing, drop_transient_git_signals
 from .phases.ingestion import _run_ingestion, reparse_for_resume
 from .resume import ResumePhase
 from .resume.controller import ResumeController
+
+
+def _resolve_language(repo_path: Path | str, config: Any | None = None) -> str:
+    """Generation language, in precedence order (issue #1756).
+
+    repo-local ``config.yaml`` > ``REPOWISE_LANGUAGE`` env (so a Docker/UI
+    deploy can pin the language without a CLI flag) > default ``"en"``.
+    """
+    if config is None:
+        from repowise.core.repo_config import load_repo_config
+
+        config = load_repo_config(repo_path)
+    return config.get("language") or os.environ.get("REPOWISE_LANGUAGE") or "en"
 
 logger = structlog.get_logger(__name__)
 
@@ -687,7 +701,7 @@ async def run_pipeline(
                 max_concurrency=concurrency,
                 reasoning=resolve_reasoning(config=_cfg),
                 wiki_style=_style,
-                language=_cfg.get("language", "en"),
+                language=_resolve_language(repo_path, config=_cfg),
             )
 
         # The mode decides how pages are rendered, not the caller's config.
