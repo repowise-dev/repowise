@@ -18,6 +18,7 @@ import click
 import pytest
 
 from repowise.cli.commands.init_cmd.command import init_command
+from repowise.cli.commands.reindex_cmd import reindex_command
 from repowise.cli.ui import mode_selection
 
 _DETECTION_KEYS = (
@@ -43,13 +44,19 @@ class _NullConsole:
 
 
 class TestEmbedderFlag:
-    def test_the_flag_accepts_edenai(self) -> None:
+    def test_init_accepts_edenai(self) -> None:
         ctx = init_command.make_context("init", ["--embedder", "edenai"])
         assert ctx.params["embedder_name"] == "edenai"
 
-    def test_an_unknown_backend_is_still_rejected(self) -> None:
+    def test_reindex_accepts_edenai(self) -> None:
+        """`reindex` documents the same set as `init`, so it has to accept it too."""
+        ctx = reindex_command.make_context("reindex", ["--embedder", "edenai"])
+        assert ctx.params["embedder"] == "edenai"
+
+    @pytest.mark.parametrize("command", [init_command, reindex_command])
+    def test_an_unknown_backend_is_still_rejected(self, command: click.Command) -> None:
         with pytest.raises(click.UsageError):
-            init_command.make_context("init", ["--embedder", "not-a-backend"])
+            command.make_context(command.name or "cmd", ["--embedder", "not-a-backend"])
 
 
 class TestInteractivePickers:
