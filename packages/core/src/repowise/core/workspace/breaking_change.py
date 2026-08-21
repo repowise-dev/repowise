@@ -531,8 +531,26 @@ def detect_breaking_changes(
         if prev_c is not None and curr_c is not None:
             prev_schema = prev_c.schema
             curr_schema = curr_c.schema
-            if prev_schema is not None and curr_schema is not None:
-                raws.extend(_diff_schemas(prev_schema, curr_schema))
+            if prev_schema is not None or curr_schema is not None:
+                # First schema-bearing run after upgrade: prev has None while curr
+                # carries proto fields. Previous guard required both sides, so the
+                # new required field never fired. Diff against empty when one side
+                # is missing so field additions/removals are surfaced.
+                from repowise.core.workspace.contract_schema import ContractSchema
+
+                if prev_schema is None and curr_schema is not None:
+                    prev_schema = ContractSchema(
+                        source=curr_schema.source, request_fields=[], response_fields=[]
+                    )
+                elif curr_schema is None and prev_schema is not None:
+                    curr_schema = ContractSchema(
+                        source=prev_schema.source, request_fields=[], response_fields=[]
+                    )
+                # Both may still be None only if originals were None, but the outer
+                # or-guard ensures we are here only when at least one existed; the
+                # empty construction above guarantees non-None for diff.
+                if prev_schema is not None and curr_schema is not None:
+                    raws.extend(_diff_schemas(prev_schema, curr_schema))
 
         if not raws:
             continue
@@ -579,9 +597,7 @@ def save_breaking_change_report(report: BreakingChangeReport, workspace_root: Pa
     out_path = data_dir / BREAKING_CHANGES_FILENAME
     # Atomic: the MCP enricher reads these artifacts from a separate
     # process and must never observe a half-written file.
-    atomic_write_text(
-        out_path, json.dumps(report.to_dict(), indent=2, ensure_ascii=False)
-    )
+    atomic_write_text(out_path, json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
     return out_path
 
 
