@@ -18,7 +18,8 @@ import { PageLede } from "../shared/page-lede";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { formatNumber } from "../lib/format";
 import { typeMeta } from "./meta";
-import { isStructural, planPoint, type RefactoringPlan } from "./types";
+import { isStructural, planPoint } from "./types";
+import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 export interface RefactoringLedeProps {
   plans: RefactoringPlan[];

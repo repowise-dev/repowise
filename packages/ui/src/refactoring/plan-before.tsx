@@ -8,8 +8,8 @@ import {
   moveTarget,
   splitGroups,
   splitResidual,
-  type RefactoringPlan,
 } from "./types";
+import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 export interface PlanBeforeProps {
   plan: RefactoringPlan;

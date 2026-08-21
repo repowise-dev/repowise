@@ -15,8 +15,8 @@ import {
   splitGroups,
   splitResidual,
   splitShimRequired,
-  type RefactoringPlan,
 } from "./types";
+import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 export interface PlanDetailProps {
   plan: RefactoringPlan;

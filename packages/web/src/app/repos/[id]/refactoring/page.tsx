@@ -26,7 +26,7 @@ import {
   TYPE_ORDER,
   typeMeta,
 } from "@repowise-dev/ui/refactoring";
-import type { RefactoringPlan, RefactoringTargets } from "@repowise-dev/ui/refactoring";
+import type { RefactoringPlan, RefactoringTargets } from "@repowise-dev/types/refactoring";
 import { AiPromptModal, buildRefactoringPlanPrompt } from "@repowise-dev/ui/health";
 import {
   generateRefactoringCode,

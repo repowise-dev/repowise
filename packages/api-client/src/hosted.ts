@@ -27,14 +27,16 @@ import type {
   HealthFinding,
   HealthOverviewResponse,
   HealthTrendResponse,
-  RefactoringQuery,
-  RefactoringTargetsResponse,
+  HealthWorkQueueQuery,
+  HealthWorkQueueResponse,
 } from "@repowise-dev/types/health";
 import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
+import type { RefactoringTargets } from "@repowise-dev/types/refactoring";
 import type { StatsHighlights } from "@repowise-dev/types/stats";
 import type { SymbolDetailResponse } from "@repowise-dev/types/symbols";
 import { ApiClientError } from "./client";
 import type { ModuleHealthSortKey } from "./modules";
+import type { RefactoringTargetsParams } from "./refactoring";
 import type {
   ArchitectureGraphResponse,
   CommunitySliceResponse,
@@ -369,10 +371,19 @@ export interface HostedProvider {
     repoId: string,
     opts?: { file_path?: string; limit?: number },
   ): Promise<HealthCoverageResponse>;
+  getHealthWorkQueue(
+    repoId: string,
+    opts?: HealthWorkQueueQuery,
+  ): Promise<HealthWorkQueueResponse>;
+  /** @deprecated Use getHealthWorkQueue. */
   getRefactoringTargets(
     repoId: string,
-    opts?: RefactoringQuery,
-  ): Promise<RefactoringTargetsResponse>;
+    opts?: HealthWorkQueueQuery,
+  ): Promise<HealthWorkQueueResponse>;
+  getRefactoringPlans(
+    repoId: string,
+    opts?: RefactoringTargetsParams,
+  ): Promise<RefactoringTargets>;
   getChurnComplexity(repoId: string, opts?: { limit?: number }): Promise<ChurnComplexityResponse>;
 
   // Modules
@@ -739,8 +750,17 @@ export function createHostedProvider(config: HostedProviderConfig): HostedProvid
       };
     },
     getHealthCoverage: (repoId, opts) => snapGet(repoId, "/health/coverage", opts),
+    getHealthWorkQueue: (repoId, opts) =>
+      snapGet(repoId, "/health/refactoring-targets", opts as QueryParams),
     getRefactoringTargets: (repoId, opts) =>
       snapGet(repoId, "/health/refactoring-targets", opts as QueryParams),
+    getRefactoringPlans: (repoId, opts = {}) =>
+      snapGet(repoId, "/refactoring/targets", {
+        refactoring_type: opts.refactoringType,
+        min_confidence: opts.minConfidence,
+        file_path: opts.filePath,
+        view: opts.view,
+      }),
     getChurnComplexity: (repoId, opts) => snapGet(repoId, "/health/churn-complexity", opts),
 
     listModuleHealth: (repoId, options = {}) => snapGet(repoId, "/modules/health", options),

@@ -215,6 +215,9 @@ class ReachedBy:
     tests: list[str]
     via: ReachedVia
     total: int = 0
+    # Internal uncapped identities let downstream aggregators de-duplicate one
+    # test that reaches several targets while public lists remain bounded.
+    all_tests: tuple[str, ...] | None = None
 
 
 def call_graph_from_graph(graph: Any) -> CallGraphView:
@@ -370,18 +373,20 @@ async def tests_reaching_by_tier(
     if call_depth >= 1:
         found = await _call_reaching(session, repo_id, seeds, test_files, call_depth)
         for seed, tests in found.items():
-            out[seed] = ReachedBy(_cut(tests), "call-graph", len(tests))
+            ordered = tuple(sorted(tests))
+            out[seed] = ReachedBy(
+                list(ordered[:MAX_TESTS_PER_TARGET]), "call-graph", len(ordered), ordered
+            )
 
     unanswered = [seed for seed in seeds if seed not in out]
     if unanswered and import_depth >= 1:
         found = await _import_reaching(session, repo_id, unanswered, test_files, import_depth)
         for seed, tests in found.items():
-            out[seed] = ReachedBy(_cut(tests), "import-graph", len(tests))
+            ordered = tuple(sorted(tests))
+            out[seed] = ReachedBy(
+                list(ordered[:MAX_TESTS_PER_TARGET]), "import-graph", len(ordered), ordered
+            )
     return out
-
-
-def _cut(tests: set[str]) -> list[str]:
-    return sorted(tests)[:MAX_TESTS_PER_TARGET]
 
 
 async def _call_reaching(

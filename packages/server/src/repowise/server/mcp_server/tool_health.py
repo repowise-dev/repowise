@@ -19,6 +19,11 @@ from repowise.core.analysis.health.grading import HEALTHY_MIN, band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
 from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
 from repowise.core.analysis.health.perf.opportunities import build_performance_opportunities
+from repowise.core.analysis.health.refactoring.recommendations import (
+    Recommendation,
+    build_recommendations,
+    hydrate_recommendations,
+)
 from repowise.core.analysis.health.scoring import hotspot_health
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.suggestions import suggestion_for
@@ -222,36 +227,10 @@ def _serialize_finding(f: HealthFinding) -> dict[str, Any]:
 
 
 def _serialize_refactoring(r: Any) -> dict[str, Any]:
-    """Serialize a ``RefactoringSuggestion`` ORM row into a structured plan.
-
-    The ``*_json`` columns are decoded back into their open dicts so an agent
-    reads the concrete plan (the split groups, the evidence, the blast radius)
-    rather than a prose string.
-    """
-
-    def _load(raw: str | None) -> Any:
-        try:
-            return json.loads(raw) if raw else {}
-        except Exception:
-            return {}
-
-    return {
-        # The persisted row id — pass it to ``generate_refactoring_code`` to
-        # turn this plan into actual code + a diff (opt-in).
-        "id": getattr(r, "id", None),
-        "refactoring_type": r.refactoring_type,
-        "file_path": r.file_path,
-        "target_symbol": r.target_symbol,
-        "line_start": r.line_start,
-        "line_end": r.line_end,
-        "plan": _load(r.plan_json),
-        "evidence": _load(r.evidence_json),
-        "impact_delta": round(r.impact_delta, 3),
-        "effort_bucket": r.effort_bucket,
-        "blast_radius": _load(r.blast_radius_json),
-        "confidence": r.confidence,
-        "source_biomarker": r.source_biomarker,
-    }
+    """Compatibility adapter; request paths hydrate through the async service."""
+    if isinstance(r, Recommendation):
+        return r.as_dict()
+    return build_recommendations([r])[0].as_dict()
 
 
 # ``include`` and ``only`` were different vocabularies: the block a caller
@@ -704,9 +683,12 @@ def _directive(
             )
         else:
             out["plan_note"] = (
-                f"No stored plan addresses {lead_biomarker!r}, and this file has no "
-                f"plans at all. plan_via will return plans for other files."
+                f"No plan addresses {lead_biomarker!r}; this file has no plans. "
+                "Use the finding itself."
             )
+        out["next_action"] = f"investigate {lead_biomarker}"
+    elif addresses:
+        out["next_action"] = "inspect matching plan via plan_via"
     return out
 
 
@@ -914,6 +896,7 @@ async def get_health(
     repo: str | None = None,
     limit: int = 20,
     only: list[str] | None = None,
+    refactoring_view: str = "canonical",
 ) -> dict:
     """Code-health scores and findings — self-check a file before/after editing.
 
@@ -932,23 +915,26 @@ async def get_health(
         include: ``biomarkers`` | ``refactoring`` | ``trend`` | ``coverage`` |
             ``accuracy`` | ``signals`` | ``churn_complexity`` |
             ``performance``/``defect``/``maintainability`` (dimension).
-            ``performance`` also adds causal ``performance_opportunities``;
-            raw findings remain available for line inspection. This only adds
-            blocks; pair it with ``only`` to project the response. Over-budget
-            responses set ``_meta.truncated_to_fit``.
+            ``performance`` adds causal ``performance_opportunities``; with
+            ``refactoring``, a compact ``recommendation_lede``. Only adds
+            blocks; pair with ``only``. Over cap sets ``_meta.truncated_to_fit``.
         only: top-level keys to keep; ``["directive"]`` is cheapest and
-            ``*_total`` siblings survive. The block names ``biomarkers``,
-            ``accuracy`` and ``refactoring`` alias. Dimension names
-            ``performance``, ``defect`` and ``maintainability`` do not;
-            unknown keys are reported.
+            ``*_total`` siblings survive. Only ``biomarkers``, ``accuracy``
+            and ``refactoring`` alias; ``performance``, ``defect``,
+            ``maintainability`` and ``signals`` do not and land in
+            ``unknown_only_keys``.
         repo: usually omitted.
         limit: max rows per ranked list (max 50, ``0`` for none).
+        refactoring_view: ``canonical`` (default) or diversified
+            ``file_spread``.
     """
     started = perf_counter()
     # ``0`` means none, matching the ``module_limit`` convention on the REST
     # coverage route. It used to clamp up to 1, so the documented way to ask for
     # "the totals, none of the rows" silently returned a row.
     limit = min(max(limit, 0), 50)
+    if refactoring_view not in {"canonical", "file_spread"}:
+        refactoring_view = "canonical"
     include_set = set(include or [])
     only_list = [_ONLY_ALIASES.get(k, k) for k in (only or [])]
     only_set = set(only_list)
@@ -974,7 +960,9 @@ async def get_health(
     # block that carries findings survives the projection.
     wants_findings = wants("findings") or wants("top_findings")
     wants_test_findings = wants("test_findings")
-    wants_performance_opportunities = wants("performance_opportunities")
+    wants_performance_opportunities = wants("performance_opportunities") or wants(
+        "recommendation_lede"
+    )
     # Everything downstream of the test/production split, in one place.
     #
     # Keep this list exhaustive. The read it gates is not free (the column list
@@ -1288,7 +1276,12 @@ async def get_health(
         # Structured refactoring plans (Extract Class, ...) — loaded only when
         # asked for, scoped to the same targets, exclude-filtered like findings.
         refactoring_rows: list[Any] = []
-        if "refactoring" in include_set and not nothing_resolved:
+        refactoring_recommendations: list[Recommendation] = []
+        if (
+            "refactoring" in include_set
+            and (wants("refactoring_plans") or wants("recommendation_lede"))
+            and not nothing_resolved
+        ):
             refactoring_rows = filter_rows_by_attr(
                 await get_refactoring_suggestions(
                     session,
@@ -1297,6 +1290,13 @@ async def get_health(
                 ),
                 "file_path",
                 exclude_spec,
+            )
+            refactoring_recommendations = await hydrate_recommendations(
+                session,
+                repository.id,
+                refactoring_rows,
+                metric_rows=all_metrics,
+                view=refactoring_view,  # type: ignore[arg-type]
             )
 
         coverage_rows: list[Any] = []
@@ -1628,58 +1628,10 @@ async def get_health(
         result["test_findings_total"] = test_findings_total
 
     if "refactoring" in include_set:
-        # Structured refactoring plans (the concrete split groups / evidence /
-        # blast radius) for detectors that have one — the upgrade over the old
-        # prose-string suggestions.
-        #
-        # Rank by the *file's* weighted deficit first, per-plan impact_delta
-        # second, and cap to ``limit``. Two reasons: an un-capped dump is a
-        # thousands-of-plans firehose that blows the token budget, and a pure
-        # impact_delta sort buries the highest-leverage plans — a Split File on a
-        # 1200-line hotspot recovers the most repo-average yet can carry a modest
-        # per-file delta, so file leverage has to lead. ``refactoring_plans_total``
-        # keeps the truncation honest.
-        deficit_by_path = {
-            m.file_path: round(max(HEALTHY_MIN - m.score, 0.0) * max(m.nloc, 1))
-            for m in all_metrics
-        }
-        # A "plans matching the file's lead biomarker sort first" tiebreak was
-        # tried here and removed: measured on this repo, 0 of the top 20 files
-        # by deficit have any plan addressing their lead, so it could not move a
-        # row inside the cap, while ``deficit`` rounds to an int and ties across
-        # files — which would have let the boost reorder *between* files. The
-        # honest fix for the mismatch is ``directive.plan_addresses_reason``,
-        # which reports it rather than reshuffling around it.
-        ranked = sorted(
-            refactoring_rows,
-            key=lambda r: (deficit_by_path.get(r.file_path, 0), r.impact_delta or 0.0),
-            reverse=True,
-        )
-        # ...then spread the cap across files. Deficit is a *file* property, so a
-        # pure deficit sort puts every plan on the worst file ahead of every plan
-        # on the second worst: asking for the top 8 returned 8 plans on one file
-        # out of 1,903, and an agent asking "what should I refactor?" saw no view
-        # of the repo at all. Round-robin one plan per file per pass, files in
-        # their ranked order (a file ranks by its best plan) and plans in theirs,
-        # so the head spans as many files as it has rows. The order is otherwise
-        # unchanged — the worst file still leads, it just no longer owns the list.
-        by_file: dict[str, list[Any]] = {}
-        for r in ranked:
-            by_file.setdefault(r.file_path, []).append(r)
-        spread: list[Any] = []
-        while len(spread) < limit and by_file:
-            for path in list(by_file):
-                spread.append(by_file[path].pop(0))
-                if not by_file[path]:
-                    del by_file[path]
-                if len(spread) >= limit:
-                    break
+        # Canonical is the shared REST/MCP/CLI order.  File diversity remains
+        # available only through the explicitly named ``file_spread`` view.
         result["refactoring_plans"] = [
-            {
-                **_serialize_refactoring(r),
-                "file_weighted_deficit": deficit_by_path.get(r.file_path, 0),
-            }
-            for r in spread
+            recommendation.as_dict() for recommendation in refactoring_recommendations[:limit]
         ]
         result["refactoring_plans_total"] = len(refactoring_rows)
         # The deterministic prose suggestion is the fallback for biomarkers
@@ -1716,6 +1668,7 @@ async def get_health(
             "recent": recent_kpis(snapshots, limit=10),
         }
 
+    opportunities = []
     if "performance" in include_set and wants_performance_opportunities:
         opportunities = build_performance_opportunities(
             [row for row in lead_rows if _in_dimensions(row, {"performance"})],
@@ -1725,6 +1678,64 @@ async def get_health(
             opportunity.as_dict() for opportunity in opportunities[:limit]
         ]
         result["performance_opportunities_total"] = len(opportunities)
+
+    if {"performance", "refactoring"} <= include_set and wants("recommendation_lede"):
+        performance_lead = opportunities[0] if opportunities else None
+        recommendation_lead = (
+            refactoring_recommendations[0] if refactoring_recommendations else None
+        )
+        matching = next(
+            (
+                recommendation
+                for recommendation in refactoring_recommendations
+                if performance_lead is not None
+                and recommendation.suggestion.refactoring_type == "performance_fix"
+                and (recommendation.suggestion.evidence or {}).get("opportunity_id")
+                == performance_lead.opportunity_id
+            ),
+            None,
+        )
+        lead_payload = recommendation_lead.as_dict() if recommendation_lead else None
+        result["recommendation_lede"] = {
+            "performance_opportunities_total": len(opportunities),
+            "refactoring_plans_total": len(refactoring_recommendations),
+            "performance_lead": (
+                {
+                    "opportunity_id": performance_lead.opportunity_id,
+                    "intervention_symbol": performance_lead.intervention_symbol,
+                    "boundary_kind": performance_lead.boundary_kind,
+                    "execution_context": performance_lead.execution_context,
+                    "affected_call_sites_total": performance_lead.affected_call_sites_total,
+                    "rank_score": performance_lead.rank_score,
+                }
+                if performance_lead
+                else None
+            ),
+            "recommendation_lead": (
+                {
+                    key: lead_payload[key]
+                    for key in (
+                        "id",
+                        "refactoring_type",
+                        "file_path",
+                        "target_symbol",
+                        "benefit",
+                        "leverage",
+                        "cost",
+                        "risk",
+                        "rank_score",
+                        "validation",
+                    )
+                }
+                if lead_payload
+                else None
+            ),
+            "performance_plan_id": matching.id if matching else None,
+            "next_call": (
+                "get_health(include=['performance','refactoring'], limit=3, "
+                "only=['performance_opportunities','refactoring_plans'])"
+            ),
+        }
 
     if "coverage" in include_set:
         # Drop the bulky covered-lines arrays from dashboard mode; full

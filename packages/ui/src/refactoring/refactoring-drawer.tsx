@@ -31,11 +31,13 @@ import {
   blastFiles,
   evidenceRows,
   planWins,
-  type Confidence,
-  type EffortBucket,
-  type GeneratedCode,
-  type RefactoringPlan,
 } from "./types";
+import type {
+  Confidence,
+  EffortBucket,
+  GeneratedCode,
+  RefactoringPlan,
+} from "@repowise-dev/types/refactoring";
 
 export interface RefactoringDrawerProps {
   plan: RefactoringPlan | null;

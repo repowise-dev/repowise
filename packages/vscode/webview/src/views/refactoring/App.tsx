@@ -14,11 +14,13 @@ import {
   blastFiles,
   evidenceRows,
   planWins,
-  type Confidence,
-  type EffortBucket,
-  type RefactoringPlan,
-  type RefactoringTargets,
 } from "@repowise-dev/ui/refactoring/types";
+import type {
+  Confidence,
+  EffortBucket,
+  RefactoringPlan,
+  RefactoringTargets,
+} from "@repowise-dev/types/refactoring";
 import type { AiPromptFlavor } from "@repowise-dev/ui/health/ai-prompt-builder";
 import type { ViewProps } from "../../runtime/mount";
 import type { WebviewHost } from "../../runtime/rpc";

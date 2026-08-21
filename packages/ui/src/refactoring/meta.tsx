@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { ArrowRightLeft, CopyMinus, FileStack, Scissors, Split, Unlink } from "lucide-react";
-import type { Confidence, EffortBucket, RefactoringType } from "./types";
+import type { Confidence, EffortBucket, RefactoringType } from "@repowise-dev/types/refactoring";
 
 export interface RefactoringTypeMeta {
   label: string;

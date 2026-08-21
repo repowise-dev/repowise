@@ -4,7 +4,11 @@
  */
 
 import { apiGet, apiPost, apiPut } from "./client";
-import type { GeneratedCode, RefactoringPlan, RefactoringTargets } from "@repowise-dev/ui/refactoring";
+import type {
+  GeneratedCode,
+  RefactoringPlan,
+  RefactoringTargets,
+} from "@repowise-dev/types/refactoring";
 
 export interface RefactoringSettings {
   enabled: boolean;
@@ -22,6 +26,7 @@ export interface RefactoringTargetsParams {
   minConfidence?: string;
   /** Repo-relative path; narrows plans to one file (summary stays global). */
   filePath?: string;
+  view?: "canonical" | "file_spread";
 }
 
 export async function getRefactoringTargets(
@@ -32,6 +37,7 @@ export async function getRefactoringTargets(
     refactoring_type: params.refactoringType,
     min_confidence: params.minConfidence,
     file_path: params.filePath,
+    view: params.view,
   });
 }
 

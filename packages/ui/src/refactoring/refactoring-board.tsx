@@ -27,10 +27,12 @@ import { CONFIDENCE_LABEL } from "./meta";
 import {
   blastCount,
   isStructural,
-  type Confidence,
-  type EffortBucket,
-  type RefactoringPlan,
 } from "./types";
+import type {
+  Confidence,
+  EffortBucket,
+  RefactoringPlan,
+} from "@repowise-dev/types/refactoring";
 
 const PAGE_SIZE = 60;
 

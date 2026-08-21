@@ -631,10 +631,10 @@ export interface HealthCoverageResponse {
 }
 
 /* ------------------------------------------------------------------ *
- * Refactoring targets
+ * Health work queue (legacy route: /health/refactoring-targets)
  * ------------------------------------------------------------------ */
 
-export interface RefactoringTarget {
+export interface HealthWorkItem {
   file_path: string;
   score: number;
   nloc: number;
@@ -670,12 +670,12 @@ export interface RefactoringTarget {
   }>;
 }
 
-export interface RefactoringTargetsResponse {
-  targets: RefactoringTarget[];
+export interface HealthWorkQueueResponse {
+  targets: HealthWorkItem[];
   total: number;
 }
 
-export interface RefactoringQuery {
+export interface HealthWorkQueueQuery {
   limit?: number;
   module?: string;
   biomarker?: string;
@@ -683,6 +683,13 @@ export interface RefactoringQuery {
   max_effort?: string;
   sort?: "impact_per_effort" | "total_impact" | "score" | "finding_count";
 }
+
+/** @deprecated Use HealthWorkItem; this is a file triage row, not a plan. */
+export type RefactoringTarget = HealthWorkItem;
+/** @deprecated Use HealthWorkQueueResponse. */
+export type RefactoringTargetsResponse = HealthWorkQueueResponse;
+/** @deprecated Use HealthWorkQueueQuery. */
+export type RefactoringQuery = HealthWorkQueueQuery;
 
 /* ------------------------------------------------------------------ *
  * Churn x complexity quadrant (the "hotspot anatomy" view)

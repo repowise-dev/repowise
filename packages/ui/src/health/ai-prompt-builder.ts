@@ -13,9 +13,10 @@
  */
 
 import { deadCodeRiskFactorLabel } from "@repowise-dev/types/dead-code";
+import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 import { biomarkerInfo, CATEGORY_LABEL } from "./biomarker-glossary";
-import type { RefactoringTarget } from "./refactoring-card";
+import type { HealthWorkItem } from "./refactoring-card";
 import {
   blastFiles,
   cutEdges,
@@ -25,7 +26,6 @@ import {
   extractMethodPlan,
   helperSite,
   moveTarget,
-  type RefactoringPlan,
 } from "../refactoring/types";
 import { typeMeta } from "../refactoring/meta";
 
@@ -169,7 +169,7 @@ function biomarkerExtraContext(
   return null;
 }
 
-function effortHint(effort: RefactoringTarget["effort_bucket"]): string {
+function effortHint(effort: HealthWorkItem["effort_bucket"]): string {
   switch (effort) {
     case "S":
       return "Small (≤40 NLOC) — should be doable in one focused pass.";
@@ -187,7 +187,7 @@ function effortHint(effort: RefactoringTarget["effort_bucket"]): string {
 // ─────────────────────────────────────────────────────────────────────
 
 export interface BuildPromptOptions {
-  target: RefactoringTarget;
+  target: HealthWorkItem;
   flavor?: AiPromptFlavor;
   repoName?: string;
 }
@@ -1315,6 +1315,40 @@ function planSourceLink(path: string, start: number | null, end: number | null):
   return `\`${path}\``;
 }
 
+function recommendationValidation(plan: RefactoringPlan): string {
+  const validation = plan.validation;
+  if (!validation) return "";
+  const evidence =
+    validation.basis === "unknown"
+      ? "No measured or inferred guarding test was found; treat this as a validation gap."
+      : `${validation.total} guarding test${validation.total === 1 ? "" : "s"} via ${
+          validation.via ?? validation.basis
+        }${validation.truncated ? ` (showing ${validation.tests.length})` : ""}.`;
+  return [
+    "## Validation plan",
+    "",
+    bulletList([
+      evidence,
+      validation.tests.length
+        ? `Tests: ${validation.tests.map((test) => `\`${test}\``).join(", ")}.`
+        : null,
+      validation.affected_files.length
+        ? `Affected files: ${validation.affected_files
+            .map((file) => `\`${file}\``)
+            .join(", ")}.`
+        : null,
+      validation.affected_symbols.length
+        ? `Affected symbols: ${validation.affected_symbols
+            .map((symbol) => `\`${symbol}\``)
+            .join(", ")}.`
+        : null,
+      validation.commands.length
+        ? `Run: ${validation.commands.map((command) => `\`${command}\``).join("; ")}.`
+        : null,
+    ]),
+  ].join("\n");
+}
+
 /** Render the concrete, type-specific steps the agent should carry out. The
  *  detection is already done deterministically; this is the executable plan. */
 function refactoringPlanSteps(plan: RefactoringPlan): string {
@@ -1413,6 +1447,7 @@ export function buildRefactoringPlanPrompt({
   const repoLine = repoName ? ` (\`${repoName}\`)` : "";
   const meta = typeMeta(plan.refactoring_type);
   const files = blastFiles(plan).filter((f) => f !== plan.file_path);
+  const validation = recommendationValidation(plan);
 
   const constraintList = [
     "Preserve behavior exactly — this is a refactoring, not a feature change. No public API or observable behavior should shift.",
@@ -1450,6 +1485,8 @@ export function buildRefactoringPlanPrompt({
     "## The plan",
     "",
     refactoringPlanSteps(plan),
+    "",
+    validation,
     "",
     "## Hard constraints",
     "",

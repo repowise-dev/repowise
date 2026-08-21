@@ -16,7 +16,7 @@ import {
 import { fileEntityPath, symbolEntityPath } from "@repowise-dev/ui/shared/entity";
 import {
   getHealthOverview,
-  getRefactoringTargets,
+  getHealthWorkQueue,
   listHealthFiles,
   listHealthFindings,
   getHealthCoverage,
@@ -33,7 +33,7 @@ export function FindingsTab({ repoId: id }: { repoId: string }) {
     getOverview: (limit) => getHealthOverview(id, limit),
     listFindings: (opts) => listHealthFindings(id, opts),
     listFiles: (opts) => listHealthFiles(id, opts),
-    getRefactoringTargets: (opts) => getRefactoringTargets(id, opts),
+    getHealthWorkQueue: (opts) => getHealthWorkQueue(id, opts),
     updateFindingStatus: (findingId, status) =>
       updateFindingStatus(id, findingId, status),
     getCoverage: (opts) => getHealthCoverage(id, opts),

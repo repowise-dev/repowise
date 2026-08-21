@@ -2,7 +2,7 @@
 
 /**
  * Findings view — the engineer's workbench. The ranked fix-next queue
- * (refactoring targets + file inventory), the cross-function performance-risk
+ * (health work items + file inventory), the cross-function performance-risk
  * panel, and the function-level / hidden-coupling panels.
  *
  * Split out of {@link TriageView} so the landing surface stays an airy
@@ -18,8 +18,8 @@ import type {
   HealthFinding,
   HealthFilesResponse,
   HealthOverviewResponse,
-  RefactoringQuery,
-  RefactoringTargetsResponse,
+  HealthWorkQueueQuery,
+  HealthWorkQueueResponse,
 } from "@repowise-dev/types/health";
 
 import { Skeleton } from "../ui/skeleton";
@@ -33,11 +33,11 @@ import { BiomarkerList } from "./biomarker-list";
 import { HotFunctionsPanel } from "./hot-functions-panel";
 import { HiddenCouplingList } from "./hidden-coupling-list";
 import {
-  RefactoringTargetList,
+  HealthWorkQueueList,
   type FindingStatus,
-  type RefactoringTarget,
+  type HealthWorkItem,
 } from "./refactoring-target-list";
-import type { RefactoringTargetFinding } from "./refactoring-card";
+import type { HealthWorkItemFinding } from "./refactoring-card";
 import { FilterSelect, FilterChip, ViewToggle } from "./code-health-controls";
 import { ImpactEffortQuadrant } from "./impact-effort-quadrant";
 import { biomarkerLabel } from "./biomarker-glossary";
@@ -113,12 +113,12 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
   const [minSeverity, setMinSeverity] = useState<Severity | "all">("all");
   const [biomarker, setBiomarker] = useState<string>("all");
   const [maxEffort, setMaxEffort] = useState<string>("all");
-  const [sort, setSort] = useState<RefactoringQuery["sort"]>("impact_per_effort");
+  const [sort, setSort] = useState<HealthWorkQueueQuery["sort"]>("impact_per_effort");
   const [groupBy, setGroupBy] = useState<GroupBy>("none");
   const [queueLimit, setQueueLimit] = useState(QUEUE_PAGE);
   const [view, setView] = useState<QueueView>("queue");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [promptTarget, setPromptTarget] = useState<RefactoringTarget | null>(null);
+  const [promptTarget, setPromptTarget] = useState<HealthWorkItem | null>(null);
 
   // The targets list no longer ships `all_findings` — it cost 1.8 MB per
   // request to serve two click-gated consumers. Both fetch here instead.
@@ -128,11 +128,11 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
     (await adapter.listFindings({
       file_path: filePath,
       limit: 1000,
-    })) as RefactoringTargetFinding[];
+    })) as HealthWorkItemFinding[];
 
   // The prompt promises the agent "every marker", so hydrate before opening
   // rather than letting the builder fall back to the primary finding alone.
-  const openPrompt = async (t: RefactoringTarget) => {
+  const openPrompt = async (t: HealthWorkItem) => {
     setPromptTarget(t);
     try {
       setPromptTarget({ ...t, all_findings: await loadFindings(t.file_path) });
@@ -147,14 +147,18 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
       JSON.stringify({ cacheKey, biomarker, minSeverity, maxEffort, sort, queueLimit }),
     [cacheKey, biomarker, minSeverity, maxEffort, sort, queueLimit],
   );
+  const loadHealthWorkQueue = (opts: HealthWorkQueueQuery) => {
+    const load = adapter.getHealthWorkQueue ?? adapter.getRefactoringTargets;
+    return load ? load(opts) : Promise.resolve({ targets: [], total: 0 });
+  };
   const {
     data: queue,
     isLoading: queueLoading,
     mutate: mutateQueue,
-  } = useSWR<RefactoringTargetsResponse>(
+  } = useSWR<HealthWorkQueueResponse>(
     overview ? `code-health-queue:${queueKey}` : null,
     () =>
-      adapter.getRefactoringTargets({
+      loadHealthWorkQueue({
         limit: queueLimit,
         ...(biomarker !== "all" && { biomarker }),
         ...(minSeverity !== "all" && { min_severity: minSeverity }),
@@ -334,7 +338,7 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
               <FilterSelect
                 label="Sort"
                 value={sort ?? "impact_per_effort"}
-                onChange={(v) => setSort(v as RefactoringQuery["sort"])}
+                onChange={(v) => setSort(v as HealthWorkQueueQuery["sort"])}
                 options={[
                   { value: "impact_per_effort", label: "Leverage (impact ÷ effort)" },
                   { value: "total_impact", label: "Total impact" },
@@ -391,7 +395,7 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
                           </span>
                         </h3>
                       ) : null}
-                      <RefactoringTargetList
+                      <HealthWorkQueueList
                         targets={g.targets}
                         onSelect={(t) => setSelectedFile(t.file_path)}
                         onStatusChange={handleStatus}

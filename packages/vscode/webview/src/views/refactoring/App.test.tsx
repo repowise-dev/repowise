@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react";
 
 afterEach(cleanup);
-import type { RefactoringPlan } from "@repowise-dev/ui/refactoring/types";
+import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 import { App } from "./App";
 import type { WebviewHost } from "../../runtime/rpc";
 

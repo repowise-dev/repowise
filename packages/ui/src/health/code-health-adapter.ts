@@ -5,8 +5,8 @@ import type {
   HealthFilesResponse,
   HealthFinding,
   HealthOverviewResponse,
-  RefactoringQuery,
-  RefactoringTargetsResponse,
+  HealthWorkQueueQuery,
+  HealthWorkQueueResponse,
   TestsReachingFile,
 } from "@repowise-dev/types/health";
 
@@ -48,9 +48,13 @@ export interface CodeHealthAdapter {
   getOverview(limit: number): Promise<HealthOverviewResponse>;
   listFindings(opts?: CodeHealthFindingsQuery): Promise<HealthFinding[]>;
   listFiles(opts?: HealthFilesQuery): Promise<HealthFilesResponse>;
-  getRefactoringTargets(
-    opts?: RefactoringQuery,
-  ): Promise<RefactoringTargetsResponse>;
+  getHealthWorkQueue?(
+    opts?: HealthWorkQueueQuery,
+  ): Promise<HealthWorkQueueResponse>;
+  /** @deprecated Legacy adapter name; FindingsView accepts it during migration. */
+  getRefactoringTargets?(
+    opts?: HealthWorkQueueQuery,
+  ): Promise<HealthWorkQueueResponse>;
   updateFindingStatus(
     findingId: string,
     status: FindingStatusValue,

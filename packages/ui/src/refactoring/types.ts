@@ -7,60 +7,27 @@
  * type's shape so the plan renderer can read them without `any`.
  */
 
-export type RefactoringType =
-  | "extract_class"
-  | "extract_helper"
-  | "extract_method"
-  | "move_method"
-  | "break_cycle"
-  | "split_file";
+import type {
+  GeneratedCode,
+  RefactoringPlan,
+  RefactoringType,
+} from "@repowise-dev/types/refactoring";
 
-export type EffortBucket = "S" | "M" | "L" | "XL";
-export type Confidence = "low" | "medium" | "high";
-
-export interface RefactoringPlan {
-  id: string;
-  refactoring_type: RefactoringType | string;
-  file_path: string;
-  target_symbol: string;
-  line_start: number | null;
-  line_end: number | null;
-  plan: Record<string, unknown>;
-  evidence: Record<string, unknown>;
-  impact_delta: number;
-  effort_bucket: EffortBucket | string;
-  blast_radius: Record<string, unknown>;
-  confidence: Confidence | string;
-  source_biomarker: string;
-  rank_score: number;
-  /**
-   * Files that import this plan's file, and the file's line count. Served
-   * rather than derived: `blast_radius` carries a count under three different
-   * keys depending on the detector, so reading it here produced two different
-   * numbers for the same file.
-   *
-   * Optional so a frontend ahead of its backend degrades — an older server
-   * simply omits them and the structural map renders nothing rather than
-   * plotting every plan at the origin.
-   */
-  dependents?: number;
-  file_nloc?: number;
-}
-
-export interface RefactoringTypeCount {
-  type: string;
-  count: number;
-}
-
-export interface RefactoringSummary {
-  total: number;
-  by_type: RefactoringTypeCount[];
-}
-
-export interface RefactoringTargets {
-  summary: RefactoringSummary;
-  plans: RefactoringPlan[];
-}
+export type {
+  Confidence,
+  EffortBucket,
+  GeneratedCode,
+  GeneratedSpan,
+  RecommendationValidation,
+  RecommendationValidationTarget,
+  RefactoringPlan,
+  RefactoringSummary,
+  RefactoringTargets,
+  RefactoringType,
+  RefactoringTypeCount,
+  ValidationBasis,
+  ValidationVia,
+} from "@repowise-dev/types/refactoring";
 
 // ── Per-type plan shapes (the open `plan` dict, read defensively) ──────────
 
@@ -359,34 +326,6 @@ export interface PlanWin {
 }
 
 // ── Generated code (the opt-in LLM enrichment result) ─────────────────────
-
-export interface GeneratedSpan {
-  file: string;
-  line_start: number;
-  line_end: number;
-}
-
-/**
- * The result of the "Generate code" action — mirrors the backend
- * `GenerateCodeResponse` (POST `…/refactoring/{id}/generate-code`). `diff` is a
- * unified diff; `validation` is the per-type self-check (open dict, read
- * defensively via {@link generatedVerdict}).
- */
-export interface GeneratedCode {
-  suggestion_id: string | null;
-  refactoring_type: string;
-  file_path: string;
-  target_symbol: string;
-  content: string;
-  diff: string;
-  provider: string;
-  model: string;
-  cached: boolean;
-  input_tokens: number;
-  output_tokens: number;
-  validation: Record<string, unknown>;
-  spans: GeneratedSpan[];
-}
 
 export type VerdictTone = "pass" | "fail" | "neutral";
 

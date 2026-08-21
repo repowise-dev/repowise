@@ -10,51 +10,14 @@ needs the working tree on disk, so it is a local-server capability.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any
 
+from repowise.core.analysis.health.refactoring.recommendations import hydrate_recommendations
 from repowise.core.persistence.crud import get_refactoring_suggestion
 from repowise.core.persistence.database import get_session
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-
-
-def _row_to_suggestion(row: Any) -> Any:
-    """Re-hydrate a persisted ORM row into a ``RefactoringSuggestion`` dataclass.
-
-    Mirrors the web router's adapter; the enrichment engine reads the open
-    ``plan`` / ``evidence`` / ``blast_radius`` dicts, which the DB stores as
-    ``*_json`` text.
-    """
-    from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
-
-    def _loads(value: Any) -> dict[str, Any]:
-        if not value:
-            return {}
-        try:
-            parsed = json.loads(value)
-        except (TypeError, ValueError):
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-
-    sug = RefactoringSuggestion(
-        refactoring_type=row.refactoring_type,
-        file_path=row.file_path,
-        target_symbol=row.target_symbol,
-        line_start=row.line_start,
-        line_end=row.line_end,
-        plan=_loads(row.plan_json),
-        evidence=_loads(row.evidence_json),
-        impact_delta=row.impact_delta,
-        effort_bucket=row.effort_bucket,
-        blast_radius=_loads(row.blast_radius_json),
-        confidence=row.confidence,
-        source_biomarker=row.source_biomarker,
-    )
-    sug.id = row.id  # type: ignore[attr-defined]
-    return sug
 
 
 @mcp.tool(default=False)
@@ -104,7 +67,7 @@ async def generate_refactoring_code(suggestion_id: str, repo: str | None = None)
                 "detail": f"No refactoring plan with id {suggestion_id!r} in this repo.",
                 "_meta": _build_meta(repository=repository),
             }
-        sug = _row_to_suggestion(row)
+        sug = (await hydrate_recommendations(session, repository.id, [row]))[0].suggestion
         meta = _build_meta(repository=repository)
 
     try:

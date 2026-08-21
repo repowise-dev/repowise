@@ -14,8 +14,8 @@ import type {
   HealthFileBreakdownResponse,
   HealthOverviewResponse,
   HealthTrendResponse,
-  RefactoringQuery,
-  RefactoringTargetsResponse,
+  HealthWorkQueueQuery,
+  HealthWorkQueueResponse,
 } from "@repowise-dev/types/health";
 import { apiGet, apiPatch } from "./client";
 
@@ -39,6 +39,9 @@ export type {
   HealthModuleRow,
   HealthOverviewResponse,
   HealthTrendResponse,
+  HealthWorkItem,
+  HealthWorkQueueQuery,
+  HealthWorkQueueResponse,
   ModuleCoverageRow,
   RefactoringQuery,
   RefactoringTarget,
@@ -128,15 +131,18 @@ export async function getTestsReaching(
   );
 }
 
-export async function getRefactoringTargets(
+export async function getHealthWorkQueue(
   repoId: string,
-  opts?: RefactoringQuery,
-): Promise<RefactoringTargetsResponse> {
-  return apiGet<RefactoringTargetsResponse>(
+  opts?: HealthWorkQueueQuery,
+): Promise<HealthWorkQueueResponse> {
+  return apiGet<HealthWorkQueueResponse>(
     `/api/repos/${repoId}/health/refactoring-targets`,
     opts as Record<string, string | number | boolean | undefined>,
   );
 }
+
+/** @deprecated Use getHealthWorkQueue; the response is file triage, not plans. */
+export const getRefactoringTargets = getHealthWorkQueue;
 
 export async function getChurnComplexity(
   repoId: string,

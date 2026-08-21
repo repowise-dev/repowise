@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { buildRefactoringPlanPrompt, type AiPromptFlavor } from "@repowise-dev/ui/health/ai-prompt-builder";
 import { typeMeta } from "@repowise-dev/ui/refactoring/meta";
-import type { RefactoringPlan } from "@repowise-dev/ui/refactoring/types";
+import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 import { CONFIG_SECTION, InternalCommands } from "../constants";
 import type { RepowiseContext } from "../core/context";
 import { repoRelativePath } from "../core/fileSignals";
