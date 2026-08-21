@@ -7,6 +7,7 @@ import contextlib
 import re
 from typing import Any
 
+import structlog
 from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
@@ -36,6 +37,14 @@ from repowise.server.mcp_server.tool_search_symbols import (
     search_paths_single,
     search_symbols_single,
 )
+
+log = structlog.get_logger(__name__)
+
+# Long enough for the cold vector path (LanceDB connect + first embed + first
+# ANN query can reach ~13s on a fresh process), not the warm path (~0.2s). A
+# bound tuned to warm makes the first query of a session time out and silently
+# return [] (issue #1678).
+_VECTOR_TIMEOUT_S = 30.0
 
 # Minimum relevance score below which results are dropped. Prevents
 # returning semantically unrelated pages when the corpus has no real match.
@@ -279,11 +288,20 @@ async def _non_decision_fallback(ctx, query: str, fetch_limit: int) -> list[dict
     src = "vector"
     # Skipped on a keyless index, which then falls through to the FTS branch.
     if store_has_semantic_vectors(ctx.vector_store):
-        with contextlib.suppress(TimeoutError, Exception):
+        try:
             results = await asyncio.wait_for(
                 ctx.vector_store.search(query, limit=fetch_limit * 4),
-                timeout=8.0,
+                timeout=_VECTOR_TIMEOUT_S,
             )
+        except TimeoutError:
+            log.warning(
+                "vector_search_timed_out",
+                timeout_s=_VECTOR_TIMEOUT_S,
+                query=query[:80],
+            )
+            results = []
+        except Exception:
+            results = []
     if not results:
         src = "fts"
         with contextlib.suppress(Exception):
@@ -608,12 +626,30 @@ async def _safe_vector(ctx, query: str, limit: int) -> list:
     why the mock's vectors cannot be ranked on; the reason this is enforced here
     rather than in ``_fused_retrieve`` is that this function is the only place
     the vector leg is entered, so a later caller inherits the guard.
+
+    The timeout is deliberately long enough for the *cold* path (LanceDB
+    connect + first embed + first ANN query can reach ~13s on a fresh process),
+    not the warm path (~0.2s). A shorter bound tuned to warm makes the first
+    query of a session time out and silently return ``[]`` (issue #1678). A
+    genuine timeout is logged as a degradation rather than swallowed, so a
+    semantic miss that is actually a slow vector leg is distinguishable from
+    one with no relevant results.
     """
     if ctx.vector_store is None or not store_has_semantic_vectors(ctx.vector_store):
         return []
-    with contextlib.suppress(Exception):
-        return await asyncio.wait_for(ctx.vector_store.search(query, limit=limit), timeout=8.0)
-    return []
+    try:
+        return await asyncio.wait_for(
+            ctx.vector_store.search(query, limit=limit), timeout=_VECTOR_TIMEOUT_S
+        )
+    except TimeoutError:
+        log.warning(
+            "vector_search_timed_out",
+            timeout_s=_VECTOR_TIMEOUT_S,
+            query=query[:80],
+        )
+        return []
+    except Exception:
+        return []
 
 
 def _fused_entry(r) -> dict:
