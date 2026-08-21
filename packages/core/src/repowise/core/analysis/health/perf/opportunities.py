@@ -20,6 +20,7 @@ from repowise.core.test_paths import is_test_related_path
 
 ExecutionContext = Literal["production", "tooling", "test"]
 FixSafety = Literal["proven", "advisory"]
+OpportunityConfidence = Literal["high", "medium", "low"]
 FixStrategy = Literal[
     "parallelize_independent_awaits",
     "replace_membership_collection",
@@ -75,6 +76,7 @@ class PerformanceOpportunity:
     evidence_truncated: bool
     reliable_entry_reachability: bool | None
     provenance: str
+    confidence: OpportunityConfidence
     rank_score: int
     rank_factors: dict[str, int]
     fix: PerformanceFix | None
@@ -96,6 +98,7 @@ class PerformanceOpportunity:
             "evidence_truncated": self.evidence_truncated,
             "reliable_entry_reachability": self.reliable_entry_reachability,
             "provenance": self.provenance,
+            "confidence": self.confidence,
             "rank_score": self.rank_score,
             "rank_factors": dict(self.rank_factors),
             "fix": self.fix.as_dict() if self.fix else None,
@@ -191,13 +194,25 @@ def _shared_suffix(paths: list[tuple[str, ...]]) -> tuple[str, ...]:
 
 def _evidence(row: Any, details: dict[str, Any]) -> dict[str, Any]:
     return {
+        "finding_id": str(_attr(row, "id", "") or ""),
         "file_path": str(_attr(row, "file_path", "")),
+        "biomarker_type": str(_attr(row, "biomarker_type", "") or ""),
         "function_name": _attr(row, "function_name", None),
         "line_start": _attr(row, "line_start", None),
         "line_end": _attr(row, "line_end", None),
+        "reason": str(_attr(row, "reason", "") or ""),
         "path": list(details.get("path", ())),
         "provenance": details.get("resolution_basis", "direct"),
     }
+
+
+def provenance_confidence(provenance: str) -> OpportunityConfidence:
+    """Product confidence label owned beside the provenance ranking policy."""
+    if provenance in {"call-site", "direct"}:
+        return "high"
+    if provenance == "reliable-edge":
+        return "medium"
+    return "low"
 
 
 def _fix_for(
@@ -339,6 +354,7 @@ def build_performance_opportunities(
                 evidence_truncated=len(rows) > cap,
                 reliable_entry_reachability=reachable,
                 provenance=provenance,
+                confidence=provenance_confidence(provenance),
                 rank_score=sum(factors.values()),
                 rank_factors=factors,
                 fix=_fix_for(
@@ -370,4 +386,5 @@ __all__ = [
     "execution_context",
     "link_performance_findings",
     "opportunity_id_for_finding",
+    "provenance_confidence",
 ]

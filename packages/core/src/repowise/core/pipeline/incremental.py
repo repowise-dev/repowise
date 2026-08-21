@@ -970,11 +970,24 @@ async def persist_partial_health(session: Any, repo_id: str, report: Any) -> Non
             file_paths=changed_paths,
         )
     if performance_paths:
+        performance_suggestions = [
+            suggestion
+            for suggestion in list(getattr(report, "refactoring_suggestions", None) or [])
+            if suggestion.refactoring_type == "performance_fix"
+        ]
+        # A causal plan is stored at its shared intervention, which can sit
+        # downstream of every caller file in the performance invalidation
+        # closure. Include those targets in the scoped replacement or the
+        # findings refresh while their matching plans are silently discarded.
+        performance_plan_paths = sorted(
+            set(performance_paths)
+            | {suggestion.file_path for suggestion in performance_suggestions}
+        )
         await upsert_refactoring_suggestions(
             session,
             repo_id,
-            list(getattr(report, "refactoring_suggestions", None) or []),
-            file_paths=performance_paths,
+            performance_suggestions,
+            file_paths=performance_plan_paths,
             refactoring_type="performance_fix",
         )
     # Per-function blame rollup for the changed files (keeps git_function_blame

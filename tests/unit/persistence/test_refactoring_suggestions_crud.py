@@ -194,3 +194,37 @@ async def test_performance_only_partial_scope_clears_stale_plan(async_session):
 
     rows = await get_refactoring_suggestions(async_session, repo.id)
     assert [(row.refactoring_type, row.target_symbol) for row in rows] == [("extract_class", "Foo")]
+
+
+@pytest.mark.asyncio
+async def test_partial_performance_scope_persists_downstream_intervention(async_session):
+    from repowise.core.pipeline.incremental import persist_partial_health
+
+    repo = await insert_repo(async_session)
+    performance = _suggestion(
+        "shared.py",
+        "shared.py::load",
+        refactoring_type="performance_fix",
+        source_biomarker="io_in_loop",
+        plan={
+            "opportunity_id": "opp-shared",
+            "strategy": "batch_or_prefetch_io",
+            "affected_locations": [{"file_path": "caller.py", "line_start": 10}],
+        },
+    )
+    report = SimpleNamespace(
+        authoritative_paths=set(),
+        performance_authoritative_paths={"caller.py"},
+        metrics=[],
+        findings=[],
+        refactoring_suggestions=[performance],
+        function_blame_rows=[],
+    )
+
+    await persist_partial_health(async_session, repo.id, report)
+    await async_session.commit()
+
+    rows = await get_refactoring_suggestions(async_session, repo.id)
+    assert [(row.refactoring_type, row.file_path, row.target_symbol) for row in rows] == [
+        ("performance_fix", "shared.py", "shared.py::load")
+    ]

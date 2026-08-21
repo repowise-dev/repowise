@@ -1,5 +1,7 @@
 /** Canonical wire contract for structured refactoring recommendations. */
 
+import type { Paginated } from "./pagination.js";
+
 export type RefactoringType =
   | "extract_class"
   | "extract_helper"
@@ -70,11 +72,26 @@ export interface RefactoringTypeCount {
 export interface RefactoringSummary {
   total: number;
   by_type: RefactoringTypeCount[];
+  /** Additive Phase 4 aggregates; absent on older servers. */
+  files_total?: number;
+  structural_total?: number;
+  performance_total?: number;
+  small_effort_total?: number;
+  health_recovery_total?: number;
+  negligible_health_total?: number;
+  best_health_gain?: number;
 }
 
 export interface RefactoringTargets {
   summary: RefactoringSummary;
   plans: RefactoringPlan[];
+}
+
+/** Bounded product list. The legacy unpaged RefactoringTargets path remains. */
+export interface RefactoringPlanPage extends Paginated<RefactoringPlan> {
+  summary: RefactoringSummary;
+  /** Bounded canonical structural head used by the existing Start here section. */
+  structural_leads: RefactoringPlan[];
 }
 
 export interface GeneratedSpan {

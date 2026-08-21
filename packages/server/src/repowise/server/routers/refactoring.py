@@ -19,7 +19,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.refactoring.recommendations import hydrate_recommendations
+from repowise.core.analysis.health.refactoring.recommendations import (
+    apply_view,
+    blast_size,
+    hydrate_recommendations,
+)
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
 
@@ -84,11 +88,29 @@ class RefactoringTypeCount(BaseModel):
 class RefactoringSummary(BaseModel):
     total: int
     by_type: list[RefactoringTypeCount]
+    files_total: int | None = None
+    structural_total: int | None = None
+    performance_total: int | None = None
+    small_effort_total: int | None = None
+    health_recovery_total: int | None = None
+    negligible_health_total: int | None = None
+    best_health_gain: float | None = None
 
 
 class RefactoringTargetsResponse(BaseModel):
     summary: RefactoringSummary
     plans: list[RefactoringPlanResponse]
+
+
+class RefactoringPlanPageResponse(BaseModel):
+    """Bounded product page; the legacy targets response remains unpaged."""
+
+    items: list[RefactoringPlanResponse]
+    total: int
+    has_more: bool
+    next_offset: int | None
+    summary: RefactoringSummary
+    structural_leads: list[RefactoringPlanResponse]
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +120,88 @@ class RefactoringTargetsResponse(BaseModel):
 
 def _to_response(data: dict[str, Any]) -> RefactoringPlanResponse:
     return RefactoringPlanResponse(**data)
+
+
+_STRUCTURAL_TYPES = {"split_file", "break_cycle", "extract_class", "move_method"}
+_EFFORT_ORDER = {"S": 0, "M": 1, "L": 2, "XL": 3}
+
+
+def _summary(recommendations: list[Any]) -> RefactoringSummary:
+    by_type: dict[str, int] = {}
+    for recommendation in recommendations:
+        suggestion = recommendation.suggestion
+        by_type[suggestion.refactoring_type] = by_type.get(suggestion.refactoring_type, 0) + 1
+    return RefactoringSummary(
+        total=len(recommendations),
+        by_type=[
+            RefactoringTypeCount(type=kind, count=count)
+            for kind, count in sorted(by_type.items(), key=lambda item: (-item[1], item[0]))
+        ],
+        files_total=len({item.suggestion.file_path for item in recommendations}),
+        structural_total=sum(
+            item.suggestion.refactoring_type in _STRUCTURAL_TYPES for item in recommendations
+        ),
+        performance_total=by_type.get("performance_fix", 0),
+        small_effort_total=sum(item.suggestion.effort_bucket == "S" for item in recommendations),
+        health_recovery_total=sum(item.suggestion.impact_delta >= 0.1 for item in recommendations),
+        negligible_health_total=sum(item.suggestion.impact_delta < 0.5 for item in recommendations),
+        best_health_gain=round(
+            max((float(item.suggestion.impact_delta) for item in recommendations), default=0.0),
+            3,
+        ),
+    )
+
+
+def _csv_values(value: str | None) -> set[str]:
+    return {part.strip() for part in (value or "").split(",") if part.strip()}
+
+
+def _matches_search(recommendation: Any, query: str) -> bool:
+    suggestion = recommendation.suggestion
+    plan = suggestion.plan or {}
+    haystack = " ".join(
+        (
+            suggestion.file_path,
+            suggestion.target_symbol,
+            suggestion.refactoring_type,
+            suggestion.source_biomarker,
+            str(plan.get("strategy") or ""),
+            str(plan.get("intervention_symbol") or ""),
+        )
+    ).lower()
+    return query in haystack
+
+
+def _sort_recommendations(recommendations: list[Any], sort: str) -> list[Any]:
+    canonical_position = {item.id: index for index, item in enumerate(recommendations)}
+    if sort == "canonical":
+        return recommendations
+    if sort == "health":
+        return sorted(
+            recommendations,
+            key=lambda item: (-item.suggestion.impact_delta, canonical_position[item.id]),
+        )
+    if sort == "effort":
+        return sorted(
+            recommendations,
+            key=lambda item: (
+                _EFFORT_ORDER.get(item.suggestion.effort_bucket, 2),
+                canonical_position[item.id],
+            ),
+        )
+    if sort == "blast":
+        return sorted(
+            recommendations,
+            key=lambda item: (-blast_size(item.suggestion), canonical_position[item.id]),
+        )
+    return sorted(
+        recommendations,
+        key=lambda item: (
+            item.suggestion.file_path,
+            item.suggestion.target_symbol,
+            item.id,
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +259,67 @@ async def get_refactoring_targets(
     return RefactoringTargetsResponse(
         summary=summary,
         plans=[_to_response(recommendation.as_dict()) for recommendation in recommendations],
+    )
+
+
+@router.get("/{repo_id}/refactoring/targets/page", response_model=RefactoringPlanPageResponse)
+async def get_refactoring_plan_page(
+    repo_id: str,
+    refactoring_type: str | None = Query(None),
+    min_confidence: str | None = Query(None, description="Compatibility confidence floor"),
+    confidence: str | None = Query(None, description="Comma-separated exact confidence values"),
+    effort: str | None = Query(None, description="Comma-separated effort buckets"),
+    file_path: str | None = Query(None),
+    search: str | None = Query(None, max_length=200),
+    sort: Literal["canonical", "health", "effort", "blast", "file"] = Query("canonical"),
+    view: Literal["canonical", "file_spread"] = Query("canonical"),
+    limit: int = Query(60, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_db_session),
+) -> RefactoringPlanPageResponse:
+    """Bounded list with server-owned filters and deterministic ordering.
+
+    Hydration remains one batched pass over the repository plans so validation
+    and priority have exactly the Phase 3 semantics and a constant SQL shape.
+    Only the requested page crosses the wire.
+    """
+    rows = await crud.get_refactoring_suggestions(session, repo_id, min_confidence=min_confidence)
+    canonical = await hydrate_recommendations(session, repo_id, rows, view="canonical")
+    summary = _summary(canonical)
+    structural_leads = [
+        item for item in canonical if item.suggestion.refactoring_type in _STRUCTURAL_TYPES
+    ][:12]
+
+    ordered = apply_view(canonical, view)
+    if refactoring_type == "structural":
+        ordered = [
+            item for item in ordered if item.suggestion.refactoring_type in _STRUCTURAL_TYPES
+        ]
+    elif refactoring_type:
+        ordered = [item for item in ordered if item.suggestion.refactoring_type == refactoring_type]
+    if file_path is not None:
+        ordered = [item for item in ordered if item.suggestion.file_path == file_path]
+    confidences = _csv_values(confidence)
+    if confidences:
+        ordered = [item for item in ordered if item.suggestion.confidence in confidences]
+    efforts = _csv_values(effort)
+    if efforts:
+        ordered = [item for item in ordered if item.suggestion.effort_bucket in efforts]
+    normalized_search = (search or "").strip().lower()
+    if normalized_search:
+        ordered = [item for item in ordered if _matches_search(item, normalized_search)]
+    ordered = _sort_recommendations(ordered, sort)
+
+    total = len(ordered)
+    page = ordered[offset : offset + limit]
+    next_offset = offset + len(page) if offset + len(page) < total else None
+    return RefactoringPlanPageResponse(
+        items=[_to_response(item.as_dict()) for item in page],
+        total=total,
+        has_more=next_offset is not None,
+        next_offset=next_offset,
+        summary=summary,
+        structural_leads=[_to_response(item.as_dict()) for item in structural_leads],
     )
 
 

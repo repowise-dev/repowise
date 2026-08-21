@@ -14,9 +14,11 @@ import type {
   HealthFileBreakdownResponse,
   HealthOverviewResponse,
   HealthTrendResponse,
+  PerformanceOpportunityPage,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
 } from "@repowise-dev/types/health";
+import type { Paginated } from "@repowise-dev/types";
 import { apiGet, apiPatch } from "./client";
 
 export type {
@@ -69,6 +71,33 @@ export async function listHealthFindings(
   },
 ): Promise<HealthFinding[]> {
   return apiGet<HealthFinding[]>(`/api/repos/${repoId}/health/findings`, opts);
+}
+
+export interface PerformanceOpportunityPageParams {
+  context?: "production_tooling" | "test" | "all";
+  limit?: number;
+  offset?: number;
+}
+
+export async function getPerformanceOpportunities(
+  repoId: string,
+  opts: PerformanceOpportunityPageParams = {},
+): Promise<PerformanceOpportunityPage> {
+  return apiGet<PerformanceOpportunityPage>(
+    `/api/repos/${repoId}/health/performance-opportunities`,
+    { context: opts.context, limit: opts.limit, offset: opts.offset },
+  );
+}
+
+export async function getPerformanceOpportunityFindings(
+  repoId: string,
+  opportunityId: string,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<Paginated<HealthFinding>> {
+  return apiGet(
+    `/api/repos/${repoId}/health/performance-opportunities/${encodeURIComponent(opportunityId)}/findings`,
+    { limit: opts.limit, offset: opts.offset },
+  );
 }
 
 export async function listHealthFiles(
