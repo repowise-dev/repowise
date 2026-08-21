@@ -51,6 +51,7 @@ _BUILTIN_PROVIDERS: dict[str, tuple[str, str]] = {
     "litellm": ("repowise.core.providers.llm.litellm", "LiteLLMProvider"),
     "deepseek": ("repowise.core.providers.llm.deepseek", "DeepSeekProvider"),
     "kimi": ("repowise.core.providers.llm.kimi", "KimiProvider"),
+    "edenai": ("repowise.core.providers.llm.edenai", "EdenAIProvider"),
     "codex_cli": ("repowise.core.providers.llm.codex_cli", "CodexCliProvider"),
     "opencode": ("repowise.core.providers.llm.opencode", "OpenCodeProvider"),
     "mock": ("repowise.core.providers.llm.mock", "MockProvider"),
@@ -72,6 +73,7 @@ PROVIDER_API_KEY_ENVS: dict[str, tuple[str, ...]] = {
     "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),  # either one
     "deepseek": ("DEEPSEEK_API_KEY",),
     "kimi": ("KIMI_API_KEY",),
+    "edenai": ("EDENAI_API_KEY",),
     "litellm": ("LITELLM_API_KEY",),
 }
 
@@ -88,6 +90,7 @@ PROVIDER_BASE_URL_ENVS: dict[str, tuple[str, ...]] = {
     "gemini": ("GEMINI_BASE_URL",),
     "deepseek": ("DEEPSEEK_BASE_URL",),
     "kimi": ("KIMI_BASE_URL",),
+    "edenai": ("EDENAI_BASE_URL",),
     "ollama": ("OLLAMA_BASE_URL",),
     "litellm": ("LITELLM_BASE_URL", "LITELLM_API_BASE"),
 }
