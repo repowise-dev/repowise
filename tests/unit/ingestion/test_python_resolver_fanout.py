@@ -156,3 +156,45 @@ def test_non_submodule_binding_keeps_package_init() -> None:
     assert len(imp.bindings) == 1
     assert imp.bindings[0].local_name == "some_function"
     assert imp.bindings[0].source_file is None
+
+
+def test_submodule_aliased_binding_points_at_submodule_file() -> None:
+    """``from pkg import submodule as alias`` binds ``alias`` to the submodule file."""
+    paths = {
+        "sensors/__init__.py",
+        "sensors/foo.py",
+        "caller.py",
+    }
+    imp = _imp(
+        "sensors",
+        ["foo"],
+        bindings=[NamedBinding(local_name="f", exported_name="foo", source_file=None)],
+    )
+    targets = resolve_python_import_all(imp, "caller.py", _ctx(paths))
+    assert targets == ("sensors/__init__.py", "sensors/foo.py")
+    assert len(imp.bindings) == 1
+    assert imp.bindings[0].local_name == "f"
+    assert imp.bindings[0].source_file == "sensors/foo.py"
+
+
+def test_non_submodule_aliased_binding_keeps_package_init() -> None:
+    """An aliased name that is not a submodule file keeps the package init as its source."""
+    paths = {
+        "sensors/__init__.py",
+        "sensors/foo.py",
+        "caller.py",
+    }
+    imp = _imp(
+        "sensors",
+        ["some_function"],
+        bindings=[
+            NamedBinding(
+                local_name="sf", exported_name="some_function", source_file=None
+            )
+        ],
+    )
+    targets = resolve_python_import_all(imp, "caller.py", _ctx(paths))
+    assert targets == ("sensors/__init__.py",)
+    assert len(imp.bindings) == 1
+    assert imp.bindings[0].local_name == "sf"
+    assert imp.bindings[0].source_file is None
