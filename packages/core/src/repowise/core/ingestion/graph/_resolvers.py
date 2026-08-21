@@ -574,6 +574,7 @@ class ResolveMixin:
                             rc.callee_id,
                             edge_type="calls",
                             confidence=rc.confidence,
+                            supplied_props=rc.supplied_props,
                             resolution_origin=rc.origin,
                             call_lines=[rc.line],
                         )
@@ -590,6 +591,11 @@ class ResolveMixin:
                         if rc.confidence > existing.get("confidence", 0):
                             existing["confidence"] = rc.confidence
                             existing["resolution_origin"] = rc.origin
+                        ex_props = existing.get("supplied_props")
+                        if ex_props is None or rc.supplied_props is None:
+                            existing["supplied_props"] = None
+                        else:
+                            existing["supplied_props"] = frozenset(ex_props | rc.supplied_props)
             if progress:
                 progress.on_item_done("graph.calls")
 
