@@ -121,7 +121,7 @@ def resolve_python_import_all(
                 # (#1193). Without this the binding's source_file stays the
                 # package init, which declares nothing, and the call is missed.
                 for binding in imp.bindings:
-                    if binding.local_name == name:
+                    if (binding.exported_name or binding.local_name) == name:
                         binding.source_file = hit
                         break
     return tuple(dict.fromkeys(targets))
