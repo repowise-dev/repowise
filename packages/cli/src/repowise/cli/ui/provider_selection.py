@@ -82,6 +82,10 @@ _PROVIDER_NOTES: dict[str, str] = {
 }
 
 _OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
+# The OpenAI adapter is also the generic adapter for local gateways. Keep the
+# official endpoint as the prompt default, while letting a user replace it
+# inline with a vLLM/SGLang/9router URL without exporting another env var first.
+_OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
 # Enough for a loopback connect; the table renders before any prompt, so a slow
 # or firewalled endpoint must not hold the whole screen.
 _OLLAMA_PROBE_TIMEOUT_S = 0.3
@@ -697,6 +701,7 @@ def _prompt_api_key(
     env_var: str,
     *,
     repo_path: Path | None = None,
+    save_key: bool = True,
 ) -> str | None:
     """Prompt for an API key, set env var, and optionally save to .repowise/.env.
 
@@ -716,7 +721,7 @@ def _prompt_api_key(
     console.print(f"  [{OK}]✓ Key set for this session[/]")
 
     # Offer to save for future runs
-    if repo_path is not None:
+    if repo_path is not None and save_key:
         save = click.confirm(
             "  Save this key to .repowise/.env so future runs find it? "
             "(the file is git-ignored, so it will not be committed)",
@@ -734,6 +739,108 @@ def _prompt_api_key(
             from repowise.cli.helpers import NO_SAVE_KEY_ENV
 
             os.environ[NO_SAVE_KEY_ENV] = "1"
+    elif repo_path is not None:
+        # Keep --no-save-key visible to the endpoint prompt below too. The
+        # final init persistence pass already honors this flag, but the
+        # interactive prompt writes values immediately.
+        from repowise.cli.helpers import NO_SAVE_KEY_ENV
+
+        os.environ[NO_SAVE_KEY_ENV] = "1"
     console.print()
 
     return key
+
+
+def _prompt_provider_base_url(
+    console: Console,
+    provider: str,
+    env_var: str,
+    *,
+    repo_path: Path | None = None,
+    save_key: bool = True,
+) -> str | None:
+    """Prompt for an optional OpenAI-compatible endpoint and persist it.
+
+    This is deliberately a separate question from the API key: the same
+    ``openai`` provider can target api.openai.com, a local gateway, or a
+    self-hosted server. An existing env value wins, so re-running init never
+    asks a question the user already answered.
+    """
+    current = (os.environ.get(env_var) or "").strip()
+    if current:
+        return current
+
+    default = _OPENAI_DEFAULT_BASE_URL if provider == "openai" else ""
+    label = "  Base URL (OpenAI-compatible endpoint)"
+    if default:
+        value = click.prompt(label, default=default, show_default=True)
+    else:
+        value = click.prompt(label, default="", show_default=False)
+    value = value.strip()
+    if not value:
+        return None
+
+    os.environ[env_var] = value
+    from repowise.cli.helpers import NO_SAVE_KEY_ENV
+
+    should_save = save_key and not (os.environ.get(NO_SAVE_KEY_ENV) or "").strip()
+    if repo_path is not None and should_save:
+        _save_key_to_dotenv(repo_path, env_var, value)
+        console.print(f"  [{OK}]✓ Saved {env_var} to .repowise/.env[/]")
+    console.print()
+    return value
+
+
+def interactive_provider_credentials(
+    console: Console,
+    provider: str,
+    *,
+    repo_path: Path | None = None,
+    save_key: bool = True,
+) -> bool:
+    """Onboard an explicitly selected provider from a terminal.
+
+    Returns ``True`` when a missing credential was supplied, ``False`` when
+    there was nothing this prompt could configure or the user skipped it.
+    The OpenAI provider additionally asks for a base URL, which is the small
+    piece that makes the generic adapter useful for local gateways such as
+    9router.
+    """
+    from repowise.core.providers.llm.registry import PROVIDER_API_KEY_ENVS
+
+    env_vars = PROVIDER_API_KEY_ENVS.get(provider, ())
+    if not env_vars:
+        return False
+
+    configured = False
+    key_present = any((os.environ.get(name) or "").strip() for name in env_vars)
+    if not key_present:
+        env_var = env_vars[0]
+        console.print()
+        console.print(f"  [bold]{provider}[/bold] setup")
+        console.print(f"  API key goes in [{VALUE}]{env_var}[/]. It will be hidden while typing.")
+        key = _prompt_api_key(
+            console,
+            provider,
+            env_var,
+            repo_path=repo_path,
+            save_key=save_key,
+        )
+        if not key:
+            return False
+        configured = True
+
+    # The generic OpenAI adapter is the supported path for all compatible
+    # gateways. Hosted OpenAI users can simply press Enter; local users paste
+    # their gateway's /v1 URL here. Ask this when an explicit OpenAI provider
+    # has a key but no endpoint too, so an existing OPENAI_API_KEY does not
+    # force a local-gateway user back to shell configuration.
+    if provider == "openai" and _prompt_provider_base_url(
+        console,
+        provider,
+        "OPENAI_BASE_URL",
+        repo_path=repo_path,
+        save_key=save_key,
+    ):
+        configured = True
+    return configured

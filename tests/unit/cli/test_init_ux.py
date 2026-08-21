@@ -7,6 +7,7 @@ detection that decides whether picking a provider asks for an API key.
 
 from __future__ import annotations
 
+import os
 from io import StringIO
 from typing import Any
 
@@ -283,3 +284,57 @@ def test_selecting_an_unreachable_ollama_never_prompts_for_a_key(monkeypatch: An
     assert chosen == "openai"
     assert "runs on your machine" in out
     assert "ollama serve" in out
+
+
+def test_explicit_openai_setup_prompts_for_key_and_gateway_url(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    """``init --provider openai`` can onboard a local gateway inline.
+
+    The generic OpenAI adapter is how 9router and other compatible gateways
+    are configured. A user should not have to discover and export two env vars
+    before the command can even start.
+    """
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    answers = iter(["router-secret", "http://localhost:20128/v1"])
+    monkeypatch.setattr(provider_selection.click, "prompt", lambda *_a, **_k: next(answers))
+    monkeypatch.setattr(provider_selection.click, "confirm", lambda *_a, **_k: True)
+    console, buf = _console()
+
+    configured = provider_selection.interactive_provider_credentials(
+        console,
+        "openai",
+        repo_path=tmp_path,
+    )
+
+    assert configured is True
+    assert os.environ["OPENAI_API_KEY"] == "router-secret"
+    assert os.environ["OPENAI_BASE_URL"] == "http://localhost:20128/v1"
+    env_text = (tmp_path / ".repowise" / ".env").read_text(encoding="utf-8")
+    assert "OPENAI_API_KEY=router-secret" in env_text
+    assert "OPENAI_BASE_URL=http://localhost:20128/v1" in env_text
+    assert "router-secret" not in buf.getvalue()
+
+
+def test_explicit_openai_setup_prompts_for_url_when_key_is_already_set(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    """A pre-exported key must not hide the local-gateway URL question."""
+    monkeypatch.setenv("OPENAI_API_KEY", "router-secret")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.setattr(
+        provider_selection.click,
+        "prompt",
+        lambda *_a, **_k: "http://localhost:20128/v1",
+    )
+    console, _ = _console()
+
+    configured = provider_selection.interactive_provider_credentials(
+        console,
+        "openai",
+        repo_path=tmp_path,
+    )
+
+    assert configured is True
+    assert os.environ["OPENAI_BASE_URL"] == "http://localhost:20128/v1"

@@ -543,6 +543,20 @@ Repowise discovers namespaced model ids from compatible gateways as-is, so
 the model does not need to start with `gpt-`. For another local provider,
 replace the key, URL, and model with that provider's values.
 
+In a terminal, `init` can collect the two values inline when an explicit
+OpenAI-compatible setup is incomplete, so exporting them first is optional:
+
+```text
+API key (hidden): <paste the gateway key>
+Base URL [https://api.openai.com/v1]: http://localhost:20128/v1
+```
+
+The answers are placed in the repo's gitignored `.repowise/.env`, and the
+selected model/provider are written to `config.yaml`. Press Enter at the URL
+prompt to use the official OpenAI endpoint. Scripted runs (`--yes`, CI, or
+non-TTY) remain non-interactive and should continue to use environment
+variables.
+
 ### OpenRouter
 
 ```bash

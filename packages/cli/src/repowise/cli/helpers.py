@@ -988,6 +988,61 @@ def resolve_provider(
     )
 
 
+def resolve_explicit_provider_or_prompt(
+    provider_name: str | None,
+    model: str | None,
+    repo_path: Path,
+    *,
+    interactive: bool,
+    save_key: bool = True,
+) -> Any:
+    """Resolve an explicit provider, onboarding missing credentials in a TTY.
+
+    ``resolve_provider`` stays non-interactive because hooks, CI, and library
+    callers must never block on stdin. ``init`` can opt into this wrapper when
+    it has a real terminal: a missing explicit provider key gets the same
+    inline setup as the provider picker, and an explicit OpenAI provider also
+    gets the endpoint question used by local gateways.
+    """
+    from repowise.cli.ui import interactive_provider_credentials
+
+    if interactive and provider_name == "openai":
+        # A pty can report TTY while stdin is not readable. Let the normal
+        # resolution below produce the actionable provider error instead of
+        # replacing it with Abort.
+        with contextlib.suppress(EOFError, click.Abort):
+            interactive_provider_credentials(
+                console,
+                provider_name,
+                repo_path=repo_path,
+                save_key=save_key,
+            )
+
+        return resolve_provider(provider_name, model, repo_path=repo_path)
+
+    try:
+        return resolve_provider(provider_name, model, repo_path=repo_path)
+    except click.ClickException as original_error:
+        if not interactive or provider_name is None:
+            raise
+
+        try:
+            configured = interactive_provider_credentials(
+                console,
+                provider_name,
+                repo_path=repo_path,
+                save_key=save_key,
+            )
+        except (EOFError, click.Abort):
+            # A pty can report TTY while stdin is not readable. Preserve the
+            # actionable provider error instead of replacing it with Abort.
+            raise original_error from None
+
+        if not configured:
+            raise original_error
+        return resolve_provider(provider_name, model, repo_path=repo_path)
+
+
 def resolve_provider_or_prompt(
     provider_name: str | None,
     model: str | None,
