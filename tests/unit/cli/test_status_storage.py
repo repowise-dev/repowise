@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from repowise.cli.commands import status_cmd
 
 
@@ -33,3 +35,24 @@ def test_health_line_for_a_repo_with_no_scored_file(monkeypatch) -> None:
     )
     line = status_cmd._query_health_line(Path("."))
     assert line is not None and "not analysed" in line and "2992" in line
+
+
+def test_path_mapping_valid_with_no_db_is_true(tmp_path: Path) -> None:
+    """Nothing to diverge from: an unindexed dir is not a broken mapping."""
+    assert status_cmd._path_mapping_valid(tmp_path) is True
+
+
+def test_path_mapping_valid_false_when_repo_row_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #1748: .repowise/ exists but no Repository row matches the
+    checkout's local_path, so the index/checkout identity has diverged."""
+    # An empty .repowise/wiki.db with no Repository row (identity lost).
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "wiki.db").write_bytes(b"")
+
+    monkeypatch.setenv("REPOWISE_DATA_DIR", str(tmp_path / ".repowise"))
+    monkeypatch.setenv("REPOWISE_DB_PATH", str(tmp_path / ".repowise" / "wiki.db"))
+
+    # No repo was ever upserted -> the mapping must read as invalid.
+    assert status_cmd._path_mapping_valid(tmp_path) is False
