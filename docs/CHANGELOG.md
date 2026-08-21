@@ -80,6 +80,11 @@ The headline this cycle is test intelligence that needs no coverage report. 0.44
   or a bar. The file page names the tests that reach it, with `via` separating a
   test whose calls run into the file from one that only imports it. (#1758)
 
+- **OpenAI-compatible local gateways expose their models.** Custom endpoints
+  configured with `OPENAI_BASE_URL` can now return namespaced model ids such as
+  9router's `ag/...` and `ds/...` entries; loopback requests also bypass proxy
+  environment parsing so a standard IPv6 `NO_PROXY` entry cannot block them.
+
 - **`untested_hotspot` stops accusing files that the tests run.** With no
   coverage ingested it fired on any hotspot without a *paired test file*, which
   is a filename convention, so a suite that names its tests for behaviour

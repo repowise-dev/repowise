@@ -13,9 +13,11 @@ Recommended models (as of 2026):
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import os
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 import structlog
 from openai import APIError as _OpenAIAPIError
@@ -163,11 +165,24 @@ def _openai_temperature(model: str, requested: float) -> float:
     return requested
 
 
-def _is_openai_text_model(model_id: str) -> bool:
+def _is_openai_text_model(model_id: str, *, allow_namespaced: bool = False) -> bool:
+    """Keep chat-capable ids, including arbitrary ids from custom gateways."""
     leaf = _model_leaf(model_id)
     if any(marker in leaf for marker in _OPENAI_NON_TEXT_MARKERS):
         return False
-    return leaf.startswith(_OPENAI_TEXT_MODEL_PREFIXES)
+    return allow_namespaced or leaf.startswith(_OPENAI_TEXT_MODEL_PREFIXES)
+
+
+def _is_loopback_url(base_url: str) -> bool:
+    host = urlparse(base_url).hostname
+    if not host:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _openai_option(
@@ -203,11 +218,13 @@ def _openai_model_options(
     try:
         import httpx
 
-        response = httpx.get(
-            f"{base_url.rstrip('/')}/models",
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=5.0,
-        )
+        request_kwargs: dict[str, Any] = {
+            "headers": {"Authorization": f"Bearer {api_key}"},
+            "timeout": 5.0,
+        }
+        if _is_loopback_url(base_url):
+            request_kwargs["trust_env"] = False
+        response = httpx.get(f"{base_url.rstrip('/')}/models", **request_kwargs)
         response.raise_for_status()
         data = response.json().get("data", [])
     except Exception:
@@ -222,7 +239,10 @@ def _openai_model_options(
             for model in data
             if isinstance(model, dict)
             and isinstance(model.get("id"), str)
-            and _is_openai_text_model(model["id"])
+            and _is_openai_text_model(
+                model["id"],
+                allow_namespaced=base_url.rstrip("/") != "https://api.openai.com/v1",
+            )
         }
     )
     if not model_ids:
@@ -258,7 +278,16 @@ class OpenAIProvider(BaseProvider):
         resolved_base_url = base_url or os.environ.get("OPENAI_BASE_URL")
         self._api_key = resolved_key
         self._base_url = resolved_base_url or "https://api.openai.com/v1"
-        self._client = AsyncOpenAI(api_key=resolved_key, base_url=resolved_base_url)
+        http_client = None
+        if resolved_base_url and _is_loopback_url(resolved_base_url):
+            import httpx
+
+            http_client = httpx.AsyncClient(trust_env=False)
+        self._client = AsyncOpenAI(
+            api_key=resolved_key,
+            base_url=resolved_base_url,
+            http_client=http_client,
+        )
         self._model = model
         self._rate_limiter = rate_limiter
         self._cost_tracker = cost_tracker

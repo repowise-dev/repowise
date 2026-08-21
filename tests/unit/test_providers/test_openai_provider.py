@@ -126,6 +126,47 @@ def test_available_model_options_uses_models_endpoint(monkeypatch):
     )
 
 
+def test_available_model_options_accepts_namespaced_compatible_models(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {
+                "data": [
+                    {"id": "ag/gemini-3.7-flash-medium"},
+                    {"id": "ds/deepseek-v4-flash"},
+                    {"id": "cmc/moonshotai/Kimi-K2.6"},
+                    {"id": "text-embedding-3-large"},
+                ]
+            }
+
+    captured: dict[str, object] = {}
+
+    def fake_get(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setattr("httpx.get", fake_get)
+
+    options = OpenAIProvider(
+        api_key="sk-test",
+        base_url="http://localhost:20128/v1",
+    ).available_model_options()
+    models = [option.model for option in options]
+
+    assert models == [
+        "ag/gemini-3.7-flash-medium",
+        "cmc/moonshotai/Kimi-K2.6",
+        "ds/deepseek-v4-flash",
+    ]
+    assert captured["trust_env"] is False
+    assert next(
+        option for option in options if option.model == "ag/gemini-3.7-flash-medium"
+    ).reasoning_modes == ("auto",)
+
+
 def test_available_model_options_falls_back_to_configured_model(monkeypatch):
     def fake_get(*_args, **_kwargs):
         raise RuntimeError("offline")
