@@ -149,7 +149,8 @@ async def test_directive_admits_when_the_file_has_no_plans_at_all(setup_mcp, hea
     # The seeded worst file leads with complex_method and carries no plans.
     assert directive["fix_first"] == "src/auth/service.py"
     assert directive["plan_addresses_reason"] is False
-    assert "no plans at all" in directive["plan_note"]
+    assert "has no plans" in directive["plan_note"]
+    assert directive["next_action"] == "investigate complex_method"
 
 
 @pytest.mark.asyncio
@@ -162,7 +163,13 @@ async def test_directive_admits_when_plans_target_a_different_biomarker(
     await _seed_plans(
         session,
         health_data,
-        [{"file_path": "src/auth/service.py", "source_biomarker": "dry_violation", "impact_delta": 1.0}],
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "source_biomarker": "dry_violation",
+                "impact_delta": 1.0,
+            }
+        ],
     )
 
     directive = (await get_health(only=["directive"]))["directive"]
@@ -173,9 +180,7 @@ async def test_directive_admits_when_plans_target_a_different_biomarker(
 
 
 @pytest.mark.asyncio
-async def test_directive_confirms_when_a_plan_addresses_the_reason(
-    setup_mcp, health_data, session
-):
+async def test_directive_confirms_when_a_plan_addresses_the_reason(setup_mcp, health_data, session):
     """The true branch has to be reachable, or the flag is decoration."""
     from repowise.server.mcp_server import get_health
 
@@ -194,6 +199,34 @@ async def test_directive_confirms_when_a_plan_addresses_the_reason(
     directive = (await get_health(only=["directive"]))["directive"]
     assert directive["plan_addresses_reason"] is True
     assert "plan_note" not in directive
+    assert directive["next_action"] == "inspect matching plan via plan_via"
+
+
+@pytest.mark.asyncio
+async def test_combined_recommendation_lede_is_compact_and_self_directing(
+    setup_mcp, health_data, session
+):
+    from repowise.server.mcp_server import get_health
+
+    await _seed_plans(
+        session,
+        health_data,
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "source_biomarker": "complex_method",
+                "impact_delta": 1.0,
+            }
+        ],
+    )
+    result = await get_health(include=["performance", "refactoring"], only=["recommendation_lede"])
+    lede = result["recommendation_lede"]
+    assert set(result) <= {"mode", "recommendation_lede", "_meta"}
+    assert lede["performance_opportunities_total"] == 1
+    assert lede["refactoring_plans_total"] == 1
+    assert lede["performance_lead"]["boundary_kind"] == "db"
+    assert {"benefit", "leverage", "cost", "risk", "validation"} <= set(lede["recommendation_lead"])
+    assert "only=['performance_opportunities','refactoring_plans']" in lede["next_call"]
 
 
 @pytest.mark.asyncio
@@ -223,7 +256,7 @@ async def test_directive_does_not_claim_a_file_is_planless_over_an_unattributed_
 
     directive = (await get_health(only=["directive"]))["directive"]
     assert directive["plan_addresses_reason"] is False
-    assert "no plans at all" not in directive["plan_note"]
+    assert "has no plans" not in directive["plan_note"]
     assert "record no source biomarker" in directive["plan_note"]
 
 
@@ -377,9 +410,7 @@ async def test_get_health_dashboard_leads_with_a_directive(setup_mcp, health_dat
 
 
 @pytest.mark.asyncio
-async def test_directive_share_bounded_when_gross_exceeds_net_gap(
-    session, setup_mcp
-):
+async def test_directive_share_bounded_when_gross_exceeds_net_gap(session, setup_mcp):
     """Regression guard for #1437: the share uses the gross deficit of all
     below-target files as its denominator, so it is bounded by 100% and sums to
     100% by construction — the net gap (which healthy files cushion) would let
@@ -436,9 +467,7 @@ async def test_directive_share_bounded_when_gross_exceeds_net_gap(
 
 
 @pytest.mark.asyncio
-async def test_directive_absent_when_no_file_below_target(
-    session, setup_mcp
-):
+async def test_directive_absent_when_no_file_below_target(session, setup_mcp):
     """When no file is below the Healthy floor there is no gross gap, nothing to
     recommend, and no share to report — the directive is absent entirely."""
     from repowise.core.persistence.crud import save_health_metrics
@@ -472,9 +501,7 @@ async def test_directive_absent_when_no_file_below_target(
 
 
 @pytest.mark.asyncio
-async def test_high_leverage_rows_sum_to_100_with_negative_net_gap(
-    session, setup_mcp
-):
+async def test_high_leverage_rows_sum_to_100_with_negative_net_gap(session, setup_mcp):
     """The microdot scenario from #1437: several files below target against a
     negative net gap. The gross gap is the denominator, so rows are distinct,
     each bounded by 100%, and they sum to 100% by construction — whereas the
@@ -822,9 +849,7 @@ async def test_worst_files_order_survives_every_dimension_filter(setup_mcp, floo
 
 
 @pytest.mark.asyncio
-async def test_one_response_agrees_with_itself_about_the_worst_file(
-    setup_mcp, floored_health_data
-):
+async def test_one_response_agrees_with_itself_about_the_worst_file(setup_mcp, floored_health_data):
     """``kpis`` and ``worst_files`` must name the same file.
 
     Regression: ``_compute_kpis`` reduces with ``min()``, which returns the
@@ -1115,9 +1140,7 @@ async def test_test_findings_get_their_own_bucket(setup_mcp, health_data_with_te
 
 
 @pytest.mark.asyncio
-async def test_each_bucket_is_capped_against_its_own_population(
-    setup_mcp, health_data_with_tests
-):
+async def test_each_bucket_is_capped_against_its_own_population(setup_mcp, health_data_with_tests):
     """The split happens before the cap, not after.
 
     Capping first and partitioning after would hand the smaller bucket
@@ -1134,9 +1157,7 @@ async def test_each_bucket_is_capped_against_its_own_population(
 
 
 @pytest.mark.asyncio
-async def test_metric_rows_say_whether_a_file_is_test_material(
-    setup_mcp, health_data_with_tests
-):
+async def test_metric_rows_say_whether_a_file_is_test_material(setup_mcp, health_data_with_tests):
     """``is_test`` is a fact on the row, distinct from ``has_test_file``.
 
     The two answer opposite questions — "is this file a test" vs "is this file
@@ -1299,7 +1320,7 @@ async def test_coverage_payload_shape_is_unchanged(setup_mcp, health_data):
 
 @pytest.mark.asyncio
 async def test_refactoring_plans_spread_across_files(setup_mcp, health_data, session):
-    """The cap is spread over files instead of being spent on the worst one.
+    """The explicit file_spread view spreads the cap without changing rank.
 
     ``deficit_by_path`` is a *file* property, so a pure deficit sort puts every
     plan on the worst file ahead of every plan on the second worst. Measured on
@@ -1334,7 +1355,9 @@ async def test_refactoring_plans_spread_across_files(setup_mcp, health_data, ses
         ],
     )
 
-    plans = (await get_health(include=["refactoring"], limit=4))["refactoring_plans"]
+    plans = (await get_health(include=["refactoring"], limit=4, refactoring_view="file_spread"))[
+        "refactoring_plans"
+    ]
     assert len(plans) == 4
     # Both files are represented rather than the worst file owning the list.
     assert len({p["file_path"] for p in plans}) == 2
@@ -1665,9 +1688,7 @@ async def test_a_response_that_fits_is_not_trimmed(setup_mcp, health_data):
 
 
 @pytest.mark.asyncio
-async def test_trimming_never_eats_the_directive_or_the_totals(
-    setup_mcp, health_data, monkeypatch
-):
+async def test_trimming_never_eats_the_directive_or_the_totals(setup_mcp, health_data, monkeypatch):
     """The blocks that let a caller recover must survive the cut that caused it."""
     from repowise.server.mcp_server import get_health
 

@@ -4,7 +4,12 @@
  */
 
 import { apiGet, apiPost, apiPut } from "./client";
-import type { GeneratedCode, RefactoringPlan, RefactoringTargets } from "@repowise-dev/ui/refactoring";
+import type {
+  GeneratedCode,
+  RefactoringPlanPage,
+  RefactoringPlan,
+  RefactoringTargets,
+} from "@repowise-dev/types/refactoring";
 
 export interface RefactoringSettings {
   enabled: boolean;
@@ -22,6 +27,18 @@ export interface RefactoringTargetsParams {
   minConfidence?: string;
   /** Repo-relative path; narrows plans to one file (summary stays global). */
   filePath?: string;
+  view?: "canonical" | "file_spread";
+}
+
+export type RefactoringSort = "canonical" | "health" | "effort" | "blast" | "file";
+
+export interface RefactoringPageParams extends RefactoringTargetsParams {
+  search?: string;
+  confidence?: string;
+  effort?: string;
+  sort?: RefactoringSort;
+  limit?: number;
+  offset?: number;
 }
 
 export async function getRefactoringTargets(
@@ -32,6 +49,26 @@ export async function getRefactoringTargets(
     refactoring_type: params.refactoringType,
     min_confidence: params.minConfidence,
     file_path: params.filePath,
+    view: params.view,
+  });
+}
+
+/** Bounded server-filtered list for product surfaces. */
+export async function getRefactoringPlansPage(
+  repoId: string,
+  params: RefactoringPageParams = {},
+): Promise<RefactoringPlanPage> {
+  return apiGet<RefactoringPlanPage>(`/api/repos/${repoId}/refactoring/targets/page`, {
+    refactoring_type: params.refactoringType,
+    min_confidence: params.minConfidence,
+    file_path: params.filePath,
+    view: params.view,
+    search: params.search,
+    confidence: params.confidence,
+    effort: params.effort,
+    sort: params.sort,
+    limit: params.limit,
+    offset: params.offset,
   });
 }
 

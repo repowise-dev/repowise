@@ -10,8 +10,8 @@ in a hot, request-reachable function. The gate fires those markers *only there*.
 "Hot" combines two whole-program signals a file-local linter cannot compute:
 
   * **centrality** — the function's symbol node has a top-quintile number of
-    distinct direct callers in the resolved ``calls`` graph (the ``CallGraphIndex``
-    in-degree). A widely-called function is on many request paths, so a latency
+    distinct direct predecessors in the reliable execution graph (the
+    ``CallGraphIndex`` in-degree). A widely-reached function is on many request paths, so a latency
     or quadratic cost there is paid often. Direct in-degree is a deterministic,
     ``O(E)`` proxy for request-reachability; transitive fan-in would be stronger
     but is quadratic to compute per function.

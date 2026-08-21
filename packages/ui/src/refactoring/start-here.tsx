@@ -31,8 +31,8 @@ import {
   planPoint,
   planReason,
   planSynopsis,
-  type RefactoringPlan,
 } from "./types";
+import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 export interface StartHereProps {
   /** Structural plans, already in rank order. */

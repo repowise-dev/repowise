@@ -68,6 +68,7 @@ BARREL_FILENAMES: frozenset[str] = frozenset(
         "index.cts",
         "index.mjs",
         "index.cjs",
+        "mod.rs",
     }
 )
 
@@ -288,6 +289,8 @@ def is_file_reachable(
         return True
     if path in rescues.whitelist:
         return True
+    # BARREL_FILENAMES entries are strictly lowercase matching standard file-system conventions
+    # (e.g. index.ts, __init__.py, mod.rs).
     if PurePosixPath(path).name in BARREL_FILENAMES:
         return True
     # Bundler ``resolve.alias`` targets are reached through the aliased package

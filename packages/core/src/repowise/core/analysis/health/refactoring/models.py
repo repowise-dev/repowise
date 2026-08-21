@@ -216,3 +216,6 @@ class RefactoringSuggestion:
     confidence: str
     # The biomarker finding this suggestion answers (e.g. "low_cohesion").
     source_biomarker: str = ""
+    # Read-side validation plan. Detectors leave it empty; the canonical
+    # recommendation service attaches measured/inferred tests in one batch.
+    validation: dict[str, Any] = field(default_factory=dict)

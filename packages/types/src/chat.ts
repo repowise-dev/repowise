@@ -126,14 +126,48 @@ export interface ContextArtifact {
 }
 
 /** `get_risk` / `get_change_risk` — modification or commit-range risk report. */
+export interface RiskTargetRow {
+  /** Path key; optional on MCP dict values that use `target` instead. */
+  file_path?: string;
+  /** MCP per-target id when `targets` is a path-keyed object. */
+  target?: string;
+  /**
+   * MCP `get_risk` hotspot score: a 0–1 fraction from
+   * `GitMetadata.churn_percentile` (rank / total), not 0–100.
+   */
+  hotspot_score?: number;
+  /** Same 0–1 fraction as `hotspot_score` (legacy fixture field name). */
+  churn_percentile?: number;
+  is_hotspot?: boolean;
+  risk_type?: string;
+  trend?: string;
+  risk_summary?: string;
+  [k: string]: unknown;
+}
+
 export interface RiskReportArtifactData {
-  targets: Array<{
-    file_path: string;
+  /**
+   * MCP `get_risk` returns a path-keyed object; legacy fixtures used an array.
+   * Renderers normalize either shape.
+   */
+  targets?: RiskTargetRow[] | Record<string, RiskTargetRow>;
+  global_hotspots?: Array<{
+    /** MCP wire. */
+    file_path?: string;
+    hotspot_score?: number;
+    /** Legacy chat fixture. */
+    path?: string;
     churn_percentile?: number;
-    is_hotspot?: boolean;
-    [k: string]: unknown;
   }>;
-  global_hotspots: Array<{ path: string; churn_percentile: number }>;
+  /** `get_change_risk` live-git payload fields. */
+  ref?: string;
+  score?: number;
+  risk_percentile?: number | null;
+  review_priority?: string;
+  classification?: string;
+  warning?: string;
+  error?: string;
+  [k: string]: unknown;
 }
 export interface RiskReportArtifact {
   type: "risk_report";

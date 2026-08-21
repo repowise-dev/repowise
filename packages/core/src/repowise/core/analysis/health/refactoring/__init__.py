@@ -27,6 +27,7 @@ from .models import (
     RefactoringContext,
     RefactoringSuggestion,
 )
+from .performance_fix import performance_fix_suggestions
 from .rank import rank_suggestions
 from .registry import (
     RefactoringDetector,
@@ -44,6 +45,7 @@ __all__ = [
     "build_file_scc_index",
     "detect_refactorings",
     "effort_bucket",
+    "performance_fix_suggestions",
     "rank_suggestions",
     "register",
     "registered_detectors",

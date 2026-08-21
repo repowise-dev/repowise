@@ -320,6 +320,12 @@ class GraphEdge(Base):
     # Persisted because the graph is rehydrated from these rows, so an
     # unpersisted origin would exist only on the indexing run that minted it.
     resolution_origin: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Resolved call sites collapse to one graph edge per symbol pair. Preserve
+    # every source line so consumers can identify the exact first hop without
+    # reparsing the repository. JSON keeps the additive migration portable.
+    call_lines_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )

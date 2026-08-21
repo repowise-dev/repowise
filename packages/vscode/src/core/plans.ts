@@ -1,5 +1,5 @@
 import { getRefactoringTargets } from "@repowise-dev/api-client/refactoring";
-import type { RefactoringPlan } from "@repowise-dev/ui/refactoring/types";
+import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 import type { RepowiseContext } from "./context";
 
 /**

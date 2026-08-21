@@ -86,3 +86,8 @@ class HealthReport:
     # to the ``coverage_files`` table. Empty when no coverage was ingested.
     coverage_files: list[Any] = field(default_factory=list)
     coverage_format: str | None = None
+    # Incremental writers replace all dimensions only for ``authoritative_paths``.
+    # ``performance_authoritative_paths`` may be wider: the bounded execution
+    # closure whose performance rows/plans were recomputed for full parity.
+    authoritative_paths: set[str] = field(default_factory=set)
+    performance_authoritative_paths: set[str] = field(default_factory=set)

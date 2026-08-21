@@ -411,7 +411,7 @@ def _run_generation_phase(
     default=None,
     help=(
         "LLM provider name (anthropic, openai, openrouter, gemini, "
-        "deepseek, kimi, ollama, litellm, codex_cli, opencode, mock)."
+        "deepseek, kimi, ollama, litellm, codex_cli, opencode, edenai, mock)."
     ),
 )
 @click.option("--model", default=None, help="Model identifier override.")
@@ -419,8 +419,11 @@ def _run_generation_phase(
     "--embedder",
     "embedder_name",
     default=None,
-    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "mock"]),
-    help="Embedder for RAG: gemini | openai | openrouter | ollama | mock (default: auto-detect).",
+    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "edenai", "mock"]),
+    help=(
+        "Embedder for RAG: gemini | openai | openrouter | ollama | edenai | mock "
+        "(default: auto-detect)."
+    ),
 )
 @click.option("--skip-tests", is_flag=True, default=False, help="Skip test files.")
 @click.option("--skip-infra", is_flag=True, default=False, help="Skip infrastructure files.")

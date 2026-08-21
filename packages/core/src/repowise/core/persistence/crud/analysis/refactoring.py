@@ -81,6 +81,7 @@ async def upsert_refactoring_suggestions(
     suggestions: list[Any],
     *,
     file_paths: list[str],
+    refactoring_type: str | None = None,
 ) -> None:
     """Replace open suggestions **only for the given file paths**.
 
@@ -92,18 +93,28 @@ async def upsert_refactoring_suggestions(
     if not file_paths:
         return
     allowed = set(file_paths)
-    existing = await session.execute(
-        select(RefactoringSuggestion).where(
-            RefactoringSuggestion.repository_id == repository_id,
-            RefactoringSuggestion.status == "open",
-            RefactoringSuggestion.file_path.in_(file_paths),
-        )
-    )
+    predicates = [
+        RefactoringSuggestion.repository_id == repository_id,
+        RefactoringSuggestion.status == "open",
+        RefactoringSuggestion.file_path.in_(file_paths),
+    ]
+    if refactoring_type is not None:
+        predicates.append(RefactoringSuggestion.refactoring_type == refactoring_type)
+    existing = await session.execute(select(RefactoringSuggestion).where(*predicates))
     for row in existing.scalars().all():
         await session.delete(row)
     await session.flush()
 
-    scoped = [s for s in suggestions if _finding_file_path(s) in allowed]
+    scoped = [
+        s
+        for s in suggestions
+        if _finding_file_path(s) in allowed
+        and (
+            refactoring_type is None
+            or (s.refactoring_type if hasattr(s, "refactoring_type") else s.get("refactoring_type"))
+            == refactoring_type
+        )
+    ]
     for i in range(0, len(scoped), _BATCH_SIZE):
         batch = scoped[i : i + _BATCH_SIZE]
         for s in batch:

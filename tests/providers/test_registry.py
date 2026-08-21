@@ -118,4 +118,4 @@ class TestCustomProviderRegistration:
 
     def test_builtin_count(self) -> None:
         """Sanity check: we have exactly 11 built-in providers."""
-        assert len(_BUILTIN_PROVIDERS) == 11
+        assert len(_BUILTIN_PROVIDERS) == 12

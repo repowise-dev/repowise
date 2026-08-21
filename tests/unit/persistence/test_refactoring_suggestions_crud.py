@@ -7,6 +7,8 @@ columns, so a future edit that forgets a field is caught.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from repowise.core.analysis.health.refactoring import RefactoringSuggestion
@@ -131,3 +133,98 @@ async def test_upsert_only_touches_given_files(async_session):
     await async_session.commit()
     rows = await get_refactoring_suggestions(async_session, repo.id)
     assert [r.target_symbol for r in rows] == ["Bar"]
+
+
+@pytest.mark.asyncio
+async def test_type_scoped_upsert_preserves_nonperformance_plans(async_session):
+    repo = await insert_repo(async_session)
+    performance = _suggestion(
+        "a.py",
+        "a.py::fetch",
+        refactoring_type="performance_fix",
+        source_biomarker="io_in_loop",
+        plan={"strategy": "batch_or_prefetch_io"},
+    )
+    await save_refactoring_suggestions(
+        async_session,
+        repo.id,
+        [_suggestion("a.py", "Foo"), performance],
+    )
+    await upsert_refactoring_suggestions(
+        async_session,
+        repo.id,
+        [],
+        file_paths=["a.py"],
+        refactoring_type="performance_fix",
+    )
+    await async_session.commit()
+    rows = await get_refactoring_suggestions(async_session, repo.id)
+    assert [(row.refactoring_type, row.target_symbol) for row in rows] == [("extract_class", "Foo")]
+
+
+@pytest.mark.asyncio
+async def test_performance_only_partial_scope_clears_stale_plan(async_session):
+    from repowise.core.pipeline.incremental import persist_partial_health
+
+    repo = await insert_repo(async_session)
+    await save_refactoring_suggestions(
+        async_session,
+        repo.id,
+        [
+            _suggestion("caller.py", "Foo"),
+            _suggestion(
+                "caller.py",
+                "caller.py::run",
+                refactoring_type="performance_fix",
+                source_biomarker="io_in_loop",
+            ),
+        ],
+    )
+    report = SimpleNamespace(
+        authoritative_paths=set(),
+        performance_authoritative_paths={"caller.py"},
+        metrics=[],
+        findings=[],
+        refactoring_suggestions=[],
+        function_blame_rows=[],
+    )
+
+    await persist_partial_health(async_session, repo.id, report)
+    await async_session.commit()
+
+    rows = await get_refactoring_suggestions(async_session, repo.id)
+    assert [(row.refactoring_type, row.target_symbol) for row in rows] == [("extract_class", "Foo")]
+
+
+@pytest.mark.asyncio
+async def test_partial_performance_scope_persists_downstream_intervention(async_session):
+    from repowise.core.pipeline.incremental import persist_partial_health
+
+    repo = await insert_repo(async_session)
+    performance = _suggestion(
+        "shared.py",
+        "shared.py::load",
+        refactoring_type="performance_fix",
+        source_biomarker="io_in_loop",
+        plan={
+            "opportunity_id": "opp-shared",
+            "strategy": "batch_or_prefetch_io",
+            "affected_locations": [{"file_path": "caller.py", "line_start": 10}],
+        },
+    )
+    report = SimpleNamespace(
+        authoritative_paths=set(),
+        performance_authoritative_paths={"caller.py"},
+        metrics=[],
+        findings=[],
+        refactoring_suggestions=[performance],
+        function_blame_rows=[],
+    )
+
+    await persist_partial_health(async_session, repo.id, report)
+    await async_session.commit()
+
+    rows = await get_refactoring_suggestions(async_session, repo.id)
+    assert [(row.refactoring_type, row.file_path, row.target_symbol) for row in rows] == [
+        ("performance_fix", "shared.py", "shared.py::load")
+    ]

@@ -15,7 +15,14 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         for f in fields:
             n = def_node.child_by_field_name(f)
             if n is not None:
-                return f" -> {node_text(n, src)}"
+                text = node_text(n, src)
+                # TypeScript/JavaScript's return_type is a type_annotation
+                # node whose text already carries a leading colon (": string"),
+                # unlike Python ("int"), Rust ("i32"), or Go ("string"). Strip
+                # it so we never emit a doubled " -> : type".
+                if text.startswith(":"):
+                    text = text[1:].lstrip()
+                return f" -> {text}"
         return ""
 
     if node_type == "function_definition":
@@ -43,8 +50,14 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         # TypeScript/JavaScript class method
         return f"{name}{params_text}{_ret(('return_type',))}"
     if node_type == "method_declaration":
-        # Go method: include receiver text and result type
         recv_node = def_node.child_by_field_name("receiver")
+        declared_type_fields = ("type", "returns")
+        if recv_node is None and any(
+            def_node.child_by_field_name(field) is not None for field in declared_type_fields
+        ):
+            # Java/C#: the declared type is the return type; there is no method keyword.
+            return f"{name}{params_text}{_ret(declared_type_fields)}"
+        # Go method: include receiver text and result type.
         recv_text = node_text(recv_node, src) if recv_node else ""
         recv_prefix = f"{recv_text} " if recv_text else ""
         return f"func {recv_prefix}{name}{params_text}{_ret(('result',))}"

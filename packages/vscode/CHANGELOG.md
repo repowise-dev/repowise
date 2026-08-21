@@ -79,6 +79,12 @@ upgrade with `pip install --upgrade repowise`.
 
 ### Refactoring
 
+- Performance plans use the same refactoring webview, tree and CodeLens as
+  structural plans. Priority comes from the canonical shared contract, and the
+  drawer renders validation basis, provenance, true totals, capped tests and
+  commands through shared UI components. Missing fields from older servers
+  degrade cleanly; the extension does not import web code or execute a plan.
+
 - An extract-helper plan names a directory as its destination. It used to
   prefer a graph community label, which named a directory the duplicated code
   did not live in: censused over 963 stored plans, all 905 that carried a label

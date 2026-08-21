@@ -135,6 +135,47 @@ async def tests_covering(
     return out
 
 
+async def tests_covering_files(
+    session: AsyncSession,
+    repository_id: str,
+    source_files: set[str],
+) -> dict[str, list[dict[str, Any]]]:
+    """Bulk reverse index for recommendation validation.
+
+    Unlike :func:`tests_covering`, this performs one indexed query for the
+    complete target set.  Callers may then apply plan-specific line ranges in
+    memory without turning recommendation hydration into one query per plan.
+    Rows and buckets are ordered deterministically; ``covered_lines`` remains
+    complete so a caller can distinguish a measured line hit from a file-only
+    match.
+    """
+    if not source_files:
+        return {}
+    result = await session.execute(
+        select(TestCoverageEntry)
+        .where(
+            TestCoverageEntry.repository_id == repository_id,
+            TestCoverageEntry.source_file.in_(sorted(source_files)),
+        )
+        .order_by(
+            TestCoverageEntry.source_file.asc(),
+            TestCoverageEntry.test_id.asc(),
+            TestCoverageEntry.test_file.asc(),
+        )
+    )
+    out: dict[str, list[dict[str, Any]]] = {}
+    for row in result.scalars().all():
+        out.setdefault(row.source_file, []).append(
+            {
+                "test_id": row.test_id,
+                "test_file": row.test_file,
+                "covered_lines": _decode_lines(row),
+                "source_format": row.source_format,
+            }
+        )
+    return out
+
+
 async def covered_source_files(
     session: AsyncSession,
     repository_id: str,

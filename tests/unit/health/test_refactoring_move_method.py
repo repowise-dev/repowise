@@ -81,6 +81,22 @@ def test_feature_envy_suggests_move_to_target_class():
     assert s.confidence == "high"
 
 
+def test_unreliable_calls_cannot_prove_feature_envy():
+    graph = _envy_graph()
+    for _source, _target, data in graph.edges(data=True):
+        if data.get("edge_type") == "calls":
+            data["resolution_origin"] = "global_unique"
+    assert _detect(graph, "c.py") == []
+
+
+def test_noncall_execution_edges_cannot_prove_feature_envy():
+    graph = _envy_graph()
+    for _source, _target, data in graph.edges(data=True):
+        if data.get("edge_type") == "calls":
+            data["edge_type"] = "dispatches_to"
+    assert _detect(graph, "c.py") == []
+
+
 def test_method_that_uses_its_own_class_is_not_envious():
     g = _envy_graph()
     # envious now also calls 2 of its own class's members → no longer clearly

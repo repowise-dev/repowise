@@ -10,11 +10,12 @@ import json
 from collections import Counter
 from typing import Any
 
-from repowise.core.analysis.execution_flows import (
-    _EXCLUDE_PATH_PATTERNS,
-    FlowTermination,
-    classify_termination,
+from repowise.core.analysis.execution_flows import FlowTermination, classify_termination
+from repowise.core.analysis.execution_graph import (
+    is_excluded_execution_path,
+    is_walkable_execution_edge,
 )
+from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
 from repowise.core.persistence.crud import (
     get_graph_edges_for_node,
     get_graph_nodes_by_ids,
@@ -29,11 +30,11 @@ def _node_id_is_excluded(node_id: str) -> bool:
     """True if a ``path::Name`` node id lives in a test/demo/fixture path.
 
     Uses the same pattern as the core entry-point scorer so server-side
-    traces never wander into test fakes that a mis-resolved call edge points
+    traces never wander into test fakes that a mis-resolved execution edge points
     at (e.g. a fake ``fetchall``).
     """
     path = node_id.split("::", 1)[0] if "::" in node_id else node_id
-    return bool(_EXCLUDE_PATH_PATTERNS.search(path))
+    return is_excluded_execution_path(path)
 
 
 def parse_community_meta(node: GraphNode) -> dict[str, Any]:
@@ -116,16 +117,18 @@ async def bfs_trace(
             repo_id,
             current,
             direction="callees",
-            edge_types=["calls"],
+            edge_types=sorted(EXECUTION_EDGE_TYPES),
             limit=_CALLEE_FETCH_LIMIT + 1,
         )
         edges = rows[:_CALLEE_FETCH_LIMIT]
         # Rows arrive most-confident first, so a tail below the floor is
         # provably unwalkable and hides nothing: only a cut whose last kept row
         # is still walkable leaves a real unknown.
-        truncated = len(rows) > _CALLEE_FETCH_LIMIT and (
-            edges[-1].confidence or 0.0
-        ) >= 0.5
+        truncated = len(rows) > _CALLEE_FETCH_LIMIT and is_walkable_execution_edge(
+            edges[-1].edge_type,
+            edges[-1].resolution_origin,
+            edges[-1].confidence,
+        )
         revisited = 0
         low_confidence = Counter()
         excluded = 0
@@ -136,7 +139,7 @@ async def bfs_trace(
         for e in edges:
             tid = e.target_node_id
             conf = e.confidence if e.confidence is not None else 0.0
-            if conf < 0.5:
+            if not is_walkable_execution_edge(e.edge_type, e.resolution_origin, e.confidence):
                 low_confidence[e.resolution_origin or "unlabelled"] += 1
                 continue
             if _node_id_is_excluded(tid):
@@ -169,9 +172,7 @@ async def bfs_trace(
             truncated=truncated,
         )
         termination["reason"] = reason
-        termination["detail"] = (
-            dict(low_confidence) if reason == "confidence_filtered" else {}
-        )
+        termination["detail"] = dict(low_confidence) if reason == "confidence_filtered" else {}
 
     return trace
 
@@ -290,10 +291,12 @@ def build_visual_context(
             touches_tgt = bool(neighbors & tgt_community_nodes)
             if touches_src and touches_tgt:
                 meta = node_meta.get(node_id)
-                bridge_nodes.append({
-                    "node": node_id,
-                    "pagerank": meta.pagerank if meta else 0.0,
-                })
+                bridge_nodes.append(
+                    {
+                        "node": node_id,
+                        "pagerank": meta.pagerank if meta else 0.0,
+                    }
+                )
         bridge_nodes.sort(key=lambda x: x["pagerank"], reverse=True)
         context["bridge_suggestions"] = bridge_nodes[:5]
     else:
@@ -301,8 +304,8 @@ def build_visual_context(
 
     # --- Connectivity summary ---
     components = list(nx.weakly_connected_components(graph))
-    src_comp = next((c for c in components if source in c), set())
-    tgt_comp = next((c for c in components if target in c), set())
+    src_comp: set[Any] = next((c for c in components if source in c), set())
+    tgt_comp: set[Any] = next((c for c in components if target in c), set())
     actually_disconnected = src_comp != tgt_comp
 
     if actually_disconnected:

@@ -2,6 +2,17 @@
 
 from __future__ import annotations
 
+# Before anything else can pull in numpy: a BLAS runtime sizes its private
+# per-thread workspace to the host's core count at import, and on a 32-core
+# machine that is ~750 MB committed and never returned, for work this pipeline
+# does single-threaded in under a second. See the module for the measurements
+# (issue #1394). This has to precede every other repowise import — one of them
+# reaching numpy first is exactly the bug.
+from repowise.core.blas_threads import limit_blas_threads
+
+limit_blas_threads()
+
+# ruff: noqa: E402 — the BLAS pin above is only effective before these run.
 import click
 
 from repowise.cli import __version__

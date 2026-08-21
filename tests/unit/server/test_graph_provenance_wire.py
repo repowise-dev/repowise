@@ -29,10 +29,9 @@ _LEAF = "src/app/service.py::persist"
 async def _seed(session_factory, repo_id: str) -> None:
     """A two-hop chain, each hop stamped with a different origin.
 
-    The two origins are chosen from opposite ends of the vocabulary —
-    ``same_file`` is direct evidence, ``global_unique`` is a bare name guess —
-    so a test asserting the pair also proves the field is per-edge and not a
-    constant.
+    The origins differ so asserting the pair proves the field is per-edge and
+    not a constant. Both are reliable execution evidence; ``global_unique`` is
+    deliberately excluded from execution walks because it is only a name guess.
     """
     async with get_session(session_factory) as session:
         for node_id in (_ENTRY, _MID, _LEAF):
@@ -62,7 +61,7 @@ async def _seed(session_factory, repo_id: str) -> None:
             )
         for src, tgt, origin in (
             (_ENTRY, _MID, "same_file"),
-            (_MID, _LEAF, "global_unique"),
+            (_MID, _LEAF, "import_scoped"),
         ):
             session.add(
                 GraphEdge(
@@ -107,7 +106,7 @@ async def test_a_traced_flow_carries_an_origin_per_hop(client: AsyncClient, app)
     )
     flow = resp.json()["flows"][0]
 
-    assert flow["trace_via"] == ["same_file", "global_unique"]
+    assert flow["trace_via"] == ["same_file", "import_scoped"]
     assert len(flow["trace_via"]) == len(flow["trace"]) - 1
 
 
@@ -141,7 +140,7 @@ async def test_callers_callees_carry_the_origin(client: AsyncClient, app) -> Non
     body = resp.json()
 
     assert [c["resolution_origin"] for c in body["callers"]] == ["same_file"]
-    assert [c["resolution_origin"] for c in body["callees"]] == ["global_unique"]
+    assert [c["resolution_origin"] for c in body["callees"]] == ["import_scoped"]
 
 
 @pytest.mark.asyncio
@@ -216,4 +215,4 @@ async def test_symbol_detail_carries_the_origin(client: AsyncClient, app) -> Non
     graph = resp.json()["graph"]
 
     assert [c["resolution_origin"] for c in graph["callers"]] == ["same_file"]
-    assert [c["resolution_origin"] for c in graph["callees"]] == ["global_unique"]
+    assert [c["resolution_origin"] for c in graph["callees"]] == ["import_scoped"]

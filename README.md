@@ -37,7 +37,8 @@
   <a href="#the-ten-mcp-tools">MCP tools</a> ·
   <a href="#measured-against-the-field">Benchmarks</a> ·
   <a href="#how-it-compares-on-capability">Comparison</a> ·
-  <a href="#for-teams--enterprises">Teams</a>
+  <a href="#for-teams-and-enterprises">Enterprise</a> ·
+  <a href="ROADMAP.md">Roadmap</a>
 </sub></p>
 
 ---
@@ -63,6 +64,11 @@ across 21 repos and 9 languages, leakage-free. Every layer computed with <strong
 calls</strong>. <strong>We publish the rows we lose</strong>, and we are the slowest indexer here.
 <a href="docs/BENCHMARKS.md"><strong>All of it, including the losses →</strong></a><br />
 Free and self-hosted, runs on your machine, and the first index needs no API key.</sub>
+
+<p align="center"><sub>
+Runs entirely on your infrastructure · <strong>zero LLM calls in every analysis layer</strong> ·
+AGPL-3.0 or commercial · <a href="#for-teams-and-enterprises"><strong>For enterprises →</strong></a>
+</sub></p>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/assets/one-index-dark.svg" />
@@ -140,8 +146,9 @@ layers and renders every wiki page from your code's structure, with no API key a
 no spend. Convert any part of it to LLM-written prose whenever you want, one page,
 one directory, or a ranked coverage slice at a time, and pay only for what you pick,
 from the CLI or right in the dashboard with the cost shown before you confirm.
-(Seven of the eight decision sources are deterministic too; only the one harvested
-during doc generation needs a provider.)
+(Six of the seven decision sources are deterministic too; only comment
+archaeology, which reads rationale prose on high-centrality code, needs a
+provider.)
 
 Full detail on every layer: **[docs/layers/INTELLIGENCE_LAYERS.md →](docs/layers/INTELLIGENCE_LAYERS.md)**
 How the graph sees a call, how it resolves one, how much to trust the result, and
@@ -189,12 +196,41 @@ Three deterministic signals, all computed from the graph and git history, no LLM
   Doc, test and config commits are filtered out so the count means what it says, and a
   file with a run of recent fixes gets flagged as a bug magnet while you edit it.
   ([reference →](docs/layers/BUG_HISTORY.md))
-- **Test intelligence.** Ingest coverage, find untested hotspots, and run only the
-  tests a diff actually exercises with `repowise impacted-tests HEAD~1`.
+- **[Test intelligence](#which-tests-cover-this-file-without-a-coverage-report).** Which
+  tests reach a file and which ones a diff actually exercises, from the call graph,
+  with or without a coverage report.
   ([reference →](docs/layers/TEST_INTELLIGENCE.md))
 
 Plus the free **[Repowise PR Bot](#the-pr-bot)**, which puts all of it on every pull
 request. Zero LLM calls.
+
+---
+
+## Which tests cover this file, without a coverage report
+
+Ingest LCOV, Cobertura or Clover and you get the measured answer. **Most
+repositories never produce one**, so the graph answers instead: a test file that
+imports a source file *reaches* it, which is a recorded edge rather than the
+name-shaped guess everything else falls back to.
+
+That fallback fails in both directions, and this repo is the proof. Five of its
+six worst bug-magnet files have no test named for them and read as untested while
+the graph names 3 to 23 test files each. The sixth is worse: matching on basename
+paired the *health* engine with the *distill* engine's tests and called it tested.
+
+```bash
+repowise impacted-tests main..HEAD   # only the tests this diff actually exercises
+repowise health                      # untested hotspots, now graph-aware
+```
+
+<sub>Dogfooded against a real <code>coverage run --contexts=test</code>:
+<strong>95.7% precision</strong> on what reaches a file and <strong>97.5% on the
+run list</strong>, at a 100% hit rate, against 72.1% and 94.8% for the one-hop
+import walk this replaced. The two tiers are never averaged: rows are stamped
+<code>basis: "measured"</code> or <code>"inferred"</code>, measured wins outright
+where both can answer, and the inferred tier may never produce a percentage.
+Sound as a floor, unsound as a quantity, and labelled so.
+<a href="docs/layers/TEST_INTELLIGENCE.md"><strong>Test intelligence →</strong></a></sub>
 
 ---
 
@@ -407,7 +443,11 @@ the orchestrators. Full matrix and the contributor recipe:
 
 ## Supported languages
 
-**19 languages parsed to AST · 13 at the Full tier · framework-aware across all of them.**
+**19 languages parsed to AST · 35 on a five-rung ladder · framework-aware across
+all of them.**
+
+"Do you support X" has five useful answers, not two, so languages land on a
+ladder and every rung says what it buys you.
 
 <p>
   <strong>Full tier &nbsp;</strong>
@@ -435,6 +475,23 @@ the orchestrators. Full matrix and the contributor recipe:
   &nbsp;<strong>· Partial &nbsp;</strong>
   <img src="https://img.shields.io/badge/Luau-00A2FF?style=flat-square&logo=lua&logoColor=white" alt="Luau" />
 </p>
+
+Below those two rungs the ladder keeps going, and a language on a lower rung is
+still doing real work rather than being ignored:
+
+| Rung | Languages | What you get |
+|---|---|---|
+| **Full** (13) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges, **and code-health markers** |
+| **Good** (5) | C · Swift · PHP · Dart · Object Pascal | All of the above except the full health suite |
+| **Partial** (1) | Luau / Roblox | AST symbols and `require()` resolution, Rojo and `.luaurc` aware |
+| | | ⎯⎯ *tree-sitter parsing stops here; the rungs below come from git and imports* ⎯⎯ |
+| **Lightweight** (7) | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# · HTML | A real file-to-file import graph, and no symbol-level claims |
+| **Structural** (9) | Objective-C · R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history: blame, hotspots, co-change, ownership, bug history |
+
+**Every language ships in the open-source distribution.** None is gated behind
+the commercial licence, and none will be. Languages on the way up the ladder,
+including **COBOL**, are on the
+**[roadmap →](ROADMAP.md#languages)**.
 
 SQL and dbt projects get real `ref()` / `source()` lineage, shell scripts get
 function-level symbols, HTML pages contribute their `<script src>` / `<link href>`
@@ -763,26 +820,57 @@ one index, self-hostable and open source. Full side-by-side comparisons:
 | **Team leads** | Know which PRs to worry about before you merge: change-risk scoring plus the free [Repowise PR Bot](https://github.com/apps/repowise-bot). [For team leads →](https://www.repowise.dev/for/teams) |
 | **Engineering leaders** | See how much of your code AI wrote and whether it is healthy: agent provenance, health trends and bus factor, straight from git history. [For engineering leaders →](https://www.repowise.dev/for/engineering-leaders) |
 | **Security & compliance** | Reachability-aware CVE triage, secret detection across full git history, and SBOM, on your real dependency graph. [For security →](https://www.repowise.dev/for/security) · [security review →](docs/business/SECURITY_COMPLIANCE.md) |
-| **Enterprises** | On-prem and air-gapped, SSO/SCIM, commercial licensing with no AGPL obligation, IP indemnification. [For enterprise →](https://www.repowise.dev/for/enterprise) · [docs/business/COMMERCIAL.md](docs/business/COMMERCIAL.md) |
+| **Enterprises** | On-prem and air-gapped, SSO/SCIM, commercial licensing with no AGPL obligation, IP indemnification. [For enterprise →](https://www.repowise.dev/for/enterprise) · [what we're building next →](ROADMAP.md) · [docs/business/COMMERCIAL.md](docs/business/COMMERCIAL.md) |
 
 ---
 
-## For teams & enterprises
+<a id="for-teams-and-enterprises"></a>
+
+## For teams and enterprises
+
+The reason this passes a security review is structural rather than contractual:
+**every analysis layer computes with zero LLM calls.** The graph, git history,
+code health, change risk, dead code and the PR bot make no model calls at all, so
+in the deterministic path there is no provider to trust, no retention policy to
+read, and nothing to prompt-inject. Documentation prose is the one layer that
+uses a model, it is opt-in, and it runs on your key or fully offline through
+Ollama.
+
+| | |
+|---|---|
+| **Deployment** | Self-hosted from `pip install`, or containers on your own infrastructure: API server, indexer workers and dashboard, backed by Postgres and LanceDB or pgvector. Reference topology is Kubernetes, and the same containers run on Nomad or plain Docker. Air-gapped mode requires no outbound connectivity. *(Helm chart and air-gap bundle: [planned](ROADMAP.md#enterprise-operations))* |
+| **Data boundary** | Source never leaves your network. BYOK against your own Anthropic, OpenAI or Azure OpenAI contract, or fully offline. The provider choice is **per repository**, so sensitive repos run offline while others use a hosted model. Stored: the graph, non-reversible embeddings, wiki pages, git metadata. Raw source is processed transiently and never persisted. |
+| **Compliance and audit** | CycloneDX 1.6 SBOM with VEX export and per-snapshot diffs · PCI-DSS 4.0 and SOC 2 control-coverage reports with per-control evidence · insert-only audit trail with JSON/CSV export and a signed-webhook SIEM stream · CVE triage ranked by KEV, EPSS and whether your code actually imports the package. |
+| **Contract** | Commercial licence removes the AGPL obligation for embedding repowise in your own platform · IP indemnification · defensive patent grant · named support contact with a response-time SLA and a quarterly architecture review · per-seat, per-repo or enterprise-wide pricing. |
+
+**Past one repository.** Workspaces index an estate as one unit: API contracts
+matched producer to consumer so a breaking change is caught before it ships,
+cross-repo co-change, and one federated MCP endpoint that answers across all of
+it. *(Estate-scale dashboards: [in development](ROADMAP.md#multi-repo-and-workspace).)*
+
+**Not on git?** Only the history layer needs a commit log. Point `repowise init`
+at a plain directory, an export, or a Perforce or SVN workspace and the graph,
+documentation, decisions and code-health layers all build normally; what is
+missing is hotspots, ownership, co-change and bug history until the history layer
+learns to read your system.
+*([Perforce, SVN, Endevor and ChangeMan on the roadmap →](ROADMAP.md#source-control-beyond-git))*
+
+**Everything above is labelled GA, in development, or planned, line by line, in
+[COMMERCIAL.md](docs/business/COMMERCIAL.md).** Some of it is shipping today and
+some of it is not, and a comparison table that blurred the two would not survive
+the first procurement call. Sequencing against your timeline is part of the
+commercial conversation, so the items that matter most to you can be prioritized.
 
 [**repowise.dev**](https://www.repowise.dev) is the same engine, fully managed, at
-feature parity with self-hosted: every CLI command, every MCP tool, the whole
-dashboard. We run it on our own codebase in the open:
+feature parity with self-hosted. We run it on our own codebase in the open:
 [live snapshot →](https://www.repowise.dev/s/5a6b93fa9a69) ·
 [explore public repos →](https://www.repowise.dev/explore).
 
-On top of self-hosting: managed deploys and webhooks with auto re-index on every
-commit, a hosted MCP endpoint so any client can point at one URL with no local server,
-a CVE-aware security layer, cross-repo intelligence at scale, and integrations (Slack,
-Jira/Linear, Confluence/Notion, PagerDuty) *(rolling out)*.
-
-What is GA versus in development, on-prem topology, SSO/SCIM/RBAC and pricing:
-**[docs/business/COMMERCIAL.md](docs/business/COMMERCIAL.md)** ·
-[Get in touch →](https://www.repowise.dev/#contact)
+**[Commercial detail and pricing models →](docs/business/COMMERCIAL.md)** ·
+**[Security review pack →](docs/business/SECURITY_COMPLIANCE.md)** ·
+**[Roadmap →](ROADMAP.md)** ·
+[hello@repowise.dev](mailto:hello@repowise.dev) ·
+[security@repowise.dev](mailto:security@repowise.dev)
 
 ---
 

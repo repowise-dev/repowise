@@ -14,9 +14,11 @@ import type {
   HealthFileBreakdownResponse,
   HealthOverviewResponse,
   HealthTrendResponse,
-  RefactoringQuery,
-  RefactoringTargetsResponse,
+  PerformanceOpportunityPage,
+  HealthWorkQueueQuery,
+  HealthWorkQueueResponse,
 } from "@repowise-dev/types/health";
+import type { Paginated } from "@repowise-dev/types";
 import { apiGet, apiPatch } from "./client";
 
 export type {
@@ -39,6 +41,9 @@ export type {
   HealthModuleRow,
   HealthOverviewResponse,
   HealthTrendResponse,
+  HealthWorkItem,
+  HealthWorkQueueQuery,
+  HealthWorkQueueResponse,
   ModuleCoverageRow,
   RefactoringQuery,
   RefactoringTarget,
@@ -66,6 +71,33 @@ export async function listHealthFindings(
   },
 ): Promise<HealthFinding[]> {
   return apiGet<HealthFinding[]>(`/api/repos/${repoId}/health/findings`, opts);
+}
+
+export interface PerformanceOpportunityPageParams {
+  context?: "production_tooling" | "test" | "all";
+  limit?: number;
+  offset?: number;
+}
+
+export async function getPerformanceOpportunities(
+  repoId: string,
+  opts: PerformanceOpportunityPageParams = {},
+): Promise<PerformanceOpportunityPage> {
+  return apiGet<PerformanceOpportunityPage>(
+    `/api/repos/${repoId}/health/performance-opportunities`,
+    { context: opts.context, limit: opts.limit, offset: opts.offset },
+  );
+}
+
+export async function getPerformanceOpportunityFindings(
+  repoId: string,
+  opportunityId: string,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<Paginated<HealthFinding>> {
+  return apiGet(
+    `/api/repos/${repoId}/health/performance-opportunities/${encodeURIComponent(opportunityId)}/findings`,
+    { limit: opts.limit, offset: opts.offset },
+  );
 }
 
 export async function listHealthFiles(
@@ -128,15 +160,18 @@ export async function getTestsReaching(
   );
 }
 
-export async function getRefactoringTargets(
+export async function getHealthWorkQueue(
   repoId: string,
-  opts?: RefactoringQuery,
-): Promise<RefactoringTargetsResponse> {
-  return apiGet<RefactoringTargetsResponse>(
+  opts?: HealthWorkQueueQuery,
+): Promise<HealthWorkQueueResponse> {
+  return apiGet<HealthWorkQueueResponse>(
     `/api/repos/${repoId}/health/refactoring-targets`,
     opts as Record<string, string | number | boolean | undefined>,
   );
 }
+
+/** @deprecated Use getHealthWorkQueue; the response is file triage, not plans. */
+export const getRefactoringTargets = getHealthWorkQueue;
 
 export async function getChurnComplexity(
   repoId: string,

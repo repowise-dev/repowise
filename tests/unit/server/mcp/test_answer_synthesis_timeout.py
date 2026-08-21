@@ -131,6 +131,7 @@ def test_every_builtin_provider_has_a_deliberate_budget():
         "gemini": 60.0,
         "deepseek": 60.0,
         "kimi": 60.0,
+        "edenai": 60.0,
         "mock": 60.0,
         "ollama": 120.0,
         "litellm": 120.0,

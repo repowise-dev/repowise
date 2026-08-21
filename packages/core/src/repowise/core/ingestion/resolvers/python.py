@@ -114,4 +114,14 @@ def resolve_python_import_all(
                         break
             if hit and hit != base:
                 targets.append(hit)
+                # Point the binding for this name at the submodule file, not
+                # the package ``__init__.py``. ``from pkg import submodule``
+                # binds ``submodule`` to ``pkg/submodule.py``, so a later
+                # ``submodule.symbol()`` call must resolve against that file
+                # (#1193). Without this the binding's source_file stays the
+                # package init, which declares nothing, and the call is missed.
+                for binding in imp.bindings:
+                    if (binding.exported_name or binding.local_name) == name:
+                        binding.source_file = hit
+                        break
     return tuple(dict.fromkeys(targets))

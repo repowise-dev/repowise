@@ -172,6 +172,15 @@ def _load_stored_function_mod_p80(repo_path: Any) -> int | None:
     return run_async(load_stored_function_mod_p80(repo_path, log=console.print))
 
 
+def _load_stored_performance_callers(repo_path: Any, file_diffs: list[Any]) -> set[str] | None:
+    """Old-side caller evidence for changed/deleted performance sinks."""
+    from repowise.core.pipeline.incremental import load_stored_performance_callers
+
+    changed_paths = {diff.path for diff in file_diffs}
+    changed_paths.update(diff.old_path for diff in file_diffs if getattr(diff, "old_path", None))
+    return run_async(load_stored_performance_callers(repo_path, changed_paths, log=console.print))
+
+
 def _run_partial_analysis(
     repo_path: Any,
     graph_builder: Any,
@@ -180,6 +189,7 @@ def _run_partial_analysis(
     file_diffs: list,
     source_map: dict[str, bytes] | None = None,
     stored_git_meta: dict[str, dict] | None = None,
+    stored_performance_callers: set[str] | None = None,
     repo_function_mod_p80: int | None = None,
 ) -> tuple[Any, Any]:
     """Run partial code-health + repo-wide dead-code analysis.
@@ -190,7 +200,10 @@ def _run_partial_analysis(
     Returns ``(partial_health_report, dead_code_report)`` — either may be
     ``None`` if its analysis failed (both are best-effort).
     """
-    from repowise.core.pipeline.incremental import run_partial_analysis
+    from repowise.core.pipeline.incremental import (
+        load_stored_coverage_map,
+        run_partial_analysis,
+    )
 
     return run_partial_analysis(
         repo_path,
@@ -200,6 +213,8 @@ def _run_partial_analysis(
         file_diffs,
         source_map=source_map,
         stored_git_meta=stored_git_meta,
+        stored_performance_callers=stored_performance_callers,
         repo_function_mod_p80=repo_function_mod_p80,
+        coverage_map=run_async(load_stored_coverage_map(repo_path, log=console.print)),
         log=console.print,
     )

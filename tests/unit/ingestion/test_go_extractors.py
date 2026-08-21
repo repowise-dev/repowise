@@ -46,6 +46,28 @@ class TestGoHeritage:
         parents = {r.parent_name for r in result.heritage}
         assert "Base" in parents
 
+    def test_qualified_embed_keeps_package_qualifier(self, parser: ASTParser) -> None:
+        """``io.Reader`` must stay ``io.Reader``, not ``Reader``.
+
+        Stripping the qualifier lets an embed of a stdlib type bind to whatever
+        repo-local type shares the short name — and when the enclosing type
+        has that same name, the type inherits from itself.
+        """
+        src = b"package x\n\ntype Reader struct{}\n\ntype Foo struct {\n  io.Reader\n}\n"
+        result = parser.parse_file(_file(), src)
+        parents = {r.parent_name for r in result.heritage}
+        assert "io.Reader" in parents
+        assert "Reader" not in parents
+
+    def test_qualified_interface_embed_keeps_package_qualifier(
+        self, parser: ASTParser
+    ) -> None:
+        src = b"package x\n\ntype Reader interface{}\n\ntype Foo interface {\n  io.Reader\n}\n"
+        result = parser.parse_file(_file(), src)
+        parents = {r.parent_name for r in result.heritage}
+        assert "io.Reader" in parents
+        assert "Reader" not in parents
+
 
 class TestGoBindings:
     def test_imports(self, parser: ASTParser) -> None:
@@ -80,3 +102,42 @@ class TestGoMethodReceiver:
         reset = [s for s in result.symbols if s.name == "reset"]
         assert reset
         assert reset[0].parent_name == "cache"
+
+
+class TestGoCallThroughField:
+    """A method call whose receiver is a field (``o.in.Do()``) must be captured.
+
+    The operand of the selector is itself a selector_expression, which the
+    identifier-only method-call pattern did not match — so the call was missing
+    from the graph entirely rather than present and unresolved. Capture the
+    whole receiver expression; resolution is a separate, measured change.
+    """
+
+    def test_field_receiver_call_site_is_captured(self, parser: ASTParser) -> None:
+        src = (
+            b"package p\n\n"
+            b"type inner struct{}\n\n"
+            b"func (i inner) Do() {}\n\n"
+            b"type outer struct{ in inner }\n\n"
+            b"func (o outer) Run() {\n"
+            b"\to.in.Do()\n"
+            b"}\n"
+        )
+        result = parser.parse_file(_file(), src)
+        do_calls = [c for c in result.calls if c.target_name == "Do"]
+        assert len(do_calls) == 1, f"expected one call site for Do, got {do_calls}"
+        assert do_calls[0].receiver_name == "o.in"
+
+    def test_plain_method_call_still_captured(self, parser: ASTParser) -> None:
+        src = (
+            b"package p\n\n"
+            b"type inner struct{}\n\n"
+            b"func (i inner) Do() {}\n\n"
+            b"func (o outer) Run() {\n"
+            b"\ti.Do()\n"
+            b"}\n"
+        )
+        result = parser.parse_file(_file(), src)
+        do_calls = [c for c in result.calls if c.target_name == "Do"]
+        assert len(do_calls) == 1, f"expected one call site for Do, got {do_calls}"
+        assert do_calls[0].receiver_name == "i"

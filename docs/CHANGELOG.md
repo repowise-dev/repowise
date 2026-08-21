@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Code Health performance opportunities now lead into the existing
+  Refactoring workflow.** A dedicated Performance tab groups raw findings into
+  bounded causal opportunities with production/tooling versus test context,
+  affected-call-site totals, confidence, provenance paths, and raw-evidence
+  paging. Exact stable opportunity ids open matching `performance_fix` plans;
+  opportunities without a safe plan say so instead of selecting a nearby one.
+  The Refactoring page adds a Performance filter and shared priority,
+  validation, path, and pagination renderers. Its new server-owned page endpoint
+  bounds initial payloads while preserving the legacy unpaged route. VS Code
+  consumes the same contracts and renders priority and validation without web
+  dependencies; older missing optional fields remain supported.
+
 - **A test-to-code map that needs no coverage report.** The per-test map only
   ever existed if you ingested a coverage report with contexts, so on most
   repositories `tests_to_run` was empty, `impacted_tests` said "run the full
