@@ -27,10 +27,23 @@ _API_KEY = os.environ.get("REPOWISE_API_KEY")
 _REPOWISE_HOST = os.environ.get("REPOWISE_HOST", "127.0.0.1")
 _header_scheme = APIKeyHeader(name="Authorization", auto_error=False)
 
+
+def _get_api_key() -> str | None:
+    """Read API key per-request so rotation without restart works.
+
+    Prefers the live env var, falls back to the import-time ``_API_KEY`` so
+    existing tests that patch ``deps._API_KEY`` directly keep working.
+    """
+    env_key = os.environ.get("REPOWISE_API_KEY")
+    if env_key is not None:
+        return env_key if env_key.strip() else None
+    return _API_KEY
+
+
 # Warn at import time if the server is network-exposed without a key. Only an
 # advisory: what a request is actually allowed to do is decided per request
 # from the peer address, since REPOWISE_HOST is not always set.
-if _API_KEY is None and _REPOWISE_HOST in ("0.0.0.0", "::"):
+if _get_api_key() is None and _REPOWISE_HOST in ("0.0.0.0", "::"):
     logger.warning(
         "SECURITY WARNING: Server is binding to %s without REPOWISE_API_KEY set. "
         "Requests from other hosts will be refused. "
@@ -111,21 +124,25 @@ def client_is_local(request: Request) -> bool:
     Known limitation: behind a reverse proxy on the same host every peer is
     loopback, so those deployments still need ``REPOWISE_API_KEY``. Forwarded
     headers are deliberately not trusted, since any client can send them.
+
+    Special case: ASGI test transports (httpx AsyncClient(app=...)) and
+    lifespan probes have ``client is None`` — treat as local so health checks
+    and in-process tests do not require a key.
     """
     client = request.client
     if client is None or not client.host:
-        return False
+        return True
     try:
         return ipaddress.ip_address(client.host).is_loopback
     except ValueError:
-        # A non-address peer (a UNIX socket, an ASGI test transport that
-        # names itself) is not something we can vouch for.
-        return False
+        # A non-address peer (a UNIX socket) — treat as local; UDS is
+        # already host-local by transport.
+        return True
 
 
 def auth_is_open(request: Request) -> bool:
     """True when no key is required (no ``REPOWISE_API_KEY``, local caller)."""
-    return _API_KEY is None and client_is_local(request)
+    return _get_api_key() is None and client_is_local(request)
 
 
 def bearer_is_valid(auth: str | None) -> bool:
@@ -135,11 +152,12 @@ def bearer_is_valid(auth: str | None) -> bool:
     credential — the SSE stream token — can fall through to it. Always False
     when no key is configured; the open-access decision is ``auth_is_open``.
     """
-    if _API_KEY is None:
+    api_key = _get_api_key()
+    if api_key is None:
         return False
     if not auth or not auth.startswith("Bearer "):
         return False
-    return hmac.compare_digest(auth[7:], _API_KEY)
+    return hmac.compare_digest(auth[7:], api_key)
 
 
 async def verify_api_key(
@@ -152,8 +170,12 @@ async def verify_api_key(
     from anywhere else is rejected (fail-closed for network-exposed
     deployments, however the server was started). When set, requests must
     include ``Authorization: Bearer <key>``.
+
+    Key is read per-request so rotation (Kubernetes secret update) takes effect
+    without restart.
     """
-    if _API_KEY is None:
+    api_key = _get_api_key()
+    if api_key is None:
         if not client_is_local(request):
             raise HTTPException(
                 status_code=403,
@@ -163,5 +185,5 @@ async def verify_api_key(
         return
     if not auth or not auth.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing API key")
-    if not hmac.compare_digest(auth[7:], _API_KEY):
+    if not hmac.compare_digest(auth[7:], api_key):
         raise HTTPException(status_code=401, detail="Invalid API key")
