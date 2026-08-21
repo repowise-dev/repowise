@@ -71,11 +71,3 @@ export function FilePage({ header, tabs, panels, initialTab, onTabChange }: File
     </div>
   );
 }
-
-/** Narrow a `?tab=` string to a tab this page actually renders. Exported for
- *  server components that need it before the shell mounts. */
-export function asFilePageTab(value: string | undefined): FilePageTab | undefined {
-  return value && (FILE_PAGE_TABS as readonly string[]).includes(value)
-    ? (value as FilePageTab)
-    : undefined;
-}

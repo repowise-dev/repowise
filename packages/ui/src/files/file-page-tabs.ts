@@ -112,3 +112,13 @@ export function resolveFileTab(
   const match = tabs.find((t) => t.id === requested);
   return match ? match.id : "overview";
 }
+
+/** Narrow a `?tab=` string to a tab this page actually renders. Exported for
+ *  server components that need it before the shell mounts. Lives here (a
+ *  plain module) rather than in the client component so a server page can
+ *  validate the value without importing client code (issue #1814). */
+export function asFilePageTab(value: string | undefined): FilePageTab | undefined {
+  return value && (FILE_PAGE_TABS as readonly string[]).includes(value)
+    ? (value as FilePageTab)
+    : undefined;
+}
