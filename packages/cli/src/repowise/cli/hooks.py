@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import re
 import stat
+import subprocess
 from pathlib import Path
 
 _HOOK_MARKER = "# repowise-hook-start"
@@ -94,6 +95,36 @@ def _git_root(path: Path) -> Path | None:
         if (parent / ".git").exists():
             return parent
     return None
+
+
+def _hooks_dir(repo_path: Path) -> Path | None:
+    """Resolve the real hooks directory for *repo_path*.
+
+    A normal repo keeps ``.git/hooks`` under ``.git``, but a git **worktree**
+    stores ``.git`` as a *file* (``gitdir: <path>``) pointing at the shared
+    metadata dir — so ``root / ".git" / "hooks"`` is ``NotADirectoryError``
+    territory. Ask git for the real hooks path so both layouts work, and fall
+    back to the ``.git/hooks`` heuristic when git is unavailable or not a repo.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-path", "hooks"],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            p = Path(result.stdout.strip())
+            if p.is_absolute():
+                return p
+            return repo_path / p
+    except Exception:
+        pass
+    root = _git_root(repo_path)
+    if root is None:
+        return None
+    return root / ".git" / "hooks"
 
 
 def _strip_legacy_block(content: str) -> tuple[str, bool]:
@@ -186,8 +217,10 @@ def install(repo_path: Path) -> str:
     if root is None:
         return "not a git repository"
 
-    hooks_dir = root / ".git" / "hooks"
-    hooks_dir.mkdir(exist_ok=True)
+    hooks_dir = _hooks_dir(repo_path)
+    if hooks_dir is None:
+        return "not a git repository"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
     hook_path = hooks_dir / "post-commit"
 
     migrated_legacy = False
@@ -239,7 +272,10 @@ def uninstall(repo_path: Path) -> str:
     if root is None:
         return "not a git repository"
 
-    hook_path = root / ".git" / "hooks" / "post-commit"
+    hooks_dir = _hooks_dir(repo_path)
+    if hooks_dir is None:
+        return "not a git repository"
+    hook_path = hooks_dir / "post-commit"
     if not hook_path.exists():
         return "no post-commit hook found"
 
@@ -268,7 +304,10 @@ def status(repo_path: Path) -> str:
     if root is None:
         return "not a git repository"
 
-    hook_path = root / ".git" / "hooks" / "post-commit"
+    hooks_dir = _hooks_dir(repo_path)
+    if hooks_dir is None:
+        return "not a git repository"
+    hook_path = hooks_dir / "post-commit"
     if not hook_path.exists():
         return "not installed"
 
