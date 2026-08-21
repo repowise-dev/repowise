@@ -111,6 +111,7 @@ describe("isNameMatch", () => {
         "receiver_framework_global",
         "receiver_global",
         "receiver_typed_global",
+        "return_type_global",
       ].sort(),
     );
   });
