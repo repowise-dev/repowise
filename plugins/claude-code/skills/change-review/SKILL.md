@@ -65,9 +65,9 @@ The response carries a `directive` block — read it first, it's a few short lis
   exercise the changed files. Recommend running these to validate the change.
   Read **`tests_to_run_basis`** with it: `measured` means a coverage map proves
   those tests execute the changed files (pytest-runnable ids); `inferred` means
-  the import graph shows those test *files* reaching the change, which needs no
-  coverage ingest but is a candidate list, so say so rather than presenting it as
-  proof; `none` with an empty list is "unknown", never "no tests exist".
+  the call graph shows those test *files* reaching the change, with the import
+  graph filling in where it is silent, which needs no coverage ingest but is a
+  candidate list, so say so rather than presenting it as proof; `none` with an empty list is "unknown", never "no tests exist".
 
 `pr_blast_radius` holds the fuller dossier behind those lists (including the
 per-changed-file `guarding_tests` breakdown behind `tests_to_run`).

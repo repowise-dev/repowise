@@ -23,12 +23,12 @@ This is useful when:
 
 ## Available flags
 
-- `--embedder gemini|openai|auto` — embedding provider (default: auto-detect from env vars)
+- `--embedder gemini|openai|openrouter|ollama|edenai|auto` — embedding provider (default: auto-detect from env vars)
 - `--batch-size N` — pages per embedding batch (default: 20)
 
 ## Requirements
 
-Requires either `GEMINI_API_KEY`/`GOOGLE_API_KEY` or `OPENAI_API_KEY` to be set. The mock embedder is not accepted for reindexing. If neither key is available, ask the user to set one before proceeding.
+Requires a key for one of the real embedders — `GEMINI_API_KEY`/`GOOGLE_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY` or `EDENAI_API_KEY` — or a running Ollama. The mock embedder is not accepted for reindexing. If none is available, ask the user to set one before proceeding.
 
 ## Handling $ARGUMENTS
 

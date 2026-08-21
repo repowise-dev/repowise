@@ -9,21 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.45.0] — 2026-08-21
+
+The headline this cycle is test intelligence that needs no coverage report. 0.44.0 made the call graph good enough to lead with; this release walks it to answer which tests reach a file, serves that through the API, and turns the Coverage tab into a Tests tab that says something useful on a repository that has never ingested a report. Around it, Code Health's performance findings become bounded opportunities that open the matching refactoring plan, Eden AI joins as an EU-hosted provider and embedder, and pinning BLAS threads before numpy loads halves peak memory on a cold index.
 
 ### Added
-
-- **Code Health performance opportunities now lead into the existing
-  Refactoring workflow.** A dedicated Performance tab groups raw findings into
-  bounded causal opportunities with production/tooling versus test context,
-  affected-call-site totals, confidence, provenance paths, and raw-evidence
-  paging. Exact stable opportunity ids open matching `performance_fix` plans;
-  opportunities without a safe plan say so instead of selecting a nearby one.
-  The Refactoring page adds a Performance filter and shared priority,
-  validation, path, and pagination renderers. Its new server-owned page endpoint
-  bounds initial payloads while preserving the legacy unpaged route. VS Code
-  consumes the same contracts and renders priority and validation without web
-  dependencies; older missing optional fields remain supported.
 
 - **A test-to-code map that needs no coverage report.** The per-test map only
   ever existed if you ingested a coverage report with contexts, so on most
@@ -51,7 +41,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `get_change_risk`'s `impacted_tests`, and a `via` marker on every
   `repowise impacted-tests` candidate saying which tier answered.
 
+- **Code Health performance opportunities now lead into the existing
+  Refactoring workflow.** A dedicated Performance tab groups raw findings into
+  bounded causal opportunities with production/tooling versus test context,
+  affected-call-site totals, confidence, provenance paths, and raw-evidence
+  paging. Exact stable opportunity ids open matching `performance_fix` plans;
+  opportunities without a safe plan say so instead of selecting a nearby one.
+  The Refactoring page adds a Performance filter and shared priority,
+  validation, path, and pagination renderers. Its new server-owned page endpoint
+  bounds initial payloads while preserving the legacy unpaged route. VS Code
+  consumes the same contracts and renders priority and validation without web
+  dependencies; older missing optional fields remain supported.
+
+- **`/health/tests-reaching?file_path=`** answers which tests reach one file,
+  with `via` separating a test whose calls run into it from one that only imports
+  it, and `/health/coverage` falls back to the inferred map under
+  `basis: "inferred"` when no report was ingested. The two bases never share a
+  field, so a consumer cannot render derived data through the measured code path
+  by accident. `include_inferred=false` declines the fallback for a caller that
+  only wants the cheap badge number. (#1757)
+
+- **Eden AI is a first-class LLM provider and embedder.** An EU-headquartered
+  gateway exposing 700+ models behind an OpenAI-compatible endpoint, so it reuses
+  the existing `openai` dependency with a custom base URL and adds no new one.
+  `EDENAI_API_KEY`, `EDENAI_BASE_URL` for the EU endpoint, and an embedder
+  defaulting to a 1024-dimension EU model. It is appended to the autodetect order
+  rather than inserted, so an unrelated key in the environment cannot move anyone
+  off the provider they were already resolving to. (#705)
+
 ### Changed
+
+- **The Coverage tab is now a Tests tab, and it answers without a report.** The
+  URL stays `/coverage` and "coverage" keeps meaning the measured thing inside
+  the tab; what changed is that the empty state no longer tells you to go
+  ingest a report while claiming nothing is inferred. On the inferred basis the
+  chart collapses to two positions rather than a 0-100 continuum, which is the
+  honest statement about the evidence, and nothing is rendered as a percentage
+  or a bar. The file page names the tests that reach it, with `via` separating a
+  test whose calls run into the file from one that only imports it. (#1758)
 
 - **`untested_hotspot` stops accusing files that the tests run.** With no
   coverage ingested it fired on any hotspot without a *paired test file*, which
@@ -77,6 +104,124 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `inferred_tests`.** The bucket no longer holds only filename guesses, so the
   old name described the wrong thing; each entry carries `via` (`call-graph`,
   `import-graph` or `filename-pattern`) to say which tier answered.
+
+- **Refactoring recommendations have one contract.** REST, MCP and the CLI each
+  rebuilt their own ranking and payload shape, and the TypeScript contract was
+  duplicated in the UI package. The wire contract moves to
+  `@repowise-dev/types` and the Python side gets a single read model owning
+  rehydration, enrichment, ranking, validation and serialization for every
+  surface. Blast radius now raises cost and risk rather than benefit, so a wide
+  change ranks as expensive instead of valuable. (#1784)
+
+- **The semantic leg of search gets a budget the cold path can clear.** The first
+  vector query in a process pays for the store open, the first embed and the
+  first ANN probe. That was measured at 6.3s and 13.4s on a cold Windows index
+  where a warm query takes 0.19s, against a hardcoded 8s bound inside a
+  suppressed exception. The budget is now one shared 30s default, capped at 120s and
+  overridable with `REPOWISE_VECTOR_SEARCH_TIMEOUT_S`, and a timeout logs a
+  warning naming the knob instead of silently degrading to full-text with
+  nothing said. (#1678, #1685)
+
+- **Plugin**: `/repowise:impacted-tests` and the `change-review` skill describe
+  the inferred map as the call graph with an import-graph fallback, and `init` /
+  `reindex` list the embedders the CLI actually accepts.
+
+- **Execution-graph analysis is unified** behind one code path in health, with
+  the legacy call fallback restricted rather than left answering alongside it.
+  (#1773)
+
+### Fixed
+
+- **An incremental update stopped erasing ingested coverage.** The incremental
+  pipeline built its analyzer without a coverage map, so every changed file was
+  re-scored as if no report had ever been ingested and the partial-health writer
+  upserted `line_coverage_pct` back to NULL, eroding coverage one file per
+  update, starting with the files under active development. Both callers now load
+  and supply the persisted map. (#1739, #1806)
+- **`repowise init` no longer crashes in a git worktree.** `.git` is a file
+  there, not a directory, so building `.git/hooks` by hand raised
+  `NotADirectoryError` and took the whole command down. The hooks directory is
+  resolved with `git rev-parse --git-path hooks`, which answers correctly for a
+  worktree and a normal clone alike. (#1609, #1808)
+- **The CLI and the MCP server resolve the same embedder key.** The server never
+  consulted the process environment, so on a machine with an exported provider
+  key different from the repository's `.repowise/.env`, semantic search degraded
+  through the CLI while the MCP tool answered. The server now reads the env tier
+  first, matching the CLI's "an exported key is an explicit override" contract.
+  (#1711, #1810)
+- **`edenai` is selectable everywhere it is documented**: `init --embedder`,
+  `reindex --embedder`, both interactive prompts, `EDENAI_API_KEY` autodetection
+  and the server's embedder build, four lists that were left on the older
+  five-backend set. (#1815, #1820)
+- **`repowise reindex` exits non-zero when every embed failed**, so an automated
+  pipeline cannot treat an empty vector index as a successful build. An empty
+  wiki still exits 0. (#1495, #1732)
+- **The file page states how many tests reach a file, not how many it listed.**
+  The list is capped at 50 and the page rendered that cap as the measurement; it
+  now leads with the true count and says what it is showing. (#1764)
+- **A generated-file banner has to be a banner.** The marker is required within
+  the first two lines instead of substring-matched across the whole header, which
+  fixes the class of prose false positives across all six markers. (#1519, #1731)
+- **Python resolution**: `from pkg import submodule` pinned the binding at the
+  package `__init__.py`, so a later `submodule.symbol()` call resolved against a
+  file declaring nothing and dead code called the symbol safe to delete (#1193,
+  #1733); aliased submodule bindings are pinned properly (#1255, #1785).
+- **Go**: a call through a field (`a.b.Method()`) matched no pattern and was
+  missing from the graph entirely rather than present and unresolved (#1727), and
+  an embed of `io.Reader` keeps its package qualifier instead of binding to
+  whatever repo-local `Reader` shares the short name, which made the type
+  inherit from itself when the enclosing type had that name (#1726).
+- **TypeScript**: `#private` class members produce a symbol and a call site
+  (#1715, #1721), a return type no longer renders with a stray colon
+  (`-> : string`) (#1695, #1719), and a relative import probes `index.tsx` and
+  `index.jsx` (#1725).
+- **Java and C# method return types are preserved** in signatures (#1713).
+- **The bare-name tier stops answering for the standard library** (#1708), and
+  barrel-file definitions are aligned with `file_reachability` (#1491, #1557).
+- **The paired-test filename heuristic is shared** rather than reimplemented per
+  surface (#1750).
+- **Security scanning**: `replace_findings` no longer loses rows on a duplicate
+  key (#1523), and a multi-line `subprocess.*(... shell=True)` call is flagged
+  (#1522).
+- **Agent CLIs no longer load the target repository's instruction files** when
+  invoked for generation (#1100).
+- **`workspace init --dry-run` writes nothing** (#1526), and `init --test-run`
+  actually limits generation to the top 10 files (#1525).
+- **`share_of_repo_gap_pct` uses the gross gap as its denominator** (#1452), and
+  history fetches avoid the partial-clone path (#1608).
+- **The `get_risk` artifact renders in chat.** The renderer mapped over a list
+  and read `path` / `churn_percentile`, but the tool returns a path-keyed dict of
+  `hotspot_score` / `file_path`, so opening the artifact threw or showed blank
+  rows. Both shapes are normalized, and the 0-1 score is scaled for display
+  rather than printed as though it were already a percentage. (#1480)
+
+### Performance
+
+- **Peak memory on a cold index is roughly halved.** Importing numpy brings up a
+  BLAS runtime that commits a private per-thread workspace sized to the host's
+  core count: 746 MB on a 32-core machine for the import alone, committed once,
+  never returned, and invisible to `tracemalloc` because no Python object owns
+  it. The pipeline's only numpy work is PageRank over a sparse graph, which runs
+  single-threaded in well under a second, so the thread count is pinned before
+  numpy is imported. A cold `init --no-prose` on an 876-file repository went from
+  1,547 MB to 818 MB at no wall-clock cost. `OMP_NUM_THREADS` is deliberately
+  left alone: igraph community detection really is OpenMP-parallel, and pinning
+  it cost 18% wall clock for no further saving. (#1394, #1776)
+
+### Documentation
+
+- **A roadmap, an enterprise section, and a benchmarks page that leads with its
+  results.** `ROADMAP.md` is new and states plainly that language support is
+  never gated behind the licence; the README gains a real enterprise section
+  covering deployment, data boundary, compliance and contract; `BENCHMARKS.md`
+  goes from 777 visible lines to 456 with every caveat and every losing row
+  preserved behind folds. Language support is now stated the same way in every
+  document: 19 parsed to a full AST, 35 on the ladder. Source control beyond git
+  (Perforce, Subversion, and the mainframe promotion hierarchies) is scoped to
+  the one history-derived layer that actually needs it. (#1766)
+- **The graph precision result is published**, judged by a compiler across five
+  tools (#1738), and `COMMERCIAL.md`'s tool count matches the way the document
+  counts (#1771).
 
 ---
 
