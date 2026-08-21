@@ -162,3 +162,109 @@ async def test_one_user_joined_by_two_edge_types_is_listed_once(
     used_by = (await _card(session, repository, "AuthService"))["docs"]["used_by"]
 
     assert used_by.count("src/auth/middleware.py") == 1
+
+
+async def test_call_edge_to_symbol_node_is_a_user(session, repository, populated_db) -> None:
+    """#1655: a C++ ``used_by`` must come from resolved call edges.
+
+    The old query matched ``GraphEdge.target_node_id == sym.file_path`` (the
+    bare path). Symbol nodes are keyed ``<path>::<name>`` and call edges point
+    *at* that symbol node, so a cross-file C++ call never matched — ``used_by``
+    only ever caught file→file edges, which for a C++ symbol is the synthetic
+    header/source ``imports`` pair (a header that declares but never references
+    the symbol). A real caller must now surface.
+    """
+    caller_file = "src/main.cpp"
+    callee = "src/thing.cpp::FreeValue"
+    session.add(
+        GraphNode(
+            id="gn-cpp-main",
+            repository_id=populated_db,
+            node_id=caller_file,
+            node_type="file",
+            language="cpp",
+            symbol_count=1,
+            is_entry_point=True,
+            pagerank=0.5,
+            betweenness=0.0,
+            community_id=9,
+        )
+    )
+    session.add(
+        GraphNode(
+            id="gn-cpp-callee",
+            repository_id=populated_db,
+            node_id=callee,
+            node_type="symbol",
+            name="FreeValue",
+            file_path="src/thing.cpp",
+            language="cpp",
+        )
+    )
+    session.add(
+        GraphEdge(
+            id="ge-cpp-call",
+            repository_id=populated_db,
+            source_node_id=caller_file,
+            target_node_id=callee,
+            edge_type="calls",
+            imported_names_json="[]",
+        )
+    )
+    await session.flush()
+
+    used_by = (await _card(session, repository, callee))["docs"]["used_by"]
+
+    assert caller_file in used_by
+
+
+async def test_empty_header_pair_edge_is_not_a_user(session, repository, populated_db) -> None:
+    """#1655: a synthetic header/source pair is not a ``used_by``.
+
+    The C++ header-pair pass mints a bidirectional file→file ``imports`` edge
+    with ``imported_names = []``. It names no symbol and must not be served as a
+    user of a symbol it never references — this is the fabricated ``used_by``
+    the issue reports.
+    """
+    pair_file = "src/thing.h"
+    callee = "src/thing.cpp::FreeValue"
+    session.add(
+        GraphNode(
+            id="gn-pair-hdr",
+            repository_id=populated_db,
+            node_id=pair_file,
+            node_type="file",
+            language="cpp",
+            symbol_count=1,
+            is_entry_point=False,
+            pagerank=0.3,
+            betweenness=0.0,
+            community_id=9,
+        )
+    )
+    session.add(
+        GraphNode(
+            id="gn-pair-callee",
+            repository_id=populated_db,
+            node_id=callee,
+            node_type="symbol",
+            name="FreeValue",
+            file_path="src/thing.cpp",
+            language="cpp",
+        )
+    )
+    session.add(
+        GraphEdge(
+            id="ge-pair-hdr",
+            repository_id=populated_db,
+            source_node_id=pair_file,
+            target_node_id="src/thing.cpp",
+            edge_type="imports",
+            imported_names_json="[]",
+        )
+    )
+    await session.flush()
+
+    used_by = (await _card(session, repository, callee))["docs"]["used_by"]
+
+    assert pair_file not in used_by

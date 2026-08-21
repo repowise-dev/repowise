@@ -804,6 +804,25 @@ async def _resolve_one_target(
             # files joined by both an import and a call are one user of this
             # symbol — that is a guard, not a fix: the same corpus holds zero
             # duplicate rows, so it costs nothing and prevents nothing today.
+            #
+            # A symbol's users live at two node depths, so two kinds of edge have
+            # to be matched, not one:
+            #
+            #   1. symbol -> symbol ``calls`` / ``references`` edges, which point
+            #      at the symbol node (``<path>::<name>``). For a C++ free
+            #      function the only evidence of a use is such an edge, so
+            #      querying by the bare ``sym.file_path`` never sees it.
+            #   2. file -> file ``imports`` edges, where the source file really
+            #      does import the symbol. These must be gated on the edge's
+            #      ``imported_names`` actually naming the symbol, otherwise the
+            #      synthetic C++ header/source pair (``imported_names = []``)
+            #      is served up as a "user" even though the paired header never
+            #      references the symbol.
+            #
+            # Match either: symbol-node call edges, or import edges whose
+            # ``imported_names`` mentions the symbol. Distinct sources
+            # afterwards, so a file that both imports and calls is one user.
+            sym_node_id = f"{sym.file_path}::{sym.name}"
             res = await session.execute(
                 select(GraphEdge.source_node_id, GraphNode.pagerank)
                 .outerjoin(
@@ -813,8 +832,11 @@ async def _resolve_one_target(
                 )
                 .where(
                     GraphEdge.repository_id == repo_id,
-                    GraphEdge.target_node_id == sym.file_path,
                     GraphEdge.edge_type.notin_(NON_DEPENDENCY_EDGE_TYPES),
+                    or_(
+                        GraphEdge.target_node_id == sym_node_id,
+                        GraphEdge.imported_names_json.contains(sym.name),
+                    ),
                 )
             )
             best_rank: dict[str, float] = {}
