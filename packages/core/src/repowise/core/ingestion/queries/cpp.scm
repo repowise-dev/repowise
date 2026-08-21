@@ -229,6 +229,16 @@
 (field_declaration
   type: (_) @param.type)
 
+; Local / global variable declarations: Row scratch{ ... }; or Widget *w;
+; A type used as the declared type of a variable in the same TU is a genuine
+; reference, but the captures above only see parameters, fields, return
+; types and template arguments — a ``Row scratch`` local reads as dead
+; without this. ``type_identifier`` matches only the bare-name form, so a
+; ``struct Row { ... }`` definition (wrapped in ``struct_specifier``) is not
+; caught here; it has no cross-file edge anyway.
+(declaration
+  type: (type_identifier) @param.type)
+
 ; Function return type: Widget * make(...)
 (function_definition
   type: (_) @param.type)
