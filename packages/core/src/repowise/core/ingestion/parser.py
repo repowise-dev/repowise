@@ -120,9 +120,7 @@ _REFERENCE_LANGUAGES = ("cpp", "c", "go", "rust", "kotlin")
 # ``union_specifier`` is absent because neither grammar's query captures one
 # as a symbol today. If a union capture is ever added, add it here too, or a
 # bodiless ``union U;`` goes back to reading as a definition.
-_CPP_TYPE_SPECIFIER_NODES = frozenset(
-    {"class_specifier", "struct_specifier", "enum_specifier"}
-)
+_CPP_TYPE_SPECIFIER_NODES = frozenset({"class_specifier", "struct_specifier", "enum_specifier"})
 
 
 def _is_bodiless_cpp_type(language: str, node_type: str, def_node: Node) -> bool:
@@ -387,10 +385,19 @@ class ASTParser:
                 # environment, and it does not become truer on the four
                 # thousandth shell script.
                 _MISSING_GRAMMAR_REPORTED.add(lang)
-                log.debug("tree-sitter grammar unavailable", language=lang)
+                log.warning(
+                    "tree-sitter grammar unavailable",
+                    language=lang,
+                    path=file_info.path,
+                    hint=f"pip install tree-sitter-{lang} or add to pyproject dependencies",
+                )
             # Languages without a grammar may still carry regex-tier import
             # extraction (their specs declare import_support="partial");
             # symbols stay empty — the regex tier claims no symbol knowledge.
+            # Surface as a parse_error when the language is known but the
+            # grammar is missing so Diagnostics/health can report incomplete
+            # coverage instead of silent 0% success. Unknown/config-less
+            # languages keep parse_errors empty (not a missing-grammar case).
             from .lightweight_imports import extract_lightweight_imports
 
             return ParsedFile(
@@ -399,7 +406,7 @@ class ASTParser:
                 imports=extract_lightweight_imports(file_info, source),
                 exports=[],
                 docstring=None,
-                parse_errors=[],
+                parse_errors=[f"missing grammar: {lang}"] if config is not None else [],
                 content_hash=content_hash,
             )
 
