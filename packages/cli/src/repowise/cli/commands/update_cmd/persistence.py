@@ -1105,6 +1105,7 @@ async def _rescore_health_from_db(
         )
         from repowise.core.persistence.models import GitMetadata
         from repowise.core.pipeline.persist import persist_graph_nodes
+        from repowise.core.workspace.update import get_head_commit
 
         url = get_db_url_for_repo(repo_path)
         engine = create_engine(url)
@@ -1172,12 +1173,19 @@ async def _rescore_health_from_db(
             await save_health_metrics(session, repo_id, report.metrics or [])
             await save_health_findings(session, repo_id, list(report.findings or []))
             if coverage_files:
+                # Stamp the live HEAD from disk, not the stored
+                # ``repo.head_commit`` column — an incremental update advances
+                # the tree without refreshing that field (issue #1747), so the
+                # stored value labels coverage with a stale commit.
+                live_head = get_head_commit(Path(repo_path)) or getattr(
+                    repo, "head_commit", None
+                )
                 await save_coverage_files(
                     session,
                     repo_id,
                     coverage_files,
                     source_format=coverage_format or "lcov",
-                    ingested_commit_sha=getattr(repo, "head_commit", None),
+                    ingested_commit_sha=live_head,
                 )
             await persist_graph_nodes(session, repo_id, graph_builder)
 
