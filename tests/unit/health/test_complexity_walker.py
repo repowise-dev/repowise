@@ -95,6 +95,31 @@ def test_python_complex_method_ccn():
     assert many.ccn >= 9, f"expected CCN ≥ 9, got {many.ccn}"
 
 
+def test_python_comment_in_parameter_list_not_counted():
+    """#1775: a comment inside a parameter list must not inflate param_count.
+
+    ``Annotated[T, Form(...)]`` metadata and an explanatory comment block are
+    idiomatic in FastAPI/Pydantic signatures. The comment node is named but
+    carries no arity; before the fix it was counted, so a 5-parameter handler
+    reported 6+ (and worse on longer signatures) and tripped a spurious
+    high-arity finding.
+    """
+    src = """async def trigger_scan(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    # comment with, several, commas explaining the pattern
+    agent_id: Annotated[str, Form(pattern=r\"^[a-z0-9]+(-[a-z0-9]+)*$\", max_length=128)],
+    scan_root: Annotated[str, Form()],
+    subpath: Annotated[str, Form()] = \"\",
+) -> HTMLResponse:
+    pass
+"""
+    fcx = walk_file("/tmp/trigger.py", "python", src.encode())
+    fn = _find(fcx.functions, "trigger_scan")
+    assert fn is not None
+    assert fn.param_count == 5, f"expected 5 params, got {fn.param_count}"
+
+
 def test_typescript_nested_depth():
     results = _walk("typescript/nested.ts", "typescript")
     deep = _find(results, "deeplyNested")
