@@ -72,8 +72,11 @@ async def test_pg_embed_batch_single_executemany() -> None:
 
     await store.embed_batch([("p1", "alpha", {}), ("p2", "beta", {}), ("p3", "gamma", {})])
 
-    assert len(session.executed) == 1  # one statement, list-of-params
-    stmt, params = session.executed[0]
+    # embed_batch now does a dimension check SELECT before the UPDATE
+    # (pgvector parity with LanceDB — see pgvector_store._ensure_dimension)
+    update_stmts = [s for s in session.executed if "UPDATE wiki_pages SET embedding" in s[0]]
+    assert len(update_stmts) == 1  # one UPDATE statement, list-of-params
+    stmt, params = update_stmts[0]
     assert "UPDATE wiki_pages SET embedding" in stmt
     assert isinstance(params, list) and len(params) == 3
     assert [p["pid"] for p in params] == ["p1", "p2", "p3"]
