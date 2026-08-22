@@ -10,11 +10,12 @@ Two consequences are what these tests pin:
   The second is the false positive the name-matching approach cannot avoid, and
   is the thing this layer is bought for.
 
-Symbols come from the real :class:`ASTParser` rather than hand-built
-:class:`Symbol` objects. Wrapper confirmation depends on each symbol's
-``start_line``/``end_line`` being the extent ingestion actually recorded, so
-fabricating those here would test this module against my own arithmetic instead
-of against the parse it consumes in production.
+Symbols come from the real :class:`ASTParser`, mapped onto the
+:class:`IndexedSymbol` rows ingestion persists, rather than hand-built spans.
+Wrapper confirmation depends on each symbol's ``start_line``/``end_line`` being
+the extent ingestion actually recorded, so fabricating those here would test
+this module against my own arithmetic instead of against the parse it consumes
+in production.
 """
 
 from __future__ import annotations
@@ -30,9 +31,13 @@ from repowise.core.workspace.extractors.from_index import EXTRACTION_LAYER_KEY, 
 from repowise.core.workspace.extractors.http.index_clients import extract_consumers
 from repowise.core.workspace.extractors.http.js_clients import JsClientsDialect
 from repowise.core.workspace.extractors.http.wrappers import confirm_wrappers
+from repowise.core.workspace.repo_index import IndexedSymbol
+
+from ._repo_index import make_repo_index
 
 
-def _parse(path: str, source: str):
+def _ingestion_symbols(path: str, source: str):
+    """The symbols the real parser records for *source*."""
     info = FileInfo(
         path=path,
         abs_path=f"C:/fake/{path}",
@@ -45,20 +50,45 @@ def _parse(path: str, source: str):
         is_api_contract=False,
         is_entry_point=False,
     )
-    return ASTParser().parse_file(info, source.encode())
+    return ASTParser().parse_file(info, source.encode()).symbols
+
+
+def _symbols(path: str, source: str) -> list[IndexedSymbol]:
+    """Those symbols as the rows ingestion persists, which is what this reads."""
+    return [
+        IndexedSymbol(
+            symbol_id=sym.id,
+            name=sym.name,
+            qualified_name=sym.qualified_name,
+            kind=sym.kind,
+            signature=sym.signature,
+            file_path=path,
+            start_line=sym.start_line,
+            end_line=sym.end_line,
+            visibility=sym.visibility,
+        )
+        for sym in _ingestion_symbols(path, source)
+    ]
 
 
 def _run(source: str, path: str = "src/lib/api/client.ts"):
     """Extract via the index path; returns ``(contracts, unresolved, ctx)``."""
-    parsed = _parse(path, source)
+    symbols = _symbols(path, source)
     suffix = "." + path.rsplit(".", 1)[1]
     ctx = ScanContext("frontend", path, suffix, source, {})
-    contracts, unresolved = extract_consumers(ctx, parsed)
+    contracts, unresolved = extract_consumers(ctx, symbols)
     return contracts, unresolved, ctx
 
 
 def _ids(contracts) -> set[str]:
     return {c.contract_id for c in contracts}
+
+
+async def _index_for(repo, path: str, source: str):
+    """A real per-repo index holding just *path*'s parsed symbols."""
+    return await make_repo_index(
+        repo, {path: _ingestion_symbols(path, source)}, alias="frontend"
+    )
 
 
 # The shape frontend/src/lib/api/client.ts really uses: a private `request`
@@ -209,8 +239,8 @@ class TestNameLookalikesAreRejected:
         assert unresolved == 0
 
     def test_they_are_not_confirmed_as_wrappers(self):
-        parsed = _parse("src/lib/cache.ts", DECOY_TS)
-        assert confirm_wrappers(parsed, DECOY_TS, ".ts") == set()
+        symbols = _symbols("src/lib/cache.ts", DECOY_TS)
+        assert confirm_wrappers(symbols, DECOY_TS, ".ts") == set()
 
     def test_the_regex_dialect_does_emit_them(self):
         """Documents the defect being removed, so the gain is not hypothetical."""
@@ -299,10 +329,9 @@ class TestUnresolvedPathsAreCounted:
 class TestFallbackRemainsReachable:
     """A repo with no usable index keeps the regex path.
 
-    The parse cache is version-gated, so a repo indexed by an older repowise
-    loads zero entries — measured on two of three repos in this workspace. The
-    regex dialect is therefore not a legacy path but the only path for those
-    repos, and it has to stay reachable.
+    A repo that has never been indexed has no ``wiki.db`` to read, so the regex
+    dialect is not a legacy path but the only path for it, and it has to stay
+    reachable.
     """
 
     # Plain `fetch("/x")` — the one shape the text dialect handles well.
@@ -316,28 +345,32 @@ class TestFallbackRemainsReachable:
             "frontend",
             None,
             files=[("src/legacy.ts", ".ts", self.PLAIN)],
-            index=index,
-            content_hashes={},
+            repo_index=index,
         )
 
     def test_without_an_index_the_regex_dialect_still_extracts(self, tmp_path):
         got = self._extract(tmp_path, index=None)
         assert "http::GET::/legacy/ping" in _ids(got)
 
-    def test_an_index_that_cannot_read_a_file_does_not_delete_its_contracts(
+    async def test_an_index_missing_this_file_does_not_delete_its_contracts(
         self, tmp_path
     ):
-        """An index present but missing this file must not suppress the dialect.
-
-        This is the rule that stops a bad or partial parse silently deleting
-        contracts the regex can still see.
+        """An index present but holding no rows for this file must not suppress
+        the dialect. This is the rule that stops a partial index silently
+        deleting contracts the regex can still see.
         """
-        got = self._extract(tmp_path, index={"src/other.ts": _parse("src/other.ts", "")})
+        index = await make_repo_index(
+            tmp_path, {"src/other.ts": []}, alias="frontend"
+        )
+        try:
+            got = self._extract(tmp_path, index=index)
+        finally:
+            await index.close()
         assert "http::GET::/legacy/ping" in _ids(got)
 
     def test_a_language_with_no_sink_patterns_confirms_nothing(self):
-        parsed = _parse("src/main.go", "package main\n")
-        assert confirm_wrappers(parsed, "package main\n", ".go") == set()
+        symbols = _symbols("src/main.go", "package main\n")
+        assert confirm_wrappers(symbols, "package main\n", ".go") == set()
 
     def test_one_line_wrapper_bodies_are_not_lost(self):
         """A concise wrapper puts its body on the declaration line."""
@@ -347,8 +380,8 @@ class TestFallbackRemainsReachable:
             "  go() { return this.ping(); }\n"
             "}\n"
         )
-        parsed = _parse("src/lib/one.ts", source)
-        assert "ping" in confirm_wrappers(parsed, source, ".ts")
+        symbols = _symbols("src/lib/one.ts", source)
+        assert "ping" in confirm_wrappers(symbols, source, ".ts")
 
 
 class TestHopBudget:
@@ -356,12 +389,12 @@ class TestHopBudget:
 
     def test_budget_one_still_reaches_through_the_two_hop_chain(self):
         """call site -> fetch -> request -> sink: the target is 1 hop from the sink."""
-        parsed = _parse("src/lib/api/client.ts", CLIENT_TS)
-        assert "fetch" in confirm_wrappers(parsed, CLIENT_TS, ".ts", budget=1)
+        symbols = _symbols("src/lib/api/client.ts", CLIENT_TS)
+        assert "fetch" in confirm_wrappers(symbols, CLIENT_TS, ".ts", budget=1)
 
     def test_budget_zero_confirms_only_the_symbol_holding_the_sink(self):
-        parsed = _parse("src/lib/api/client.ts", CLIENT_TS)
-        assert confirm_wrappers(parsed, CLIENT_TS, ".ts", budget=0) == {"request"}
+        symbols = _symbols("src/lib/api/client.ts", CLIENT_TS)
+        assert confirm_wrappers(symbols, CLIENT_TS, ".ts", budget=0) == {"request"}
 
     def test_a_chain_longer_than_the_budget_is_not_confirmed(self):
         source = (
@@ -373,8 +406,8 @@ class TestHopBudget:
             "  e() { return this.d('/x/y'); }\n"
             "}\n"
         )
-        parsed = _parse("src/lib/deep.ts", source)
-        confirmed = confirm_wrappers(parsed, source, ".ts", budget=2)
+        symbols = _symbols("src/lib/deep.ts", source)
+        confirmed = confirm_wrappers(symbols, source, ".ts", budget=2)
         assert "a" in confirmed and "b" in confirmed and "c" in confirmed
         assert "d" not in confirmed
 
@@ -387,8 +420,8 @@ class TestCycleSafety:
             "  b(p: string) { return this.a(p); }\n"
             "}\n"
         )
-        parsed = _parse("src/lib/r.ts", source)
-        assert confirm_wrappers(parsed, source, ".ts") == set()
+        symbols = _symbols("src/lib/r.ts", source)
+        assert confirm_wrappers(symbols, source, ".ts") == set()
 
 
 class TestSseEndpointsLinkToTheirConsumers:
@@ -587,7 +620,7 @@ class TestNothingFoundIsSilentlyDropped:
 class TestSupersedeCannotSubtract:
     """The index pass removes its own duplicates, never another shape."""
 
-    def test_an_axios_call_survives_beside_a_confirmed_wrapper(self, tmp_path):
+    async def test_an_axios_call_survives_beside_a_confirmed_wrapper(self, tmp_path):
         from repowise.core.workspace.extractors.http import HttpExtractor
 
         source = (
@@ -599,20 +632,22 @@ class TestSupersedeCannotSubtract:
             "}\n"
             "export function legacy() { return axios.get('/legacy'); }\n"
         )
-        parsed = _parse("src/lib/mix.ts", source)
-        got = HttpExtractor().extract(
-            tmp_path,
-            "frontend",
-            None,
-            files=[("src/lib/mix.ts", ".ts", source)],
-            index={"src/lib/mix.ts": parsed},
-            content_hashes={"src/lib/mix.ts": parsed.content_hash},
-        )
+        index = await _index_for(tmp_path, "src/lib/mix.ts", source)
+        try:
+            got = HttpExtractor().extract(
+                tmp_path,
+                "frontend",
+                None,
+                files=[("src/lib/mix.ts", ".ts", source)],
+                repo_index=index,
+            )
+        finally:
+            await index.close()
         ids = _ids(got)
         assert "http::GET::/wrapped" in ids  # from the index pass
         assert "http::GET::/legacy" in ids  # only the regex dialect sees this
 
-    def test_duplicates_are_not_emitted_twice(self, tmp_path):
+    async def test_duplicates_are_not_emitted_twice(self, tmp_path):
         from repowise.core.workspace.extractors.http import HttpExtractor
 
         source = (
@@ -620,15 +655,17 @@ class TestSupersedeCannotSubtract:
             "  return fetch('/dup');\n"
             "}\n"
         )
-        parsed = _parse("src/lib/dup.ts", source)
-        got = HttpExtractor().extract(
-            tmp_path,
-            "frontend",
-            None,
-            files=[("src/lib/dup.ts", ".ts", source)],
-            index={"src/lib/dup.ts": parsed},
-            content_hashes={"src/lib/dup.ts": parsed.content_hash},
-        )
+        index = await _index_for(tmp_path, "src/lib/dup.ts", source)
+        try:
+            got = HttpExtractor().extract(
+                tmp_path,
+                "frontend",
+                None,
+                files=[("src/lib/dup.ts", ".ts", source)],
+                repo_index=index,
+            )
+        finally:
+            await index.close()
         dup = [c for c in got if c.contract_id == "http::GET::/dup"]
         assert len(dup) == 1
 

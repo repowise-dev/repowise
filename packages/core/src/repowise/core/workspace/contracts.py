@@ -30,6 +30,7 @@ from repowise.core.workspace.contract_schema import ContractSchema
 
 if TYPE_CHECKING:
     from repowise.core.workspace.extractors.service_boundary import ServiceBoundary
+    from repowise.core.workspace.repo_index import WorkspaceIndex
 
 _log = logging.getLogger("repowise.workspace.contracts")
 
@@ -719,6 +720,7 @@ async def run_contract_extraction(
     changed_repos: list[str],
     boundaries_by_repo: dict[str, list[ServiceBoundary]] | None = None,
     previous_store: ContractStore | None = None,
+    workspace_index: WorkspaceIndex | None = None,
 ) -> ContractStore:
     """Full contract extraction pipeline.
 
@@ -735,6 +737,10 @@ async def run_contract_extraction(
     :func:`run_cross_repo_hooks` and shared with the system-graph build, which
     needs the same answer. When None (a direct call, or a test), boundaries are
     detected here instead.
+
+    *workspace_index* is the open read side of each repo's ``wiki.db``, held by
+    :func:`run_cross_repo_hooks` across every phase. When None, or when a repo
+    has no entry in it, that repo is extracted from text alone.
 
     *previous_store* is the artifact as it stands on disk, the source of any
     carried-forward rows. When None nothing is reused and every repo is
@@ -789,12 +795,7 @@ async def run_contract_extraction(
         detect_service_boundaries,
     )
     from .extractors.base import iter_source_files, make_exclude_predicate
-    from .extractors.from_index import (
-        ALL_INDEX_SUFFIXES,
-        EXTRACTION_LAYER_KEY,
-        LAYER_REGEX,
-        load_repo_index,
-    )
+    from .extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
 
     contract_config = ws_config.contracts
     exclude = make_exclude_predicate(tuple(contract_config.exclude_globs))
@@ -901,21 +902,14 @@ async def run_contract_extraction(
         wanted: frozenset[str] = frozenset()
         for extractor in extractors:
             wanted |= extractor.source_extensions()
-        # The walk records each file's content hash as it reads it, which is
-        # what lets the index path tell a matching parse from a stale one
-        # without a second read.
-        content_hashes: dict[str, str] = {}
         files = await asyncio.to_thread(
-            lambda: list(iter_source_files(repo_path, wanted, exclude, content_hashes))
+            lambda: list(iter_source_files(repo_path, wanted, exclude))
         )
 
-        # Symbols ingestion already parsed for this repo, when its parse cache
-        # is usable. None means the regex dialects are the only path, which is
-        # also the answer for languages with no AST tier. Only the HTTP
-        # extractor consults it, so nothing is loaded when it is disabled.
-        index = None
-        if contract_config.detect_http:
-            index = await asyncio.to_thread(load_repo_index, repo_path, ALL_INDEX_SUFFIXES)
+        # The symbols ingestion persisted for this repo. None means the regex
+        # dialects are the only path, which is also the answer for a repo that
+        # has never been indexed. Only the HTTP extractor consults it.
+        repo_index = workspace_index.get(alias) if workspace_index is not None else None
 
         # Counters the HTTP extractor fills in as it goes. The unresolved-path
         # count is the honest half of any recall figure: it says how many real
@@ -929,7 +923,7 @@ async def run_contract_extraction(
 
         for extractor in extractors:
             kwargs = (
-                {"index": index, "content_hashes": content_hashes, "stats": stats}
+                {"repo_index": repo_index, "stats": stats}
                 if isinstance(extractor, HttpExtractor)
                 else {}
             )

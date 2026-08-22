@@ -28,11 +28,14 @@ from .wrappers import (
     confirm_wrappers,
     mask_source,
     sink_call_names,
+    sink_patterns,
 )
 
 if TYPE_CHECKING:
-    from repowise.core.ingestion.models import ParsedFile
+    from collections.abc import Sequence
+
     from repowise.core.workspace.contracts import Contract
+    from repowise.core.workspace.repo_index import IndexedSymbol
 
     from ..base import ScanContext
 
@@ -160,7 +163,7 @@ def _literal_url(arg: str) -> str | None:
     return inner if _CONCRETE_URL_RE.match(inner) else None
 
 
-def _declaration_sites(parsed: ParsedFile) -> set[tuple[int, str]]:
+def _declaration_sites(symbols: Sequence[IndexedSymbol]) -> set[tuple[int, str]]:
     """``(line, name)`` for each callable's own declaration.
 
     A method declaration is syntactically a call — ``fetch<T>(path: string)`` —
@@ -170,16 +173,18 @@ def _declaration_sites(parsed: ParsedFile) -> set[tuple[int, str]]:
     """
     return {
         (s.start_line, s.name)
-        for s in parsed.symbols
+        for s in symbols
         if s.kind in {"function", "method", "constructor"}
     }
 
 
-def _confirmed_ranges(parsed: ParsedFile, confirmed: set[str]) -> list[tuple[int, int]]:
+def _confirmed_ranges(
+    symbols: Sequence[IndexedSymbol], confirmed: set[str]
+) -> list[tuple[int, int]]:
     """Line extents of the symbols confirmed to reach a sink."""
     return [
         (s.start_line, s.end_line)
-        for s in parsed.symbols
+        for s in symbols
         if s.name in confirmed and s.kind in {"function", "method", "constructor"}
     ]
 
@@ -190,7 +195,7 @@ def _within(ranges: list[tuple[int, int]], line: int) -> bool:
 
 def extract_consumers(
     ctx: ScanContext,
-    parsed: ParsedFile,
+    symbols: Sequence[IndexedSymbol],
     budget: int = DEFAULT_HOP_BUDGET,
 ) -> tuple[list[Contract], int]:
     """Consumer contracts at confirmed wrapper call sites, plus an unresolved count.
@@ -201,7 +206,14 @@ def extract_consumers(
     endpoint calls this layer cannot name; reporting the number is what keeps
     the recall figure honest rather than flattering.
     """
-    confirmed = confirm_wrappers(parsed, ctx.content, ctx.suffix, budget)
+    # No sink anywhere in the raw text means no wrapper can be confirmed and no
+    # receiverless sink call can exist, so the two O(n) masking passes below
+    # would run to find nothing. Masking only removes matches, so a miss here is
+    # a miss there. Most files in a repo take this exit.
+    if not any(p.search(ctx.content) for p in sink_patterns(ctx.suffix)):
+        return [], 0
+
+    confirmed = confirm_wrappers(symbols, ctx.content, ctx.suffix, budget)
     sinks = sink_call_names(ctx.suffix)
     if not confirmed and not sinks:
         return [], 0
@@ -212,7 +224,7 @@ def extract_consumers(
     # argument scanner. Masking preserves offsets and length, so slices taken
     # against this text are the real argument text.
     content = mask_source(ctx.content, ctx.suffix)
-    declarations = _declaration_sites(parsed)
+    declarations = _declaration_sites(symbols)
 
     # Pass 1: every call site of a confirmed wrapper, split into resolved
     # (concrete literal) and unresolved. The set of wrappers proven to take a
@@ -227,7 +239,7 @@ def extract_consumers(
     # proved, and a call that never parsed proved nothing either way. Gating
     # these would let a scanner failure zero itself out.
     parse_failures = 0
-    confirmed_ranges = _confirmed_ranges(parsed, confirmed)
+    confirmed_ranges = _confirmed_ranges(symbols, confirmed)
 
     for m in _CALL_RE.finditer(content):
         name = m.group("name")

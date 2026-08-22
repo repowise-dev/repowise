@@ -201,7 +201,7 @@ async def test_every_contract_records_its_extraction_layer(
     monkeypatch.setattr(contracts_mod, "save_contract_store", lambda store, root: root)
     store = await run_contract_extraction(workspace, tmp_path, [])
     assert store.contracts
-    # No parse cache in these fixture repos, so everything is regex-sourced.
+    # No wiki.db in these fixture repos, so everything is regex-sourced.
     assert {c.meta.get(EXTRACTION_LAYER_KEY) for c in store.contracts} == {LAYER_REGEX}
 
 

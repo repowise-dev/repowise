@@ -16,6 +16,10 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from repowise.core.workspace.repo_index import RepoIndex
 
 # Path segments that mark a test/mock tree. A route handler or topic publisher
 # that exists only under one of these is a fixture, not a real service contract,
@@ -89,6 +93,9 @@ class ScanContext:
     file text. ``mounts`` is the repo-wide ``router-variable -> mount-prefix``
     map a provider dialect uses to recover cross-file route prefixes (see
     :mod:`.http.mounts`); empty for single-file extraction.
+
+    ``index`` is the repo's read-only symbol table, when the repo has one.
+    Every dialect may ignore it and read ``content`` exactly as before.
     """
 
     repo_alias: str
@@ -96,6 +103,7 @@ class ScanContext:
     suffix: str
     content: str
     mounts: Mapping[str, str] = field(default_factory=dict)
+    index: RepoIndex | None = None
 
 
 # One scanned source file: ``(rel_path, suffix, content)``.
@@ -107,7 +115,6 @@ def select_files(
     extensions: frozenset[str],
     exclude: Callable[[str], bool] | None,
     files: Sequence[SourceFile] | None,
-    content_hashes: dict[str, str] | None = None,
 ) -> list[SourceFile]:
     """Filter an already-walked *files* list, or walk *repo_path* when it is None.
 
@@ -117,7 +124,7 @@ def select_files(
     keeps the standalone call (and every direct test) working unchanged.
     """
     if files is None:
-        return list(iter_source_files(repo_path, extensions, exclude, content_hashes))
+        return list(iter_source_files(repo_path, extensions, exclude))
     return [f for f in files if f[1] in extensions]
 
 
@@ -125,7 +132,6 @@ def iter_source_files(
     repo_root: Path,
     extensions: frozenset[str],
     exclude: Callable[[str], bool] | None = None,
-    content_hashes: dict[str, str] | None = None,
 ) -> Iterator[tuple[str, str, str]]:
     """Yield ``(rel_path, suffix, content)`` for each scannable source file.
 
@@ -145,13 +151,9 @@ def iter_source_files(
     Oversized, binary, generated, and ignored files are already excluded by the
     traverser. Unreadable files are silently skipped.
 
-    When *content_hashes* is given it is filled with ``rel_path -> sha256`` of
-    each file's raw bytes — the same key the ingestion parse cache is stored
-    under, so a caller can tell a matching parse from a stale one. Files are
-    read as bytes and decoded here rather than via ``read_text`` so that hash
-    describes the bytes on disk; the newline translation ``read_text`` would
-    have applied is reproduced verbatim, leaving every dialect's input
-    unchanged.
+    Files are read as bytes and decoded here rather than via ``read_text``; the
+    newline translation ``read_text`` would have applied is reproduced verbatim
+    below, leaving every dialect's input unchanged.
     """
     from repowise.core.ingestion.traverser import FileTraverser
 
@@ -175,8 +177,4 @@ def iter_source_files(
         # to bytes. Dialect regexes are written against ``\n``.
         if "\r" in content:
             content = content.replace("\r\n", "\n").replace("\r", "\n")
-        if content_hashes is not None:
-            from repowise.core.ingestion.models import compute_content_hash
-
-            content_hashes[info.path] = compute_content_hash(raw)
         yield info.path, suffix, content

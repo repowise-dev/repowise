@@ -39,7 +39,9 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from repowise.core.ingestion.models import ParsedFile, Symbol
+    from collections.abc import Sequence
+
+    from repowise.core.workspace.repo_index import IndexedSymbol
 
 # Hop budget for wrapper confirmation. 2 is not arbitrary: the real chain in
 # ``frontend/src/lib/api/client.ts`` is
@@ -239,7 +241,7 @@ def sink_call_names(suffix: str) -> frozenset[str]:
     return _SINK_CALL_NAMES_BY_SUFFIX.get(suffix.lower(), frozenset())
 
 
-def symbol_body(lines: list[str], symbol: Symbol) -> str:
+def symbol_body(lines: list[str], symbol: IndexedSymbol) -> str:
     """The source text of *symbol*'s body, excluding its own declaration.
 
     The declaration must be excluded because a symbol *named* like a sink
@@ -267,7 +269,7 @@ def symbol_body(lines: list[str], symbol: Symbol) -> str:
     return "\n".join([head, *rest]) if head else "\n".join(rest)
 
 
-def _callable_symbols(parsed: ParsedFile) -> dict[str, list[Symbol]]:
+def _callable_symbols(symbols: Sequence[IndexedSymbol]) -> dict[str, list[IndexedSymbol]]:
     """Callable symbols in this file, indexed by bare name.
 
     A name can be declared more than once (two classes with a ``get`` method);
@@ -276,15 +278,15 @@ def _callable_symbols(parsed: ParsedFile) -> dict[str, list[Symbol]]:
     the alternative — dropping ambiguous names — would lose real calls in every
     file with two similarly-shaped classes.
     """
-    out: dict[str, list[Symbol]] = {}
-    for sym in parsed.symbols:
+    out: dict[str, list[IndexedSymbol]] = {}
+    for sym in symbols:
         if sym.kind in _CALLABLE_KINDS:
             out.setdefault(sym.name, []).append(sym)
     return out
 
 
 def confirm_wrappers(
-    parsed: ParsedFile,
+    symbols: Sequence[IndexedSymbol],
     content: str,
     suffix: str,
     budget: int = DEFAULT_HOP_BUDGET,
@@ -305,7 +307,7 @@ def confirm_wrappers(
     # confirming a wrapper on it would reintroduce name-guessing by another
     # route. Masking preserves offsets, so symbol line ranges still apply.
     lines = mask_source(content, suffix, strings=True).split("\n")
-    by_name = _callable_symbols(parsed)
+    by_name = _callable_symbols(symbols)
     if not by_name:
         return set()
 
@@ -315,26 +317,26 @@ def confirm_wrappers(
     failed_at: dict[str, int] = {}
     confirmed: set[str] = set()
 
-    def reaches_sink(sym: Symbol, hops: int, stack: frozenset[str]) -> bool:
-        if sym.id in stack:  # a cycle cannot introduce a new sink
+    def reaches_sink(sym: IndexedSymbol, hops: int, stack: frozenset[str]) -> bool:
+        if sym.symbol_id in stack:  # a cycle cannot introduce a new sink
             return False
-        if failed_at.get(sym.id, -1) >= hops:
+        if failed_at.get(sym.symbol_id, -1) >= hops:
             return False
         body = symbol_body(lines, sym)
         if not body:
-            failed_at[sym.id] = max(failed_at.get(sym.id, -1), hops)
+            failed_at[sym.symbol_id] = max(failed_at.get(sym.symbol_id, -1), hops)
             return False
         if any(p.search(body) for p in patterns):
             return True
         if hops <= 0:
-            failed_at[sym.id] = max(failed_at.get(sym.id, -1), hops)
+            failed_at[sym.symbol_id] = max(failed_at.get(sym.symbol_id, -1), hops)
             return False
-        inner = stack | {sym.id}
+        inner = stack | {sym.symbol_id}
         for m in _LOCAL_CALL_RE.finditer(body):
             for callee in by_name.get(m.group(1), ()):
-                if callee.id != sym.id and reaches_sink(callee, hops - 1, inner):
+                if callee.symbol_id != sym.symbol_id and reaches_sink(callee, hops - 1, inner):
                     return True
-        failed_at[sym.id] = max(failed_at.get(sym.id, -1), hops)
+        failed_at[sym.symbol_id] = max(failed_at.get(sym.symbol_id, -1), hops)
         return False
 
     for name, syms in by_name.items():

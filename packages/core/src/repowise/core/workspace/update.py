@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from repowise.core.workspace.extractors.service_boundary import ServiceBoundary
+    from repowise.core.workspace.repo_index import WorkspaceIndex
 
 # Per-repo update lock — the shared single-flight guard (one implementation
 # for the CLI update command and this workspace updater, which used to carry
@@ -944,6 +945,36 @@ async def run_cross_repo_hooks(
     if len(ws_config.repos) < 2:
         return
 
+    from .repo_index import WorkspaceIndex, open_workspace_index
+
+    timings = PhaseTimingRecorder()
+
+    # The read side of every repo's index, opened once here and closed in the
+    # finally below, so one connection per repo serves all five phases.
+    # Indexing has just written these databases; without this the phases below
+    # re-derive from raw text what they already hold. Only the HTTP extractor
+    # reads it today, so nothing is opened when that is off.
+    workspace_index = (
+        await open_workspace_index(ws_config, workspace_root)
+        if ws_config.contracts.detect_http
+        else WorkspaceIndex({})
+    )
+    try:
+        await _run_phases(
+            ws_config, workspace_root, changed_repos, timings, workspace_index
+        )
+    finally:
+        await workspace_index.close()
+
+
+async def _run_phases(
+    ws_config: WorkspaceConfig,
+    workspace_root: Path,
+    changed_repos: list[str],
+    timings: PhaseTimingRecorder,
+    workspace_index: WorkspaceIndex,
+) -> None:
+    """The five cross-repo phases, over an already-open workspace index."""
     from .breaking_change import run_breaking_change_detection
     from .conformance import run_conformance_check
     from .contracts import ContractStore, load_contract_store, run_contract_extraction
@@ -953,8 +984,6 @@ async def run_cross_repo_hooks(
         _detect_boundaries_by_repo,
         run_system_graph_build,
     )
-
-    timings = PhaseTimingRecorder()
 
     # Service boundaries, detected once for the whole workspace. Contract
     # extraction and the system-graph build both need them and each used to walk
@@ -983,7 +1012,7 @@ async def run_cross_repo_hooks(
     previous_store = load_contract_store(workspace_root) or ContractStore()
 
     # Phases 1 and 2 are independent: they read disjoint inputs (git history and
-    # manifests vs source files and the parse cache), write different artifacts
+    # manifests vs source files and the symbol index), write different artifacts
     # (cross_repo_edges.json vs contracts.json), and share no mutable state —
     # boundaries_by_repo is computed above and passed in read-only. Both push
     # their blocking work through asyncio.to_thread, so gather genuinely
@@ -1008,6 +1037,7 @@ async def run_cross_repo_hooks(
                 changed_repos,
                 boundaries_by_repo or None,
                 previous_store,
+                workspace_index,
             ),
         ),
         return_exceptions=True,
