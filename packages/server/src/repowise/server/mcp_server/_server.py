@@ -346,14 +346,18 @@ def _detect_workspace(repo_path: str | None):
         # Determine which repo the given path belongs to
         resolved = _Path(repo_path).resolve()
         repo_alias = None
+        best_match_depth = -1
         for entry in ws_config.repos:
             entry_abs = (ws_root / entry.path).resolve()
             try:
                 resolved.relative_to(entry_abs)
-                repo_alias = entry.alias
-                break
             except ValueError:
                 continue
+
+            match_depth = len(entry_abs.parts)
+            if match_depth > best_match_depth:
+                repo_alias = entry.alias
+                best_match_depth = match_depth
 
         if repo_alias is None:
             # Path is inside workspace but doesn't match a repo — use default
