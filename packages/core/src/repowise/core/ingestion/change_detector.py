@@ -382,6 +382,7 @@ class ChangeDetector:
         graph: object,  # nx.DiGraph
         cascade_budget: int = 30,
         pagerank: dict[str, float] | None = None,
+        stale_pages: dict[str, float] | None = None,
     ) -> AffectedPages:
         """Compute which wiki pages need action after a set of file changes.
 
@@ -393,6 +394,14 @@ class ChangeDetector:
                 passes GraphBuilder's cached file pagerank so this function
                 does not recompute a full-graph pass). Falls back to an
                 internal computation when omitted.
+            stale_pages: ``{file_path: staleness_age_seconds}`` for pages whose
+                prose is already stale, oldest-stale mapping to the largest
+                value. When the cascade budget is constrained, these bubble to
+                the top of the regenerate slice so the run spends its LLM calls
+                on the pages that actually lag the code rather than the
+                highest-importance pages that may already be current (issues
+                #847 / #851). Pages with no entry count as fresh and sort last.
+                Absent (or empty) keeps the historical pure-importance order.
         """
         import networkx as nx
 
@@ -456,7 +465,16 @@ class ChangeDetector:
 
         all_pages_needing_regen = sorted(
             directly_changed | one_hop,
-            key=lambda p: pr.get(p, 0.0),
+            key=lambda p: (
+                # Staleness-first: an already-stale page (larger age) outranks a
+                # fresh page no matter how central the fresh one is, so a
+                # constrained budget spends its LLM calls on the pages that
+                # actually lag the code (issues #847 / #851). Fresh pages sort
+                # below every stale page, importance then breaking the tie
+                # within each staleness class.
+                0.0 if not stale_pages else float(stale_pages.get(p, -1.0)),
+                pr.get(p, 0.0),
+            ),
             reverse=True,
         )
 

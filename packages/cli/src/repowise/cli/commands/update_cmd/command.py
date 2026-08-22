@@ -1185,11 +1185,14 @@ def run_update(
             console.print(f"Adaptive cascade budget: [cyan]{cascade_budget}[/cyan]")
     # Pass the builder's cached file pagerank so the cascade ordering does
     # not recompute a full-graph pagerank pass on every update.
+    from .deterministic import load_stale_file_page_ages
+
     affected = detector.get_affected_pages(
         file_diffs,
         graph_builder.graph(),
         cascade_budget,
         pagerank=graph_builder.pagerank(),
+        stale_pages=load_stale_file_page_ages(repo_path),
     )
 
     # File pages a newer renderer would write differently. The cascade above
