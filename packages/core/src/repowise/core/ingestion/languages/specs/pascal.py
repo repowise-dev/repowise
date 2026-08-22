@@ -69,5 +69,21 @@ SPEC = LanguageSpec(
         "TObject", "TInterfacedObject", "TPersistent", "TComponent",
         "IUnknown", "IInterface", "IDispatch",
     }),
+    # Ordinal/scalar built-ins plus the universal VCL/RTL root types (the
+    # latter overlap with builtin_parents above) -- none of these ever have
+    # an in-repo declaration, so resolving them as a type reference is a
+    # guaranteed miss. Read back via get_builtin_types("pascal") in
+    # parser_helpers.py's head-identifier extractor.
+    builtin_types=frozenset({
+        "Integer", "Cardinal", "Boolean", "ByteBool", "WordBool", "LongBool",
+        "String", "AnsiString", "WideString", "UnicodeString", "ShortString",
+        "Char", "AnsiChar", "WideChar", "Byte", "ShortInt", "SmallInt", "Word",
+        "LongWord", "LongInt", "Int64", "UInt64", "NativeInt", "NativeUInt",
+        "Single", "Double", "Extended", "Real", "Real48", "Currency", "Comp",
+        "Variant", "OleVariant", "Pointer", "PChar", "PAnsiChar", "PWideChar",
+        "TDateTime", "TDate", "TTime", "TGUID", "TClass", "HRESULT", "TBytes",
+        "TObject", "TInterfacedObject", "TPersistent", "TComponent",
+        "IUnknown", "IInterface", "IDispatch",
+    }),
     color_hex="#E3352E",
 )
