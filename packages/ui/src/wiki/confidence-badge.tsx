@@ -8,7 +8,7 @@ import {
   statusLabel,
   type FreshnessStatus,
 } from "../lib/confidence";
-import { formatConfidence } from "../lib/format";
+import { formatConfidence, formatDate } from "../lib/format";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 
 interface ConfidenceBadgeProps {
@@ -74,7 +74,7 @@ export function ConfidenceBadge({
       <Tooltip>
         <TooltipTrigger asChild>{badge}</TooltipTrigger>
         <TooltipContent>
-          <p>Stale since {new Date(staleSince).toLocaleDateString()}</p>
+          <p>Stale since {formatDate(staleSince)}</p>
           <p className="text-[var(--color-text-tertiary)]">
             Confidence: {formatConfidence(score)}
           </p>

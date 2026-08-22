@@ -2,6 +2,25 @@
  * Number, date, token, and other formatters for repowise UI.
  */
 
+/** A timestamp we can render. */
+type Timestamp = string | Date;
+
+/**
+ * Parse an API timestamp into a `Date`, treating a bare ISO string without an
+ * explicit timezone suffix (e.g. `"2026-08-21T13:23:33"`) as UTC. The repowise
+ * API returns UTC wall-clock strings with no trailing `Z`, so a plain
+ * `new Date("...")` would interpret them as *local* time and shift every
+ * displayed timestamp by the viewer's UTC offset.
+ */
+export function parseDate(date: Timestamp): Date {
+  if (date instanceof Date) return date;
+  // No timezone suffix (`Z`/`z` or `+HH:MM`)? Treat the wall-clock as UTC.
+  if (!/[zZ]|[+-]\d\d?:\d\d$/.test(date.trim())) {
+    return new Date(`${date.trim()}Z`);
+  }
+  return new Date(date);
+}
+
 /** Format a number with commas: 1234567 → "1,234,567" */
 export function formatNumber(n: number): string {
   return new Intl.NumberFormat().format(n);
@@ -37,7 +56,7 @@ export function formatCost(usd: number): string {
 
 /** Format a datetime to a relative string: "2h ago", "3d ago", "just now" */
 export function formatRelativeTime(date: string | Date): string {
-  const d = typeof date === "string" ? new Date(date) : date;
+  const d = parseDate(date);
   const now = Date.now();
   const diff = now - d.getTime();
   const seconds = Math.floor(diff / 1000);
@@ -64,30 +83,32 @@ export function formatRelativeTimeOrNull(
   fallback = "—",
 ): string {
   if (!iso) return fallback;
-  const d = new Date(iso);
+  const d = parseDate(iso);
   if (Number.isNaN(d.getTime()) || d.getTime() > Date.now()) return fallback;
   return formatRelativeTime(d);
 }
 
-/** Format a datetime to an absolute string: "Mar 19, 2026" */
+/** Format a datetime to an absolute string: "Mar 19, 2026" (in UTC) */
 export function formatDate(date: string | Date): string {
-  const d = typeof date === "string" ? new Date(date) : date;
+  const d = parseDate(date);
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
+    timeZone: "UTC",
   }).format(d);
 }
 
-/** Format a datetime to full: "Mar 19, 2026 at 10:30 AM" */
+/** Format a datetime to full: "Mar 19, 2026 at 10:30 AM" (in UTC) */
 export function formatDateTime(date: string | Date): string {
-  const d = typeof date === "string" ? new Date(date) : date;
+  const d = parseDate(date);
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
+    timeZone: "UTC",
   }).format(d);
 }
 

@@ -8,6 +8,7 @@ import { VirtualizedTable } from "../shared/virtualized-table";
 import { clickableRowProps, CLICKABLE_ROW_CLS } from "../shared/responsive-table";
 import { AiPromptButton } from "../health/ai-prompt-button";
 import { cn } from "../lib/cn";
+import { formatDate, formatDateTime } from "../lib/format";
 import type { CouplingEdge } from "@repowise-dev/types/coupling";
 
 /**
@@ -256,8 +257,8 @@ export function CouplingTable({
           </div>
         </td>
         <td className={`px-3 py-2 text-left text-xs text-[var(--color-text-tertiary)] ${HIDE_BELOW_LG}`}>
-          <span title={e.last_co_change ? new Date(e.last_co_change).toLocaleString() : undefined}>
-            {e.last_co_change ? new Date(e.last_co_change).toLocaleDateString() : "—"}
+          <span title={e.last_co_change ? formatDateTime(e.last_co_change) : undefined}>
+            {e.last_co_change ? formatDate(e.last_co_change) : "—"}
           </span>
         </td>
         {onGeneratePrompt ? (

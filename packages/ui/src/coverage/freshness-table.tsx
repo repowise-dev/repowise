@@ -12,6 +12,7 @@ import {
 } from "../lib/confidence";
 import {
   formatConfidence,
+  formatDateTime,
   formatRelativeTime,
 } from "../lib/format";
 import { getPageTypeIcon, getPageTypeLabel } from "../lib/page-types";
@@ -183,7 +184,7 @@ export function FreshnessTable({
                 </td>
                 <td
                   className="px-4 py-2.5 text-xs text-[var(--color-text-tertiary)] hidden md:table-cell"
-                  title={new Date(page.updated_at).toLocaleString()}
+                  title={formatDateTime(page.updated_at)}
                 >
                   {formatRelativeTime(page.updated_at)}
                 </td>
