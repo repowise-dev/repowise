@@ -630,3 +630,36 @@ export const handler = onCall(async () => 1);
 
     def test_class_and_function_expression_bindings_are_indexed(self, parser: ASTParser) -> None:
         assert {"KlassExpr", "fnExpr"} <= self._names(parser)
+
+
+class TestTypeScriptPrivateMembers:
+    """ECMAScript #private class members should produce a symbol and a call site.
+
+    Regression for #1715: tree-sitter spells ``#foo`` as
+    ``private_property_identifier``, which the symbol and member-call query
+    patterns did not accept, so private methods were invisible at both ends.
+    """
+
+    def test_private_method_produces_symbol(self, parser: ASTParser) -> None:
+        fi = _make_file_info("src/counter.ts", "typescript")
+        src = b"""\
+class Counter {
+  #count = 0;
+  #increment() { this.#count++; }
+  inc() { this.#increment(); return this.#count; }
+}"""
+        result = parser.parse_file(fi, src)
+        method_names = [s.name for s in result.symbols if s.kind == "method"]
+        assert "#increment" in method_names
+
+    def test_private_method_call_produces_call_site(self, parser: ASTParser) -> None:
+        fi = _make_file_info("src/counter.ts", "typescript")
+        src = b"""\
+class Counter {
+  #count = 0;
+  #increment() { this.#count++; }
+  inc() { this.#increment(); return this.#count; }
+}"""
+        result = parser.parse_file(fi, src)
+        call_targets = [c.target_name for c in result.calls]
+        assert "#increment" in call_targets

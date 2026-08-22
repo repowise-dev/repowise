@@ -150,19 +150,41 @@ async def test_get_risk_pr_directive_surfaces_coverage_backed_tests_to_run(setup
         "tests/test_service.py::test_login",
         "tests/test_service.py::test_logout",
     ]
+    # The graph also reaches this file, and must not dilute a measured answer.
+    assert directive["tests_to_run_basis"] == "measured"
     assert "coverage-backed test(s) guard the change" in directive["summary"]
 
 
 @pytest.mark.asyncio
-async def test_get_risk_pr_directive_tests_to_run_empty_without_map(setup_mcp):
-    """No per-test map -> tests_to_run is an empty list, never invented."""
+async def test_get_risk_pr_directive_falls_back_to_the_graph_without_a_map(setup_mcp):
+    """No per-test map -> the import graph answers, labelled as inferred.
+
+    The fixture records ``tests/test_service.py`` importing ``service.py``. That
+    is not proof it executes it, so the ids are test *files* and the basis says
+    ``inferred``; what it replaces is an empty list on every repo that has never
+    ingested a coverage report.
+    """
     from repowise.server.mcp_server import get_risk
 
     result = await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
     directive = result["directive"]
 
-    assert directive["tests_to_run"] == []
+    assert directive["tests_to_run"] == ["tests/test_service.py"]
+    assert directive["tests_to_run_basis"] == "inferred"
+    assert "inferred, not coverage-proven" in directive["summary"]
     assert "coverage-backed test(s) guard the change" not in directive["summary"]
+
+
+@pytest.mark.asyncio
+async def test_get_risk_pr_directive_names_no_tests_when_nothing_reaches(setup_mcp):
+    """Neither map nor graph -> an empty list and a ``none`` basis, not a guess."""
+    from repowise.server.mcp_server import get_risk
+
+    result = await get_risk(["src/db/models.py"], changed_files=["src/db/models.py"])
+    directive = result["directive"]
+
+    assert directive["tests_to_run"] == []
+    assert directive["tests_to_run_basis"] == "none"
 
 
 # ---- _classify_risk_type small-team calibration (issue #361) ---------------
@@ -208,15 +230,24 @@ def test_classify_bus_factor_unknown_team_size_keeps_behaviour():
     assert _classify_risk_type(_bus_factor_meta(), dep_count=1, team_size=None) == "bus-factor-risk"
 
 
-@pytest.mark.asyncio
-async def test_test_gap_pattern_treats_an_underscore_as_a_literal(session, repo_id):
-    """``_`` is a LIKE wildcard, so an unescaped pattern matched the wrong file.
+@pytest.mark.parametrize(
+    ("source", "test"),
+    [
+        ("lib/user.dart", "test/user_test.dart"),
+        ("lib/user.ex", "test/user_test.exs"),
+        ("src/user.rs", "tests/user_test.rs"),
+    ],
+)
+def test_health_filename_heuristic_supports_suffix_test_conventions(source, test):
+    from repowise.core.analysis.health.engine import _has_paired_test_file
 
-    The probe builds ``%test_<base>%``. Unescaped, that also matches
-    ``testXbase`` — and for a source file named ``my_module.py`` it matches
-    ``testXmyXmodule`` too. A false hit here makes the tool report a file as
-    tested when nothing tests it, in the directive block reviewers read first.
-    """
+    assert _has_paired_test_file(source, {test.rsplit("/", 1)[-1]})
+
+
+@pytest.mark.asyncio
+async def test_test_gap_uses_health_filename_heuristic(session, repo_id):
+    """Health and risk agree that suffixed test names are not exact pairs."""
+    from repowise.core.analysis.health.engine import _has_paired_test_file
     from repowise.core.persistence.models import GraphNode
     from repowise.server.mcp_server.tool_risk.assessment import _check_test_gap
 
@@ -224,7 +255,7 @@ async def test_test_gap_pattern_treats_an_underscore_as_a_literal(session, repo_
         GraphNode(
             id="gn-decoy",
             repository_id=repo_id,
-            node_id="tests/testXmy_module.py",
+            node_id="tests/test_my_module_strategies.py",
             node_type="file",
             language="python",
             is_test=True,
@@ -232,7 +263,7 @@ async def test_test_gap_pattern_treats_an_underscore_as_a_literal(session, repo_
     )
     await session.flush()
 
-    # Nothing named test_my_module.py exists, so this is a genuine gap.
+    assert not _has_paired_test_file("src/my_module.py", {"test_my_module_strategies.py"})
     assert await _check_test_gap(session, repo_id, "src/my_module.py") is True
 
     session.add(

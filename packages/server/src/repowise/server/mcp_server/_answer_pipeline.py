@@ -58,6 +58,10 @@ from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.core.test_paths import is_test_path
+from repowise.server.mcp_server._helpers import (
+    _VECTOR_TIMEOUT_ENV,
+    vector_search_timeout_s,
+)
 from repowise.server.mcp_server._prose_symbols import symbol_backed_pages
 
 _log = logging.getLogger("repowise.mcp.answer")
@@ -462,10 +466,16 @@ async def _safe_vector_search(ctx: Any, question: str) -> list[Any]:
                 _RETRIEVAL_FETCH_LIMIT + _DECISION_OVERFETCH,
                 vector=vector,
             ),
-            timeout=8.0,
+            timeout=vector_search_timeout_s(),
         )
     except TimeoutError:
         _record_leg("vector", "timeout")
+        _log.warning(
+            "Vector search exceeded its %gs budget; answering without semantic hits. "
+            "Raise it with %s=<seconds>.",
+            vector_search_timeout_s(),
+            _VECTOR_TIMEOUT_ENV,
+        )
         return []
     except Exception:
         _record_leg("vector", "error")
@@ -963,7 +973,7 @@ async def _semantic_concept_paths(question: str, ctx: Any) -> list[str]:
             vector_search(
                 vs, question, _CONCEPT_FETCH_LIMIT, vector=await question_vector(ctx, question)
             ),
-            timeout=8.0,
+            timeout=vector_search_timeout_s(),
         )
     except Exception:
         return []

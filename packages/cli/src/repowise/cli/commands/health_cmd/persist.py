@@ -8,6 +8,9 @@ per-test map. A ``repowise health`` run must not overwrite that data.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
 
 from repowise.cli.helpers import console, run_async
 
@@ -61,6 +64,47 @@ def _load_persisted_coverage_map(repo_path: object) -> dict[str, dict]:
         return run_async(_do())
     except Exception:
         return {}
+
+
+def _load_recommendations(
+    repo_path: Path, suggestions: Sequence[Any], metrics: Sequence[Any]
+) -> list[dict[str, Any]]:
+    """Canonical CLI recommendations, enriched from the local store in bulk."""
+    from repowise.cli.helpers import get_db_url_for_repo, reconcile_schema_best_effort
+    from repowise.core.analysis.health.refactoring.recommendations import (
+        build_recommendations,
+        hydrate_recommendations,
+        serialize_recommendations,
+    )
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+
+    async def _do() -> list[dict[str, Any]]:
+        url = get_db_url_for_repo(repo_path)
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return []
+            recommendations = await hydrate_recommendations(
+                session, repo.id, suggestions, metric_rows=metrics
+            )
+            return serialize_recommendations(recommendations)
+
+    try:
+        hydrated = run_async(_do())
+        if hydrated:
+            return hydrated
+    except Exception:
+        pass
+    return serialize_recommendations(
+        build_recommendations(
+            suggestions,
+            metric_by_path={getattr(metric, "file_path", ""): metric for metric in metrics},
+        )
+    )
 
 
 def _persist_health(repo_path: object, *, report: object) -> None:

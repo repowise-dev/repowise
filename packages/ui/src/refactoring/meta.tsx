@@ -1,19 +1,29 @@
 "use client";
 
 import * as React from "react";
-import { ArrowRightLeft, CopyMinus, FileStack, Scissors, Split, Unlink } from "lucide-react";
-import type { Confidence, EffortBucket, RefactoringType } from "./types";
+import { ArrowRightLeft, CopyMinus, FileStack, Gauge, Scissors, Split, Unlink } from "lucide-react";
+import type { Confidence, EffortBucket, RefactoringType } from "@repowise-dev/types/refactoring";
 
 export interface RefactoringTypeMeta {
   label: string;
   /** One-line description of what the refactoring does. */
   blurb: string;
-  Icon: React.ComponentType<{ className?: string; style?: React.CSSProperties }>;
+  Icon: React.ComponentType<{
+    className?: string;
+    style?: React.CSSProperties;
+  }>;
   /** A CSS var name used for the type's accent (text + tinted backgrounds). */
   accentVar: string;
 }
 
 export const TYPE_META: Record<string, RefactoringTypeMeta> = {
+  performance_fix: {
+    label: "Performance",
+    blurb:
+      "Change one proven intervention to remove repeated runtime, tooling, or test-suite work.",
+    Icon: Gauge,
+    accentVar: "--color-accent-primary",
+  },
   extract_class: {
     label: "Extract Class",
     blurb: "Split a low-cohesion class into focused, single-responsibility classes.",
@@ -88,6 +98,7 @@ export const CONFIDENCE_DOT: Record<Confidence, string> = {
 
 /** Order types deterministically for legends and tab rows. */
 export const TYPE_ORDER: RefactoringType[] = [
+  "performance_fix",
   "extract_class",
   "extract_helper",
   "extract_method",

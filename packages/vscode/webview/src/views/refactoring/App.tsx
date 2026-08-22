@@ -8,17 +8,16 @@ import {
   typeMeta,
 } from "@repowise-dev/ui/refactoring/meta";
 import { PlanDetail } from "@repowise-dev/ui/refactoring/plan-detail";
+import { PriorityExplanation } from "@repowise-dev/ui/refactoring/priority-explanation";
+import { ValidationSummary } from "@repowise-dev/ui/refactoring/validation-summary";
 import { RefactoringPlanCard } from "@repowise-dev/ui/refactoring/refactoring-plan-card";
-import {
-  blastCount,
-  blastFiles,
-  evidenceRows,
-  planWins,
-  type Confidence,
-  type EffortBucket,
-  type RefactoringPlan,
-  type RefactoringTargets,
-} from "@repowise-dev/ui/refactoring/types";
+import { blastCount, blastFiles, evidenceRows, planWins } from "@repowise-dev/ui/refactoring/types";
+import type {
+  Confidence,
+  EffortBucket,
+  RefactoringPlan,
+  RefactoringTargets,
+} from "@repowise-dev/types/refactoring";
 import type { AiPromptFlavor } from "@repowise-dev/ui/health/ai-prompt-builder";
 import type { ViewProps } from "../../runtime/mount";
 import type { WebviewHost } from "../../runtime/rpc";
@@ -68,9 +67,7 @@ export function App({ host, params, refreshToken }: ViewProps<"refactoring">) {
 // ── Async state helper ─────────────────────────────────────────────────────
 
 type AsyncState<T> =
-  | { status: "loading" }
-  | { status: "error"; message: string }
-  | { status: "ok"; data: T };
+  { status: "loading" } | { status: "error"; message: string } | { status: "ok"; data: T };
 
 function useAsync<T>(load: () => Promise<T>, deps: unknown[]): AsyncState<T> {
   const [state, setState] = useState<AsyncState<T>>({ status: "loading" });
@@ -83,7 +80,10 @@ function useAsync<T>(load: () => Promise<T>, deps: unknown[]): AsyncState<T> {
       },
       (err: unknown) => {
         if (!cancelled) {
-          setState({ status: "error", message: err instanceof Error ? err.message : String(err) });
+          setState({
+            status: "error",
+            message: err instanceof Error ? err.message : String(err),
+          });
         }
       },
     );
@@ -194,6 +194,14 @@ function PlanDetailView({ host, planId, refreshToken, onBack }: PlanDetailViewPr
         <PlanDetail plan={plan} fileHref={fileHref} />
       </Section>
 
+      <Section title="Priority">
+        <PriorityExplanation plan={plan} />
+      </Section>
+
+      <Section title="Validation">
+        <ValidationSummary validation={plan.validation} fileHref={fileHref} />
+      </Section>
+
       {evidence.length > 0 ? (
         <Section title="Evidence">
           <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -218,7 +226,7 @@ function PlanDetailView({ host, planId, refreshToken, onBack }: PlanDetailViewPr
         <div className="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)]">
           <Layers className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
           {affected.length > 0
-            ? `${affected.length} other file${affected.length === 1 ? "" : "s"} to keep consistent`
+            ? `${blast} affected file${blast === 1 ? "" : "s"} recorded`
             : blast > 0
               ? `${blast} dependent${blast === 1 ? "" : "s"} affected`
               : "No dependent files recorded."}
@@ -243,6 +251,11 @@ function PlanDetailView({ host, planId, refreshToken, onBack }: PlanDetailViewPr
             ) : null}
           </ul>
         ) : null}
+        {affected.length > 0 && affected.length < blast ? (
+          <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
+            {Math.min(affected.length, 25)} shown of {blast} affected files.
+          </p>
+        ) : null}
       </Section>
 
       <CopyForAgentRow host={host} planId={planId} />
@@ -262,7 +275,10 @@ function PlanHeader({ plan, onOpenFile }: { plan: RefactoringPlan; onOpenFile: (
       <div className="flex flex-wrap items-center gap-3">
         <span
           className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[15px] font-semibold"
-          style={{ backgroundColor: `color-mix(in srgb, ${accent} 14%, transparent)`, color: accent }}
+          style={{
+            backgroundColor: `color-mix(in srgb, ${accent} 14%, transparent)`,
+            color: accent,
+          }}
         >
           <Icon className="h-4 w-4" />
           {meta.label}
@@ -336,9 +352,7 @@ function CopyForAgentRow({ host, planId }: { host: WebviewHost; planId: string }
           </button>
         ))}
       </div>
-      {copyError ? (
-        <p className="mt-2 text-xs text-[var(--color-error)]">{copyError}</p>
-      ) : null}
+      {copyError ? <p className="mt-2 text-xs text-[var(--color-error)]">{copyError}</p> : null}
     </div>
   );
 }
@@ -353,10 +367,7 @@ interface PlanListViewProps {
 }
 
 function PlanListView({ host, filePath, refreshToken, onOpen }: PlanListViewProps) {
-  const state = useAsync(
-    () => host.api.refactoringTargets(filePath),
-    [filePath, refreshToken],
-  );
+  const state = useAsync(() => host.api.refactoringTargets(filePath), [filePath, refreshToken]);
 
   if (state.status === "loading") return <CenteredNote>Loading refactoring plans…</CenteredNote>;
   if (state.status === "error") {

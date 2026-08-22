@@ -19,28 +19,32 @@
  * line of prose under the title.
  */
 
+import type { ReactNode } from "react";
 import { Layers, Sparkles, TrendingUp, Wand2 } from "lucide-react";
 
 import { Sheet, SheetContent, SheetTitle } from "../ui/sheet";
 import { formatNumber } from "../lib/format";
 import { PlanComparison } from "./plan-comparison";
 import { GenerateCodePanel } from "./generate-code-panel";
+import { PriorityExplanation } from "./priority-explanation";
+import { ValidationSummary } from "./validation-summary";
 import { CONFIDENCE_LABEL, EFFORT_LABEL, typeMeta } from "./meta";
-import {
-  blastCount,
-  blastFiles,
-  evidenceRows,
-  planWins,
-  type Confidence,
-  type EffortBucket,
-  type GeneratedCode,
-  type RefactoringPlan,
-} from "./types";
+import { blastCount, blastFiles, evidenceRows, planWins } from "./types";
+import type {
+  Confidence,
+  EffortBucket,
+  GeneratedCode,
+  RefactoringPlan,
+} from "@repowise-dev/types/refactoring";
 
 export interface RefactoringDrawerProps {
   plan: RefactoringPlan | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  loading?: boolean | undefined;
+  error?: string | undefined;
+  /** Optional causal context supplied by another shared product surface. */
+  contextSlot?: ReactNode;
   onAiPrompt?: ((plan: RefactoringPlan) => void) | undefined;
   /** Opt-in LLM code generation. Omit to hide the section entirely. */
   onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
@@ -52,6 +56,9 @@ export function RefactoringDrawer({
   plan,
   open,
   onOpenChange,
+  loading = false,
+  error,
+  contextSlot,
   onAiPrompt,
   onGenerateCode,
   settingsHref,
@@ -74,9 +81,27 @@ export function RefactoringDrawer({
             onGenerateCode={onGenerateCode}
             settingsHref={settingsHref}
             fileHref={fileHref}
+            contextSlot={contextSlot}
           />
+        ) : loading ? (
+          <>
+            <SheetTitle className="border-b border-[var(--color-border-default)] px-5 py-4 pr-12 text-[15px]">
+              Loading structured plan
+            </SheetTitle>
+            <div className="space-y-4 px-5 py-5" aria-busy="true">
+              <div className="h-16 animate-pulse bg-[var(--color-bg-surface)]" />
+              <div className="h-40 animate-pulse bg-[var(--color-bg-surface)]" />
+            </div>
+          </>
+        ) : error ? (
+          <>
+            <SheetTitle className="border-b border-[var(--color-border-default)] px-5 py-4 pr-12 text-[15px]">
+              Structured plan unavailable
+            </SheetTitle>
+            <p className="px-5 py-5 text-sm text-[var(--color-text-secondary)]">{error}</p>
+          </>
         ) : (
-          <SheetTitle className="sr-only">Refactoring plan</SheetTitle>
+          <SheetTitle className="sr-only">Structured plan</SheetTitle>
         )}
       </SheetContent>
     </Sheet>
@@ -89,12 +114,14 @@ function DrawerBody({
   onGenerateCode,
   settingsHref,
   fileHref,
+  contextSlot,
 }: {
   plan: RefactoringPlan;
   onAiPrompt?: ((plan: RefactoringPlan) => void) | undefined;
   onGenerateCode?: ((plan: RefactoringPlan) => Promise<GeneratedCode>) | undefined;
   settingsHref?: string | undefined;
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
+  contextSlot?: ReactNode;
 }) {
   const meta = typeMeta(plan.refactoring_type);
   const effort = (plan.effort_bucket || "M") as EffortBucket;
@@ -141,6 +168,7 @@ function DrawerBody({
       </div>
 
       <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
+        {contextSlot}
         <p className="text-sm leading-relaxed text-[var(--color-text-secondary)]">{meta.blurb}</p>
 
         <section>
@@ -148,6 +176,23 @@ function DrawerBody({
             The change
           </h4>
           <PlanComparison plan={plan} fileHref={fileHref} />
+        </section>
+
+        <section>
+          <h4 className="mb-3 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+            Priority
+          </h4>
+          <PriorityExplanation plan={plan} />
+        </section>
+
+        <section>
+          <h4 className="mb-3 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+            Validation
+          </h4>
+          <ValidationSummary
+            validation={plan.validation}
+            fileHref={(path) => fileHref?.(path, null)}
+          />
         </section>
 
         {onGenerateCode ? (

@@ -29,7 +29,7 @@ async def churn_complexity(
     One point per recently-changed file: x = 90-day commit count (churn),
     y = max cyclomatic complexity, dot size = NLOC, color = health band. The
     top-right corner is where churn and complexity collide -- the highest-value
-    refactoring targets, plotted instead of listed.
+    health work items, plotted instead of listed.
     """
     repo = await crud.get_repository(session, repo_id)
     if repo is None:

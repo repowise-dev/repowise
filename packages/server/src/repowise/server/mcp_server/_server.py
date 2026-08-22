@@ -72,6 +72,7 @@ _EMBEDDER_KEY_ENV: dict[str, tuple[str, ...]] = {
     "openai": ("OPENAI_API_KEY",),
     "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     "openrouter": ("OPENROUTER_API_KEY",),
+    "edenai": ("EDENAI_API_KEY",),
 }
 
 
@@ -96,6 +97,16 @@ def _persisted_embedder_key(name: str) -> str | None:
     if not env_vars:
         return None
     canonical = env_vars[0]
+
+    # The process environment is the highest-precedence source, matching the
+    # CLI's resolver (cli/providers/keys.py): an exported key is an explicit
+    # override. The server used to skip this tier entirely, so on a machine
+    # with an exported credential it and the CLI disagreed about the same
+    # repo in the same shell (issue #1711).
+    for var in env_vars:
+        value = os.environ.get(var)
+        if value:
+            return value
 
     if _state._repo_path:
         try:

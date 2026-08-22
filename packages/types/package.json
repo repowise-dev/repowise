@@ -30,7 +30,8 @@
     "./external-systems": "./src/external-systems.ts",
     "./health": "./src/health.ts",
     "./coupling": "./src/coupling.ts",
-    "./stats": "./src/stats.ts"
+    "./stats": "./src/stats.ts",
+    "./refactoring": "./src/refactoring.ts"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",

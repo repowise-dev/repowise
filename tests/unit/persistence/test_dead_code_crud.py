@@ -386,3 +386,39 @@ async def test_summary_uses_shared_confidence_thresholds(async_session, monkeypa
         "medium": 2,
         "low": 1,
     }
+
+
+async def test_get_dead_code_git_fields_returns_last_commit_at_aware(async_session):
+    """A stored timestamp must come back comparable to fresh git metadata.
+
+    SQLite drops the offset from ``DateTime(timezone=True)``, so this read used
+    to hand the analyzer a naive value. It merges those rows with freshly read
+    git metadata, which is aware, and then does ``datetime.now(UTC) - value``
+    when ageing a zombie package and ``>`` when picking the package's newest
+    commit. Either raises ``TypeError: can't subtract offset-naive and
+    offset-aware datetimes``, which the dead-code phase catches broadly — the
+    whole analysis is skipped and every finding silently keeps its previous
+    verdict on every incremental update.
+    """
+    from datetime import UTC, datetime
+
+    from repowise.core.persistence.crud import get_dead_code_git_fields
+    from repowise.core.persistence.models import GitMetadata
+
+    repo = await insert_repo(async_session)
+    async_session.add(
+        GitMetadata(
+            repository_id=repo.id,
+            file_path="a.py",
+            last_commit_at=datetime(2025, 12, 21, 0, 6, 49, tzinfo=UTC),
+        )
+    )
+    await async_session.commit()
+
+    stored = (await get_dead_code_git_fields(async_session, repo.id))["a.py"]["last_commit_at"]
+
+    assert stored.tzinfo is not None, "a naive value here skips the whole dead-code analysis"
+    # The two operations that raised, exactly as the analyzer performs them.
+    assert (datetime.now(UTC) - stored).days >= 0
+    assert stored > datetime(2020, 1, 1, tzinfo=UTC)
+    assert stored == datetime(2025, 12, 21, 0, 6, 49, tzinfo=UTC), "must not shift the instant"

@@ -1,4 +1,16 @@
-"""Coverage summary + per-file / per-module coverage route."""
+"""Coverage routes: the measured map, and the graph-inferred one behind it.
+
+``test_coverage`` is filled only by an ingested report, and most repositories
+have none. Rather than answering "no coverage" the routes fall back to the
+graph-inferred test map, tagged ``basis: "inferred"`` so a consumer can never
+mistake it for a measurement.
+
+The two bases never share a field. On the inferred basis ``summary``, ``files``
+and ``modules`` come back empty and the answer rides in ``inferred``, so a UI
+cannot render derived data through the measured code path by accident. Nothing
+here derives a percentage from the inferred map: it has no line attribution, so
+any ratio built from it would be a coverage figure the data cannot support.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +20,12 @@ from typing import Any
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.test_reachability import (
+    call_graph_from_db,
+    files_reached_by_tests,
+    load_test_files,
+    tests_reaching_by_tier,
+)
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
 
@@ -38,6 +56,7 @@ async def health_coverage(
     file_path: str | None = Query(None),
     limit: int = Query(500, ge=1, le=5000),
     module_limit: int = Query(1000, ge=0, le=5000),
+    include_inferred: bool = Query(True),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Coverage summary + per-file rows.
@@ -55,6 +74,14 @@ async def health_coverage(
     ``modules_total`` is always the full count, so a trimmed rollup can never be
     read as the whole repo. ``module_limit=0`` returns none of them, for callers
     that want the summary and nothing else.
+
+    ``include_inferred=false`` declines the graph-inferred fallback. It is not a
+    third cap: the fallback costs a read of every call edge in the repository
+    plus every health metric, which is the right price for the tab and the wrong
+    one for the tab *badge*, whose whole point is that it asks for one file row
+    and no modules. A declined response omits ``basis`` rather than reporting
+    ``"none"`` - the graph was not consulted, which is not the same as the graph
+    having nothing to say.
     """
     repo = await crud.get_repository(session, repo_id)
     if repo is None:
@@ -67,6 +94,17 @@ async def health_coverage(
     all_rows = await crud.load_coverage_for_repo(
         session, repo_id, include_covered_lines=False
     )
+    if not all_rows:
+        # No report was ever ingested. The graph can still answer "does a test
+        # reach this", so answer that instead of an empty measured shape.
+        if not include_inferred:
+            return {
+                "summary": _empty_summary(),
+                "files": [],
+                "modules": [],
+                "modules_total": 0,
+            }
+        return await _inferred_coverage(session, repo_id, limit)
     summary = await crud.get_coverage_summary(session, repo_id, rows=all_rows)
     if summary.get("ingested_at") is not None:
         summary = {**summary, "ingested_at": summary["ingested_at"].isoformat()}
@@ -120,8 +158,158 @@ async def health_coverage(
     module_rows.sort(key=lambda x: x["line_coverage_pct"])
 
     return {
+        "basis": "measured",
         "summary": summary,
         "files": files,
         "modules": module_rows[:module_limit] if module_limit else [],
         "modules_total": len(module_rows),
+    }
+
+
+def _empty_summary() -> dict[str, Any]:
+    """The measured summary's zero shape.
+
+    Sent on the inferred basis so the field keeps one type. It is empty because
+    nothing measured this repo, which is a different statement from "measured at
+    zero percent" - and the only field that distinguishes them is ``basis``.
+    """
+    return {
+        "file_count": 0,
+        "covered_lines": 0,
+        "total_lines": 0,
+        "line_coverage_pct": None,
+        "branch_coverage_pct": None,
+        "source_format": None,
+        "ingested_at": None,
+        "ingested_commit_sha": None,
+    }
+
+
+async def _inferred_coverage(
+    session: AsyncSession, repo_id: str, limit: int
+) -> dict[str, Any]:
+    """The graph-inferred test map, in the shape the measured one leaves empty.
+
+    Reuses the health engine's forward walk rather than the attributed reverse
+    one. This is the batch question - "which files does any test reach" - which
+    is one multi-source search over the whole graph, where the reverse walk runs
+    a query per level per seed and is built for a change's files. Sharing the
+    walk also means this can never disagree with the ``untested_hotspot``
+    biomarker, which reads the same function.
+
+    Counts are repo-wide even when ``files`` is trimmed, matching the measured
+    branch's ``modules_total``: a truncated page must never read as the repo.
+
+    Degrades to ``basis: "none"`` rather than raising. An unindexed graph is the
+    honest unknown, and failing the tab to withhold a secondary signal is the
+    wrong trade - the same call ``pr_blast._inferred_guarding_tests`` makes.
+    """
+    try:
+        test_files = await load_test_files(session, repo_id)
+        if not test_files:
+            return {
+                "basis": "none",
+                "summary": _empty_summary(),
+                "files": [],
+                "modules": [],
+                "modules_total": 0,
+            }
+        view = await call_graph_from_db(session, repo_id)
+        reached = files_reached_by_tests(view, test_files)
+    except Exception:
+        return {
+            "basis": "none",
+            "summary": _empty_summary(),
+            "files": [],
+            "modules": [],
+            "modules_total": 0,
+        }
+
+    # Health metrics are the file list: already exclusion-filtered and already
+    # worst-first, which is the order the ranked list wants, and they carry the
+    # score and NLOC the chart plots. Test files are dropped - "is this tested"
+    # is not a question about a test.
+    metrics = await crud.get_health_metrics(session, repo_id)
+    rows = [m for m in metrics if m.file_path not in test_files]
+
+    reached_count = sum(1 for m in rows if m.file_path in reached)
+    files = [
+        {
+            "file_path": m.file_path,
+            "reached": m.file_path in reached,
+            "health_score": round(m.score, 2),
+            "nloc": m.nloc,
+        }
+        for m in rows[:limit]
+    ]
+    return {
+        "basis": "inferred",
+        "summary": _empty_summary(),
+        "files": [],
+        "modules": [],
+        "modules_total": 0,
+        "inferred": {
+            "files": files,
+            "files_total": len(rows),
+            "files_reached": reached_count,
+            "files_not_reached": len(rows) - reached_count,
+            "test_file_count": len(test_files),
+        },
+    }
+
+
+@router.get("/api/repos/{repo_id}/health/tests-reaching")
+async def health_tests_reaching(
+    repo_id: str,
+    file_path: str = Query(...),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """Which test files reach one file, and which tier of the graph found them.
+
+    The attributed reverse walk, seeded with a single file - the shape it was
+    built for. ``via`` separates ``call-graph`` (a test's calls run into this
+    file) from the weaker ``import-graph`` (a test only imports it), so the file
+    page can say which claim it is making.
+
+    ``tests`` is capped at ``MAX_TESTS_PER_TARGET``; ``total`` is what the walk
+    found and ``truncated`` says whether the two differ. A file reached by 124
+    tests would otherwise report 50 as though that were the number.
+
+    Always inferred; there is no measured form of this question, because a
+    coverage report attributes lines to tests and this attributes files. A file
+    nothing reaches returns ``basis: "none"`` rather than an empty ``inferred``
+    answer, so "no test reaches this" stays distinguishable from "the graph had
+    nothing to say".
+    """
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    empty = {
+        "file_path": file_path,
+        "basis": "none",
+        "reached": False,
+        "tests": [],
+        "via": None,
+        "total": 0,
+        "truncated": False,
+    }
+    try:
+        found = await tests_reaching_by_tier(session, repo_id, [file_path])
+    except Exception:
+        return empty
+    reached = found.get(file_path)
+    if reached is None or not reached.tests:
+        return empty
+    total = reached.total or len(reached.tests)
+    return {
+        "file_path": file_path,
+        "basis": "inferred",
+        "reached": True,
+        "tests": reached.tests,
+        "via": reached.via,
+        # The walk's own count, which ``tests`` may be a trimmed alphabetical
+        # slice of. Without it a caller renders the cap as the answer.
+        "total": total,
+        "truncated": total > len(reached.tests),
     }

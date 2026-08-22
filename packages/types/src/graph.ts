@@ -271,6 +271,10 @@ export type ResolutionOrigin =
   | "receiver_framework_same_package"
   | "receiver_framework_import"
   | "receiver_framework_global"
+  | "return_type_same_file"
+  | "return_type_same_package"
+  | "return_type_import"
+  | "return_type_global"
   | "self_inherited"
   | "enclosing_inherited";
 

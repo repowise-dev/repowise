@@ -33,13 +33,16 @@ repowise impacted-tests main..HEAD --format list | xargs pytest
 
 ## Notes
 
-- Requires a per-test map from `repowise coverage add` on a report with
-  contexts. If none is ingested, the command prompts to run
-  `/prompts:repowise-coverage` / `repowise coverage add` — it does **not** invent an
-  empty "no tests needed" result.
-- A changed file with no coverage rows may get a filename-pattern **guess**
-  labelled as a guess — never present guesses as coverage-backed.
-- A brand-new file with neither coverage nor a paired test is "unknown, run
-  the full suite".
+- Line-precise answers need a per-test map from `repowise coverage add` on a
+  report with contexts. If none is ingested, the command still prompts to run
+  `/prompts:repowise-coverage` / `repowise coverage add`. It does **not** invent an empty
+  "no tests needed" result.
+- A changed file with no coverage rows gets *candidates* instead, in a table
+  headed "NOT coverage-backed", each carrying a `via` marker: `changed-test`
+  (the changed file is itself a test), `call-graph` or `import-graph` (a test
+  file that reaches it, no ingest needed), or `filename-pattern` (a name-shaped
+  guess). Report them as candidates. Only `via: coverage` proves a test
+  executed the change.
+- A file none of those can speak to is "unknown, run the full suite".
 - For a whole-change defect-risk score, use `/prompts:repowise-risk`. For per-file
   blast radius / `tests_to_run`, use the `get_risk` MCP tool.

@@ -490,6 +490,7 @@ def _changed_file_edges(
                 "confidence": data.get("confidence", 1.0),
                 "hint_source": data.get("hint_source"),
                 "resolution_origin": data.get("resolution_origin"),
+                "call_lines_json": json.dumps(data.get("call_lines", [])),
             }
         )
     return sorted(reconcile), edges
@@ -1368,6 +1369,7 @@ async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
                 "confidence": data.get("confidence", 1.0),
                 "hint_source": data.get("hint_source"),
                 "resolution_origin": data.get("resolution_origin"),
+                "call_lines_json": json.dumps(data.get("call_lines", [])),
             }
         )
     if edges:

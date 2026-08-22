@@ -35,6 +35,7 @@ _EMBEDDER_KEY_ENV: dict[str, tuple[str, ...]] = {
     "openai": ("OPENAI_API_KEY",),
     "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     "openrouter": ("OPENROUTER_API_KEY",),
+    "edenai": ("EDENAI_API_KEY",),
 }
 
 

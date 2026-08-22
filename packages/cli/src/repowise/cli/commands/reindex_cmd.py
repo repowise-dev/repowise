@@ -19,7 +19,7 @@ from repowise.cli.ui import BRAND_STYLE, OWL_SPINNER
 @click.argument("path", required=False, default=None)
 @click.option(
     "--embedder",
-    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "mock", "auto"]),
+    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "edenai", "mock", "auto"]),
     default="auto",
     help="Embedder to use. 'auto' detects from env vars / config.",
 )
@@ -253,3 +253,10 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         + (f" ({below_floor} held back as too thin to index)" if below_floor else "")
         + f" -> {lance_dir}"
     )
+
+    # A reindex that indexed nothing but failed on every item is a failed
+    # build, not a success: an automated pipeline (or an agent) must not treat
+    # an empty vector index as a successful reindex. Exit non-zero so the
+    # failure is visible in the exit status, not just in the printed count.
+    if indexed == 0 and failed > 0:
+        raise click.Abort()

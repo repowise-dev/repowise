@@ -27,8 +27,8 @@ function targets(n: number): RefactoringTarget[] {
 }
 
 function renderedPaths(): string[] {
-  return Array.from(document.querySelectorAll("[data-refactoring-card]")).map(
-    (el) => el.getAttribute("data-refactoring-card") ?? "",
+  return Array.from(document.querySelectorAll("[data-health-work-item]")).map(
+    (el) => el.getAttribute("data-health-work-item") ?? "",
   );
 }
 

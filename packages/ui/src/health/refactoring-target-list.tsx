@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  RefactoringCard,
-  type RefactoringTarget,
-  type RefactoringTargetFinding,
+  HealthWorkItemCard,
+  type HealthWorkItem,
+  type HealthWorkItemFinding,
   type FindingStatus,
 } from "./refactoring-card";
 
@@ -19,29 +19,29 @@ import {
  */
 const CARD_PAGE = 50;
 
-export interface RefactoringTargetListProps {
-  targets: RefactoringTarget[];
-  onSelect?: ((target: RefactoringTarget) => void) | undefined;
+export interface HealthWorkQueueListProps {
+  targets: HealthWorkItem[];
+  onSelect?: ((target: HealthWorkItem) => void) | undefined;
   onStatusChange?: ((findingId: string, status: FindingStatus) => void) | undefined;
-  onGeneratePrompt?: ((target: RefactoringTarget) => void) | undefined;
+  onGeneratePrompt?: ((target: HealthWorkItem) => void) | undefined;
   /** Per-card lazy fetch of a file's findings; see `RefactoringCardProps`. */
   onLoadFindings?:
-    | ((filePath: string) => Promise<RefactoringTargetFinding[]>)
+    | ((filePath: string) => Promise<HealthWorkItemFinding[]>)
     | undefined;
   emptyMessage?: string;
   /** File path of the card to flash-highlight (quadrant click). */
   highlightedPath?: string | null | undefined;
 }
 
-export function RefactoringTargetList({
+export function HealthWorkQueueList({
   targets,
   onSelect,
   onStatusChange,
   onGeneratePrompt,
   onLoadFindings,
-  emptyMessage = "No refactoring targets match the current filters.",
+  emptyMessage = "No health work items match the current filters.",
   highlightedPath,
-}: RefactoringTargetListProps) {
+}: HealthWorkQueueListProps) {
   const [visible, setVisible] = useState(CARD_PAGE);
 
   // A new list is a new question — re-filtering or re-sorting must not leave
@@ -76,7 +76,7 @@ export function RefactoringTargetList({
     <>
       <div className="grid gap-3">
         {targets.slice(0, shown).map((t) => (
-          <RefactoringCard
+          <HealthWorkItemCard
             key={t.file_path}
             target={t}
             onSelect={onSelect}
@@ -100,4 +100,9 @@ export function RefactoringTargetList({
   );
 }
 
-export type { RefactoringTarget, FindingStatus } from "./refactoring-card";
+export type { FindingStatus, HealthWorkItem } from "./refactoring-card";
+
+/** @deprecated Use HealthWorkQueueList; this is a health triage queue. */
+export type RefactoringTargetListProps = HealthWorkQueueListProps;
+export const RefactoringTargetList = HealthWorkQueueList;
+export type { RefactoringTarget } from "./refactoring-card";
