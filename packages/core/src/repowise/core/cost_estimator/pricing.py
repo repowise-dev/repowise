@@ -38,6 +38,11 @@ _COST_TABLE_EXACT: dict[str, tuple[float, float]] = {
     "claude-opus-4-6": (0.005, 0.025),  # $5 / $25 per MTok
     "claude-sonnet-4-6": (0.003, 0.015),  # $3 / $15 per MTok
     "claude-haiku-4-5": (0.001, 0.005),  # $1 / $5 per MTok
+    # Mistral — https://mistral.ai/pricing
+    "mistral-large-latest": (0.002, 0.006),  # $2 / $6 per MTok
+    "mistral-small-latest": (0.0002, 0.0006),
+    "ministral-8b-latest": (0.00015, 0.0004),
+    "ministral-3b-latest": (0.00015, 0.0004),
 }
 
 # Prefix fallbacks for unknown variants. No `gpt-5.6` catch-all: the 5.6
@@ -54,6 +59,11 @@ _COST_TABLE_PREFIX: dict[str, tuple[float, float]] = {
     "claude-haiku": (0.001, 0.005),
     "claude": (0.003, 0.015),
     "gemini": (0.00025, 0.0015),
+    # Mistral AI — https://mistral.ai/pricing
+    "mistral-large": (0.002, 0.006),  # $2 / $6 per MTok
+    "mistral-small": (0.0002, 0.0006),  # $0.20 / $0.60 per MTok
+    "mistral": (0.0002, 0.0006),
+    "ministral": (0.00015, 0.0004),  # $0.15 / $0.40 per MTok (3B/8B edge models)
     "llama": (0.0, 0.0),
     "mock": (0.0, 0.0),
     "codex_cli/": (0.0, 0.0),
