@@ -170,11 +170,11 @@ async def test_search_embeds_the_query_once(session, setup_mcp, monkeypatch):
 
     original = vs.embed_texts
 
-    async def _counting(texts):
+    async def _counting(texts, *, kind="document"):
         calls.append("embed_texts")
-        return await original(texts)
+        return await original(texts, kind=kind)
 
-    async def _forbidden(query, limit=10):
+    async def _forbidden(query, limit=10, *, kind="query"):
         calls.append(f"search:{query}")
         return []
 

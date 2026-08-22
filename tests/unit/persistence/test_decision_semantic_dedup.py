@@ -35,7 +35,8 @@ class _KeywordEmbedder:
 
     dimensions = 8
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
+        del kind
         out: list[list[float]] = []
         for t in texts:
             tl = t.lower()
@@ -202,7 +203,8 @@ class _CountingOrthogonalEmbedder:
         self.calls = 0
         self._axis_by_text: dict[str, int] = {}
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
+        del kind
         self.calls += 1
         out: list[list[float]] = []
         for t in texts:

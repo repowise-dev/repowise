@@ -699,7 +699,7 @@ async def _semantic_lanes(ctx: Any, query: str) -> tuple[list, list]:
 
     raw: list | None = None
     with contextlib.suppress(Exception):
-        vectors = await ctx.vector_store.embed_texts([query])
+        vectors = await ctx.vector_store.embed_texts([query], kind="query")
         if vectors:
             raw = await ctx.vector_store.search_by_vector(vectors[0], limit=_SEMANTIC_WINDOW)
         if raw is None:
