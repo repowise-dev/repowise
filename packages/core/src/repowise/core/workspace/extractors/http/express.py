@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ..base import line_at
 from ..langs import JS_TS
 from .dialect import METHODS, build_provider_contract
 from .mounts import compose_prefix
@@ -59,7 +60,11 @@ class ExpressDialect:
                 continue
             path = compose_prefix(ctx.mounts.get(var, ""), path_raw)
             c = build_provider_contract(
-                ctx, method=method.upper(), path_raw=path, framework="express"
+                ctx,
+                method=method.upper(),
+                path_raw=path,
+                framework="express",
+                line=line_at(ctx.content, m.start()),
             )
             if c is not None:
                 out.append(c)

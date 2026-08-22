@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ..base import line_at
 from ..langs import PYTHON
 from .dialect import make_grpc_contract
 
@@ -38,6 +39,7 @@ class PythonGrpcDialect:
                     symbol_name=f"py:add_{svc}Servicer_to_server",
                     confidence=0.8,
                     meta={"service": svc, "source": "py_servicer"},
+                    line=line_at(ctx.content, m.start()),
                 )
             )
         for m in _PY_CONSUMER_RE.finditer(ctx.content):
@@ -52,6 +54,7 @@ class PythonGrpcDialect:
                     symbol_name=f"py:{svc}Stub",
                     confidence=0.7,
                     meta={"service": svc, "source": "py_stub"},
+                    line=line_at(ctx.content, m.start()),
                 )
             )
         return out

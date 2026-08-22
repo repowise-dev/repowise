@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ..base import line_at
 from ..langs import PHP
 from .dialect import METHODS, build_provider_contract
 
@@ -28,7 +29,11 @@ class LaravelDialect:
         out: list[Contract] = []
         for m in _LARAVEL_RE.finditer(ctx.content):
             c = build_provider_contract(
-                ctx, method=m.group(1).upper(), path_raw=m.group(2), framework="laravel"
+                ctx,
+                method=m.group(1).upper(),
+                path_raw=m.group(2),
+                framework="laravel",
+                line=line_at(ctx.content, m.start()),
             )
             if c is not None:
                 out.append(c)

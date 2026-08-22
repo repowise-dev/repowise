@@ -110,6 +110,34 @@ class OrphanProvider:
 
 
 @dataclass
+class SymbolIdentity:
+    """How many of one role's contracts bound to a symbol id, and out of what.
+
+    Two denominators because they answer different questions. *total* is the
+    honest workspace-wide share. *bound_ratio_indexed* excludes the files with
+    no parsed symbols at all — ``.sql``, ``.proto``, anything in a repo without
+    an index — which is what says whether the binding rule itself is working:
+    no rule can reach a file the parser never saw.
+    """
+
+    total: int = 0
+    bound: int = 0
+    unindexed_file: int = 0
+
+    def _ratio(self, denominator: int) -> float | None:
+        return self.bound / denominator if denominator > 0 else None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total": self.total,
+            "bound": self.bound,
+            "unindexed_file": self.unindexed_file,
+            "bound_ratio": self._ratio(self.total),
+            "bound_ratio_indexed": self._ratio(self.total - self.unindexed_file),
+        }
+
+
+@dataclass
 class ExtractionDiagnostics:
     """Aggregate explanation of contract extraction + matching coverage."""
 
@@ -127,6 +155,9 @@ class ExtractionDiagnostics:
     #: HTTP client calls located but not resolvable to an endpoint, workspace
     #: wide. This is the only miss count extraction can actually observe.
     http_consumers_unresolved: int = 0
+    #: Symbol-id binding coverage, keyed by role. Reported, never asserted: a
+    #: contract with no symbol id still matches, it just cannot be traversed.
+    symbol_identity: dict[str, SymbolIdentity] = field(default_factory=dict)
 
     @property
     def http_consumer_coverage(self) -> float | None:
@@ -158,6 +189,7 @@ class ExtractionDiagnostics:
             "consumers_by_layer": self.consumers_by_layer,
             "http_consumers_unresolved": self.http_consumers_unresolved,
             "http_consumer_coverage": self.http_consumer_coverage,
+            "symbol_identity": {r: v.to_dict() for r, v in sorted(self.symbol_identity.items())},
         }
 
     @classmethod
@@ -203,6 +235,14 @@ class ExtractionDiagnostics:
             providers_by_layer=data.get("providers_by_layer", {}),
             consumers_by_layer=data.get("consumers_by_layer", {}),
             http_consumers_unresolved=data.get("http_consumers_unresolved", 0),
+            symbol_identity={
+                role: SymbolIdentity(
+                    total=v.get("total", 0),
+                    bound=v.get("bound", 0),
+                    unindexed_file=v.get("unindexed_file", 0),
+                )
+                for role, v in (data.get("symbol_identity") or {}).items()
+            },
         )
 
 
@@ -338,6 +378,17 @@ def build_diagnostics(
             )
         )
 
+    identity = {
+        role: SymbolIdentity(
+            total=len(rows),
+            bound=sum(1 for c in rows if c.symbol_id is not None),
+            unindexed_file=sum(
+                s.get(f"identity_unindexed_{role}", 0) for s in stats_by_repo.values()
+            ),
+        )
+        for role, rows in (("provider", providers), ("consumer", consumers))
+    }
+
     return ExtractionDiagnostics(
         total_providers=len(providers),
         total_consumers=len(consumers),
@@ -355,4 +406,5 @@ def build_diagnostics(
         http_consumers_unresolved=sum(
             s.get("http_consumer_unresolved", 0) for s in stats_by_repo.values()
         ),
+        symbol_identity=identity,
     )

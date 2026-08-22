@@ -273,11 +273,15 @@ def extract_http_providers(
         seen.add(key)
         framework = "flask" if _is_route_head(decorator) else "fastapi"
         contract = build_provider_contract(
-            ctx, method=method, path_raw=path, framework=framework
+            ctx, method=method, path_raw=path, framework=framework, line=symbol.start_line
         )
         if contract is not None:
             contract.meta[EXTRACTION_LAYER_KEY] = LAYER_INDEX
             contract.meta["handler"] = symbol.name
+            # Bound here rather than by line: this path found the route *by*
+            # walking up from the handler's own span, so the symbol is known
+            # exactly and no lookahead rule needs to re-derive it.
+            contract.symbol_id = symbol.symbol_id
             out.append(contract)
     return out
 

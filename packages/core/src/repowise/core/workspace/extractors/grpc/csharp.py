@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ..base import line_at
 from ..langs import CSHARP
 from .dialect import make_grpc_contract
 
@@ -55,6 +56,7 @@ class CSharpGrpcDialect:
                     symbol_name=f"cs:MapGrpcService<{svc}>",
                     confidence=0.8,
                     meta={"service": svc, "source": "csharp_mapgrpc"},
+                    line=line_at(ctx.content, m.start()),
                 )
             )
         for m in _CSHARP_GRPC_BASE_RE.finditer(ctx.content):
@@ -67,6 +69,7 @@ class CSharpGrpcDialect:
                     symbol_name=f"cs:extends {svc}.{svc}ServiceBase",
                     confidence=0.8,
                     meta={"service": svc, "source": "csharp_base"},
+                    line=line_at(ctx.content, m.start()),
                 )
             )
         # Consumers are only credible when the file shows real gRPC usage —
@@ -85,6 +88,7 @@ class CSharpGrpcDialect:
                     symbol_name=f"cs:new {svc}Client",
                     confidence=0.65,
                     meta={"service": svc, "source": "csharp_client"},
+                    line=line_at(ctx.content, m.start()),
                 )
             )
         return out

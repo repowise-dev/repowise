@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ..base import line_at
 from ..langs import GO
 from .dialect import make_grpc_contract
 
@@ -35,6 +36,7 @@ class GoGrpcDialect:
                     symbol_name=f"go:Register{svc}Server",
                     confidence=0.8,
                     meta={"service": svc, "source": "go_register"},
+                    line=line_at(ctx.content, m.start()),
                 )
             )
         for m in _GO_CONSUMER_RE.finditer(ctx.content):
@@ -47,6 +49,7 @@ class GoGrpcDialect:
                     symbol_name=f"go:New{svc}Client",
                     confidence=0.7,
                     meta={"service": svc, "source": "go_client"},
+                    line=line_at(ctx.content, m.start()),
                 )
             )
         return out

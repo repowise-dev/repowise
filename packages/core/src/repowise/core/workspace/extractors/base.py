@@ -52,6 +52,15 @@ _TEST_FILE_PATTERNS = (
 _SELF_EXCLUDE_GLOBS = ("*/repowise/core/workspace/extractors/*",)
 
 
+def line_at(content: str, offset: int) -> int:
+    """The 1-indexed line of *content* holding character *offset*.
+
+    Every regex dialect reports where it matched this way, which is what binds
+    a contract to a symbol id (see :func:`..contracts.bind_symbol_ids`).
+    """
+    return content.count("\n", 0, offset) + 1
+
+
 def is_test_path(rel_path: str) -> bool:
     """True when *rel_path* (POSIX) lives in a test tree or is a test file."""
     parts = rel_path.split("/")

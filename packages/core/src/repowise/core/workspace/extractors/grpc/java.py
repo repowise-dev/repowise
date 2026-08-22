@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ..base import line_at
 from ..langs import JAVA
 from .dialect import make_grpc_contract
 
@@ -35,6 +36,7 @@ class JavaGrpcDialect:
                     symbol_name=f"java:extends {svc}Grpc.ImplBase",
                     confidence=0.8,
                     meta={"service": svc, "source": "java_extends"},
+                    line=line_at(ctx.content, m.start()),
                 )
             )
         for m in _JAVA_CONSUMER_RE.finditer(ctx.content):
@@ -47,6 +49,7 @@ class JavaGrpcDialect:
                     symbol_name=f"java:{svc}Grpc.newStub",
                     confidence=0.7,
                     meta={"service": svc, "source": "java_stub"},
+                    line=line_at(ctx.content, m.start()),
                 )
             )
         return out

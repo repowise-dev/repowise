@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ..base import line_at
 from ..langs import JS_TS
 from .dialect import METHODS, build_consumer_contract
 
@@ -59,16 +60,23 @@ class JsClientsDialect:
         content = ctx.content
         out: list[Contract] = []
 
-        def emit(*, method: str, url: str, client: str, confidence: float = 0.75) -> None:
+        def emit(
+            *, method: str, url: str, client: str, line: int, confidence: float = 0.75
+        ) -> None:
             c = build_consumer_contract(
-                ctx, method=method, url=url, client=client, confidence=confidence
+                ctx, method=method, url=url, client=client, line=line, confidence=confidence
             )
             if c is not None:
                 out.append(c)
 
         # fetch() with an explicit method.
         for m in _FETCH_METHOD_RE.finditer(content):
-            emit(method=m.group(2).upper(), url=m.group(1), client="fetch")
+            emit(
+                method=m.group(2).upper(),
+                url=m.group(1),
+                client="fetch",
+                line=line_at(content, m.start()),
+            )
 
         # fetch() without a method → GET, skipping URLs already matched above.
         method_urls = {m.group(1) for m in _FETCH_METHOD_RE.finditer(content)}
@@ -76,11 +84,16 @@ class JsClientsDialect:
             url = m.group(1)
             if url in method_urls:
                 continue
-            emit(method="GET", url=url, client="fetch")
+            emit(method="GET", url=url, client="fetch", line=line_at(content, m.start()))
 
         # axios.<method>()
         for m in _AXIOS_RE.finditer(content):
-            emit(method=m.group(1).upper(), url=m.group(2), client="axios")
+            emit(
+                method=m.group(1).upper(),
+                url=m.group(2),
+                client="axios",
+                line=line_at(content, m.start()),
+            )
 
         # Wrapper calls — fetchJSON(`${BASE}/path`, { method: "POST" }) etc.
         for m in _WRAPPER_CALL_RE.finditer(content):
@@ -94,6 +107,12 @@ class JsClientsDialect:
             if not (_HTTP_NAME_RE.search(callee) or method_opt):
                 continue
             method = method_opt.group(1).upper() if method_opt else "GET"
-            emit(method=method, url=m.group(2), client="wrapper", confidence=0.65)
+            emit(
+                method=method,
+                url=m.group(2),
+                client="wrapper",
+                line=line_at(content, m.start()),
+                confidence=0.65,
+            )
 
         return out

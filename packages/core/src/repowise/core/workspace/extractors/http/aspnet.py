@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ..base import line_at
 from ..langs import CSHARP
 from .dialect import METHODS, build_provider_contract, nearest_prefix
 
@@ -67,14 +68,24 @@ class AspNetDialect:
             prefix = nearest_prefix(class_mappings, m.start())
             if prefix:
                 path_raw = prefix + "/" + path_raw.lstrip("/")
-            c = build_provider_contract(ctx, method=method, path_raw=path_raw, framework="aspnet")
+            c = build_provider_contract(
+                ctx,
+                method=method,
+                path_raw=path_raw,
+                framework="aspnet",
+                line=line_at(content, m.start()),
+            )
             if c is not None:
                 out.append(c)
 
         # Minimal API — not inside a controller, never prefix-stitched.
         for m in _ASPNET_MINIMAL_RE.finditer(content):
             c = build_provider_contract(
-                ctx, method=m.group(1).upper(), path_raw=m.group(2), framework="aspnet-minimal"
+                ctx,
+                method=m.group(1).upper(),
+                path_raw=m.group(2),
+                framework="aspnet-minimal",
+                line=line_at(content, m.start()),
             )
             if c is not None:
                 out.append(c)
@@ -87,7 +98,13 @@ class AspNetDialect:
                 prefix = nearest_prefix(class_mappings, m.start())
                 if not prefix:
                     continue
-                c = build_provider_contract(ctx, method=method, path_raw=prefix, framework="aspnet")
+                c = build_provider_contract(
+                    ctx,
+                    method=method,
+                    path_raw=prefix,
+                    framework="aspnet",
+                    line=line_at(content, m.start()),
+                )
                 if c is not None:
                     out.append(c)
 

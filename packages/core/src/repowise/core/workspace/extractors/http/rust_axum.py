@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ..base import line_at
 from ..langs import RUST
 from .dialect import build_provider_contract
 
@@ -63,7 +64,11 @@ class RustAxumDialect:
             methods = {mm.group(1).upper() for mm in _AXUM_METHOD_RE.finditer(window)}
             for method in sorted(methods):
                 c = build_provider_contract(
-                    ctx, method=method, path_raw=path_raw, framework="axum"
+                    ctx,
+                    method=method,
+                    path_raw=path_raw,
+                    framework="axum",
+                    line=line_at(content, m.start()),
                 )
                 if c is not None:
                     out.append(c)
@@ -71,7 +76,11 @@ class RustAxumDialect:
         # Actix-web / Rocket attribute macros.
         for m in _RUST_ATTR_ROUTE_RE.finditer(content):
             c = build_provider_contract(
-                ctx, method=m.group(1).upper(), path_raw=m.group(2), framework="rust-attr"
+                ctx,
+                method=m.group(1).upper(),
+                path_raw=m.group(2),
+                framework="rust-attr",
+                line=line_at(content, m.start()),
             )
             if c is not None:
                 out.append(c)

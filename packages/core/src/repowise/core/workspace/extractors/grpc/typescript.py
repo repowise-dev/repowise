@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ..base import line_at
 from ..langs import JS_TS
 from .dialect import make_grpc_contract
 
@@ -34,6 +35,7 @@ class TypeScriptGrpcDialect:
                     symbol_name=f"ts:@GrpcMethod('{svc}', '{method}')",
                     confidence=0.8,
                     meta={"service": svc, "method": method, "source": "ts_decorator"},
+                    line=line_at(ctx.content, m.start()),
                 )
             )
         return out

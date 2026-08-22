@@ -311,6 +311,7 @@ def test_system_graph_json_shape_is_locked():
         "consumers_by_layer",
         "http_consumers_unresolved",
         "http_consumer_coverage",
+        "symbol_identity",
     }
 
 

@@ -33,6 +33,14 @@ _log = logging.getLogger("repowise.workspace.repo_index")
 # the repo — a third-party package or a sibling workspace repo.
 EXTERNAL_PREFIX = "external:"
 
+# How far below a declaration line its symbol may open. Covers a stack of
+# decorators or annotations and the blank lines between them. The ceiling: a
+# declaration this close above an unrelated *nested* definition binds to it,
+# since the index alone cannot tell a decorator run from ordinary code. Reading
+# the intervening text would settle it, at the cost of the caller holding the
+# file (see :func:`.extractors.from_index._decorators_above`, which does).
+_DECLARATION_LOOKAHEAD = 8
+
 
 @dataclass(frozen=True)
 class IndexedSymbol:
@@ -142,6 +150,36 @@ class RepoIndex:
             ):
                 best = sym
         return best
+
+    def declared_symbol_at(self, rel_path: str, line: int) -> IndexedSymbol | None:
+        """The symbol a declaration on *line* names, or None.
+
+        :meth:`symbol_at` answers "which symbol contains this line", which is
+        the wrong question for a declaration that sits *above* its handler: a
+        route decorator or annotation is outside the handler's span, because
+        the parser takes a symbol's span from the definition node rather than
+        the decorated one. So a symbol opening just below *line* is preferred,
+        but only when it is nested inside whatever contains *line* — that guard
+        is what stops a call on a function's last line from binding to the next
+        function down.
+        """
+        containing = self.symbol_at(rel_path, line)
+        # A match *on* a symbol's own declaration line names that symbol, not
+        # the first member under it (a gRPC servicer class, say).
+        if containing is not None and containing.start_line == line:
+            return containing
+        following: IndexedSymbol | None = None
+        for sym in self._by_file.get(rel_path, ()):
+            if line < sym.start_line <= line + _DECLARATION_LOOKAHEAD and (
+                following is None or sym.start_line < following.start_line
+            ):
+                following = sym
+        if following is not None and (
+            containing is None
+            or containing.start_line <= following.start_line <= containing.end_line
+        ):
+            return following
+        return containing
 
     def external_import_edges(self) -> list[ExternalImport]:
         """Every ``imports`` edge leaving the repo, with the names it consumes."""

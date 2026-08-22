@@ -64,6 +64,7 @@ def build_provider_contract(
     method: str,
     path_raw: str,
     framework: str,
+    line: int | None = None,
     confidence: float = 0.85,
 ) -> Contract | None:
     """Build a provider contract, or ``None`` if the path is unusable.
@@ -87,6 +88,7 @@ def build_provider_contract(
         symbol_name=f"{framework}:{method} {path_raw}",
         confidence=confidence,
         service=None,
+        line=line,
         meta={"method": method, "path": norm_path, "framework": framework},
     )
 
@@ -97,6 +99,7 @@ def build_consumer_contract(
     method: str,
     url: str,
     client: str,
+    line: int | None = None,
     confidence: float = 0.75,
 ) -> Contract | None:
     """Build a consumer contract from a raw client-call URL.
@@ -122,5 +125,6 @@ def build_consumer_contract(
         symbol_name=f"{client}:{method} {url}",
         confidence=confidence,
         service=None,
+        line=line,
         meta=consumer_meta(method, norm_path, client, base_token, host),
     )

@@ -274,7 +274,8 @@ class WorkspaceImpactedConsumer(BaseModel):
     service: str | None = None
     node_id: str
     file: str
-    symbol: str
+    symbol: str  # display label; symbol_id is the one a tool can look up
+    symbol_id: str | None = None
     match_type: str = "exact"
     confidence: float = 0.0
 

@@ -86,10 +86,14 @@ def _breaking_change_directive(repo_alias: str) -> list[dict[str, Any]]:
                     "severity": change.get("severity"),
                     "detail": change.get("detail"),
                     "impacted_consumers": [
+                        # symbol_id only when the contract bound to one: it is
+                        # what the reader can pass to get_symbol, and a null
+                        # would just cost budget.
                         {
                             "repo": c.get("repo"),
                             "service": c.get("service"),
                             "file": c.get("file"),
+                            **({"symbol_id": sid} if (sid := c.get("symbol_id")) else {}),
                         }
                         for c in cross[:_BC_CONSUMER_LIMIT]
                     ],

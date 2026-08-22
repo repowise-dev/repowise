@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ..base import line_at
 from ..langs import GO
 from .dialect import METHODS_UPPER, build_provider_contract
 from .mounts import compose_prefix
@@ -68,7 +69,13 @@ class GoDialect:
             # Handle/HandleFunc don't carry a method verb.
             method = "*" if method_raw in ("Handle", "HandleFunc") else method_raw.upper()
             path = compose_prefix(prefixes.get(var, ""), path_raw)
-            c = build_provider_contract(ctx, method=method, path_raw=path, framework="go")
+            c = build_provider_contract(
+                ctx,
+                method=method,
+                path_raw=path,
+                framework="go",
+                line=line_at(ctx.content, m.start()),
+            )
             if c is not None:
                 out.append(c)
         return out
