@@ -186,9 +186,6 @@ type NormalizedRiskTarget = {
   risk_summary?: string;
 };
 
-/** Same top-quartile cut `git_indexer/enrich.py` uses for `is_hotspot`. */
-const HOTSPOT_SCORE_THRESHOLD = 0.75;
-
 function formatHotspotPct(score: number): string {
   return `${Math.round(score * 100)}th`;
 }
@@ -227,10 +224,10 @@ function normalizeRiskTargets(data: RiskReportArtifactData): NormalizedRiskTarge
       const out: NormalizedRiskTarget = {
         file_path: t.file_path,
         score,
-        // MCP target rows omit `is_hotspot`; derive from the enrich.py cut.
-        is_hotspot:
-          Boolean(t.is_hotspot) ||
-          (typeof score === "number" && score >= HOTSPOT_SCORE_THRESHOLD),
+        // The backend now emits `is_hotspot` (which already applies the
+        // absolute activity floors); trust it instead of re-deriving from the
+        // score, which can't reproduce the floors and misbadges quiet repos.
+        is_hotspot: Boolean(t.is_hotspot),
       };
       if (typeof t.risk_type === "string") out.risk_type = t.risk_type;
       if (typeof t.trend === "string") out.trend = t.trend;
