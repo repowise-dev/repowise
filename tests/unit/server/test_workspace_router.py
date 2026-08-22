@@ -42,6 +42,7 @@ def _make_workspace_app(
     ws_config=None,
     enricher=None,
     workspace_root: str | None = None,
+    session_factory=None,
 ) -> FastAPI:
     """Build a minimal FastAPI app with workspace router + injected state."""
 
@@ -58,6 +59,7 @@ def _make_workspace_app(
     app.state.workspace_config = ws_config
     app.state.cross_repo_enricher = enricher
     app.state.workspace_root = workspace_root
+    app.state.session_factory = session_factory
 
     app.include_router(workspace.router)
     return app
@@ -380,6 +382,55 @@ class TestGetWorkspace:
         assert data["is_workspace"] is True
         assert data["cross_repo_summary"] is None
         assert data["contract_summary"] is None
+
+    @pytest.mark.asyncio
+    async def test_configured_db_repo_reported_as_indexed(self, tmp_path: Path) -> None:
+        """Issue #1034: repos indexed in the configured DB (e.g. PostgreSQL),
+        with no repo-local ``.repowise/wiki.db`` file, must be reconciled as
+        indexed rather than ``needs_index`` with zero stats."""
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import StaticPool
+
+        from repowise.core.persistence import upsert_repository
+        from repowise.core.persistence.database import get_session, init_db
+
+        ws_root = tmp_path / "ws"
+        backend_dir = ws_root / "backend"
+        backend_dir.mkdir(parents=True)
+
+        # Configured DB — in-memory SQLite standing in for PostgreSQL.
+        engine = create_async_engine(
+            "sqlite+aiosqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        await init_db(engine)
+        sf = async_sessionmaker(engine, expire_on_commit=False)
+        async with get_session(sf) as session:
+            repo = await upsert_repository(session, name="backend", local_path=str(backend_dir))
+            repo_id = repo.id
+            await session.flush()
+
+        ws_config = _make_ws_config()
+        app = _make_workspace_app(
+            ws_config=ws_config,
+            workspace_root=str(ws_root),
+            session_factory=sf,
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        backend = next(r for r in data["repos"] if r["alias"] == "backend")
+        # No local wiki.db — the repo must still be reconciled from the DB.
+        assert (backend_dir / ".repowise" / "wiki.db").exists() is False
+        assert backend["status"] == "indexed"
+        assert backend["repo_id"] == repo_id
+        assert backend["file_count"] == 0
+
+        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
