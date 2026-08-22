@@ -141,6 +141,22 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "env_keys": [],
         "requires_key": False,
     },
+    {
+        "id": "devin",
+        "name": "Devin CLI",
+        "default_model": "devin/adaptive",
+        "models": [
+            "devin/adaptive",
+            "devin/opus",
+            "devin/sonnet",
+            "devin/gpt",
+            "devin/swe",
+            "devin/codex",
+            "devin/gemini",
+        ],
+        "env_keys": [],
+        "requires_key": False,
+    },
 ]
 
 _CATALOG_BY_ID = {p["id"]: p for p in PROVIDER_CATALOG}

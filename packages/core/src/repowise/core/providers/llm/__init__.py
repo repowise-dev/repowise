@@ -20,6 +20,7 @@ Built-in providers:
     litellm    — 100+ providers via LiteLLM proxy
     codex_cli  — local authenticated Codex CLI via codex exec
     opencode   — local opencode CLI via opencode run
+    devin      — local Devin CLI via devin -p
     mock       — deterministic test provider
 """
 

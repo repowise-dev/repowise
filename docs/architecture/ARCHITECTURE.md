@@ -1629,7 +1629,7 @@ Two things worth knowing before you start:
 Full configuration with defaults (`.repowise/config.yaml`):
 
 ```yaml
-provider: anthropic          # anthropic | openai | openrouter | gemini | deepseek | kimi | ollama | litellm | codex_cli | opencode | edenai | mock
+provider: anthropic          # anthropic | openai | openrouter | gemini | deepseek | kimi | ollama | litellm | codex_cli | opencode | devin | edenai | mock
 model: claude-sonnet-4-5    # passed through to the provider
 embedding_provider: anthropic
 embedding_model: voyage-3
