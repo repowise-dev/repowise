@@ -7,7 +7,7 @@ every public name, so existing imports are unaffected.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -659,3 +659,45 @@ async def get_stale_pages(
         )
     )
     return list(result.scalars().all())
+
+
+async def get_stale_file_page_ages(
+    session: AsyncSession,
+    repository_id: str,
+) -> dict[str, float]:
+    """``{file_path: staleness_age_seconds}`` for stale/expired file pages.
+
+    The cascade-budget ordering in
+    :meth:`~repowise.core.ingestion.change_detector.ChangeDetector.get_affected_pages`
+    consumes this so a constrained regeneration run bubbles the *oldest* stale
+    pages to the top rather than reordering purely by importance (issues #847 /
+    #851). Staleness age is measured from ``updated_at`` — the last time the
+    page was regenerated — so the page whose prose lagged the code longest
+    carries the largest value.
+
+    Only ``file_page`` rows are returned: the cascade reaches file paths, and
+    the module / SCC / repo-wide containers are derived from the selected files
+    rather than selected themselves. Returns an empty dict when nothing is
+    stale (or the repository has no file pages), which keeps the pure-importance
+    ordering.
+    """
+    result = await session.execute(
+        select(Page.id, Page.target_path, Page.updated_at).where(
+            Page.repository_id == repository_id,
+            Page.page_type == "file_page",
+            Page.freshness_status.in_(["stale", "expired"]),
+        )
+    )
+    now = datetime.now(UTC)
+    ages: dict[str, float] = {}
+    for _pid, target_path, updated_at in result:
+        if not target_path:
+            continue
+        if updated_at is None:
+            ages[target_path] = float("inf")
+            continue
+        dt = updated_at
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        ages[target_path] = max(0.0, (now - dt).total_seconds())
+    return ages
