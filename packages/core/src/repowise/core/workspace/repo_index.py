@@ -83,6 +83,7 @@ class RepoIndex:
         self._session = session
         self._engine = engine
         self._by_file: dict[str, list[IndexedSymbol]] = {}
+        self._by_name: dict[str, list[IndexedSymbol]] = {}
         self._externals: list[ExternalImport] = []
 
     # -- Loading -----------------------------------------------------------
@@ -127,6 +128,8 @@ class RepoIndex:
         # the last is the method.
         for symbols in self._by_file.values():
             symbols.sort(key=lambda s: (s.start_line, -s.end_line))
+            for sym in symbols:
+                self._by_name.setdefault(sym.name, []).append(sym)
 
         edges = await self._session.execute(
             select(
@@ -199,6 +202,15 @@ class RepoIndex:
         ):
             return following
         return containing
+
+    def symbol_named(self, name: str) -> IndexedSymbol | None:
+        """The one symbol called *name* in this repo, or None.
+
+        A name declared more than once is refused rather than guessed: which of
+        them the caller meant would otherwise be decided by index row order.
+        """
+        found = self._by_name.get(name)
+        return found[0] if found is not None and len(found) == 1 else None
 
     def external_import_edges(self) -> list[ExternalImport]:
         """Every ``imports`` edge leaving the repo, with the names it consumes."""

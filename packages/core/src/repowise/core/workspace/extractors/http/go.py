@@ -11,10 +11,12 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from repowise.core.ingestion.framework_routes import GroupMatch
+
 from ..base import line_at
 from ..langs import GO
 from .dialect import METHODS_UPPER, build_provider_contract
-from .mounts import compose_prefix
+from .mounts import compose_prefix, group_prefixes
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -33,28 +35,11 @@ _GO_ROUTE_RE = re.compile(
 )
 
 
-def _group_prefixes(content: str) -> dict[str, str]:
-    """Resolve each group variable to its full, transitively-composed prefix."""
-    # child -> (parent, segment)
-    edges: dict[str, tuple[str, str]] = {}
-    for m in _GROUP_RE.finditer(content):
-        edges[m.group(1)] = (m.group(2), m.group(3))
-
-    resolved: dict[str, str] = {}
-
-    def resolve(var: str, seen: frozenset[str]) -> str:
-        if var in resolved:
-            return resolved[var]
-        if var not in edges or var in seen:
-            return ""  # base router (gin.Default()/echo.New()) or a cycle
-        parent, segment = edges[var]
-        prefix = compose_prefix(resolve(parent, seen | {var}), segment)
-        resolved[var] = prefix
-        return prefix
-
-    for var in edges:
-        resolve(var, frozenset())
-    return resolved
+def _groups(content: str) -> list[GroupMatch]:
+    return [
+        GroupMatch(var=m.group(1), parent=m.group(2), prefix=m.group(3))
+        for m in _GROUP_RE.finditer(content)
+    ]
 
 
 class GoDialect:
@@ -62,7 +47,7 @@ class GoDialect:
     extensions = GO
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        prefixes = _group_prefixes(ctx.content)
+        prefixes = group_prefixes(_groups(ctx.content))
         out: list[Contract] = []
         for m in _GO_ROUTE_RE.finditer(ctx.content):
             var, method_raw, path_raw = m.group(1), m.group(2), m.group(3)

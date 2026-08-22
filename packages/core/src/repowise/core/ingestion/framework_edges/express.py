@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from ..framework_routes import express_routes
 from ..resolvers import ResolverContext
 from .base import (
     DetectionContext,
@@ -30,9 +31,6 @@ _IDENT_RE = re.compile(r"\b([A-Z]\w*)\b")
 
 _EXPRESS_RECEIVER_RE = re.compile(
     r"\b(\w+)\s*(?::[^=;\n]+)?=\s*(?:express\s*\(\s*\)|(?:express\s*\.\s*)?Router\s*\()"
-)
-_ROUTE_CALL_START_RE = re.compile(
-    r"\b(\w+)\s*\.\s*(?:get|post|put|delete|patch|options|head|all|use)\s*\("
 )
 _STRING_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`(?:[^`\\]|\\.)*`")
 _ARG_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*")
@@ -103,13 +101,15 @@ def _add_express_edges(
             receivers = {m.group(1) for m in _EXPRESS_RECEIVER_RE.finditer(text)}
             if local_funcs and receivers:
                 module_sym = f"{path}::__module__"
-                for m in _ROUTE_CALL_START_RE.finditer(text):
-                    if m.group(1) not in receivers:
+                for route in express_routes(text):
+                    if route.receiver not in receivers:
                         continue
-                    close = _match_paren(text, m.end() - 1)
+                    close = _match_paren(text, route.paren_offset)
                     if close == -1:
                         continue
-                    arg_blob = _STRING_LITERAL_RE.sub("", text[m.end() : close])
+                    arg_blob = _STRING_LITERAL_RE.sub(
+                        "", text[route.paren_offset + 1 : close]
+                    )
                     for ident in _ARG_IDENT_RE.finditer(arg_blob):
                         sym_id = local_funcs.get(ident.group(0))
                         if sym_id and add_symbol_edge(graph, module_sym, sym_id):

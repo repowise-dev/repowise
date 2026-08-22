@@ -66,12 +66,18 @@ def build_provider_contract(
     framework: str,
     line: int | None = None,
     confidence: float = 0.85,
+    handler: str | None = None,
 ) -> Contract | None:
     """Build a provider contract, or ``None`` if the path is unusable.
 
     A match whose path normalizes to bare ``/`` only counts when the raw text
     actually carried a path — a template-variable-only or empty route is
     dropped, matching the legacy extractor's skip rule.
+
+    *handler* is the expression the registration names, for frameworks that
+    declare a route away from its handler (an ASP.NET minimal API). It is what
+    lets :func:`.contracts.bind_symbol_ids` reach the handler rather than the
+    registration site; without it the line lookup binds to ``Program.cs``.
     """
     from repowise.core.workspace.contracts import Contract
 
@@ -89,7 +95,12 @@ def build_provider_contract(
         confidence=confidence,
         service=None,
         line=line,
-        meta={"method": method, "path": norm_path, "framework": framework},
+        meta={
+            "method": method,
+            "path": norm_path,
+            "framework": framework,
+            **({"handler": handler} if handler else {}),
+        },
     )
 
 

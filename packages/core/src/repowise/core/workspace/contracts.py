@@ -42,10 +42,12 @@ _log = logging.getLogger("repowise.workspace.contracts")
 CONTRACTS_FILENAME = "contracts.json"
 
 #: Artifact schema version. Bumped to 2 when contracts gained ``symbol_id``,
-#: to 3 when providers gained a signature-derived ``schema``.
+#: to 3 when providers gained a signature-derived ``schema``, to 4 when a
+#: package surface became a ``code`` contract, and to 5 when ASP.NET minimal
+#: APIs gained ``MapGroup`` prefixes and a handler-bound ``symbol_id``.
 #: A store written under an older version is readable but not reusable: its
 #: rows carry no identity, and nothing short of re-extraction can give them one.
-CONTRACTS_VERSION = 4
+CONTRACTS_VERSION = 5
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +245,10 @@ def bind_symbol_ids(contracts: list[Contract], index: RepoIndex | None) -> dict[
     are left alone here. Which of the two lookups applies is the one thing a
     contract's own shape decides: see :data:`_DECLARED_ABOVE`.
 
+    A provider whose ``meta`` names a ``handler`` binds to that symbol first: an
+    ASP.NET minimal API declares the route in ``Program.cs`` and defines the
+    handler elsewhere, so the line lookup would bind it to the registration site.
+
     Mutates *contracts* in place and returns the one counter the artifact
     cannot recover on its own: ``identity_unindexed_<role>``, contracts whose
     file has no parsed symbols at all — a ``.sql`` file, or a repo with no
@@ -252,6 +258,13 @@ def bind_symbol_ids(contracts: list[Contract], index: RepoIndex | None) -> dict[
     """
     counts: dict[str, int] = {}
     for contract in contracts:
+        handler = contract.meta.get("handler") if contract.role == "provider" else None
+        if contract.symbol_id is None and index is not None and handler:
+            # `OrderHandlers.GetOrder` names the handler in its last segment;
+            # the graph consumer reads the first one, which is its type.
+            symbol = index.symbol_named(handler.split(".")[-1])
+            if symbol is not None:
+                contract.symbol_id = symbol.symbol_id
         if contract.symbol_id is None and index is not None and contract.line is not None:
             declares = contract.role == "provider" and contract.contract_type in _DECLARED_ABOVE
             lookup = index.declared_symbol_at if declares else index.symbol_at
