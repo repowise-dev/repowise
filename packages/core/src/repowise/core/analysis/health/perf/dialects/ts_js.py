@@ -163,7 +163,12 @@ class TsJsPerfDialect(BasePerfDialect):
             if method in TS_SINK_METHODS or awaited:
                 return root_kind
             return None
-        if method in PRISMA_METHODS:  # distinctive prisma-client verbs
+        # Distinctive prisma-client verbs, but only as a MEMBER call. A prisma
+        # query is always reached through the client (``prisma.user.aggregate``),
+        # so a bare ``aggregate(xs)`` / ``groupBy(xs)`` / ``upsert(x)`` is an
+        # ordinary local function and was being reported as a database round
+        # trip -- an N+1 finding on pure arithmetic, in code with no database.
+        if is_attribute and method in PRISMA_METHODS:
             return "db"
         if method in TS_FS_METHODS:  # distinctive sync-fs verbs
             return "filesystem"
