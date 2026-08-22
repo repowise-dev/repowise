@@ -7,6 +7,8 @@ the commit-depth defaults, decay half-lives, and skip heuristics.
 from __future__ import annotations
 
 import contextlib
+import math
+import os
 import re
 from typing import Any
 
@@ -383,4 +385,37 @@ _MAX_BLAME_SIZE_BYTES: int = 100 * 1024  # 100 KB
 # Maximum seconds to wait for a single file's git indexing.  If exceeded the
 # file is recorded with whatever data was collected before the timeout and the
 # semaphore slot is released so other files can proceed.
-_FILE_INDEX_TIMEOUT_SECS: float = 45.0
+#
+# The default is deliberately generous: a first full index of a large
+# repository can run several slow git subprocesses per file (log, blame,
+# renames), and a premature fire here would silently record partial data for
+# files that were simply still working — the same premature-timeout failure
+# mode reported for long-running build/compile commands. Override per-repo or
+# per-machine with ``REPOWISE_GIT_INDEX_TIMEOUT_S`` (a positive float, seconds).
+_FILE_INDEX_TIMEOUT_SECS_ENV = "REPOWISE_GIT_INDEX_TIMEOUT_S"
+_FILE_INDEX_TIMEOUT_SECS_DEFAULT: float = 120.0
+
+
+def _resolve_file_index_timeout() -> float:
+    """Seconds one file's git indexing may take, from env or the default.
+
+    An unparseable or non-positive value keeps the default rather than
+    silently dropping the budget (matching the other ``REPOWISE_*_TIMEOUT_S``
+    resolvers in the codebase).
+    """
+    raw = os.environ.get(_FILE_INDEX_TIMEOUT_SECS_ENV, "").strip()
+    if not raw:
+        return _FILE_INDEX_TIMEOUT_SECS_DEFAULT
+    try:
+        seconds = float(raw)
+    except ValueError:
+        seconds = float("nan")
+    # NaN and inf both fail ``isfinite``/``> 0``, so they land on the default
+    # rather than on a budget asyncio.wait_for would treat as already expired
+    # (or one it would never fire at all).
+    if not math.isfinite(seconds) or not seconds > 0:
+        return _FILE_INDEX_TIMEOUT_SECS_DEFAULT
+    return seconds
+
+
+_FILE_INDEX_TIMEOUT_SECS: float = _resolve_file_index_timeout()
