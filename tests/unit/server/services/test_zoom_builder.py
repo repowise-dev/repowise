@@ -11,6 +11,7 @@ from repowise.server.services.c4_builder.models import (
     ArchTourStep,
 )
 from repowise.server.services.zoom_builder import assemble_zoom_map
+from repowise.server.services.zoom_builder.calls import keep_projected_edge
 from repowise.server.services.zoom_builder.metrics import rollup_health, rollup_metrics
 from repowise.server.services.zoom_builder.models import ZoomNode
 from repowise.server.services.zoom_builder.relations import aggregate_relations
@@ -600,3 +601,66 @@ def _has_ancestor(nodes: dict[str, ZoomNode], node_id: str, ancestor_id: str) ->
             return True
         cur = nodes[cur].parent_id
     return False
+
+
+# --- the projected call graph ----------------------------------------------
+
+
+def test_keep_projected_edge_guards():
+    # A genuine cross-file pair in one language survives.
+    assert keep_projected_edge("a/x.py", "a/y.py")
+    # Every intra-file call projects onto a self-loop, which has no sibling to
+    # point at, and those outnumber the real ones.
+    assert not keep_projected_edge("a/x.py", "a/x.py")
+    # Across a language boundary the pair is more often a same-name coincidence
+    # than a call.
+    assert not keep_projected_edge("a/x.py", "a/x.ts")
+    assert not keep_projected_edge("", "a/y.py")
+
+
+def test_assemble_zoom_map_projected_calls_relabel_an_existing_pair():
+    # main.py -> engine.py is already drawn as "imports". A projected call over
+    # the same pair must not add a second arrow; it must upgrade the verb, since
+    # "calls" outranks "imports" and is the more precise claim about the pair.
+    view = _view()
+    before = {(r.source_id, r.target_id): r for r in assemble_zoom_map(view).relations}
+    after = {
+        (r.source_id, r.target_id): r
+        for r in assemble_zoom_map(
+            view, call_edges=[("pkg/main.py", "pkg/core/engine.py", "calls")]
+        ).relations
+    }
+
+    assert set(before) == set(after), "a relabelled pair must not become a new arrow"
+    # Under the layer, main.py's folder points at the group holding engine.py.
+    key = ("zm:D:zm:L:layer:service:pkg", "zm:G:layer:service:core")
+    assert before[key].label == "imports"
+    assert after[key].label == "calls"
+    assert after[key].edge_count == before[key].edge_count + 1
+
+
+def test_assemble_zoom_map_projected_calls_add_a_pair_no_import_covers():
+    # util.py never imports main.py, so a call between them is an arrow the map
+    # could not draw before — this is the part of the projection that is new
+    # information rather than a better word for old information.
+    view = _view()
+    before = {(r.source_id, r.target_id) for r in assemble_zoom_map(view).relations}
+    zoom = assemble_zoom_map(
+        view, call_edges=[("pkg/core/util.py", "pkg/main.py", "dispatches_to")]
+    )
+    added = {(r.source_id, r.target_id) for r in zoom.relations} - before
+
+    # The only edge under the layer ran folder -> group; this is the reverse
+    # direction, which nothing imported into existence.
+    pair = ("zm:G:layer:service:core", "zm:D:zm:L:layer:service:pkg")
+    assert added == {pair}
+    new = next(r for r in zoom.relations if (r.source_id, r.target_id) == pair)
+    assert new.label == "dispatches to"
+
+
+def test_assemble_zoom_map_call_edges_default_to_none():
+    # The pure assembly still runs without them: the hosted builder calls it
+    # directly and has no symbol graph in its artifacts.
+    assert assemble_zoom_map(_view()).relations == assemble_zoom_map(
+        _view(), call_edges=None
+    ).relations

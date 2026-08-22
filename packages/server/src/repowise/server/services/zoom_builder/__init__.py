@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.server.services.c4_builder.architecture import build_architecture_view
 from repowise.server.services.c4_builder.models import ArchitectureView
 
+from .calls import load_projected_calls
 from .metrics import rollup_health, rollup_metrics
 from .models import ZoomMap, ZoomNode, ZoomRelation
 from .relations import aggregate_relations
@@ -55,6 +56,7 @@ def assemble_zoom_map(
     focus: str | None = None,
     health: dict[str, tuple[float, int]] | None = None,
     modules: dict[str, ModuleInfo] | None = None,
+    call_edges: list[tuple[str, str, str]] | None = None,
 ) -> ZoomMap:
     """Pure assembly: ``ArchitectureView`` -> ``ZoomMap``. No DB.
 
@@ -67,6 +69,11 @@ def assemble_zoom_map(
     folder card reads as the subsystem the docs name rather than as a path
     segment. Also optional: a repository indexed without a wiki has none, and
     the hosted builder does not have them in its artifacts yet.
+
+    ``call_edges`` are symbol-level execution edges already projected onto file
+    pairs by :mod:`.calls`. The view cannot carry them -- it is loaded file-only,
+    so both endpoints of a symbol edge are filtered out before it arrives -- so
+    they come in beside it. Optional for the same reasons as the two above.
     """
     health = health or {}
     # The view is loaded file-only, but the curated node_type can be
@@ -99,6 +106,7 @@ def assemble_zoom_map(
         for n in file_nodes
     ]
     edges = [(e.source, e.target, e.edge_type) for e in view.edges]
+    edges.extend(call_edges or ())
 
     signals = compute_file_signals(
         file_stats,
@@ -240,6 +248,15 @@ async def build_zoom_map(
 
     view = await build_architecture_view(session, repo_id, include_symbols=False)
     modules = await _load_module_names(session, repo_id)
+    # The view is file-only, so the whole symbol-level execution graph was
+    # filtered out of it. Read it back and project it onto file pairs.
+    call_edges = await load_projected_calls(
+        session,
+        repo_id,
+        # Same file-node test the assembly uses, so a projected edge can only
+        # land on a file the tree will actually contain.
+        {n.id for n in view.nodes if n.line_range is None and n.id == n.file_path},
+    )
     # One extra read: per-file health, keyed by path -> (effective score, loc).
     # Effective score prefers the split ``defect_score`` and falls back to the
     # overall ``score``, exactly like GET /api/repos/{id}/files, so the zoom card
@@ -254,7 +271,12 @@ async def build_zoom_map(
         for m in metrics
     }
     return assemble_zoom_map(
-        view, max_depth=max_depth, focus=focus, health=health, modules=modules
+        view,
+        max_depth=max_depth,
+        focus=focus,
+        health=health,
+        modules=modules,
+        call_edges=call_edges,
     )
 
 
