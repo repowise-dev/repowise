@@ -57,6 +57,23 @@ def save_repo_config(repo_path: Path | str, config: dict[str, Any]) -> None:
     )
 
 
+def merge_exclude_patterns(*sources: list[str] | None) -> list[str]:
+    """Concatenate exclude-pattern lists, dropping duplicates, order preserved.
+
+    ``exclude_patterns`` from ``.repowise/config.yaml`` and the gitignore stack
+    overlap often (``node_modules`` shows up in both); combining them by blind
+    ``extend`` double-applies the same rule and bloats the compiled PathSpec.
+    This merges any number of sources into one ordered, de-duplicated list;
+    ``None`` entries are treated as empty so callers need not pre-filter.
+    """
+    out: list[str] = []
+    for src in sources:
+        for pattern in src or []:
+            if pattern not in out:
+                out.append(pattern)
+    return out
+
+
 def config_fingerprint(repo_path: Path | str) -> str:
     """SHA-256 hex of ``.repowise/config.yaml`` + ``health-rules.json`` content.
 
