@@ -707,8 +707,10 @@ agent over MCP.
 | MCP tools served | 11 | 1 | 29 | 3 |
 | **Finds the gold files** *([measured](docs/BENCHMARKS.md#1-finding-the-right-files), n=42 sealed)* | ✅ **0.876** | 0.610 | not in this run | not measured |
 | **Output tokens vs a bare agent** *([measured](docs/BENCHMARKS.md#2-what-changes-in-a-real-agent-loop), n=43)* | ✅ **-31.6%** | -24.4% | -14.8% | not measured |
-| **Index time, django** *([measured](docs/BENCHMARKS.md#6-indexing-time-the-row-we-lose))* | ⚠️ **366.8s**, slowest here | ✅ **16.4s** | not measured | n/a, cloud |
-| | *one-time; updates after it are incremental* | | | |
+| **Memory to build the graph** *([measured](docs/BENCHMARKS.md#what-it-costs-to-run), 5 tools, 35 repos)* | ✅ **75 MB**, lowest on 35 of 35 | 757 MB | not measured | n/a, cloud |
+| **Time to build the graph** *([measured](docs/BENCHMARKS.md#what-it-costs-to-run), same run)* | **2.77s**, fastest on 14 of 35 | **3.65s**, fastest on 16 | not measured | n/a, cloud |
+| **Time to build the full index, django** *([measured](docs/BENCHMARKS.md#what-it-costs-to-run))* | ⚠️ **366.8s**, slowest here | ✅ **16.4s** | not measured | n/a, cloud |
+| | *five layers against their one; one-time, updates after it are incremental* | | | |
 | **Call-edge precision** *([measured](docs/BENCHMARKS.md#7-edge-precision), 540 rows hand-graded from source)* | ✅ **84.8%** | 57.0% | not measured | not measured |
 | **Call-edge precision, judged by a compiler** *([measured](docs/BENCHMARKS.md#8-the-same-question-against-an-answer-key-we-do-not-control), 5 tools, 7 cells, 37,853 edges)* | ✅ **nothing that finds as much gets more of it right**, 7 of 7 | lower precision in 7, and lower recall in 5 | not measured | not measured |
 | Generated documentation | ✅ | ❌ | ❌ | ✅ |
@@ -719,9 +721,13 @@ agent over MCP.
 | Architectural decision records | ✅ | ❌ | ❌ | ❌ |
 | Multi-repo workspace intelligence | ✅ contracts, co-change, federated MCP | ❌ | ❌ | ❌ |
 
-CodeGraph builds its index **22x faster than we do**, and if a call graph is all
-you need, that is the right trade. With prose generation on, which is what a
-default `repowise init` actually costs, it is **135x**. Graphify and
+**The two cost rows answer different questions.** Building the call graph, we are
+the lightest tool measured, about ten times lighter than the next, and roughly as
+fast as the fastest. Building the *whole* index, CodeGraph is **22x faster than we
+are**, because by then we have also built the git-history layer, the wiki, the
+decisions and the health pass. If a call graph is all you need, that is the right
+trade and you should take it. With prose generation on, which is what a default
+`repowise init` costs, it is **135x**. Graphify and
 code-review-graph were in the same measured field and are on the benchmarks page.
 
 The precision row cuts the other way and is worth stating as plainly: of the call
