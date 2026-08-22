@@ -465,11 +465,31 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS — allow all origins for local development
+    # CORS — configurable; default allows local dev but is browser-spec compliant.
+    # Browsers reject `Access-Control-Allow-Origin: *` with `Allow-Credentials: true`
+    # (preflight fails). When REPOWISE_CORS_ORIGINS is unset we allow any origin
+    # without credentials (safe for local dev); when credentials are needed the
+    # operator must set explicit origins via REPOWISE_CORS_ORIGINS.
+    cors_origins_env = os.environ.get("REPOWISE_CORS_ORIGINS", "").strip()
+    if cors_origins_env:
+        cors_origins = [o.strip() for o in cors_origins_env.split(",") if o.strip()]
+        cors_allow_credentials = True
+    else:
+        cors_origins = ["*"]
+        cors_allow_credentials = False
+        # Wildcard with credentials is rejected by browsers — force False and warn
+        # if the old unsafe combination is detected via explicit env.
+        if os.environ.get("REPOWISE_CORS_ALLOW_CREDENTIALS", "").lower() in ("1", "true", "yes"):
+            logger.warning(
+                "cors.wildcard_with_credentials_rejected: "
+                "REPOWISE_CORS_ORIGINS=* cannot be used with credentials; "
+                "set REPOWISE_CORS_ORIGINS to explicit origins"
+            )
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=cors_origins,
+        allow_credentials=cors_allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )
