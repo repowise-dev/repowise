@@ -7,9 +7,12 @@ must produce nothing rather than a partial answer.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from repowise.core.ingestion.traverser import FileTraverser
 from repowise.core.precedent import EpisodeStore
@@ -271,6 +274,56 @@ class TestFormatterDrift:
         )
         episodes = derive_structural_episodes(repo, _traverser(repo), allow_formatter_check=True)
         assert KIND_FORMATTER_DRIFT not in _kinds(episodes)
+
+    def test_repo_local_ruff_is_never_executed(self, tmp_path: Path, monkeypatch) -> None:
+        repo = self._declaring_repo(tmp_path)
+        repo_ruff = repo / ".venv" / "bin" / "ruff"
+        repo_ruff.parent.mkdir(parents=True)
+        repo_ruff.write_text("#!/bin/sh\ntouch PWNED\n", encoding="utf-8")
+        monkeypatch.setattr(shutil, "which", lambda _name: str(repo_ruff))
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *_a, **_k: (_ for _ in ()).throw(
+                AssertionError("repository-controlled ruff must not execute")
+            ),
+        )
+
+        episodes = derive_structural_episodes(repo, _traverser(repo), allow_formatter_check=True)
+
+        assert KIND_FORMATTER_DRIFT not in _kinds(episodes)
+        assert not (repo / "PWNED").exists()
+
+    def test_path_ruff_outside_repo_remains_available(self, tmp_path: Path, monkeypatch) -> None:
+        from repowise.core.precedent.structural import _ruff_executable
+
+        (tmp_path / "repo").mkdir()
+        repo = self._declaring_repo(tmp_path / "repo")
+        trusted_ruff = tmp_path / "trusted-tools" / "ruff"
+        trusted_ruff.parent.mkdir()
+        trusted_ruff.write_text("trusted", encoding="utf-8")
+        monkeypatch.setattr(shutil, "which", lambda _name: str(trusted_ruff))
+
+        assert _ruff_executable(repo) == str(trusted_ruff.resolve())
+
+    def test_repo_symlink_to_external_ruff_is_still_rejected(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from repowise.core.precedent.structural import _ruff_executable
+
+        (tmp_path / "repo").mkdir()
+        repo = self._declaring_repo(tmp_path / "repo")
+        trusted_ruff = tmp_path / "trusted-ruff"
+        trusted_ruff.write_text("trusted", encoding="utf-8")
+        repo_ruff = repo / ".venv" / "bin" / "ruff"
+        repo_ruff.parent.mkdir(parents=True)
+        try:
+            repo_ruff.symlink_to(trusted_ruff)
+        except OSError:
+            pytest.skip("symlinks are unavailable on this platform")
+        monkeypatch.setattr(shutil, "which", lambda _name: str(repo_ruff))
+
+        assert _ruff_executable(repo) is None
 
     def test_drift_is_reported_with_the_true_count(self, tmp_path: Path, monkeypatch) -> None:
         repo = self._declaring_repo(tmp_path)

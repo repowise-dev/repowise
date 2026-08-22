@@ -5,12 +5,26 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from repowise.core.providers.llm.registry import PROVIDER_API_KEY_ENVS
+
+# ``.repowise/.env`` is repository-controlled input.  Interactive setup writes
+# provider credentials there, so those are the only names it may project into
+# the ambient process environment.  In particular, process-loader, subprocess,
+# cache-sealing, database, and network-routing controls must remain owned by the
+# user who launched RepoWise.
+_REPO_ENV_ALLOWLIST = frozenset(
+    env_var for env_vars in PROVIDER_API_KEY_ENVS.values() for env_var in env_vars
+)
+
 
 def load_dotenv(repo_path: Path) -> None:
-    """Load ``<repo>/.repowise/.env`` into ``os.environ`` (without overwriting).
+    """Load saved provider keys into ``os.environ`` without overwriting.
 
-    Supports ``export KEY=value``, quoted values (``KEY="value"``, ``KEY='value'``),
-    and inline comments (``KEY=value  # comment``).
+    ``.repowise/.env`` is untrusted repository state, not a general-purpose
+    process dotenv.  Only the built-in providers' documented API-key names are
+    accepted.  Supports ``export KEY=value``, quoted values
+    (``KEY="value"``, ``KEY='value'``), and inline comments
+    (``KEY=value  # comment``).
     """
     env_file = repo_path / ".repowise" / ".env"
     if not env_file.exists():
@@ -38,7 +52,7 @@ def load_dotenv(repo_path: Path) -> None:
         # Strip matching surrounding quotes
         value = _strip_quotes(raw_value)
         # Don't overwrite existing env vars (explicit env takes priority)
-        if key and value and key not in os.environ:
+        if key in _REPO_ENV_ALLOWLIST and value and key not in os.environ:
             os.environ[key] = value
 
 

@@ -486,13 +486,26 @@ def _head_commit(root: Path) -> str | None:
 
 
 def _ruff_executable(root: Path) -> str | None:
-    """Prefer the checkout's own environment, then PATH."""
-    for venv_name in _VENV_DIRNAMES:
-        for scripts_dir, filename in (
-            (root / venv_name / "Scripts", "ruff.exe"),
-            (root / venv_name / "bin", "ruff"),
-        ):
-            candidate = scripts_dir / filename
-            if candidate.is_file():
-                return str(candidate)
-    return shutil.which("ruff")
+    """Return a launcher selected by the caller's PATH, never by the repository.
+
+    The checkout is untrusted input.  A committed ``.venv/bin/ruff`` must not
+    turn an indexing check into arbitrary code execution, even when a relative
+    PATH entry or symlink makes :func:`shutil.which` discover it.  Resolve the
+    selected launcher once and execute that canonical path so a repository
+    symlink cannot be swapped between validation and use.
+    """
+    executable = shutil.which("ruff")
+    if executable is None:
+        return None
+    try:
+        root_lexical = Path(os.path.abspath(root))
+        root_resolved = root.resolve(strict=True)
+        candidate_lexical = Path(os.path.abspath(executable))
+        candidate_resolved = candidate_lexical.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if candidate_lexical.is_relative_to(root_lexical) or candidate_resolved.is_relative_to(
+        root_resolved
+    ):
+        return None
+    return str(candidate_resolved)
