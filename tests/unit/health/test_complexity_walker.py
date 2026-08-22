@@ -234,6 +234,24 @@ def test_rust_flat_match_complexity():
     )
 
 
+def test_python_match_arms_count_toward_ccn():
+    """Python match/case is pattern matching — each case is a real branch.
+
+    Unlike Rust ``match`` (a flat dispatch that counts once), a Python
+    ``match`` with N ``case`` arms is structurally an ``if``/``elif`` chain
+    and each arm must count toward CCN. Regression for #1774: the flat-match
+    suppression was over-applied to Python, so a 4-arm match reported 2
+    (base 1 + 1 for the match, all arms dropped) instead of counting each arm.
+    """
+    results = _walk("python/match.py", "python")
+    match_fn = _find(results, "python_match")
+    assert match_fn is not None, "python_match not detected"
+    # base 1 + 4 case arms (1, 2, 3, wildcard _) = 5.
+    assert match_fn.ccn == 5, f"python match CCN expected 5, got {match_fn.ccn}"
+    # The arms are genuinely counted, not flattened away.
+    assert match_fn.ccn >= 4, f"match arms must count toward CCN, got {match_fn.ccn}"
+
+
 def test_unsupported_language_returns_empty():
     results = walk_file_complexity("/tmp/x.unknown", "klingon", b"")
     assert results == []
