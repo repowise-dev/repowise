@@ -209,3 +209,41 @@ def read_update_lock(repo_path: Path) -> dict[str, Any] | None:
     if age > UPDATE_LOCK_STALE_AFTER_SECONDS:
         return None
     return payload
+
+
+def lock_is_suspect(payload: dict[str, Any] | None) -> bool:
+    """True when a live owner has held the lock past the suspect window.
+
+    The reporting half of :func:`read_update_lock`: a lock an owner we can
+    positively see running has held for longer than
+    :data:`UPDATE_LOCK_SUSPECT_AFTER_SECONDS` is *suspect* — still honoured,
+    but old enough that a wedged update is worth surfacing to the user. A dead
+    or recycled-PID owner is "broken" (cleared), not "suspect", so this
+    returns ``False`` for it; a lock whose liveness cannot be established falls
+    back to the wall clock elsewhere and is likewise not *suspect* here.
+
+    Distinct from staleness: a merely old lock whose owner is alive is not
+    evidence of abandonment (a large repo's full update can outrun any ceiling
+    worth setting), so it reports as suspect rather than breaking the owner's
+    lock.
+    """
+    if not payload:
+        return False
+    pid = payload.get("pid")
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+
+    from repowise.core.procutils import pid_alive, process_create_token
+
+    if pid_alive(pid) is not True:
+        return False
+    stored_token = payload.get("pid_create_token")
+    if isinstance(stored_token, str) and stored_token:
+        current_token = process_create_token(pid)
+        if current_token is not None and current_token != stored_token:
+            return False
+
+    age = lock_age_seconds(payload)
+    if age is None:
+        return False
+    return age > UPDATE_LOCK_SUSPECT_AFTER_SECONDS
