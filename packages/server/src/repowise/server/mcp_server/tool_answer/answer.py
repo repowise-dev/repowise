@@ -257,7 +257,7 @@ async def _run_retrieval_pipeline(
     # (consumer instead of orchestrator). Adds up to 3 neighbors with a
     # damped score, then re-sorts.
     with contextlib.suppress(Exception):
-        hits = await _expand_via_graph(hits, ctx)
+        hits = await _expand_via_graph(hits, ctx, question)
     # Re-filter: graph expansion can pull excluded neighbors back in (before the
     # cap, so an excluded neighbor can't occupy a top-5 slot).
     hits = filter_dicts_by_key(hits, "target_path", exclude_spec)

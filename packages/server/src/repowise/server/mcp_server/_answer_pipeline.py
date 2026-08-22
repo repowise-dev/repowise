@@ -50,7 +50,7 @@ import re
 from collections import OrderedDict
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import or_, select
 
 from repowise.core.analysis.decisions.semantic_match import DECISION_VECTOR_PREFIX
 from repowise.core.ingestion.models import CONTAINMENT_EDGE_TYPES
@@ -58,6 +58,12 @@ from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.core.test_paths import is_test_path
+from repowise.server.mcp_server._graph_files import (
+    is_symbol_node,
+    keep_projected_edge,
+    node_to_file,
+    touches_files,
+)
 from repowise.server.mcp_server._helpers import (
     _VECTOR_TIMEOUT_ENV,
     vector_search_timeout_s,
@@ -719,33 +725,64 @@ async def apply_pagerank_bias(hits: list[dict], ctx: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _neighbor_degrees(session: Any, nodes: set[str]) -> dict[str, int]:
-    """Total graph degree (in + out) for each node in *nodes*.
+def _projected_pair(
+    src: str | None, tgt: str | None, edge_type: str | None, confidence: float | None
+) -> tuple[str | None, str | None]:
+    """An edge's two endpoints as file paths, or ``(None, None)`` to drop it.
 
-    One grouped count per direction over the same indexed edge table the
-    expansion already reads, scoped to the candidate set rather than the whole
-    graph.
+    The symbol layer needs its guards applied after projection; the file layer
+    is already file-to-file and keeps today's behaviour untouched. That
+    asymmetry is deliberate: the guards refuse cross-extension pairs, and a
+    ``co_changes`` edge between a module and its own docs is a legitimate
+    "read this too" that expansion has always served.
+    """
+    src = src or ""
+    tgt = tgt or ""
+    if not is_symbol_node(src) and not is_symbol_node(tgt):
+        return (src or None, tgt or None)
+    src_file, tgt_file = node_to_file(src), node_to_file(tgt)
+    if not keep_projected_edge(src_file, tgt_file, edge_type, confidence):
+        return (None, None)
+    return (src_file, tgt_file)
+
+
+async def _neighbor_degrees(session: Any, nodes: set[str]) -> dict[str, int]:
+    """File-level graph degree (in + out) for each file path in *nodes*.
+
+    Counted over the same edges the expansion walk traverses, and projected the
+    same way: a grouped count on the raw node id would have counted only the
+    file layer, so a file reachable mostly by calls read as unconnected and the
+    p99 hub cutoff was calibrated on an imports-only distribution.
+
+    Containment stays excluded. Its endpoints project onto the declaring file
+    itself, so counting it would inflate a file's degree by the number of
+    symbols it declares and make a symbol-rich file read as a hub on its own
+    size.
     """
     if not nodes:
         return {}
-    degree: dict[str, int] = {}
-    for column in (GraphEdge.source_node_id, GraphEdge.target_node_id):
-        res = await session.execute(
-            select(column, func.count())
-            .where(
-                column.in_(nodes),
-                # Count over the same edges the walk above traverses. Counting
-                # containment too inflates a file's degree by the number of
-                # symbols it declares, so a symbol-rich file reads as a hub on
-                # its own size, and the p99 cutoff moves with how many symbol
-                # nodes happen to be in the candidate set rather than with how
-                # connected the files are.
-                GraphEdge.edge_type.notin_(CONTAINMENT_EDGE_TYPES),
-            )
-            .group_by(column)
+    res = await session.execute(
+        select(
+            GraphEdge.source_node_id,
+            GraphEdge.target_node_id,
+            GraphEdge.edge_type,
+            GraphEdge.confidence,
+        ).where(
+            or_(
+                touches_files(GraphEdge.source_node_id, nodes),
+                touches_files(GraphEdge.target_node_id, nodes),
+            ),
+            GraphEdge.edge_type.notin_(CONTAINMENT_EDGE_TYPES),
         )
-        for node_id, count in res.all():
-            degree[node_id] = degree.get(node_id, 0) + int(count or 0)
+    )
+    degree: dict[str, int] = {}
+    for src, tgt, etype, conf in res.all():
+        src_file, tgt_file = _projected_pair(src, tgt, etype, conf)
+        if src_file is None or tgt_file is None:
+            continue
+        for side in (src_file, tgt_file):
+            if side in nodes:
+                degree[side] = degree.get(side, 0) + 1
     return degree
 
 
@@ -763,7 +800,7 @@ def _hub_degree_cutoff(degree: dict[str, int]) -> int:
     return max(_HUB_DEGREE_FLOOR, values[idx])
 
 
-async def expand_via_graph(hits: list[dict], ctx: Any) -> list[dict]:
+async def expand_via_graph(hits: list[dict], ctx: Any, question: str = "") -> list[dict]:
     """Add up to ``_GRAPH_EXPAND_MAX_NEW`` graph-neighbor files to ``hits``.
 
     Rescues near-misses where the top retrieved file is in the right
@@ -794,30 +831,44 @@ async def expand_via_graph(hits: list[dict], ctx: Any) -> list[dict]:
         # moves with yours" is a genuine read-this-too signal, and expansion
         # surfaces what it adds neutrally as ``[graph-expanded]`` rather than
         # as an import claim. Containment edges are excluded because they can
-        # never contribute: their endpoint is a ``path::Name`` symbol node, and
-        # the page lookup below matches ``target_path`` against ``file_page``
-        # rows, so every such neighbour was fetched only to be discarded.
-        neighbor_cols = (GraphEdge.source_node_id, GraphEdge.target_node_id)
-        inbound_res = await session.execute(
-            select(*neighbor_cols).where(
-                GraphEdge.target_node_id.in_(seed_paths),
-                GraphEdge.edge_type.notin_(CONTAINMENT_EDGE_TYPES),
-            )
-        )
-        outbound_res = await session.execute(
-            select(*neighbor_cols).where(
-                GraphEdge.source_node_id.in_(seed_paths),
+        # never contribute: both their endpoints describe the same file, so a
+        # projected containment edge is always a self-loop.
+        #
+        # Both directions in one query. It matches the symbol layer as well as
+        # the file layer: ``calls`` and its six siblings join ``path::Name``
+        # nodes, so an equality test against a seed path could never match one
+        # and the entire call graph was invisible here.
+        seed_set = set(seed_paths)
+        res = await session.execute(
+            select(
+                GraphEdge.source_node_id,
+                GraphEdge.target_node_id,
+                GraphEdge.edge_type,
+                GraphEdge.confidence,
+            ).where(
+                or_(
+                    touches_files(GraphEdge.source_node_id, seed_set),
+                    touches_files(GraphEdge.target_node_id, seed_set),
+                ),
                 GraphEdge.edge_type.notin_(CONTAINMENT_EDGE_TYPES),
             )
         )
 
+        # ``links`` counts the distinct edges tying each neighbour to the seed
+        # set. That is the ranking signal the projection above buys: before it,
+        # only imports were visible and almost every neighbour scored 1.
         neighbors: set[str] = set()
-        for src, _tgt in inbound_res.all():
-            if src and src not in existing:
-                neighbors.add(src)
-        for _src, tgt in outbound_res.all():
-            if tgt and tgt not in existing:
-                neighbors.add(tgt)
+        links: dict[str, int] = {}
+        for src, tgt, etype, conf in res.all():
+            src_file, tgt_file = _projected_pair(src, tgt, etype, conf)
+            if src_file is None or tgt_file is None:
+                continue
+            # The SQL prefix can over-match a longer path, so membership is
+            # re-checked here against the projected file.
+            for mine, theirs in ((src_file, tgt_file), (tgt_file, src_file)):
+                if mine in seed_set and theirs not in existing:
+                    neighbors.add(theirs)
+                    links[theirs] = links.get(theirs, 0) + 1
 
         if not neighbors:
             return hits
@@ -872,12 +923,33 @@ async def expand_via_graph(hits: list[dict], ctx: Any) -> list[dict]:
                 "_sources": {"graph_expand"},
                 "_expanded_from": "graph",
                 "_pagerank": pr_by_path.get(path, 0.0),
+                "_seed_links": links.get(path, 0),
             }
         )
 
-    # Rank candidates by PageRank within the expansion set so we pick the
-    # most central neighbor first when we have multiple plausible ones.
-    candidates.sort(key=lambda c: -c.get("_pagerank", 0.0))
+    # A test calls the file it exercises far more often than any collaborator
+    # does, so link count alone ranks a repo's tests above its implementation.
+    # ``demote_noise_hits`` runs downstream and would reorder them, but only
+    # after they had spent all _GRAPH_EXPAND_MAX_NEW slots — the implementation
+    # file it should have picked never enters the list. Same rule, applied where
+    # the slots are handed out.
+    test_focused = bool(_TEST_QUERY_RE.search(question))
+
+    # Rank by how strongly the neighbour is tied to THIS seed, PageRank only as
+    # the tiebreak. Ranking on PageRank alone answers "what is central in the
+    # repo" when the question asked "what is next to this file", so the same few
+    # central modules were returned whatever the seed was — the hub cutoff above
+    # only removes the extreme tail of that, it does not change the ordering.
+    # Link count is the seed-specific signal, and it only became usable once the
+    # projection above made the call layer visible: on imports alone almost
+    # every neighbour scored 1.
+    candidates.sort(
+        key=lambda c: (
+            not test_focused and is_test_path(c["target_path"]),
+            -c.get("_seed_links", 0),
+            -c.get("_pagerank", 0.0),
+        )
+    )
     additions = candidates[:_GRAPH_EXPAND_MAX_NEW]
     if not additions:
         return hits
