@@ -3,7 +3,10 @@ import {
   formatAgeDays,
   formatBytes,
   formatCompact,
+  formatDate,
+  formatDateTime,
   formatPercent,
+  parseDate,
 } from "../../src/lib/format";
 
 describe("formatCompact", () => {
@@ -73,5 +76,44 @@ describe("formatBytes", () => {
   it("returns an em dash for invalid input", () => {
     expect(formatBytes(-1)).toBe("—");
     expect(formatBytes(Number.NaN)).toBe("—");
+  });
+});
+
+describe("parseDate", () => {
+  it("treats a bare ISO string (no tz suffix) as UTC", () => {
+    // "2026-08-21T13:23:33" must mean 13:23 UTC, not local time.
+    expect(parseDate("2026-08-21T13:23:33").toISOString()).toBe(
+      "2026-08-21T13:23:33.000Z",
+    );
+  });
+
+  it("keeps an explicit Z or offset as-is", () => {
+    expect(parseDate("2026-08-21T13:23:33Z").toISOString()).toBe(
+      "2026-08-21T13:23:33.000Z",
+    );
+    expect(parseDate("2026-08-21T21:23:33+08:00").toISOString()).toBe(
+      "2026-08-21T13:23:33.000Z",
+    );
+  });
+
+  it("passes Date instances through unchanged", () => {
+    const d = new Date("2026-08-21T13:23:33Z");
+    expect(parseDate(d)).toBe(d);
+  });
+});
+
+describe("formatDate / formatDateTime render UTC, not the local zone", () => {
+  it("renders the bare API string as the same wall-clock in UTC", () => {
+    // With a plain `new Date("2026-08-21T13:23:33")`, a UTC+8 browser would
+    // render 21:23 on the 21st as the local reading of 13:23 UTC. Parsing as
+    // UTC and pinning timeZone: "UTC" keeps the shown wall-clock fixed at the
+    // value the API returned.
+    expect(formatDate("2026-08-21T13:23:33")).toBe("Aug 21, 2026");
+    expect(formatDateTime("2026-08-21T13:23:33")).toBe("Aug 21, 2026, 1:23 PM");
+  });
+
+  it("renders an explicit Z timestamp at the same UTC wall-clock", () => {
+    expect(formatDate("2026-08-21T13:23:33Z")).toBe("Aug 21, 2026");
+    expect(formatDateTime("2026-08-21T13:23:33Z")).toBe("Aug 21, 2026, 1:23 PM");
   });
 });
