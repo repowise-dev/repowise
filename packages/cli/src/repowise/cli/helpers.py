@@ -51,6 +51,17 @@ T = TypeVar("T")
 console = Console(width=resolve_console_width(sys.stdout))
 err_console = Console(stderr=True, width=resolve_console_width(sys.stderr))
 
+
+def warn(text: str) -> None:
+    """Print a warning to stderr with the shared yellow ``Warning:`` prefix.
+
+    Every CLI warning funnels through this helper so warnings render on the
+    same ``err_console`` stream (never stdout) and use one ``[yellow]Warning:[/yellow]``
+    spelling instead of hand-synced copies scattered across commands.
+    """
+    err_console.print(f"[yellow]Warning:[/yellow] {text}")
+
+
 STATE_FILENAME = "state.json"
 REPOWISE_DIR = ".repowise"
 
@@ -693,8 +704,8 @@ def _persist_provider_key(repo_path: Path, provider: str) -> None:
         try:
             save_repo_env_key(repo_path, env_var, value)
         except (OSError, ValueError) as exc:
-            err_console.print(
-                f"[yellow]Warning:[/yellow] could not save {env_var} to "
+            warn(
+                f"could not save {env_var} to "
                 f".repowise/.env ({exc}). The index is complete, but "
                 f"`repowise mcp` will need {env_var} in its environment."
             )
@@ -961,7 +972,7 @@ def resolve_provider(
         warnings = validate_provider_config(provider_name)
         if warnings:
             for warning in warnings:
-                err_console.print(f"[yellow]Warning:[/yellow] {warning}")
+                warn(warning)
             # For explicit provider requests, we still try to create it
             # The provider constructor will fail if the API key is actually required
 
