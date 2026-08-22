@@ -237,6 +237,11 @@ async def update_page_notes(
 async def regenerate_page_by_query(
     request: Request,
     page_id: str = Query(..., description="Page ID"),
+    repo_id: str | None = Query(
+        None,
+        description="Repository ID. Required in workspace mode to route to the "
+        "correct repository database.",
+    ),
     style: str | None = Query(
         None,
         description="Optional wiki style to regenerate this page in (per-page override).",
