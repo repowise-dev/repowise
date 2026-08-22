@@ -242,9 +242,9 @@ def _workspace_generation_provider_for_repo(provider: Any, repo_path: Path) -> A
     and returned unchanged.
     """
 
-    if getattr(provider, "provider_name", None) != "codex_cli":
+    if provider.provider_name not in ("codex_cli", "devin_cli"):
         return provider
-    return resolve_provider("codex_cli", getattr(provider, "model_name", None), repo_path)
+    return resolve_provider(provider.provider_name, provider.model_name, repo_path)
 
 
 @dataclass
@@ -382,8 +382,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         pages_generated = len(generated_pages)
         docs_mode = "deterministic"
         console.print(
-            f"    [{OK}]✓[/] Rendered {len(generated_pages)} pages from structure "
-            "(no model)\n"
+            f"    [{OK}]✓[/] Rendered {len(generated_pages)} pages from structure (no model)\n"
         )
 
     if ctx.dry_run:
