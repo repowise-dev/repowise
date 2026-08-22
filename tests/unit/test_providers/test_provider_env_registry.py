@@ -143,6 +143,7 @@ def test_required_envs_is_the_endpoint_for_ollama():
 def test_required_envs_is_empty_for_the_agent_clis():
     assert provider_required_envs("codex_cli") == ()
     assert provider_required_envs("opencode") == ()
+    assert provider_required_envs("devin") == ()
 
 
 # --- provider_is_usable vs provider_credentials_present --------------------
@@ -153,6 +154,8 @@ def test_keyless_provider_is_usable_with_an_empty_environment():
     empty = {}.get
     assert provider_is_usable("codex_cli", empty) is True
     assert provider_credentials_present("codex_cli", empty) is False
+    assert provider_is_usable("devin", empty) is True
+    assert provider_credentials_present("devin", empty) is False
 
 
 def test_keyed_provider_needs_its_key_to_be_usable():
@@ -212,7 +215,7 @@ def test_litellm_prefers_base_url_over_api_base():
 
 def test_agent_cli_providers_are_told_which_repo_to_run_in():
     """#1119: without this the CLI runs against the host process cwd."""
-    for name in ("codex_cli", "opencode"):
+    for name in ("codex_cli", "opencode", "devin"):
         kwargs = provider_kwargs(name, repo_path="/repo", getenv={}.get)
         assert kwargs["repo_path"] == "/repo"
 

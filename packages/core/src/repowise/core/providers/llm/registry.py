@@ -15,6 +15,7 @@ Built-in providers:
     - litellm     → LiteLLMProvider
     - codex_cli   → CodexCliProvider
     - opencode    → OpenCodeProvider
+    - devin       → DevinProvider
     - mock        → MockProvider (testing only)
 
 Custom provider registration:
@@ -53,6 +54,7 @@ _BUILTIN_PROVIDERS: dict[str, tuple[str, str]] = {
     "edenai": ("repowise.core.providers.llm.edenai", "EdenAIProvider"),
     "codex_cli": ("repowise.core.providers.llm.codex_cli", "CodexCliProvider"),
     "opencode": ("repowise.core.providers.llm.opencode", "OpenCodeProvider"),
+    "devin": ("repowise.core.providers.llm.devin", "DevinProvider"),
     "mock": ("repowise.core.providers.llm.mock", "MockProvider"),
 }
 
@@ -93,13 +95,13 @@ PROVIDER_BASE_URL_ENVS: dict[str, tuple[str, ...]] = {
 # proxy the user secured elsewhere). Resolution must never reject one of these
 # for a "missing" key, and must never fall through to a different provider
 # because it could not find one.
-KEYLESS_PROVIDERS = frozenset({"codex_cli", "opencode", "ollama", "litellm", "mock"})
+KEYLESS_PROVIDERS = frozenset({"codex_cli", "opencode", "devin", "ollama", "litellm", "mock"})
 
 # Providers that shell out to a CLI and therefore need to be told which repo
 # they are reasoning about: they pass it as the subprocess working directory.
 # Omitting it silently runs the CLI against whatever cwd the host process had,
 # which for an MCP server launched by an editor is not the user's repo.
-REPO_PATH_PROVIDERS = frozenset({"codex_cli", "opencode"})
+REPO_PATH_PROVIDERS = frozenset({"codex_cli", "opencode", "devin"})
 
 # Order to try providers in when nothing was configured and we are guessing
 # from whatever credentials the environment happens to carry. This is the CLI's
@@ -284,7 +286,7 @@ def get_provider(
         raise ValueError(f"Unknown provider: {name!r}. Available providers: {available}")
 
     # Attach rate limiter (skip for mock — tests should run without limits)
-    if with_rate_limiter and name not in ("mock", "codex_cli", "opencode"):
+    if with_rate_limiter and name not in ("mock", "codex_cli", "opencode", "devin"):
         config = rate_limit_config or PROVIDER_DEFAULTS.get(name)
         if config and "rate_limiter" not in kwargs:
             kwargs["rate_limiter"] = RateLimiter(config)
@@ -306,6 +308,7 @@ def get_provider(
             "litellm": "litellm",
             "codex_cli": "@openai/codex",
             "opencode": "opencode",
+            "devin": "devin",
         }
         package = _missing.get(name, name)
         raise ImportError(

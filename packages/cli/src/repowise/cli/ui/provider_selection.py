@@ -33,6 +33,7 @@ _PROVIDER_DEFAULTS: dict[str, str] = {
     "edenai": "mistral/mistral-small-latest",
     "codex_cli": "codex_cli/default",
     "opencode": "opencode/default",
+    "devin": "devin/adaptive",
     "ollama": "qwen3.5:4b",
     "openrouter": "google/gemini-3.5-flash-lite",
     "litellm": "groq/llama-3.1-70b-versatile",
@@ -47,6 +48,7 @@ _PROVIDER_ENV: dict[str, str] = {
     "edenai": "EDENAI_API_KEY",
     "codex_cli": "__CODEX_CLI__",
     "opencode": "__OPENCODE_CLI__",
+    "devin": "__DEVIN_CLI__",
     "ollama": "OLLAMA_BASE_URL",
     "openrouter": "OPENROUTER_API_KEY",
     # The picker iterates this map, so a provider missing here never renders a
@@ -64,6 +66,7 @@ _PROVIDER_SIGNUP: dict[str, str] = {
     "edenai": "https://app.edenai.run/user/register",
     "codex_cli": "https://developers.openai.com/codex/cli",
     "opencode": "https://opencode.ai",
+    "devin": "https://docs.devin.ai/cli",
     "ollama": "https://ollama.com/download",
     "openrouter": "https://openrouter.ai/keys",
     "litellm": "https://docs.litellm.ai/docs/providers",
@@ -77,6 +80,7 @@ _PROVIDER_NOTES: dict[str, str] = {
     "gemini": "recommended",
     "codex_cli": "uses your Codex CLI login",
     "opencode": "uses your opencode CLI setup",
+    "devin": "uses your Devin CLI setup",
     "ollama": "runs on your machine, no key",
     "litellm": "proxy in front of another provider",
 }
@@ -109,6 +113,13 @@ def _detect_opencode_status() -> bool:
     import shutil
 
     return shutil.which("opencode") is not None
+
+
+def _detect_devin_status() -> bool:
+    """Return ``True`` if the Devin CLI is installed on PATH."""
+    import shutil
+
+    return shutil.which("devin") is not None
 
 
 def ollama_base_url() -> str:
@@ -181,6 +192,9 @@ def _detect_provider_status() -> dict[str, str]:
         elif prov == "opencode":
             if _detect_opencode_status():
                 status[prov] = "opencode CLI"
+        elif prov == "devin":
+            if _detect_devin_status():
+                status[prov] = "devin CLI"
         elif prov == "ollama":
             if _detect_ollama_status():
                 status[prov] = ollama_base_url()
@@ -219,6 +233,22 @@ def _opencode_setup_lines() -> list[str]:
     ]
 
 
+def _devin_setup_lines() -> list[str]:
+    return [
+        "  [bold]devin[/bold] is a local AI coding agent that manages its own "
+        "models and authentication. No API key here.",
+        f"  Install: [{BRAND}]curl -fsSL https://cli.devin.ai/install.sh | bash[/]",
+        f"  Log in:  [{BRAND}]devin auth login[/]",
+        f"  Models:  [{BRAND}]devin --model adaptive -- your prompt[/]",
+        "",
+        f"  To pick a specific model: [{BRAND}]repowise init --provider devin "
+        "--model devin/opus[/]",
+        "",
+        f"  [{WARN}]devin CLI not found on PATH.[/] Install it and retry, "
+        "or select another provider.",
+    ]
+
+
 def _ollama_setup_lines() -> list[str]:
     base_url = ollama_base_url()
     lines = ["  [bold]ollama[/bold] runs models on your machine. No key needed.", ""]
@@ -248,6 +278,7 @@ def _ollama_setup_lines() -> list[str]:
 _LOCAL_PROVIDER_SETUP: dict[str, Callable[[], list[str]]] = {
     "codex_cli": _codex_cli_setup_lines,
     "opencode": _opencode_setup_lines,
+    "devin": _devin_setup_lines,
     "ollama": _ollama_setup_lines,
 }
 
