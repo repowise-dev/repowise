@@ -677,6 +677,58 @@ class TestQueryRepoStats:
 
         assert top_language == "python"
 
+    def test_file_count_excludes_external_nodes(self, tmp_path: Path) -> None:
+        """Regression #964: external import nodes must not count as files.
+
+        Before the fix, pages like ``external:node:path`` were stored with no
+        ``node_type``, so the writer defaulted them to ``'file'`` and the
+        file_count (a ``WHERE node_type = 'file'`` query) counted third-party
+        dependencies as repo files (~3% inflation on real indexes).
+        """
+        db_path = tmp_path / ".repowise" / "wiki.db"
+        self._make_wiki_db(
+            db_path,
+            rows=[],
+            graph_nodes=[
+                ("src/a.py", "file", "python"),
+                ("src/b.py", "file", "python"),
+                # External third-party import nodes must never count as files.
+                ("external:node:path", "external", "python"),
+                ("external:fastapi", "external", "python"),
+                ("src/a.py::Foo", "symbol", "python"),
+            ],
+        )
+
+        stats = workspace._query_repo_stats(db_path)
+
+        assert stats["file_count"] == 2
+
+    def test_top_language_excludes_external_nodes(self, tmp_path: Path) -> None:
+        """Regression #964: top-language must ignore external import nodes.
+
+        An external node carries an ``external`` node_type and the same
+        language as the file importing it; without filtering it out, it could
+        tip the top-language count for a language with few real files.
+        """
+        db_path = tmp_path / ".repowise" / "wiki.db"
+        self._make_wiki_db(
+            db_path,
+            rows=[],
+            graph_nodes=[
+                ("src/a.py", "file", "python"),
+                ("src/b.py", "file", "python"),
+                # Many external JS imports must not let javascript win.
+                ("external:left_pad", "external", "javascript"),
+                ("external:lodash", "external", "javascript"),
+                ("external:chalk", "external", "javascript"),
+                ("external:express", "external", "javascript"),
+            ],
+        )
+
+        top_language = workspace._query_top_language(db_path)
+
+        assert top_language == "python"
+
 
 # ---------------------------------------------------------------------------
 # GET /api/workspace/system-graph + /diagnostics
