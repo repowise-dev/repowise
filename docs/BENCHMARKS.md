@@ -86,49 +86,36 @@ be tuned by picking a cutoff, and adding a competitor can only break it. Two
 competitors were added to this experiment after it was first written, and it held
 in all seven cells.
 
-**Precision: of the call edges a tool emits, the share the compiler confirms.**
+Each cell is **precision / recall**, printed as a pair for the reason above.
 
 | cell | repowise | CodeGraph 1.5.0 | codebase-memory-mcp 0.10.8 | Graphify 0.9.31 | code-review-graph 2.3.7 |
 |---|---|---|---|---|---|
-| cobra (with tests) | 0.972 | 0.929 | 0.912 | 0.971 | **0.997** |
-| gitleaks (no tests) | 0.976 | 0.972 | 0.934 | **0.997** | 0.759 |
-| gitleaks (with tests) | 0.974 | 0.971 | 0.922 | **0.995** | 0.800 |
-| syft (no tests) | 0.943 | 0.872 | 0.635 | 0.771 | **0.968** |
-| syft (with tests) | 0.950 | 0.864 | 0.673 | 0.802 | **0.966** |
-| zod (no tests) | **0.992** | 0.729 | 0.987 | 0.825 | 0.932 |
-| hono (no tests) | 0.977 | 0.805 | 0.949 | 0.980 | 0.966 |
+| cobra (with tests) | 0.972 / 0.684 | 0.929 / 0.763 | 0.912 / 0.743 | 0.971 / 0.433 | 0.997 / 0.174 |
+| gitleaks (no tests) | 0.976 / 0.955 | 0.972 / 0.920 | 0.934 / 0.967 | 0.997 / 0.886 | 0.759 / 0.026 |
+| gitleaks (with tests) | 0.974 / 0.914 | 0.971 / 0.895 | 0.922 / 0.945 | 0.995 / 0.832 | 0.800 / 0.032 |
+| syft (no tests) | 0.943 / 0.513 | 0.872 / 0.508 | 0.635 / 0.542 | 0.771 / 0.447 | 0.968 / 0.201 |
+| syft (with tests) | 0.950 / 0.322 | 0.864 / 0.338 | 0.673 / 0.361 | 0.802 / 0.273 | 0.966 / 0.086 |
+| zod (no tests) | 0.992 / 0.703 | 0.729 / 0.373 | 0.987 / 0.694 | 0.825 / 0.248 | 0.932 / 0.652 |
+| hono (no tests) | 0.977 / 0.731 | 0.805 / 0.684 | 0.949 / 0.686 | 0.980 / 0.688 | 0.966 / 0.691 |
 
-**Recall: of the edges the compiler has, the share the tool found.**
-
-| cell | repowise | CodeGraph | codebase-memory-mcp | Graphify | code-review-graph |
-|---|---|---|---|---|---|
-| cobra (with tests) | 0.684 | **0.763** | 0.743 | 0.433 | 0.174 |
-| gitleaks (no tests) | 0.955 | 0.920 | **0.967** | 0.886 | 0.026 |
-| gitleaks (with tests) | 0.914 | 0.895 | **0.945** | 0.832 | 0.032 |
-| syft (no tests) | 0.513 | 0.508 | **0.542** | 0.447 | 0.201 |
-| syft (with tests) | 0.322 | 0.338 | **0.361** | 0.273 | 0.086 |
-| zod (no tests) | **0.703** | 0.373 | 0.694 | 0.248 | 0.652 |
-| hono (no tests) | **0.731** | 0.684 | 0.686 | 0.688 | 0.691 |
-
-Read a row across both tables and the trade is visible in every one. The tools
-above us on precision are below us on recall, every time. The tool above us on
-recall is below us on precision, every time. **Nobody is above us on both, in any
-cell.**
+**Nobody is above us on both numbers, in any cell.** Read across a row and the
+trade is visible every time: the arms above us on precision are below us on
+recall, and the arm above us on recall is below us on precision.
 
 **The weaker readings, so nobody has to infer them.** We are the most precise arm
-outright in **one cell of seven** and tied for it in one more. We are beaten on
-precision in **five**: by code-review-graph on cobra and both syft cells, and by
-Graphify on both gitleaks cells. Against the two tools this experiment started
-with, CodeGraph and codebase-memory-mcp, we are the most precise in seven of seven,
-and that narrower claim should always carry its label.
+outright in one cell of seven and tied in one more, and beaten on precision in
+five — by code-review-graph on cobra and both syft cells, and by Graphify on both
+gitleaks cells. Against the two tools this experiment started with, CodeGraph and
+codebase-memory-mcp, we are the most precise in seven of seven, a narrower claim
+that should always carry its label. **Graphify's is the one worth taking
+seriously**: 89% recall against our 95% is a narrow, real trade, and it should not
+be lumped in with an arm that scores its precision over 2.6% of the graph.
 
-**The column we lose.** We lead recall in the two TypeScript cells and in **none of
-the five Go cells**, where codebase-memory-mcp leads four and CodeGraph the fifth.
-On cross-file coverage over 35 repositories, codebase-memory-mcp separates from us
-on 15 and we separate on none. Those are real losses and they are not softened
-here. What the oracle adds is the price of that lead rather than an excuse for
-ours: on syft, more than a third of what that tool emits is a call the Go compiler
-says does not exist.
+**The column we lose.** We lead recall in the two TypeScript cells and in **none
+of the five Go cells**. On cross-file coverage over 35 repositories,
+codebase-memory-mcp separates from us on 15 and we separate on none. Those are
+real losses. What the oracle adds is the price of that lead: on syft, more than a
+third of what that tool emits is a call the Go compiler says does not exist.
 
 <details>
 <summary><b>Method, limits, and what this does not show</b></summary>
@@ -170,33 +157,25 @@ Further limits:
   16% to 46% on the TypeScript ones, where dependencies are not installed in the
   pinned corpus.
 - **A library has no `main`, so RTA has no roots**; cobra is analysed through its
-  test binaries only.
-- The two variants of a repository answer different questions. Report both or say
-  which one you used.
-- **Two oracle languages, and the programme stops at two.** C#, Java, Kotlin and
-  C++ each need a toolchain installed and a working build per repository, none of
-  which exists on the measurement machine. Rust has the toolchain and no sound
-  call-graph tool exists for it. Python, Ruby and PHP admit no oracle even in
-  principle. So the hand-graded audit is the permanent method on those languages
-  rather than a stopgap, and nothing here should be read as a claim about them.
-- **The TypeScript cells exclude test files, and the with-tests variants are
-  void.** A test file imports its own package by name, the pinned corpus has no
-  dependencies installed, and roughly a third of call sites go unresolvable, which
-  takes the unjudged bucket past three quarters. Both variants were run and neither
-  is quoted anywhere.
-- **The three newer competitors are priced on these two languages only.**
-  codebase-memory-mcp, Graphify and code-review-graph have no precision figure of
-  any kind on the other nine languages, and none was ever entered into the
-  hand-graded audit in either direction. That audit is a two-tool claim and this one
-  a five-tool claim, and neither transfers to the other's languages.
-- **Two of the five arms are read through an adapter we wrote**, and both now beat
-  us on precision in some cell, so the reading matters. Graphify tags 93% of its
-  call edges `INFERRED` rather than AST-certain and we score all of them, which is
-  the choice least favourable to us. code-review-graph stores unresolved callees
-  beside resolved ones and we score only the resolved, which is the choice most
-  favourable to it: on gitleaks that is 76 edges out of 4,367 stored rows. Both
-  choices are argued in the benchmark and a reader who disagrees can recompute
-  either from the artifacts.
+  test binaries only, and the two variants of a repository answer different
+  questions, so report both or say which you used.
+- **Two oracle languages, and the programme stops at two.** The other corpus
+  languages either need a per-repository build that does not exist on the
+  measurement machine, have no sound call-graph tool (Rust), or admit no oracle
+  even in principle (Python, Ruby, PHP). The hand-graded audit below is the
+  permanent method there, not a stopgap.
+- **The TypeScript with-tests variants are void and quoted nowhere.** The pinned
+  corpus installs no dependencies, so a third of call sites go unresolvable.
+- **The three newer competitors are priced on these two languages only**, and
+  none was ever entered into the hand-graded audit in either direction. That
+  audit is a two-tool claim and this one a five-tool claim; neither transfers to
+  the other's languages.
+- **Two of the five arms are read through an adapter we wrote**, and both now
+  beat us on precision somewhere, so the reading matters. Graphify tags 93% of
+  its call edges `INFERRED` and we score all of them, the choice least
+  favourable to us. code-review-graph is scored on resolved rows only, the
+  choice most favourable to it. Both are argued in the benchmark and either can
+  be recomputed from the artifacts.
 
 Full method, per-cell artifacts, the twenty hand-confirmed identities the protocol
 required, and the graded pre-registration including the two predictions that
