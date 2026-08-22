@@ -575,6 +575,7 @@ class ResolveMixin:
                             edge_type="calls",
                             confidence=rc.confidence,
                             resolution_origin=rc.origin,
+                            call_lines=[rc.line],
                         )
                         total_resolved += 1
                     else:
@@ -582,6 +583,10 @@ class ResolveMixin:
                         # strongest wins, and the origin has to follow the
                         # confidence it explains.
                         existing = self._graph[rc.caller_id][rc.callee_id]
+                        lines = existing.setdefault("call_lines", [])
+                        if rc.line not in lines:
+                            lines.append(rc.line)
+                            lines.sort()
                         if rc.confidence > existing.get("confidence", 0):
                             existing["confidence"] = rc.confidence
                             existing["resolution_origin"] = rc.origin

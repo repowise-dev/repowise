@@ -16,6 +16,7 @@
  */
 
 import type { C4IoKind } from "./external-systems.js";
+import type { Paginated } from "./pagination.js";
 
 /** Finding severity used across the health surface. */
 export type HealthSeverity = "low" | "medium" | "high" | "critical";
@@ -231,6 +232,66 @@ export interface HealthFinding {
   dimension?: HealthDimension;
 }
 
+export type PerformanceExecutionContext = "production" | "tooling" | "test";
+export type PerformanceOpportunityConfidence = "high" | "medium" | "low";
+
+export interface PerformanceOpportunityFix {
+  strategy: string;
+  safety: "proven" | "advisory";
+  rationale: string;
+}
+
+export interface PerformanceOpportunityEvidence {
+  finding_id: string;
+  file_path: string;
+  biomarker_type: string;
+  function_name: string | null;
+  line_start: number | null;
+  line_end: number | null;
+  reason: string;
+  path: string[];
+  provenance: string;
+}
+
+export interface PerformanceOpportunity {
+  opportunity_id: string;
+  biomarker_type: string;
+  biomarker_types: string[];
+  boundary_kind: C4IoKind | null;
+  execution_context: PerformanceExecutionContext;
+  terminal_sink: string | null;
+  shared_path_suffix: string[];
+  intervention_symbol: string | null;
+  affected_call_sites_total: number;
+  affected_files_total: number;
+  observations_total: number;
+  evidence: PerformanceOpportunityEvidence[];
+  evidence_truncated: boolean;
+  reliable_entry_reachability: boolean | null;
+  provenance: string;
+  confidence: PerformanceOpportunityConfidence;
+  rank_score: number;
+  rank_factors: Record<string, number>;
+  fix: PerformanceOpportunityFix | null;
+  /** Exact stored match. Never inferred from file, marker, or rank. */
+  plan_id: string | null;
+  plan_status: "available" | "no_safe_plan" | "not_persisted";
+  plan_reason: string;
+}
+
+export interface PerformanceOpportunitySummary {
+  total: number;
+  production_total: number;
+  tooling_total: number;
+  test_total: number;
+  with_plan_total: number;
+  without_plan_total: number;
+}
+
+export interface PerformanceOpportunityPage extends Paginated<PerformanceOpportunity> {
+  summary: PerformanceOpportunitySummary;
+}
+
 export interface HealthModuleRow {
   module: string;
   file_count: number;
@@ -260,7 +321,12 @@ export interface HealthOverviewSummary {
   worst_performer_path: string | null;
   worst_performer_score: number | null;
   open_findings: number;
-  severity_breakdown?: { critical: number; high: number; medium: number; low: number };
+  severity_breakdown?: {
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+  };
   /** Repo-level band derived from `average_health` (added in the band/distribution layer). */
   band?: HealthBand;
   /**
@@ -488,7 +554,12 @@ export interface HealthTrendResponse {
     message: string;
   }>;
   /** Largest movements first, in either direction, capped server-side. */
-  file_deltas: Array<{ file_path: string; before: number; after: number; delta: number }>;
+  file_deltas: Array<{
+    file_path: string;
+    before: number;
+    after: number;
+    delta: number;
+  }>;
   /**
    * How many files moved in total, before the cap. Optional: the hosted
    * backend does not send it, so consumers fall back to `file_deltas.length`.
@@ -533,6 +604,76 @@ export interface CoverageSummary {
   ingested_commit_sha: string | null;
 }
 
+/**
+ * Which signal answered "is this tested". `measured` is a coverage report: it
+ * records the lines a test really executed. `inferred` is the dependency graph:
+ * a test whose calls reach this file, which says control *can* flow there, not
+ * that a run did. `none` is the honest unknown.
+ *
+ * The two are never merged and never averaged. They are different claims, and a
+ * reader who cannot tell them apart cannot tell a measured test from a guessed
+ * one. `basis` says which one answered; nothing blends them.
+ */
+export type CoverageBasis = "measured" | "inferred" | "none";
+
+/**
+ * Which tier of the graph found a test. `call-graph` means a test's calls reach
+ * the file, the stronger claim; `import-graph` means it only imports it.
+ */
+export type ReachedVia = "call-graph" | "import-graph";
+
+/**
+ * One file on the inferred basis. `reached` is the whole of what this basis
+ * knows about it: there is no percentage here and there never can be, because
+ * reaching is a file-level fact with no line attribution behind it.
+ *
+ * Which tests reach it is a separate, per-file request — attributing every file
+ * at once costs a walk per file, and the list is only ever read one row at a
+ * time. See `TestsReachingFile`.
+ */
+export interface ReachedFileRow {
+  file_path: string;
+  reached: boolean;
+  health_score?: number;
+  nloc?: number;
+}
+
+/**
+ * The graph-inferred test map: counts, never a ratio. `files_reached` and
+ * `files_not_reached` are deliberately two counts rather than one fraction —
+ * a fraction invites a progress bar, and a progress bar is the coverage
+ * percentage this basis is not allowed to claim.
+ *
+ * `files_total` is the full count whatever `files` carries, so a trimmed list is
+ * never read as the whole repo.
+ */
+export interface InferredTestMap {
+  files: ReachedFileRow[];
+  files_total: number;
+  files_reached: number;
+  files_not_reached: number;
+  test_file_count: number;
+}
+
+/** Which tests reach one file, and which tier found them. */
+export interface TestsReachingFile {
+  file_path: string;
+  basis: CoverageBasis;
+  reached: boolean;
+  /**
+   * Empty when `reached` is false, and capped server-side. Render `total`
+   * beside it, never `tests.length` on its own: the cut is alphabetical, so a
+   * trimmed list states a cap as if it were the answer.
+   */
+  tests: string[];
+  /** Null when `reached` is false. */
+  via: ReachedVia | null;
+  /** How many tests the walk found, before the cap trimmed `tests`. */
+  total?: number;
+  /** Whether `tests` is a trimmed slice of `total`. */
+  truncated?: boolean;
+}
+
 export interface HealthCoverageResponse {
   summary: CoverageSummary;
   files: CoverageFileRow[];
@@ -544,13 +685,27 @@ export interface HealthCoverageResponse {
    * hosted backend does not send it yet.
    */
   modules_total?: number;
+  /**
+   * Which signal answered, when the response determined one. Absent means it did
+   * not: an older backend that predates the field, or a caller that passed
+   * `include_inferred=false` and so never consulted the graph. That is why a
+   * declined response omits it rather than reporting `"none"` — not consulted
+   * and nothing to say are different states.
+   */
+  basis?: CoverageBasis;
+  /**
+   * Present only when `basis` is `inferred`. `summary`, `files` and `modules`
+   * are then empty: measured rows and inferred rows never share an array, so no
+   * consumer can render one through the other's code path by accident.
+   */
+  inferred?: InferredTestMap;
 }
 
 /* ------------------------------------------------------------------ *
- * Refactoring targets
+ * Health work queue (legacy route: /health/refactoring-targets)
  * ------------------------------------------------------------------ */
 
-export interface RefactoringTarget {
+export interface HealthWorkItem {
   file_path: string;
   score: number;
   nloc: number;
@@ -586,12 +741,12 @@ export interface RefactoringTarget {
   }>;
 }
 
-export interface RefactoringTargetsResponse {
-  targets: RefactoringTarget[];
+export interface HealthWorkQueueResponse {
+  targets: HealthWorkItem[];
   total: number;
 }
 
-export interface RefactoringQuery {
+export interface HealthWorkQueueQuery {
   limit?: number;
   module?: string;
   biomarker?: string;
@@ -599,6 +754,13 @@ export interface RefactoringQuery {
   max_effort?: string;
   sort?: "impact_per_effort" | "total_impact" | "score" | "finding_count";
 }
+
+/** @deprecated Use HealthWorkItem; this is a file triage row, not a plan. */
+export type RefactoringTarget = HealthWorkItem;
+/** @deprecated Use HealthWorkQueueResponse. */
+export type RefactoringTargetsResponse = HealthWorkQueueResponse;
+/** @deprecated Use HealthWorkQueueQuery. */
+export type RefactoringQuery = HealthWorkQueueQuery;
 
 /* ------------------------------------------------------------------ *
  * Churn x complexity quadrant (the "hotspot anatomy" view)

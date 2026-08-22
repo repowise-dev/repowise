@@ -13,9 +13,11 @@
  */
 
 import { deadCodeRiskFactorLabel } from "@repowise-dev/types/dead-code";
+import type { PerformanceOpportunity } from "@repowise-dev/types/health";
+import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 import { biomarkerInfo, CATEGORY_LABEL } from "./biomarker-glossary";
-import type { RefactoringTarget } from "./refactoring-card";
+import type { HealthWorkItem } from "./refactoring-card";
 import {
   blastFiles,
   cutEdges,
@@ -25,7 +27,6 @@ import {
   extractMethodPlan,
   helperSite,
   moveTarget,
-  type RefactoringPlan,
 } from "../refactoring/types";
 import { typeMeta } from "../refactoring/meta";
 
@@ -169,7 +170,7 @@ function biomarkerExtraContext(
   return null;
 }
 
-function effortHint(effort: RefactoringTarget["effort_bucket"]): string {
+function effortHint(effort: HealthWorkItem["effort_bucket"]): string {
   switch (effort) {
     case "S":
       return "Small (≤40 NLOC) — should be doable in one focused pass.";
@@ -187,7 +188,7 @@ function effortHint(effort: RefactoringTarget["effort_bucket"]): string {
 // ─────────────────────────────────────────────────────────────────────
 
 export interface BuildPromptOptions {
-  target: RefactoringTarget;
+  target: HealthWorkItem;
   flavor?: AiPromptFlavor;
   repoName?: string;
 }
@@ -1303,6 +1304,54 @@ export function buildCommitAiPrompt({
 // Refactoring plan prompt — hand a deterministic plan to a coding agent
 // ─────────────────────────────────────────────────────────────────────
 
+export interface BuildPerformanceOpportunityPromptOptions {
+  opportunity: PerformanceOpportunity;
+  flavor?: AiPromptFlavor;
+}
+
+/** An evidence-first handoff used only when no exact persisted plan is available. */
+export function buildPerformanceOpportunityPrompt({
+  opportunity,
+  flavor = "generic",
+}: BuildPerformanceOpportunityPromptOptions): string {
+  const evidence = opportunity.evidence.map((item) => {
+    const location = `${item.file_path}${item.line_start ? `:${item.line_start}` : ""}`;
+    const path = item.path.length ? `; path: ${item.path.join(" -> ")}` : "";
+    return `- \`${location}\`: ${item.reason} (${item.provenance}${path})`;
+  });
+  const intervention = opportunity.intervention_symbol
+    ? `Candidate shared intervention: \`${opportunity.intervention_symbol}\`.`
+    : "No shared intervention was proven.";
+
+  return [
+    FLAVOR_PREAMBLE[flavor],
+    "",
+    "## Causal performance opportunity",
+    "",
+    `- Stable opportunity ID: \`${opportunity.opportunity_id}\`.`,
+    `- Detector: \`${opportunity.biomarker_type}\`.`,
+    `- Execution context: ${opportunity.execution_context}.`,
+    `- Boundary: ${opportunity.boundary_kind ?? "unknown"}.`,
+    `- Confidence: ${opportunity.confidence}; provenance: ${opportunity.provenance}.`,
+    `- Scope: ${opportunity.affected_call_sites_total} affected call sites across ${opportunity.affected_files_total} files.`,
+    `- ${intervention}`,
+    `- Product status: ${opportunity.plan_reason}`,
+    "",
+    "## Evidence sampled by the analyzer",
+    "",
+    evidence.length ? evidence.join("\n") : "No resolved evidence paths were included in this page.",
+    "",
+    "## What to do",
+    "",
+    "1. Verify the repeated cost and caller-to-sink paths against the real code.",
+    "2. Determine whether one behavior-preserving intervention safely addresses the shared cause.",
+    "3. Identify the tests and commands that prove result equivalence and performance improvement.",
+    "4. If the evidence is insufficient or the intervention is unsafe, stop and explain the blocker instead of editing.",
+    "",
+    "Do not run commands or change files until the evidence and proposed validation have been reviewed.",
+  ].join("\n");
+}
+
 export interface BuildRefactoringPlanPromptOptions {
   plan: RefactoringPlan;
   flavor?: AiPromptFlavor;
@@ -1313,6 +1362,40 @@ function planSourceLink(path: string, start: number | null, end: number | null):
   if (start && end) return `\`${path}:${start}-${end}\``;
   if (start) return `\`${path}:${start}\``;
   return `\`${path}\``;
+}
+
+function recommendationValidation(plan: RefactoringPlan): string {
+  const validation = plan.validation;
+  if (!validation) return "";
+  const evidence =
+    validation.basis === "unknown"
+      ? "No measured or inferred guarding test was found; treat this as a validation gap."
+      : `${validation.total} guarding test${validation.total === 1 ? "" : "s"} via ${
+          validation.via ?? validation.basis
+        }${validation.truncated ? ` (showing ${validation.tests.length})` : ""}.`;
+  return [
+    "## Validation plan",
+    "",
+    bulletList([
+      evidence,
+      validation.tests.length
+        ? `Tests: ${validation.tests.map((test) => `\`${test}\``).join(", ")}.`
+        : null,
+      validation.affected_files.length
+        ? `Affected files: ${validation.affected_files
+            .map((file) => `\`${file}\``)
+            .join(", ")}.`
+        : null,
+      validation.affected_symbols.length
+        ? `Affected symbols: ${validation.affected_symbols
+            .map((symbol) => `\`${symbol}\``)
+            .join(", ")}.`
+        : null,
+      validation.commands.length
+        ? `Run: ${validation.commands.map((command) => `\`${command}\``).join("; ")}.`
+        : null,
+    ]),
+  ].join("\n");
 }
 
 /** Render the concrete, type-specific steps the agent should carry out. The
@@ -1413,6 +1496,7 @@ export function buildRefactoringPlanPrompt({
   const repoLine = repoName ? ` (\`${repoName}\`)` : "";
   const meta = typeMeta(plan.refactoring_type);
   const files = blastFiles(plan).filter((f) => f !== plan.file_path);
+  const validation = recommendationValidation(plan);
 
   const constraintList = [
     "Preserve behavior exactly — this is a refactoring, not a feature change. No public API or observable behavior should shift.",
@@ -1450,6 +1534,8 @@ export function buildRefactoringPlanPrompt({
     "## The plan",
     "",
     refactoringPlanSteps(plan),
+    "",
+    validation,
     "",
     "## Hard constraints",
     "",

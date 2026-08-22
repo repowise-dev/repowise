@@ -18,10 +18,13 @@ import { PageLede } from "../shared/page-lede";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { formatNumber } from "../lib/format";
 import { typeMeta } from "./meta";
-import { isStructural, planPoint, type RefactoringPlan } from "./types";
+import { isStructural, planPoint, STRUCTURAL_TYPES } from "./types";
+import type { RefactoringPlan, RefactoringSummary } from "@repowise-dev/types/refactoring";
 
 export interface RefactoringLedeProps {
   plans: RefactoringPlan[];
+  /** True repo totals from the paged endpoint. Older hosts may omit it. */
+  summary?: RefactoringSummary | undefined;
   /** Files in the repo, for the "802 of 4,952 indexed" denominator. Omit and
    *  the ribbon drops the comparison rather than inventing one. */
   indexedFileCount?: number | undefined;
@@ -44,29 +47,53 @@ const STRUCTURAL_PHRASE: Record<string, (n: number) => string> = {
   move_method: (n) => `${n} method${n === 1 ? "" : "s"} living on the wrong class`,
 };
 
-export function RefactoringLede({ plans, indexedFileCount, action }: RefactoringLedeProps) {
-  const total = plans.length;
+export function RefactoringLede({
+  plans,
+  summary,
+  indexedFileCount,
+  action,
+}: RefactoringLedeProps) {
+  const total = summary?.total ?? plans.length;
   const structural = plans.filter(isStructural);
-  const local = total - structural.length;
+  const structuralTotal = summary?.structural_total ?? structural.length;
+  const performanceTotal =
+    summary?.performance_total ??
+    plans.filter((p) => p.refactoring_type === "performance_fix").length;
+  const local = Math.max(0, total - structuralTotal - performanceTotal);
 
-  const files = new Set(plans.map((p) => p.file_path)).size;
-  const small = plans.filter((p) => (p.effort_bucket || "M") === "S").length;
-  const recovers = plans.filter((p) => p.impact_delta >= 0.1).length;
+  const files = summary?.files_total ?? new Set(plans.map((p) => p.file_path)).size;
+  const small =
+    summary?.small_effort_total ?? plans.filter((p) => (p.effort_bucket || "M") === "S").length;
+  const recovers =
+    summary?.health_recovery_total ?? plans.filter((p) => p.impact_delta >= 0.1).length;
   const plottable = structural.filter((p) => planPoint(p) !== null).length;
 
   const byType = new Map<string, number>();
-  for (const p of structural) byType.set(p.refactoring_type, (byType.get(p.refactoring_type) ?? 0) + 1);
+  if (summary) {
+    for (const item of summary.by_type) {
+      if ((STRUCTURAL_TYPES as readonly string[]).includes(item.type)) {
+        byType.set(item.type, item.count);
+      }
+    }
+  } else {
+    for (const p of structural)
+      byType.set(p.refactoring_type, (byType.get(p.refactoring_type) ?? 0) + 1);
+  }
   const structuralPhrase = joinPhrases(
     [...byType.entries()]
       .sort((a, b) => b[1] - a[1])
-      .map(([type, n]) => STRUCTURAL_PHRASE[type]?.(n) ?? `${n} ${typeMeta(type).label.toLowerCase()}`),
+      .map(
+        ([type, n]) => STRUCTURAL_PHRASE[type]?.(n) ?? `${n} ${typeMeta(type).label.toLowerCase()}`,
+      ),
   );
 
   // The largest single recovery on the page. Quoted rather than assumed,
   // because the ceiling is what makes "rank by health recovered" a bad idea and
   // a reader is entitled to check the claim.
-  const bestGain = plans.reduce((m, p) => Math.max(m, p.impact_delta), 0);
-  const negligible = plans.filter((p) => p.impact_delta < 0.5).length;
+  const bestGain =
+    summary?.best_health_gain ?? plans.reduce((m, p) => Math.max(m, p.impact_delta), 0);
+  const negligible =
+    summary?.negligible_health_total ?? plans.filter((p) => p.impact_delta < 0.5).length;
 
   const stats: RibbonStat[] = [
     {
@@ -86,8 +113,11 @@ export function RefactoringLede({ plans, indexedFileCount, action }: Refactoring
     },
     {
       label: "Change a file's shape",
-      value: formatNumber(structural.length),
-      sub: plottable < structural.length ? `${formatNumber(plottable)} measured` : "the rest are local",
+      value: formatNumber(structuralTotal),
+      sub:
+        plottable < structural.length
+          ? `${formatNumber(plottable)} measured among displayed leads`
+          : `${formatNumber(structural.length)} displayed leads`,
     },
   ];
 
@@ -100,10 +130,12 @@ export function RefactoringLede({ plans, indexedFileCount, action }: Refactoring
         layout="beside"
         action={action}
         figureFooter={
-          structural.length > 0 ? (
+          structuralTotal > 0 ? (
             <p className="text-caption text-[var(--color-text-tertiary)]">
-              {formatNumber(structural.length)} of them change a file&apos;s shape. The rest are
-              local.
+              {formatNumber(structuralTotal)} change a file&apos;s shape
+              {performanceTotal
+                ? `; ${formatNumber(performanceTotal)} address a causal performance opportunity.`
+                : ". The rest are local."}
             </p>
           ) : undefined
         }
@@ -117,11 +149,20 @@ export function RefactoringLede({ plans, indexedFileCount, action }: Refactoring
           small effort. They are worth doing when you are already in the file, and they are not
           worth a planning meeting.
         </p>
-        {structural.length > 0 ? (
+        {performanceTotal > 0 ? (
           <p>
             <span className="font-medium text-[var(--color-text-primary)]">
-              {formatNumber(structural.length)}{" "}
-              {structural.length === 1 ? "is structural" : "are structural"}.
+              {formatNumber(performanceTotal)} performance plan
+              {performanceTotal === 1 ? "" : "s"}.
+            </span>{" "}
+            These preserve detector-native benefit even when defect-health recovery is zero.
+          </p>
+        ) : null}
+        {structuralTotal > 0 ? (
+          <p>
+            <span className="font-medium text-[var(--color-text-primary)]">
+              {formatNumber(structuralTotal)}{" "}
+              {structuralTotal === 1 ? "is structural" : "are structural"}.
             </span>{" "}
             {structuralPhrase}. These change how the codebase is shaped, so they lead the page.
           </p>

@@ -398,9 +398,7 @@ async def get_deduction_by_path(
     return totals
 
 
-def sort_metrics_worst_first(
-    rows: list[Any], deduction_by_path: dict[str, float]
-) -> list[Any]:
+def sort_metrics_worst_first(rows: list[Any], deduction_by_path: dict[str, float]) -> list[Any]:
     """Order per-file metrics worst-first: ``(score asc, deduction desc, path)``.
 
     ``score`` alone cannot rank the band that matters. It clamps at 1.0, so on
@@ -904,6 +902,7 @@ async def upsert_health_findings(
     findings: list[Any],
     *,
     file_paths: list[str],
+    dimension: str | None = None,
 ) -> None:
     """Replace open findings **only for the given file paths**.
 
@@ -912,19 +911,36 @@ async def upsert_health_findings(
     """
     if not file_paths:
         return
-    existing = await session.execute(
-        select(HealthFinding).where(
-            HealthFinding.repository_id == repository_id,
-            HealthFinding.status == "open",
-            HealthFinding.file_path.in_(file_paths),
-        )
-    )
+    predicates = [
+        HealthFinding.repository_id == repository_id,
+        HealthFinding.status == "open",
+        HealthFinding.file_path.in_(file_paths),
+    ]
+    if dimension is not None:
+        predicates.append(HealthFinding.dimension == dimension)
+    existing = await session.execute(select(HealthFinding).where(*predicates))
     for row in existing.scalars().all():
         await session.delete(row)
     await session.flush()
 
-    for i in range(0, len(findings), _BATCH_SIZE):
-        batch = findings[i : i + _BATCH_SIZE]
+    allowed = set(file_paths)
+    scoped = [
+        finding
+        for finding in findings
+        if (finding.file_path if hasattr(finding, "file_path") else finding.get("file_path"))
+        in allowed
+        and (
+            dimension is None
+            or (
+                getattr(finding, "dimension", None)
+                if hasattr(finding, "dimension")
+                else finding.get("dimension")
+            )
+            == dimension
+        )
+    ]
+    for i in range(0, len(scoped), _BATCH_SIZE):
+        batch = scoped[i : i + _BATCH_SIZE]
         for f in batch:
             if hasattr(f, "biomarker_type"):
                 severity = f.severity

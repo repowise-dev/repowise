@@ -205,6 +205,19 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
+; Chained call: factory().Method(args). Carry the inner invocation as an AST
+; node so resolution can use its declared return type without scanning text.
+(invocation_expression
+  function: (member_access_expression
+    expression: (invocation_expression) @call.receiver_call
+    name: [
+      (identifier) @call.target
+      (generic_name (identifier) @call.target)
+    ]
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
 ; Fluent construction: new Builder().Method(args).
 ; The receiver is captured from the constructed type rather than from a
 ; variable, because here the type is written at the call site. That keeps the

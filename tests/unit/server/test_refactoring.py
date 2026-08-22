@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 from httpx import AsyncClient
+from sqlalchemy import event
 
 from repowise.core.persistence import (
     batch_upsert_graph_edges,
@@ -221,6 +222,139 @@ async def test_type_filter_narrows_plans_but_keeps_summary(client: AsyncClient, 
     assert [p["refactoring_type"] for p in body["plans"]] == ["break_cycle"]
     # Summary still reflects all four types so the chips can show totals.
     assert body["summary"]["total"] == 4
+
+
+async def test_paged_targets_are_bounded_deterministic_and_server_filtered(
+    client: AsyncClient, app
+) -> None:
+    repo_id = await _seed(client, app)
+    legacy = (await client.get(f"/api/repos/{repo_id}/refactoring/targets")).json()
+    first = (
+        await client.get(f"/api/repos/{repo_id}/refactoring/targets/page", params={"limit": 2})
+    ).json()
+    second = (
+        await client.get(
+            f"/api/repos/{repo_id}/refactoring/targets/page",
+            params={"limit": 2, "offset": first["next_offset"]},
+        )
+    ).json()
+
+    assert len(first["items"]) == 2
+    assert first["total"] == 4
+    assert first["has_more"] is True
+    assert [item["id"] for item in first["items"] + second["items"]] == [
+        item["id"] for item in legacy["plans"]
+    ]
+
+    filtered = (
+        await client.get(
+            f"/api/repos/{repo_id}/refactoring/targets/page",
+            params={
+                "search": "helper.do_work",
+                "confidence": "medium",
+                "effort": "S",
+                "sort": "file",
+            },
+        )
+    ).json()
+    assert filtered["total"] == 1
+    assert filtered["items"][0]["refactoring_type"] == "move_method"
+    assert filtered["summary"]["total"] == 4
+
+
+async def test_paged_targets_query_count_is_constant_as_payload_grows(
+    client: AsyncClient, app, test_engine
+) -> None:
+    repo_id = await _seed(client, app)
+
+    async def request_count(limit: int) -> int:
+        statements: list[str] = []
+
+        def record(*args) -> None:
+            statements.append(str(args[2]))
+
+        event.listen(test_engine.sync_engine, "before_cursor_execute", record)
+        try:
+            response = await client.get(
+                f"/api/repos/{repo_id}/refactoring/targets/page", params={"limit": limit}
+            )
+            assert response.status_code == 200
+        finally:
+            event.remove(test_engine.sync_engine, "before_cursor_execute", record)
+        return len(statements)
+
+    small = await request_count(1)
+    async with app.state.session_factory() as session:
+        await crud.save_refactoring_suggestions(
+            session,
+            repo_id,
+            [
+                {
+                    "refactoring_type": "extract_method",
+                    "file_path": f"pkg/many_{index}.py",
+                    "target_symbol": f"work_{index}",
+                    "line_start": 1,
+                    "line_end": 30,
+                    "plan": {"suggested_name": f"part_{index}"},
+                    "evidence": {"slice_nloc": 12, "ccn_removed": 2},
+                    "impact_delta": 0.2,
+                    "effort_bucket": "S",
+                    "blast_radius": {"files": [f"pkg/many_{index}.py"], "file_count": 1},
+                    "confidence": "high",
+                    "source_biomarker": "high_complexity",
+                }
+                for index in range(80)
+            ],
+        )
+        await session.commit()
+
+    large = await request_count(60)
+    assert large == small
+
+
+async def test_paged_targets_filter_performance_plans_without_redefining_rank(
+    client: AsyncClient, app
+) -> None:
+    repo_id = await _seed(client, app)
+    async with app.state.session_factory() as session:
+        await crud.save_refactoring_suggestions(
+            session,
+            repo_id,
+            [
+                {
+                    "refactoring_type": "performance_fix",
+                    "file_path": "pkg/hub.py",
+                    "target_symbol": "pkg/hub.py::load",
+                    "plan": {
+                        "opportunity_id": "opp-exact",
+                        "strategy": "batch_or_prefetch_io",
+                        "affected_locations_total": 4,
+                    },
+                    "evidence": {"rank_factors": {"multiplier_shape": 3, "affected_call_sites": 4}},
+                    "impact_delta": 0.0,
+                    "effort_bucket": "M",
+                    "blast_radius": {"files": ["pkg/hub.py"], "file_count": 1},
+                    "confidence": "medium",
+                    "source_biomarker": "io_in_loop",
+                }
+            ],
+        )
+        await session.commit()
+
+    all_page = (await client.get(f"/api/repos/{repo_id}/refactoring/targets/page")).json()
+    performance = (
+        await client.get(
+            f"/api/repos/{repo_id}/refactoring/targets/page",
+            params={"refactoring_type": "performance_fix"},
+        )
+    ).json()
+    expected = next(
+        item for item in all_page["items"] if item["refactoring_type"] == "performance_fix"
+    )
+    assert performance["items"] == [expected]
+    assert performance["summary"]["performance_total"] == 1
+    assert expected["impact_delta"] == 0.0
+    assert expected["benefit"] > 0
 
 
 async def test_file_path_filter_narrows_plans_but_keeps_summary(client: AsyncClient, app) -> None:

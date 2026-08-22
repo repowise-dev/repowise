@@ -368,6 +368,7 @@ class OpenCodeProvider(BaseProvider):
                     env={
                         **os.environ,
                         "OPENCODE_CONFIG_CONTENT": _OPENCODE_READONLY_CONFIG,
+                        "OPENCODE_DISABLE_PROJECT_CONFIG": "true",
                     },
                 )
             except FileNotFoundError as exc:

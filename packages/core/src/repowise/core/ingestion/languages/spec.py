@@ -147,6 +147,13 @@ class LanguageSpec:
     # clause; a type may be ubiquitous in parameter position without ever
     # being inherited from.
     builtin_types: frozenset[str] = field(default_factory=frozenset)
+    # Method and constructor names the language's own standard library owns.
+    # Read *only* by the bare-name fallback in ``CallResolver``, to stop it
+    # answering ``Ok(..)`` or ``.unwrap()`` with whatever same-named symbol the
+    # repository happens to declare once. Deliberately not ``builtin_calls``:
+    # that set is matched receiver-blind in the parser and drops the call site
+    # outright, which would also delete a real ``obj.unwrap()`` edge.
+    builtin_methods: frozenset[str] = field(default_factory=frozenset)
 
     # -- Display ---------------------------------------------------------
     color_hex: str = "#8b5cf6"  # fallback purple ("other")

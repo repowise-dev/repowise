@@ -38,7 +38,9 @@ def test_every_performance_biomarker_carries_a_weight() -> None:
     below ``string_concat_in_loop`` and nobody would see it. This is the
     mechanism that makes adding one loud.
     """
-    registered = {b.name for b in registered_biomarkers() if getattr(b, "category", "") == "performance"}
+    registered = {
+        b.name for b in registered_biomarkers() if getattr(b, "category", "") == "performance"
+    }
     assert registered, "no performance detectors registered — the check is vacuous"
     assert registered <= set(_PERF_MARKER_POINTS), (
         f"unweighted performance biomarkers: {sorted(registered - set(_PERF_MARKER_POINTS))}"
@@ -250,6 +252,58 @@ async def test_perf_rank_is_absent_from_every_other_dimension(setup_mcp, perf_fi
     assert all("perf_rank" not in f for f in by_dim["defect"])
     assert all("perf_rank" not in f for f in by_dim.get("maintainability", []))
     assert all("perf_rank" in f for f in by_dim["performance"])
+
+
+@pytest.mark.asyncio
+async def test_narrow_projection_leads_with_one_shared_causal_opportunity(
+    setup_mcp, perf_findings, session
+):
+    import json
+
+    from repowise.core.persistence.models import HealthFinding
+    from repowise.server.mcp_server import get_health
+
+    for index, caller in enumerate(("src/a.py", "src/b.py"), start=10):
+        session.add(
+            HealthFinding(
+                id=str(uuid.uuid4()),
+                repository_id=perf_findings,
+                file_path=caller,
+                biomarker_type="io_in_loop",
+                severity="medium",
+                function_name="run",
+                line_start=index,
+                line_end=index,
+                details_json=json.dumps(
+                    {
+                        "boundary_kind": "db",
+                        "cross_function": True,
+                        "path": [f"{caller}::run", "src/shared.py::load", "src/db.py::fetch"],
+                        "resolution_basis": "call-site",
+                    }
+                ),
+                health_impact=0.0,
+                reason="shared N+1",
+                dimension="performance",
+                status="open",
+            )
+        )
+    await session.flush()
+
+    result = await get_health(include=["performance"], only=["performance_opportunities"], limit=50)
+    shared = [
+        item
+        for item in result["performance_opportunities"]
+        if item["terminal_sink"] == "src/db.py::fetch"
+    ]
+    assert len(shared) == 1
+    assert shared[0]["intervention_symbol"] == "src/shared.py::load"
+    assert shared[0]["affected_call_sites_total"] == 2
+    assert shared[0]["observations_total"] == 2
+    assert {item["line_start"] for item in shared[0]["evidence"]} == {10, 11}
+    assert {item["function_name"] for item in shared[0]["evidence"]} == {"run"}
+    assert result["performance_opportunities_total"] >= 1
+    assert "top_findings" not in result
 
 
 @pytest.mark.asyncio

@@ -111,5 +111,34 @@ SPEC = LanguageSpec(
             "Self", "self",
         }
     ),
+    # Prelude constructors and std trait methods. Every one is in scope in
+    # every file without an import, so a bare-name guess that answers one with
+    # a repo symbol is answering for the standard library — `Ok(())` bound to
+    # the single repo symbol spelled `Ok`, `.unwrap()` on a chained receiver
+    # bound to an unrelated private helper. Names a repository plausibly
+    # declares and calls in its own right (`new`, `from`, `get`, `len`, `map`,
+    # `next`, `insert`, `push`, `parse`) are deliberately absent: the tier this
+    # feeds is a guess, but it is not always a wrong one, and the gate is that
+    # every edge it loses was wrong.
+    builtin_methods=frozenset(
+        {
+            # Prelude constructors and variants
+            "Ok", "Err", "Some", "None",
+            # Option / Result
+            "unwrap", "unwrap_or", "unwrap_or_else", "unwrap_or_default",
+            "unwrap_err", "expect", "expect_err",
+            "is_some", "is_none", "is_ok", "is_err",
+            "ok_or", "ok_or_else", "map_err", "and_then", "or_else",
+            # Iterator
+            "collect", "filter_map", "flat_map", "enumerate", "rev",
+            "cloned", "copied", "into_iter", "peekable", "zip",
+            # Conversion and ownership
+            "to_owned", "to_string", "to_vec", "as_ref", "as_mut",
+            "as_str", "as_bytes", "as_slice", "borrow_mut",
+            # str / slice / Path methods with no plausible repo twin
+            "starts_with", "ends_with", "to_lowercase", "to_uppercase",
+            "canonicalize", "is_file", "is_dir",
+        }
+    ),
     color_hex="#DEA584",
 )

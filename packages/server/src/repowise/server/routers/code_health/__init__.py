@@ -21,6 +21,7 @@ from . import (
     files_routes,  # noqa: F401
     findings_routes,  # noqa: F401
     overview_routes,  # noqa: F401
+    performance_routes,  # noqa: F401
     refactoring_routes,  # noqa: F401
     trends_routes,  # noqa: F401
 )

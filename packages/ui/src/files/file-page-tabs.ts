@@ -31,7 +31,7 @@ export const FILE_TAB_LABEL: Record<FilePageTab, string> = {
   history: "History",
   decisions: "Decisions",
   graph: "Dependencies",
-  coverage: "Coverage",
+  coverage: "Tests",
 };
 
 /**
@@ -51,7 +51,8 @@ export const FILE_TAB_BLURB: Record<FilePageTab, string> = {
   history: "What git knows about this file — how often it changes, who changes it, and what moves with it.",
   decisions: "Architectural decisions recorded against this file.",
   graph: "Where this file sits in the indexed dependency graph.",
-  coverage: "Line coverage, once a test report has been ingested for this repository.",
+  coverage:
+    "Which tests reach this file, read from the dependency graph, plus the lines they executed once a coverage report has been ingested.",
 };
 
 export interface FileTabDef {

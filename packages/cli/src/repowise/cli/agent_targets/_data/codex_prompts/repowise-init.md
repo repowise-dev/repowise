@@ -79,7 +79,8 @@ Core flags:
   --mode fast            Quick first pass on very large repos: no wiki at all.
 
 Embeddings:
-  --embedder NAME        Embedding provider: gemini, openai, mock (default: auto-detect)
+  --embedder NAME        Embedding provider: gemini, openai, openrouter, ollama,
+                         edenai, mock (default: auto-detect)
 
 Cost control:
   --concurrency N        Max parallel LLM calls (default: 10)

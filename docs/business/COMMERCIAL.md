@@ -19,7 +19,7 @@ models. Specific pricing figures are provided in a separate proposal.
 ## 1. Who the commercial license is for
 
 The open-source distribution covers the full developer-experience surface: the five
-intelligence layers, the eleven MCP tools, multi-repo workspaces, the local dashboard,
+intelligence layers, the ten MCP tools, multi-repo workspaces, the local dashboard,
 auto-sync, and auto-generated `CLAUDE.md`. That is everything an engineer or a team
 needs to make their AI coding agents codebase-aware.
 
@@ -41,21 +41,30 @@ scale, in a regulated or security-sensitive environment**:
 
 All of the following ship in `pip install repowise` today, free for internal use.
 
-- **Five intelligence layers**: Graph (tree-sitter AST across 19 languages, two-tier
-  dependency graph, call resolution, heritage extraction, Leiden communities,
-  PageRank / betweenness / SCC), Git (hotspots, ownership, co-change pairs, bus
-  factor, significant commits, contributor profiles, module health), Documentation
-  (LLM-generated wiki, freshness scoring, RAG search), Decision (architectural
+- **[Five intelligence layers](../layers/INTELLIGENCE_LAYERS.md)**: Graph
+  (tree-sitter AST across 19 languages, two-tier dependency graph, call
+  resolution, heritage extraction, Leiden communities, PageRank / betweenness /
+  SCC), Git (hotspots, ownership, co-change pairs, bus factor, significant
+  commits, contributor profiles, module health), Documentation (a wiki page per
+  module and file, freshness scoring, hybrid search), Decision (architectural
   decision records linked to graph nodes, staleness tracking), and Code Health
   (49 deterministic detectors, 1–10 score per file, coverage ingestion, trend
-  alerts).
+  alerts). Full detail on each, and what every layer costs to build:
+  **[INTELLIGENCE_LAYERS.md](../layers/INTELLIGENCE_LAYERS.md)**.
+- **Zero LLM calls in every analysis layer.** Graph, git, code health, change
+  risk, dead code and the PR bot make no model calls at all, and the whole wiki
+  renders from code structure with no API key (`repowise init --no-prose`).
+  Model-written prose is opt-in, priced before you confirm it, and runs on your
+  own key or fully offline through Ollama. Six of the seven decision sources are
+  deterministic as well; only comment archaeology, which reads rationale prose on
+  high-centrality code, needs a provider.
 - **Ten task-shaped MCP tools**: `get_overview`, `get_answer`, `get_context`,
   `get_symbol`, `search_codebase`, `get_risk`, `get_change_risk`, `get_why`,
-  `get_dead_code`, `get_health`. Benchmarked at **−33.5 % cost per question**
-  against a bare agent, cheaper on 13 of 15 questions (n=15, p=0.007), and
-  **−49 % to −70 % tool calls** across paired runs on `pallets/flask` and
-  `scikit-learn`. See [docs/BENCHMARKS.md](../BENCHMARKS.md) for the sample
-  sizes, the tests, and the runs where the cost saving did not replicate.
+  `get_dead_code`, `get_health`, plus `list_repos` for workspace routing.
+  Measured at **−31.6 % of the agent's own output tokens** against a bare agent
+  on 43 questions (p < 0.0001), leaner on 37 of 44, reached in 3.8 tool calls
+  where the bare agent needed 7.2. See [docs/BENCHMARKS.md](../BENCHMARKS.md) for
+  the sample sizes, all three agent harnesses, and the rows where we lose.
 - **Multi-repo workspace intelligence**: cross-repo co-changes, API contract
   extraction (HTTP / gRPC / topics) with provider↔consumer matching, package
   dependency mapping, federated MCP queries (`repo="all"`), workspace dashboard and
@@ -70,6 +79,13 @@ All of the following ship in `pip install repowise` today, free for internal use
   Security (local pattern scan), Knowledge Map, and the workspace views.
 - **Dead-code detection**: pure graph traversal, confidence-tiered, framework-aware
   (ASP.NET, Django, FastAPI, Flask, Rails, Laravel), dynamic-import aware.
+- **Test intelligence, from a coverage report and from the call graph.** Ingests
+  LCOV / Cobertura / Clover like a coverage service, then does the half a coverage
+  service structurally cannot: answers *which tests reach this file* and *which
+  tests does this diff exercise* **with no report at all**, at **95.7% and 97.5%
+  precision** measured against a real `coverage run --contexts=test`. Measured and
+  inferred rows are labelled and never averaged. Zero LLM calls, no CI integration.
+  ([TEST_INTELLIGENCE.md](../layers/TEST_INTELLIGENCE.md))
 - **Privacy** (self-hosted): source never leaves your infrastructure, BYOK or fully
   offline via Ollama. Anonymous, opt-out usage telemetry (command names and coarse
   environment only, never code, paths or repo names) can be turned off with
@@ -83,14 +99,33 @@ All of the following ship in `pip install repowise` today, free for internal use
 
 ## 3. First-class language coverage
 
-Repowise treats **13 languages at Full tier** (Python, TypeScript, JavaScript, Svelte,
-Vue, Java, Kotlin, Go, Rust, C++, **C#**, Scala, and Ruby) with AST parsing, import
-resolution, named bindings, call resolution, heritage extraction, multi-project
-workspace resolvers, framework-aware edges, per-language dynamic-hint extractors, and
-code-health markers. A further 5 languages (C, Swift, PHP, Dart, Object Pascal/Delphi)
-sit at Good tier,
-and Luau is partial. SQL/dbt, shell, HTML, and the config formats are handled by
-dedicated extractors on top of that.
+Repowise parses **19 languages to a full AST** and places **35 on a five-rung
+ladder**, so "do you support X" gets the rung as its answer rather than a yes or a
+no. Both numbers matter and neither is worth quoting alone.
+
+The 19 are the top three rungs. At **Full tier sit 13** (Python, TypeScript,
+JavaScript, Svelte, Vue, Java, Kotlin, Go, Rust, C++, **C#**, Scala, and Ruby) with
+AST parsing, import resolution, named bindings, call resolution, heritage
+extraction, multi-project workspace resolvers, framework-aware edges, per-language
+dynamic-hint extractors, and code-health markers. A further **5 at Good tier** (C,
+Swift, PHP, Dart, Object Pascal/Delphi) get all of that except the full health
+suite, and Luau is partial. SQL/dbt, shell, HTML, and the config formats are
+handled by dedicated extractors on top of that.
+
+Below the AST line the ladder continues rather than stopping: **7 at Lightweight**
+(Elixir, Clojure, Haskell, Lean 4, Erlang, F#, HTML) get a real file-to-file import
+graph with no symbol-level claims, and **9 at Structural** (Objective-C, R, Zig,
+Julia, Elm, OCaml, Crystal, Nim, D) get the git intelligence layer only: blame,
+hotspots, co-change, ownership and bug history, with no parsing. Stating the rung
+per language is deliberate, because a support claim that averages these together
+would not survive a technical evaluation. Full ladder:
+[LANGUAGE_SUPPORT.md](../layers/LANGUAGE_SUPPORT.md).
+
+**Languages are never gated.** Every one of them ships in the AGPL distribution,
+including the ones still climbing. What is on the way up, **COBOL** among them,
+is on the public [roadmap](../../ROADMAP.md#languages). Where you need a language
+or framework that is not there, §5.4 covers having it built and maintained by us
+as a commercial line item, and the result still ships to everyone under AGPL.
 
 For estates built on a particular stack, the relevant Full-tier capabilities are
 worth calling out. For **.NET**, as one example:
@@ -122,12 +157,13 @@ the items that matter most to you can be prioritized.
 | Capability | Open Source (AGPL) | Commercial License |
 |------------|:------------------:|:------------------:|
 | Five intelligence layers | ✅ | ✅ |
-| Eleven MCP tools | ✅ | ✅ |
+| Ten task-shaped MCP tools (plus `list_repos`) | ✅ | ✅ |
 | Multi-repo workspaces | ✅ | ✅ |
 | Full-tier language support (incl. C# / .NET) | ✅ | ✅ |
 | Local dashboard (incl. local security pattern scan) | ✅ | ✅ |
 | Auto-sync (hooks, watcher, webhooks) | ✅ | ✅ |
 | Auto-generated CLAUDE.md | ✅ | ✅ |
+| Test intelligence (coverage ingestion **and** the graph-inferred test map) | ✅ | ✅ |
 | Local full-history secret scan (`repowise security scan --history`) | ✅ | ✅ |
 | Graph-aware enhanced security scanning | — | ✅ *(GA on hosted)* |
 | Language-specific security rulesets | — | ✅ *(dev)* |

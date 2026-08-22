@@ -411,6 +411,7 @@ class CodexCliProvider(BaseProvider):
             "--cd",
             str(self._repo_path),
         ]
+        cmd.extend(["--config", "project_doc_max_bytes=0"])
         reasoning_config = _codex_reasoning_config(self._codex_cmd, self.model_name, reasoning)
         if reasoning_config:
             cmd.extend(["--config", reasoning_config])

@@ -15,6 +15,10 @@ from typing import Literal, get_args
 import networkx as nx
 import structlog
 
+from repowise.core.analysis.execution_graph import (
+    is_excluded_execution_path,
+    is_walkable_execution_edge,
+)
 from repowise.core.ids import file_path_of
 
 log = structlog.get_logger(__name__)
@@ -27,28 +31,19 @@ _MIN_ENTRY_POINT_SCORE = 0.3
 
 # Name patterns for entry point scoring (compiled once)
 _TIER1_NAMES = re.compile(
-    r"^(main|run|start|serve|cli|__main__|app|execute|bootstrap|init)$", re.IGNORECASE,
+    r"^(main|run|start|serve|cli|__main__|app|execute|bootstrap|init)$",
+    re.IGNORECASE,
 )
 _TIER2_NAMES = re.compile(
-    r"^(handle_|on_|dispatch_|process_|route_|do_)", re.IGNORECASE,
+    r"^(handle_|on_|dispatch_|process_|route_|do_)",
+    re.IGNORECASE,
 )
 _TIER3_NAMES = re.compile(
-    r"^(get_|create_|execute_|invoke_|fetch_|submit_|send_|post_)", re.IGNORECASE,
-)
-
-# Files to exclude from entry point scoring — test, demo, fixture, etc.
-_EXCLUDE_PATH_PATTERNS = re.compile(
-    r"("
-    r"test[s_/]|_test\.|\.test\.|\.spec\.|__tests__|conftest|"
-    r"fixture[s]?[/.]|mock[s]?[/.]|stub[s]?[/.]|fake[s]?[/.]|"
-    r"demo[_/.]|example[s]?[/.]|sample[s]?[/.]|"
-    r"benchmark[s]?[/.]|_bench\.|"
-    r"scripts?/"
-    r")",
+    r"^(get_|create_|execute_|invoke_|fetch_|submit_|send_|post_)",
     re.IGNORECASE,
 )
 
-
+# Files to exclude from entry point scoring — test, demo, fixture, etc.
 # ---------------------------------------------------------------------------
 # Why a trace stopped
 # ---------------------------------------------------------------------------
@@ -71,7 +66,7 @@ FlowTermination = Literal[
     "confidence_filtered",
     # Every successor was a test/demo/fixture node.
     "excluded_target",
-    # No outgoing call edges were recorded. Deliberately not called a leaf: a
+    # No outgoing execution edges were recorded. Deliberately not called a leaf: a
     # symbol whose calls we failed to resolve looks exactly like this, and
     # asserting the code has no callees is the claim we cannot make.
     "no_callees",
@@ -174,7 +169,9 @@ def _build_call_degree_maps(
     out_deg: dict[str, int] = defaultdict(int)
     in_deg: dict[str, int] = defaultdict(int)
     for u, v, d in graph.edges(data=True):
-        if d.get("edge_type") == "calls":
+        if is_walkable_execution_edge(
+            d.get("edge_type"), d.get("resolution_origin"), d.get("confidence")
+        ):
             out_deg[u] += 1
             in_deg[v] += 1
     return out_deg, in_deg
@@ -192,7 +189,7 @@ def _is_excluded_node(graph: nx.DiGraph, node_id: str) -> bool:
     """
     data = graph.nodes.get(node_id, {})
     file_path = data.get("file_path") or file_path_of(node_id) or ""
-    return bool(_EXCLUDE_PATH_PATTERNS.search(file_path))
+    return is_excluded_execution_path(file_path)
 
 
 def _score_entry_point(
@@ -209,7 +206,7 @@ def _score_entry_point(
     if data.get("node_type") == "external":
         return 0.0
     file_path = data.get("file_path", "") or ""
-    if _EXCLUDE_PATH_PATTERNS.search(file_path):
+    if is_excluded_execution_path(file_path):
         return 0.0
 
     # Signal 1: Fan-out ratio (weight 0.35)
@@ -277,21 +274,23 @@ class _Successors:
 
 
 def _get_call_successors(
-    node_id: str, graph: nx.DiGraph, out_deg: dict[str, int],
+    node_id: str,
+    graph: nx.DiGraph,
+    out_deg: dict[str, int],
 ) -> _Successors:
     """Get outgoing call targets, sorted by out-degree descending.
 
     Test/demo/fixture nodes are dropped so traces stay on production code
-    even when a call edge mis-resolves to a test fake (e.g. a fake
+    even when an execution edge mis-resolves to a test fake (e.g. a fake
     ``fetchall`` in a unit test).
     """
     successors = []
     low_confidence: Counter = Counter()
     excluded = 0
     for _, target, d in graph.out_edges(node_id, data=True):
-        if d.get("edge_type") != "calls":
-            continue
-        if d.get("confidence", 0) < 0.5:
+        if not is_walkable_execution_edge(
+            d.get("edge_type"), d.get("resolution_origin"), d.get("confidence")
+        ):
             low_confidence[d.get("resolution_origin") or "unlabelled"] += 1
             continue
         if _is_excluded_node(graph, target):
@@ -311,7 +310,7 @@ def _bfs_trace(
     config: FlowConfig,
     out_deg: dict[str, int],
 ) -> ExecutionFlow | None:
-    """Trace from an entry point following call edges.
+    """Trace from an entry point following reliable execution edges.
 
     Follows the highest-fan-out successor at each step to build
     the primary execution path.
@@ -376,9 +375,7 @@ def _bfs_trace(
         communities_visited=communities_seen,
         termination=termination,
         termination_detail=(
-            dict(successors.low_confidence)
-            if termination == "confidence_filtered"
-            else {}
+            dict(successors.low_confidence) if termination == "confidence_filtered" else {}
         ),
     )
 
@@ -417,7 +414,7 @@ def trace_execution_flows(
     """Trace execution flows from top-scored entry points.
 
     Args:
-        graph: The full dependency graph with symbol nodes and call edges.
+        graph: The full dependency graph with symbol nodes and execution edges.
         community_map: {node_id: community_id} from community detection.
         config: Optional flow tracing configuration.
 
@@ -429,7 +426,9 @@ def trace_execution_flows(
 
     if graph.number_of_nodes() == 0:
         return ExecutionFlowReport(
-            total_entry_points_scored=0, total_flows=0, flows=[],
+            total_entry_points_scored=0,
+            total_flows=0,
+            flows=[],
         )
 
     out_deg, in_deg = _build_call_degree_maps(graph)
@@ -457,7 +456,7 @@ def trace_execution_flows(
     # whether it produced a long enough trace below.
     entry_point_scores = {node_id: score for node_id, score in candidates}
 
-    top_candidates = candidates[:config.max_flows]
+    top_candidates = candidates[: config.max_flows]
 
     # Trace from each candidate
     flows: list[ExecutionFlow] = []

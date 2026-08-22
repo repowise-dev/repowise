@@ -29,7 +29,8 @@ import * as React from "react";
 
 import { formatNumber } from "../lib/format";
 import { typeMeta } from "./meta";
-import { planPoint, type RefactoringPlan } from "./types";
+import { planPoint } from "./types";
+import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 export interface StructuralMapProps {
   /** Structural plans. Those without both figures are dropped and counted. */

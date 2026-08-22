@@ -23,7 +23,7 @@ LLM layer (code generation) is a separate, strictly opt-in step ([below](#opt-in
 <img src="../../.github/assets/health-loop.svg" alt="repowise code-health loop: markers fan into three signals, the graph and git history locate risk, and refactoring intelligence emits concrete plans an agent executes" width="100%" />
 </div>
 
-## The six detectors
+## The seven detectors
 
 Each detector is a self-contained module registered into a registry (adding a
 refactoring type is a new file + a registry entry, like the marker registry).
@@ -38,6 +38,7 @@ one**, and produces stable-sorted, deterministic output.
 | **Break Cycle** | The minimal set of import edges to invert to break a dependency cycle. | A strongly-connected component in the import graph → greedy minimum feedback arc set (MFAS) over the real edges picks the smallest cut. |
 | **Split File** | The cohesive files an oversized module should decompose into: which top-level symbols move to each new file, plus the import edits in every dependent. | Community detection (Leiden, Louvain fallback) over a weighted intra-file symbol graph (direct calls, shared local helpers, shared foreign modules); emits only when the partition's **modularity** clears a decomposability gate. The file-level analog of Extract Class. |
 | **Extract Method** | The exact line span to lift out of an oversized/complex method, with the helper's inferred signature: the parameters it needs (IN) and the value it must return (OUT). | Intra-procedural dataflow (CFG + def/use + reaching definitions) over methods a `large_method` / `brain_method` / `complex_method` finding already flagged. Only single-exit, statement-boundary spans that remove real complexity qualify; IN/OUT comes from liveness over the def/use facts, so the suggested helper is behavior-preserving by construction. |
+| **Performance Fix** | A safe shared intervention, affected call sites, and caller-to-sink paths for one causal performance opportunity. | The call-graph opportunity service groups raw findings by stable cause, boundary and context, then emits only supported strategies. Findings with no coherent safe intervention remain visible in Code Health without a plan. |
 
 The algorithms are derived from public academic literature (Fokaefs-Tsantalis
 HAC for class splitting, Bavota feature-envy distance, MFAS for cycle breaking,
@@ -58,11 +59,11 @@ web).
 
 | Field | Meaning |
 |-------|---------|
-| `refactoring_type` | `extract_class` \| `extract_helper` \| `move_method` \| `break_cycle` \| `split_file` \| `extract_method` |
+| `refactoring_type` | `extract_class` \| `extract_helper` \| `move_method` \| `break_cycle` \| `split_file` \| `extract_method` \| `performance_fix` |
 | `file_path`, `target_symbol`, `line_start`, `line_end` | What the refactoring acts on. |
 | `plan` | The concrete, type-specific plan: the split `groups` (methods + fields), the move `{method, from_class, to_class}`, the clone `occurrences` + `suggested_site`, the cycle + `cut_edges`, the file-split `groups` (`{name, symbols, suggested_file}`) + `residual` core + `shim_required`, or the method-extraction `span` + `params` + `returns` + `suggested_name`. |
 | `evidence` | The signals that justify it: `lcom4`, `wmc`, clone token/line counts + `co_change_count`, Jaccard distances, cycle size, or the split's `modularity` + `symbol_count` + `group_count` + intra/cut edge counts. |
-| `impact_delta` | The health score the refactoring would recover (the deduction of the marker it answers); `0` for the graph-native types that answer no marker. |
+| `impact_delta` | The defect-health score the refactoring would recover; `0` for graph-native and performance plans. Their canonical `benefit` comes from detector-native evidence instead. |
 | `effort_bucket` | `S` \| `M` \| `L` \| `XL`, from the target's size. |
 | `blast_radius` | What else must move: the callers, co-change partners, and importing files. Extract Method carries `{"scope": "local"}` instead — extraction adds a private helper and changes no signature, so nothing outside the file moves and there is no count to make. |
 | `confidence` | `low` \| `medium` \| `high` (drives the `min_confidence` surface gate). |
@@ -74,22 +75,19 @@ The per-type `plan` / `evidence` / `blast_radius` shapes are documented in full 
 ## Ranking: graph-aware, not churn-only
 
 Each detector sorts its own output, but the surfaces show one mixed list, so the
-**global** order is what matters. A single unified rank blends three orthogonal
-signals as a product of `(1 + signal)` factors (so a zero in any one dimension
-shapes the order without annihilating the plan):
+**global** order is what matters. The shared recommendation service owns four
+named components and one canonical score:
 
 ```
-score = (1 + impact_delta)
-      × (1 + log1p(target centrality))     # importer count / in-degree
-      × (1 + log1p(blast radius))          # how much else moves, a mild amplifier
-      × confidence_weight                  # high 1.25 · medium 1.0 · low 0.75
+score = (1 + benefit) * (1 + leverage) / (1 + cost + risk)
 ```
 
-A plan on a **central hub file outranks the same plan on a leaf**. Because the
-impact-free graph-native types (Move Method, Break Cycle, Split File) still rank
-via centrality and blast radius, they interleave fairly with the impact-bearing
-types rather than sinking below them. Ties break on type → file → target, so the
-order is fully deterministic.
+`benefit` is recoverable health or detector-native structural/performance gain;
+`leverage` is weighted health deficit, dependents, and reliable entry reach;
+`cost` includes effort and change surface; `risk` includes blast radius,
+confidence, provenance, and validation quality. Larger blast radius therefore
+cannot improve rank by masquerading as benefit. Performance plans keep their
+detector-native benefit even with zero health impact. Ties break deterministically.
 
 > **The wedge.** The leading commercial code-health tool ranks refactoring
 > targets by **churn alone**, generates code **within-function only**, and ignores
@@ -113,16 +111,19 @@ get_health(targets=["module:src.api"])           # one module
 ```text
 # REST: what the web tab reads
 GET /api/repos/{repo_id}/refactoring/targets?refactoring_type=extract_class&min_confidence=high
+GET /api/repos/{repo_id}/refactoring/targets/page?limit=60&offset=0&refactoring_type=performance_fix
 GET /api/repos/{repo_id}/refactoring/{suggestion_id}        # one plan + blast-radius detail
 ```
 
-The web **Refactoring** tab renders each plan as a card (the split groups as a
-small tree, the move arrow, the clone occurrences with line links, the file-split
-groups tree with its residual core and import-rewrite list) over an impact/effort
-quadrant, with per-type filter chips (URL-synced) and a distinct accent color per
-type carried consistently across the quadrant dots, card rails, and chips. Each
-card has a **copy-to-agent** button that exports the structured plan + source
-spans + blast radius as a prompt a coding agent can execute.
+The web **Refactoring** page uses one shared plan board and drawer for every
+type, including a Performance filter. Its initial data path is bounded and
+server-owned: search, type, confidence, effort, canonical sorting, true totals,
+and deterministic offset cursors. The older unpaged endpoint remains available
+during migration. The drawer explains benefit, leverage, cost, risk and rank;
+shows validation basis and provenance, true test totals, capped tests and
+commands; and makes affected paths and intervention points navigable. Each card
+can still export the structured plan for an agent. It never runs tests, creates
+edits, or applies a refactoring automatically.
 
 ## Optional code generation
 

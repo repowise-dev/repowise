@@ -176,42 +176,175 @@ export function ContextRenderer({ data }: { data: ContextArtifactData }) {
 // Risk report
 // ---------------------------------------------------------------------------
 
+type NormalizedRiskTarget = {
+  file_path: string;
+  /** 0–1 fraction from MCP `hotspot_score` / `churn_percentile`. */
+  score: number | null;
+  is_hotspot: boolean;
+  risk_type?: string;
+  trend?: string;
+  risk_summary?: string;
+};
+
+/** Same top-quartile cut `git_indexer/enrich.py` uses for `is_hotspot`. */
+const HOTSPOT_SCORE_THRESHOLD = 0.75;
+
+function formatHotspotPct(score: number): string {
+  return `${Math.round(score * 100)}th`;
+}
+
+function normalizeRiskTargets(data: RiskReportArtifactData): NormalizedRiskTarget[] {
+  const raw = data.targets;
+  if (!raw) return [];
+
+  const rows: Array<{
+    file_path: string;
+    hotspot_score?: number;
+    churn_percentile?: number;
+    is_hotspot?: boolean;
+    risk_type?: string;
+    trend?: string;
+    risk_summary?: string;
+  }> = Array.isArray(raw)
+    ? raw.map((t) => ({
+        ...t,
+        file_path: t.file_path ?? t.target ?? "",
+      }))
+    : Object.entries(raw).map(([key, value]) => ({
+        ...value,
+        file_path: value.file_path ?? value.target ?? key,
+      }));
+
+  return rows
+    .filter((t) => t.file_path.length > 0)
+    .map((t) => {
+      const score =
+        typeof t.hotspot_score === "number"
+          ? t.hotspot_score
+          : typeof t.churn_percentile === "number"
+            ? t.churn_percentile
+            : null;
+      const out: NormalizedRiskTarget = {
+        file_path: t.file_path,
+        score,
+        // MCP target rows omit `is_hotspot`; derive from the enrich.py cut.
+        is_hotspot:
+          Boolean(t.is_hotspot) ||
+          (typeof score === "number" && score >= HOTSPOT_SCORE_THRESHOLD),
+      };
+      if (typeof t.risk_type === "string") out.risk_type = t.risk_type;
+      if (typeof t.trend === "string") out.trend = t.trend;
+      if (typeof t.risk_summary === "string") out.risk_summary = t.risk_summary;
+      return out;
+    });
+}
+
+function normalizeGlobalHotspots(data: RiskReportArtifactData): Array<{
+  path: string;
+  score: number;
+}> {
+  return (data.global_hotspots ?? [])
+    .map((h) => {
+      const path = h.file_path ?? h.path ?? "";
+      const score =
+        typeof h.hotspot_score === "number"
+          ? h.hotspot_score
+          : typeof h.churn_percentile === "number"
+            ? h.churn_percentile
+            : null;
+      if (!path || score === null) return null;
+      return { path, score };
+    })
+    .filter((h): h is { path: string; score: number } => h !== null);
+}
+
 export function RiskReportRenderer({ data }: { data: RiskReportArtifactData }) {
+  // get_change_risk returns a live-git score card, not per-file targets.
+  if (data.error || data.ref || data.review_priority || data.risk_percentile != null) {
+    const pct =
+      typeof data.risk_percentile === "number"
+        ? Math.round(data.risk_percentile)
+        : null;
+    return (
+      <div className="space-y-3">
+        {data.error && (
+          <p className="text-xs text-[var(--color-warning)]">{String(data.error)}</p>
+        )}
+        {data.ref && (
+          <StatRow label="Change" value={String(data.ref)} />
+        )}
+        {data.review_priority && (
+          <StatRow label="Review priority" value={String(data.review_priority)} />
+        )}
+        {pct !== null && <StatRow label="Risk percentile" value={`p${pct}`} />}
+        {typeof data.score === "number" && (
+          <StatRow label="Score" value={data.score.toFixed(1)} />
+        )}
+        {data.classification && (
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            {String(data.classification)}
+          </p>
+        )}
+        {data.warning && (
+          <p className="text-xs text-[var(--color-text-tertiary)]">{String(data.warning)}</p>
+        )}
+      </div>
+    );
+  }
+
+  const targets = normalizeRiskTargets(data);
+  const hotspots = normalizeGlobalHotspots(data);
+
+  if (targets.length === 0 && hotspots.length === 0) {
+    return (
+      <p className="text-xs text-[var(--color-text-tertiary)]">No risk data.</p>
+    );
+  }
+
   return (
     <div className="space-y-4">
-      <div>
-        <SectionTitle icon={ShieldAlert}>Targets</SectionTitle>
-        <div className="space-y-1.5">
-          {data.targets.map((t, i) => (
-            <div
-              key={`${t.file_path}:${i}`}
-              className="rounded-lg border border-[var(--color-border-default)] p-2.5"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-mono text-xs text-[var(--color-text-primary)] truncate">
-                  {t.file_path}
-                </span>
-                {t.is_hotspot && (
-                  <span className="inline-flex items-center gap-1 rounded bg-[var(--color-warning)]/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-warning)]">
-                    <AlertTriangle className="h-2.5 w-2.5" /> hotspot
+      {targets.length > 0 && (
+        <div>
+          <SectionTitle icon={ShieldAlert}>Targets</SectionTitle>
+          <div className="space-y-1.5">
+            {targets.map((t, i) => (
+              <div
+                key={`${t.file_path}:${i}`}
+                className="rounded-lg border border-[var(--color-border-default)] p-2.5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-xs text-[var(--color-text-primary)] truncate">
+                    {t.file_path}
                   </span>
+                  {t.is_hotspot && (
+                    <span className="inline-flex items-center gap-1 rounded bg-[var(--color-warning)]/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-warning)]">
+                      <AlertTriangle className="h-2.5 w-2.5" /> hotspot
+                    </span>
+                  )}
+                </div>
+                {typeof t.score === "number" && (
+                  <div className="text-[10px] text-[var(--color-text-tertiary)] mt-0.5 tabular-nums">
+                    Hotspot {formatHotspotPct(t.score)} pct
+                    {t.risk_type ? ` · ${t.risk_type}` : ""}
+                    {t.trend ? ` · ${t.trend}` : ""}
+                  </div>
+                )}
+                {t.risk_summary && (
+                  <p className="text-[10px] text-[var(--color-text-secondary)] mt-1 line-clamp-2">
+                    {t.risk_summary}
+                  </p>
                 )}
               </div>
-              {typeof t.churn_percentile === "number" && (
-                <div className="text-[10px] text-[var(--color-text-tertiary)] mt-0.5 tabular-nums">
-                  Churn {Math.round(t.churn_percentile)}th pct
-                </div>
-              )}
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
-      {data.global_hotspots.length > 0 && (
+      {hotspots.length > 0 && (
         <div>
           <SectionTitle icon={Activity}>Top global hotspots</SectionTitle>
           <div className="space-y-1">
-            {data.global_hotspots.slice(0, 5).map((h, i) => (
+            {hotspots.slice(0, 5).map((h, i) => (
               <div
                 key={`${h.path}:${i}`}
                 className="flex items-center justify-between gap-2 text-xs"
@@ -220,7 +353,7 @@ export function RiskReportRenderer({ data }: { data: RiskReportArtifactData }) {
                   {h.path}
                 </span>
                 <span className="text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
-                  {Math.round(h.churn_percentile)}th
+                  {formatHotspotPct(h.score)}
                 </span>
               </div>
             ))}

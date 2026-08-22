@@ -33,8 +33,10 @@ searchable in natural language.
 - [Auto-sync](#auto-sync-five-ways-to-stay-current)
 - [Auto-generated CLAUDE.md](#auto-generated-claudemd)
 
-Everything below is computed **without model calls**. An LLM is an optional
-upgrade for prose quality in the docs layer, never a requirement for the index.
+Everything below is computed **without model calls**, with two named exceptions,
+both optional and both skipped entirely on a keyless index: prose quality in the
+docs layer, and comment archaeology in the decision layer. Neither is a
+requirement for the index.
 
 ---
 
@@ -147,7 +149,10 @@ Architectural decisions mined at index time from **five sources**: ADR files
 (Nygard/MADR), PR and squash-commit bodies, inline markers, git archaeology, and
 centrality-bounded code comments. Two further capture paths exist for humans and
 agents: `repowise decision add`, and mining your Claude Code or Codex session
-transcripts.
+transcripts. **Seven sources in total, six of them deterministic**; comment
+archaeology is the one that reads prose with a model, and it is skipped on a
+keyless index. Three further sources were retired for producing records nobody
+ever acted on, which [`DECISIONS.md`](DECISIONS.md) names.
 
 ```python
 # WHY: JWT chosen over sessions — API must be stateless for k8s horizontal scaling
@@ -240,13 +245,22 @@ Reference: [`CHANGE_RISK.md`](CHANGE_RISK.md).
 ## Test Intelligence
 
 Which tests actually exercise the code you changed, which changed files have no
-guarding test at all, and per-file coverage merged across every test that
-touches it. Coverage ingests from LCOV, Cobertura, Clover or normalized JSON and
-feeds the code-health coverage markers.
+guarding test at all, and per-file coverage merged across every test that touches
+it. Coverage ingests from LCOV, Cobertura, Clover or normalized JSON and feeds the
+code-health coverage markers.
 
-The practical payoff is `tests_to_run` in `get_risk()` PR mode: a
-coverage-backed list rather than a guess, so an agent runs the tests that can
-actually catch its change.
+**It answers with or without that ingest.** Most repositories never produce a
+report, so where one is missing the layer walks the call graph instead: a test
+whose calls reach a file executes it, three hops by default, filtered to the call
+edges the graph is confident in. Measured against a real
+`coverage run --contexts=test`, that reaches **95.7% precision** on what covers a
+file and **97.5% on the run list**. Rows are stamped `basis: "measured"` or
+`basis: "inferred"`, the measured tier wins outright wherever it can answer, the
+two are never averaged, and the inferred tier may never emit a percentage.
+
+The practical payoff is `tests_to_run` in `get_risk()` PR mode: a real list rather
+than a guess, so an agent runs the tests that can actually catch its change, on
+repositories that have never configured coverage at all.
 
 Reference: [`TEST_INTELLIGENCE.md`](TEST_INTELLIGENCE.md).
 
@@ -289,8 +303,9 @@ repowise dead-code
 ```
 
 Conservative by design. `safe_to_delete` requires confidence ≥ 0.70 and excludes
-17 dynamically-loaded naming patterns (`*Plugin`, `*Handler`, `*Middleware`,
-`register_*`, `on_*`, `*_route`, `*_callback` and more). Dynamic-import
+14 dynamically-loaded naming patterns (`*Plugin`, `*Handler`, `*Adapter`,
+`*Middleware`, `*Mixin`, `*Command`, `register_*`, `on_*`, `*_view`,
+`*_endpoint`, `*_route`, `*_callback`, `*_signal`, `*_task`). Dynamic-import
 detection and a per-language framework-convention registry further cut false
 positives. repowise surfaces candidates; engineers decide.
 

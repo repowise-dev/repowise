@@ -33,11 +33,10 @@ Soundness (honest limits — these cap recall, never precision):
     loop-nested callee* to the sink (per the design); the loop owner ``A`` is
     one further labelling hop in the reported path, not a counted reachability
     hop. Chains longer than that from the callee are not followed.
-  * **First-hop name match.** The loop-nested callee is matched to one of the
-    loop owner's *resolved* graph callees by name. The resolver did the real
-    binding; the name only selects which of the owner's calls were in a loop.
-    Two distinct callees sharing a name under one function (rare) could let an
-    out-of-loop edge stand in for the in-loop one.
+  * **First-hop compatibility.** New indexes retain the resolved call's source
+    line, so the loop-nested call selects the exact graph edge. Indexes created
+    before that fact existed fall back to matching the owner's resolved callees
+    by name until the next refresh.
   * **Incremental runs.** When only a subset of files is walked, a sink-holding
     callee that was not itself re-walked is absent from the sink set; full
     detection requires a whole-repo analyze (the index recomputes there).
@@ -150,17 +149,13 @@ def _hits_for_function(
     callees = index.forward.get(a_sid)
     if not callees:
         return []
-    # Index the owner's resolved callees by name for the first-hop match.
-    callees_by_name: dict[str, list[str]] = {}
-    for c in callees:
-        callees_by_name.setdefault(index.name.get(c, ""), []).append(c)
-
     hits: list[PerfHit] = []
     seen: set[str] = set()
     for target_name, call_line in fact.loop_call_targets:
         if target_name in seen:
             continue
-        for callee in callees_by_name.get(target_name, ()):
+        targets, basis = index.resolve_call_targets(a_sid, call_line, target_name)
+        for callee in targets:
             info = reach.get(callee)
             if info is None:
                 continue
@@ -176,6 +171,7 @@ def _hits_for_function(
                     function=fact.function,
                     detail=kind,
                     path=(a_sid, *chain),
+                    resolution_basis=basis,
                 )
             )
             break

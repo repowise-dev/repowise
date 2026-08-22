@@ -8,6 +8,8 @@ Split File) for both console and Markdown output.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from typing import Any, cast
 
 import click
 from rich.table import Table
@@ -25,11 +27,19 @@ def _effort_bucket(nloc: int) -> tuple[str, int]:
     return "XL", 5
 
 
-def _suggestion_to_dict(s: object) -> dict:
+def _suggestion_to_dict(s: object) -> dict[str, Any]:
     """Serialize a ``RefactoringSuggestion`` dataclass to a plain dict."""
     import dataclasses
 
-    return dataclasses.asdict(s) if dataclasses.is_dataclass(s) else dict(s)
+    if dataclasses.is_dataclass(s) and not isinstance(s, type):
+        return dataclasses.asdict(s)
+    return dict(cast(Mapping[str, Any], s))
+
+
+def _suggestion_path(s: object) -> str:
+    if isinstance(s, dict):
+        return str(s.get("file_path") or "")
+    return str(getattr(s, "file_path", "") or "")
 
 
 def _render_refactoring_targets(
@@ -44,7 +54,7 @@ def _render_refactoring_targets(
     suggestions = suggestions or []
     sugg_by_file: dict[str, list] = {}
     for s in suggestions:
-        sugg_by_file.setdefault(s.file_path, []).append(s)
+        sugg_by_file.setdefault(_suggestion_path(s), []).append(s)
 
     by_file: dict[str, list] = {}
     for f in findings:
@@ -80,10 +90,19 @@ def _render_refactoring_targets(
 
     # Structured plans are displayed independently of the impact/effort file
     # table (a god class worth splitting may not top that churn-weighted list).
-    # The order is the engine's unified rank (impact x centrality x blast
-    # radius across all detector types), so we preserve it rather than
-    # re-sorting per type.
-    ranked_plans = [_suggestion_to_dict(s) for s in suggestions][:limit]
+    # The order is the canonical recommendation rank (benefit and leverage,
+    # discounted by cost and risk), so preserve it rather than re-sorting.
+    if suggestions and not all(
+        isinstance(s, dict) and "benefit" in s and "validation" in s for s in suggestions
+    ):
+        from repowise.core.analysis.health.refactoring.recommendations import (
+            build_recommendations,
+            serialize_recommendations,
+        )
+
+        ranked_plans = serialize_recommendations(build_recommendations(suggestions))[:limit]
+    else:
+        ranked_plans = [_suggestion_to_dict(s) for s in suggestions][:limit]
 
     if fmt == "json":
         click.echo(json.dumps({"targets": targets, "refactoring_plans": ranked_plans}, indent=2))

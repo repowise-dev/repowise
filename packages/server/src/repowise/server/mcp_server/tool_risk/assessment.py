@@ -10,12 +10,12 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.engine import _has_paired_test_file, _path_basenames
 from repowise.core.persistence.models import (
     GitMetadata,
     GraphNode,
     Repository,
 )
-from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
 from repowise.server.mcp_server._helpers import (
     filter_dicts_by_key,
 )
@@ -180,14 +180,21 @@ def _compute_impact_surface(
 async def _check_test_gap(session: AsyncSession, repo_id: str, target: str) -> bool:
     """Return True if *target* has no test, coverage-backed where the map has data.
 
-    A file with a per-test coverage row (from ``repowise coverage add``) is
-    coverage-*proven* tested, so it is never a gap. Where the map has no data for
-    the file, fall back to the filename pattern (test_<name>, <name>_test,
-    <name>.spec.*) - an honest "unknown", never asserted as untested. Test files
-    themselves (is_test=True) are never a gap.
-    """
-    import os
+    Three signals, in descending order of what they can prove, and the file is a
+    gap only when all three stay silent - the same ladder ``pr_blast``
+    ``_find_test_gaps`` uses, because the two answered this question differently
+    and a reader has no way to tell which one they are looking at.
 
+    1. A per-test coverage row (from ``repowise coverage add``) is
+       execution-proof: never a gap.
+    2. A test file reaching it in the dependency graph is evidence, not proof,
+       but a recorded edge rather than a guess - it catches the suites whose
+       tests are named for behaviour rather than for the file under test.
+    3. Otherwise the filename pattern (test_<name>, <name>_test, <name>.spec.*)
+       - an honest "unknown", never asserted as untested.
+
+    Test files themselves (is_test=True) are never a gap.
+    """
     from repowise.core.persistence.crud import covered_source_files
 
     # Test files don't need tests — skip the check entirely
@@ -207,31 +214,24 @@ async def _check_test_gap(session: AsyncSession, repo_id: str, target: str) -> b
     if await covered_source_files(session, repo_id, {target}):
         return False
 
-    base = os.path.splitext(os.path.basename(target))[0]
-    ext = os.path.splitext(target)[1].lstrip(".")
-    # Build a LIKE pattern broad enough to catch test_<base>, <base>_test,
-    # <base>.spec.*. Escaped whole: the underscores are ours and meant
-    # literally, and *base* is a filename, where an underscore is the norm.
-    # Unescaped, "%test_my_module%" also matches "testXmyXmodule", and a false
-    # hit here reports a file as tested when nothing tests it.
-    patterns = [
-        f"%{escape_like(f'test_{base}')}%",
-        f"%{escape_like(f'{base}_test')}%",
-        f"%{escape_like(f'{base}.spec.{ext}')}%",
-    ]
-    for pat in patterns:
-        res = await session.execute(
-            select(GraphNode)
-            .where(
-                GraphNode.repository_id == repo_id,
-                GraphNode.is_test == True,  # noqa: E712
-                GraphNode.node_id.like(pat, escape=LIKE_ESCAPE),
-            )
-            .limit(1)
-        )
-        if res.scalar_one_or_none() is not None:
+    # The graph records a test reaching it: not a gap either. Degrades to "no
+    # signal" rather than raising - a failed walk must not become an accusation.
+    from repowise.core.analysis.test_reachability import tests_reaching
+
+    try:
+        if await tests_reaching(session, repo_id, [target]):
             return False
-    return True
+    except Exception:
+        pass
+
+    test_nodes = await session.execute(
+        select(GraphNode.node_id).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.is_test == True,  # noqa: E712
+        )
+    )
+    test_basenames = _path_basenames(set(test_nodes.scalars()))
+    return not _has_paired_test_file(target, test_basenames)
 
 
 async def _get_security_signals(session: AsyncSession, repo_id: str, target: str) -> list[dict]:
