@@ -61,6 +61,16 @@ async def index_repo_full(
                 local_path=str(repo_path),
             )
             await persist_pipeline_result(result, session, repo.id)
+            # A full run has just archived a version of every page it replaced,
+            # so this is both when the version table grows fastest and when
+            # nothing downstream is mid-read. Best-effort: a failed sweep must
+            # not cost the index that already persisted.
+            try:
+                from repowise.core.pipeline.retention_store import prune_repo_page_versions
+
+                await prune_repo_page_versions(session, repo.id)
+            except Exception:  # pragma: no cover - defensive
+                pass
     finally:
         await engine.dispose()
 
