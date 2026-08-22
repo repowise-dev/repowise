@@ -236,6 +236,8 @@ def test_classify_bus_factor_unknown_team_size_keeps_behaviour():
         ("lib/user.dart", "test/user_test.dart"),
         ("lib/user.ex", "test/user_test.exs"),
         ("src/user.rs", "tests/user_test.rs"),
+        ("lib/user.rb", "spec/user_spec.rb"),
+        ("src/user.cr", "spec/user_spec.cr"),
     ],
 )
 def test_health_filename_heuristic_supports_suffix_test_conventions(source, test):
