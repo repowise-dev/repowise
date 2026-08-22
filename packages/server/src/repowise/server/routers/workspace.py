@@ -944,10 +944,30 @@ async def sync_workspace(
         repo_path = (ws_root_path / entry.path).resolve()
         db_path = repo_path / ".repowise" / "wiki.db"
 
-        # Not indexed yet → establish the repo-local database and run the
+        # A repo is "indexed" when a Repository row exists for its resolved
+        # path in the configured database — not when a local .repowise/wiki.db
+        # file happens to exist. Under PostgreSQL (REPOWISE_DB_URL) repos are
+        # indexed into the shared DB with no per-repo wiki.db, so a file check
+        # alone would wrongly treat every Postgres-indexed repo as "not indexed"
+        # and re-index it on every sync (issue #1034).
+        already_indexed = False
+        if db_path.exists():
+            already_indexed = True
+        else:
+            try:
+                async with get_session(request.app.state.session_factory) as session:
+                    already_indexed = (
+                        await crud.get_repository_by_path(
+                            session, str(repo_path.resolve())
+                        )
+                    ) is not None
+            except Exception:
+                already_indexed = False
+
+        # Not indexed yet → establish the repository database and run the
         # first full index through the same job machinery, instead of
         # bouncing the user to the CLI.
-        if not db_path.exists():
+        if not already_indexed:
             try:
                 from repowise.server.repo_db import ensure_repo_registration
                 from repowise.server.routers.repos import _enqueue_index_job
