@@ -664,3 +664,30 @@ def test_assemble_zoom_map_call_edges_default_to_none():
     assert assemble_zoom_map(_view()).relations == assemble_zoom_map(
         _view(), call_edges=None
     ).relations
+
+
+def test_compute_file_signals_reaches_over_calls_as_well_as_imports():
+    # b.py is imported by nobody, so the dependency graph alone cannot reach it;
+    # a call from the entry point does. The union is what makes "on flow" mean
+    # execution rather than "appears in an import header somewhere".
+    stats = [FileStat(path=p) for p in ("a.py", "b.py")]
+    imports_only = compute_file_signals(
+        stats, [], entry_points=["a.py"], tour_paths=set()
+    )
+    assert imports_only["b.py"].on_flow is False
+
+    with_calls = compute_file_signals(
+        stats, [("a.py", "b.py", "calls")], entry_points=["a.py"], tour_paths=set()
+    )
+    assert with_calls["b.py"].on_flow is True
+    assert with_calls["b.py"].entry_dist == 1
+
+
+def test_compute_file_signals_keeps_import_reachability_when_calls_are_absent():
+    # The union must not cost anything where there is no call graph: a hosted
+    # build with no projected edges has to reach exactly what it reached before.
+    stats = [FileStat(path=p) for p in ("a.py", "b.py")]
+    signals = compute_file_signals(
+        stats, [("a.py", "b.py", "imports")], entry_points=["a.py"], tour_paths=set()
+    )
+    assert signals["b.py"].on_flow is True
