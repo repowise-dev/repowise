@@ -22,6 +22,7 @@ preserve structure.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -82,7 +83,7 @@ _LITERAL_KINDS = frozenset(
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Token:
     """One AST token with the source location of its origin node."""
 
@@ -139,7 +140,11 @@ def _tokenize_leaf(node: Node, source: bytes) -> Token | None:
         except Exception:
             return None
     return Token(
-        kind=kind,
+        # A clone scan holds one Token per leaf and later keeps every kind
+        # through collision verification. Operators and keywords otherwise
+        # create one equal Python string per occurrence; interning turns that
+        # repo-sized string population into one object per distinct spelling.
+        kind=sys.intern(kind),
         start_line=node.start_point[0] + 1,
         end_line=node.end_point[0] + 1,
         start_byte=node.start_byte,

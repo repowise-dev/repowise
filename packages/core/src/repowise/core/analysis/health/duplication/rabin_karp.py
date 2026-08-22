@@ -40,7 +40,7 @@ def _token_hash(tok_kind: str) -> int:
     return h
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class WindowHash:
     """One rolling-hash window with origin file + line span."""
 

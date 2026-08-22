@@ -43,7 +43,8 @@ from .biomarkers.base import HasEdge
 from .complexity import FileComplexity, FunctionComplexity, walk_file
 from .coverage import is_test_file as _coverage_is_test_file
 from .dataflow import FileDataflowCache
-from .duplication import DuplicationReport, detect_clones
+from .duplication import DuplicationReport
+from .duplication.isolation import detect_clones_with_isolation as detect_clones
 from .models import HealthFileMetricData, HealthFindingData, HealthReport, Severity
 from .perf import (
     CallGraphIndex,
