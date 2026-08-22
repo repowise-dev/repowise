@@ -8,6 +8,7 @@ from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.server.deps import resolve_session_factory, verify_api_key
 from repowise.server.provider_config import (
+    _redact_key,
     list_provider_status,
     set_active_provider,
     set_api_key,
@@ -129,11 +130,16 @@ async def validate_provider(
         provider_name = getattr(llm_client, "provider_name", None)
         model_name = getattr(llm_client, "model_name", None)
     except Exception as exc:
-        return {"ok": False, "provider": provider_id, "model": None, "error": str(exc)}
+        return {"ok": False, "provider": provider_id, "model": None, "error": _redact_key(str(exc))}
 
     try:
         await llm_client.generate("You are a test.", "Reply with OK.", max_tokens=50)
     except Exception as exc:
-        return {"ok": False, "provider": provider_name, "model": model_name, "error": str(exc)}
+        return {
+            "ok": False,
+            "provider": provider_name,
+            "model": model_name,
+            "error": _redact_key(str(exc)),
+        }
 
     return {"ok": True, "provider": provider_name, "model": model_name, "error": None}
