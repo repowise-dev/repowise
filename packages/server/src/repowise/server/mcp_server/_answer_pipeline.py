@@ -50,7 +50,7 @@ import re
 from collections import OrderedDict
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from repowise.core.analysis.decisions.semantic_match import DECISION_VECTOR_PREFIX
 from repowise.core.ingestion.models import CONTAINMENT_EDGE_TYPES
@@ -59,11 +59,9 @@ from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.core.test_paths import is_test_path
 from repowise.server.mcp_server._graph_files import (
-    batched_paths,
     is_symbol_node,
     keep_projected_edge,
     node_to_file,
-    touches_files,
 )
 from repowise.server.mcp_server._helpers import (
     _VECTOR_TIMEOUT_ENV,
@@ -120,10 +118,6 @@ _GRAPH_EXPAND_MAX_NEW = 3
 # repo where every file has a handful of edges excludes nothing.
 _HUB_DEGREE_FLOOR = 50
 _HUB_DEGREE_PERCENTILE = 0.99
-
-# How many of the strongest-linked page-bearing neighbours get scored — enough
-# for the hub percentile to have a distribution, far below the candidate set.
-_DEGREE_SAMPLE = 25
 
 # PageRank bias is multiplicative and capped. We don't want a marginally
 # more central file to outrank a strong text match — only to break ties.
@@ -750,43 +744,33 @@ def _projected_pair(
     return (src_file, tgt_file)
 
 
-async def _neighbor_degrees(session: Any, nodes: set[str]) -> dict[str, int]:
-    """File-level graph degree (in + out) for each file path in *nodes*.
+async def _projected_edges(session: Any, repo_id: str) -> list[tuple[str, str]]:
+    """Every non-containment edge for *repo_id*, as a pair of file paths.
 
-    Counted over the same edges the walk traverses and projected the same way: a
-    grouped count on the raw node id sees only the file layer, so a file reached
-    mostly by calls read as unconnected and the p99 hub cutoff was calibrated on
-    an imports-only distribution.
+    One scan, projected in Python. A prefix match on the symbol layer cannot use
+    the node-id index (SQLite disables the LIKE optimisation under an ESCAPE
+    clause), so per-candidate queries were a scan each; this is one.
 
-    Containment stays excluded — its endpoints project onto the declaring file,
-    so counting it makes a symbol-rich file a hub on its own size.
+    Containment is excluded because both its endpoints describe the same file,
+    so a projected containment edge is always a self-loop.
     """
-    if not nodes:
-        return {}
-    degree: dict[str, int] = {}
-    for batch in batched_paths(nodes):
-        res = await session.execute(
-            select(
-                GraphEdge.source_node_id,
-                GraphEdge.target_node_id,
-                GraphEdge.edge_type,
-                GraphEdge.confidence,
-            ).where(
-                or_(
-                    touches_files(GraphEdge.source_node_id, batch),
-                    touches_files(GraphEdge.target_node_id, batch),
-                ),
-                GraphEdge.edge_type.notin_(CONTAINMENT_EDGE_TYPES),
-            )
+    res = await session.execute(
+        select(
+            GraphEdge.source_node_id,
+            GraphEdge.target_node_id,
+            GraphEdge.edge_type,
+            GraphEdge.confidence,
+        ).where(
+            GraphEdge.repository_id == repo_id,
+            GraphEdge.edge_type.notin_(CONTAINMENT_EDGE_TYPES),
         )
-        for src, tgt, etype, conf in res.all():
-            src_file, tgt_file = _projected_pair(src, tgt, etype, conf)
-            if src_file is None or tgt_file is None:
-                continue
-            for side in (src_file, tgt_file):
-                if side in nodes:
-                    degree[side] = degree.get(side, 0) + 1
-    return degree
+    )
+    pairs: list[tuple[str, str]] = []
+    for src, tgt, etype, conf in res.all():
+        src_file, tgt_file = _projected_pair(src, tgt, etype, conf)
+        if src_file and tgt_file:
+            pairs.append((src_file, tgt_file))
+    return pairs
 
 
 def _hub_degree_cutoff(degree: dict[str, int]) -> int:
@@ -803,7 +787,7 @@ def _hub_degree_cutoff(degree: dict[str, int]) -> int:
     return max(_HUB_DEGREE_FLOOR, values[idx])
 
 
-async def expand_via_graph(hits: list[dict], ctx: Any, question: str = "") -> list[dict]:
+async def expand_via_graph(hits: list[dict], ctx: Any, repo_id: str) -> list[dict]:
     """Add up to ``_GRAPH_EXPAND_MAX_NEW`` graph-neighbor files to ``hits``.
 
     Rescues near-misses where the top retrieved file is in the right
@@ -825,51 +809,26 @@ async def expand_via_graph(hits: list[dict], ctx: Any, question: str = "") -> li
     existing = {h.get("target_path") for h in hits}
 
     async with get_session(ctx.session_factory) as session:
-        # Inbound (someone → seed) and outbound (seed → someone) in one query
-        # each. Two queries are fine — both hit the same indexed edge table and
-        # run in <10ms on the corpus this is tuned for.
-        #
         # Not import edges only, despite the naming this code used to carry:
-        # ``co_changes`` neighbours stay in on purpose, because "this file
-        # moves with yours" is a genuine read-this-too signal, and expansion
-        # surfaces what it adds neutrally as ``[graph-expanded]`` rather than
-        # as an import claim. Containment edges are excluded because they can
-        # never contribute: both endpoints describe the same file, so a projected
-        # containment edge is always a self-loop.
+        # ``co_changes`` neighbours stay in on purpose, because "this file moves
+        # with yours" is a genuine read-this-too signal, and expansion surfaces
+        # what it adds neutrally as ``[graph-expanded]`` rather than as an import
+        # claim.
         #
-        # Both directions in one query, matching the symbol layer as well as the
-        # file layer: ``calls`` and its siblings join ``path::Name`` nodes, so an
-        # equality test against a seed path matched none of them.
+        # The scan reaches the symbol layer as well as the file layer: ``calls``
+        # and its siblings join ``path::Name`` nodes, so an equality test against
+        # a seed path matched none of them and the call graph was invisible here.
         seed_set = set(seed_paths)
-        res = await session.execute(
-            select(
-                GraphEdge.source_node_id,
-                GraphEdge.target_node_id,
-                GraphEdge.edge_type,
-                GraphEdge.confidence,
-            ).where(
-                or_(
-                    touches_files(GraphEdge.source_node_id, seed_set),
-                    touches_files(GraphEdge.target_node_id, seed_set),
-                ),
-                GraphEdge.edge_type.notin_(CONTAINMENT_EDGE_TYPES),
-            )
-        )
+        pairs = await _projected_edges(session, repo_id)
 
-        # ``links`` counts the edges tying each neighbour to the seed set — the
-        # ranking signal the projection buys, since imports alone scored ~1 each.
         neighbors: set[str] = set()
-        links: dict[str, int] = {}
-        for src, tgt, etype, conf in res.all():
-            src_file, tgt_file = _projected_pair(src, tgt, etype, conf)
-            if src_file is None or tgt_file is None:
-                continue
-            # The SQL prefix can over-match a longer path, so membership is
-            # re-checked here against the projected file.
+        degree: dict[str, int] = {}
+        for src_file, tgt_file in pairs:
+            degree[src_file] = degree.get(src_file, 0) + 1
+            degree[tgt_file] = degree.get(tgt_file, 0) + 1
             for mine, theirs in ((src_file, tgt_file), (tgt_file, src_file)):
                 if mine in seed_set and theirs not in existing:
                     neighbors.add(theirs)
-                    links[theirs] = links.get(theirs, 0) + 1
 
         if not neighbors:
             return hits
@@ -878,28 +837,20 @@ async def expand_via_graph(hits: list[dict], ctx: Any, question: str = "") -> li
         # context block can't carry a useful excerpt for them.
         page_res = await session.execute(
             select(Page.target_path, Page.summary, Page.page_type).where(
-                Page.target_path.in_(neighbors),
+                Page.target_path.in_(sorted(neighbors)),
                 Page.page_type == "file_page",
             )
         )
         page_rows = list(page_res.all())
 
-        # Score only the head of the link ranking: both queries below scale with
-        # the candidate set, which the call layer multiplied (2.2s per answer on
-        # fastapi over the full set), and only three candidates can be returned.
-        page_rows.sort(key=lambda row: -links.get(row[0], 0))
-        page_rows = page_rows[:_DEGREE_SAMPLE]
-        sampled = {row[0] for row in page_rows}
-
         # Also load PageRank for the neighbors so we can rank them.
         pr_res = await session.execute(
             select(GraphNode.node_id, GraphNode.pagerank).where(
-                GraphNode.node_id.in_(sorted(sampled)),
+                GraphNode.node_id.in_(sorted(neighbors)),
                 GraphNode.node_type == "file",
             )
         )
         pr_by_path = {row[0]: float(row[1] or 0.0) for row in pr_res.all()}
-        degree = await _neighbor_degrees(session, sampled)
 
     if not page_rows:
         return hits
@@ -908,7 +859,9 @@ async def expand_via_graph(hits: list[dict], ctx: Any, question: str = "") -> li
     # them, which is the wrong instinct here: expansion is trying to name the
     # specific file the question is about, and the most-imported file in the
     # repo is the least specific candidate available.
-    cutoff = _hub_degree_cutoff(degree)
+    # Scoped to the candidate set, not the repo: the cutoff answers "is this
+    # neighbour a hub among the ones on offer".
+    cutoff = _hub_degree_cutoff({row[0]: degree.get(row[0], 0) for row in page_rows})
     non_hub = [row for row in page_rows if degree.get(row[0], 0) <= cutoff]
     if non_hub:
         page_rows = non_hub
@@ -931,25 +884,14 @@ async def expand_via_graph(hits: list[dict], ctx: Any, question: str = "") -> li
                 "_sources": {"graph_expand"},
                 "_expanded_from": "graph",
                 "_pagerank": pr_by_path.get(path, 0.0),
-                "_seed_links": links.get(path, 0),
             }
         )
 
-    # A test calls what it exercises more often than any collaborator does, so
-    # link count alone ranks tests first. ``demote_noise_hits`` reorders them
-    # downstream, but only after they have spent every slot.
-    test_focused = bool(_TEST_QUERY_RE.search(question))
-
-    # Rank on the tie to THIS seed, PageRank only as tiebreak. PageRank alone
-    # answers "what is central in the repo" for a question about what sits next
-    # to one file, and returned the same modules whatever the seed was.
-    candidates.sort(
-        key=lambda c: (
-            not test_focused and is_test_path(c["target_path"]),
-            -c.get("_seed_links", 0),
-            -c.get("_pagerank", 0.0),
-        )
-    )
+    # Rank candidates by PageRank within the expansion set so we pick the
+    # most central neighbor first when we have multiple plausible ones.
+    # Path breaks ties, so which neighbour is picked cannot move with the
+    # database's row order between runs on identical data.
+    candidates.sort(key=lambda c: (-c.get("_pagerank", 0.0), c["target_path"]))
     additions = candidates[:_GRAPH_EXPAND_MAX_NEW]
     if not additions:
         return hits

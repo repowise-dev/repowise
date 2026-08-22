@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from repowise.server.mcp_server._graph_files import (
-    PATHS_PER_QUERY,
-    batched_paths,
     file_ext,
     is_symbol_node,
     keep_projected_edge,
@@ -31,14 +29,3 @@ def test_guards():
     assert not keep_projected_edge("a.py", "b.ts", "calls", 0.9)
     # The floor is scoped to ``calls``; nothing else carries a confidence tail.
     assert keep_projected_edge("a.py", "b.py", "extends", 0.2)
-
-
-def test_batched_paths_stays_under_the_sqlite_expression_depth():
-    """A candidate set of a few hundred files raised OperationalError unbatched."""
-    paths = [f"src/mod{i}.py" for i in range(PATHS_PER_QUERY * 2 + 7)]
-    batches = list(batched_paths(paths))
-    assert all(len(b) <= PATHS_PER_QUERY for b in batches)
-    assert sorted(p for b in batches for p in b) == sorted(paths)
-    # Deterministic order, because which neighbours a truncated walk saw must
-    # not move with the per-process hash seed.
-    assert list(batched_paths(set(paths))) == batches

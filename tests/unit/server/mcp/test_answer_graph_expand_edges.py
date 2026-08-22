@@ -85,7 +85,7 @@ async def test_co_change_neighbour_is_still_expanded(setup_mcp, factory):
     await _seed_co_change_partner_with_a_page(factory, setup_mcp)
 
     hits = [{"target_path": _SEED, "score": 0.9, "page_type": "file_page"}]
-    expanded = await expand_via_graph(hits, SimpleNamespace(session_factory=factory))
+    expanded = await expand_via_graph(hits, SimpleNamespace(session_factory=factory), setup_mcp)
 
     added = {h["target_path"] for h in expanded if h.get("_expanded_from") == "graph"}
     assert _PARTNER in added, (
@@ -121,7 +121,7 @@ async def test_containment_neighbours_are_excluded(setup_mcp, factory):
         await s.commit()
 
     hits = [{"target_path": _SEED, "score": 0.9, "page_type": "file_page"}]
-    expanded = await expand_via_graph(hits, SimpleNamespace(session_factory=factory))
+    expanded = await expand_via_graph(hits, SimpleNamespace(session_factory=factory), setup_mcp)
 
     assert symbol_id not in {h.get("target_path") for h in expanded}
 
@@ -178,19 +178,15 @@ async def _seed_callee_with_a_page(factory, repo_id: str, path: str, confidence:
 
 @pytest.mark.asyncio
 async def test_call_neighbour_is_expanded(setup_mcp, factory):
-    """The defect this file's containment test was written next to and missed.
-
-    ``calls`` endpoints are ``path::Name`` symbol nodes too, so an equality test
-    against a seed *path* matched none of them and the whole call graph was
-    invisible to expansion — not fetched and discarded, never fetched.
-    """
+    """``calls`` endpoints are ``path::Name`` nodes, so expansion only sees them
+    once they are projected onto their file."""
     from repowise.server.mcp_server._answer_pipeline import expand_via_graph
 
     callee = "src/auth/tokens.py"
     await _seed_callee_with_a_page(factory, setup_mcp, callee, confidence=0.9)
 
     hits = [{"target_path": _SEED, "score": 0.9, "page_type": "file_page"}]
-    expanded = await expand_via_graph(hits, SimpleNamespace(session_factory=factory))
+    expanded = await expand_via_graph(hits, SimpleNamespace(session_factory=factory), setup_mcp)
 
     added = {h["target_path"] for h in expanded if h.get("_expanded_from") == "graph"}
     assert callee in added
@@ -206,7 +202,7 @@ async def test_low_confidence_call_neighbour_is_not_expanded(setup_mcp, factory)
     await _seed_callee_with_a_page(factory, setup_mcp, callee, confidence=0.2)
 
     hits = [{"target_path": _SEED, "score": 0.9, "page_type": "file_page"}]
-    expanded = await expand_via_graph(hits, SimpleNamespace(session_factory=factory))
+    expanded = await expand_via_graph(hits, SimpleNamespace(session_factory=factory), setup_mcp)
 
     assert callee not in {h["target_path"] for h in expanded if h.get("_expanded_from") == "graph"}
 
@@ -219,40 +215,6 @@ async def test_cross_extension_call_neighbour_is_not_expanded(setup_mcp, factory
     await _seed_callee_with_a_page(factory, setup_mcp, callee, confidence=0.95)
 
     hits = [{"target_path": _SEED, "score": 0.9, "page_type": "file_page"}]
-    expanded = await expand_via_graph(hits, SimpleNamespace(session_factory=factory))
+    expanded = await expand_via_graph(hits, SimpleNamespace(session_factory=factory), setup_mcp)
 
     assert callee not in {h["target_path"] for h in expanded if h.get("_expanded_from") == "graph"}
-
-
-@pytest.mark.asyncio
-async def test_strongest_link_outranks_the_more_central_file(setup_mcp, factory):
-    """Ranking asks "next to this seed", not "central in the repo"."""
-    from repowise.server.mcp_server._answer_pipeline import expand_via_graph
-
-    tied = "src/auth/tied.py"
-    central = "src/auth/central.py"
-    await _seed_callee_with_a_page(factory, setup_mcp, tied, confidence=0.9)
-    await _seed_callee_with_a_page(factory, setup_mcp, central, confidence=0.9)
-    async with factory() as s:
-        node = await s.get(GraphNode, f"gn-{central}")
-        node.pagerank = 0.99
-        for i in range(3):
-            s.add(
-                GraphEdge(
-                    id=f"ge-calls-extra-{i}",
-                    repository_id=setup_mcp,
-                    source_node_id=f"{_SEED}::login{i}",
-                    target_node_id=f"{tied}::verify{i}",
-                    imported_names_json="[]",
-                    edge_type="calls",
-                    confidence=0.9,
-                    created_at=_NOW,
-                )
-            )
-        await s.commit()
-
-    hits = [{"target_path": _SEED, "score": 0.9, "page_type": "file_page"}]
-    expanded = await expand_via_graph(hits, SimpleNamespace(session_factory=factory))
-
-    added = [h["target_path"] for h in expanded if h.get("_expanded_from") == "graph"]
-    assert added.index(tied) < added.index(central)

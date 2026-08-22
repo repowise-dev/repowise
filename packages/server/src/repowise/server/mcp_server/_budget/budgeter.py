@@ -10,10 +10,8 @@ written.
 
 The MCP host caps the size of a tool result. An over-cap result is **spilled to
 a sidecar file** the agent must Read back, not rejected: it comes back worded as
-an error but carries no ``isError``. (The older claim here — rejection with an
-``MCPContentTooLargeError`` — came from a docs lookup, and that string appears
-in no host output.) The cap is counted in tokens; the spill message reports
-characters.
+an error but carries no ``isError``. The cap is counted in tokens; the spill
+message reports characters.
 
 Observed bounds: the largest MCP result that did NOT spill was 47,276 chars,
 the smallest that DID was 60,718 — consistent with a 25000-token cap at the

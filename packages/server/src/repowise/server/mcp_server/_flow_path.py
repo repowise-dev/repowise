@@ -41,7 +41,6 @@ from sqlalchemy import select
 from repowise.core.persistence.models import GraphEdge, Page, WikiSymbol
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server._graph_files import (
-    CALLS_CONF_FLOOR,
     file_ext,
     keep_projected_edge,
     node_to_file,
@@ -53,10 +52,6 @@ from repowise.server.mcp_server._graph_files import (
 # are either not directed dependency flow or not answer-bearing, so they stay
 # out of the path search.
 _FLOW_EDGE_TYPES = ("imports", "calls")
-
-# Kept as an alias: the floor now lives with the projection it guards, so the
-# one-hop expansion in ``_answer_pipeline`` cannot drift from this one.
-_FLOW_CALLS_CONF_FLOOR = CALLS_CONF_FLOOR
 
 # Depth cap for the path search. Endpoints connect in 2-4 hops on the measured
 # graph; past 4 a "path" is a coincidence, not a flow.

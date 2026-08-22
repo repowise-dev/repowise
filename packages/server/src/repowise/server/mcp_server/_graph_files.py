@@ -1,26 +1,16 @@
 """One answer to "which files is this file a graph neighbour of".
 
-The graph has two layers. ``imports`` and the other file-dependency types join
-file paths; ``calls``, ``references``, ``extends`` and the rest join
-``path::Name`` symbol nodes, and nothing points from a symbol back to its file.
-A consumer that keys on file paths therefore sees only the first layer unless it
-projects the second, and the projection was written twice independently
-(:mod:`_flow_path`, :mod:`tool_context.enrichment`) while a third consumer had
-none at all: :func:`_answer_pipeline.expand_via_graph` compared raw node ids
-against ``file_page`` rows, so the call graph was invisible to retrieval
-expansion.
+``imports`` joins file paths; ``calls`` and its siblings join ``path::Name``
+symbol nodes, and nothing points from a symbol back to its file, so a consumer
+keyed on paths sees only the first layer until it projects the second.
 
-The projection alone is not the fix. Projecting a symbol edge onto its files
-manufactures a self-loop out of every intra-file call and stitches together
-files a language boundary separates, so the guards travel with it here rather
-than being re-derived per site.
+Projecting also manufactures a self-loop out of every intra-file call and
+stitches files across a language boundary, so the guards live here with it.
 """
 
 from __future__ import annotations
 
 import os
-
-from sqlalchemy import or_
 
 # Confidence floor for ``calls`` edges. Imports are always 1.0; calls average
 # 0.90 with a low-confidence tail from heuristic resolution. 0.5 keeps every
@@ -63,39 +53,3 @@ def keep_projected_edge(
     if not src_file or not tgt_file or src_file == tgt_file:
         return False
     return file_ext(src_file) == file_ext(tgt_file)
-
-
-# SQLite refuses an expression tree deeper than 1000 nodes, and the predicate
-# below contributes one branch per path. Measured on fastapi: a candidate set of
-# a few hundred files raised OperationalError, and because the only caller sits
-# under ``contextlib.suppress``, expansion would have returned nothing at all
-# rather than failing loudly. Batch well under the limit.
-PATHS_PER_QUERY = 200
-
-
-def touches_files(column, paths):
-    """SQLAlchemy predicate: *column* is one of *paths*, or a symbol declared in one.
-
-    The prefix test is what reaches the symbol layer, and it is a prefix rather
-    than a function on the column so the index still applies. ``autoescape``
-    matters: an ordinary path is full of ``_``, which is a LIKE wildcard.
-    The prefix can still over-match a longer path, so callers re-check the
-    projected file in Python.
-
-    Pass at most :data:`PATHS_PER_QUERY` paths; :func:`batched_paths` splits a
-    larger set.
-    """
-    ordered = sorted(paths)
-    if not ordered:
-        return or_(False)
-    return or_(
-        column.in_(ordered),
-        *[column.startswith(f"{p}::", autoescape=True) for p in ordered],
-    )
-
-
-def batched_paths(paths):
-    """*paths* in :data:`PATHS_PER_QUERY`-sized, deterministically ordered chunks."""
-    ordered = sorted(paths)
-    for i in range(0, len(ordered), PATHS_PER_QUERY):
-        yield ordered[i : i + PATHS_PER_QUERY]

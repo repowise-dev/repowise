@@ -323,12 +323,9 @@ def mine_rationale(
 
     scored.sort(key=lambda t: t[0], reverse=True)
 
-    # Relevance floor, relative to the best block found. Without it the tail of
-    # the six is whatever cleared the >=2-term gate on generic vocabulary — a
-    # question about projecting call edges onto files returned an SVG
-    # edge-routing docstring on "edges"/"project"/"between". This block only
-    # ships on a non-dominant answer, so the tail is paid for exactly when the
-    # answer is least likely to be right.
+    # Relevance floor, relative to the best block: below half the top score a
+    # block cleared the >=2-term gate on generic vocabulary rather than on the
+    # question — an SVG edge-routing docstring on "edges"/"project"/"between".
     if scored:
         floor = scored[0][0] * _RELEVANCE_FLOOR_FRACTION
         scored = [t for t in scored if t[0] >= floor]
