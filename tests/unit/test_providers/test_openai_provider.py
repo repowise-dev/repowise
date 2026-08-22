@@ -76,10 +76,13 @@ def test_gpt56_family_ladder_drops_minimal_and_max():
         ).supported_reasoning_modes() == ("auto", "none", "low", "medium", "high", "xhigh")
 
     # The generic gpt-5 branch is a prefix of gpt-5.6 and must not win.
-    assert "minimal" in OpenAIProvider(
-        api_key="sk-test",
-        model="gpt-5.4-nano",
-    ).supported_reasoning_modes()
+    assert (
+        "minimal"
+        in OpenAIProvider(
+            api_key="sk-test",
+            model="gpt-5.4-nano",
+        ).supported_reasoning_modes()
+    )
 
 
 def test_gpt54_model():
@@ -126,6 +129,47 @@ def test_available_model_options_uses_models_endpoint(monkeypatch):
     )
 
 
+def test_available_model_options_accepts_namespaced_compatible_models(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {
+                "data": [
+                    {"id": "ag/gemini-3.7-flash-medium"},
+                    {"id": "ds/deepseek-v4-flash"},
+                    {"id": "cmc/moonshotai/Kimi-K2.6"},
+                    {"id": "text-embedding-3-large"},
+                ]
+            }
+
+    captured: dict[str, object] = {}
+
+    def fake_get(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setattr("httpx.get", fake_get)
+
+    options = OpenAIProvider(
+        api_key="sk-test",
+        base_url="http://localhost:20128/v1",
+    ).available_model_options()
+    models = [option.model for option in options]
+
+    assert models == [
+        "ag/gemini-3.7-flash-medium",
+        "cmc/moonshotai/Kimi-K2.6",
+        "ds/deepseek-v4-flash",
+    ]
+    assert captured["trust_env"] is False
+    assert next(
+        option for option in options if option.model == "ag/gemini-3.7-flash-medium"
+    ).reasoning_modes == ("auto",)
+
+
 def test_available_model_options_falls_back_to_configured_model(monkeypatch):
     def fake_get(*_args, **_kwargs):
         raise RuntimeError("offline")
@@ -137,6 +181,38 @@ def test_available_model_options_falls_back_to_configured_model(monkeypatch):
     assert options[0].model == "gpt-5.6-luna"
     assert options[0].recommended is True
     assert options[0].source == "fallback"
+
+
+def test_discover_model_options_surfaces_endpoint_errors(monkeypatch):
+    def fake_get(*_args, **_kwargs):
+        raise RuntimeError("gateway unavailable")
+
+    monkeypatch.setattr("httpx.get", fake_get)
+
+    provider = OpenAIProvider(
+        api_key="sk-test",
+        base_url="http://localhost:20128/v1",
+    )
+    with pytest.raises(RuntimeError, match="gateway unavailable"):
+        provider.discover_model_options()
+
+
+def test_discover_model_options_rejects_malformed_payload(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {"models": []}
+
+    monkeypatch.setattr("httpx.get", lambda *_a, **_k: FakeResponse())
+
+    provider = OpenAIProvider(
+        api_key="sk-test",
+        base_url="http://localhost:20128/v1",
+    )
+    with pytest.raises(ValueError, match="data list"):
+        provider.discover_model_options()
 
 
 # ---------------------------------------------------------------------------

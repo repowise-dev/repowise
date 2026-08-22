@@ -38,6 +38,7 @@ from repowise.cli.helpers import (
     head_commit_ts,
     load_config,
     load_state,
+    resolve_explicit_provider_or_prompt,
     resolve_max_file_pages,
     resolve_provider,
     resolve_reasoning,
@@ -411,7 +412,9 @@ def _run_generation_phase(
     default=None,
     help=(
         "LLM provider name (anthropic, openai, openrouter, gemini, "
-        "deepseek, kimi, ollama, litellm, codex_cli, opencode, edenai, mock)."
+        "deepseek, kimi, ollama, litellm, codex_cli, opencode, edenai, mock). "
+        "In a terminal, a missing key is prompted for; openai also asks for "
+        "an optional OpenAI-compatible Base URL."
     ),
 )
 @click.option("--model", default=None, help="Model identifier override.")
@@ -827,9 +830,7 @@ def init_command(
             include_submodules=include_submodules,
         )
         if seeded:
-            console.print(
-                f"[{OK}]Worktree index seeded successfully. Delegating to update...[/]"
-            )
+            console.print(f"[{OK}]Worktree index seeded successfully. Delegating to update...[/]")
             from repowise.cli.commands.update_cmd.command import run_update
 
             is_workspace = len(scan.repos) > 1 and not no_workspace
@@ -986,6 +987,7 @@ def init_command(
                 model,
                 reasoning,
                 repo_path=repo_path,
+                save_key=save_key,
             )
             provider_name = selection.provider_name
             model = selection.model
@@ -1169,16 +1171,19 @@ def init_command(
                     f"Decision extraction provider: [{VALUE}]{decision_provider.provider_name}[/]"
                 )
     else:
-        # No prompt here. ``is_interactive`` (line ~800) is already false only
-        # when the user passed --provider, --index-only or --yes, or stdin is
-        # not a terminal — so the old fallback picker in this branch fired
-        # exactly on ``--yes``, which means "do not ask me". On shells where
-        # isatty() claims a terminal it cannot actually read from (Windows
-        # mintty, ``docker run -t`` without -i) that prompt hit EOF and killed
-        # the run instead. A --yes run with no key now lands in the template
-        # wiki below rather than in a question or a crash.
+        # An explicit provider may onboard its missing key (and, for the
+        # OpenAI-compatible adapter, its endpoint) here when stdin is a real
+        # terminal. Auto-detection and scripted runs remain non-interactive:
+        # a --yes run with no key lands in the template wiki below rather than
+        # in a question or a crash.
         try:
-            provider = resolve_provider(provider_name, model, repo_path)
+            provider = resolve_explicit_provider_or_prompt(
+                provider_name,
+                model,
+                repo_path,
+                interactive=sys.stdin.isatty() and not yes and not index_only,
+                save_key=save_key,
+            )
         except click.ClickException as exc:
             # Nothing configured anywhere. Workspace init, workspace update
             # and the OSS server all render a template wiki in this exact
