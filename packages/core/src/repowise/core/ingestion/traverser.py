@@ -223,10 +223,20 @@ _BLOCKED_DIRS: frozenset[str] = frozenset(
         # is_test_related_path() so downstream consumers can filter them
         # when appropriate.
         #
+        # e2e/ used to sit here because Playwright/Cypress rigs were
+        # treated as browser-driven test scaffolding whose content rarely
+        # answers code questions. But end-to-end specs are exactly where a
+        # codebase's hard-won conventions live -- the hydration gate every
+        # console e2e test depends on, the fixtures everyone must use -- and
+        # silently dropping them left the wiki unable to answer any
+        # test-infrastructure question with no signal a whole area was
+        # missing. e2e files are now indexed like other tests and tagged
+        # is_test=True via is_test_related_path(), so they get a file_page
+        # and stay filterable when a consumer wants to exclude them.
+        #
         # The following ARE still blocked because they typically hold
-        # binary fixtures, generated artifacts, or browser-driven test
-        # rigs whose content rarely answers code questions:
-        "e2e",
+        # binary fixtures, generated artifacts, or scaffolding whose content
+        # rarely answers code questions:
         "fixtures",
         "conftest",
     }
