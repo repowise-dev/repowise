@@ -39,6 +39,21 @@ if TYPE_CHECKING:
 LOCK_IO_KIND = "blocking_io_under_lock"
 
 
+def _in_rust_test_range(line: int, ranges: tuple[tuple[int, int], ...]) -> bool:
+    """True when *line* falls inside one of *ranges* (Rust test-only spans).
+
+    *ranges* is ``FileComplexity.rust_test_line_ranges``, computed once per
+    file by the walker from the tree it already parsed (see
+    ``complexity.walker._rust_test_line_ranges``) — empty for every language
+    but Rust, so this is a no-op everywhere else. Checked here, at the single
+    choke point both centrality-gated markers share, so a function inside a
+    ``#[cfg(test)] mod`` / ``#[test]`` fn — invisible to the file-level
+    ``is_test`` heuristic — never emits ``hot_path_sync_io`` or
+    ``nested_loop_quadratic``, without weakening the gate for production code.
+    """
+    return any(start <= line <= end for start, end in ranges)
+
+
 def collect_centrality_gated(
     walked: Iterable[tuple[Any, FileComplexity]], ranker: PerfRanker
 ) -> dict[str, list[PerfHit]]:
@@ -48,7 +63,10 @@ def collect_centrality_gated(
     is produced ONLY when ``ranker.is_hot(path, func_start)`` — so a quadratic
     loop or a blocking sync sink ships only where it sits on a hot, central, or
     churny path. Pure when neither graph nor git signal is available (nothing is
-    hot ⇒ no hits), which is the precision-first default.
+    hot ⇒ no hits), which is the precision-first default. A fact whose function
+    sits inside Rust inline test code (``_in_rust_test_range``) is skipped
+    before the hotness check even runs — test code doing blocking I/O is
+    normal, not a finding, regardless of how central or churny its file is.
     """
     from ..complexity import PerfHit
 
@@ -58,8 +76,11 @@ def collect_centrality_gated(
             continue
         path = pf.file_info.path
         file_hits: list[PerfHit] = []
+        test_ranges = fcx.rust_test_line_ranges
         for fact in fcx.perf_fn_facts:
             if fact.nested_loop_line == 0 and fact.blocking_sink_kind is None:
+                continue
+            if test_ranges and _in_rust_test_range(fact.func_start, test_ranges):
                 continue
             if not ranker.is_hot(path, fact.func_start):
                 continue

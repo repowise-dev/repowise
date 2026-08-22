@@ -302,3 +302,14 @@ class FileComplexity:
     # flips a file from "untested" to "tested", so it can silence a finding
     # but never invent one.
     has_inline_tests: bool = False
+    # 1-indexed ``(start_line, end_line)`` spans of Rust test-only code: a
+    # ``#[cfg(test)]``-gated ``mod``/``impl`` (whole span, including any
+    # undecorated helper fns nested inside it) or a directly ``#[test]`` /
+    # ``#[tokio::test]`` / ``#[rstest]``-marked ``fn``. Computed once from the
+    # SAME parsed tree ``walk_file`` already builds — no extra parse. Rust-only
+    # (empty for every other language); the Phase-7b centrality gate
+    # (``perf.gated.collect_centrality_gated``) uses it to keep a
+    # ``PerfFnFacts.func_start`` line from ever emitting a ``hot_path_sync_io``
+    # / ``nested_loop_quadratic`` hit for inline test code the file-level
+    # ``is_test`` heuristic can't see.
+    rust_test_line_ranges: tuple[tuple[int, int], ...] = field(default_factory=tuple)
