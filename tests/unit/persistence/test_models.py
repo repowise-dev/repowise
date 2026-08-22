@@ -221,6 +221,7 @@ def test_graph_edge_has_expected_tablename():
 def test_graph_edge_defaults():
     col_defaults = {c.name: c.default for c in GraphEdge.__table__.columns if c.default is not None}
     assert col_defaults["imported_names_json"].arg == "[]"
+    assert col_defaults["call_lines_json"].arg == "[]"
 
 
 # ---------------------------------------------------------------------------

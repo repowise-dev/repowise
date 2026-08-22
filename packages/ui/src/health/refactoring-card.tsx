@@ -10,7 +10,7 @@ import { SeverityMark } from "./severity-mark";
 
 export type EffortBucket = "S" | "M" | "L" | "XL";
 
-export interface RefactoringTargetFinding {
+export interface HealthWorkItemFinding {
   id: string;
   biomarker_type: string;
   severity: Severity;
@@ -23,7 +23,7 @@ export interface RefactoringTargetFinding {
   details?: BiomarkerDetailsRecord | null;
 }
 
-export interface RefactoringTarget {
+export interface HealthWorkItem {
   file_path: string;
   score: number;
   nloc: number;
@@ -41,16 +41,16 @@ export interface RefactoringTarget {
   biomarkers: string[];
   effort_bucket: EffortBucket;
   impact_per_effort: number;
-  all_findings?: RefactoringTargetFinding[];
+  all_findings?: HealthWorkItemFinding[];
 }
 
 export type FindingStatus = "open" | "acknowledged" | "resolved" | "false_positive";
 
-export interface RefactoringCardProps {
-  target: RefactoringTarget;
-  onSelect?: ((target: RefactoringTarget) => void) | undefined;
+export interface HealthWorkItemCardProps {
+  target: HealthWorkItem;
+  onSelect?: ((target: HealthWorkItem) => void) | undefined;
   onStatusChange?: ((findingId: string, status: FindingStatus) => void) | undefined;
-  onGeneratePrompt?: ((target: RefactoringTarget) => void) | undefined;
+  onGeneratePrompt?: ((target: HealthWorkItem) => void) | undefined;
   /**
    * Fetch this file's findings, called on first expand. The list response
    * deliberately omits them — serializing every file's findings to render a
@@ -59,7 +59,7 @@ export interface RefactoringCardProps {
    * an older payload still expands.
    */
   onLoadFindings?:
-    | ((filePath: string) => Promise<RefactoringTargetFinding[]>)
+    | ((filePath: string) => Promise<HealthWorkItemFinding[]>)
     | undefined;
   expandable?: boolean;
   /** Flash-highlight the card (e.g. after a quadrant dot click scrolled to it). */
@@ -80,7 +80,7 @@ const effortColor: Record<EffortBucket, string> = {
   XL: "bg-[var(--color-error)]/15 text-[var(--color-error)]",
 };
 
-export function RefactoringCard({
+export function HealthWorkItemCard({
   target,
   onSelect,
   onStatusChange,
@@ -88,9 +88,9 @@ export function RefactoringCard({
   onLoadFindings,
   expandable = true,
   highlighted = false,
-}: RefactoringCardProps) {
+}: HealthWorkItemCardProps) {
   const [expanded, setExpanded] = useState(false);
-  const [loaded, setLoaded] = useState<RefactoringTargetFinding[] | null>(null);
+  const [loaded, setLoaded] = useState<HealthWorkItemFinding[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
 
   // `finding_count` is on every target, so the expander's presence and its
@@ -112,7 +112,7 @@ export function RefactoringCard({
   };
   return (
     <div
-      data-refactoring-card={target.file_path}
+      data-health-work-item={target.file_path}
       className={`rounded-lg border bg-[var(--color-bg-surface)] overflow-hidden transition-colors ${
         highlighted
           ? "border-[var(--color-accent-primary)] ring-1 ring-[var(--color-accent-primary)]/40"
@@ -245,6 +245,12 @@ export function RefactoringCard({
     </div>
   );
 }
+
+/** @deprecated Health queue compatibility names; these are not structured plans. */
+export type RefactoringTarget = HealthWorkItem;
+export type RefactoringTargetFinding = HealthWorkItemFinding;
+export type RefactoringCardProps = HealthWorkItemCardProps;
+export const RefactoringCard = HealthWorkItemCard;
 
 function StatusButton({
   current,

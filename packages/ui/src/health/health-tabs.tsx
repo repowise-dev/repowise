@@ -25,7 +25,7 @@ export interface HealthTabsProps {
 const TABS: { key: HealthTabKey; label: string; suffix: string; Icon: React.ComponentType<{ className?: string }> }[] = [
   { key: "overview", label: "Overview", suffix: "", Icon: HeartPulse },
   { key: "trend", label: "Trend", suffix: "/trend", Icon: TrendingUp },
-  { key: "coverage", label: "Coverage", suffix: "/coverage", Icon: TestTubeDiagonal },
+  { key: "coverage", label: "Tests", suffix: "/coverage", Icon: TestTubeDiagonal },
   { key: "refactoring", label: "Refactoring", suffix: "/refactoring-targets", Icon: Wrench },
 ];
 

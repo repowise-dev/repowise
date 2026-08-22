@@ -204,7 +204,7 @@
 ; Chained call: obj.method1().method2(args)
 (call_expression
   function: (field_expression
-    argument: (call_expression)
+    argument: (call_expression) @call.receiver_call
     field: (field_identifier) @call.target
   )
   arguments: (argument_list) @call.arguments

@@ -7,6 +7,14 @@ scheduler) and shutdown (cleanup).
 
 from __future__ import annotations
 
+# Same reason as the CLI entry point, and it matters more here: a server is
+# long-lived, so a BLAS workspace sized to the host's core count is held for
+# the process's whole life rather than one index (issue #1394).
+from repowise.core.blas_threads import limit_blas_threads
+
+limit_blas_threads()
+
+# ruff: noqa: E402 — the BLAS pin above is only effective before these run.
 import logging
 import os
 from collections.abc import AsyncGenerator
@@ -95,6 +103,7 @@ def _build_embedder():
         gemini     — GeminiEmbedder via GEMINI_API_KEY / GOOGLE_API_KEY env var
         openai     — OpenAIEmbedder via OPENAI_API_KEY env var
         openrouter — OpenRouterEmbedder via OPENROUTER_API_KEY env var
+        edenai     — EdenAIEmbedder via EDENAI_API_KEY env var
     """
     name = os.environ.get("REPOWISE_EMBEDDER", "mock").lower()
     if name == "ollama":
@@ -121,8 +130,14 @@ def _build_embedder():
 
         model = os.environ.get("REPOWISE_EMBEDDING_MODEL", "google/gemini-embedding-001")
         return OpenRouterEmbedder(model=model)
+    if name == "edenai":
+        from repowise.core.providers.embedding.edenai import EdenAIEmbedder
+
+        model = os.environ.get("REPOWISE_EMBEDDING_MODEL", "amazon/amazon.titan-embed-text-v2:0")
+        return EdenAIEmbedder(model=model)
     logger.warning(
-        "embedder.mock_active: set REPOWISE_EMBEDDER=gemini, openai, openrouter, or ollama for real RAG"
+        "embedder.mock_active: set REPOWISE_EMBEDDER=gemini, openai, openrouter, "
+        "ollama, or edenai for real RAG"
     )
     return KeylessEmbedder()
 

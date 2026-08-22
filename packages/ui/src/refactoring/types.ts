@@ -7,60 +7,27 @@
  * type's shape so the plan renderer can read them without `any`.
  */
 
-export type RefactoringType =
-  | "extract_class"
-  | "extract_helper"
-  | "extract_method"
-  | "move_method"
-  | "break_cycle"
-  | "split_file";
+import type {
+  GeneratedCode,
+  RefactoringPlan,
+  RefactoringType,
+} from "@repowise-dev/types/refactoring";
 
-export type EffortBucket = "S" | "M" | "L" | "XL";
-export type Confidence = "low" | "medium" | "high";
-
-export interface RefactoringPlan {
-  id: string;
-  refactoring_type: RefactoringType | string;
-  file_path: string;
-  target_symbol: string;
-  line_start: number | null;
-  line_end: number | null;
-  plan: Record<string, unknown>;
-  evidence: Record<string, unknown>;
-  impact_delta: number;
-  effort_bucket: EffortBucket | string;
-  blast_radius: Record<string, unknown>;
-  confidence: Confidence | string;
-  source_biomarker: string;
-  rank_score: number;
-  /**
-   * Files that import this plan's file, and the file's line count. Served
-   * rather than derived: `blast_radius` carries a count under three different
-   * keys depending on the detector, so reading it here produced two different
-   * numbers for the same file.
-   *
-   * Optional so a frontend ahead of its backend degrades — an older server
-   * simply omits them and the structural map renders nothing rather than
-   * plotting every plan at the origin.
-   */
-  dependents?: number;
-  file_nloc?: number;
-}
-
-export interface RefactoringTypeCount {
-  type: string;
-  count: number;
-}
-
-export interface RefactoringSummary {
-  total: number;
-  by_type: RefactoringTypeCount[];
-}
-
-export interface RefactoringTargets {
-  summary: RefactoringSummary;
-  plans: RefactoringPlan[];
-}
+export type {
+  Confidence,
+  EffortBucket,
+  GeneratedCode,
+  GeneratedSpan,
+  RecommendationValidation,
+  RecommendationValidationTarget,
+  RefactoringPlan,
+  RefactoringSummary,
+  RefactoringTargets,
+  RefactoringType,
+  RefactoringTypeCount,
+  ValidationBasis,
+  ValidationVia,
+} from "@repowise-dev/types/refactoring";
 
 // ── Per-type plan shapes (the open `plan` dict, read defensively) ──────────
 
@@ -256,6 +223,51 @@ export function splitBlast(plan: RefactoringPlan): SplitBlast {
 }
 
 /** A one-line synopsis for the compact card — what the plan does, at a glance. */
+export interface PerformancePlanDetail {
+  opportunityId: string | null;
+  strategy: string;
+  safety: string;
+  interventionSymbol: string | null;
+  affectedLocations: Array<{
+    file_path: string;
+    function_name?: string | null;
+    line_start?: number | null;
+    line_end?: number | null;
+  }>;
+  affectedLocationsTotal: number;
+  paths: string[][];
+  pathsTotal: number;
+  truncated: boolean;
+}
+
+export function performancePlanDetail(plan: RefactoringPlan): PerformancePlanDetail {
+  const value = plan.plan ?? {};
+  const locations = Array.isArray(value.affected_locations) ? value.affected_locations : [];
+  const paths = Array.isArray(value.paths) ? value.paths : [];
+  return {
+    opportunityId: typeof value.opportunity_id === "string" ? value.opportunity_id : null,
+    strategy: typeof value.strategy === "string" ? value.strategy : "performance intervention",
+    safety: typeof value.safety === "string" ? value.safety : "advisory",
+    interventionSymbol:
+      typeof value.intervention_symbol === "string" ? value.intervention_symbol : null,
+    affectedLocations: locations.filter(
+      (item): item is PerformancePlanDetail["affectedLocations"][number] =>
+        Boolean(
+          item &&
+          typeof item === "object" &&
+          typeof (item as { file_path?: unknown }).file_path === "string",
+        ),
+    ),
+    affectedLocationsTotal: Number(value.affected_locations_total ?? locations.length),
+    paths: paths.filter(
+      (item): item is string[] =>
+        Array.isArray(item) && item.every((node) => typeof node === "string"),
+    ),
+    pathsTotal: Number(value.paths_total ?? paths.length),
+    truncated: value.evidence_truncated === true,
+  };
+}
+
 export function planSynopsis(plan: RefactoringPlan): string {
   switch (plan.refactoring_type) {
     case "extract_class": {
@@ -288,6 +300,10 @@ export function planSynopsis(plan: RefactoringPlan): string {
     case "split_file": {
       const n = splitGroups(plan).length;
       return `Split into ${n} module${n === 1 ? "" : "s"}`;
+    }
+    case "performance_fix": {
+      const detail = performancePlanDetail(plan);
+      return `${detail.strategy.replaceAll("_", " ")} at ${detail.interventionSymbol ?? plan.target_symbol}`;
     }
     default:
       return "";
@@ -339,6 +355,8 @@ export const EVIDENCE_LABELS: Record<string, string> = {
   cut_edges: "Cut edges",
   slice_nloc: "Extracted lines",
   ccn_removed: "Complexity removed",
+  observations_total: "Observations",
+  affected_files_total: "Affected files",
 };
 
 export function evidenceRows(plan: RefactoringPlan): { label: string; value: string }[] {
@@ -346,7 +364,10 @@ export function evidenceRows(plan: RefactoringPlan): { label: string; value: str
   for (const [key, label] of Object.entries(EVIDENCE_LABELS)) {
     const v = plan.evidence?.[key];
     if (typeof v === "number" && Number.isFinite(v)) {
-      rows.push({ label, value: Number.isInteger(v) ? String(v) : v.toFixed(2) });
+      rows.push({
+        label,
+        value: Number.isInteger(v) ? String(v) : v.toFixed(2),
+      });
     }
   }
   return rows;
@@ -359,34 +380,6 @@ export interface PlanWin {
 }
 
 // ── Generated code (the opt-in LLM enrichment result) ─────────────────────
-
-export interface GeneratedSpan {
-  file: string;
-  line_start: number;
-  line_end: number;
-}
-
-/**
- * The result of the "Generate code" action — mirrors the backend
- * `GenerateCodeResponse` (POST `…/refactoring/{id}/generate-code`). `diff` is a
- * unified diff; `validation` is the per-type self-check (open dict, read
- * defensively via {@link generatedVerdict}).
- */
-export interface GeneratedCode {
-  suggestion_id: string | null;
-  refactoring_type: string;
-  file_path: string;
-  target_symbol: string;
-  content: string;
-  diff: string;
-  provider: string;
-  model: string;
-  cached: boolean;
-  input_tokens: number;
-  output_tokens: number;
-  validation: Record<string, unknown>;
-  spans: GeneratedSpan[];
-}
 
 export type VerdictTone = "pass" | "fail" | "neutral";
 
@@ -416,7 +409,11 @@ export function generatedVerdict(result: GeneratedCode): GeneratedVerdict | null
   const status = v.status;
   if (status === "skipped") {
     const reason = typeof v.reason === "string" ? v.reason : null;
-    return { tone: "neutral", label: "Self-check skipped", ...(reason ? { detail: reason } : {}) };
+    return {
+      tone: "neutral",
+      label: "Self-check skipped",
+      ...(reason ? { detail: reason } : {}),
+    };
   }
   if (status !== "checked") return null;
 
@@ -474,14 +471,20 @@ export function generatedVerdict(result: GeneratedCode): GeneratedVerdict | null
 export function planWins(plan: RefactoringPlan): PlanWin[] {
   const wins: PlanWin[] = [];
   if (plan.impact_delta > 0) {
-    wins.push({ hero: true, label: `+${plan.impact_delta.toFixed(1)} health recovered` });
+    wins.push({
+      hero: true,
+      label: `+${plan.impact_delta.toFixed(1)} health recovered`,
+    });
   }
   switch (plan.refactoring_type) {
     case "extract_class": {
       const n = extractClassGroups(plan).filter(
         (g) => g.methods.length > 0 || g.fields.length > 0,
       ).length;
-      if (n) wins.push({ label: `${n} focused, single-responsibility class${n === 1 ? "" : "es"}` });
+      if (n)
+        wins.push({
+          label: `${n} focused, single-responsibility class${n === 1 ? "" : "es"}`,
+        });
       break;
     }
     case "extract_helper": {
@@ -502,9 +505,14 @@ export function planWins(plan: RefactoringPlan): PlanWin[] {
       const ccn = Number(plan.evidence?.ccn_removed ?? 0);
       if (em.span) {
         const lines = em.span.end - em.span.start + 1;
-        wins.push({ label: `${lines} line${lines === 1 ? "" : "s"} lifted into a focused helper` });
+        wins.push({
+          label: `${lines} line${lines === 1 ? "" : "s"} lifted into a focused helper`,
+        });
       }
-      if (ccn) wins.push({ label: `-${ccn} cyclomatic complexity on the original method` });
+      if (ccn)
+        wins.push({
+          label: `-${ccn} cyclomatic complexity on the original method`,
+        });
       break;
     }
     case "move_method": {
@@ -516,13 +524,19 @@ export function planWins(plan: RefactoringPlan): PlanWin[] {
       const members = cycleMembers(plan).length;
       const edges = cutEdges(plan).length;
       if (members) wins.push({ label: `${members} files untangled` });
-      if (edges) wins.push({ label: `${edges} import edge${edges === 1 ? "" : "s"} cut` });
+      if (edges)
+        wins.push({
+          label: `${edges} import edge${edges === 1 ? "" : "s"} cut`,
+        });
       break;
     }
     case "split_file": {
       const n = splitGroups(plan).length;
       const blast = splitBlast(plan);
-      if (n) wins.push({ label: `${n} focused module${n === 1 ? "" : "s"} from one file` });
+      if (n)
+        wins.push({
+          label: `${n} focused module${n === 1 ? "" : "s"} from one file`,
+        });
       if (blast.import_rewrites > 0) {
         wins.push({
           label: `${blast.import_rewrites} dependent file${
@@ -536,6 +550,13 @@ export function planWins(plan: RefactoringPlan): PlanWin[] {
           }, zero import edits`,
         });
       }
+      break;
+    }
+    case "performance_fix": {
+      const detail = performancePlanDetail(plan);
+      wins.push({
+        label: `${detail.affectedLocationsTotal} repeated call site${detail.affectedLocationsTotal === 1 ? "" : "s"} addressed at one intervention`,
+      });
       break;
     }
   }
@@ -595,6 +616,11 @@ export function planReason(plan: RefactoringPlan): string {
   const num = (key: string): number => Number(ev[key] ?? 0);
 
   switch (plan.refactoring_type) {
+    case "performance_fix": {
+      const detail = performancePlanDetail(plan);
+      const rationale = typeof plan.evidence?.rationale === "string" ? plan.evidence.rationale : "";
+      return `${detail.safety === "proven" ? "Proven" : "Advisory"} ${detail.strategy.replaceAll("_", " ")} across ${detail.affectedLocationsTotal} affected call site${detail.affectedLocationsTotal === 1 ? "" : "s"}.${rationale ? ` ${rationale}` : ""}`;
+    }
     case "split_file": {
       const parts: string[] = [];
       const nloc = num("file_nloc");

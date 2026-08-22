@@ -60,6 +60,7 @@ from .extractors.visibility import (
 from .language_configs import LANGUAGE_CONFIGS, LanguageConfig
 from .languages.registry import REGISTRY as _LANG_REGISTRY
 from .models import (
+    CallReceiver,
     CallSite,
     FileInfo,
     Import,
@@ -115,15 +116,62 @@ _TS_JS_LANGUAGES = ("typescript", "javascript", "svelte", "vue")
 _REFERENCE_LANGUAGES = ("cpp", "c", "go", "rust", "kotlin")
 
 
+def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
+    """Describe an inner call captured as another call's receiver.
+
+    The queries identify the complete inner AST node.  This helper reads only
+    named tree-sitter fields, so nested arguments and formatting cannot change
+    which call is carried into resolution.
+    """
+
+    arguments = node.child_by_field_name("arguments")
+    argument_count = _count_arguments(arguments) if arguments is not None else None
+
+    target = node.child_by_field_name("name")
+    receiver = node.child_by_field_name("object")
+    if target is None:
+        function = node.child_by_field_name("function")
+        if function is None:
+            return None
+        if function.type in ("identifier", "property_identifier", "field_identifier"):
+            target = function
+            receiver = None
+        elif function.type == "generic_name":
+            target = function.child_by_field_name("name") or next(
+                (child for child in function.named_children if child.type == "identifier"), None
+            )
+            receiver = None
+        else:
+            target = (
+                function.child_by_field_name("name")
+                or function.child_by_field_name("property")
+                or function.child_by_field_name("field")
+            )
+            receiver = (
+                function.child_by_field_name("expression")
+                or function.child_by_field_name("object")
+                or function.child_by_field_name("argument")
+            )
+
+    if target is None:
+        return None
+    target_name = _node_text(target, src).strip()
+    if not target_name:
+        return None
+
+    receiver_name = None
+    if receiver is not None and receiver.type in ("identifier", "this"):
+        receiver_name = _node_text(receiver, src).strip() or None
+    return CallReceiver(target_name, receiver_name, argument_count)
+
+
 # C/C++ node types that spell a type. Each one covers both the definition and
 # the forward declaration of that type; only the ``body`` field tells them
 # apart. See ``_is_bodiless_cpp_type``.
 # ``union_specifier`` is absent because neither grammar's query captures one
 # as a symbol today. If a union capture is ever added, add it here too, or a
 # bodiless ``union U;`` goes back to reading as a definition.
-_CPP_TYPE_SPECIFIER_NODES = frozenset(
-    {"class_specifier", "struct_specifier", "enum_specifier"}
-)
+_CPP_TYPE_SPECIFIER_NODES = frozenset({"class_specifier", "struct_specifier", "enum_specifier"})
 
 
 def _is_bodiless_cpp_type(language: str, node_type: str, def_node: Node) -> bool:
@@ -139,6 +187,15 @@ def _is_bodiless_cpp_type(language: str, node_type: str, def_node: Node) -> bool
     """
     if language not in ("cpp", "c"):
         return False
+    if node_type == "template_declaration":
+        # ``template <typename T> class Foo;``. The wrapper carries no ``body``
+        # field of its own — the inner specifier does — so asking the wrapper
+        # would call every template a declaration. Ask the type it wraps.
+        inner = next(
+            (c for c in def_node.children if c.type in _CPP_TYPE_SPECIFIER_NODES),
+            None,
+        )
+        return inner is not None and inner.child_by_field_name("body") is None
     if node_type not in _CPP_TYPE_SPECIFIER_NODES:
         return False
     if def_node.child_by_field_name("body") is not None:
@@ -1174,13 +1231,13 @@ class ASTParser:
         )
 
         calls: list[CallSite] = []
-        seen: set[tuple[int, str, str | None]] = set()
 
         for capture_dict in matches:
             site_nodes = capture_dict.get("call.site", [])
             target_nodes = capture_dict.get("call.target", [])
             arg_nodes = capture_dict.get("call.arguments", [])
             receiver_nodes = capture_dict.get("call.receiver", [])
+            receiver_call_nodes = capture_dict.get("call.receiver_call", [])
 
             if not site_nodes or not target_nodes:
                 continue
@@ -1197,11 +1254,11 @@ class ASTParser:
             receiver_name = _node_text(receiver_nodes[0], src).strip() if receiver_nodes else None
             if receiver_name and file_info.language == "php":
                 receiver_name = _normalize_php_receiver(receiver_name)
-
-            dedup_key = (line, target_name, receiver_name)
-            if dedup_key in seen:
-                continue
-            seen.add(dedup_key)
+            receiver_call = (
+                _call_receiver_from_node(receiver_call_nodes[0], src)
+                if receiver_call_nodes
+                else None
+            )
 
             arg_count: int | None = None
             if arg_nodes:
@@ -1217,10 +1274,20 @@ class ASTParser:
                     caller_symbol_id=caller_id,
                     line=line,
                     argument_count=arg_count,
+                    receiver_call=receiver_call,
                 )
             )
 
-        return calls
+        deduplicated: dict[tuple[int, str, str | None], CallSite] = {}
+        for call in calls:
+            key = (call.line, call.target_name, call.receiver_name)
+            existing = deduplicated.get(key)
+            if existing is None or (
+                existing.receiver_call is None
+                and call.receiver_call is not None
+            ):
+                deduplicated[key] = call
+        return list(deduplicated.values())
 
     def _extract_references(
         self,

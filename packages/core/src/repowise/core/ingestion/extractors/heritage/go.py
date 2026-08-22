@@ -5,7 +5,7 @@ from __future__ import annotations
 from tree_sitter import Node
 
 from ...models import HeritageRelation
-from ...type_names import bare_type_name
+from ...type_names import strip_type_arguments
 from ..helpers import node_text
 
 
@@ -33,12 +33,16 @@ def _extract_go_heritage(
             type_child = field_decl.child_by_field_name("type")
             if name_node is None and type_child is not None:
                 parent = node_text(type_child, src).strip().lstrip("*")
-                bare = bare_type_name(parent)
-                if bare:
+                # Keep the package qualifier: ``io.Reader`` must stay
+                # ``io.Reader``, not ``Reader``, or an embed of a stdlib type
+                # binds to whatever repo-local type shares the short name (and
+                # can inherit from itself). Type arguments are still stripped.
+                parent = strip_type_arguments(parent)
+                if parent:
                     out.append(
                         HeritageRelation(
                             child_name=name,
-                            parent_name=bare,
+                            parent_name=parent,
                             kind="mixin",
                             line=line,
                         )
@@ -53,12 +57,13 @@ def _extract_go_heritage(
             # is a generic bound, carrying no methods to inherit.
             if "|" in text or "~" in text:
                 continue
-            bare = bare_type_name(text)
-            if bare:
+            # Keep the package qualifier (see the struct branch above).
+            parent = strip_type_arguments(text)
+            if parent:
                 out.append(
                     HeritageRelation(
                         child_name=name,
-                        parent_name=bare,
+                        parent_name=parent,
                         kind="extends",
                         line=line,
                     )

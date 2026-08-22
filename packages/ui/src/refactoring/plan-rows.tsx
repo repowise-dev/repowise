@@ -21,7 +21,8 @@ import * as React from "react";
 
 import { formatNumber } from "../lib/format";
 import { typeMeta } from "./meta";
-import { blastCount, planSynopsis, type RefactoringPlan } from "./types";
+import { blastCount, planSynopsis } from "./types";
+import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 export interface PlanRowsProps {
   plans: RefactoringPlan[];
@@ -41,13 +42,7 @@ const EFFORT_WORD: Record<string, string> = {
   XL: "Extra large",
 };
 
-export function PlanRows({
-  plans,
-  onOpen,
-  onAiPrompt,
-  fileHref,
-  highlightedId,
-}: PlanRowsProps) {
+export function PlanRows({ plans, onOpen, onAiPrompt, fileHref, highlightedId }: PlanRowsProps) {
   return (
     <div className="flex flex-col">
       {plans.map((plan) => (
@@ -120,10 +115,12 @@ function PlanRow({
       </div>
 
       <div className="order-4 text-[12.5px] tabular-nums lg:order-none">
-        {gain > 0 ? (
+        {plan.refactoring_type === "performance_fix" && (plan.benefit ?? 0) > 0 ? (
           <span className="font-medium text-[var(--color-success)]">
-            +{gain.toFixed(1)} health
+            {plan.benefit?.toFixed(1)} benefit
           </span>
+        ) : gain > 0 ? (
+          <span className="font-medium text-[var(--color-success)]">+{gain.toFixed(1)} health</span>
         ) : (
           <span className="text-[var(--color-text-tertiary)]">no score change</span>
         )}

@@ -18,6 +18,7 @@ import {
   type FilePageTab,
 } from "@repowise-dev/ui/files";
 import { FilePageHost } from "@/components/files/file-page-host";
+import { FileTestsPanel } from "@/components/files/file-tests-panel";
 import { FileHealthPanel } from "@/components/files/file-health-panel";
 import type { FileDetailResponse } from "@repowise-dev/types/files";
 
@@ -187,6 +188,7 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
         functionBlame={detail.function_blame}
       />
     ),
+    testsPanel: <FileTestsPanel repoId={id} filePath={detail.file_path} />,
     LinkComponent: Link,
   });
 

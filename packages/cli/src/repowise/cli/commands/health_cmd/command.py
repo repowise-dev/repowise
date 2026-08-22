@@ -25,7 +25,7 @@ from repowise.cli.helpers import (
 )
 
 from .codegen import _generate_refactoring_code
-from .persist import _load_persisted_coverage_map, _persist_health
+from .persist import _load_persisted_coverage_map, _load_recommendations, _persist_health
 from .refactoring_targets import _render_refactoring_targets
 from .summary import (
     _render_badge,
@@ -280,6 +280,9 @@ def health_command(
             suggestions = [s for s in suggestions if s.file_path == file_filter]
         if module_filter:
             suggestions = [s for s in suggestions if s.file_path.startswith(module_filter)]
+        # Attaches the same batched validation block the read surfaces emit;
+        # code generation remains explicitly requested and never auto-applies.
+        _load_recommendations(repo_path, suggestions, metrics_sorted)
         _generate_refactoring_code(repo_path, suggestions, generate_code, fmt=fmt)
         return
 
@@ -289,7 +292,8 @@ def health_command(
             suggestions = [s for s in suggestions if s.file_path == file_filter]
         if module_filter:
             suggestions = [s for s in suggestions if s.file_path.startswith(module_filter)]
-        _render_refactoring_targets(metrics_sorted, findings, suggestions, fmt=fmt)
+        recommendations = _load_recommendations(repo_path, suggestions, metrics_sorted)
+        _render_refactoring_targets(metrics_sorted, findings, recommendations, fmt=fmt)
         return
 
     if badge_view:

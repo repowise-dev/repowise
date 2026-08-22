@@ -1,9 +1,11 @@
 # Language Support
 
-**19 languages parsed to a full AST · 13 at the Full tier · framework-aware
-across all of them.** Everything else in your repo still appears in the wiki and
-is tracked through git history. This page is the "what works for my language
-today" reference.
+**19 languages parsed to a full AST · 35 on the five-rung ladder ·
+framework-aware across all of them.** "Do you support X" has five useful answers
+rather than two, so every language lands on a rung and the rung says what it
+buys you. Everything else in your repo still appears in the wiki and is tracked
+through git history. This page is the "what works for my language today"
+reference.
 
 <p>
   <strong>Full tier &nbsp;</strong>
@@ -49,11 +51,17 @@ produce meaningful output.
 
 | Tier | Languages | What you get |
 |------|-----------|--------------|
-| **Full** | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges, **and code-health markers** |
-| **Good** | C · Swift · PHP · Dart · Object Pascal | Everything above except the full health suite. Dart and Object Pascal *do* get health markers; C, Swift and PHP don't yet |
-| **Partial** | Luau / Roblox | AST symbols and `require()` resolution (Rojo / `.luaurc` aware). No health markers yet |
-| **Lightweight** | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# · HTML | A real file-to-file import graph, no symbol-level claims |
-| **Structural** | Objective-C · R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history only: blame, hotspots, co-change. No AST parsing |
+| **Full** (13) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges, **and code-health markers** |
+| **Good** (5) | C · Swift · PHP · Dart · Object Pascal | Everything above except the full health suite. Dart and Object Pascal *do* get health markers; C, Swift and PHP don't yet |
+| **Partial** (1) | Luau / Roblox | AST symbols and `require()` resolution (Rojo / `.luaurc` aware). No health markers yet |
+| | | ⎯⎯ *tree-sitter parsing stops here. The rungs below are derived from git and imports, not from an AST.* ⎯⎯ |
+| **Lightweight** (7) | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# · HTML | A real file-to-file import graph, no symbol-level claims |
+| **Structural** (9) | Objective-C · R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history only: blame, hotspots, co-change. No AST parsing |
+
+The first three rungs are the **19 languages parsed to a full AST**; all five are
+the **35** on the ladder. Both numbers are worth stating and neither is worth
+stating alone, so if you only take one thing from this page, take the rung your
+language sits on rather than either count.
 
 [**SQL / dbt**](#sql--dbt) and [**shell**](#shell) sit outside this ladder on
 purpose: each has a coverage shape the tiers cannot describe. SQL is parsed by

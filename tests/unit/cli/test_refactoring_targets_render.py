@@ -52,10 +52,10 @@ def test_json_includes_move_and_break_plans(capsys):
     out = json.loads(capsys.readouterr().out)
     types = {p["refactoring_type"] for p in out["refactoring_plans"]}
     assert {"move_method", "break_cycle"} <= types
-    # Order is preserved from the (already unified-ranked) input.
+    # Raw detector rows are normalized into the canonical recommendation rank.
     assert [p["refactoring_type"] for p in out["refactoring_plans"]] == [
-        "move_method",
         "break_cycle",
+        "move_method",
     ]
 
 

@@ -231,6 +231,19 @@ class Import:
 
 
 @dataclass
+class CallReceiver:
+    """A call expression used as the receiver of another call.
+
+    Keeping this AST-derived fact separate from ``receiver_name`` prevents a
+    chained call from being mistaken for an unqualified/free call.
+    """
+
+    target_name: str
+    receiver_name: str | None
+    argument_count: int | None
+
+
+@dataclass
 class CallSite:
     """A function or method call extracted from a source file.
 
@@ -242,6 +255,7 @@ class CallSite:
     caller_symbol_id: str | None  # enclosing symbol ID (e.g. "src/app.py::main")
     line: int  # 1-indexed line number of the call
     argument_count: int | None  # number of arguments (None if unknown)
+    receiver_call: CallReceiver | None = None  # set only for a captured chained call
 
 
 HeritageKind = Literal["extends", "implements", "trait_impl", "mixin"]
@@ -391,6 +405,11 @@ ResolutionOrigin = Literal[
     "receiver_framework_same_package",  # 0.90
     "receiver_framework_import",  # 0.88
     "receiver_framework_global",  # 0.75
+    # Chained receiver typed from the inner callee's declared return type.
+    "return_type_same_file",  # 0.93
+    "return_type_same_package",  # 0.90 (JVM)
+    "return_type_import",  # 0.88
+    "return_type_global",  # 0.75
     # 0.90 — the caller's own class does not declare the method but exactly one
     # of its ancestors does. Below the two same-class origins because the walk
     # compares no signature and reads no visibility, so it can reach a method
@@ -497,6 +516,17 @@ SYMBOL_USE_EDGE_TYPES: frozenset[str] = frozenset(
         "references",
     }
 )
+
+
+# Symbol → symbol edges along which control can actually reach the target, for
+# the question "would running this test execute that code?". The reachability
+# view minus the two that record a mention rather than a transfer of control:
+# `references` is a name sitting in a dispatch table and `reads` is a field
+# access, and neither runs the thing it names. Narrower than
+# SYMBOL_USE_EDGE_TYPES on purpose — dead code asks "is this used", which a
+# mention answers, and the inferred test map asks "is this run", which it does
+# not.
+EXECUTION_EDGE_TYPES: frozenset[str] = SYMBOL_USE_EDGE_TYPES - {"references", "reads"}
 
 
 # "Does anything use this symbol at all?" — the reachability view. Adds

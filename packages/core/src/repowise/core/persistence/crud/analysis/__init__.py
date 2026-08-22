@@ -20,6 +20,7 @@ from .coverage_map import (
     get_test_coverage_summary,
     save_test_coverage,
     tests_covering,
+    tests_covering_files,
 )
 from .dead_code import (
     get_dead_code_findings,
@@ -96,6 +97,7 @@ __all__ = [
     "save_test_coverage",
     "sort_metrics_worst_first",
     "tests_covering",
+    "tests_covering_files",
     "update_dead_code_status",
     "update_health_finding_status",
     "upsert_health_findings",

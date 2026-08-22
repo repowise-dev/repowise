@@ -183,7 +183,7 @@ function headerStats(data: FileDetailResponse): RibbonStat[] {
   }
   if (coveragePct != null) {
     stats.push({
-      label: "Coverage",
+      label: "Tests",
       value: `${coveragePct.toFixed(0)}%`,
       valueColor: coverageTextColor(coveragePct),
     });

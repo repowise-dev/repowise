@@ -30,7 +30,7 @@ export function ImpactEffortQuadrant({
   if (data.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-6 text-sm text-[var(--color-text-tertiary)]">
-        No refactoring targets to plot yet.
+        No health work items to plot yet.
       </div>
     );
   }

@@ -88,6 +88,49 @@ class TestScanFile:
         findings = asyncio.run(scanner.scan_file("b.py", CLEAN.decode(), symbols=[]))
         assert findings == []
 
+    def test_single_line_subprocess_shell_true_is_flagged(self) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        source = 'subprocess.run("rm -rf " + path, shell=True)\n'
+        findings = asyncio.run(scanner.scan_file("a.py", source, symbols=[]))
+        hits = [f for f in findings if f["kind"] == "subprocess_shell_true"]
+        assert len(hits) == 1
+        assert hits[0]["line"] == 1
+
+    def test_multiline_subprocess_shell_true_is_flagged(self) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        source = 'subprocess.run(\n    "rm -rf " + path,\n    shell=True,\n)\n'
+        findings = asyncio.run(scanner.scan_file("a.py", source, symbols=[]))
+        hits = [f for f in findings if f["kind"] == "subprocess_shell_true"]
+        assert len(hits) == 1
+        assert hits[0]["line"] == 1
+
+    def test_multiline_popen_shell_true_is_flagged(self) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        source = 'subprocess.Popen(\n    ["/bin/sh"],\n    shell=True,\n)\n'
+        findings = asyncio.run(scanner.scan_file("a.py", source, symbols=[]))
+        hits = [f for f in findings if f["kind"] == "subprocess_shell_true"]
+        assert len(hits) == 1
+        assert hits[0]["line"] == 1
+
+    def test_subprocess_without_shell_does_not_fire(self) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        source = 'subprocess.run(\n    ["git", "rev-parse", "HEAD"],\n    capture_output=True,\n)\n'
+        findings = asyncio.run(scanner.scan_file("a.py", source, symbols=[]))
+        hits = [f for f in findings if f["kind"] == "subprocess_shell_true"]
+        assert hits == []
+
+    def test_spanning_pass_does_not_jump_to_later_shell_true(self) -> None:
+        """A closed subprocess call must not claim a later column-0 shell=True."""
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        source = (
+            'subprocess.run(["ls"], capture_output=True)\n'
+            "\n"
+            "os.popen(cmd, shell=True)\n"
+        )
+        findings = asyncio.run(scanner.scan_file("a.py", source, symbols=[]))
+        hits = [f for f in findings if f["kind"] == "subprocess_shell_true"]
+        assert hits == []
+
 
 class TestPersistSecurityFindings:
     """The persist.py wiring: source_map in, idempotent rows out."""
@@ -179,3 +222,64 @@ class TestPersistSecurityFindings:
 
         rows = asyncio.run(_run())
         assert ("auth.py", "security_sensitive_symbol", 7) in rows
+
+    def test_replace_findings_duplicate_key_does_not_lose_rows(self, tmp_path: Path) -> None:
+        """Two findings sharing a provenance key must not abort the batch and
+        drop the file's other rows (regression for the bulk-INSERT abort that
+        swallowed IntegrityError and silently truncated the insert)."""
+        from repowise.core.analysis.security_scan import SecurityScanner
+        from repowise.core.persistence import get_session
+
+        async def _run():
+            engine, sf = await _fresh_session_factory(tmp_path)
+            async with get_session(sf) as session:
+                scanner = SecurityScanner(session, "repo-1")
+                await scanner.replace_findings(
+                    {
+                        "a.py": [
+                            {"kind": "hardcoded_password", "severity": "high", "line": 1},
+                            {"kind": "security_sensitive_symbol", "severity": "low", "line": 7},
+                            {"kind": "security_sensitive_symbol", "severity": "low", "line": 7},
+                        ],
+                    },
+                    ["a.py"],
+                )
+            rows = await _rows(sf)
+            await engine.dispose()
+            return rows
+
+        rows = asyncio.run(_run())
+        assert sorted(rows) == [
+            ("a.py", "hardcoded_password", 1),
+            ("a.py", "security_sensitive_symbol", 7),
+        ]
+
+    def test_replace_findings_rescan_keeps_prior_and_new_rows(self, tmp_path: Path) -> None:
+        """Re-running replace_findings over the same file must yield the same
+        full row set — duplicates on the provenance key are no-ops, never a
+        partial insert."""
+        from repowise.core.analysis.security_scan import SecurityScanner
+        from repowise.core.persistence import get_session
+
+        async def _run():
+            engine, sf = await _fresh_session_factory(tmp_path)
+            findings = {
+                "a.py": [
+                    {"kind": "hardcoded_password", "severity": "high", "line": 1},
+                    {"kind": "security_sensitive_symbol", "severity": "low", "line": 7},
+                    {"kind": "security_sensitive_symbol", "severity": "low", "line": 7},
+                ],
+            }
+            for _ in range(2):
+                async with get_session(sf) as session:
+                    scanner = SecurityScanner(session, "repo-1")
+                    await scanner.replace_findings(findings, ["a.py"])
+            rows = await _rows(sf)
+            await engine.dispose()
+            return rows
+
+        rows = asyncio.run(_run())
+        assert sorted(rows) == [
+            ("a.py", "hardcoded_password", 1),
+            ("a.py", "security_sensitive_symbol", 7),
+        ]

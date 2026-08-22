@@ -399,6 +399,7 @@ def _build_user_prompt(suggestion: Any, spans: list[SourceSpan]) -> str:
                 "plan": suggestion.plan or {},
                 "evidence": suggestion.evidence or {},
                 "blast_radius": suggestion.blast_radius or {},
+                "validation": getattr(suggestion, "validation", {}) or {},
             },
             indent=2,
             sort_keys=True,
@@ -471,6 +472,7 @@ def _cache_key(suggestion: Any, spans: list[SourceSpan], model: str) -> str:
             "target": suggestion.target_symbol,
             "file": suggestion.file_path,
             "plan": suggestion.plan or {},
+            "validation": getattr(suggestion, "validation", {}) or {},
             "spans": [
                 [s.file, s.start_line, s.end_line, hashlib.sha256(s.source.encode()).hexdigest()]
                 for s in spans

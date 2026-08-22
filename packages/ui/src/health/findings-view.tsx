@@ -2,8 +2,8 @@
 
 /**
  * Findings view — the engineer's workbench. The ranked fix-next queue
- * (refactoring targets + file inventory), the cross-function performance-risk
- * panel, and the function-level / hidden-coupling panels.
+ * (health work items + file inventory) and the function-level /
+ * hidden-coupling panels. Performance has its own causal-opportunity view.
  *
  * Split out of {@link TriageView} so the landing surface stays an airy
  * proof + map overview and the dense drill-down lives behind its own tab.
@@ -13,31 +13,29 @@
 
 import { useMemo, useState } from "react";
 import useSWR from "swr";
-import { Gauge, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import type {
   HealthFinding,
   HealthFilesResponse,
   HealthOverviewResponse,
-  RefactoringQuery,
-  RefactoringTargetsResponse,
+  HealthWorkQueueQuery,
+  HealthWorkQueueResponse,
 } from "@repowise-dev/types/health";
 
 import { Skeleton } from "../ui/skeleton";
 import { Button } from "../ui/button";
 import { EmptyState } from "../shared/empty-state";
-import { CollapsibleSection } from "../shared/collapsible-section";
 
 import { AiPromptModal } from "./ai-prompt-modal";
 import { HealthFileTable, type FileSortField } from "./file-table";
-import { BiomarkerList } from "./biomarker-list";
 import { HotFunctionsPanel } from "./hot-functions-panel";
 import { HiddenCouplingList } from "./hidden-coupling-list";
 import {
-  RefactoringTargetList,
+  HealthWorkQueueList,
   type FindingStatus,
-  type RefactoringTarget,
+  type HealthWorkItem,
 } from "./refactoring-target-list";
-import type { RefactoringTargetFinding } from "./refactoring-card";
+import type { HealthWorkItemFinding } from "./refactoring-card";
 import { FilterSelect, FilterChip, ViewToggle } from "./code-health-controls";
 import { ImpactEffortQuadrant } from "./impact-effort-quadrant";
 import { biomarkerLabel } from "./biomarker-glossary";
@@ -98,27 +96,16 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
     [panelFindings],
   );
 
-  // Every open performance-pillar finding (the cross-function N+1 / I/O-in-loop
-  // moat), for the dedicated Performance risks panel.
-  const { data: perfFindings } = useSWR<HealthFinding[]>(
-    `code-health-perf-findings:${cacheKey}`,
-    () =>
-      adapter
-        .listFindings({ dimension: "performance", limit: 200 })
-        .catch(() => [] as HealthFinding[]),
-    { revalidateOnFocus: false },
-  );
-
   // ---- Queue filters ----
   const [minSeverity, setMinSeverity] = useState<Severity | "all">("all");
   const [biomarker, setBiomarker] = useState<string>("all");
   const [maxEffort, setMaxEffort] = useState<string>("all");
-  const [sort, setSort] = useState<RefactoringQuery["sort"]>("impact_per_effort");
+  const [sort, setSort] = useState<HealthWorkQueueQuery["sort"]>("impact_per_effort");
   const [groupBy, setGroupBy] = useState<GroupBy>("none");
   const [queueLimit, setQueueLimit] = useState(QUEUE_PAGE);
   const [view, setView] = useState<QueueView>("queue");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [promptTarget, setPromptTarget] = useState<RefactoringTarget | null>(null);
+  const [promptTarget, setPromptTarget] = useState<HealthWorkItem | null>(null);
 
   // The targets list no longer ships `all_findings` — it cost 1.8 MB per
   // request to serve two click-gated consumers. Both fetch here instead.
@@ -128,11 +115,11 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
     (await adapter.listFindings({
       file_path: filePath,
       limit: 1000,
-    })) as RefactoringTargetFinding[];
+    })) as HealthWorkItemFinding[];
 
   // The prompt promises the agent "every marker", so hydrate before opening
   // rather than letting the builder fall back to the primary finding alone.
-  const openPrompt = async (t: RefactoringTarget) => {
+  const openPrompt = async (t: HealthWorkItem) => {
     setPromptTarget(t);
     try {
       setPromptTarget({ ...t, all_findings: await loadFindings(t.file_path) });
@@ -144,17 +131,28 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
 
   const queueKey = useMemo(
     () =>
-      JSON.stringify({ cacheKey, biomarker, minSeverity, maxEffort, sort, queueLimit }),
+      JSON.stringify({
+        cacheKey,
+        biomarker,
+        minSeverity,
+        maxEffort,
+        sort,
+        queueLimit,
+      }),
     [cacheKey, biomarker, minSeverity, maxEffort, sort, queueLimit],
   );
+  const loadHealthWorkQueue = (opts: HealthWorkQueueQuery) => {
+    const load = adapter.getHealthWorkQueue ?? adapter.getRefactoringTargets;
+    return load ? load(opts) : Promise.resolve({ targets: [], total: 0 });
+  };
   const {
     data: queue,
     isLoading: queueLoading,
     mutate: mutateQueue,
-  } = useSWR<RefactoringTargetsResponse>(
+  } = useSWR<HealthWorkQueueResponse>(
     overview ? `code-health-queue:${queueKey}` : null,
     () =>
-      adapter.getRefactoringTargets({
+      loadHealthWorkQueue({
         limit: queueLimit,
         ...(biomarker !== "all" && { biomarker }),
         ...(minSeverity !== "all" && { min_severity: minSeverity }),
@@ -246,35 +244,6 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
 
   return (
     <div className="space-y-6">
-      {/* Performance risks — the cross-function N+1 / I/O-in-loop moat, given a
-          dedicated home. Only rendered when risks actually exist (high
-          precision, low recall), so a clean repo stays uncluttered. */}
-      {perfFindings && perfFindings.length > 0 ? (
-        <CollapsibleSection
-          title={
-            <span className="inline-flex items-center gap-2">
-              <Gauge className="h-4 w-4 text-[var(--color-info)]" />
-              Performance risks
-            </span>
-          }
-          hint={`${perfFindings.length} ${perfFindings.length === 1 ? "risk" : "risks"}`}
-          defaultOpen
-        >
-          <div className="space-y-3">
-            <p className="text-xs text-[var(--color-text-secondary)]">
-              Static performance risk: a DB, network, filesystem, or subprocess call
-              per loop iteration, detected across function boundaries via the call
-              graph. High precision, low recall, never blended into the defect score.
-            </p>
-            <BiomarkerList
-              findings={perfFindings}
-              grouped
-              onSelect={(f) => setSelectedFile(f.file_path)}
-            />
-          </div>
-        </CollapsibleSection>
-      ) : null}
-
       {/* The full ranked queue + file inventory. */}
       <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
@@ -305,7 +274,10 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
                 onChange={setBiomarker}
                 options={[
                   { value: "all", label: "All markers" },
-                  ...biomarkerOptions.map((b) => ({ value: b, label: biomarkerLabel(b) })),
+                  ...biomarkerOptions.map((b) => ({
+                    value: b,
+                    label: biomarkerLabel(b),
+                  })),
                 ]}
               />
               <FilterSelect
@@ -334,9 +306,12 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
               <FilterSelect
                 label="Sort"
                 value={sort ?? "impact_per_effort"}
-                onChange={(v) => setSort(v as RefactoringQuery["sort"])}
+                onChange={(v) => setSort(v as HealthWorkQueueQuery["sort"])}
                 options={[
-                  { value: "impact_per_effort", label: "Leverage (impact ÷ effort)" },
+                  {
+                    value: "impact_per_effort",
+                    label: "Leverage (impact ÷ effort)",
+                  },
                   { value: "total_impact", label: "Total impact" },
                   { value: "score", label: "Worst score" },
                   { value: "finding_count", label: "Finding count" },
@@ -391,7 +366,7 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
                           </span>
                         </h3>
                       ) : null}
-                      <RefactoringTargetList
+                      <HealthWorkQueueList
                         targets={g.targets}
                         onSelect={(t) => setSelectedFile(t.file_path)}
                         onStatusChange={handleStatus}
@@ -495,9 +470,7 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
           findings={hotFunctionFindings}
           collapsible
           onSelect={(f) => setSelectedFile(f.file_path)}
-          symbolHrefFor={(f) =>
-            f.symbol_id ? adapter.symbolHref?.(f.symbol_id) : undefined
-          }
+          symbolHrefFor={(f) => (f.symbol_id ? adapter.symbolHref?.(f.symbol_id) : undefined)}
         />
       ) : null}
 

@@ -150,7 +150,7 @@
 
 ; Chained method call: obj.method1().method2(args)
 (method_invocation
-  object: (method_invocation)
+  object: (method_invocation) @call.receiver_call
   name: (identifier) @call.target
   arguments: (argument_list) @call.arguments
 ) @call.site

@@ -334,13 +334,25 @@ def _build_pr_directive(
         exclude_spec,
     )[:3]
 
-    # Coverage-backed run-list: the tests the per-test map proves execute the
-    # changed files (the positive complement of missing_tests). Read from the
-    # untrimmed analyzer payload; _trim_blast_lists passes guarding_tests
-    # through, but reading it here keeps the source explicit. Test node ids,
-    # not file paths, so they are not exclude-filtered as paths.
+    # Run-list: the tests that exercise the changed files (the positive
+    # complement of missing_tests). Read from the untrimmed analyzer payload;
+    # _trim_blast_lists passes guarding_tests through, but reading it here keeps
+    # the source explicit.
     guarding = pr_blast_radius.get("guarding_tests") or {}
     all_tests_to_run = list(guarding.get("tests_to_run", []))
+    # One word saying where the list came from, because the two sources carry
+    # different weight and an agent cannot tell them apart from the ids alone.
+    # "measured" is coverage-proven execution; "inferred" is a test file the
+    # import graph shows reaching the change, which over-claims and is a
+    # candidate list, not a proof. Kept as a sibling field rather than mixed
+    # into the ids so no caller can read one as the other.
+    tests_to_run_basis = guarding.get("basis") or "none"
+    # Only the inferred list is exclude-filtered. Its entries are repo file
+    # paths, so a user who excluded a tree must not be handed paths out of it;
+    # measured entries are test node ids ("path::name"), which are not paths and
+    # would not survive a path filter intact.
+    if tests_to_run_basis == "inferred":
+        all_tests_to_run = filter_path_list(all_tests_to_run, exclude_spec)
     tests_to_run = all_tests_to_run[:_TESTS_TO_RUN_LIMIT]
     if len(all_tests_to_run) > _TESTS_TO_RUN_LIMIT:
         collector.add(
@@ -348,11 +360,17 @@ def _build_pr_directive(
             f"({len(all_tests_to_run) - _TESTS_TO_RUN_LIMIT} dropped)",
             all_tests_to_run[_TESTS_TO_RUN_LIMIT:],
         )
-    tests_to_run_suffix = (
-        f" {len(all_tests_to_run)} coverage-backed test(s) guard the change - run these."
-        if all_tests_to_run
-        else ""
-    )
+    if not all_tests_to_run:
+        tests_to_run_suffix = ""
+    elif tests_to_run_basis == "measured":
+        tests_to_run_suffix = (
+            f" {len(all_tests_to_run)} coverage-backed test(s) guard the change - run these."
+        )
+    else:
+        tests_to_run_suffix = (
+            f" {len(all_tests_to_run)} test file(s) reach the change per the import graph "
+            f"(inferred, not coverage-proven) - run these first."
+        )
 
     gov_count = len(governance_risk)
     gov_suffix = f" {gov_count} governance risk(s) detected." if gov_count > 0 else ""
@@ -401,6 +419,7 @@ def _build_pr_directive(
         "missing_cochanges": missing_cochanges,
         "missing_tests": missing_tests,
         "tests_to_run": tests_to_run,
+        "tests_to_run_basis": tests_to_run_basis,
         "will_break_consumers": will_break_consumers,
         "missing_cross_repo_cochanges": missing_cross_repo_cochanges,
         "breaking_changes": breaking_changes,

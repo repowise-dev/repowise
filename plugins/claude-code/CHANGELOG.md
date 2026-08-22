@@ -2,6 +2,30 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.45.0
+
+### Changed
+- `/repowise:impacted-tests` and the `change-review` skill describe the map as
+  it now works: with no coverage ingested the candidates come from the call
+  graph, with the import graph filling in only where it is silent, and every
+  candidate carries the `via` marker saying which tier answered. Only
+  `via: coverage` proves a test executed the change (#1749, #1755, #1757).
+- `/repowise:init` and `/repowise:reindex` list the embedders the CLI actually
+  accepts - `gemini`, `openai`, `openrouter`, `ollama`, `edenai` - rather than
+  the three-name set they had drifted to, and name the keys that resolve them
+  (#705, #1820).
+- No hook or MCP tool surface change this cycle: `hooks.json` still mirrors
+  `claude_config.py` and every tool named in a command or skill is one the
+  server lists.
+
+## 0.44.0
+
+### Changed
+- Version bump to track the 0.44.0 release. No command, skill, hook or MCP tool
+  surface changed this cycle: the live `list_tools()` set is unchanged, no
+  `@click.option` moved on any documented command, and `hooks.json` still
+  mirrors `claude_config.py`.
+
 ## 0.43.0
 
 ### Changed

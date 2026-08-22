@@ -15,3 +15,7 @@ export * from "./refactoring-lede";
 export * from "./refactoring-drawer";
 export * from "./refactoring-settings-card";
 export * from "./refactoring-board";
+export * from "./priority-explanation";
+export * from "./validation-summary";
+export * from "../shared/provenance-path-list";
+export * from "../shared/pagination-controls";

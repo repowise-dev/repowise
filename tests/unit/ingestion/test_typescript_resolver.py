@@ -79,6 +79,46 @@ class TestExplicitRelativeExtensions:
         assert result == "data/example.ts"
 
 
+class TestDirectoryIndexProbing:
+    """A relative import to a directory must probe its index files.
+
+    The resolver already probed ``/index.ts`` and ``/index.js`` but missed the
+    two React index forms (``/index.tsx``, ``/index.jsx``) that the bare
+    extension list and the tsconfig path resolver both accept — so a
+    directory-index React component resolved to nothing and read as an
+    unreachable external dep.
+    """
+
+    @pytest.mark.parametrize(
+        "index_file",
+        [
+            "src/components/TodoList/index.ts",
+            "src/components/TodoList/index.tsx",
+            "src/components/TodoList/index.mts",
+            "src/components/TodoList/index.cts",
+            "src/components/TodoList/index.js",
+            "src/components/TodoList/index.jsx",
+        ],
+    )
+    def test_directory_index_resolves(self, tmp_path: Path, index_file: str) -> None:
+        ctx = _ctx(tmp_path, [index_file, "src/main.ts"])
+        result = resolve_ts_js_import("./components/TodoList", "src/main.ts", ctx)
+        assert result == index_file
+
+    def test_tsx_index_wins_over_ts_when_both_present(self, tmp_path: Path) -> None:
+        # ``/index.ts`` is probed before ``/index.tsx``; when both exist the
+        # first match wins, matching the bare-extension ordering.
+        ctx = _ctx(
+            tmp_path,
+            [
+                "src/components/TodoList/index.ts",
+                "src/components/TodoList/index.tsx",
+            ],
+        )
+        result = resolve_ts_js_import("./components/TodoList", "src/main.ts", ctx)
+        assert result == "src/components/TodoList/index.ts"
+
+
 class TestWorkspaceMap:
     def test_workspaces_array_form(self, tmp_path: Path) -> None:
         (tmp_path / "package.json").write_text(json.dumps({"workspaces": ["packages/*"]}))

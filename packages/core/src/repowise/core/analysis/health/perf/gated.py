@@ -170,16 +170,13 @@ def _lock_hits_for_function(
     callees = index.forward.get(a_sid)
     if not callees:
         return []
-    callees_by_name: dict[str, list[str]] = {}
-    for c in callees:
-        callees_by_name.setdefault(index.name.get(c, ""), []).append(c)
-
     hits: list[PerfHit] = []
     seen: set[str] = set()
     for target_name, call_line in fact.lock_call_targets:
         if target_name in seen:
             continue
-        for callee in callees_by_name.get(target_name, ()):
+        targets, basis = index.resolve_call_targets(a_sid, call_line, target_name)
+        for callee in targets:
             info = reach.get(callee)
             if info is None:
                 continue
@@ -196,6 +193,7 @@ def _lock_hits_for_function(
                     detail=kind,
                     func_start=fact.func_start,
                     path=(a_sid, *chain),
+                    resolution_basis=basis,
                 )
             )
             break
