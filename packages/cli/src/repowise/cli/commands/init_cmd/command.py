@@ -46,6 +46,7 @@ from repowise.cli.helpers import (
     run_async,
     save_config_partial,
     save_state,
+    warn,
 )
 from repowise.cli.platform import telemetry
 from repowise.cli.providers import resolve_embedder
@@ -338,8 +339,8 @@ def _run_generation_phase(
     # Warn when a local provider runs with default concurrency
     local_providers = ("ollama", "codex_cli", "claude_cli", "opencode")
     if provider.provider_name in local_providers and concurrency > 4:
-        console.print(
-            f"  [{WARN}]Warning:[/] {provider.provider_name} is a local provider "
+        warn(
+            f"  {provider.provider_name} is a local provider "
             f"running with concurrency={concurrency}. "
             f"If you see timeout errors, try [bold]--concurrency 1[/bold]."
         )
