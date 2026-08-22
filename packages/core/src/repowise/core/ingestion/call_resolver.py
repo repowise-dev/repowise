@@ -837,11 +837,7 @@ class CallResolver:
         for call in calls:
             if not call.caller_symbol_id:
                 # Module-level call — assign to synthetic __module__ symbol
-                receiver_call = getattr(call, "receiver_call", None)
-                module_call = replace(call, caller_symbol_id=f"{file_path}::__module__")
-                if receiver_call is not None:
-                    module_call.receiver_call = receiver_call  # type: ignore[attr-defined]
-                call = module_call
+                call = replace(call, caller_symbol_id=f"{file_path}::__module__")
 
             resolved = self._resolve_one(file_path, call)
             if resolved:
@@ -855,7 +851,7 @@ class CallResolver:
         assert caller_id is not None
 
         language = self._language_of(file_path) or ""
-        receiver_call = getattr(call, "receiver_call", None)
+        receiver_call = call.receiver_call
         if receiver_call is not None and language in self._return_type_chain_languages:
             handled, resolved = self._resolve_return_typed_chain(
                 file_path, call, caller_id, language
@@ -885,7 +881,7 @@ class CallResolver:
         behavior untouched.
         """
 
-        inner = getattr(call, "receiver_call", None)
+        inner = call.receiver_call
         assert inner is not None
         inner_call = CallSite(
             target_name=inner.target_name,

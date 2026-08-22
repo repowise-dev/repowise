@@ -1248,20 +1248,17 @@ class ASTParser:
                     caller_symbol_id=caller_id,
                     line=line,
                     argument_count=arg_count,
+                    receiver_call=receiver_call,
                 )
             )
-            if receiver_call is not None:
-                # CallSite remains open for orthogonal evidence payloads so
-                # contributor fields can compose at the dataclass boundary.
-                calls[-1].receiver_call = receiver_call  # type: ignore[attr-defined]
 
         deduplicated: dict[tuple[int, str, str | None], CallSite] = {}
         for call in calls:
             key = (call.line, call.target_name, call.receiver_name)
             existing = deduplicated.get(key)
             if existing is None or (
-                getattr(existing, "receiver_call", None) is None
-                and getattr(call, "receiver_call", None) is not None
+                existing.receiver_call is None
+                and call.receiver_call is not None
             ):
                 deduplicated[key] = call
         return list(deduplicated.values())

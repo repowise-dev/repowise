@@ -255,6 +255,7 @@ class CallSite:
     caller_symbol_id: str | None  # enclosing symbol ID (e.g. "src/app.py::main")
     line: int  # 1-indexed line number of the call
     argument_count: int | None  # number of arguments (None if unknown)
+    receiver_call: CallReceiver | None = None  # set only for a captured chained call
 
 
 HeritageKind = Literal["extends", "implements", "trait_impl", "mixin"]
