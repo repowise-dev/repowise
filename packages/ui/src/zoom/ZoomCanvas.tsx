@@ -45,10 +45,10 @@ export interface ZoomCanvasProps {
   /** Show a small live frame-stat overlay (drawn/culled/fps). Dev aid. */
   showStats?: boolean;
   /**
-   * Draw only relations carrying this verb, or every relation when unset.
-   * See `DrawOptions.relationVerb` for why this is one verb and not a set.
+   * Draw only relations whose verb is in this set, or every relation when
+   * unset. See `DrawOptions.relationVerbs` for why this is a set.
    */
-  relationVerb?: string | null;
+  relationVerbs?: ReadonlySet<string> | null;
   /**
    * Relations incident to a node, for the hover card's one-line summary. The
    * host already indexes these for its detail panel, so it passes the lookup in
@@ -89,7 +89,7 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
     onFocusChange,
     initialFocusId,
     showStats,
-    relationVerb = null,
+    relationVerbs = null,
     relationsByNode,
   },
   ref,
@@ -164,8 +164,8 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
   }, [scene]);
 
   useEffect(() => {
-    rendererRef.current?.setRelationVerb(relationVerb);
-  }, [relationVerb]);
+    rendererRef.current?.setRelationVerbs(relationVerbs);
+  }, [relationVerbs]);
 
   // One-shot: jump to the URL-provided focus node once the canvas has done its
   // initial fit (it needs a real viewport size before a node rect can be framed).

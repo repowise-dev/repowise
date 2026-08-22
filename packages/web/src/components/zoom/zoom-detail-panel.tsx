@@ -39,7 +39,7 @@ interface ZoomDetailPanelProps {
   /** Relations incident to this node, in either direction. */
   relations: ZoomRelation[];
   /** The verb the map is currently filtered to, or null for all of them. */
-  relationVerb: string | null;
+  relationVerbs: ReadonlySet<string> | null;
   onClose: () => void;
   onZoom: (id: string) => void;
 }
@@ -94,7 +94,7 @@ export function ZoomDetailPanel({
   node,
   repoId,
   relations,
-  relationVerb,
+  relationVerbs,
   onClose,
   onZoom,
 }: ZoomDetailPanelProps) {
@@ -112,7 +112,7 @@ export function ZoomDetailPanel({
   // "the 10 strongest" while two arrows are on screen.
   const summary = summarizeRelations(relations);
   const drawn = summarizeRelations(
-    relationVerb === null ? relations : relations.filter((r) => r.label === relationVerb),
+    relationVerbs === null ? relations : relations.filter((r) => relationVerbs.has(r.label)),
   );
   const cap = describeCap(drawn);
 

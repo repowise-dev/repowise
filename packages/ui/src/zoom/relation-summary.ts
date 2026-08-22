@@ -76,6 +76,25 @@ export function summarizeRelations(relations: readonly ZoomRelation[]): Relation
 }
 
 /**
+ * Add or remove one verb from the drawn set, in the map key's chip row.
+ *
+ * Null means "every verb draws", and emptying the set returns to it rather than
+ * to a canvas with no arrows: a filter whose natural resting state hides
+ * everything trains people not to touch it. That makes null the only
+ * representation of "unfiltered", so callers never have to treat a full set and
+ * null as the same thing.
+ */
+export function toggleVerb(
+  selected: ReadonlySet<string> | null,
+  verb: string,
+): ReadonlySet<string> | null {
+  const next = new Set(selected ?? []);
+  if (next.has(verb)) next.delete(verb);
+  else next.add(verb);
+  return next.size === 0 ? null : next;
+}
+
+/**
  * The summary as one readable line.
  *
  * On a live index 89% of boxes have a single verb across all their relations,

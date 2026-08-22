@@ -35,7 +35,7 @@ export function FilterSelect({
   );
 }
 
-/** Toggleable filter chip (Hotspots / Untested / Failing). */
+/** Toggleable filter chip (Hotspots / Untested / Failing, zoom-map verbs). */
 export function FilterChip({
   active,
   onClick,
@@ -49,6 +49,7 @@ export function FilterChip({
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={active}
       className={cn(
         "text-xs rounded-md px-2 py-1 border transition-colors",
         active

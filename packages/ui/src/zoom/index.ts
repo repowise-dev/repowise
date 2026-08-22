@@ -26,6 +26,7 @@ export {
   describeRelations,
   indexRelationsByNode,
   summarizeRelations,
+  toggleVerb,
 } from "./relation-summary";
 export type { RelationSummary, VerbCount } from "./relation-summary";
 
