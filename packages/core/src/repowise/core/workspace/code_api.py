@@ -63,8 +63,15 @@ _MANIFESTS: dict[str, str] = {
 #: Not implemented, but counted, so the coverage figure names what it misses.
 _UNSUPPORTED_MANIFESTS: dict[str, str] = {"go.mod": "go", "pom.xml": "maven"}
 
+#: Ecosystem tokens a resolver prefixes onto an external node id — a C#
+#: `using` that matches a PackageReference resolves to `external:nuget:<ns>`.
+_EXTERNAL_PREFIXES = ("nuget:", "pub:", "gem:")
+
 #: The bound ``external_systems._discover`` uses, so both see one manifest set.
 _MANIFEST_DEPTH = 3
+
+#: The language an entry-file-less ecosystem's surface is written in.
+_ECOSYSTEM_LANGUAGE = {"nuget": "csharp"}
 
 #: Kinds a consumer can import by name.
 _EXPORTABLE_KINDS = frozenset({"function", "method", "class", "interface", "struct", "enum"})
@@ -83,6 +90,10 @@ class PublishedPackage:
     entry_files: frozenset[str] | None = None
     #: ``__all__`` names defined elsewhere in the package.
     reexported: frozenset[str] = frozenset()
+    #: What an importing source actually writes. Not the same as ``name``:
+    #: a PyPI distribution ships a differently-named module, and Cargo
+    #: rewrites `-` to `_`.
+    import_names: frozenset[str] = frozenset()
 
 
 # ---------------------------------------------------------------------------
@@ -111,10 +122,19 @@ def _npm(data: dict[str, Any], root: str) -> tuple[str, frozenset[str]] | None:
     targets: set[str] = set()
 
     def add(value: Any) -> None:
-        if isinstance(value, str) and value.startswith("./"):
-            targets.add(f"{root}/{value[2:]}" if root else value[2:])
+        if isinstance(value, str):
+            # `exports` values are spelt `./x`; `main`/`module`/`types` are
+            # routinely bare. A URL or an `#imports` alias names no file.
+            if value.startswith(("/", "#")) or "://" in value:
+                return
+            rel = value[2:] if value.startswith("./") else value
+            if rel:
+                targets.add(f"{root}/{rel}" if root else rel)
         elif isinstance(value, dict):  # conditional exports: {"import": "./x.js"}
             for nested in value.values():
+                add(nested)
+        elif isinstance(value, list):  # fallback arrays: [{"import": "./a"}, "./b"]
+            for nested in value:
                 add(nested)
 
     add(data.get("exports"))
@@ -134,8 +154,7 @@ def _pypi(text: str, root: str) -> tuple[str, frozenset[str], frozenset[str]] | 
     project = data.get("project")
     name = project.get("name") if isinstance(project, dict) else None
     if not isinstance(name, str):
-        poetry = data.get("tool", {}).get("poetry", {})
-        name = poetry.get("name") if isinstance(poetry, dict) else None
+        name = _table(data, "tool", "poetry").get("name")
     if not isinstance(name, str) or not name:
         return None
     prefix = f"{root}/" if root else ""
@@ -149,22 +168,36 @@ def _pypi(text: str, root: str) -> tuple[str, frozenset[str], frozenset[str]] | 
     return name, frozenset(f"{prefix}{d}/__init__.py" for d in dirs), frozenset()
 
 
+def _table(data: Any, *keys: str) -> dict[str, Any]:
+    """Walk a chain of TOML tables, yielding {} the moment one is not a table."""
+    for key in keys:
+        if not isinstance(data, dict):
+            return {}
+        data = data.get(key, {})
+    return data if isinstance(data, dict) else {}
+
+
 def _pypi_package_dirs(data: dict[str, Any]) -> list[str]:
-    """Package directories the build backend declares, newest layouts first."""
-    dirs: list[str] = []
-    hatch = data.get("tool", {}).get("hatch", {})
-    wheel = hatch.get("build", {}).get("targets", {}).get("wheel", {}) if hatch else {}
-    dirs.extend(p for p in wheel.get("packages", []) if isinstance(p, str))
+    """Package directories the build backend declares, newest layouts first.
 
-    setuptools = data.get("tool", {}).get("setuptools", {})
-    dirs.extend(p.replace(".", "/") for p in setuptools.get("packages", []) if isinstance(p, str))
+    Every read is shape-checked: a hand-edited ``pyproject.toml`` must not be
+    able to crash extraction for the whole workspace, and setuptools' auto-
+    discovery spelling (``packages = {find = {...}}``) is a table, not a list.
+    """
 
-    for entry in data.get("tool", {}).get("poetry", {}).get("packages", []):
+    def strings(value: Any) -> list[str]:
+        return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+
+    dirs: list[str] = strings(_table(data, "tool", "hatch", "build", "targets", "wheel").get("packages"))
+    dirs += [
+        p.replace(".", "/") for p in strings(_table(data, "tool", "setuptools").get("packages"))
+    ]
+    for entry in _table(data, "tool", "poetry").get("packages") or []:
         include = entry.get("include") if isinstance(entry, dict) else None
         if isinstance(include, str):
             source = entry.get("from")
             dirs.append(f"{source}/{include}" if isinstance(source, str) else include)
-    return [d.strip("/") for d in dirs if d.strip("/")]
+    return [d.strip("/") for d in dirs if isinstance(d, str) and d.strip("/")]
 
 
 def _dunder_all(repo_path: Path, entry_files: frozenset[str]) -> frozenset[str]:
@@ -293,6 +326,7 @@ def find_published_packages(
                     root=root,
                     entry_files=entries,
                     reexported=reexported,
+                    import_names=_import_names(ecosystem, name, entries),
                 )
             )
 
@@ -314,6 +348,7 @@ def find_published_packages(
                 manifest=rel_manifest,
                 root=root,
                 entry_files=None,  # no entry file; the assembly's public types are the surface
+                import_names=frozenset({package_id}),
             )
         )
     return packages, counts
@@ -369,7 +404,9 @@ def _surface_symbols(
         and s.file_path.startswith(prefix)
     ]
     if package.entry_files is None:
-        return candidates
+        # A .csproj at the repo root gives prefix "", so without this every
+        # file in the repo — every language — would be an assembly symbol.
+        return [s for s in candidates if s.language == _ECOSYSTEM_LANGUAGE[package.ecosystem]]
 
     # An `__all__` entry names a symbol its entry file does not declare, so it
     # resolves by name across the package — and only when that name is unique.
@@ -436,6 +473,7 @@ def build_code_surface(
 
     # -- providers ---------------------------------------------------------
     by_name: dict[str, PublishedPackage] = {}
+    by_import: dict[str, PublishedPackage] = {}
     for package in published:
         index = workspace_index.get(package.repo)
         if index is None:
@@ -448,12 +486,18 @@ def build_code_surface(
             )
             continue
         by_name[package.name] = package
+        for import_name in package.import_names:
+            by_import.setdefault(import_name, package)
         rows = surface.by_repo.setdefault(package.repo, [])
         exported_here = surface.members.setdefault(package.name, set())
         seen: set[str] = set()
         for symbol in _surface_symbols(package, index, exclude):
             exported = _exported_name(symbol)
             if exported in seen:
+                # Two entry files exporting one name: which row survives
+                # would otherwise be decided by index row order.
+                stats = surface.stats.setdefault(package.repo, {})
+                stats["code_ambiguous_export"] = stats.get("code_ambiguous_export", 0) + 1
                 continue
             seen.add(exported)
             exported_here.add(exported)
@@ -490,7 +534,7 @@ def build_code_surface(
         stats = surface.stats.setdefault(alias, {})
         seen_pairs: set[tuple[str, str, str]] = set()
         for edge in index.external_import_edges():
-            package = _package_for(edge.external_name, by_name)
+            package = _package_for(edge.external_name, by_import)
             if package is None:
                 continue
             if package.repo == alias or exclude(edge.source_file):
@@ -527,22 +571,45 @@ def build_code_surface(
     return surface
 
 
-def _package_for(
-    external_name: str, by_name: dict[str, PublishedPackage]
-) -> PublishedPackage | None:
-    """Resolve ``external:<name>`` to a published package.
+def _import_names(ecosystem: str, name: str, entry_files: frozenset[str] | None) -> frozenset[str]:
+    """What an importing source writes for this package.
 
-    An import target carries the subpath it reached (``@scope/ui/lib/format``),
-    so the longest declared name that prefixes it wins — a shorter one would
-    match ``@scope/ui`` for an import of an unrelated ``@scope/ui-icons``.
+    Only npm's publish id and import specifier are the same string. A PyPI
+    distribution ships a module named by its build backend (``repowise-core``
+    ships ``repowise``), and Cargo rewrites ``-`` to ``_``.
     """
-    if external_name in by_name:
-        return by_name[external_name]
-    best: PublishedPackage | None = None
-    for name, package in by_name.items():
-        if external_name.startswith(f"{name}/") and (best is None or len(name) > len(best.name)):
-            best = package
-    return best
+    names = {name}
+    if ecosystem == "cargo":
+        names.add(name.replace("-", "_"))
+    elif ecosystem == "pypi" and entry_files:
+        names.update(f.rsplit("/", 2)[-2] for f in entry_files if "/" in f)
+    return frozenset(n for n in names if n)
+
+
+def _package_for(
+    external_name: str, by_import: dict[str, PublishedPackage]
+) -> PublishedPackage | None:
+    """Resolve an ``external:`` target to a published package.
+
+    The target carries whatever the importing source reached: a subpath
+    (``@scope/ui/lib/format``), a child namespace (``nuget:Contoso.Orders.Models``)
+    or a submodule (``mylib.sub``). The longest import name that prefixes it on a
+    separator wins — a bare prefix would match ``@scope/ui`` for an unrelated
+    ``@scope/ui-icons``.
+    """
+    for prefix in _EXTERNAL_PREFIXES:
+        if external_name.startswith(prefix):
+            external_name = external_name[len(prefix) :]
+            break
+    if external_name in by_import:
+        return by_import[external_name]
+    best: tuple[int, PublishedPackage] | None = None
+    for name, package in by_import.items():
+        if external_name.startswith((f"{name}/", f"{name}.")) and (
+            best is None or len(name) > best[0]
+        ):
+            best = (len(name), package)
+    return best[1] if best else None
 
 
 def _consumed_exports(imported: str, exported: set[str]) -> list[str]:

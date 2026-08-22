@@ -897,6 +897,15 @@ async def run_contract_extraction(
     if len(repo_paths) < 2:
         return ContractStore()
 
+    # Built once, workspace-wide: a code consumer only exists when some *other*
+    # repo publishes the package it imports, so neither half of it can be
+    # decided inside one repo's extraction.
+    code_surface = (
+        await asyncio.to_thread(build_code_surface, repo_paths, workspace_index, exclude)
+        if contract_config.detect_code_api
+        else CodeSurface()
+    )
+
     # Which repos can be carried forward, and which must be re-extracted.
     # Probing a repo's state costs a `git rev-parse` and a dirty check; the
     # alternative is trusting changed_repos, which is exactly the trust a stale
@@ -911,8 +920,13 @@ async def run_contract_extraction(
     # repo extracted under `detect_data: false`, or before a `service_bases`
     # entry existed, holds rows that answer a question no longer being asked —
     # and its HEAD is unchanged, so nothing else here would notice.
+    # The published-package set joins it because a code consumer depends on
+    # *another* repo's manifests: adding the repo that publishes what this one
+    # imports moves no HEAD here, so nothing else would notice.
     config_fp = hashlib.sha256(
-        json.dumps(contract_config.to_dict(), sort_keys=True).encode()
+        json.dumps(
+            [contract_config.to_dict(), sorted(code_surface.members)], sort_keys=True
+        ).encode()
     ).hexdigest()[:16]
 
     # A store written before contracts carried identity holds rows that cannot
@@ -955,15 +969,6 @@ async def run_contract_extraction(
     for alias in to_extract:
         if alias not in heads:
             heads[alias] = await asyncio.to_thread(get_head_commit, repo_paths[alias])
-
-    # Built once, workspace-wide: a code consumer only exists when some *other*
-    # repo publishes the package it imports, so neither half of it can be
-    # decided inside one repo's extraction.
-    code_surface = (
-        await asyncio.to_thread(build_code_surface, repo_paths, workspace_index, exclude)
-        if contract_config.detect_code_api
-        else CodeSurface()
-    )
 
     # Per-repo extraction. Returns the contracts plus the counters the
     # extractors filled in, which are the denominator half of any coverage

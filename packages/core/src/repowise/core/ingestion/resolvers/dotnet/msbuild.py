@@ -79,6 +79,19 @@ def _bool(value: str | None) -> bool:
     return (value or "").strip().lower() in ("true", "enable", "1")
 
 
+def _tristate(value: str | None) -> bool | None:
+    """None for anything that is not a literal boolean.
+
+    ``<IsPackable>$(PublishLibraries)</IsPackable>`` is the normal way to
+    centralise the flag; reading an unevaluated property as ``false`` would
+    record an unknown as an explicit no.
+    """
+    text = (value or "").strip().lower()
+    if text in ("true", "enable", "1"):
+        return True
+    return False if text in ("false", "disable", "0") else None
+
+
 def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
     """Parse a single .csproj file. Returns None on parse failure."""
     try:
@@ -102,7 +115,10 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
         elif tag == "PackageId" and elem.text:
             project.package_id = elem.text.strip()
         elif tag == "IsPackable" and elem.text:
-            project.is_packable = _bool(elem.text)
+            # Last literal wins; a conditional PropertyGroup is not evaluated.
+            packable = _tristate(elem.text)
+            if packable is not None:
+                project.is_packable = packable
         elif tag == "GeneratePackageOnBuild" and elem.text:
             project.generate_package_on_build = _bool(elem.text)
         elif tag == "ProjectReference":

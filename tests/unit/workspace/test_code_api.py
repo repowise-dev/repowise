@@ -84,13 +84,16 @@ async def _extract(root: Path, lib_source: str, monkeypatch) -> ContractStore:
     (app / ".repowise").mkdir(parents=True, exist_ok=True)
 
     lib_index = await make_repo_index(lib, _parse(lib), alias="lib")
-    # The consuming side is an `imports` edge to an unresolved external target,
-    # which is exactly what ingestion writes for a PackageReference.
+    # The `nuget:` prefix and the child namespace are what `resolve_csharp_import`
+    # actually writes for a `using` that matches a PackageReference — not the
+    # bare package id, which is why the join strips and walks dotted prefixes.
     app_index = await make_repo_index(
         app,
         {},
         alias="app",
-        external_edges=[("Program.cs", "external:Contoso.Orders", ["OrderService"])],
+        external_edges=[
+            ("Program.cs", "external:nuget:Contoso.Orders.Models", ["OrderService"])
+        ],
     )
     config = WorkspaceConfig(
         repos=[RepoEntry(path="lib", alias="lib"), RepoEntry(path="app", alias="app")],
@@ -296,6 +299,108 @@ class TestPublishability:
         packages, counts = self._packages(tmp_path)
         assert packages == {}
         assert counts["code_unsupported_ecosystem"] == 1
+
+
+class TestManifestSpellings:
+    """Shapes a real manifest uses that a happy-path reader silently loses."""
+
+    def _packages(self, repo: Path):
+        packages, counts = find_published_packages("r", repo)
+        return {p.name: p for p in packages}, counts
+
+    def test_a_bare_main_is_an_entry_point(self, tmp_path: Path):
+        # `npm init` writes `"main": "index.js"`. Only `exports` values need `./`.
+        (tmp_path / "package.json").write_text(
+            '{"name": "@acme/sdk", "main": "index.js"}', encoding="utf-8"
+        )
+        packages, _ = self._packages(tmp_path)
+        assert packages["@acme/sdk"].entry_files == frozenset({"index.js"})
+
+    def test_an_exports_fallback_array_is_walked(self, tmp_path: Path):
+        (tmp_path / "package.json").write_text(
+            '{"name": "p", "exports": {".": [{"import": "./esm.js"}, "./cjs.js"]}}',
+            encoding="utf-8",
+        )
+        packages, _ = self._packages(tmp_path)
+        assert packages["p"].entry_files == frozenset({"esm.js", "cjs.js"})
+
+    def test_setuptools_auto_discovery_is_a_table_not_a_package_list(
+        self, tmp_path: Path
+    ):
+        # `packages = {find = {where = ["src"]}}` iterated as a list yields the
+        # key "find", which both invents a directory and suppresses the guess.
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "mylib"\n[tool.setuptools.packages.find]\nwhere = ["src"]\n',
+            encoding="utf-8",
+        )
+        packages, _ = self._packages(tmp_path)
+        assert packages["mylib"].entry_files == frozenset(
+            {"src/mylib/__init__.py", "mylib/__init__.py"}
+        )
+
+    def test_a_malformed_pyproject_cannot_abort_the_workspace(self, tmp_path: Path):
+        # `tool` as a scalar is legal TOML; an unguarded .get() chain would
+        # raise and take every other contract type down with it.
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "a"\ntool = "oops"\n', encoding="utf-8"
+        )
+        assert set(self._packages(tmp_path)[0]) == {"a"}
+
+    def test_an_unevaluated_msbuild_property_is_unknown_not_no(self, tmp_path: Path):
+        # <IsPackable>$(PublishLibraries)</IsPackable> is the normal way to
+        # centralise the flag; reading it as false would drop a real library.
+        (tmp_path / "Lib.csproj").write_text(
+            '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+            "<PackageId>Contoso.Lib</PackageId>"
+            "<IsPackable>$(PublishLibraries)</IsPackable>"
+            "</PropertyGroup></Project>",
+            encoding="utf-8",
+        )
+        assert set(self._packages(tmp_path)[0]) == {"Contoso.Lib"}
+
+
+class TestTheImportJoin:
+    """What an importing source writes is not always the manifest's name."""
+
+    @pytest.mark.parametrize(
+        ("ecosystem", "manifest_name", "external_name"),
+        [
+            ("npm", "@scope/ui", "@scope/ui/lib/format"),
+            ("nuget", "Contoso.Orders", "nuget:Contoso.Orders.Models"),
+            ("cargo", "tokio-util", "tokio_util"),
+            ("pypi", "repowise-core", "repowise.workspace"),
+        ],
+        ids=["npm-subpath", "nuget-prefixed-namespace", "cargo-underscore", "pypi-module"],
+    )
+    def test_a_reachable_spelling_resolves_to_its_package(
+        self, ecosystem: str, manifest_name: str, external_name: str
+    ):
+        from repowise.core.workspace.code_api import (
+            PublishedPackage,
+            _import_names,
+            _package_for,
+        )
+
+        entries = frozenset({"src/repowise/__init__.py"}) if ecosystem == "pypi" else None
+        package = PublishedPackage(
+            name=manifest_name,
+            ecosystem=ecosystem,
+            repo="lib",
+            manifest="m",
+            root="",
+            entry_files=entries,
+            import_names=_import_names(ecosystem, manifest_name, entries),
+        )
+        by_import = {n: package for n in package.import_names}
+        assert _package_for(external_name, by_import) is package
+
+    def test_a_sibling_name_sharing_a_prefix_does_not_match(self):
+        from repowise.core.workspace.code_api import PublishedPackage, _package_for
+
+        ui = PublishedPackage(
+            name="@scope/ui", ecosystem="npm", repo="lib", manifest="m", root=""
+        )
+        assert _package_for("@scope/ui-icons", {"@scope/ui": ui}) is None
 
 
 class TestSurfaceScope:

@@ -335,7 +335,10 @@ class _GraphBuilder:
         for e in edges:
             endpoints.add(e.source)
             endpoints.add(e.target)
-            if e.structural and e.kind != "package":
+            # A `package` edge is a manifest dependency, which says nothing
+            # about whether a contract was consumed — unless a `code` contract
+            # link built it, which `contract_refs` is what distinguishes.
+            if e.structural and (e.kind != "package" or e.contract_refs):
                 contract_targets.add(e.target)
                 contract_sources.add(e.source)
 
