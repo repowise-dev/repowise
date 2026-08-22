@@ -65,6 +65,14 @@ def keep_projected_edge(
     return file_ext(src_file) == file_ext(tgt_file)
 
 
+# SQLite refuses an expression tree deeper than 1000 nodes, and the predicate
+# below contributes one branch per path. Measured on fastapi: a candidate set of
+# a few hundred files raised OperationalError, and because the only caller sits
+# under ``contextlib.suppress``, expansion would have returned nothing at all
+# rather than failing loudly. Batch well under the limit.
+PATHS_PER_QUERY = 200
+
+
 def touches_files(column, paths):
     """SQLAlchemy predicate: *column* is one of *paths*, or a symbol declared in one.
 
@@ -73,6 +81,9 @@ def touches_files(column, paths):
     matters: an ordinary path is full of ``_``, which is a LIKE wildcard.
     The prefix can still over-match a longer path, so callers re-check the
     projected file in Python.
+
+    Pass at most :data:`PATHS_PER_QUERY` paths; :func:`batched_paths` splits a
+    larger set.
     """
     ordered = sorted(paths)
     if not ordered:
@@ -81,3 +92,10 @@ def touches_files(column, paths):
         column.in_(ordered),
         *[column.startswith(f"{p}::", autoescape=True) for p in ordered],
     )
+
+
+def batched_paths(paths):
+    """*paths* in :data:`PATHS_PER_QUERY`-sized, deterministically ordered chunks."""
+    ordered = sorted(paths)
+    for i in range(0, len(ordered), PATHS_PER_QUERY):
+        yield ordered[i : i + PATHS_PER_QUERY]

@@ -59,6 +59,7 @@ from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.core.test_paths import is_test_path
 from repowise.server.mcp_server._graph_files import (
+    batched_paths,
     is_symbol_node,
     keep_projected_edge,
     node_to_file,
@@ -119,6 +120,11 @@ _GRAPH_EXPAND_MAX_NEW = 3
 # repo where every file has a handful of edges excludes nothing.
 _HUB_DEGREE_FLOOR = 50
 _HUB_DEGREE_PERCENTILE = 0.99
+
+# How many of the strongest-linked page-bearing neighbours get scored. Well
+# above _GRAPH_EXPAND_MAX_NEW so the hub filter still has a distribution to take
+# a percentile of, and far below the candidate set the projection now produces.
+_DEGREE_SAMPLE = 25
 
 # PageRank bias is multiplicative and capped. We don't want a marginally
 # more central file to outrank a strong text match — only to break ties.
@@ -761,28 +767,29 @@ async def _neighbor_degrees(session: Any, nodes: set[str]) -> dict[str, int]:
     """
     if not nodes:
         return {}
-    res = await session.execute(
-        select(
-            GraphEdge.source_node_id,
-            GraphEdge.target_node_id,
-            GraphEdge.edge_type,
-            GraphEdge.confidence,
-        ).where(
-            or_(
-                touches_files(GraphEdge.source_node_id, nodes),
-                touches_files(GraphEdge.target_node_id, nodes),
-            ),
-            GraphEdge.edge_type.notin_(CONTAINMENT_EDGE_TYPES),
-        )
-    )
     degree: dict[str, int] = {}
-    for src, tgt, etype, conf in res.all():
-        src_file, tgt_file = _projected_pair(src, tgt, etype, conf)
-        if src_file is None or tgt_file is None:
-            continue
-        for side in (src_file, tgt_file):
-            if side in nodes:
-                degree[side] = degree.get(side, 0) + 1
+    for batch in batched_paths(nodes):
+        res = await session.execute(
+            select(
+                GraphEdge.source_node_id,
+                GraphEdge.target_node_id,
+                GraphEdge.edge_type,
+                GraphEdge.confidence,
+            ).where(
+                or_(
+                    touches_files(GraphEdge.source_node_id, batch),
+                    touches_files(GraphEdge.target_node_id, batch),
+                ),
+                GraphEdge.edge_type.notin_(CONTAINMENT_EDGE_TYPES),
+            )
+        )
+        for src, tgt, etype, conf in res.all():
+            src_file, tgt_file = _projected_pair(src, tgt, etype, conf)
+            if src_file is None or tgt_file is None:
+                continue
+            for side in (src_file, tgt_file):
+                if side in nodes:
+                    degree[side] = degree.get(side, 0) + 1
     return degree
 
 
@@ -883,15 +890,26 @@ async def expand_via_graph(hits: list[dict], ctx: Any, question: str = "") -> li
         )
         page_rows = list(page_res.all())
 
+        # Rank on the seed-link count first and keep only the head of it. Making
+        # the call layer visible multiplied the candidate set, and both queries
+        # below scale with it: on fastapi the degree query alone reached 2.2s
+        # per answer over the full set. Only _GRAPH_EXPAND_MAX_NEW candidates
+        # can ever be returned, so scoring far more than that buys nothing —
+        # and the hub cutoff is a percentile, which needs a sample rather than
+        # the population.
+        page_rows.sort(key=lambda row: -links.get(row[0], 0))
+        page_rows = page_rows[:_DEGREE_SAMPLE]
+        sampled = {row[0] for row in page_rows}
+
         # Also load PageRank for the neighbors so we can rank them.
         pr_res = await session.execute(
             select(GraphNode.node_id, GraphNode.pagerank).where(
-                GraphNode.node_id.in_(neighbors),
+                GraphNode.node_id.in_(sorted(sampled)),
                 GraphNode.node_type == "file",
             )
         )
         pr_by_path = {row[0]: float(row[1] or 0.0) for row in pr_res.all()}
-        degree = await _neighbor_degrees(session, neighbors)
+        degree = await _neighbor_degrees(session, sampled)
 
     if not page_rows:
         return hits
