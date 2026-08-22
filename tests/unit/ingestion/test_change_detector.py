@@ -236,6 +236,18 @@ class TestGetAffectedPages:
         assert len(result.regenerate) <= 3
         # Some go to decay_only
         assert len(result.decay_only) > 0
+        # Check that skipped pages are counted in stale_due_to_budget
+        assert result.stale_due_to_budget > 0
+        assert result.stale_due_to_budget == 10 - len(result.regenerate)
+
+    def test_stale_due_to_budget_is_zero_when_under_budget(self, tmp_path: Path) -> None:
+        """When under cascade budget, stale_due_to_budget should be 0."""
+        d = self._detector(tmp_path)
+        g = nx.DiGraph()
+        g.add_node("file0.py")
+        diff = self._simple_file_diff("file0.py")
+        result = d.get_affected_pages([diff], graph=g, cascade_budget=50)
+        assert result.stale_due_to_budget == 0
 
     def test_all_lists_are_disjoint(self, tmp_path: Path) -> None:
         """regenerate, rename_patch, and decay_only should be disjoint."""
