@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -67,6 +68,11 @@ class ExternalImport:
     source_file: str
     external_name: str  # the target with its ``external:`` prefix stripped
     imported_names: tuple[str, ...]
+
+
+#: What separates a qualifier from the name it qualifies, across the languages
+#: whose handler expressions reach :meth:`RepoIndex.symbol_named`.
+_QUALIFIER_RE = re.compile(r"::|\.")
 
 
 class RepoIndex:
@@ -206,16 +212,24 @@ class RepoIndex:
     def symbol_named(self, expression: str) -> IndexedSymbol | None:
         """The one symbol *expression* names in this repo, or None.
 
-        *expression* may be qualified (``OrderHandlers.GetOrder``); the qualifier
-        settles a member name that is ambiguous on its own, which is the common
-        case for the handler shape this exists for (``Endpoint.HandleAsync``).
-        A name that still resolves to more than one symbol is refused rather
-        than guessed: which one the caller meant would otherwise be decided by
-        index row order.
+        *expression* may be qualified (``OrderHandlers.GetOrder``,
+        ``handlers::ping``); the qualifier settles a member name that is
+        ambiguous on its own, which is the common case for the handler shape
+        this exists for (``Endpoint.HandleAsync``). A name that still resolves to
+        more than one symbol is refused rather than guessed: which one the caller
+        meant would otherwise be decided by index row order.
+
+        ``::`` separates a qualifier too. Without it a Rust handler written
+        ``handlers::ping`` is looked up whole, matches nothing, and the caller
+        falls back to a line lookup that binds the route to its router builder.
         """
-        found = self._by_name.get(expression.rsplit(".", 1)[-1], ())
-        if len(found) > 1 and "." in expression:
-            found = [s for s in found if s.qualified_name.endswith(expression)]
+        parts = _QUALIFIER_RE.split(expression)
+        found = self._by_name.get(parts[-1], ())
+        if len(found) > 1 and len(parts) > 1:
+            tail = parts[-2:]
+            found = [
+                s for s in found if _QUALIFIER_RE.split(s.qualified_name)[-2:] == tail
+            ]
         return found[0] if len(found) == 1 else None
 
     def external_import_edges(self) -> list[ExternalImport]:

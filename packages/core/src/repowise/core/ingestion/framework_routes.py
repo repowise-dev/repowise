@@ -55,6 +55,14 @@ def _opt(value: str | None) -> str | None:
     return value or None
 
 
+def _next_top_level_comma(args: str, *, hash_comments: bool = False) -> int:
+    """Index just past the first comma separating *args*, or -1."""
+    for i, c, depth in scan_code(args, hash_comments=hash_comments):
+        if c == "," and depth == 0:
+            return i + 1
+    return -1
+
+
 def _groups(pattern: re.Pattern[str], content: str) -> Iterator[GroupMatch]:
     """Every ``var``/``parent``/``prefix`` match of *pattern* in *content*."""
     for m in pattern.finditer(content):
@@ -156,32 +164,64 @@ def express_routes(content: str) -> Iterator[RouteMatch]:
 
 
 # ---------------------------------------------------------------------------
-# Shared scanning helper
+# Shared scanning
 # ---------------------------------------------------------------------------
 
 
-def match_paren(text: str, open_idx: int, quotes: str = "\"'`") -> int:
-    """Index of the ``)`` closing the ``(`` at *open_idx*, or -1.
+def scan_code(
+    text: str, start: int = 0, *, quotes: str = "\"'`", hash_comments: bool = False
+) -> Iterator[tuple[int, str, int]]:
+    """``(index, char, paren_depth)`` over *text*, skipping strings and comments.
 
-    *quotes* is what opens a string literal, so a paren inside one is ignored.
-    Rust must pass ``'"'``: its ``'`` is a lifetime, not a quote.
+    Route calls run across lines and carry commented-out arguments, so a scanner
+    that reads a comment as code is worse than one that reads a line: an
+    apostrophe in ``// won't work`` opens a string that never closes.
+
+    *quotes* is what opens a string literal — Rust must pass ``'"'``, because its
+    ``'`` is a lifetime. *hash_comments* adds PHP's ``#``, excluding the ``#[``
+    of an attribute.
     """
     depth = 0
-    i = open_idx
-    n = len(text)
+    i, n = start, len(text)
     while i < n:
         c = text[i]
         if c in quotes:
             i += 1
             while i < n and text[i] != c:
                 i += 2 if text[i] == "\\" else 1
-        elif c == "(":
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            i = text.find("\n", i)
+            if i == -1:
+                return
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            end = text.find("*/", i + 2)
+            if end == -1:
+                return
+            i = end + 2
+            continue
+        if hash_comments and c == "#" and text[i + 1 : i + 2] != "[":
+            i = text.find("\n", i)
+            if i == -1:
+                return
+            continue
+        if c == "(":
             depth += 1
         elif c == ")":
             depth -= 1
-            if depth == 0:
-                return i
+        yield i, c, depth
         i += 1
+
+
+def match_paren(
+    text: str, open_idx: int, *, quotes: str = "\"'`", hash_comments: bool = False
+) -> int:
+    """Index of the ``)`` closing the ``(`` at *open_idx*, or -1."""
+    for i, c, depth in scan_code(text, open_idx, quotes=quotes, hash_comments=hash_comments):
+        if c == ")" and depth == 0:
+            return i
     return -1
 
 
@@ -192,14 +232,15 @@ def match_paren(text: str, open_idx: int, quotes: str = "\"'`") -> int:
 # `HandleFunc` precedes `Handle` so the longer name wins the alternation.
 _GO_VERBS = "GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD|Any|HandleFunc|Handle"
 
-# r.GET("/users", GetUsers). The receiver may be empty on an inline chain. A
-# wrapped handler (`api.RequireSession(h)`) is admitted and flagged, but `func`
-# never is: it is the only way Go spells an inline closure, and without the
-# exclusion `r.GET("/x", func(c *gin.Context) {...})` yields the handler `func`.
+# r.GET("/users", GetUsers). The receiver may be empty on an inline chain. The
+# handler may be wrapped (`api.RequireSession(h)`) or a composite literal
+# (`healthHandler{}`). The two keywords that can open one are excluded: they name
+# no symbol, and `r.GET("/x", func(c *gin.Context) {...})` otherwise yields the
+# handler `func`.
 _GO_ROUTE_RE = re.compile(
     rf"(?P<receiver>\w*)\s*\.\s*(?P<verb>{_GO_VERBS})\s*(?P<paren>\()"
     r"""\s*(?P<q>["'])(?P<path>[^"']*)(?P=q)"""
-    r"(?:\s*,\s*(?P<handler>(?!func\b)[A-Za-z_][\w.]*)\s*(?P<after>[,)(]))?"
+    r"(?:\s*,\s*(?P<handler>(?!(?:func|struct)\b)[A-Za-z_][\w.]*)\s*(?P<after>[,)({]))?"
 )
 
 # api := r.Group("/v1") — groups nest, so the parent is captured for transitive
@@ -266,12 +307,16 @@ def laravel_routes(content: str) -> Iterator[RouteMatch]:
     also carries is dropped, since the graph consumer links to the class's file.
     """
     for m in _LARAVEL_CALL_RE.finditer(content):
-        close = match_paren(content, m.start("paren"))
+        close = match_paren(content, m.start("paren"), hash_comments=True)
         if close == -1:
             continue
         args = content[m.end() : close]
         path = _LARAVEL_PATH_RE.match(args)
-        handler = _LARAVEL_HANDLER_RE.search(args, path.end() if path else 0)
+        # Only past the first top-level comma: the path expression can itself
+        # contain `X::class` or a quoted 'word@word', neither of which is the
+        # handler (`Route::get(trans('Contact@us'), [PageController::class, ...])`).
+        second = _next_top_level_comma(args, hash_comments=True)
+        handler = _LARAVEL_HANDLER_RE.search(args, second) if second != -1 else None
         yield RouteMatch(
             verb=m.group("verb").upper(),
             path=path.group("path") or None if path else None,
@@ -316,7 +361,15 @@ def axum_routes(content: str) -> Iterator[RouteMatch]:
         if close == -1:
             continue  # truncated call; scanning to EOF would credit it every verb
         region = content[head.end() : close]
-        for m in _AXUM_METHOD_RE.finditer(region):
+        # Only verbs the method router itself chains. A verb nested in another
+        # call's arguments is not one: `get(h).with_state(state.options())`
+        # would otherwise fabricate an OPTIONS route.
+        for i, _c, depth in scan_code(region, quotes='"'):
+            if depth != 0:
+                continue
+            m = _AXUM_METHOD_RE.match(region, i)
+            if m is None:
+                continue
             yield RouteMatch(
                 verb=m.group("verb").upper(),
                 path=head.group("path"),

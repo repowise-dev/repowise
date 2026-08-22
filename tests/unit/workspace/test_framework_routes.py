@@ -32,6 +32,7 @@ from repowise.core.ingestion.models import FileInfo, Symbol
 from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.workspace.contracts import bind_symbol_ids
+from repowise.core.workspace.extractors.http.mounts import group_prefixes
 from repowise.core.workspace.extractors.http_extractor import HttpExtractor
 
 from ._repo_index import make_repo_index
@@ -382,9 +383,14 @@ pub fn app() -> Router {
 }
 """
 
-HANDLERS_RS = """\
+# Split across two files so "links every chained handler" is a claim a single
+# resolved handler cannot satisfy.
+COLLECTION_RS = """\
 pub async fn list_orders() {}
 pub async fn create_order() {}
+"""
+
+ITEM_RS = """\
 pub async fn show_order() {}
 pub async fn remove_order() {}
 """
@@ -401,11 +407,13 @@ class TestGoRecognition:
             ("ANY", "/catchall", "r", "CatchAll"),
         ]
 
-    def test_a_closure_is_not_a_handler(self) -> None:
-        # `func` is the only spelling of an inline closure, so excluding that one
-        # keyword is what stops the token `func` being read as a handler name.
-        (route,) = list(go_routes('r.GET("/x", func(c *gin.Context) {})'))
-        assert route.handler is None
+    def test_a_closure_or_anonymous_struct_is_not_a_handler(self) -> None:
+        # Excluding the two keywords that can open one is what stops the tokens
+        # `func` and `struct` being read as handler names.
+        assert [r.handler for r in go_routes('r.GET("/x", func(c *gin.Context) {})')] == [
+            None
+        ]
+        assert [r.handler for r in go_routes('mux.Handle("/y", struct{}{})')] == [None]
 
     def test_a_wrapped_handler_is_kept_but_flagged(self) -> None:
         # Middleware wrappers are the dominant real shape in mattermost/grafana.
@@ -466,9 +474,10 @@ class TestLaravelRecognition:
         (route,) = list(laravel_routes("Route::put($uri, [EditController::class, 'e']);"))
         assert (route.path, route.handler) == (None, "EditController")
 
-    def test_resource_is_yielded_but_is_not_an_http_method(self) -> None:
-        verbs = {r.verb for r in laravel_routes(ROUTES_PHP)}
-        assert "RESOURCE" in verbs and not {"RESOURCE"} & HTTP_METHODS
+    def test_resource_reaches_the_graph_consumer_with_its_controller(self) -> None:
+        # It stands for a set of routes, so only the graph consumer can use it.
+        (resource,) = [r for r in laravel_routes(ROUTES_PHP) if r.verb == "RESOURCE"]
+        assert resource.handler == "PhotoController"
 
 
 class TestAxumRecognition:
@@ -576,23 +585,28 @@ class TestLaravelConsumers:
 class TestAxumConsumers:
     def _write(self, tmp_path: Path) -> None:
         (tmp_path / "main.rs").write_text(MAIN_RS, encoding="utf-8")
-        (tmp_path / "handlers.rs").write_text(HANDLERS_RS, encoding="utf-8")
+        (tmp_path / "collection.rs").write_text(COLLECTION_RS, encoding="utf-8")
+        (tmp_path / "item.rs").write_text(ITEM_RS, encoding="utf-8")
 
     def test_graph_links_every_chained_handler(self, tmp_path: Path) -> None:
         self._write(tmp_path)
         graph = _graph_edges(tmp_path, _parse_repo(tmp_path, "*.rs", "rust"), ["axum"])
-        assert graph.has_edge("main.rs", "handlers.rs")
+        # The second verb of each chain was invisible to the regex this replaced,
+        # so item.rs is the edge that proves chaining is read.
+        assert graph.has_edge("main.rs", "collection.rs")
+        assert graph.has_edge("main.rs", "item.rs")
 
-    def test_contracts_cover_every_chained_verb(self, tmp_path: Path) -> None:
+    def test_contracts_are_exactly_the_chained_verbs(self, tmp_path: Path) -> None:
         self._write(tmp_path)
-        ids = set(_providers(tmp_path))
-        assert {
+        # Equality, not containment: a nested call inside the method-router
+        # argument used to fabricate extra verbs on the same path.
+        assert set(_providers(tmp_path)) == {
             "http::GET::/orders",
             "http::POST::/orders",
             "http::GET::/orders/{param}",
             "http::DELETE::/orders/{param}",
             "http::GET::/ping",
-        } <= ids
+        }
 
     async def test_a_route_binds_to_its_handler(self, tmp_path: Path) -> None:
         self._write(tmp_path)
@@ -602,11 +616,158 @@ class TestAxumConsumers:
         index = await _index_of_repo(tmp_path, "*.rs", "rust")
         try:
             expected = {
-                s.name: s.symbol_id for s in index.symbols_for_file("handlers.rs")
+                s.name: s.symbol_id
+                for f in ("collection.rs", "item.rs")
+                for s in index.symbols_for_file(f)
             }
-            assert "list_orders" in expected
+            assert {"list_orders", "remove_order"} <= set(expected)
             bind_symbol_ids(contracts, index)
         finally:
             await index.close()
         bound = {c.contract_id: c.symbol_id for c in contracts}
         assert bound["http::GET::/orders"] == expected["list_orders"]
+        # The second verb of a chain binds to its own handler, not the first's.
+        assert bound["http::DELETE::/orders/{param}"] == expected["remove_order"]
+
+
+# ===========================================================================
+# Shapes the W5b review found: everything below failed before it was fixed.
+# ===========================================================================
+
+
+class TestCommentsInsideARouteCall:
+    def test_an_apostrophe_in_a_php_comment_does_not_eat_the_route(self) -> None:
+        # `// won't work` opened a string that never closed, so the paren scan
+        # failed and the whole route — contract and edge — was dropped.
+        (route,) = list(
+            laravel_routes(
+                "Route::post(\n    '/x',\n    // won't work\n"
+                "    [XController::class, 'store']\n);"
+            )
+        )
+        assert (route.verb, route.path, route.handler) == ("POST", "/x", "XController")
+
+    def test_a_hash_comment_is_a_comment_but_an_attribute_is_not(self) -> None:
+        (route,) = list(
+            laravel_routes("Route::get(\n  '/y',  # it's fine\n  [C::class, 'i']\n);")
+        )
+        assert route.handler == "C"
+        # PHP 8 `#[...]` is an attribute; treating it as a comment would swallow
+        # the argument list.
+        (attr,) = list(laravel_routes("Route::get('/z', #[Pure] [C::class, 'i']);"))
+        assert attr.handler == "C"
+
+    def test_an_unbalanced_paren_in_a_rust_comment_does_not_eat_the_route(self) -> None:
+        routes = list(
+            axum_routes(
+                '.route(\n    "/orders",\n    // see issue (123\n'
+                "    get(list_orders),\n)\n"
+            )
+        )
+        assert [(r.verb, r.path, r.handler) for r in routes] == [
+            ("GET", "/orders", "list_orders")
+        ]
+
+    def test_a_stray_close_paren_in_a_comment_does_not_truncate_the_arguments(
+        self,
+    ) -> None:
+        (route,) = list(
+            laravel_routes(
+                "Route::post(\n    '/webhook',  // closes with )\n"
+                "    [HookController::class, 'store']\n);"
+            )
+        )
+        assert route.handler == "HookController"
+
+
+class TestNestedCallsDoNotInventRoutes:
+    def test_a_verb_inside_another_calls_arguments_is_not_a_method_router(
+        self,
+    ) -> None:
+        # `state.options()` used to fabricate an OPTIONS provider on this path,
+        # and `cache.head(id)` a HEAD one bound to a symbol named `id`.
+        routes = list(
+            axum_routes('.route("/x", get(list_items).with_state(state.options()))')
+        )
+        assert [(r.verb, r.handler) for r in routes] == [("GET", "list_items")]
+
+    def test_a_closure_body_naming_a_verb_yields_one_route(self) -> None:
+        routes = list(
+            axum_routes('.route("/cfg", get(move || async move { settings.get(&key) }))')
+        )
+        assert [(r.verb, r.handler) for r in routes] == [("GET", None)]
+
+    def test_chaining_still_reaches_every_top_level_verb(self) -> None:
+        # The depth rule must not cost the thing the depth scan was added for.
+        routes = list(axum_routes('.route("/x", get(a).post(b).delete(c))'))
+        assert [(r.verb, r.handler) for r in routes] == [
+            ("GET", "a"),
+            ("POST", "b"),
+            ("DELETE", "c"),
+        ]
+
+
+class TestTheHandlerIsNotReadFromTheFirstArgument:
+    def test_a_class_constant_in_the_path_expression_is_not_a_handler(self) -> None:
+        (route,) = list(
+            laravel_routes("Route::get(Legacy::class, [OrderController::class, 'show']);")
+        )
+        assert route.handler == "OrderController"
+
+    def test_an_at_sign_inside_a_translated_path_is_not_a_legacy_handler(self) -> None:
+        (route,) = list(
+            laravel_routes("Route::get(trans('Contact@us'), [PageController::class, 's']);")
+        )
+        assert route.handler == "PageController"
+
+    def test_a_call_with_one_argument_names_no_handler(self) -> None:
+        (route,) = list(laravel_routes("Route::get('/only');"))
+        assert route.handler is None
+
+
+class TestGoHandlerShapes:
+    def test_a_composite_literal_handler_is_kept(self) -> None:
+        # `mux.Handle("/x", healthHandler{})` is a net/http idiom; requiring
+        # `,` or `)` after the handler dropped its edge.
+        (route,) = list(go_routes('mux.Handle("/x", healthHandler{})'))
+        assert (route.handler, route.handler_call) == ("healthHandler", False)
+
+    def test_an_index_expression_is_not_a_handler(self) -> None:
+        # `mlog.Any("selected_field", lookup.Submission["k"])` is a logging call,
+        # not a route; the matcher this replaced captured it.
+        assert not [r.handler for r in go_routes('r.GET("/x", handlers[0])') if r.handler]
+
+    def test_an_empty_path_under_a_group_is_still_that_groups_route(self) -> None:
+        src = 'api := r.Group("/api")\napi.GET("", Index)\n'
+        (route,) = list(go_routes(src))
+        assert route.path == ""
+        assert group_prefixes(go_groups(src)) == {"api": "/api"}
+
+
+class TestQualifiedHandlerBinding:
+    async def test_a_rust_path_qualified_handler_binds(self, tmp_path: Path) -> None:
+        # `symbol_named` split on `.` only, so `handlers::ping` matched nothing
+        # and the route silently fell back to binding its router builder.
+        (tmp_path / "main.rs").write_text(
+            'use axum::{routing::get, Router};\n\n'
+            'pub fn app() -> Router {\n'
+            '    Router::new().route("/ping", get(handlers::ping))\n}\n',
+            encoding="utf-8",
+        )
+        (tmp_path / "handlers.rs").write_text("pub async fn ping() {}\n", encoding="utf-8")
+        contracts = [
+            c for c in HttpExtractor().extract(tmp_path, "api") if c.role == "provider"
+        ]
+        index = await _index_of_repo(tmp_path, "*.rs", "rust")
+        try:
+            expected = {s.name: s.symbol_id for s in index.symbols_for_file("handlers.rs")}
+            assert "ping" in expected
+            builder = {s.name for s in index.symbols_for_file("main.rs")}
+            bind_symbol_ids(contracts, index)
+        finally:
+            await index.close()
+        bound = {c.contract_id: c.symbol_id for c in contracts}
+        # The fallback this used to take is a real symbol, so the assertion below
+        # discriminates rather than merely finding something.
+        assert "app" in builder
+        assert bound["http::GET::/ping"] == expected["ping"]

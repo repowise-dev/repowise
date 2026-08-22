@@ -37,8 +37,6 @@ class GoDialect:
         prefixes = group_prefixes(go_groups(ctx.content))
         out: list[Contract] = []
         for route in go_routes(ctx.content):
-            if not route.path:
-                continue
             if route.verb in _VERBLESS:
                 method = "*"
             elif route.verb in HTTP_METHODS:
@@ -48,7 +46,12 @@ class GoDialect:
             c = build_provider_contract(
                 ctx,
                 method=method,
-                path_raw=compose_prefix(prefixes.get(route.receiver or "", ""), route.path),
+                # An empty path under a group is still that group's route, so
+                # the emptiness rule is `build_provider_contract`'s, after
+                # stitching — the same order ASP.NET's MapGroup uses.
+                path_raw=compose_prefix(
+                    prefixes.get(route.receiver or "", ""), route.path or ""
+                ),
                 framework="go",
                 line=line_at(ctx.content, route.offset),
                 # A wrapped handler names the middleware, not the route's own
