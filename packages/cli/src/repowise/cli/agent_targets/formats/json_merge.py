@@ -221,6 +221,270 @@ def write_json_config(path: Path, data: dict) -> FileAction:
     return action
 
 
+# ---------------------------------------------------------------------------
+# Surgical (minimal-edit) JSON merge
+#
+# ``write_json_config`` renders the whole document from a dict, which is the
+# right call for config we own. It is the wrong call for a tracked, repo-shared
+# file such as the root ``.mcp.json`` that other tools also write into: the
+# file is parsed to a dict and re-serialised end to end, so pre-existing,
+# unrelated server entries come back reformatted (issue #1603). The function
+# below performs a *minimal edit*: only the bytes of the entry we own are
+# touched, everything else in the file stays byte-identical.
+# ---------------------------------------------------------------------------
+
+
+def _skip_ws(text: str, i: int, end: int) -> int:
+    while i < end and text[i] in " \t\r\n":
+        i += 1
+    return i
+
+
+def _find_object_member(
+    text: str, obj_start: int, obj_end: int, key_target: str
+) -> tuple[int, int, int, int] | None:
+    """Locate a ``"key": value`` member inside the object spanning *text*.
+
+    *obj_start* points at the ``{`` and *obj_end* just past its ``}``. Returns
+    ``(key_start, key_end, value_start, value_end)`` for the member whose key
+    equals *key_target*, or ``None`` when the key is not present. Strict JSON
+    only — this is only ever called after :func:`load_json_object` has already
+    validated the document, so the scan is free to be lax about errors.
+    """
+    decoder = json.JSONDecoder()
+    i = obj_start + 1
+    while True:
+        i = _skip_ws(text, i, obj_end)
+        if i >= obj_end or text[i] == "}":
+            return None
+        if text[i] == ",":
+            i += 1
+            continue
+        key_start = i
+        try:
+            key, kend = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            return None
+        i = _skip_ws(text, kend, obj_end)
+        if i >= obj_end or text[i] != ":":
+            return None
+        i = _skip_ws(text, i + 1, obj_end)
+        try:
+            _, vend = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            return None
+        if key == key_target:
+            return key_start, kend, i, vend
+        i = _skip_ws(text, vend, obj_end)
+
+
+def _container_indent(text: str, obj_start: int, obj_end: int) -> str:
+    """Return the whitespace prefix indenting the object's members.
+
+    Derived from the whitespace preceding the matching closing brace, so a
+    member inserted into the object is indented to sit with its siblings no
+    matter the file's formatting. Falls back to ``"  "`` for one-line objects.
+    """
+    i = obj_end - 1
+    j = i
+    while j > obj_start and text[j] in " \t\r\n":
+        j -= 1
+    if j != i:
+        _, after_newline = text[j:obj_end].rsplit("\n", 1)
+        if after_newline.strip() == "":
+            return after_newline
+    return "  "
+
+
+def _render_indented(value_text: str, base_indent: str) -> str:
+    """Re-indent a ``json.dumps(..., indent=2)`` block so its lines sit at
+    *base_indent* relative to the opening brace.
+
+    ``json.dumps`` emits ``{``, then keys indented by two spaces each level,
+    then a closing ``}`` at column 0 — all relative to the opening brace. To
+    embed that block mid-document so the keys sit at *base_indent* and the
+    closing brace at *close_indent*, every line after the first gets that
+    amount of leading whitespace prepended.
+    """
+    lines = value_text.split("\n")
+    if len(lines) <= 1:
+        return value_text
+    return lines[0] + "\n" + "\n".join(base_indent + line for line in lines[1:])
+
+
+def _render_value_block(value: dict, member_indent: str) -> str:
+    """Render a ``{ ... }`` value block whose members sit at *member_indent*.
+
+    Produces ``{``, then each key at *member_indent* (two spaces past the
+    member's own indent), then a closing ``}`` at *member_indent* — matching
+    how the rest of the document lays out nested objects.
+    """
+    return _render_indented(json.dumps(value, indent=2), member_indent)
+
+
+def _render_member(member: str, value: dict, member_indent: str) -> str:
+    """Render a ``"key": { ... }`` member at *member_indent*.
+
+    Deterministic — the same *member*/*value*/*member_indent* always yields the
+    same bytes — which is what makes the upsert idempotent: replacing an
+    existing value re-produces exactly what an insert produced, so a re-run
+    reports ``UNCHANGED`` instead of churning the file.
+    """
+    return f"{member_indent}{json.dumps(member)}: {_render_value_block(value, member_indent)}"
+
+
+def _insert_member(text: str, obj_start: int, obj_end: int, member_snippet: str) -> str | None:
+    """Return *text* with *member_snippet* (a ``"key": value`` snippet)
+    inserted into the object spanning *obj_start:obj_end*.
+
+    Preserves every byte of the original object apart from the inserted member.
+    Returns ``None`` when the object shape cannot be handled safely, so the
+    caller leaves the file alone rather than risk corrupting it.
+    """
+    body = _skip_ws(text, obj_start + 1, obj_end)
+    if body >= obj_end:
+        return None
+    if text[body] == "}":
+        # Empty object ``{}`` → ``{ "key": value }``, closing brace indented
+        # to match the container's members.
+        return (
+            text[:body]
+            + "\n"
+            + member_snippet
+            + "\n"
+            + _container_indent(text, obj_start, obj_end)
+            + text[body:]
+        )
+    # Non-empty: walk to the end of the last member's value, then insert after
+    # it, adding a comma separator unless a trailing comma is already present.
+    decoder = json.JSONDecoder()
+    i = obj_start + 1
+    last_value_end: int | None = None
+    trailing_comma = False
+    while True:
+        i = _skip_ws(text, i, obj_end)
+        if i >= obj_end or text[i] == "}":
+            break
+        if text[i] == ",":
+            i += 1
+            continue
+        try:
+            _, kend = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            return None
+        i = _skip_ws(text, kend, obj_end)
+        if i >= obj_end or text[i] != ":":
+            return None
+        i = _skip_ws(text, i + 1, obj_end)
+        try:
+            _, vend = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            return None
+        last_value_end = vend
+        i = _skip_ws(text, vend, obj_end)
+        trailing_comma = i < obj_end and text[i] == ","
+        if trailing_comma:
+            i += 1
+    if last_value_end is None:
+        return None
+    insert_at = _skip_ws(text, last_value_end, obj_end)
+    sep = "" if trailing_comma else ","
+    # Append the separator immediately after the last value, then the new
+    # member on its own line, then reuse the original whitespace that preceded
+    # the closing brace so the brace keeps its existing indent.
+    return (
+        text[:last_value_end]
+        + sep
+        + "\n"
+        + member_snippet
+        + text[last_value_end:insert_at]
+        + text[insert_at:]
+    )
+
+
+def merge_json_object_member(
+    config_path: Path,
+    container_key: str,
+    member: str,
+    new_value: dict,
+) -> FileAction:
+    """Surgically upsert one ``member`` into the ``container_key`` object of a
+    strict-JSON file, preserving every byte outside that member.
+
+    This is the minimal-edit writer for tracked, repo-shared files. Unlike
+    :func:`write_json_config`, which re-renders the whole document from a dict
+    (reformatting unrelated content on every run), this touches only the
+    ``container_key.member`` value and its surrounding separator. Other servers
+    a user configured, and the file's own formatting, are left byte-for-byte
+    identical (issue #1603).
+
+    Returns the :class:`FileAction` performed. Raises ``click.ClickException``
+    (via :func:`load_json_object`) when the file exists but is not strict
+    JSON, so JSONC/JSON5 files are left untouched. When ``container_key`` is
+    absent it is created holding just the new member; when the file itself is
+    absent it is created with only ``container_key``.
+    """
+    if not config_path.exists():
+        return write_json_config(config_path, {container_key: {member: new_value}})
+
+    original = config_path.read_text(encoding="utf-8")
+    load_json_object(config_path)  # validate; raises on non-strict JSON
+
+    root_start = _skip_ws(original, 0, len(original))
+    if root_start >= len(original) or original[root_start] != "{":
+        return FileAction.KEPT
+
+    span = _find_object_member(original, root_start, len(original), container_key)
+
+    if span is not None:
+        _, _, cval_start, cval_end = span
+        if original[cval_start] != "{":
+            # container_key is present but not an object; leave the file alone
+            # rather than guessing what a rewrite would mean.
+            return FileAction.KEPT
+        inner = _find_object_member(original, cval_start, cval_end, member)
+        if inner is not None:
+            _, _, vstart, vend = inner
+            # Preserve user-added keys on the existing entry (e.g. an ``env``
+            # block) while generated keys take the new values. Parse the stored
+            # entry and shallow-merge the generated keys over it, so a user's
+            # BYOK env survives re-registration (mirrors merge_server_entries,
+            # issue #307). Then re-indent to the container's member indent and
+            # re-render, which is byte-identical to what an insert produces.
+            existing_entry = json.loads(original[vstart:vend])
+            merged_entry = dict(existing_entry)
+            merged_entry.update(new_value)
+            member_indent = _container_indent(original, cval_start, cval_end) + "  "
+            rendered = _render_member(member, merged_entry, member_indent)
+            _, value_with_indent = rendered.split(": ", 1)
+            edited = original[:vstart] + value_with_indent + original[vend:]
+        else:
+            member_indent = _container_indent(original, cval_start, cval_end) + "  "
+            rendered_member = _render_member(member, new_value, member_indent)
+            inserted = _insert_member(original, cval_start, cval_end, rendered_member)
+            if inserted is None:
+                return FileAction.KEPT
+            edited = inserted
+    else:
+        # container_key is absent: create it holding just our member. The
+        # container's closing brace sits at the root member indent, and its
+        # (single) member at one level deeper, matching the document's layout.
+        member_indent = _container_indent(original, root_start, len(original)) + "  "
+        rendered_container = (
+            f"{member_indent}{json.dumps(container_key)}: "
+            f"{_render_value_block({member: new_value}, member_indent)}"
+        )
+        inserted = _insert_member(original, root_start, len(original), rendered_container)
+        if inserted is None:
+            return FileAction.KEPT
+        edited = inserted
+
+    if edited == original:
+        return FileAction.UNCHANGED
+    atomic_write_text(config_path, edited)
+    return FileAction.UPDATED
+
+
 def merge_server_entries(servers: dict, new_entry: dict) -> dict:
     """Deep-merge *new_entry* server definitions into *servers* in place.
 

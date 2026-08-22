@@ -1621,6 +1621,123 @@ def test_write_json_config_compares_the_bytes_it_would_land(tmp_path: Path) -> N
     assert path.read_bytes() == settled
 
 
+# ---------------------------------------------------------------------------
+# merge_json_object_member — minimal-edit upsert (issue #1603)
+# ---------------------------------------------------------------------------
+
+
+def test_merge_member_preserves_unrelated_entries_byte_identical(tmp_path: Path) -> None:
+    """The core #1603 regression: unrelated servers must not be reformatted.
+
+    The old writer re-serialised the whole ``.mcp.json`` from a dict, so a
+    pre-existing entry whose formatting ``json.dumps(indent=2)`` does not
+    reproduce (e.g. compact ``["-e", "VAR"]`` args) came back expanded one
+    element per line. The surgical writer touches only the entry it owns.
+    """
+    config = tmp_path / ".mcp.json"
+    original = (
+        '{\n'
+        '  "mcpServers": {\n'
+        '    "sonarqube": {\n'
+        '      "command": "sonar",\n'
+        '      "args": ["-e", "SONARQUBE_TOKEN"]\n'
+        '    }\n'
+        '  }\n'
+        '}\n'
+    )
+    config.write_text(original, encoding="utf-8")
+
+    json_merge.merge_json_object_member(
+        config, "mcpServers", "repowise", {"command": "repowise", "args": ["mcp"]}
+    )
+
+    # The sonarqube block is byte-for-byte what it was.
+    assert (
+        '"sonarqube": {\n'
+        '      "command": "sonar",\n'
+        '      "args": ["-e", "SONARQUBE_TOKEN"]\n'
+        "    }" in config.read_text(encoding="utf-8")
+    )
+    # And the whole file is still one valid JSON document.
+    saved = json.loads(config.read_text(encoding="utf-8"))
+    assert saved["mcpServers"]["sonarqube"]["args"] == ["-e", "SONARQUBE_TOKEN"]
+    assert "repowise" in saved["mcpServers"]
+
+
+def test_merge_member_reports_unchanged_on_rerun(tmp_path: Path) -> None:
+    """The minimal edit is idempotent: re-running writes nothing."""
+    config = tmp_path / ".mcp.json"
+    config.write_text(
+        '{\n  "mcpServers": {\n    "other": {"command": "x"}\n  }\n}\n',
+        encoding="utf-8",
+    )
+    new_entry = {"command": "repowise", "args": ["mcp"]}
+
+    assert json_merge.merge_json_object_member(
+        config, "mcpServers", "repowise", new_entry
+    ) is FileAction.UPDATED
+    settled = config.read_bytes()
+    assert json_merge.merge_json_object_member(
+        config, "mcpServers", "repowise", new_entry
+    ) is FileAction.UNCHANGED
+    assert config.read_bytes() == settled
+
+
+def test_merge_member_preserves_user_env_on_existing_entry(tmp_path: Path) -> None:
+    """User-added keys on the repowise entry survive (mirrors #307)."""
+    config = tmp_path / ".mcp.json"
+    config.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "repowise": {
+                        "command": "old",
+                        "args": ["stale"],
+                        "env": {"DEEPSEEK_API_KEY": "dk-secret"},
+                    }
+                }
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    json_merge.merge_json_object_member(
+        config, "mcpServers", "repowise", {"command": "repowise", "args": ["mcp"]}
+    )
+
+    repowise = json.loads(config.read_text(encoding="utf-8"))["mcpServers"]["repowise"]
+    assert repowise["env"] == {"DEEPSEEK_API_KEY": "dk-secret"}
+    assert repowise["command"] == "repowise"
+
+
+def test_merge_member_creates_container_when_key_absent(tmp_path: Path) -> None:
+    """A missing ``mcpServers`` container is created holding our member."""
+    config = tmp_path / ".mcp.json"
+    config.write_text('{\n  "other": 1\n}\n', encoding="utf-8")
+
+    json_merge.merge_json_object_member(
+        config, "mcpServers", "repowise", {"command": "repowise"}
+    )
+
+    saved = json.loads(config.read_text(encoding="utf-8"))
+    assert saved["other"] == 1
+    assert saved["mcpServers"]["repowise"]["command"] == "repowise"
+
+
+def test_merge_member_creates_missing_file(tmp_path: Path) -> None:
+    """A missing file is created with just the container and member."""
+    config = tmp_path / ".mcp.json"
+
+    assert json_merge.merge_json_object_member(
+        config, "mcpServers", "repowise", {"command": "repowise"}
+    ) is FileAction.CREATED
+
+    saved = json.loads(config.read_text(encoding="utf-8"))
+    assert saved["mcpServers"]["repowise"]["command"] == "repowise"
+
+
 def test_codex_reinstall_reports_unchanged_and_leaves_config_alone(tmp_path: Path) -> None:
     """The ``.codex/config.toml`` non-idempotency, closed.
 
