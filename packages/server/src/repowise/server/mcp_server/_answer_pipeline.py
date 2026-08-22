@@ -121,9 +121,8 @@ _GRAPH_EXPAND_MAX_NEW = 3
 _HUB_DEGREE_FLOOR = 50
 _HUB_DEGREE_PERCENTILE = 0.99
 
-# How many of the strongest-linked page-bearing neighbours get scored. Well
-# above _GRAPH_EXPAND_MAX_NEW so the hub filter still has a distribution to take
-# a percentile of, and far below the candidate set the projection now produces.
+# How many of the strongest-linked page-bearing neighbours get scored — enough
+# for the hub percentile to have a distribution, far below the candidate set.
 _DEGREE_SAMPLE = 25
 
 # PageRank bias is multiplicative and capped. We don't want a marginally
@@ -736,11 +735,10 @@ def _projected_pair(
 ) -> tuple[str | None, str | None]:
     """An edge's two endpoints as file paths, or ``(None, None)`` to drop it.
 
-    The symbol layer needs its guards applied after projection; the file layer
-    is already file-to-file and keeps today's behaviour untouched. That
-    asymmetry is deliberate: the guards refuse cross-extension pairs, and a
-    ``co_changes`` edge between a module and its own docs is a legitimate
-    "read this too" that expansion has always served.
+    Only the symbol layer gets the guards; the file layer is already
+    file-to-file and keeps today's behaviour. The asymmetry is deliberate — the
+    guards refuse cross-extension pairs, and a ``co_changes`` edge between a
+    module and its docs is a "read this too" expansion has always served.
     """
     src = src or ""
     tgt = tgt or ""
@@ -755,15 +753,13 @@ def _projected_pair(
 async def _neighbor_degrees(session: Any, nodes: set[str]) -> dict[str, int]:
     """File-level graph degree (in + out) for each file path in *nodes*.
 
-    Counted over the same edges the expansion walk traverses, and projected the
-    same way: a grouped count on the raw node id would have counted only the
-    file layer, so a file reachable mostly by calls read as unconnected and the
-    p99 hub cutoff was calibrated on an imports-only distribution.
+    Counted over the same edges the walk traverses and projected the same way: a
+    grouped count on the raw node id sees only the file layer, so a file reached
+    mostly by calls read as unconnected and the p99 hub cutoff was calibrated on
+    an imports-only distribution.
 
-    Containment stays excluded. Its endpoints project onto the declaring file
-    itself, so counting it would inflate a file's degree by the number of
-    symbols it declares and make a symbol-rich file read as a hub on its own
-    size.
+    Containment stays excluded — its endpoints project onto the declaring file,
+    so counting it makes a symbol-rich file a hub on its own size.
     """
     if not nodes:
         return {}
@@ -838,13 +834,12 @@ async def expand_via_graph(hits: list[dict], ctx: Any, question: str = "") -> li
         # moves with yours" is a genuine read-this-too signal, and expansion
         # surfaces what it adds neutrally as ``[graph-expanded]`` rather than
         # as an import claim. Containment edges are excluded because they can
-        # never contribute: both their endpoints describe the same file, so a
-        # projected containment edge is always a self-loop.
+        # never contribute: both endpoints describe the same file, so a projected
+        # containment edge is always a self-loop.
         #
-        # Both directions in one query. It matches the symbol layer as well as
-        # the file layer: ``calls`` and its six siblings join ``path::Name``
-        # nodes, so an equality test against a seed path could never match one
-        # and the entire call graph was invisible here.
+        # Both directions in one query, matching the symbol layer as well as the
+        # file layer: ``calls`` and its siblings join ``path::Name`` nodes, so an
+        # equality test against a seed path matched none of them.
         seed_set = set(seed_paths)
         res = await session.execute(
             select(
@@ -861,9 +856,8 @@ async def expand_via_graph(hits: list[dict], ctx: Any, question: str = "") -> li
             )
         )
 
-        # ``links`` counts the distinct edges tying each neighbour to the seed
-        # set. That is the ranking signal the projection above buys: before it,
-        # only imports were visible and almost every neighbour scored 1.
+        # ``links`` counts the edges tying each neighbour to the seed set — the
+        # ranking signal the projection buys, since imports alone scored ~1 each.
         neighbors: set[str] = set()
         links: dict[str, int] = {}
         for src, tgt, etype, conf in res.all():
@@ -890,13 +884,9 @@ async def expand_via_graph(hits: list[dict], ctx: Any, question: str = "") -> li
         )
         page_rows = list(page_res.all())
 
-        # Rank on the seed-link count first and keep only the head of it. Making
-        # the call layer visible multiplied the candidate set, and both queries
-        # below scale with it: on fastapi the degree query alone reached 2.2s
-        # per answer over the full set. Only _GRAPH_EXPAND_MAX_NEW candidates
-        # can ever be returned, so scoring far more than that buys nothing —
-        # and the hub cutoff is a percentile, which needs a sample rather than
-        # the population.
+        # Score only the head of the link ranking: both queries below scale with
+        # the candidate set, which the call layer multiplied (2.2s per answer on
+        # fastapi over the full set), and only three candidates can be returned.
         page_rows.sort(key=lambda row: -links.get(row[0], 0))
         page_rows = page_rows[:_DEGREE_SAMPLE]
         sampled = {row[0] for row in page_rows}
@@ -945,22 +935,14 @@ async def expand_via_graph(hits: list[dict], ctx: Any, question: str = "") -> li
             }
         )
 
-    # A test calls the file it exercises far more often than any collaborator
-    # does, so link count alone ranks a repo's tests above its implementation.
-    # ``demote_noise_hits`` runs downstream and would reorder them, but only
-    # after they had spent all _GRAPH_EXPAND_MAX_NEW slots — the implementation
-    # file it should have picked never enters the list. Same rule, applied where
-    # the slots are handed out.
+    # A test calls what it exercises more often than any collaborator does, so
+    # link count alone ranks tests first. ``demote_noise_hits`` reorders them
+    # downstream, but only after they have spent every slot.
     test_focused = bool(_TEST_QUERY_RE.search(question))
 
-    # Rank by how strongly the neighbour is tied to THIS seed, PageRank only as
-    # the tiebreak. Ranking on PageRank alone answers "what is central in the
-    # repo" when the question asked "what is next to this file", so the same few
-    # central modules were returned whatever the seed was — the hub cutoff above
-    # only removes the extreme tail of that, it does not change the ordering.
-    # Link count is the seed-specific signal, and it only became usable once the
-    # projection above made the call layer visible: on imports alone almost
-    # every neighbour scored 1.
+    # Rank on the tie to THIS seed, PageRank only as tiebreak. PageRank alone
+    # answers "what is central in the repo" for a question about what sits next
+    # to one file, and returned the same modules whatever the seed was.
     candidates.sort(
         key=lambda c: (
             not test_focused and is_test_path(c["target_path"]),

@@ -8,29 +8,23 @@ every drop recoverable, and (b) a skeleton-stripping stage for the
 ``include=["skeleton"]`` blocks that did not exist when the original was
 written.
 
-The MCP host caps the size of a tool result. Measured on Claude Code
-2026-07-11: a result whose stringified form exceeds ``MAX_MCP_OUTPUT_TOKENS``
-(default **25000 tokens**) is REJECTED with an isError
-(``MCPContentTooLargeError`` — "response (N tokens) exceeds maximum allowed
-tokens (25000)"), not silently truncated and not spilled to a file. That
-isError matters twice over: the agent loses the answer AND — per the Phase 1
-session-survival doctrine — one isError early in a session teaches it to
-abandon the server entirely. So staying under the host cap is not a nicety.
+The MCP host caps the size of a tool result. An over-cap result is **spilled to
+a sidecar file** the agent must Read back, not rejected: it comes back worded as
+an error but carries no ``isError``. (The older claim here — rejection with an
+``MCPContentTooLargeError`` — came from a docs lookup, and that string appears
+in no host output.) The cap is counted in tokens; the spill message reports
+characters.
 
-Our default budget (``TOKEN_BUDGET`` = 8000) sits comfortably under the
-default host cap, so the common case is unchanged. The risk is the inverse of
-the one long assumed here: a user who *lowers* ``MAX_MCP_OUTPUT_TOKENS`` below
-our budget would start tripping the reject path. :func:`effective_char_budget`
-therefore reads the host cap at call time and clamps our ceiling under it.
-(The earlier "~10k token" ceiling in this docstring was a guess; the measured
-number is 25000, and the failure mode is rejection, not file spill.)
+Observed bounds: the largest MCP result that did NOT spill was 47,276 chars,
+the smallest that DID was 60,718 — consistent with a 25000-token cap at the
+~2.0-2.4 chars/token dense JSON really costs. ``CHAR_BUDGET`` (32,000) is about
+half that line. The residual risk is a user who *lowers*
+``MAX_MCP_OUTPUT_TOKENS``, which :func:`effective_char_budget` clamps for.
 
 The estimator is intentionally dependency-free: 4 chars/token is the
-widely-quoted average for English + code on BPE tokenizers and is within
-~20% of tiktoken for typical wiki content. Dense code can tokenize finer than
-4 chars/token, so the host may count MORE tokens than we estimate — the
-safety fraction below absorbs that gap plus the JSON envelope and ``_meta``
-the host counts on top of our payload.
+widely-quoted average for English + code on BPE tokenizers, and it undercounts
+the compact JSON we emit by roughly 1.7x. ``HOST_CAP_BUDGET_FRACTION`` absorbs
+that gap plus the JSON envelope and ``_meta`` the host counts on top.
 """
 
 from __future__ import annotations
@@ -48,14 +42,14 @@ TOKEN_BUDGET = 8000
 CHARS_PER_TOKEN = 4
 CHAR_BUDGET = TOKEN_BUDGET * CHARS_PER_TOKEN
 
-# Claude Code's MAX_MCP_OUTPUT_TOKENS default (measured 2026-07-11). A result
-# over this is rejected with an isError, so our ceiling must stay under it.
+# Claude Code's MAX_MCP_OUTPUT_TOKENS default. A result over this is spilled to
+# a sidecar file the agent must Read back, so our ceiling stays under it.
 HOST_MCP_TOKEN_CAP_DEFAULT = 25000
 
 # Fraction of the host cap we allow ourselves. The gap absorbs (a) estimator
-# error — our 4-chars/token figure can undercount real tokens on dense code by
-# up to ~30% — and (b) the JSON envelope + _meta the host tokenizes on top of
-# our payload. 0.6 keeps even an undercounted response clear of the reject line.
+# error — 4 chars/token undercounts compact JSON by roughly 1.7x — and (b) the
+# JSON envelope + _meta the host tokenizes on top of our payload. 0.6 keeps even
+# an undercounted response clear of the spill line.
 HOST_CAP_BUDGET_FRACTION = 0.6
 
 
@@ -81,8 +75,8 @@ def effective_char_budget(configured: int = CHAR_BUDGET) -> int:
     """``configured`` ceiling, lowered under the live host cap when that is tighter.
 
     Default host cap (25000) leaves our 8000-token budget untouched; a narrowed
-    ``MAX_MCP_OUTPUT_TOKENS`` pulls us down with it so we never trip the host's
-    reject-with-isError path (one isError = server abandonment, Phase 1).
+    ``MAX_MCP_OUTPUT_TOKENS`` pulls us down with it so a response can never
+    reach the host's spill-to-file path and cost the agent a Read.
     """
     host_char_ceiling = int(host_token_cap() * HOST_CAP_BUDGET_FRACTION) * CHARS_PER_TOKEN
     return min(configured, host_char_ceiling)
@@ -161,7 +155,7 @@ def truncate_to_budget(
 
     ``char_budget`` defaults to :func:`effective_char_budget` — our configured
     ceiling, clamped under the live MCP host cap so the response can never trip
-    the host's reject-with-isError path. Pass an explicit value to override
+    the host's spill-to-file path. Pass an explicit value to override
     (tests do; production callers should not).
 
     Strategy (applied in order, stopping as soon as the budget is met):
