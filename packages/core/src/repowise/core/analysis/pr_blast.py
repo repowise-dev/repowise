@@ -17,7 +17,8 @@ from __future__ import annotations
 import json
 import math
 import os
-from collections import defaultdict
+from collections import Counter, defaultdict
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from sqlalchemy import select, text
@@ -25,6 +26,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.ingestion.models import NON_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.models import GitMetadata, GraphNode
+
+
+def rank_tests_by_reach(by_file: Mapping[str, Iterable[str]]) -> list[str]:
+    """Test ids ordered by how many changed files each one reaches.
+
+    Callers cap this list and tell the agent to run the head of it first, so a
+    flat alphabetical sort hands over the head of the alphabet rather than the
+    tests that cover most of the change. Ties keep alphabetical order, which
+    leaves a single-file change ordered exactly as before.
+    """
+    reach = Counter(test_id for tests in by_file.values() for test_id in tests)
+    return sorted(reach, key=lambda t: (-reach[t], t))
 
 
 class PRBlastRadiusAnalyzer:
@@ -409,7 +422,7 @@ class PRBlastRadiusAnalyzer:
         return {
             "map_present": True,
             "basis": "measured",
-            "tests_to_run": sorted(all_ids),
+            "tests_to_run": rank_tests_by_reach(by_file),
             "by_file": by_file,
         }
 
@@ -431,11 +444,10 @@ class PRBlastRadiusAnalyzer:
         if not reaching:
             return empty
         by_file = {path: sorted(tests) for path, tests in reaching.items() if tests}
-        all_tests = sorted({t for tests in by_file.values() for t in tests})
         return {
             "map_present": empty["map_present"],
             "basis": "inferred",
-            "tests_to_run": all_tests,
+            "tests_to_run": rank_tests_by_reach(by_file),
             "by_file": by_file,
         }
 

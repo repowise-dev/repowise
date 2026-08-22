@@ -156,6 +156,67 @@ async def test_get_risk_pr_directive_surfaces_coverage_backed_tests_to_run(setup
 
 
 @pytest.mark.asyncio
+async def test_get_risk_tests_to_run_ranks_by_files_reached(setup_mcp, session):
+    """The test covering both changed files leads, despite sorting last."""
+    from repowise.core.analysis.health.coverage import TestCoverage
+    from repowise.core.persistence.crud import save_test_coverage
+    from repowise.server.mcp_server import get_risk
+
+    def _cov(test_id: str, path: str) -> TestCoverage:
+        return TestCoverage(
+            test_id=test_id,
+            file_path=path,
+            covered_lines=[1, 2],
+            source_format="coverage.py",
+            test_file=test_id.split("::")[0],
+        )
+
+    await save_test_coverage(
+        session,
+        "repo1",
+        [
+            # Sorts last alphabetically, reaches both changed files.
+            _cov("tests/test_zeta.py::test_both", "src/auth/service.py"),
+            _cov("tests/test_zeta.py::test_both", "src/auth/token.py"),
+            # Sorts first alphabetically, reaches one.
+            _cov("tests/test_alpha.py::test_one", "src/auth/service.py"),
+        ],
+        source_format="coverage.py",
+    )
+    await session.flush()
+
+    result = await get_risk(
+        ["src/auth/service.py"],
+        changed_files=["src/auth/service.py", "src/auth/token.py"],
+    )
+
+    assert result["directive"]["tests_to_run"] == [
+        "tests/test_zeta.py::test_both",
+        "tests/test_alpha.py::test_one",
+    ]
+
+
+class TestRankTestsByReach:
+    def test_more_files_reached_wins_over_alphabetical(self) -> None:
+        from repowise.core.analysis.pr_blast import rank_tests_by_reach
+
+        ranked = rank_tests_by_reach({"a.py": ["t_z", "t_both"], "b.py": ["t_a", "t_both"]})
+        assert ranked == ["t_both", "t_a", "t_z"]
+
+    def test_single_file_keeps_alphabetical_order(self) -> None:
+        # Every test ties at one file reached, so the pre-existing ordering
+        # of a single-file change is unchanged.
+        from repowise.core.analysis.pr_blast import rank_tests_by_reach
+
+        assert rank_tests_by_reach({"a.py": ["t_c", "t_a", "t_b"]}) == ["t_a", "t_b", "t_c"]
+
+    def test_empty_mapping_is_empty(self) -> None:
+        from repowise.core.analysis.pr_blast import rank_tests_by_reach
+
+        assert rank_tests_by_reach({}) == []
+
+
+@pytest.mark.asyncio
 async def test_get_risk_pr_directive_falls_back_to_the_graph_without_a_map(setup_mcp):
     """No per-test map -> the import graph answers, labelled as inferred.
 

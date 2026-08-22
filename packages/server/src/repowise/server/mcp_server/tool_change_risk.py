@@ -19,6 +19,7 @@ from repowise.core.analysis.change_risk import (
     normalize_extensions,
     score_live_change,
 )
+from repowise.core.analysis.pr_blast import rank_tests_by_reach
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._helpers import (
     _get_repo,
@@ -447,7 +448,7 @@ async def _inferred_impacted(
         reaching = await tests_reaching(session, repo_id, changed_files)
     except Exception:
         reaching = {}
-    tests = sorted({t for group in reaching.values() for t in group})
+    tests = rank_tests_by_reach(reaching)
     if not tests:
         return _empty_impacted(
             "no_map",
@@ -510,14 +511,16 @@ async def _impacted_tests_block(
             report = await detect_missing_tests(session, repo_id, changed)
             if report.map_empty:
                 return await _inferred_impacted(session, repo_id, sorted(changed))
-            all_ids: set[str] = set()
+            by_file: dict[str, list[str]] = {}
             for source_file, lines in changed.items():
-                for row in await tests_covering(session, repo_id, source_file, lines=lines):
-                    all_ids.add(row["test_id"])
+                rows = await tests_covering(session, repo_id, source_file, lines=lines)
+                ids = sorted({row["test_id"] for row in rows})
+                if ids:
+                    by_file[source_file] = ids
     except LookupError:
         return _empty_impacted("no_index", "No indexed repository; run `repowise init`.")
 
-    tests = sorted(all_ids)
+    tests = rank_tests_by_reach(by_file)
     total = len(tests)
     return {
         "status": "map_present",
