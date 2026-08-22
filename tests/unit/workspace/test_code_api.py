@@ -327,6 +327,34 @@ class TestSurfaceScope:
             "code::@scope/lib::published"
         ]
 
+    async def test_an_ambiguous_dunder_all_name_is_refused_not_guessed(
+        self, tmp_path: Path
+    ):
+        """A contract's ``symbol_id`` must not be decided by index row order."""
+        repo = tmp_path / "lib"
+        (repo / "pkg").mkdir(parents=True)
+        (repo / ".repowise").mkdir()
+        (repo / "pyproject.toml").write_text(
+            '[project]\nname = "pkg"\n', encoding="utf-8"
+        )
+        (repo / "pkg" / "__init__.py").write_text(
+            "__all__ = ['Widget', 'Gauge']\n", encoding="utf-8"
+        )
+        (repo / "pkg" / "a.py").write_text("class Widget:\n    pass\n", encoding="utf-8")
+        (repo / "pkg" / "b.py").write_text(
+            "class Widget:\n    pass\n\n\nclass Gauge:\n    pass\n", encoding="utf-8"
+        )
+        index = await make_repo_index(repo, _parse(repo), alias="lib")
+        try:
+            surface = build_code_surface(
+                {"lib": repo}, WorkspaceIndex({"lib": index}), make_exclude_predicate()
+            )
+        finally:
+            await index.close()
+        # `Gauge` is unique and published; `Widget` names two symbols, so it is
+        # not published at all rather than published as a coin flip.
+        assert [c.contract_id for c in surface.for_repo("lib")] == ["code::pkg::Gauge"]
+
     async def test_an_import_of_an_unpublished_package_yields_no_consumer(
         self, tmp_path: Path
     ):

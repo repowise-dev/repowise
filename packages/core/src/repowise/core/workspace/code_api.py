@@ -361,16 +361,29 @@ def _surface_symbols(
 ) -> list[IndexedSymbol]:
     """The public symbols *package* publishes, per its entry-file rule."""
     prefix = f"{package.root}/" if package.root else ""
-    out: list[IndexedSymbol] = []
-    for symbol in index.public_symbols():
-        if symbol.kind not in _EXPORTABLE_KINDS or exclude(symbol.file_path):
-            continue
-        if package.entry_files is None:
-            if symbol.file_path.startswith(prefix):
-                out.append(symbol)
-        elif symbol.file_path in package.entry_files or (symbol.name in package.reexported and symbol.file_path.startswith(prefix)):
-            out.append(symbol)
-    return out
+    candidates = [
+        s
+        for s in index.public_symbols()
+        if s.kind in _EXPORTABLE_KINDS
+        and not exclude(s.file_path)
+        and s.file_path.startswith(prefix)
+    ]
+    if package.entry_files is None:
+        return candidates
+
+    # An `__all__` entry names a symbol its entry file does not declare, so it
+    # resolves by name across the package — and only when that name is unique.
+    # Two `Widget`s would otherwise bind the contract to whichever the index
+    # happened to return first.
+    by_name: dict[str, list[IndexedSymbol]] = {}
+    for symbol in candidates:
+        by_name.setdefault(symbol.name, []).append(symbol)
+    return [
+        s
+        for s in candidates
+        if s.file_path in package.entry_files
+        or (s.name in package.reexported and len(by_name[s.name]) == 1)
+    ]
 
 
 # ---------------------------------------------------------------------------
