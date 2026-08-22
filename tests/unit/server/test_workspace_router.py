@@ -2011,3 +2011,90 @@ async def test_workspace_indexed_at_comes_from_the_member_store(tmp_path: Path) 
     by_alias = {r["alias"]: r["indexed_at"] for r in repos}
     # backend: the store stamp over the config's 2026-04-12; frontend has no store.
     assert by_alias == {"backend": "2026-10-20T19:21:15+00:00", "frontend": None}
+
+
+class TestWorkspaceSync:
+    """The fan-out decisions ``POST /api/workspace/sync`` makes per repo."""
+
+    @pytest.mark.asyncio
+    async def test_configured_db_repo_syncs_instead_of_reindexing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Issue #1034: a repo with a row in the configured store and no
+        repo-local ``.repowise/wiki.db`` must get a sync job against that
+        store. Gating on the file alone re-indexed it on every sync; gating
+        on the store but still reading the repo id out of the missing file
+        errors instead of syncing."""
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import StaticPool
+
+        from repowise.core.persistence import upsert_repository
+        from repowise.core.persistence.database import get_session, init_db
+        from repowise.core.persistence.models import GenerationJob
+        from repowise.server.routers import repos as repos_module
+
+        # Stub the executor: this covers the decision, not the pipeline.
+        async def _noop_execute(job_id, app_state, session_factory_override=None):
+            return None
+
+        monkeypatch.setattr(repos_module, "execute_job", _noop_execute)
+
+        ws_root = tmp_path / "ws"
+        backend_dir = ws_root / "backend"
+        backend_dir.mkdir(parents=True)
+
+        # Configured DB — in-memory SQLite standing in for PostgreSQL.
+        engine = create_async_engine(
+            "sqlite+aiosqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        await init_db(engine)
+        sf = async_sessionmaker(engine, expire_on_commit=False)
+        async with get_session(sf) as session:
+            repo = await upsert_repository(session, name="backend", local_path=str(backend_dir))
+            await session.commit()
+
+        repo_entry = MagicMock()
+        repo_entry.alias = "backend"
+        repo_entry.path = "./backend"
+        repo_entry.is_primary = True
+        repo_entry.indexed_at = None
+        repo_entry.last_commit_at_index = None
+        ws_config = MagicMock()
+        ws_config.repos = [repo_entry]
+        ws_config.default_repo = "backend"
+
+        app = _make_workspace_app(
+            ws_config=ws_config,
+            workspace_root=str(ws_root),
+            session_factory=sf,
+        )
+        app.state.background_tasks = set()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.post("/api/workspace/sync")
+
+        assert resp.status_code == 202, resp.text
+        (result,) = resp.json()["results"]
+        assert result["status"] == "accepted", result
+        assert result["repo_id"] == repo.id
+        assert result["job_id"]
+
+        async with get_session(sf) as session:
+            jobs = (
+                (
+                    await session.execute(
+                        select(GenerationJob).where(GenerationJob.repository_id == repo.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert [job.status for job in jobs] == ["pending"]
+        # The repo lives in the configured store; sync must not conjure a
+        # per-repo index for it.
+        assert (backend_dir / ".repowise" / "wiki.db").exists() is False
+
+        await engine.dispose()

@@ -1000,10 +1000,32 @@ async def sync_workspace(
         repo_path = (ws_root_path / entry.path).resolve()
         db_path = repo_path / ".repowise" / "wiki.db"
 
-        # Not indexed yet → establish the repo-local database and run the
+        # A repo is "indexed" when a Repository row exists for its resolved
+        # path in the configured database — not when a local .repowise/wiki.db
+        # file happens to exist. Under PostgreSQL (REPOWISE_DB_URL) repos are
+        # indexed into the shared DB with no per-repo wiki.db, so a file check
+        # alone would wrongly treat every Postgres-indexed repo as "not indexed"
+        # and re-index it on every sync (issue #1034).
+        already_indexed = False
+        configured_repo_id: str | None = None
+        if db_path.exists():
+            already_indexed = True
+        else:
+            try:
+                async with get_session(request.app.state.session_factory) as session:
+                    configured = await crud.get_repository_by_path(
+                        session, str(repo_path.resolve())
+                    )
+            except Exception:
+                configured = None
+            if configured is not None:
+                already_indexed = True
+                configured_repo_id = configured.id
+
+        # Not indexed yet → establish the repository database and run the
         # first full index through the same job machinery, instead of
         # bouncing the user to the CLI.
-        if not db_path.exists():
+        if not already_indexed:
             try:
                 from repowise.server.repo_db import ensure_repo_registration
                 from repowise.server.routers.repos import _enqueue_index_job
@@ -1034,30 +1056,35 @@ async def sync_workspace(
             )
             continue
 
-        # Discover repo_id from the per-repo DB.
-        try:
-            with sqlite3.connect(str(db_path)) as conn:
-                row = conn.execute("SELECT id FROM repositories LIMIT 1").fetchone()
-        except Exception as exc:
-            results.append(
-                WorkspaceSyncResult(
-                    alias=entry.alias,
-                    status="error",
-                    reason=f"could not read repo id: {exc}",
+        if configured_repo_id is not None:
+            # No repo-local index to read a row from: the configured store
+            # holds this repo, and its jobs belong to that store's factory.
+            repo_id = configured_repo_id
+        else:
+            # Discover repo_id from the per-repo DB.
+            try:
+                with sqlite3.connect(str(db_path)) as conn:
+                    row = conn.execute("SELECT id FROM repositories LIMIT 1").fetchone()
+            except Exception as exc:
+                results.append(
+                    WorkspaceSyncResult(
+                        alias=entry.alias,
+                        status="error",
+                        reason=f"could not read repo id: {exc}",
+                    )
                 )
-            )
-            continue
+                continue
 
-        if not row:
-            results.append(
-                WorkspaceSyncResult(
-                    alias=entry.alias,
-                    status="error",
-                    reason="repository row missing in wiki.db",
+            if not row:
+                results.append(
+                    WorkspaceSyncResult(
+                        alias=entry.alias,
+                        status="error",
+                        reason="repository row missing in wiki.db",
+                    )
                 )
-            )
-            continue
-        repo_id = row[0]
+                continue
+            repo_id = row[0]
 
         session_factory = resolve_session_factory(request.app.state, repo_id)
 
