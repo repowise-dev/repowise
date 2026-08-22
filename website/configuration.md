@@ -45,6 +45,8 @@ The main configuration file. Created after first `init`, updated when you pass `
 ```yaml
 provider: anthropic                  # LLM provider
 model: claude-sonnet-4-6             # Model identifier
+answer_provider: anthropic           # Provider for get_answer synthesis (optional; falls back to provider)
+answer_model: claude-haiku-4-5       # Model for get_answer synthesis (optional; falls back to model)
 embedder: gemini                     # Embedding provider
 reasoning: auto                      # auto | off/none | minimal | low | medium | high | xhigh | max
 max_tokens: 16384                    # Max output tokens per generated documentation page

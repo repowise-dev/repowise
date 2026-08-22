@@ -96,6 +96,8 @@ flags like `--commit-limit`, `--follow-renames`, or `--wiki-style`.
 ```yaml
 provider: anthropic                  # LLM provider (auto-detected if omitted)
 model: claude-sonnet-4-6             # Model identifier (provider default if omitted)
+answer_provider: anthropic           # Provider for get_answer synthesis (falls back to provider)
+answer_model: claude-haiku-4-5       # Model for get_answer synthesis (falls back to model)
 embedder: mock                       # Embedding provider (mock if no key detected)
 embedding_model: text-embedding-3-small  # Embedding model (provider default if omitted)
 reasoning: auto                      # auto | off | none | minimal | low | medium | high | xhigh | max
@@ -728,7 +730,9 @@ The `.repowise/.env` file is gitignored automatically.
 |----------|-------------|
 | `REPOWISE_PROVIDER` | Override provider (skips auto-detection) |
 | `REPOWISE_MODEL` | Override model |
-| `REPOWISE_DOC_MODEL` | Override the model used for `get_answer` synthesis specifically |
+| `REPOWISE_ANSWER_PROVIDER` | Provider for `get_answer` synthesis. Answering a question (short grounded prose over retrieved excerpts) is a different workload from writing wiki pages, so the answer surface can run its own provider; falls back to the generation provider when unset |
+| `REPOWISE_ANSWER_MODEL` | Model for `get_answer` synthesis; falls back through `REPOWISE_DOC_MODEL` / `REPOWISE_MODEL` to the persisted model. Together with `embedding_model` this makes the three model roles — wiki writer, answerer, embedder — independently configurable |
+| `REPOWISE_DOC_MODEL` | Older name for the `get_answer` model override; still honored, at lower precedence than `REPOWISE_ANSWER_MODEL` |
 | `REPOWISE_REASONING` | Override `reasoning` (see valid values above) |
 | `REPOWISE_ANSWER_TIMEOUT_S` | Seconds `get_answer` waits for synthesis before giving up. Defaults to a per-provider budget: 60s for the remote API providers, 120s for `ollama` and `litellm`, 180s for `codex_cli` and `opencode`. Raise it if your model is slower than its class suggests, lower it if you would rather an agent fail fast than block. Capped at 600s. Note your MCP client enforces its own tool timeout underneath this one, so setting a value above it produces a client-side error instead of repowise's diagnosable "synthesis exceeded its budget" response |
 
