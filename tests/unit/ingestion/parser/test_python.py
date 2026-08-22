@@ -233,6 +233,102 @@ class TestPythonParser:
         assert "add" in result.exports
         assert "Calculator" in result.exports
 
+    def test_single_decorator_on_function(self, parser: ASTParser) -> None:
+        """Test that a decorated function has exactly one decorator entry (no duplication)."""
+        source = b'''
+@pytest.fixture
+def setup_db():
+    """Setup test database."""
+    pass
+'''
+        fi = _make_file_info("test_db.py", "python")
+        result = parser.parse_file(fi, source)
+        setup = next(s for s in result.symbols if s.name == "setup_db")
+        assert setup.decorators == ["@pytest.fixture"], "Single decorator should not be duplicated"
+        assert len(setup.decorators) == 1, "Decorator list should have exactly one entry"
+
+    def test_multiple_decorators_on_function(self, parser: ASTParser) -> None:
+        """Test that multiple decorators are captured without duplication."""
+        source = b'''
+@app.get("/users")
+@validate_request
+@cache(ttl=300)
+def list_users():
+    """List all users."""
+    pass
+'''
+        fi = _make_file_info("api.py", "python")
+        result = parser.parse_file(fi, source)
+        list_users = next(s for s in result.symbols if s.name == "list_users")
+        assert len(list_users.decorators) == 3, "Should have exactly 3 decorators"
+        assert any("@app.get" in d for d in list_users.decorators), "Should contain @app.get"
+        assert any("@validate_request" in d for d in list_users.decorators), "Should contain @validate_request"
+        assert any("@cache" in d for d in list_users.decorators), "Should contain @cache"
+
+    def test_decorated_class(self, parser: ASTParser) -> None:
+        """Test that decorated classes are captured correctly."""
+        source = b'''
+@dataclass
+class User:
+    """User model."""
+    name: str
+'''
+        fi = _make_file_info("models.py", "python")
+        result = parser.parse_file(fi, source)
+        user = next(s for s in result.symbols if s.name == "User" and s.kind == "class")
+        assert user.decorators == ["@dataclass"], "Class decorator should be captured exactly once"
+
+    def test_undecorated_function_has_empty_decorators(self, parser: ASTParser) -> None:
+        """Test that functions without decorators have empty decorators list."""
+        source = b'''
+def plain_function():
+    """A function with no decorators."""
+    pass
+'''
+        fi = _make_file_info("utils.py", "python")
+        result = parser.parse_file(fi, source)
+        plain = next(s for s in result.symbols if s.name == "plain_function")
+        assert plain.decorators == [], "Undecorated function should have empty decorators list"
+
+    def test_decorator_with_complex_args(self, parser: ASTParser) -> None:
+        """Test that decorators with complex arguments are captured completely."""
+        source = b'''
+@pytest.mark.parametrize("input,expected", [(1, 2), (3, 4)])
+def test_add(input, expected):
+    """Parametrized test."""
+    pass
+'''
+        fi = _make_file_info("test_calc.py", "python")
+        result = parser.parse_file(fi, source)
+        test_add = next(s for s in result.symbols if s.name == "test_add")
+        assert len(test_add.decorators) == 1, "Should have exactly one decorator"
+        assert "parametrize" in test_add.decorators[0], "Decorator should contain parametrize"
+        assert "[(1" in test_add.decorators[0], "Should preserve arguments"
+
+    def test_method_decorator_not_duplicated(self, parser: ASTParser) -> None:
+        """Regression test: method decorators should not be duplicated."""
+        source = b'''
+class Calculator:
+    @staticmethod
+    def version() -> str:
+        """Return version string."""
+        return "1.0"
+    
+    @classmethod
+    def create(cls):
+        """Create instance."""
+        return cls()
+'''
+        fi = _make_file_info("calc.py", "python")
+        result = parser.parse_file(fi, source)
+        version = next(s for s in result.symbols if s.name == "version")
+        create = next(s for s in result.symbols if s.name == "create")
+        assert len(version.decorators) == 1, "@staticmethod should appear exactly once"
+        assert version.decorators == ["@staticmethod"]
+        assert len(create.decorators) == 1, "@classmethod should appear exactly once"
+        assert create.decorators == ["@classmethod"]
+
+
 
 PYTHON_CONSTANTS_SOURCE = b'''"""Module with constants."""
 

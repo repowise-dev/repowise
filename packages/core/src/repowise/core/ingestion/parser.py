@@ -617,11 +617,29 @@ class ASTParser:
         if file_info.language in _TS_JS_LANGUAGES:
             ts_deferred_exports = ts_deferred_export_names(src)
 
+        # Pre-group modifier nodes (e.g. decorators) by symbol (start_line, name)
+        modifiers_by_symbol: dict[tuple[int, str], list[Node]] = {}
+        for capture_dict in matches:
+            def_nodes = capture_dict.get("symbol.def", [])
+            name_nodes = capture_dict.get("symbol.name", [])
+            modifier_nodes = capture_dict.get("symbol.modifiers", [])
+            if def_nodes and name_nodes:
+                def_node = def_nodes[0]
+                name = _node_text(name_nodes[0], src)
+                if name:
+                    start_line = def_node.start_point[0] + 1
+                    key = (start_line, name)
+                    if key not in modifiers_by_symbol:
+                        modifiers_by_symbol[key] = []
+                    existing_ids = {id(n) for n in modifiers_by_symbol[key]}
+                    for m in modifier_nodes:
+                        if id(m) not in existing_ids:
+                            modifiers_by_symbol[key].append(m)
+
         for capture_dict in matches:
             def_nodes = capture_dict.get("symbol.def", [])
             name_nodes = capture_dict.get("symbol.name", [])
             params_nodes = capture_dict.get("symbol.params", [])
-            modifier_nodes = capture_dict.get("symbol.modifiers", [])
             receiver_nodes = capture_dict.get("symbol.receiver", [])
 
             if not def_nodes or not name_nodes:
@@ -637,6 +655,7 @@ class ASTParser:
             if dedup_key in seen:
                 continue
             seen.add(dedup_key)
+            modifier_nodes = modifiers_by_symbol.get(dedup_key, [])
 
             # Kind from node type
             node_type = def_node.type
@@ -736,10 +755,7 @@ class ASTParser:
 
             # Visibility
             modifier_texts = [_node_text(m, src) for m in modifier_nodes]
-            if def_node.parent and def_node.parent.type == "decorated_definition":
-                for sibling in def_node.parent.children:
-                    if sibling.type == "decorator":
-                        modifier_texts.append(_node_text(sibling, src))
+
 
             # Rust: outer attributes (#[...]) are preceding siblings of the item
             rust_attrs: list[str] = []
