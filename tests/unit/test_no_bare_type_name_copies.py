@@ -90,6 +90,11 @@ _KNOWN: dict[str, int] = {
     # prefix to resolve the package it came from. Neither wants a type.
     _PREFIX + "framework_edges/rust.py": 1,
     _PREFIX + "framework_edges/go.py": 1,
+    # Takes the qualifier HEAD of `OrderHandlers.GetOrder` to reach the
+    # declaring type. It does want a type, but the shared helper returns the
+    # trailing segment, which is the member — the opposite end, the same reason
+    # `receiver_types.py` is exempt.
+    _PREFIX + "framework_edges/aspnet.py": 1,
     # Real copies, each held by a consumer no gate here measures: converting
     # them moves framework edges, C++ symbol parent names and Go
     # `method_implements` edges respectively. Removable once those are covered.
