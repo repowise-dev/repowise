@@ -44,6 +44,7 @@ from repowise.core.rate_limiter import PROVIDER_DEFAULTS, RateLimitConfig, RateL
 _BUILTIN_PROVIDERS: dict[str, tuple[str, str]] = {
     "anthropic": ("repowise.core.providers.llm.anthropic", "AnthropicProvider"),
     "openai": ("repowise.core.providers.llm.openai", "OpenAIProvider"),
+    "azure_openai": ("repowise.core.providers.llm.azure_openai", "AzureOpenAIProvider"),
     "openrouter": ("repowise.core.providers.llm.openrouter", "OpenRouterProvider"),
     "gemini": ("repowise.core.providers.llm.gemini", "GeminiProvider"),
     "ollama": ("repowise.core.providers.llm.ollama", "OllamaProvider"),
@@ -67,6 +68,7 @@ _BUILTIN_PROVIDERS: dict[str, tuple[str, str]] = {
 PROVIDER_API_KEY_ENVS: dict[str, tuple[str, ...]] = {
     "anthropic": ("ANTHROPIC_API_KEY",),
     "openai": ("OPENAI_API_KEY",),
+    "azure_openai": ("AZURE_OPENAI_API_KEY",),
     "openrouter": ("OPENROUTER_API_KEY",),
     "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),  # either one
     "deepseek": ("DEEPSEEK_API_KEY",),
@@ -80,6 +82,11 @@ PROVIDER_API_KEY_ENVS: dict[str, tuple[str, ...]] = {
 PROVIDER_BASE_URL_ENVS: dict[str, tuple[str, ...]] = {
     "anthropic": ("ANTHROPIC_BASE_URL",),
     "openai": ("OPENAI_BASE_URL",),
+    "azure_openai": (
+        "AZURE_OPENAI_ENDPOINT",
+        "AZURE_OPENAI_BASE_URL",
+        "AZURE_OPENAI_API_BASE",
+    ),
     "gemini": ("GEMINI_BASE_URL",),
     "deepseek": ("DEEPSEEK_BASE_URL",),
     "kimi": ("KIMI_BASE_URL",),
@@ -110,6 +117,7 @@ REPO_PATH_PROVIDERS = frozenset({"codex_cli", "opencode"})
 PROVIDER_AUTODETECT_ORDER: tuple[str, ...] = (
     "anthropic",
     "openai",
+    "azure_openai",
     "openrouter",
     "ollama",
     "gemini",
@@ -204,7 +212,18 @@ def provider_kwargs(
         kwargs["api_key"] = api_key
     base_url = _first_env(PROVIDER_BASE_URL_ENVS.get(name, ()), getenv)
     if base_url:
-        kwargs["base_url"] = base_url
+        if name == "azure_openai":
+            kwargs["azure_endpoint"] = base_url
+        else:
+            kwargs["base_url"] = base_url
+    # Azure may also carry deployment via AZURE_OPENAI_DEPLOYMENT
+    if name == "azure_openai":
+        deployment = _clean(getenv("AZURE_OPENAI_DEPLOYMENT"))
+        if deployment and "model" not in kwargs:
+            kwargs["model"] = deployment
+        api_version = _clean(getenv("AZURE_OPENAI_API_VERSION"))
+        if api_version:
+            kwargs["api_version"] = api_version
     if repo_path is not None and name in REPO_PATH_PROVIDERS:
         kwargs["repo_path"] = repo_path
     return kwargs
@@ -297,6 +316,7 @@ def get_provider(
         _missing = {
             "anthropic": "anthropic",
             "openai": "openai",
+            "azure_openai": "openai",
             "gemini": "google-genai",
             "ollama": "openai",  # ollama uses the openai package
             "openrouter": "openai",  # openrouter uses the openai package
