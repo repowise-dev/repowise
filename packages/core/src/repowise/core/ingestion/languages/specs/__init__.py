@@ -14,6 +14,7 @@ from ..spec import LanguageSpec
 from .asciidoc import SPEC as _ASCIIDOC
 from .c import SPEC as _C
 from .clojure import SPEC as _CLOJURE
+from .cobol import SPEC as _COBOL
 from .cpp import SPEC as _CPP
 from .crystal import SPEC as _CRYSTAL
 from .csharp import SPEC as _CSHARP
@@ -93,6 +94,7 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _SCALA,
     _DART,
     _PASCAL,
+    _COBOL,
     # -----------------------------------------------------------------
     # Config / data / markup languages (passthrough — no AST)
     # -----------------------------------------------------------------

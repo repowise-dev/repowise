@@ -287,7 +287,10 @@ def _build_language_registry() -> dict[str, Language]:
         try:
             mod = __import__(spec.grammar_package)
             loader_fn = getattr(mod, spec.grammar_loader)
-            lang_obj = Language(loader_fn())
+            loaded = loader_fn(*spec.grammar_loader_args)
+            # Standalone grammar wheels return a PyCapsule; shared grammar
+            # packs may return the fully constructed Language directly.
+            lang_obj = loaded if isinstance(loaded, Language) else Language(loaded)
             registry[spec.tag] = lang_obj
         except Exception as exc:
             log.debug(
@@ -628,7 +631,7 @@ class ASTParser:
                 continue
 
             def_node = def_nodes[0]
-            name = _node_text(name_nodes[0], src)
+            name = config.symbol_name_fn(_node_text(name_nodes[0], src), def_node.type)
             if not name:
                 continue
 
@@ -681,6 +684,8 @@ class ASTParser:
             # the trailing body sibling or call-site attribution stops at the
             # signature line.
             end_line = def_node.end_point[0] + 1
+            if config.symbol_end_line_fn is not None:
+                end_line = config.symbol_end_line_fn(def_node, end_line)
             if file_info.language == "dart" and node_type in (
                 "function_signature",
                 "getter_signature",
@@ -1217,7 +1222,10 @@ class ASTParser:
                 continue
 
             site_node = site_nodes[0]
-            target_name = _node_text(target_nodes[0], src).strip()
+            target_node = target_nodes[0]
+            target_name = config.call_target_name_fn(
+                _node_text(target_node, src).strip(), target_node.type
+            )
             if not target_name:
                 continue
 

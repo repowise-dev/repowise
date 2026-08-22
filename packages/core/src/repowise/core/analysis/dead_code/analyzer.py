@@ -24,12 +24,12 @@ import structlog
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 from .constants import (
     _CONTAINER_USE_LANGUAGES,
+    _DEAD_CODE_EXEMPT_LANGUAGES,
     _DEFAULT_DYNAMIC_PATTERNS,
     _DELIBERATELY_UNUSED_ANNOTATIONS,
     _FRAMEWORK_DECORATOR_SUFFIXES,
     _FRAMEWORK_DECORATORS,
     _NEVER_PACKAGE_DIRS,
-    _NON_CODE_LANGUAGES,
     _is_fixture_path,
     never_flag_match,
 )
@@ -334,8 +334,6 @@ def _non_importable_kinds(language: str) -> frozenset[str]:
             return _UNIVERSAL_NON_IMPORTABLE - _TS_JS_IMPORTABLE_KINDS
         return _UNIVERSAL_NON_IMPORTABLE
     return _UNIVERSAL_NON_IMPORTABLE | extra
-
-
 
 # Preserved for tests / external callers that imported the old name.
 # New code should prefer ``_non_importable_kinds(language)``.
@@ -847,7 +845,7 @@ class DeadCodeAnalyzer:
             # (Go / JVM / C-C++) — lives in the predicate, which the overview
             # assembler calls with the same state so the two cannot disagree.
             # See :mod:`file_reachability`.
-            if node_data.get("language", "unknown") in _NON_CODE_LANGUAGES:
+            if node_data.get("language", "unknown") in _DEAD_CODE_EXEMPT_LANGUAGES:
                 continue
             if node_data.get("is_test", False):
                 continue
@@ -1076,7 +1074,7 @@ class DeadCodeAnalyzer:
                 continue
 
             node_data = self.graph.nodes[node]
-            if node_data.get("language", "unknown") in _NON_CODE_LANGUAGES:
+            if node_data.get("language", "unknown") in _DEAD_CODE_EXEMPT_LANGUAGES:
                 continue
             # Framework-instantiated files (Spring stereotypes, JAX-RS
             # resources, Quarkus components, Spring Data repos, …) have
@@ -1637,7 +1635,8 @@ class DeadCodeAnalyzer:
             # every file under the candidate dir is config/data (YAML,
             # JSON, MD, TOML), it is not a package — it is metadata.
             has_code_file = any(
-                self.graph.nodes.get(f, {}).get("language", "unknown") not in _NON_CODE_LANGUAGES
+                self.graph.nodes.get(f, {}).get("language", "unknown")
+                not in _DEAD_CODE_EXEMPT_LANGUAGES
                 for f in files
             )
             if not has_code_file:
@@ -1767,6 +1766,7 @@ class DeadCodeAnalyzer:
                     return True
         return False
 
+
     def _matches_dynamic_patterns(self, path: str, patterns: tuple[str, ...]) -> bool:
         name = Path(path).stem
         return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
@@ -1784,4 +1784,3 @@ class DeadCodeAnalyzer:
                 dt = dt.replace(tzinfo=UTC)
             return (now - dt).days > days
         return False
-

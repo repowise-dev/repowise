@@ -32,10 +32,14 @@ class LanguageSpec:
     is_infra: bool = False  # True for dockerfile, makefile, terraform, shell
     is_passthrough: bool = False  # True = no AST parser (config/data/markup)
     is_api_contract: bool = False  # True for proto, graphql, openapi
+    # True when files/symbols are invoked primarily by an external runtime and
+    # static reachability therefore cannot support dead-code claims.
+    dead_code_exempt: bool = False
 
     # -- Tree-sitter -----------------------------------------------------
     grammar_package: str | None = None  # "tree_sitter_python"
     grammar_loader: str = "language"  # function name in grammar package
+    grammar_loader_args: tuple[str, ...] = ()  # args for shared grammar packs
     scm_file: str | None = None  # "python.scm" — None = no AST queries
     shares_grammar_with: str | None = None  # C shares cpp grammar
 

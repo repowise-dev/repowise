@@ -1,7 +1,7 @@
 # Language Support
 
-**19 languages parsed to a full AST · 35 on the five-rung ladder ·
-framework-aware across all of them.** "Do you support X" has five useful answers
+**20 languages parsed to a full AST · 36 on the five-rung ladder ·
+framework-aware where an ecosystem handler exists.** "Do you support X" has five useful answers
 rather than two, so every language lands on a rung and the rung says what it
 buys you. Everything else in your repo still appears in the wiki and is tracked
 through git history. This page is the "what works for my language today"
@@ -30,6 +30,7 @@ reference.
   <img src="https://img.shields.io/badge/PHP-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP" />
   <img src="https://img.shields.io/badge/Dart-0175C2?style=flat-square&logo=dart&logoColor=white" alt="Dart" />
   <img src="https://img.shields.io/badge/Delphi-EE1F35?style=flat-square&logo=delphi&logoColor=white" alt="Object Pascal / Delphi" />
+  <img src="https://img.shields.io/badge/COBOL-005CA5?style=flat-square" alt="COBOL" />
   &nbsp;<strong>· Partial &nbsp;</strong>
   <img src="https://img.shields.io/badge/Luau-00A2FF?style=flat-square&logo=lua&logoColor=white" alt="Luau" />
 </p>
@@ -52,14 +53,14 @@ produce meaningful output.
 | Tier | Languages | What you get |
 |------|-----------|--------------|
 | **Full** (13) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges, **and code-health markers** |
-| **Good** (5) | C · Swift · PHP · Dart · Object Pascal | Everything above except the full health suite. Dart and Object Pascal *do* get health markers; C, Swift and PHP don't yet |
+| **Good** (6) | C · Swift · PHP · Dart · Object Pascal · COBOL | Everything above except the full health suite. Dart and Object Pascal *do* get health markers; C, Swift, PHP and COBOL don't yet |
 | **Partial** (1) | Luau / Roblox | AST symbols and `require()` resolution (Rojo / `.luaurc` aware). No health markers yet |
 | | | ⎯⎯ *tree-sitter parsing stops here. The rungs below are derived from git and imports, not from an AST.* ⎯⎯ |
 | **Lightweight** (7) | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# · HTML | A real file-to-file import graph, no symbol-level claims |
 | **Structural** (9) | Objective-C · R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history only: blame, hotspots, co-change. No AST parsing |
 
-The first three rungs are the **19 languages parsed to a full AST**; all five are
-the **35** on the ladder. Both numbers are worth stating and neither is worth
+The first three rungs are the **20 languages parsed to a full AST**; all five are
+the **36** on the ladder. Both numbers are worth stating and neither is worth
 stating alone, so if you only take one thing from this page, take the rung your
 language sits on rather than either count.
 
@@ -83,12 +84,15 @@ meaningless for a script invoked by name. See
 | Heritage (extends / implements) | ✅ | ✅ | — | — | — |
 | Named bindings | ✅ | ✅ | — | — | — |
 | Code-health markers | ✅ | Dart, Pascal | — | — | — |
-| Dead code detection | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Dead code detection | ✅ | ✅* | ✅ | ✅ | ✅ |
 | Semantic search & wiki pages | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 Scala's import resolution is partial: it shares the JVM index with Java and
 Kotlin and falls back to parsing SBT / Mill build files. Every other Full and
 Good language resolves imports outright.
+
+\* COBOL is excluded from dead-code claims: JCL, schedulers and dynamic program
+calls are external entry paths that the repository graph cannot observe.
 
 ---
 
@@ -232,16 +236,25 @@ instead of reading as dead code.
 
 ## Good tier
 
-AST parsing, symbol extraction, import resolution, call resolution, named
-bindings and heritage, with a dedicated workspace resolver per language.
+AST parsing, symbol extraction and static call resolution, plus the
+language-appropriate dependency surface. Languages with imports add named
+bindings, heritage and a workspace resolver where their syntax supports them.
 
-| Language | Extensions | Import resolution |
+| Language | Extensions | Dependency resolution |
 |----------|-----------|--------------|
 | **C** | `.c` | `#include` via `compile_commands.json` (shares the C++ grammar) |
 | **Swift** | `.swift` | SPM `Package.swift` target → directory mapping, intra-module type references, `@main` entry points |
 | **PHP** | `.php` | `use Foo\Bar\Baz` with composer.json PSR-4 longest-prefix resolution; Laravel, TYPO3 edges |
 | **Dart** | `.dart` | `import` / `export` / `part` URIs, `package:` via every `pubspec.yaml`, Flutter route tables and `runApp()` edges. **Health markers included** |
-| **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` `.inc` | `uses` clauses via the generic unit-name → file-stem fallback; project files as entry points. **Health markers included** |
+| **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses via the generic unit-name → file-stem fallback; project files as entry points. **Health markers included** |
+| **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` | Program IDs, sections, paragraphs and data levels; literal `CALL` and `PERFORM` targets resolve to program/procedure symbols. Dynamic calls and `COPY` edges are deliberately silent |
+
+COBOL is Good rather than Full because it has no code-health walker. Its static
+dependency surface is narrower than a module language's: literal program calls
+and local procedure transfers resolve, while copybook resolution, dynamic
+`CALL data-item`, dialect-specific syntax and source-format preprocessing are
+explicitly deferred. Dead-code findings are also suppressed because JCL and
+scheduler entry points usually live outside the indexed source graph.
 
 ---
 
@@ -366,6 +379,10 @@ cannot check.
   enum / type alias all report as `kind="class"`, and its `extends` vs
   `implements` split is inferred from the `I`-prefix naming convention rather
   than guaranteed by the language.
+- **COBOL support is intentionally COBOL-85 shaped.** Literal `CALL` and
+  `PERFORM` resolve, and `.cpy` files are parsed when indexed directly, but
+  `COPY` does not create an edge. Dynamic program names, dialect extensions and
+  fixed/free-format preprocessing beyond what the grammar accepts stay silent.
 - **C has no health dialect.** It shares the C++ grammar for parsing but reaches
   no health walker map, so it gets graph coverage without markers.
 - **Scala import resolution is partial**, and ScalaTest's infix DSL
@@ -386,6 +403,7 @@ cannot check.
 | C# | Full (health) | Dataflow dialect |
 | Dart | Good | riverpod / get_it dynamic hints, dataflow dialect |
 | Object Pascal | Good | Assertion and performance markers, a dedicated `uses` resolver |
+| COBOL | Good | Copybook resolution, source-format normalization, dialect coverage, health markers |
 | Elixir · F# | Good | AST upgrade (both grammars are available on PyPI) |
 | SQL / dbt | — | Column-level blast radius |
 | Shell | — | Shebang detection for extensionless executables |

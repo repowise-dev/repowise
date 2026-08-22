@@ -127,6 +127,10 @@ class LanguageRegistry:
         """Return tags for languages with no AST parser."""
         return frozenset(s.tag for s in self._specs.values() if s.is_passthrough)
 
+    def dead_code_exempt_languages(self) -> frozenset[str]:
+        """Languages whose external runtime makes static reachability unsound."""
+        return frozenset(s.tag for s in self._specs.values() if s.dead_code_exempt)
+
     def unparseable_data_languages(self) -> frozenset[str]:
         """Config/markup/data plus infra passthrough tags, without ``openapi``
         and ``unknown``.

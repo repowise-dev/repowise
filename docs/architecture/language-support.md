@@ -194,7 +194,10 @@ SPEC = LanguageSpec(
     display_name="MyLang",
     extensions=frozenset({".ml"}),
     grammar_package="tree_sitter_mylang",       # PyPI package name
+    grammar_loader="language",                  # package loader function
+    grammar_loader_args=(),                      # args for shared grammar packs
     scm_file="mylang.scm",                       # query file name
+    dead_code_exempt=False,                       # only for unobservable external entry
     heritage_node_types=frozenset({"class_declaration"}),
     entry_point_patterns=("main.ml",),
     manifest_files=("mylang.toml", "mylang.build.json"),
@@ -205,6 +208,21 @@ SPEC = LanguageSpec(
     color_hex="#AB47BC",
 )
 ```
+
+Most grammar wheels expose a zero-argument `language()` function returning a
+PyCapsule. Shared grammar packs can instead declare `grammar_loader_args`; the
+loader may return either a capsule or a constructed `tree_sitter.Language`.
+COBOL uses this seam with
+`tree_sitter_language_pack.get_language("cobol")`, because no standalone
+Python COBOL grammar wheel exists. The pack downloads and caches that grammar
+on first use; the ordinary missing-grammar fallback still applies if it is not
+available.
+
+Set `dead_code_exempt=True` only when the runtime's entry paths fundamentally
+live outside the repository graph. COBOL uses it because JCL, schedulers and
+dynamic program calls cannot be proven by static source reachability. The flag
+suppresses file- and symbol-level dead-code claims without disabling parsing,
+call resolution or the rest of graph analysis.
 
 Then register it in `languages/specs/__init__.py` by importing the module and
 slotting it into the `ALL_SPECS` tuple. **Order matters**: `LanguageRegistry`
@@ -360,7 +378,8 @@ sets from the registry automatically.
 
 ## What a new language does *not* get for free
 
-Steps 1–5 give you symbols, imports and a call graph. They do **not** give you:
+Steps 1–5 give you the symbols, imports and calls your query captures. They do
+**not** give you:
 
 - **Code-health markers.** The complexity walker uses its own per-language
   node-type map (`analysis/health/complexity/languages.py`), independent of your
