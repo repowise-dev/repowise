@@ -480,6 +480,13 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         state["model"] = provider.model_name
     if repo_phase_timings:
         state["phase_timings"] = repo_phase_timings
+    # The generation phase rebuilds the embedder, and that second build can
+    # degrade even when the header probe was clean (issue #1369). It records the
+    # degradation on ``result``; persist it here so an agent-driven workspace run
+    # sees it in state.json after the terminal is gone, like the single-repo flow.
+    gen_embedder_degraded = getattr(result, "embedder_degraded", None)
+    if gen_embedder_degraded:
+        state["degraded"] = [gen_embedder_degraded]
     kg = getattr(result, "knowledge_graph_result", None)
     if kg is not None:
         state["knowledge_graph"] = build_kg_state(kg)
