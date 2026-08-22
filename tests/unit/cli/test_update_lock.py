@@ -313,3 +313,72 @@ def test_workspace_uses_shared_core_lock(tmp_path: Path) -> None:
         assert payload["pid"] == os.getpid()
     finally:
         ws_update._release_lock(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Workspace-level lock — the #1831 single-flight guard
+# ---------------------------------------------------------------------------
+
+
+def test_workspace_lock_lives_under_workspace_data_dir(tmp_path: Path) -> None:
+    """The workspace guard must NOT reuse the per-repo lock path — it lives in
+    ``.repowise-workspace/.update.lock`` so a workspace's members share one."""
+    from repowise.core.update_lock import (
+        update_workspace_lock,
+        workspace_update_lock_path,
+    )
+
+    path = workspace_update_lock_path(tmp_path)
+    assert path == tmp_path / ".repowise-workspace" / ".update.lock"
+
+    assert update_workspace_lock(tmp_path) is None
+    try:
+        assert (tmp_path / ".repowise-workspace" / ".update.lock").exists()
+        # The per-repo lock is a different file — a held workspace lock does
+        # not block a single-repo update.
+        assert not (tmp_path / ".repowise" / ".update.lock").exists()
+    finally:
+        from repowise.core.update_lock import release_workspace_lock
+
+        release_workspace_lock(tmp_path)
+    assert not (tmp_path / ".repowise-workspace" / ".update.lock").exists()
+
+
+def test_workspace_lock_is_single_flight(tmp_path: Path) -> None:
+    """A second workspace update defers to the first instead of running a
+    redundant full pass."""
+    from repowise.core.update_lock import (
+        release_workspace_lock,
+        update_workspace_lock,
+    )
+
+    assert update_workspace_lock(tmp_path) is None
+    try:
+        owner = update_workspace_lock(tmp_path)
+        assert owner is not None
+        assert owner["pid"] == os.getpid()
+    finally:
+        release_workspace_lock(tmp_path)
+
+    # After release a fresh acquire wins again.
+    assert update_workspace_lock(tmp_path) is None
+    release_workspace_lock(tmp_path)
+
+
+def test_stale_workspace_lock_is_cleared(tmp_path: Path) -> None:
+    """A dead owner's workspace lock must not wedge the next update."""
+    from repowise.core.update_lock import update_workspace_lock
+    from repowise.core.workspace.update import _release_workspace_lock
+
+    ws_dir = tmp_path / ".repowise-workspace"
+    ws_dir.mkdir(parents=True, exist_ok=True)
+    (ws_dir / ".update.lock").write_text(
+        json.dumps({"pid": _dead_pid(), "target_commit": None, "started_at": time.time()}),
+        encoding="utf-8",
+    )
+
+    assert update_workspace_lock(tmp_path) is None
+    try:
+        assert (ws_dir / ".update.lock").exists()
+    finally:
+        _release_workspace_lock(tmp_path)
