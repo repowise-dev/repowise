@@ -118,6 +118,9 @@ _MAX_FILE_LINES = 8000
 _MAX_BLOCK_LINES = 12
 _MAX_BLOCK_CHARS = 800
 _MAX_RESULTS = 6
+# Keep a block only if it scores at least this fraction of the best block's
+# score. Relative, not absolute: scores scale with how many terms a question has.
+_RELEVANCE_FLOOR_FRACTION = 0.5
 _NEAR_LINE_WINDOW = 60
 
 
@@ -319,6 +322,16 @@ def mine_rationale(
         scored = [t for t in scored if t[1] or t[2]]
 
     scored.sort(key=lambda t: t[0], reverse=True)
+
+    # Relevance floor, relative to the best block found. Without it the tail of
+    # the six is whatever cleared the >=2-term gate on generic vocabulary — a
+    # question about projecting call edges onto files returned an SVG
+    # edge-routing docstring on "edges"/"project"/"between". This block only
+    # ships on a non-dominant answer, so the tail is paid for exactly when the
+    # answer is least likely to be right.
+    if scored:
+        floor = scored[0][0] * _RELEVANCE_FLOOR_FRACTION
+        scored = [t for t in scored if t[0] >= floor]
     return [entry for _, _, _, entry in scored[:max_results]]
 
 
