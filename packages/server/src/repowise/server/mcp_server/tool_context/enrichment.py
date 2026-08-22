@@ -38,10 +38,17 @@ from repowise.core.persistence.models import (
     HealthFinding,
     Repository,
 )
+from repowise.server.mcp_server._graph_files import keep_projected_edge, node_to_file
 from repowise.server.mcp_server._helpers import filter_dicts_by_key, filter_path_list
 from repowise.server.schemas.intelligence import SYMBOL_RELATION_GROUP_OF
 
-# Minimum confidence for call edges to filter false positives
+# Minimum confidence for call edges to filter false positives.
+#
+# Symbol-level only. The file-level rollup below defers to the shared
+# ``_graph_files`` floor (0.5) that every other file-pair surface uses; this
+# one stays at 0.7 because the two sites that read it -- the totals query and
+# the symbol rows -- have to be cut by the same rule as each other, and that
+# rule is documented at ``_count_neighbors_by_edge_type``.
 _MIN_CALL_CONFIDENCE = 0.7
 
 # Every edge type meaning "something reaches this symbol". Sorted so the
@@ -411,12 +418,18 @@ async def _resolve_file_level_callers(
                 GraphEdge.edge_type == "calls",
             )
         )
+        # One rule for every calls-projected-onto-files surface. This rollup
+        # used to hand-roll a 0.7 floor and the self-loop drop and had no
+        # cross-extension guard at all, so the same edge was kept by the zoom
+        # map and dropped here (1,436 of 45,755 reliable execution edges, 3.1%,
+        # across 8 indexed repos; 24.8% on eShopOnWeb). The shared helper
+        # replaces all three checks. Its same-extension guard does drop genuine
+        # cross-language calls -- that is the known ceiling on the shared
+        # helper, not debt introduced here.
         for src_id, confidence in edge_res.all():
-            if (confidence or 0) < _MIN_CALL_CONFIDENCE:
+            src_file = node_to_file(src_id)
+            if not keep_projected_edge(src_file, target_file, "calls", confidence):
                 continue
-            src_file = src_id.split("::")[0] if "::" in src_id else src_id
-            if src_file == target_file:
-                continue  # intra-file calls are not "callers" of the file
             calls_by_file[src_file] = calls_by_file.get(src_file, 0) + 1
 
     entries: list[dict[str, Any]] = []
