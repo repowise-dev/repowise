@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select, text
@@ -27,6 +28,37 @@ _BUG_PRONE_FIXES = 3
 #: How many attributed symbols the defect profile names. Enough to say "mostly
 #: these", short enough to keep the block inside the per-file token budget.
 _TOP_FIX_SYMBOLS = 3
+
+
+def normalize_target_path(target: str, repo_root: str | None = None) -> str:
+    """Normalize a caller-supplied file path to the POSIX-relative form stored
+    in ``git_metadata.file_path``.
+
+    ``get_risk`` matches ``file_path`` by exact string equality, but callers
+    reach it through git tools, shell completion, or editors that hand over a
+    backslash form (Windows), a leading ``./``, an absolute path, or a trailing
+    separator. Any of those makes the row lookup miss, and ``_assess_one_target``
+    then reports the indistinguishable ``no git metadata available`` card
+    (hotspot_score=0, primary_owner=None, empty co_change_partners) even though
+    the row exists — issue #1279. Normalizing the caller's side closes that gap.
+    """
+    normalized = target.replace("\\", "/")
+    # Make a repo-absolute path (``/abs/repo/src/x.py``) relative to the repo
+    # root when we know it. Uses a prefix check on the normalized forms, so a
+    # path that is already repo-relative is left untouched.
+    if repo_root:
+        root_norm = str(Path(repo_root).resolve()).replace("\\", "/")
+        try:
+            resolved = Path(normalized).resolve()
+            if str(resolved).startswith(root_norm.rstrip("/") + "/"):
+                normalized = str(resolved).replace("\\", "/")[len(root_norm.rstrip("/")) + 1 :]
+        except OSError:
+            pass
+    # Strip a leading cwd-relative prefix and any leading slash left over.
+    normalized = normalized.lstrip("/").lstrip(".")
+    # Collapse duplicate slashes and any trailing separator.
+    parts = [p for p in normalized.split("/") if p]
+    return "/".join(parts)
 
 
 def _derive_change_pattern(categories: dict[str, int]) -> str:
@@ -400,13 +432,24 @@ async def _assess_one_target(
     repo_id = repository.id
     result_data: dict[str, Any] = {"target": target}
 
-    dep_count = all_edge_map.get(target, 0)
+    # Callers reach get_risk with the file path in many forms — backslashes
+    # (Windows), a leading ``./``, a trailing separator, or a repo-absolute
+    # path — while git_metadata.file_path (and the graph node/edge ids) are
+    # stored POSIX-relative. Exact-string equality against the raw target made
+    # a row that exists look absent, and _assess_one_target then reported the
+    # indistinguishable "no git metadata available" card (hotspot_score=0,
+    # primary_owner=None, empty co_change_partners) — issue #1279. Normalize
+    # once and key every file-path lookup on it, but keep the response keyed by
+    # what the caller asked for.
+    lookup_path = normalize_target_path(target, repo_root=repository.local_path)
+
+    dep_count = all_edge_map.get(lookup_path, 0)
 
     # Git metadata
     res = await session.execute(
         select(GitMetadata).where(
             GitMetadata.repository_id == repo_id,
-            GitMetadata.file_path == target,
+            GitMetadata.file_path == lookup_path,
         )
     )
     meta = res.scalar_one_or_none()
@@ -420,19 +463,19 @@ async def _assess_one_target(
         result_data["trend"] = "unknown"
         result_data["risk_type"] = "high-coupling" if dep_count >= 5 else "unknown"
         result_data["impact_surface"] = _compute_impact_surface(
-            target,
+            lookup_path,
             reverse_deps,
             node_meta,
             exclude_spec,
         )
-        result_data["test_gap"] = await _check_test_gap(session, repo_id, target)
-        result_data["security_signals"] = await _get_security_signals(session, repo_id, target)
+        result_data["test_gap"] = await _check_test_gap(session, repo_id, lookup_path)
+        result_data["security_signals"] = await _get_security_signals(session, repo_id, lookup_path)
         result_data["risk_summary"] = f"{target} — no git metadata available"
         return result_data
 
     hotspot_score = meta.churn_percentile or 0.0
 
-    co_changes = _build_co_changes(meta, import_links.get(target, set()), exclude_spec)
+    co_changes = _build_co_changes(meta, import_links.get(lookup_path, set()), exclude_spec)
 
     owner = meta.primary_owner_name or "unknown"
     pct = meta.primary_owner_commit_pct or 0.0
@@ -444,7 +487,7 @@ async def _assess_one_target(
     risk_type = _classify_risk_type(meta, dep_count, team_size)
 
     # --- Impact surface ---
-    impact_surface = _compute_impact_surface(target, reverse_deps, node_meta, exclude_spec)
+    impact_surface = _compute_impact_surface(lookup_path, reverse_deps, node_meta, exclude_spec)
 
     # Phase 2: commit classification → change_pattern
     change_pattern = _derive_change_pattern(_load_commit_categories(meta))
@@ -483,8 +526,8 @@ async def _assess_one_target(
         result_data["defect_profile"] = defect_profile
 
     # C. Test gaps + security signals
-    result_data["test_gap"] = await _check_test_gap(session, repo_id, target)
-    result_data["security_signals"] = await _get_security_signals(session, repo_id, target)
+    result_data["test_gap"] = await _check_test_gap(session, repo_id, lookup_path)
+    result_data["security_signals"] = await _get_security_signals(session, repo_id, lookup_path)
 
     capped = getattr(meta, "commit_count_capped", False)
     capped_note = " (history truncated — actual count may be higher)" if capped else ""
