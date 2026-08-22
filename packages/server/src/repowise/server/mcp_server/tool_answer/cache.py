@@ -164,10 +164,7 @@ async def _serve_cached_answer(
         payload["_meta"] = _build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
             cached=True,
-            hint=_answer_hint(
-                payload.get("confidence", "low"),
-                len(payload.get("retrieval", [])),
-            ),
+            hint=_answer_hint(payload.get("confidence", "low")),
             repository=repository,
             targets=[p for p in cached_paths if isinstance(p, str) and p],
         )

@@ -167,7 +167,6 @@ async def _degraded_payload(
             timing_ms=(time.perf_counter() - t0) * 1000,
             hint=_answer_hint(
                 "low",
-                len(hits),
                 degraded=reason,
                 retrieval_quality=retrieval_quality,
                 has_bodies=bool(symbol_bodies),

@@ -31,6 +31,7 @@ from repowise.server.mcp_server._helpers import (
     resolve_enum_argument,
     vector_search_timeout_s,
 )
+from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._page_paths import file_candidates, hit_file_path
 from repowise.server.mcp_server._prose_symbols import symbol_backed_pages
@@ -806,17 +807,14 @@ def _grep_hint_for(query: str) -> str | None:
     if _looks_like_exact_token(query):
         return (
             f"No indexed match for identifier {query!r}. Retry with "
-            'mode="symbol" (or check spelling/casing); if you need every '
-            "literal usage for an exhaustive sweep such as a rename, Grep "
-            "is the right tool for that."
+            'mode="symbol" (or check spelling/casing). ' + EXHAUSTIVE_SWEEP_HINT
         )
     if idents := _embedded_identifiers(query):
         shown = ", ".join(repr(t) for t in idents[:3])
         return (
             f"Query names identifier(s) {shown} but nothing matched. Search "
             'the identifier alone with mode="symbol", then pipe the hit '
-            "into get_symbol for its body. For an exhaustive every-usage "
-            "sweep, Grep the literal name."
+            "into get_symbol for its body. " + EXHAUSTIVE_SWEEP_HINT
         )
     return None
 
@@ -972,8 +970,7 @@ async def _structured_search(
                 f"No indexed symbol exactly matches {shown}. The results are "
                 "fuzzy neighbours ranked by token overlap — confirm a hit names "
                 "what you meant before relying on it. If you expected an exact "
-                "symbol, recheck spelling/casing, or Grep the literal name for "
-                "an exhaustive usage sweep."
+                "symbol, recheck spelling/casing. " + EXHAUSTIVE_SWEEP_HINT
             )
     if grep_hint and not results:
         response["grep_hint"] = grep_hint

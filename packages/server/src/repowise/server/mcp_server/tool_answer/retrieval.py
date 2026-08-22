@@ -125,6 +125,7 @@ def serialize_hits(
     summary_chars: int | None = None,
     symbols_for_expanded: bool = True,
     lean_symbols: bool = False,
+    excerpt_rows: int | None = None,
 ) -> list[dict]:
     """Agent-facing view of retrieval hits — content only, no plumbing.
 
@@ -142,9 +143,16 @@ def serialize_hits(
     gated low-confidence path, where the hits are candidates to pick between,
     not answer material, and ``best_guesses`` + ``code_rationale`` already
     carry the choosing signal.
+
+    ``excerpt_rows`` serves the page excerpt on the first N rows only. An
+    excerpt is ~1,500 characters against ~300 for the whole rest of a row, so it
+    is essentially the entire cost of this block; rows past the cut keep path,
+    title, summary, snippet and score, which is a described candidate rather
+    than a bare pointer. Deliberately a *field* cut and not a row cut: dropping
+    rows takes paths out of the response, and a named path costs almost nothing.
     """
     out: list[dict] = []
-    for h in hits[: limit if limit is not None else len(hits)]:
+    for idx, h in enumerate(hits[: limit if limit is not None else len(hits)]):
         target = h.get("target_path")
         entry: dict[str, Any] = {"path": target}
         # A symbol_spotlight page's target_path is ``file.py::Symbol``: a page
@@ -160,8 +168,9 @@ def serialize_hits(
             summary = summary[: summary_chars - 1].rstrip() + "…"
         if summary:
             entry["summary"] = summary
+        serve_excerpt = excerpt_rows is None or idx < excerpt_rows
         for key in ("snippet", "excerpt"):
-            if h.get(key):
+            if h.get(key) and (key != "excerpt" or serve_excerpt):
                 entry[key] = h[key]
         if h.get("score") is not None:
             entry["score"] = round(h["score"], 3)

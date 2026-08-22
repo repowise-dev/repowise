@@ -660,6 +660,27 @@ async def test_anchor_injects_defining_file_as_dominant_hit():
 
 
 @pytest.mark.asyncio
+async def test_anchor_skips_a_symbol_with_no_file_path():
+    """A pathless symbol must not become a hit."""
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    rows = [
+        _Sym(
+            "extract_all",
+            "",
+            parent_name="DecisionExtractor",
+            qualified_name="DecisionExtractor.extract_all",
+        )
+    ]
+    hits = [{"target_path": "core/pipeline/incremental.py", "score": 3.6}]
+    out, _ = await _anchor_symbol_hits(
+        _FakeSession(rows), "repo1", {"extract_all", "DecisionExtractor"}, hits
+    )
+    assert all(h.get("target_path") for h in out)
+    assert out[0]["target_path"] == "core/pipeline/incremental.py"
+
+
+@pytest.mark.asyncio
 async def test_anchor_unresolvable_homonym_becomes_union():
     """A bare homonym (no qualifier) is not injected as a hit — its full def
     set is returned in homonyms['union'] for the answer-by-union path."""

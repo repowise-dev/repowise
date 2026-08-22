@@ -26,6 +26,7 @@ from click.testing import CliRunner
 from repowise.cli.commands import _tool_adapters as _ta
 from repowise.cli.commands.risk_cmd import project_risk, risk_command
 from repowise.cli.commands.search_cmd import project, search_command
+from repowise.server.mcp_server.tool_search import _grep_hint_for
 
 # --------------------------------------------------------------------------
 # Payloads shaped like the real tools build them
@@ -98,10 +99,10 @@ SYMBOL_MISS_PAYLOAD = {
         "No indexed symbol exactly matches 'reslove_width'. The results are fuzzy "
         "neighbours ranked by token overlap — confirm a hit names what you meant."
     ),
-    "grep_hint": (
-        "No indexed match for identifier 'reslove_width'. Retry with mode=\"symbol\"; "
-        "if you need every literal usage, Grep is the right tool for that."
-    ),
+    # Taken from the server rather than hand-written: a fixture that spells the
+    # hint itself is one more copy of a wording the tools keep in one place, and
+    # it drifts silently because nothing compares the two.
+    "grep_hint": _grep_hint_for("reslove_width"),
     "_meta": META,
 }
 

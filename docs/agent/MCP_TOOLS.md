@@ -220,7 +220,7 @@ One-call RAG: retrieves over the wiki, gates synthesis on confidence, and return
 | `question` | string | Yes | Natural language question about the codebase |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 
-**Returns:** A synthesized answer with file/symbol citations and a confidence label (`high`, `medium`, `low`). High-confidence answers can be cited directly. Low-confidence answers return ranked wiki excerpts instead.
+**Returns:** A synthesized answer with file/symbol citations and a confidence label (`high`, `medium`, `low`). High-confidence answers can be cited directly. Low-confidence answers return ranked wiki candidates instead, with the page excerpt served on the highest-scoring few; the rest carry path, title and summary, and one follow-up call opens any of them.
 
 Two path-bearing blocks, with different jobs:
 

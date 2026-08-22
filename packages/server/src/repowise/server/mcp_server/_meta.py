@@ -413,9 +413,26 @@ def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:
     return None
 
 
+# One wording for each of the two ways a response can be a dead end, so a
+# spelling cannot drift in on its own.
+#
+# The rule they encode: a dead end redirects into another call of OUR surface,
+# naming the tool and the argument to use. An external tool is named only for a
+# job we do not do, which is EXHAUSTIVE_SWEEP_HINT and nothing else.
+NO_HITS_RECOVERY_HINT = (
+    'Retry search_codebase with mode="symbol" for an identifier or mode="path" '
+    "for a file name; if the question names a file, call get_context on it "
+    "directly."
+)
+
+EXHAUSTIVE_SWEEP_HINT = (
+    "For an exhaustive sweep of every literal usage — before a rename, say — "
+    "Grep the name; that is the one job this surface does not do."
+)
+
+
 def answer_hint(
     confidence: str,
-    retrieval_count: int,
     *,
     degraded: str | None = None,
     retrieval_quality: str | None = None,
@@ -425,6 +442,13 @@ def answer_hint(
 
     Encourages verification when confidence is low; never tells the agent to
     "trust the answer" — that's the over-trust failure mode.
+
+    Deliberately takes no retrieval count. An empty ``retrieval`` block is a
+    confidence-conditional VIEW, not a measure of what retrieval found — a
+    high-confidence answer sets it to ``[]`` on purpose — so keying "no hits"
+    off its length would tell the most trustworthy answers on the surface that
+    there were none. The one site that genuinely knows retrieval came back empty
+    writes its own note there.
 
     A degraded payload is keyed separately, because "low" means something
     different there. Everywhere else it rates an answer that exists and might be
@@ -457,9 +481,4 @@ def answer_hint(
         )
     if confidence == "low":
         return "Low confidence — Read the listed fallback_targets to verify before answering."
-    if retrieval_count == 0:
-        return (
-            "No wiki hits — try search_codebase (mode=symbol/path) or "
-            "get_context on the named file; Grep only if those miss too."
-        )
     return None

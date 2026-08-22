@@ -101,6 +101,7 @@ from repowise.server.mcp_server._helpers import (
     _unsupported_repo_all,
     filter_dicts_by_key,
 )
+from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT as _NO_HITS_RECOVERY_HINT
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._neighbor_rerank import (
@@ -522,10 +523,7 @@ async def get_answer(
         return _with_candidates(
             _no_answer_payload(
                 "No wiki hits for this question. Rephrase around the code "
-                'concept, or use search_codebase (mode="symbol" for an '
-                'identifier, mode="path" for a file name); if the question '
-                "names a file, call get_context on it directly. Grep only "
-                "if those come back empty too.",
+                "concept. " + _NO_HITS_RECOVERY_HINT,
                 repository=repository,
                 t0=t0,
             ),
@@ -752,7 +750,7 @@ async def get_answer(
 
     payload["_meta"] = _build_meta(
         timing_ms=(time.perf_counter() - t0) * 1000,
-        hint=_answer_hint(confidence, len(hits)),
+        hint=_answer_hint(confidence),
         repository=repository,
         targets=[*citations, *fallback_targets],
     )
