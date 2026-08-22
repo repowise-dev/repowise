@@ -844,9 +844,8 @@ class TestResolveProviderOrPrompt:
             return True
 
         monkeypatch.setattr(
-            "repowise.cli.ui.interactive_provider_credentials",
+            "repowise.cli.ui.provider_selection.interactive_provider_credentials",
             _credentials,
-            raising=False,
         )
 
         result = helpers.resolve_explicit_provider_or_prompt(

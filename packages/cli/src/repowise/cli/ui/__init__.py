@@ -45,7 +45,6 @@ from repowise.cli.ui.progress import MaybeCountColumn, RichProgressCallback
 from repowise.cli.ui.provider_selection import (
     ProviderSelection,
     interactive_provider_config_select,
-    interactive_provider_credentials,
     interactive_provider_select,
 )
 from repowise.cli.ui.repo_scanner import (
@@ -93,7 +92,6 @@ __all__ = [
     "interactive_mode_select",
     "interactive_primary_select",
     "interactive_provider_config_select",
-    "interactive_provider_credentials",
     "interactive_provider_select",
     "interactive_repo_select",
     "key_value_table",

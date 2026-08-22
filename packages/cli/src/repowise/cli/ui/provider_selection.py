@@ -751,10 +751,8 @@ def _prompt_api_key(
     return key
 
 
-def _prompt_provider_base_url(
+def _prompt_openai_base_url(
     console: Console,
-    provider: str,
-    env_var: str,
     *,
     repo_path: Path | None = None,
     save_key: bool = True,
@@ -766,16 +764,13 @@ def _prompt_provider_base_url(
     self-hosted server. An existing env value wins, so re-running init never
     asks a question the user already answered.
     """
+    env_var = "OPENAI_BASE_URL"
     current = (os.environ.get(env_var) or "").strip()
     if current:
         return current
 
-    default = _OPENAI_DEFAULT_BASE_URL if provider == "openai" else ""
     label = "  Base URL (OpenAI-compatible endpoint)"
-    if default:
-        value = click.prompt(label, default=default, show_default=True)
-    else:
-        value = click.prompt(label, default="", show_default=False)
+    value = click.prompt(label, default=_OPENAI_DEFAULT_BASE_URL, show_default=True)
     value = value.strip()
     if not value:
         return None
@@ -835,10 +830,8 @@ def interactive_provider_credentials(
     # their gateway's /v1 URL here. Ask this when an explicit OpenAI provider
     # has a key but no endpoint too, so an existing OPENAI_API_KEY does not
     # force a local-gateway user back to shell configuration.
-    if provider == "openai" and _prompt_provider_base_url(
+    if provider == "openai" and _prompt_openai_base_url(
         console,
-        provider,
-        "OPENAI_BASE_URL",
         repo_path=repo_path,
         save_key=save_key,
     ):

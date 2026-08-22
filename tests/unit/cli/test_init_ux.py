@@ -295,8 +295,11 @@ def test_explicit_openai_setup_prompts_for_key_and_gateway_url(
     are configured. A user should not have to discover and export two env vars
     before the command can even start.
     """
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    # Use tracked empty values rather than delenv: when the variables are
+    # initially absent, MonkeyPatch cannot restore direct os.environ writes
+    # made by the production prompt, which would leak into later tests.
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("OPENAI_BASE_URL", "")
     answers = iter(["router-secret", "http://localhost:20128/v1"])
     monkeypatch.setattr(provider_selection.click, "prompt", lambda *_a, **_k: next(answers))
     monkeypatch.setattr(provider_selection.click, "confirm", lambda *_a, **_k: True)
@@ -322,7 +325,7 @@ def test_explicit_openai_setup_prompts_for_url_when_key_is_already_set(
 ) -> None:
     """A pre-exported key must not hide the local-gateway URL question."""
     monkeypatch.setenv("OPENAI_API_KEY", "router-secret")
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENAI_BASE_URL", "")
     monkeypatch.setattr(
         provider_selection.click,
         "prompt",

@@ -1004,7 +1004,7 @@ def resolve_explicit_provider_or_prompt(
     inline setup as the provider picker, and an explicit OpenAI provider also
     gets the endpoint question used by local gateways.
     """
-    from repowise.cli.ui import interactive_provider_credentials
+    from repowise.cli.ui.provider_selection import interactive_provider_credentials
 
     if interactive and provider_name == "openai":
         # A pty can report TTY while stdin is not readable. Let the normal
