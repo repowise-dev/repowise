@@ -35,6 +35,8 @@ class ZoomNodeResponse(BaseModel):
     metrics: ZoomMetricsResponse = Field(default_factory=ZoomMetricsResponse)
     summary: str = ""
     language: str | None = None
+    # Id of the module page documenting this folder, when one does; "" otherwise.
+    page_id: str = ""
     # Code-health score (0..10, higher = healthier), matching the /files treemap.
     # None when the file/subtree was unscored (health is sparse); the renderer
     # reads that as neutral.

@@ -25,9 +25,12 @@ from .metrics import rollup_health, rollup_metrics
 from .models import ZoomMap, ZoomNode, ZoomRelation
 from .relations import aggregate_relations
 from .scoring import FileStat, compute_file_signals, score_tree
-from .tree import GroupSpec, LayerSpec, LeafInfo, build_tree
+from .tree import GroupSpec, LayerSpec, LeafInfo, ModuleInfo, build_tree
 
 __all__ = [
+    # ``ModuleInfo`` is part of the public surface because the hosted builder
+    # calls ``assemble_zoom_map`` directly rather than porting it.
+    "ModuleInfo",
     "ZoomMap",
     "ZoomNode",
     "ZoomRelation",
@@ -51,6 +54,7 @@ def assemble_zoom_map(
     max_depth: int | None = None,
     focus: str | None = None,
     health: dict[str, tuple[float, int]] | None = None,
+    modules: dict[str, ModuleInfo] | None = None,
 ) -> ZoomMap:
     """Pure assembly: ``ArchitectureView`` -> ``ZoomMap``. No DB.
 
@@ -58,6 +62,11 @@ def assemble_zoom_map(
     code-health score (higher = healthier) and ``loc`` is the rollup weight. It is
     optional so the pure assembly still unit-tests without health data; files not
     present in the map read as unscored (neutral), exactly like the treemap.
+
+    ``modules`` maps a directory path to the module page documenting it, so a
+    folder card reads as the subsystem the docs name rather than as a path
+    segment. Also optional: a repository indexed without a wiki has none, and
+    the hosted builder does not have them in its artifacts yet.
     """
     health = health or {}
     # The view is loaded file-only, but the curated node_type can be
@@ -128,7 +137,7 @@ def assemble_zoom_map(
         for layer in view.layers
     ]
 
-    root_id, nodes = build_tree(view.project_name, layers, leaf_info)
+    root_id, nodes = build_tree(view.project_name, layers, leaf_info, modules)
     nodes = rollup_metrics(root_id, nodes)
     nodes = rollup_health(root_id, nodes)
     nodes = score_tree(root_id, nodes, signals)
@@ -230,6 +239,7 @@ async def build_zoom_map(
     from repowise.core.persistence import crud
 
     view = await build_architecture_view(session, repo_id, include_symbols=False)
+    modules = await _load_module_names(session, repo_id)
     # One extra read: per-file health, keyed by path -> (effective score, loc).
     # Effective score prefers the split ``defect_score`` and falls back to the
     # overall ``score``, exactly like GET /api/repos/{id}/files, so the zoom card
@@ -243,4 +253,38 @@ async def build_zoom_map(
         )
         for m in metrics
     }
-    return assemble_zoom_map(view, max_depth=max_depth, focus=focus, health=health)
+    return assemble_zoom_map(
+        view, max_depth=max_depth, focus=focus, health=health, modules=modules
+    )
+
+
+async def _load_module_names(session: AsyncSession, repo_id: str) -> dict[str, ModuleInfo]:
+    """Directory path -> the module page documenting it.
+
+    A module page's ``target_path`` is the directory it covers, which is the
+    same key the folder trie is built on, so this is a join and not a second
+    clustering. Tombstoned pages are excluded for the same reason the docs
+    reader excludes them: the page is gone, so its name is not the repository's
+    name for that directory any more.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Page
+
+    rows = await session.execute(
+        select(Page.target_path, Page.title, Page.summary, Page.id).where(
+            Page.repository_id == repo_id,
+            Page.page_type == "module_page",
+            Page.freshness_status != "tombstone",
+            Page.target_path.isnot(None),
+        )
+    )
+    modules: dict[str, ModuleInfo] = {}
+    for target_path, title, summary, page_id in rows:
+        # A module whose target is a clustering ordinal rather than a real
+        # directory has nothing to join to; it simply never matches a folder.
+        if target_path and title:
+            modules[target_path] = ModuleInfo(
+                title=title, summary=summary or "", page_id=page_id
+            )
+    return modules

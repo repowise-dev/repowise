@@ -23,6 +23,7 @@ from repowise.server.services.zoom_builder.tree import (
     GroupSpec,
     LayerSpec,
     LeafInfo,
+    ModuleInfo,
     build_tree,
     file_id,
     folder_id,
@@ -76,6 +77,100 @@ def test_build_tree_compresses_single_child_folder_chains():
     assert folders[0].name == "a/b/c"
     assert folders[0].path == "a/b/c"
     assert len(folders[0].children) == 2
+
+
+def test_build_tree_names_a_folder_after_the_module_page_documenting_it():
+    layers = [
+        LayerSpec(
+            id="layer:core",
+            name="Core",
+            display_order=0,
+            node_ids=["src/resolvers/a.py", "src/parsers/b.py"],
+        ),
+    ]
+    modules = {
+        "src/resolvers": ModuleInfo(
+            title="Symbol Resolution", summary="Cross-language lookup.", page_id="pg1"
+        ),
+    }
+    _root, nodes = build_tree("proj", layers, {}, modules)
+    named = next(n for n in nodes.values() if n.path == "src/resolvers")
+    assert named.name == "Symbol Resolution"
+    assert named.summary == "Cross-language lookup."
+    assert named.page_id == "pg1"
+    # A directory no page documents keeps the name the filesystem gave it, and
+    # says nothing it cannot back up.
+    plain = next(n for n in nodes.values() if n.path == "src/parsers")
+    assert plain.name == "parsers"
+    assert plain.summary == ""
+    assert plain.page_id == ""
+
+
+def test_build_tree_prefers_the_deepest_documented_rung_of_a_compressed_chain():
+    layers = [
+        LayerSpec(
+            id="layer:core",
+            name="Core",
+            display_order=0,
+            node_ids=["a/b/c/f1.py", "a/b/c/f2.py"],
+        ),
+    ]
+    # The chain a -> a/b -> a/b/c is one card. Both ends are documented, and the
+    # deeper page describes it more precisely.
+    modules = {"a": ModuleInfo(title="Broad"), "a/b/c": ModuleInfo(title="Precise")}
+    _root, nodes = build_tree("proj", layers, {}, modules)
+    folders = [n for n in nodes.values() if n.kind == "folder"]
+    assert len(folders) == 1
+    assert folders[0].name == "Precise"
+
+
+def test_build_tree_names_a_chain_from_a_rung_compression_swallowed():
+    layers = [
+        LayerSpec(
+            id="layer:core",
+            name="Core",
+            display_order=0,
+            node_ids=["a/b/c/f1.py", "a/b/c/f2.py"],
+        ),
+    ]
+    # Only the head of the chain is documented. It is still a real directory,
+    # and it is the one this card stands for, so the name applies. A repository
+    # laid out as packages/<x>/src/<pkg> collapses nearly every documented
+    # directory into a chain like this, so matching the deepest rung alone would
+    # name almost nothing.
+    modules = {"a/b": ModuleInfo(title="Middle Rung")}
+    _root, nodes = build_tree("proj", layers, {}, modules)
+    folders = [n for n in nodes.values() if n.kind == "folder"]
+    assert len(folders) == 1
+    assert folders[0].name == "Middle Rung"
+    # The path still describes what the card actually contains.
+    assert folders[0].path == "a/b/c"
+
+
+def test_build_tree_module_names_do_not_move_any_file():
+    layers = [
+        LayerSpec(
+            id="layer:core",
+            name="Core",
+            display_order=0,
+            node_ids=["src/resolvers/a.py", "src/parsers/b.py"],
+        ),
+    ]
+    modules = {"src/resolvers": ModuleInfo(title="Symbol Resolution")}
+    _root, plain = build_tree("proj", layers, {})
+    _root2, named = build_tree("proj", layers, {}, modules)
+    # Naming is a label change: same ids, same parents, same children.
+    assert set(plain) == set(named)
+    assert {i: n.parent_id for i, n in plain.items()} == {
+        i: n.parent_id for i, n in named.items()
+    }
+    assert {i: n.children for i, n in plain.items()} == {
+        i: n.children for i, n in named.items()
+    }
+    # ...and only the documented folder reads differently.
+    renamed = {i for i in plain if plain[i].name != named[i].name}
+    assert renamed == {i for i, n in named.items() if n.path == "src/resolvers"}
+    assert all(plain[i].path == named[i].path for i in plain)
 
 
 def test_build_tree_subgroups_and_ungrouped_files():

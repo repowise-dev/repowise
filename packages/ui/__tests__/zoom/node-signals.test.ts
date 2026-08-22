@@ -38,6 +38,7 @@ function node(
     children: [],
     importance: 0,
     sibling_rank: 0,
+    page_id: "",
     summary: "",
     language: null,
     health_score: null,

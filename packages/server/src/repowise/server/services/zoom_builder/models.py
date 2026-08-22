@@ -50,6 +50,9 @@ class ZoomNode:
     metrics: ZoomMetrics = field(default_factory=ZoomMetrics)
     summary: str = ""
     language: str | None = None
+    # The module page documenting this folder, when one does. Empty on every
+    # other node, and on a folder no page covers.
+    page_id: str = ""
     # Code-health score on the 0..10 scale (higher = healthier), matching the
     # /files treemap. A file carries its own defect score (falling back to the
     # overall score); a container carries the loc-weighted mean over its scored

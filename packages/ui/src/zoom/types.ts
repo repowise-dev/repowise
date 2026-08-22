@@ -37,6 +37,8 @@ export interface ZoomNode {
   metrics: ZoomMetrics;
   summary: string;
   language: string | null;
+  /** Id of the module page documenting this folder, or "" when none does. */
+  page_id: string;
   /** Code-health score (0-10, higher = healthier), matching the /files treemap.
    *  Null when the file/subtree was unscored (health is sparse) — read as neutral. */
   health_score: number | null;

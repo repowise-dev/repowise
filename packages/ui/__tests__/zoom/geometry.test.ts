@@ -26,6 +26,7 @@ function node(id: string, parent: string | null, children: string[]): ZoomNode {
       entry_point_count: 0,
       on_flow_count: 0,
     },
+    page_id: "",
     summary: "",
     language: null,
     is_entry_point: false,

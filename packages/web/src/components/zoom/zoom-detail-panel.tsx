@@ -18,7 +18,7 @@
  */
 
 import Link from "next/link";
-import { FileCode, ScanSearch, X } from "lucide-react";
+import { BookOpen, FileCode, ScanSearch, X } from "lucide-react";
 import type { ZoomNode, ZoomRelation } from "@repowise-dev/ui/zoom";
 import {
   describeCap,
@@ -30,6 +30,7 @@ import {
 } from "@repowise-dev/ui/zoom";
 import { bandForScore } from "@repowise-dev/types/health";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
+import { pageHref } from "@/lib/utils/page-href";
 import { healthBandTextColor } from "@repowise-dev/ui/health";
 
 interface ZoomDetailPanelProps {
@@ -218,7 +219,7 @@ export function ZoomDetailPanel({
         )}
       </div>
 
-      {(node.children.length > 0 || isFile) && (
+      {(node.children.length > 0 || isFile || node.page_id) && (
         <footer className="flex flex-col gap-2 border-t border-[var(--color-border-default)] p-3">
           {node.children.length > 0 && (
             <button
@@ -229,6 +230,17 @@ export function ZoomDetailPanel({
               <ScanSearch className="h-3.5 w-3.5" />
               Zoom in
             </button>
+          )}
+          {/* This card is named after a module page, so the page it is named
+              after has to be reachable from it. */}
+          {node.page_id && (
+            <Link
+              href={pageHref(repoId, node.page_id)}
+              className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-3 py-2 text-[13px] font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-wash-hover)]"
+            >
+              <BookOpen className="h-3.5 w-3.5" />
+              Read the module page
+            </Link>
           )}
           {isFile && node.path && (
             <Link
