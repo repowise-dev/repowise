@@ -8,6 +8,27 @@ from typing import Any
 
 from repowise.cli.providers.keys import embedder_key_env_vars, resolve_embedder_api_key
 
+# Once-per-invocation gate for the degradation warning below. A single command
+# trips the fallback in several sites: ``repowise update`` builds the embedder
+# for the decision semantic-dedup store and again for the deterministic page
+# path, and a workspace run builds one per repo. Printing the full warning each
+# time stacks the same sentence over and over, which buries the signal. The
+# first fallback in a process reports it; later ones are just as degraded but
+# stay quiet, exactly as the init header probe does.
+_degradation_warned = False
+
+
+def reset_degradation_warning() -> None:
+    """Clear the once-per-invocation gate.
+
+    The gate is process-wide so the warning survives every build in one CLI
+    invocation, but a process that runs several logical invocations (tests,
+    an embedded runner) needs a way to arm it again. Callers that expect to
+    see the warning on a fresh unit of work call this first.
+    """
+    global _degradation_warned
+    _degradation_warned = False
+
 
 def _embedder_kwargs(embedder_name: str, repo_path: Any = None) -> dict[str, Any]:
     kwargs: dict[str, Any] = {}
@@ -212,11 +233,20 @@ def build_embedder(embedder_name_resolved: str, repo_path: Any = None) -> Any:
                 places = "\n".join(f"  · {place}" for place in lookup.searched)
                 searched = f"\nNo API key was found in any of:\n{places}"
 
-        err_console.print(
-            f"[yellow]Embedder '{embedder_name_resolved}' could not be built:[/yellow] "
-            f"{type(exc).__name__}: {exc}{searched}\n"
-            "Falling back to keyless embeddings, which means [bold]no semantic search[/bold] "
-            "for this run.\nFull-text and symbol search are unaffected. Fix the key or "
-            "endpoint and run [cyan]repowise reindex[/cyan]\nto restore semantic search."
-        )
+        # Once per invocation, not per site. One ``repowise update`` builds the
+        # embedder for its decision store and again for the deterministic page
+        # path; warning on each would print this same sentence twice (and a
+        # workspace update once per repo). The first build of a run reports the
+        # degradation, the rest ride along — the init header probe gates the
+        # same way.
+        global _degradation_warned
+        if not _degradation_warned:
+            _degradation_warned = True
+            err_console.print(
+                f"[yellow]Embedder '{embedder_name_resolved}' could not be built:[/yellow] "
+                f"{type(exc).__name__}: {exc}{searched}\n"
+                "Falling back to keyless embeddings, which means [bold]no semantic search[/bold] "
+                "for this run.\nFull-text and symbol search are unaffected. Fix the key or "
+                "endpoint and run [cyan]repowise reindex[/cyan]\nto restore semantic search."
+            )
         return KeylessEmbedder()
