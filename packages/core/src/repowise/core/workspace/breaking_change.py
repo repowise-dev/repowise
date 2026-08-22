@@ -545,7 +545,14 @@ def detect_breaking_changes(
         if prev_c is not None and curr_c is not None:
             prev_schema = prev_c.schema
             curr_schema = curr_c.schema
-            if prev_schema is not None and curr_schema is not None:
+            # Same source only. A parameter list and a .proto message describe
+            # the same endpoint at different fidelities, so diffing one against
+            # the other reports the change of parser as a change of contract.
+            if (
+                prev_schema is not None
+                and curr_schema is not None
+                and prev_schema.source == curr_schema.source
+            ):
                 raws.extend(_diff_schemas(prev_schema, curr_schema))
 
         if not raws:

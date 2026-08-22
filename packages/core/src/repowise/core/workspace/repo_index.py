@@ -55,6 +55,9 @@ class IndexedSymbol:
     start_line: int  # 1-indexed, inclusive
     end_line: int  # 1-indexed, inclusive
     visibility: str
+    #: ingestion's language key. Defaults so a caller building one by hand
+    #: (the tests, and from_index) need not know about it.
+    language: str = ""
 
 
 @dataclass(frozen=True)
@@ -100,10 +103,26 @@ class RepoIndex:
                 WikiSymbol.start_line,
                 WikiSymbol.end_line,
                 WikiSymbol.visibility,
+                WikiSymbol.language,
             ).where(WikiSymbol.repository_id == repo_id)
         )
         for row in rows:
-            self._by_file.setdefault(row.file_path, []).append(IndexedSymbol(*row))
+            # By keyword: eight of the ten fields are strings, so a reordered
+            # or inserted column would swap values positionally without error.
+            self._by_file.setdefault(row.file_path, []).append(
+                IndexedSymbol(
+                    symbol_id=row.symbol_id,
+                    name=row.name,
+                    qualified_name=row.qualified_name,
+                    kind=row.kind,
+                    signature=row.signature,
+                    file_path=row.file_path,
+                    start_line=row.start_line,
+                    end_line=row.end_line,
+                    visibility=row.visibility,
+                    language=row.language or "",
+                )
+            )
         # Outermost first, so the first span containing a line is the class and
         # the last is the method.
         for symbols in self._by_file.values():

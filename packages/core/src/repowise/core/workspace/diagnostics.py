@@ -27,6 +27,7 @@ from repowise.core.workspace.contracts import (
     normalize_contract_id,
 )
 from repowise.core.workspace.extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
+from repowise.core.workspace.signature_schema import SCHEMA_SOURCE
 
 # ---------------------------------------------------------------------------
 # Constants (single source of truth)
@@ -138,6 +139,47 @@ class SymbolIdentity:
 
 
 @dataclass
+class SchemaCoverage:
+    """How many providers recovered a request schema, and out of what.
+
+    Two denominators, for the same reason :class:`SymbolIdentity` carries two.
+    *total* is the workspace-wide share. *recovered_ratio_eligible* excludes the
+    providers no mapper could reach whatever it did — one bound to nothing, to a
+    route-registration site, to a symbol with no parameter list, or to a language
+    with no parameter grammar — and is what says whether the mapper is working.
+    """
+
+    total: int = 0
+    bound: int = 0
+    recovered: int = 0
+    shared_symbol: int = 0
+    unsupported_language: int = 0
+    non_callable: int = 0
+
+    @property
+    def eligible(self) -> int:
+        return (
+            self.bound - self.shared_symbol - self.unsupported_language - self.non_callable
+        )
+
+    def _ratio(self, denominator: int) -> float | None:
+        return self.recovered / denominator if denominator > 0 else None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total": self.total,
+            "bound": self.bound,
+            "recovered": self.recovered,
+            "shared_symbol": self.shared_symbol,
+            "unsupported_language": self.unsupported_language,
+            "non_callable": self.non_callable,
+            "eligible": self.eligible,
+            "recovered_ratio": self._ratio(self.total),
+            "recovered_ratio_eligible": self._ratio(self.eligible),
+        }
+
+
+@dataclass
 class ExtractionDiagnostics:
     """Aggregate explanation of contract extraction + matching coverage."""
 
@@ -158,6 +200,9 @@ class ExtractionDiagnostics:
     #: Symbol-id binding coverage, keyed by role. Reported, never asserted: a
     #: contract with no symbol id still matches, it just cannot be traversed.
     symbol_identity: dict[str, SymbolIdentity] = field(default_factory=dict)
+    #: Request-schema recovery over providers. Reported, never asserted: a
+    #: provider without a schema keeps matching, it just cannot be field-diffed.
+    schema_coverage: SchemaCoverage = field(default_factory=SchemaCoverage)
 
     @property
     def http_consumer_coverage(self) -> float | None:
@@ -190,10 +235,12 @@ class ExtractionDiagnostics:
             "http_consumers_unresolved": self.http_consumers_unresolved,
             "http_consumer_coverage": self.http_consumer_coverage,
             "symbol_identity": {r: v.to_dict() for r, v in sorted(self.symbol_identity.items())},
+            "schema_coverage": self.schema_coverage.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ExtractionDiagnostics:
+        schema = data.get("schema_coverage") or {}
         return cls(
             total_providers=data.get("total_providers", 0),
             total_consumers=data.get("total_consumers", 0),
@@ -243,6 +290,14 @@ class ExtractionDiagnostics:
                 )
                 for role, v in (data.get("symbol_identity") or {}).items()
             },
+            schema_coverage=SchemaCoverage(
+                total=schema.get("total", 0),
+                bound=schema.get("bound", 0),
+                recovered=schema.get("recovered", 0),
+                shared_symbol=schema.get("shared_symbol", 0),
+                unsupported_language=schema.get("unsupported_language", 0),
+                non_callable=schema.get("non_callable", 0),
+            ),
         )
 
 
@@ -389,6 +444,23 @@ def build_diagnostics(
         for role, rows in (("provider", providers), ("consumer", consumers))
     }
 
+    schema = SchemaCoverage(
+        total=len(providers),
+        bound=sum(1 for c in providers if c.symbol_id is not None),
+        recovered=sum(
+            1 for c in providers if c.schema is not None and c.schema.source == SCHEMA_SOURCE
+        ),
+        shared_symbol=sum(
+            s.get("schema_shared_symbol_provider", 0) for s in stats_by_repo.values()
+        ),
+        unsupported_language=sum(
+            s.get("schema_unsupported_lang_provider", 0) for s in stats_by_repo.values()
+        ),
+        non_callable=sum(
+            s.get("schema_non_callable_provider", 0) for s in stats_by_repo.values()
+        ),
+    )
+
     return ExtractionDiagnostics(
         total_providers=len(providers),
         total_consumers=len(consumers),
@@ -407,4 +479,5 @@ def build_diagnostics(
             s.get("http_consumer_unresolved", 0) for s in stats_by_repo.values()
         ),
         symbol_identity=identity,
+        schema_coverage=schema,
     )

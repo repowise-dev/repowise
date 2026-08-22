@@ -27,6 +27,7 @@ from repowise.core.workspace.config import (
     ensure_workspace_data_dir,
 )
 from repowise.core.workspace.contract_schema import ContractSchema
+from repowise.core.workspace.signature_schema import attach_signature_schemas
 
 if TYPE_CHECKING:
     from repowise.core.workspace.extractors.service_boundary import ServiceBoundary
@@ -40,10 +41,11 @@ _log = logging.getLogger("repowise.workspace.contracts")
 
 CONTRACTS_FILENAME = "contracts.json"
 
-#: Artifact schema version. Bumped to 2 when contracts gained ``symbol_id``.
+#: Artifact schema version. Bumped to 2 when contracts gained ``symbol_id``,
+#: to 3 when providers gained a signature-derived ``schema``.
 #: A store written under an older version is readable but not reusable: its
 #: rows carry no identity, and nothing short of re-extraction can give them one.
-CONTRACTS_VERSION = 2
+CONTRACTS_VERSION = 3
 
 
 # ---------------------------------------------------------------------------
@@ -1019,6 +1021,7 @@ async def run_contract_extraction(
             contracts.extend(found)
 
         stats.update(bind_symbol_ids(contracts, repo_index))
+        stats.update(attach_signature_schemas(contracts, repo_index))
 
         unresolved = stats.get("http_consumer_unresolved", 0)
         if unresolved:
