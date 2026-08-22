@@ -254,6 +254,7 @@ def _has_paired_test_file(rel_path: str, path_basenames: set[str]) -> bool:
     candidates = {
         f"test_{stem}.py",
         f"{stem}_test{test_suffix}",
+        f"{stem}_spec{test_suffix}",
         f"{stem}.test.ts",
         f"{stem}.test.tsx",
         f"{stem}.test.js",
