@@ -19,7 +19,7 @@ from repowise.core.ids import is_external
 from .. import onboarding as _onboarding
 from ..context_assembler import FilePageContext
 from ..models import compute_page_id
-from .helpers import _is_infra_file
+from .helpers import _is_infra_file, decisions_for_files, rank_decisions
 
 if TYPE_CHECKING:
     from ..concept_tree.vocabulary import HouseTerm
@@ -285,7 +285,13 @@ def build_level4_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     run.graph,
                     git_meta_map=run.git_meta_map,
                     page_summaries=run.completed_page_summaries,
-                    decision_records=run.decisions_all,
+                    # The module's own decisions, not the repository's. File
+                    # pages already scope this way; passing the flat list here
+                    # showed the first five written, which on a repo with
+                    # decisions concentrated in one area is the same five on
+                    # every module page -- and they are prompt context, not
+                    # just rendered output.
+                    decision_records=decisions_for_files(run.decisions_by_file, material),
                     dead_code_findings=[
                         d for fc in fcs for d in run.dead_code_by_file.get(fc.file_path, [])
                     ],
@@ -440,7 +446,9 @@ async def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     graph_builder=run.graph_builder,
                     repo_name=run.repo_name,
                     external_systems=run.external_systems,
-                    decision_records=run.decisions_all[:10],
+                    # Repo-wide scope is right here; only the choice of ten was
+                    # list position.
+                    decision_records=rank_decisions(run.decisions_all)[:10],
                     overview_mermaid=overview_mermaid,
                     source_map=run.source_map,
                     # Per-package file counts come from the files this run
