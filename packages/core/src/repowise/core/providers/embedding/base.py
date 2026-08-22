@@ -66,6 +66,38 @@ def resolve_embedding_timeout(
     return selected
 
 
+_EMBED_PREFIX_ENV: dict[str, str] = {
+    "query": "REPOWISE_EMBED_QUERY_PREFIX",
+    "document": "REPOWISE_EMBED_DOC_PREFIX",
+}
+
+
+def resolve_embed_prefix(kind: str) -> str:
+    """The literal text to prepend before embedding a batch of *kind*.
+
+    Some embedding models (e.g. asymmetric-instruction models like
+    NVIDIA's Nemotron-3-Embed) are trained with a fixed ``"query: "`` /
+    ``"passage: "`` (or similar) framing and never apply it themselves — the
+    caller has to. Most models (OpenAI, Gemini, ...) want the raw text and
+    would be actively hurt by an uninvited prefix.
+
+    Reading ``REPOWISE_EMBED_QUERY_PREFIX`` / ``REPOWISE_EMBED_DOC_PREFIX``
+    keeps this opt-in and per-deployment: unset (the default) resolves to
+    ``""`` for both kinds, so an embedder that calls this is inert unless the
+    operator explicitly configures a model that needs it.
+
+    Args:
+        kind: ``"query"`` or ``"document"`` — which side of retrieval *texts*
+            are on. Anything else is a caller bug, not a misconfiguration, so
+            it raises rather than silently defaulting.
+    """
+    try:
+        var = _EMBED_PREFIX_ENV[kind]
+    except KeyError:
+        raise ValueError(f"kind must be 'query' or 'document', got {kind!r}") from None
+    return os.environ.get(var, "")
+
+
 def _report_invalid_timeout(var: str, raw: str, default: float) -> None:
     """Say it where the user will actually see it.
 
@@ -96,11 +128,17 @@ class Embedder(Protocol):
         """Number of dimensions in the embedding vector."""
         ...
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
         """Embed a batch of texts.
 
         Args:
             texts: Non-empty list of strings to embed.
+            kind: ``"query"`` or ``"document"`` — which side of retrieval
+                *texts* are on. Implementations that don't need the
+                distinction (most do not) accept and ignore it; it exists so
+                an asymmetric-instruction model can apply the right prefix
+                (see :func:`resolve_embed_prefix`) without every call site
+                needing to know which models care.
 
         Returns:
             List of unit-length float vectors, one per input string.
@@ -125,7 +163,8 @@ class MockEmbedder:
 
     dimensions: int = 8
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
+        del kind  # deterministic hash is direction-agnostic
         results: list[list[float]] = []
         for text in texts:
             digest = hashlib.sha256(text.encode()).digest()
