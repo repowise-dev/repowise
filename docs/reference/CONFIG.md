@@ -543,19 +543,26 @@ Repowise discovers namespaced model ids from compatible gateways as-is, so
 the model does not need to start with `gpt-`. For another local provider,
 replace the key, URL, and model with that provider's values.
 
-In a terminal, `init` can collect the two values inline when an explicit
-OpenAI-compatible setup is incomplete, so exporting them first is optional:
+In an interactive `repowise init`, choose **OpenAI-compatible (Custom / local
+gateway)**. Repowise then validates the endpoint, collects the key without
+echoing it, verifies the gateway through `/models`, and lets you search the
+discovered models or enter an exact model id. If `/models` is unavailable, you
+can retry the endpoint/key, continue with a manual model id, or return to the
+provider menu:
 
 ```text
+Base URL [http://localhost:20128/v1]:
 API key (hidden): <paste the gateway key>
-Base URL [https://api.openai.com/v1]: http://localhost:20128/v1
+✓ Connected — discovered 47 model(s).
+Select model: ag/gemini-3.7-flash-medium
 ```
 
-The answers are placed in the repo's gitignored `.repowise/.env`, and the
-selected model/provider are written to `config.yaml`. Press Enter at the URL
-prompt to use the official OpenAI endpoint. Scripted runs (`--yes`, CI, or
-non-TTY) remain non-interactive and should continue to use environment
-variables.
+The endpoint is placed in the repo's gitignored `.repowise/.env`; the key is
+saved there only after confirmation, and `--no-save-key` always keeps it
+process-local. The selected runtime provider (`openai`) and exact model id are
+written to `config.yaml`. Choose the separate **openai** row for the official
+OpenAI endpoint. Scripted runs (`--yes`, CI, or non-TTY) remain non-interactive
+and should continue to use environment variables and `--provider openai`.
 
 ### OpenRouter
 

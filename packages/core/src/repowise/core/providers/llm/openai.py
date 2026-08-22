@@ -216,22 +216,31 @@ def _openai_model_options(
         reasoning_modes=("auto", *_openai_supported_reasoning_modes(fallback_model)),
     )
     try:
-        import httpx
-
-        request_kwargs: dict[str, Any] = {
-            "headers": {"Authorization": f"Bearer {api_key}"},
-            "timeout": 5.0,
-        }
-        if _is_loopback_url(base_url):
-            request_kwargs["trust_env"] = False
-        response = httpx.get(f"{base_url.rstrip('/')}/models", **request_kwargs)
-        response.raise_for_status()
-        data = response.json().get("data", [])
+        return _discover_openai_model_options(api_key, base_url, fallback_model)
     except Exception:
         return (fallback,)
 
-    if not isinstance(data, list):
-        return (fallback,)
+
+def _discover_openai_model_options(
+    api_key: str,
+    base_url: str,
+    fallback_model: str,
+) -> tuple[ProviderModelOption, ...]:
+    """Fetch model ids, raising when an endpoint cannot prove it is usable."""
+    import httpx
+
+    request_kwargs: dict[str, Any] = {
+        "headers": {"Authorization": f"Bearer {api_key}"},
+        "timeout": 5.0,
+    }
+    if _is_loopback_url(base_url):
+        request_kwargs["trust_env"] = False
+    response = httpx.get(f"{base_url.rstrip('/')}/models", **request_kwargs)
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        raise ValueError("the /models response does not contain a data list")
+    data = payload["data"]
 
     model_ids = sorted(
         {
@@ -246,7 +255,7 @@ def _openai_model_options(
         }
     )
     if not model_ids:
-        return (fallback,)
+        raise ValueError("the /models response contains no text-generation models")
 
     return tuple(_openai_option(model_id, fallback_model=fallback_model) for model_id in model_ids)
 
@@ -305,6 +314,10 @@ class OpenAIProvider(BaseProvider):
 
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
         return _openai_model_options(self._api_key, self._base_url, self._model)
+
+    def discover_model_options(self) -> tuple[ProviderModelOption, ...]:
+        """Return live `/models` options or raise an actionable endpoint error."""
+        return _discover_openai_model_options(self._api_key, self._base_url, self._model)
 
     async def generate(
         self,

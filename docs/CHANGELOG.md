@@ -85,10 +85,12 @@ The headline this cycle is test intelligence that needs no coverage report. 0.44
   9router's `ag/...` and `ds/...` entries; loopback requests also bypass proxy
   environment parsing so a standard IPv6 `NO_PROXY` entry cannot block them.
 
-- **Explicit provider setup is interactive when a terminal is available.**
-  `repowise init --provider openai --prose` now asks for a missing API key and
-  the optional OpenAI-compatible base URL, then saves both in the repo-local
-  gitignored `.repowise/.env`; CI and `--yes` remain non-interactive.
+- **Custom OpenAI-compatible setup is a first-class init flow.** The provider
+  menu separates official OpenAI from custom/local gateways, validates the
+  endpoint, hides and optionally saves the key, verifies `/models`, supports
+  model search plus exact-id fallback, and offers retry/manual/back recovery.
+  `--no-save-key` persists the non-secret endpoint without persisting the key;
+  CI, `--yes`, and non-TTY runs remain non-interactive.
 
 - **`untested_hotspot` stops accusing files that the tests run.** With no
   coverage ingested it fired on any hotspot without a *paired test file*, which

@@ -383,8 +383,7 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         pages_generated = len(generated_pages)
         docs_mode = "deterministic"
         console.print(
-            f"    [{OK}]✓[/] Rendered {len(generated_pages)} pages from structure "
-            "(no model)\n"
+            f"    [{OK}]✓[/] Rendered {len(generated_pages)} pages from structure (no model)\n"
         )
 
     if ctx.dry_run:
@@ -666,7 +665,11 @@ def _workspace_init(
             index_only = True
         elif mode == "advanced":
             selection = interactive_provider_config_select(
-                console, model, reasoning, repo_path=primary_repo.path
+                console,
+                model,
+                reasoning,
+                repo_path=primary_repo.path,
+                save_key=save_key,
             )
             provider_name = selection.provider_name
             model = selection.model
@@ -695,7 +698,11 @@ def _workspace_init(
         elif not index_only:
             # "full" mode
             selection = interactive_provider_config_select(
-                console, model, reasoning, repo_path=primary_repo.path
+                console,
+                model,
+                reasoning,
+                repo_path=primary_repo.path,
+                save_key=save_key,
             )
             provider_name = selection.provider_name
             model = selection.model
