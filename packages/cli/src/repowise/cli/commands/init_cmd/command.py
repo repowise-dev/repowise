@@ -1453,6 +1453,13 @@ def init_command(
     # this run, so persistence/state below treat it as index-only. So does
     # `no_provider`: there is no model to do the work either way.
     effective_index_only = index_only or cost_declined or no_provider
+    # The generation phase rebuilds the embedder, and that second build can
+    # degrade even when the header probe was clean (issue #1369). The phase
+    # records it on ``result``; fold it into the run record so state.json's
+    # ``degraded`` list reports it just like a header-probe degradation would.
+    gen_embedder_degraded = getattr(result, "embedder_degraded", None)
+    if gen_embedder_degraded:
+        run_warnings.append(gen_embedder_degraded)
     print_phase_header(
         console,
         total_phases,

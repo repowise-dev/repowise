@@ -50,6 +50,7 @@ from repowise.core.generation.models import (
     count_stub_fallbacks,
     is_stub_fallback,
 )
+from repowise.core.providers.embedding.base import KeylessEmbedder
 
 __all__ = [
     "COST_GATE_USD",
@@ -284,6 +285,30 @@ def run_repo_generation(
     embedder_impl: Any = build_embedder(embedder_name_resolved, repo_path)
     vector_store: Any = build_vector_store(repo_path, embedder_impl)
     result.vector_store = vector_store
+
+    # The generation phase rebuilds the embedder, and that second build can
+    # degrade even when the header probe was clean (Ollama stops mid-run, a key
+    # is revoked between the header and generation). ``build_embedder`` warns on
+    # stderr, which a human watching sees — but a scripted run only has the
+    # persisted state record, and the run would otherwise write mock vectors
+    # with nothing in ``state.json`` saying so. Record the degradation here, on
+    # the same object the callers persist, so a degraded generation-phase
+    # embedder is reported exactly like the header probe's.
+    #
+    # ``mock`` is the keyless default and reaching it is not a failure, so it is
+    # only reported when a real backend was requested and silently downgraded.
+    requested_real = embedder_name_resolved not in ("mock", "ollama")
+    degraded_embedder = isinstance(embedder_impl, KeylessEmbedder) and (
+        requested_real or embedder_name_resolved == "ollama"
+    )
+    if degraded_embedder:
+        result.embedder_degraded = (
+            f"Configured embedder {embedder_name_resolved!r} could not be built, "
+            "so this run wrote keyless (mock) vectors and has no semantic search. "
+            "Fix the key or endpoint and run `repowise reindex` to restore it."
+        )
+    else:
+        result.embedder_degraded = None
 
     deterministic = bool(getattr(gen_config, "deterministic", False))
 
