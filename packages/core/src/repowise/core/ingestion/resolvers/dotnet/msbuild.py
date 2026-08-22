@@ -56,6 +56,11 @@ class MSBuildProject:
     project_references: list[Path] = field(default_factory=list)  # absolute paths to referenced .csproj
     package_references: set[str] = field(default_factory=set)  # NuGet package ids
     project_usings: set[str] = field(default_factory=set)  # <Using Include="X"/> namespaces
+    package_id: str | None = None  # <PackageId>, the id this project publishes under
+    #: Tri-state on purpose: None = the project says nothing, which is not the
+    #: same as an explicit <IsPackable>false</IsPackable>.
+    is_packable: bool | None = None
+    generate_package_on_build: bool = False
 
     @property
     def name(self) -> str:
@@ -94,6 +99,12 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
             project.assembly_name = elem.text.strip()
         elif tag == "ImplicitUsings" and elem.text:
             project.implicit_usings = _bool(elem.text)
+        elif tag == "PackageId" and elem.text:
+            project.package_id = elem.text.strip()
+        elif tag == "IsPackable" and elem.text:
+            project.is_packable = _bool(elem.text)
+        elif tag == "GeneratePackageOnBuild" and elem.text:
+            project.generate_package_on_build = _bool(elem.text)
         elif tag == "ProjectReference":
             include = elem.get("Include")
             if include:

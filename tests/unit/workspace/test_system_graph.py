@@ -313,6 +313,7 @@ def test_system_graph_json_shape_is_locked():
         "http_consumer_coverage",
         "symbol_identity",
         "schema_coverage",
+        "code_api",
     }
 
 

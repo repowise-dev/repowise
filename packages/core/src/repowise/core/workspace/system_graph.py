@@ -68,6 +68,9 @@ _CONTRACT_TYPE_TO_EDGE_KIND: dict[str, str] = {
     "socket": "socket",
     "topic": "event",
     "data": "db",
+    # A package boundary is exactly what the existing "package" kind means,
+    # so the graph, the conformance rules and the map need no new taxonomy.
+    "code": "package",
 }
 
 #: All edge kinds the graph can carry. ``db`` carries the shared-table

@@ -21,6 +21,7 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from repowise.core.workspace.code_api import CODE_CONTRACT_TYPE
 from repowise.core.workspace.contracts import (
     Contract,
     ContractLink,
@@ -180,6 +181,39 @@ class SchemaCoverage:
 
 
 @dataclass
+class CodeApiCoverage:
+    """How much of the workspace's package surface became a ``code`` contract.
+
+    Two denominators, as :class:`SchemaCoverage` carries two. *manifests* counts
+    every manifest seen, so *published* against it says how much of the
+    workspace declares a package at all; *linked_ratio* is over the providers
+    actually emitted and says whether the consumer join is working.
+    """
+
+    manifests: int = 0
+    published: int = 0
+    unsupported_ecosystem: int = 0
+    providers: int = 0
+    consumers: int = 0
+    linked_providers: int = 0
+
+    def _ratio(self, numerator: int, denominator: int) -> float | None:
+        return numerator / denominator if denominator > 0 else None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "manifests": self.manifests,
+            "published": self.published,
+            "unsupported_ecosystem": self.unsupported_ecosystem,
+            "providers": self.providers,
+            "consumers": self.consumers,
+            "linked_providers": self.linked_providers,
+            "published_ratio": self._ratio(self.published, self.manifests),
+            "linked_ratio": self._ratio(self.linked_providers, self.providers),
+        }
+
+
+@dataclass
 class ExtractionDiagnostics:
     """Aggregate explanation of contract extraction + matching coverage."""
 
@@ -203,6 +237,8 @@ class ExtractionDiagnostics:
     #: Request-schema recovery over providers. Reported, never asserted: a
     #: provider without a schema keeps matching, it just cannot be field-diffed.
     schema_coverage: SchemaCoverage = field(default_factory=SchemaCoverage)
+    #: Published-package surface coverage. Reported, never asserted.
+    code_api: CodeApiCoverage = field(default_factory=CodeApiCoverage)
 
     @property
     def http_consumer_coverage(self) -> float | None:
@@ -236,11 +272,13 @@ class ExtractionDiagnostics:
             "http_consumer_coverage": self.http_consumer_coverage,
             "symbol_identity": {r: v.to_dict() for r, v in sorted(self.symbol_identity.items())},
             "schema_coverage": self.schema_coverage.to_dict(),
+            "code_api": self.code_api.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ExtractionDiagnostics:
         schema = data.get("schema_coverage") or {}
+        code = data.get("code_api") or {}
         return cls(
             total_providers=data.get("total_providers", 0),
             total_consumers=data.get("total_consumers", 0),
@@ -297,6 +335,14 @@ class ExtractionDiagnostics:
                 shared_symbol=schema.get("shared_symbol", 0),
                 unsupported_language=schema.get("unsupported_language", 0),
                 non_callable=schema.get("non_callable", 0),
+            ),
+            code_api=CodeApiCoverage(
+                manifests=code.get("manifests", 0),
+                published=code.get("published", 0),
+                unsupported_ecosystem=code.get("unsupported_ecosystem", 0),
+                providers=code.get("providers", 0),
+                consumers=code.get("consumers", 0),
+                linked_providers=code.get("linked_providers", 0),
             ),
         )
 
@@ -461,6 +507,24 @@ def build_diagnostics(
         ),
     )
 
+    code_providers = [c for c in providers if c.contract_type == CODE_CONTRACT_TYPE]
+    published = sum(s.get("code_published_packages", 0) for s in stats_by_repo.values())
+    unsupported = sum(s.get("code_unsupported_ecosystem", 0) for s in stats_by_repo.values())
+    code_api = CodeApiCoverage(
+        manifests=published
+        + unsupported
+        + sum(s.get("code_unpublished_manifest", 0) for s in stats_by_repo.values()),
+        published=published,
+        unsupported_ecosystem=unsupported,
+        providers=len(code_providers),
+        consumers=sum(1 for c in consumers if c.contract_type == CODE_CONTRACT_TYPE),
+        linked_providers=sum(
+            1
+            for p in code_providers
+            if _contract_key(p.repo, p.file_path, p.contract_id) in matched_providers
+        ),
+    )
+
     return ExtractionDiagnostics(
         total_providers=len(providers),
         total_consumers=len(consumers),
@@ -480,4 +544,5 @@ def build_diagnostics(
         ),
         symbol_identity=identity,
         schema_coverage=schema,
+        code_api=code_api,
     )

@@ -45,7 +45,7 @@ CONTRACTS_FILENAME = "contracts.json"
 #: to 3 when providers gained a signature-derived ``schema``.
 #: A store written under an older version is readable but not reusable: its
 #: rows carry no identity, and nothing short of re-extraction can give them one.
-CONTRACTS_VERSION = 3
+CONTRACTS_VERSION = 4
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +59,7 @@ class Contract:
 
     repo: str  # repo alias
     contract_id: str  # e.g. "http::GET::/api/users/{param}", "data::orders"
-    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data"
+    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data" | "code"
     role: str  # "provider" | "consumer"
     file_path: str  # relative to repo root
     symbol_name: str  # handler name, service.method, etc. — display only
@@ -119,7 +119,7 @@ class ContractLink:
     """A matched provider↔consumer pair across repos."""
 
     contract_id: str
-    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data"
+    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data" | "code"
     match_type: str  # "exact" | "candidate" | "manual"
     confidence: float
     provider_repo: str
@@ -313,6 +313,11 @@ def normalize_contract_id(contract_id: str) -> str:
 
     if ctype == "topic" and len(parts) == 2:
         return f"topic::{parts[1].lower()}"
+
+    # Package name is case-insensitive, the symbol is not: the lowercase
+    # fallback would conflate `Order` with `order`.
+    if ctype == "code" and len(parts) == 3:
+        return f"code::{parts[1].lower()}::{parts[2]}"
 
     return contract_id.lower()
 
@@ -864,6 +869,7 @@ async def run_contract_extraction(
     mislabel both. Matching is dict-indexed and costs milliseconds against
     seconds of extraction, so scoping it would buy nothing and risk everything.
     """
+    from .code_api import CodeSurface, build_code_surface
     from .extractors import (
         DataExtractor,
         GrpcExtractor,
@@ -950,6 +956,15 @@ async def run_contract_extraction(
         if alias not in heads:
             heads[alias] = await asyncio.to_thread(get_head_commit, repo_paths[alias])
 
+    # Built once, workspace-wide: a code consumer only exists when some *other*
+    # repo publishes the package it imports, so neither half of it can be
+    # decided inside one repo's extraction.
+    code_surface = (
+        await asyncio.to_thread(build_code_surface, repo_paths, workspace_index, exclude)
+        if contract_config.detect_code_api
+        else CodeSurface()
+    )
+
     # Per-repo extraction. Returns the contracts plus the counters the
     # extractors filled in, which are the denominator half of any coverage
     # figure and so must survive past this function.
@@ -975,8 +990,9 @@ async def run_contract_extraction(
             extractors.append(TopicExtractor())
         if contract_config.detect_data:
             extractors.append(DataExtractor())
-        if not extractors:
-            return contracts, {}
+        code_rows = code_surface.for_repo(alias)
+        if not extractors and not code_rows:
+            return contracts, dict(code_surface.stats.get(alias, {}))
 
         # One walk per repo, shared by every extractor. Each used to walk and
         # re-read the tree itself, so a file claimed by N extractors was read N
@@ -1019,6 +1035,13 @@ async def run_contract_extraction(
                 c.service = assign_service(c.file_path, boundaries)
                 c.meta.setdefault(EXTRACTION_LAYER_KEY, LAYER_REGEX)
             contracts.extend(found)
+
+        # Before binding, so a code provider's pre-set symbol id flows into
+        # attach_signature_schemas and its parameter list becomes the schema.
+        for c in code_rows:
+            c.service = assign_service(c.file_path, boundaries)
+        contracts.extend(code_rows)
+        stats.update(code_surface.stats.get(alias, {}))
 
         stats.update(bind_symbol_ids(contracts, repo_index))
         stats.update(attach_signature_schemas(contracts, repo_index))
