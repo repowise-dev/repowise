@@ -77,6 +77,16 @@ class LanguageSpec:
     # ``Test.java`` never do (conventions match with their own case).
     test_camel_suffixes: tuple[str, ...] = ()  # ("Test", "Tests", "IT")
 
+    # Case-sensitive camel-boundary test PREFIXES — the mirror of
+    # ``test_camel_suffixes`` for languages whose test-program convention
+    # names the file ``Test<Subject>`` rather than ``<Subject>Test``.
+    # ``TestKeymap.dpr`` matches (Delphi's standalone console-test-program
+    # convention: one ``Test<Unit>.dpr`` per unit under test, sometimes
+    # exercising several units at once); ``Testing.dpr`` and bare
+    # ``Test.dpr`` never do (conventions match with their own case, and
+    # need a following uppercase letter to be a real word boundary).
+    test_camel_prefixes: tuple[str, ...] = ()  # ("Test",)
+
     # Case-sensitive camel-boundary suffixes marking test *fixture* files
     # ("ParameterizedTypeFixtures.java") — support data living in the test
     # tree. A fixtures file provides data, it doesn't verify behavior, so
