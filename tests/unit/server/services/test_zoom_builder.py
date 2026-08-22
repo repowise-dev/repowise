@@ -11,7 +11,6 @@ from repowise.server.services.c4_builder.models import (
     ArchTourStep,
 )
 from repowise.server.services.zoom_builder import assemble_zoom_map
-from repowise.server.services.zoom_builder.layout import lay_out
 from repowise.server.services.zoom_builder.metrics import rollup_health, rollup_metrics
 from repowise.server.services.zoom_builder.models import ZoomNode
 from repowise.server.services.zoom_builder.relations import aggregate_relations
@@ -285,43 +284,6 @@ def test_rollup_health_none_when_no_scored_descendant():
 
 
 # ---------------------------------------------------------------------------
-# layout
-# ---------------------------------------------------------------------------
-
-
-def test_layout_is_deterministic_and_within_unit_box():
-    layers = [
-        LayerSpec(
-            id="layer:service",
-            name="Service",
-            display_order=0,
-            node_ids=[f"pkg/f{i}.py" for i in range(6)],
-        ),
-    ]
-    leaf_info = {f"pkg/f{i}.py": LeafInfo() for i in range(6)}
-    root_id, nodes = build_tree("proj", layers, leaf_info)
-    nodes = score_tree(root_id, nodes, compute_file_signals(
-        [FileStat(path=f"pkg/f{i}.py", degree=i) for i in range(6)], [], [], set()
-    ))
-    a = lay_out(root_id, nodes)
-    b = lay_out(root_id, nodes)
-
-    for nid, node in a.items():
-        assert node.layout == b[nid].layout  # deterministic
-        rect = node.layout
-        assert rect is not None
-        assert -1e-6 <= rect.x <= 1.0 + 1e-6
-        assert -1e-6 <= rect.y <= 1.0 + 1e-6
-        assert rect.x + rect.w <= 1.0 + 1e-6
-        assert rect.y + rect.h <= 1.0 + 1e-6
-
-    # children of a parent tile its unit box (areas sum ~ 1)
-    folder = next(n for n in a.values() if n.children and n.kind != "system")
-    total = sum(a[c].layout.w * a[c].layout.h for c in folder.children)
-    assert abs(total - 1.0) < 1e-3
-
-
-# ---------------------------------------------------------------------------
 # relations
 # ---------------------------------------------------------------------------
 
@@ -478,8 +440,6 @@ def test_assemble_zoom_map_full():
     # the entry-point file is the top-ranked sibling under its parent
     main = zoom.nodes[file_id("pkg/main.py")]
     assert main.is_entry_point and main.sibling_rank == 1
-    # layout assigned everywhere
-    assert all(n.layout is not None for n in zoom.nodes.values())
     assert not zoom.truncated
 
 

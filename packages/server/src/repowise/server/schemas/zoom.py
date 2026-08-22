@@ -3,21 +3,14 @@
 One nested containment tree (system -> layer -> group -> folder -> file) served
 as a flat list of nodes (each carrying its own id), plus parent-relative
 relations. The canvas renderer indexes the list by id and reconstructs the tree
-from ``parent_id`` / ``children``, then uses ``layout`` (parent ``[0,1]`` space)
-for clip-and-scale and ``importance`` / ``sibling_rank`` for density caps. The
-list is emitted in a stable order (sorted by id).
+from ``parent_id`` / ``children``, lays the children out itself, and uses
+``importance`` / ``sibling_rank`` for density caps. The list is emitted in a
+stable order (sorted by id).
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-
-
-class ZoomRectResponse(BaseModel):
-    x: float
-    y: float
-    w: float
-    h: float
 
 
 class ZoomMetricsResponse(BaseModel):
@@ -40,7 +33,6 @@ class ZoomNodeResponse(BaseModel):
     importance: float = 0.0
     sibling_rank: int = 0
     metrics: ZoomMetricsResponse = Field(default_factory=ZoomMetricsResponse)
-    layout: ZoomRectResponse | None = None
     summary: str = ""
     language: str | None = None
     # Code-health score (0..10, higher = healthier), matching the /files treemap.

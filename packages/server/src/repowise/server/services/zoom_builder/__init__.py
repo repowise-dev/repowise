@@ -4,13 +4,13 @@ Public API
 ----------
 ``build_zoom_map(session, repo, *, max_depth=None, focus=None)`` returns the
 nested containment tree (system -> layer -> group -> folder -> file) with
-execution-aware importance, rolled-up metrics, parent-relative relations, and a
-deterministic treemap layout.
+execution-aware importance, rolled-up metrics and parent-relative relations.
+Placement is the canvas's job, not this service's.
 
 Like :mod:`c4_builder`, the map is derived ON DEMAND from the persisted graph
 (it reuses ``c4_builder.build_architecture_view`` for the heavy load), so it
 works on hosted backends with no checkout and never goes stale. Everything below
-the load is pure functions (tree / scoring / metrics / relations / layout) that
+the load is pure functions (tree / scoring / metrics / relations) that
 unit-test without a session.
 """
 
@@ -21,7 +21,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.server.services.c4_builder.architecture import build_architecture_view
 from repowise.server.services.c4_builder.models import ArchitectureView
 
-from .layout import lay_out
 from .metrics import rollup_health, rollup_metrics
 from .models import ZoomMap, ZoomNode, ZoomRelation
 from .relations import aggregate_relations
@@ -133,7 +132,6 @@ def assemble_zoom_map(
     nodes = rollup_metrics(root_id, nodes)
     nodes = rollup_health(root_id, nodes)
     nodes = score_tree(root_id, nodes, signals)
-    nodes = lay_out(root_id, nodes)
     relations = aggregate_relations(nodes, edges)
 
     # Honest count of files actually placed in the tree (a file the view knows

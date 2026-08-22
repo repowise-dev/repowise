@@ -24,7 +24,7 @@ import { buildScene } from "./scene";
 import { resolveZoomPalette } from "./theme";
 import type { ZoomMap, ZoomNode, ZoomRelation } from "./types";
 import { describeRelations, summarizeRelations } from "./relation-summary";
-import { healthBandLabel, nodeRoles } from "./node-signals";
+import { healthBandLabel, KIND_LABEL, nodeRoles } from "./node-signals";
 import { useThemeVersion } from "../shared/use-theme-tokens";
 
 export interface ZoomCanvasHandle {
@@ -370,14 +370,6 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
   );
 });
 
-const HOVER_KIND_LABEL: Record<ZoomNode["kind"], string> = {
-  system: "System",
-  layer: "Layer",
-  group: "Group",
-  folder: "Folder",
-  file: "File",
-};
-
 /**
  * A deliberately light tooltip: kind, name, path, a one-line summary and, when
  * the host supplies the index, what this box's arrows mean. The full metric
@@ -413,7 +405,7 @@ function HoverCard({
       style={{ left: hover.sx, top: hover.sy, transform: `translate(${tx}, ${ty})` }}
     >
       <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-        {HOVER_KIND_LABEL[node.kind]}
+        {KIND_LABEL[node.kind]}
       </div>
       <div className="mt-0.5 font-semibold text-[var(--color-text-primary)]">{node.name}</div>
       {node.path && node.path !== node.name && (

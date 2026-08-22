@@ -30,7 +30,6 @@ from repowise.server.schemas import (
     ZoomMapResponse,
     ZoomMetricsResponse,
     ZoomNodeResponse,
-    ZoomRectResponse,
     ZoomRelationResponse,
 )
 from repowise.server.services import c4_builder
@@ -296,16 +295,6 @@ def _zoom_response(zoom: ZoomMap) -> ZoomMapResponse:
                     dead_count=n.metrics.dead_count,
                     entry_point_count=n.metrics.entry_point_count,
                     on_flow_count=n.metrics.on_flow_count,
-                ),
-                layout=(
-                    ZoomRectResponse(
-                        x=round(n.layout.x, 6),
-                        y=round(n.layout.y, 6),
-                        w=round(n.layout.w, 6),
-                        h=round(n.layout.h, 6),
-                    )
-                    if n.layout is not None
-                    else None
                 ),
                 summary=n.summary,
                 language=n.language,

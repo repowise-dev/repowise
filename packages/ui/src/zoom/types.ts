@@ -3,24 +3,16 @@
  *
  * The backend serves one nested containment tree (system -> layer -> group ->
  * folder -> file) as a flat list of nodes, each carrying its own `id`, plus
- * parent-relative `relations`. The renderer indexes the list by id and rebuilds
- * the tree from `parent_id` / `children`. Every node's `layout` rect is in its
- * parent's `[0,1]` space, which composes multiplicatively down the tree into an
- * absolute world rect for clip-and-scale drawing.
+ * parent-relative `relations`. The renderer indexes the list by id, rebuilds
+ * the tree from `parent_id` / `children`, and packs each parent's children
+ * itself (see `layout.ts`) into rects that compose multiplicatively down the
+ * tree into an absolute world rect for clip-and-scale drawing.
  *
  * Source of truth: `packages/server/src/repowise/server/schemas/zoom.py`.
  */
 
 /** Node kinds, coarsest to finest. A leaf is always `file`. */
 export type ZoomKind = "system" | "layer" | "group" | "folder" | "file";
-
-/** A child's allocation inside its parent, in parent `[0,1]` space. */
-export interface ZoomRect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
 
 /** Counts rolled up over a node's subtree (a file is its own subtree). */
 export interface ZoomMetrics {
@@ -43,7 +35,6 @@ export interface ZoomNode {
   importance: number;
   sibling_rank: number;
   metrics: ZoomMetrics;
-  layout: ZoomRect | null;
   summary: string;
   language: string | null;
   /** Code-health score (0-10, higher = healthier), matching the /files treemap.

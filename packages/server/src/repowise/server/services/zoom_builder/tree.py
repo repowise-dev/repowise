@@ -12,7 +12,7 @@ This is deliberately NOT ``derive_modules`` (which right-sizes wiki modules to
 zoom folder by folder.
 
 Pure and framework-agnostic: inputs are plain specs, output is a dict of frozen
-``ZoomNode``. Importance, metrics, and layout are filled by later passes.
+``ZoomNode``. Importance and metrics are filled by later passes.
 """
 
 from __future__ import annotations

@@ -219,7 +219,6 @@ from .zoom import (
     ZoomMapResponse,
     ZoomMetricsResponse,
     ZoomNodeResponse,
-    ZoomRectResponse,
     ZoomRelationResponse,
 )
 
@@ -393,6 +392,5 @@ __all__ = [
     "ZoomMapResponse",
     "ZoomMetricsResponse",
     "ZoomNodeResponse",
-    "ZoomRectResponse",
     "ZoomRelationResponse",
 ]

@@ -24,6 +24,7 @@ import {
   describeCap,
   describeRelations,
   healthBandLabel,
+  KIND_LABEL,
   nodeRoles,
   summarizeRelations,
 } from "@repowise-dev/ui/zoom";
@@ -46,14 +47,6 @@ interface ZoomDetailPanelProps {
 function fileHref(repoId: string, path: string): string {
   return fileEntityPath(`/repos/${repoId}`, path);
 }
-
-const KIND_LABEL: Record<ZoomNode["kind"], string> = {
-  system: "System",
-  layer: "Layer",
-  group: "Group",
-  folder: "Folder",
-  file: "File",
-};
 
 /** A micro-label: mono, because it labels something a machine produced. */
 function Micro({ children }: { children: React.ReactNode }) {

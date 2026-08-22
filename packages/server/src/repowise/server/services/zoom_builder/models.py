@@ -1,7 +1,7 @@
 """Plain dataclasses produced by the zoom-map builder.
 
 Framework-agnostic (no Pydantic, no SQLAlchemy) so the pure tree / scoring /
-layout / relation functions unit-test without a session, mirroring
+metric / relation functions unit-test without a session, mirroring
 ``c4_builder.models``. The router wraps these into Pydantic response models.
 
 The zoom map is one nested containment tree:
@@ -10,8 +10,8 @@ The zoom map is one nested containment tree:
 
 Every node carries an execution-aware ``importance`` (0..1) and a
 ``sibling_rank`` so the renderer can cap how many children it draws at each
-zoom depth, plus a deterministic ``layout`` rect (parent ``[0,1]`` space) for
-the clip-and-scale canvas.
+zoom depth. Placement is not here: the canvas packs each parent's children
+itself, from those two fields.
 """
 
 from __future__ import annotations
@@ -20,20 +20,6 @@ from dataclasses import dataclass, field
 
 # Node kinds, coarsest to finest. A leaf is always ``file``.
 NODE_KINDS = ("system", "layer", "group", "folder", "file")
-
-
-@dataclass(frozen=True)
-class ZoomRect:
-    """A child's allocation inside its parent, in parent ``[0,1]`` space.
-
-    The renderer maps this straight to screen space: scale child content by
-    ``(w, h)`` and translate by ``(x, y)`` (clip-and-scale recursion).
-    """
-
-    x: float
-    y: float
-    w: float
-    h: float
 
 
 @dataclass(frozen=True)
@@ -62,7 +48,6 @@ class ZoomNode:
     importance: float = 0.0       # 0..1, execution-aware, normalized within siblings
     sibling_rank: int = 0         # 1 = most important among siblings
     metrics: ZoomMetrics = field(default_factory=ZoomMetrics)
-    layout: ZoomRect | None = None
     summary: str = ""
     language: str | None = None
     # Code-health score on the 0..10 scale (higher = healthier), matching the
