@@ -12,8 +12,12 @@ import sqlite3
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import func, select
 
 from repowise.core.docs_mode import resolve_docs_mode
+from repowise.core.persistence import crud
+from repowise.core.persistence.database import get_session
+from repowise.core.persistence.models import GitMetadata, GraphNode, HealthFileMetric, Page
 from repowise.server.deps import (
     get_cross_repo_enricher,
     get_workspace_config,
@@ -58,17 +62,46 @@ def _require_workspace(ws_config: object) -> None:
         raise HTTPException(status_code=404, detail="Not running in workspace mode")
 
 
-def _query_top_language(db_path: Path) -> str:
-    """Return the most common language across graph_nodes in a repo's wiki.db."""
-    if not db_path.exists():
+async def _query_top_language(
+    db_path: Path, session_factory=None, repo_path: Path | None = None
+) -> str:
+    """Return the most common language across graph_nodes for a repo.
+
+    Reads the repo-local ``wiki.db`` (SQLite) when present, otherwise falls
+    back to the configured database (e.g. PostgreSQL) keyed by ``local_path``.
+    """
+    if db_path and Path(db_path).exists():
+        try:
+            with sqlite3.connect(str(db_path)) as conn:
+                row = conn.execute(
+                    "SELECT language, COUNT(*) AS cnt FROM graph_nodes "
+                    "WHERE node_type = 'file' AND language IS NOT NULL AND language != '' "
+                    "GROUP BY language ORDER BY cnt DESC LIMIT 1"
+                ).fetchone()
+                return row[0] if row else "unknown"
+        except Exception:
+            return "unknown"
+
+    if session_factory is None or repo_path is None:
         return "unknown"
     try:
-        with sqlite3.connect(str(db_path)) as conn:
-            row = conn.execute(
-                "SELECT language, COUNT(*) AS cnt FROM graph_nodes "
-                "WHERE node_type = 'file' AND language IS NOT NULL AND language != '' "
-                "GROUP BY language ORDER BY cnt DESC LIMIT 1"
-            ).fetchone()
+        async with get_session(session_factory) as session:
+            repo = await crud.get_repository_by_path(session, str(Path(repo_path).resolve()))
+            if repo is None:
+                return "unknown"
+            result = await session.execute(
+                select(GraphNode.language, func.count(GraphNode.id))
+                .where(
+                    GraphNode.repository_id == repo.id,
+                    GraphNode.node_type == "file",
+                    GraphNode.language.is_not(None),
+                    GraphNode.language != "",
+                )
+                .group_by(GraphNode.language)
+                .order_by(func.count(GraphNode.id).desc())
+                .limit(1)
+            )
+            row = result.first()
             return row[0] if row else "unknown"
     except Exception:
         return "unknown"
@@ -100,8 +133,17 @@ def _resolve_graph_health_score(stats: dict) -> tuple[float, str]:
     )
 
 
-def _query_repo_stats(db_path: Path) -> dict:
-    """Query basic stats from a repo's wiki.db using raw sqlite3.
+async def _query_repo_stats(
+    db_path: Path,
+    session_factory=None,
+    repo_path: Path | None = None,
+) -> dict:
+    """Query basic stats for a workspace repo.
+
+    Reads the repo-local ``wiki.db`` (SQLite) when present. When the repo is
+    indexed into the configured database instead — e.g. PostgreSQL, where there
+    is no per-repo ``.repowise/wiki.db`` file — falls back to querying the
+    configured session factory keyed by the repo's absolute ``local_path``.
 
     Returns a dict with repo_id, file_count, symbol_count, page_count,
     doc_coverage_pct, hotspot_count, health_score, status, docs_enabled, and
@@ -122,22 +164,36 @@ def _query_repo_stats(db_path: Path) -> dict:
         "docs_enabled": False,
         "docs_skip_reason": None,
     }
+
+    repo_root = Path(repo_path).resolve() if repo_path else None
     # Surface docs lifecycle from state.json so the UI shows a coherent
     # picture even when only indexing (no docs) ran.
     try:
         import json as _json
 
-        state_path = db_path.parent / "state.json"
+        state_path = (db_path.parent if db_path else Path(repo_root or ".")) / "state.json"
         if state_path.is_file():
             state = _json.loads(state_path.read_text(encoding="utf-8"))
             result["docs_enabled"] = resolve_docs_mode(state) != "none"
             result["docs_skip_reason"] = state.get("docs_skip_reason")
     except Exception:
         pass
-    if not db_path.exists():
-        if not db_path.parent.parent.is_dir():
+
+    # Prefer the repo-local SQLite store; fall back to the configured DB.
+    if db_path and db_path.exists():
+        _query_repo_stats_from_sqlite(db_path, result)
+    elif session_factory is not None and repo_root is not None:
+        if not repo_root.is_dir():
             result["status"] = "missing_dir"
-        return result
+            return result
+        await _query_repo_stats_from_db(session_factory, str(repo_root), result)
+    elif db_path and not db_path.parent.parent.is_dir():
+        result["status"] = "missing_dir"
+    return result
+
+
+def _query_repo_stats_from_sqlite(db_path: Path, result: dict) -> None:
+    """Populate *result* from a repo-local SQLite wiki.db."""
     result["status"] = "indexed"
     try:
         conn = sqlite3.connect(str(db_path))
@@ -148,7 +204,7 @@ def _query_repo_stats(db_path: Path) -> dict:
         if row:
             result["repo_id"] = row[0]
 
-        # file count (graph_nodes) 
+        # file count (graph_nodes)
         row = c.execute("SELECT COUNT(*) FROM graph_nodes WHERE node_type = 'file'").fetchone()
         result["file_count"] = row[0] if row else 0
 
@@ -165,9 +221,7 @@ def _query_repo_stats(db_path: Path) -> dict:
         result["doc_coverage_pct"] = round(float(row[0] or 0.0) * 100, 1)
 
         # hotspot count — use the canonical is_hotspot flag, matching the rest
-        # of the codebase (module_health, extract-demo-data). The earlier
-        # churn_percentile >= 90 predicate never matched: churn_percentile is
-        # stored on a 0.0-1.0 scale and only scaled to 0-100 at the API layer.
+        # of the codebase (module_health, extract-demo-data).
         try:
             row = c.execute("SELECT COUNT(*) FROM git_metadata WHERE is_hotspot = 1").fetchone()
             result["hotspot_count"] = row[0] if row else 0
@@ -181,7 +235,89 @@ def _query_repo_stats(db_path: Path) -> dict:
     # Read once here rather than per-endpoint: both the workspace listing and
     # the graph need the canonical score, and this used to be a second sweep.
     result["health_score"] = read_repo_health_score(db_path)
-    return result
+
+
+async def _query_repo_stats_from_db(session_factory, local_path: str, result: dict) -> None:
+    """Populate *result* from the configured (e.g. PostgreSQL) database.
+
+    The repo row is keyed by ``local_path`` in the primary DB; counts are
+    aggregated from the same tables the SQLite path reads.
+    """
+    try:
+        async with get_session(session_factory) as session:
+            repo = await crud.get_repository_by_path(session, local_path)
+            if repo is None:
+                return
+            result["repo_id"] = repo.id
+            result["status"] = "indexed"
+
+            # file count (graph_nodes)
+            result["file_count"] = (
+                await session.execute(
+                    select(func.count(GraphNode.id)).where(
+                        GraphNode.repository_id == repo.id,
+                        GraphNode.node_type == "file",
+                    )
+                )
+            ).scalar_one() or 0
+
+            # symbol count
+            result["symbol_count"] = (
+                await session.execute(
+                    select(func.coalesce(func.sum(GraphNode.symbol_count), 0)).where(
+                        GraphNode.repository_id == repo.id
+                    )
+                )
+            ).scalar_one() or 0
+
+            # page count
+            result["page_count"] = (
+                await session.execute(
+                    select(func.count(Page.id)).where(Page.repository_id == repo.id)
+                )
+            ).scalar_one() or 0
+
+            # doc coverage (avg confidence * 100)
+            avg_conf = (
+                await session.execute(
+                    select(func.avg(Page.confidence)).where(Page.repository_id == repo.id)
+                )
+            ).scalar_one()
+            result["doc_coverage_pct"] = round(float(avg_conf or 0.0) * 100, 1)
+
+            # hotspot count — canonical is_hotspot flag.
+            try:
+                result["hotspot_count"] = (
+                    await session.execute(
+                        select(func.count(GitMetadata.id)).where(
+                            GitMetadata.repository_id == repo.id,
+                            GitMetadata.is_hotspot.is_(True),
+                        )
+                    )
+                ).scalar_one() or 0
+            except Exception:
+                result["hotspot_count"] = 0  # table or column may not exist
+    except Exception:
+        _log.debug("Failed to query stats from db for %s", local_path, exc_info=True)
+        return
+
+    # Canonical health score from the health_file_metrics table, matching
+    # read_repo_health_score's NLOC-weighted average.
+    try:
+        async with get_session(session_factory) as session:
+            row = (
+                await session.execute(
+                    select(
+                        func.sum(HealthFileMetric.score * func.max(HealthFileMetric.nloc, 1)),
+                        func.sum(func.max(HealthFileMetric.nloc, 1)),
+                    ).where(HealthFileMetric.repository_id == result["repo_id"])
+                )
+            ).first()
+            if row and row[1]:
+                avg = float(row[0]) / float(row[1])
+                result["health_score"] = max(0.0, min(100.0, round(avg * 10.0, 1)))
+    except Exception:
+        result["health_score"] = None
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +341,7 @@ async def get_workspace(
 
     ws_root = getattr(request.app.state, "workspace_root", None)
     ws_root_path = Path(ws_root) if ws_root else None
+    session_factory = getattr(request.app.state, "session_factory", None)
 
     repo_entries = []
     for r in ws_config.repos:
@@ -212,7 +349,7 @@ async def get_workspace(
         if ws_root_path:
             repo_path = (ws_root_path / r.path).resolve()
             db_path = repo_path / ".repowise" / "wiki.db"
-            stats = _query_repo_stats(db_path)
+            stats = await _query_repo_stats(db_path, session_factory, repo_path)
         repo_entries.append(
             WorkspaceRepoEntry(
                 alias=r.alias,
@@ -254,7 +391,9 @@ async def get_workspace(
 async def get_contracts(
     ws_config=Depends(get_workspace_config),
     enricher=Depends(get_cross_repo_enricher),
-    contract_type: str | None = Query(None, description="Filter: http, grpc, socket, topic, or data"),
+    contract_type: str | None = Query(
+        None, description="Filter: http, grpc, socket, topic, or data"
+    ),
     repo: str | None = Query(None, description="Filter by repo alias"),
     role: str | None = Query(None, description="Filter: provider or consumer"),
     limit: int = Query(200, ge=1, le=1000),
@@ -404,6 +543,7 @@ async def get_workspace_graph(
 
     ws_root = getattr(request.app.state, "workspace_root", None)
     ws_root_path = Path(ws_root) if ws_root else None
+    session_factory = getattr(request.app.state, "session_factory", None)
 
     # Build nodes from repo metadata
     repo_id_map: dict[str, str] = {}  # alias → repo_id
@@ -414,8 +554,8 @@ async def get_workspace_graph(
         if ws_root_path:
             repo_path = (ws_root_path / r.path).resolve()
             db_path = repo_path / ".repowise" / "wiki.db"
-            stats = _query_repo_stats(db_path)
-            top_language = _query_top_language(db_path)
+            stats = await _query_repo_stats(db_path, session_factory, repo_path)
+            top_language = await _query_top_language(db_path, session_factory, repo_path)
             health_score, health_score_source = _resolve_graph_health_score(stats)
         else:
             health_score = 0.0
