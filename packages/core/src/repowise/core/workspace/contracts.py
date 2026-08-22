@@ -44,10 +44,12 @@ CONTRACTS_FILENAME = "contracts.json"
 #: Artifact schema version. Bumped to 2 when contracts gained ``symbol_id``,
 #: to 3 when providers gained a signature-derived ``schema``, to 4 when a
 #: package surface became a ``code`` contract, and to 5 when ASP.NET minimal
-#: APIs gained ``MapGroup`` prefixes and a handler-bound ``symbol_id``.
+#: APIs gained ``MapGroup`` prefixes and a handler-bound ``symbol_id``, and to 6
+#: when a multi-line axum route became readable and go/axum providers gained a
+#: handler-bound ``symbol_id``.
 #: A store written under an older version is readable but not reusable: its
 #: rows carry no identity, and nothing short of re-extraction can give them one.
-CONTRACTS_VERSION = 5
+CONTRACTS_VERSION = 6
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
-from ..framework_routes import express_routes
+from ..framework_routes import express_routes, match_paren
 from ..resolvers import ResolverContext
 from .base import (
     DetectionContext,
@@ -34,26 +34,6 @@ _EXPRESS_RECEIVER_RE = re.compile(
 )
 _STRING_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`(?:[^`\\]|\\.)*`")
 _ARG_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*")
-
-
-def _match_paren(text: str, open_idx: int) -> int:
-    depth = 0
-    i = open_idx
-    n = len(text)
-    while i < n:
-        c = text[i]
-        if c in "\"'`":
-            i += 1
-            while i < n and text[i] != c:
-                i += 2 if text[i] == "\\" else 1
-        elif c == "(":
-            depth += 1
-        elif c == ")":
-            depth -= 1
-            if depth == 0:
-                return i
-        i += 1
-    return -1
 
 
 def _has_express_imports(parsed_files: dict[str, Any]) -> bool:
@@ -104,7 +84,7 @@ def _add_express_edges(
                 for route in express_routes(text):
                     if route.receiver not in receivers:
                         continue
-                    close = _match_paren(text, route.paren_offset)
+                    close = match_paren(text, route.paren_offset)
                     if close == -1:
                         continue
                     arg_blob = _STRING_LITERAL_RE.sub(
