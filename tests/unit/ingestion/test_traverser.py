@@ -154,6 +154,35 @@ class TestFileTraverser:
         assert not any(p.startswith("Library/") for p in paths)
         assert not any(p.startswith("Temp/") for p in paths)
 
+    def test_traverses_e2e_specs(self, tmp_path: Path) -> None:
+        """e2e spec files are indexed so they can get a file_page (#1497).
+
+        They used to be silently dropped via ``_BLOCKED_DIRS``, which left
+        the wiki unable to answer any test-infrastructure question with no
+        signal a whole area was missing. They are now indexed like other
+        tests and tagged ``is_test=True`` so they stay filterable.
+        """
+        (tmp_path / "apps" / "console" / "e2e" / "helpers").mkdir(parents=True)
+        (tmp_path / "apps" / "console" / "e2e" / "helpers" / "hydration.ts").write_text(
+            "export function hydrate() {}\n"
+        )
+        (tmp_path / "apps" / "console" / "e2e" / "fixtures.ts").write_text(
+            "export const fixtures = {};\n"
+        )
+        (tmp_path / "apps" / "console" / "e2e" / "login.spec.ts").write_text(
+            "it('works', () => {});\n"
+        )
+
+        traverser = FileTraverser(tmp_path)
+        infos = {f.path: f for f in traverser.traverse()}
+
+        assert "apps/console/e2e/helpers/hydration.ts" in infos
+        assert "apps/console/e2e/fixtures.ts" in infos
+        assert "apps/console/e2e/login.spec.ts" in infos
+        # Tagged as test material so consumers (skip_tests, scoring) can
+        # filter them without dropping them silently.
+        assert all(info.is_test for info in infos.values())
+
     def test_skips_unity_asset_extensions_before_binary_detection(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
