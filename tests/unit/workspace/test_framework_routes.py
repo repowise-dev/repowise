@@ -166,7 +166,6 @@ class TestGraphConsumer:
 class TestContractConsumer:
     def _extract(self, tmp_path: Path) -> dict[str, Any]:
         (tmp_path / "Program.cs").write_text(PROGRAM_CS, encoding="utf-8")
-        (tmp_path / "OrderHandlers.cs").write_text(HANDLERS_CS, encoding="utf-8")
         return {
             c.contract_id: c
             for c in HttpExtractor().extract(tmp_path, "api")
@@ -186,9 +185,33 @@ class TestContractConsumer:
     def test_the_handler_is_recorded_for_binding(self, tmp_path: Path) -> None:
         contract = self._extract(tmp_path)["http::GET::/api/orders/{param}"]
         assert contract.meta["handler"] == "OrderHandlers.GetOrder"
-        # The graph consumer's output is not folded in: this is a contract, and
-        # its file is where the route was declared.
-        assert contract.file_path == "Program.cs"
+
+    def test_a_lambda_parameter_is_not_a_handler(self, tmp_path: Path) -> None:
+        # `async ctx =>` used to yield handler="async", which the graph side only
+        # failed to resolve but the contract side would persist and bind by.
+        (tmp_path / "Program.cs").write_text(
+            'app.MapPut("/z", async ctx => await Do(ctx));\n'
+            'app.MapPatch("/y", ctx => Handle(ctx));\n'
+            'app.MapGet("/x", Handlers.Get);\n',
+            encoding="utf-8",
+        )
+        handlers = {
+            c.contract_id: c.meta.get("handler")
+            for c in HttpExtractor().extract(tmp_path, "api")
+            if c.role == "provider"
+        }
+        assert handlers == {
+            "http::PUT::/z": None,
+            "http::PATCH::/y": None,
+            "http::GET::/x": "Handlers.Get",
+        }
+
+    def test_a_single_quoted_path_is_still_read(self, tmp_path: Path) -> None:
+        # Not valid C#, but both matchers this replaced accepted it, and the
+        # gate for this phase is that no framework loses a contract.
+        (tmp_path / "Program.cs").write_text("app.MapGet('/legacy', H);\n", encoding="utf-8")
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "api")}
+        assert "http::GET::/legacy" in ids
 
 
 # ---------------------------------------------------------------------------
@@ -196,18 +219,21 @@ class TestContractConsumer:
 # ---------------------------------------------------------------------------
 
 
-def _symbol(name: str, path: str, start: int, end: int) -> Symbol:
-    return Symbol(
-        id=f"{path}::{name}",
-        name=name,
-        qualified_name=f"OrderHandlers.{name}",
-        kind="method",
-        signature=f"{name}(int id) -> IResult",
-        start_line=start,
-        end_line=end,
-        docstring=None,
-        visibility="public",
-    )
+async def _index_of(tmp_path: Path) -> Any:
+    """Open an index over the rows real ingestion produces for the fixtures.
+
+    The symbol ids are never written by hand. C# ingestion mints
+    ``OrderHandlers.cs::OrderHandlers::GetOrder`` — class-qualified, not the
+    ``<file>::<name>`` shape a fixture would guess — and `Program.cs` is
+    top-level statements, so it yields no symbols at all.
+    """
+    parsed = _parsed(tmp_path)
+    by_file: dict[str, list[Symbol]] = {}
+    for rel, pf in parsed.items():
+        for sym in pf.symbols:
+            sym.file_path = rel
+        by_file[rel] = list(pf.symbols)
+    return await make_repo_index(tmp_path, by_file, alias="api")
 
 
 class TestHandlerBinding:
@@ -219,38 +245,50 @@ class TestHandlerBinding:
         contracts = [
             c for c in HttpExtractor().extract(tmp_path, "api") if c.role == "provider"
         ]
-        index = await make_repo_index(
-            tmp_path,
-            {
-                "Program.cs": [_symbol("Main", "Program.cs", 1, 12)],
-                "OrderHandlers.cs": [
-                    _symbol("GetOrder", "OrderHandlers.cs", 5, 5),
-                    _symbol("CreateOrder", "OrderHandlers.cs", 6, 6),
-                ],
-            },
-            alias="api",
-        )
+        index = await _index_of(tmp_path)
         try:
+            # The expected ids come from the parse, not from this file.
+            expected = {
+                s.name: s.symbol_id
+                for s in index.symbols_for_file("OrderHandlers.cs")
+                if s.kind == "method"
+            }
+            assert set(expected) == {"GetOrder", "CreateOrder"}
             bind_symbol_ids(contracts, index)
         finally:
             await index.close()
         bound = {c.contract_id: c.symbol_id for c in contracts}
-        assert bound["http::GET::/api/orders/{param}"] == "OrderHandlers.cs::GetOrder"
-        assert bound["http::POST::/api/orders"] == "OrderHandlers.cs::CreateOrder"
-        # The lambda route names no handler, so it falls back to the line lookup.
-        assert bound["http::DELETE::/tenants/{param}/cache"] == "Program.cs::Main"
+        assert bound["http::GET::/api/orders/{param}"] == expected["GetOrder"]
+        assert bound["http::POST::/api/orders"] == expected["CreateOrder"]
+        # The lambda route names no handler and Program.cs has no symbols to fall
+        # back to, so it stays unbound — as it did before this change.
+        assert bound["http::DELETE::/tenants/{param}/cache"] is None
 
-    async def test_an_ambiguous_handler_name_is_refused(self, tmp_path: Path) -> None:
-        index = await make_repo_index(
-            tmp_path,
-            {
-                "A.cs": [_symbol("GetOrder", "A.cs", 1, 2)],
-                "B.cs": [_symbol("GetOrder", "B.cs", 1, 2)],
-            },
-            alias="api",
+    async def test_an_ambiguous_handler_is_refused_end_to_end(self, tmp_path: Path) -> None:
+        (tmp_path / "Program.cs").write_text(
+            'app.MapGet("/a", Handle);\napp.MapGet("/b", Two.Handle);\n', encoding="utf-8"
         )
+        for name in ("One", "Two"):
+            (tmp_path / f"{name}.cs").write_text(
+                f"public static class {name}\n{{\n"
+                "    public static IResult Handle() => Results.Ok();\n}\n",
+                encoding="utf-8",
+            )
+        contracts = [
+            c for c in HttpExtractor().extract(tmp_path, "api") if c.role == "provider"
+        ]
+        index = await _index_of(tmp_path)
         try:
-            assert index.symbol_named("GetOrder") is None
-            assert index.symbol_named("Nope") is None
+            bind_symbol_ids(contracts, index)
+            two = index.symbol_named("Two.Handle")
+            one = index.symbol_named("One.Handle")
         finally:
             await index.close()
+        # Both really are in the index, so the refusal below is not vacuous.
+        assert one is not None and two is not None and one.symbol_id != two.symbol_id
+        bound = {c.contract_id: c.symbol_id for c in contracts}
+        # Bare `Handle` names two symbols, so it binds to neither.
+        assert bound["http::GET::/a"] is None
+        # `Two.Handle` carries the qualifier that settles it.
+        assert two is not None
+        assert bound["http::GET::/b"] == two.symbol_id

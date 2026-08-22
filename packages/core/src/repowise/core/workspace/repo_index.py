@@ -203,14 +203,20 @@ class RepoIndex:
             return following
         return containing
 
-    def symbol_named(self, name: str) -> IndexedSymbol | None:
-        """The one symbol called *name* in this repo, or None.
+    def symbol_named(self, expression: str) -> IndexedSymbol | None:
+        """The one symbol *expression* names in this repo, or None.
 
-        A name declared more than once is refused rather than guessed: which of
-        them the caller meant would otherwise be decided by index row order.
+        *expression* may be qualified (``OrderHandlers.GetOrder``); the qualifier
+        settles a member name that is ambiguous on its own, which is the common
+        case for the handler shape this exists for (``Endpoint.HandleAsync``).
+        A name that still resolves to more than one symbol is refused rather
+        than guessed: which one the caller meant would otherwise be decided by
+        index row order.
         """
-        found = self._by_name.get(name)
-        return found[0] if found is not None and len(found) == 1 else None
+        found = self._by_name.get(expression.rsplit(".", 1)[-1], ())
+        if len(found) > 1 and "." in expression:
+            found = [s for s in found if s.qualified_name.endswith(expression)]
+        return found[0] if len(found) == 1 else None
 
     def external_import_edges(self) -> list[ExternalImport]:
         """Every ``imports`` edge leaving the repo, with the names it consumes."""

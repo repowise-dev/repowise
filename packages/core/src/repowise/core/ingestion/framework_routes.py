@@ -60,18 +60,21 @@ def _cs_str(name: str) -> str:
 
     The optional verbatim (``@``) / interpolated (``$``) prefix is taken from
     ``extractors.http.csharp_http`` — the only one of this tree's three C# route
-    matchers that handled either.
+    matchers that handled either. Single quotes stay accepted because both
+    matchers this replaces took them, and narrowing would be a reduction.
     """
-    return rf'\$?@?"(?P<{name}>[^"]*)"'
+    return rf"\$?@?(?P<{name}_q>['\"])(?P<{name}>[^'\"]*)(?P={name}_q)"
 
 
 # app.MapGet("/users", GetUsers). The receiver may be empty for a fluent chain
-# (`.MapGroup("/api").MapGet(...)`), and the handler argument is absent whenever
-# the endpoint is written as an inline lambda, which names nothing.
+# (`.MapGroup("/api").MapGet(...)`). The handler must be followed by `,` or `)`:
+# without that a lambda's own parameter is captured as the handler name —
+# `MapPut("/z", async ctx => ...)` yields `async`, which the graph side merely
+# failed to resolve but which the contract side would persist and bind by.
 _ASPNET_MAP_RE = re.compile(
     r"(?P<receiver>\w*)\s*\.\s*Map(?P<verb>Get|Post|Put|Delete|Patch)\s*(?P<paren>\()"
     rf"\s*{_cs_str('path')}"
-    r"(?:\s*,\s*(?P<handler>[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*))?",
+    r"(?:\s*,\s*(?P<handler>[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*)\s*(?=[,)]))?",
     re.IGNORECASE,
 )
 
@@ -114,10 +117,10 @@ def aspnet_groups(content: str) -> Iterator[GroupMatch]:
 _EXPRESS_VERBS = "get|post|put|delete|patch|options|head|all|use"
 
 # router.get('/path', handler). The path literal is optional — `app.use(router)`
-# carries none. The lookbehind excludes a word character as well as `@`: `@` alone
-# lets the engine restart inside the name and match `pp.get` in `@app.get`, which
-# is how a decorator framework (FastAPI, NestJS) leaked past the copy this
-# replaced.
+# carries none. The lookbehind excludes a word character as well as `@`, which
+# neither copy did: `\b` alone admits `@app.get` (a FastAPI/NestJS decorator, not
+# an Express route), and `(?<!@)` alone lets the engine restart inside the name
+# and match `pp.get` there instead.
 _EXPRESS_ROUTE_RE = re.compile(
     rf"(?<![\w@])(?P<receiver>\w+)\s*\.\s*(?P<verb>{_EXPRESS_VERBS})\s*(?P<paren>\()"
     r"""\s*(?:(?P<q>['"])(?P<path>[^'"]*)(?P=q))?""",

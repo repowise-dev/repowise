@@ -258,11 +258,12 @@ def bind_symbol_ids(contracts: list[Contract], index: RepoIndex | None) -> dict[
     """
     counts: dict[str, int] = {}
     for contract in contracts:
-        handler = contract.meta.get("handler") if contract.role == "provider" else None
+        meta = contract.meta or {}
+        handler = meta.get("handler") if contract.role == "provider" else None
         if contract.symbol_id is None and index is not None and handler:
-            # `OrderHandlers.GetOrder` names the handler in its last segment;
-            # the graph consumer reads the first one, which is its type.
-            symbol = index.symbol_named(handler.split(".")[-1])
+            # The whole expression, qualifier included: the graph consumer reads
+            # `OrderHandlers` out of it to find a file, this one needs the member.
+            symbol = index.symbol_named(handler)
             if symbol is not None:
                 contract.symbol_id = symbol.symbol_id
         if contract.symbol_id is None and index is not None and contract.line is not None:
