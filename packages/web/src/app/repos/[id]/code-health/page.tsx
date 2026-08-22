@@ -8,7 +8,9 @@
  * (health / maintainability / performance / churn) so the cross-tab redundancy
  * collapses.
  *
- * Six tabs, down from seven. Hotspots is gone: it rendered a *second* galaxy map
+ * Performance has its own causal-opportunity tab; raw observations remain its
+ * evidence rather than competing with the ranked finding queue. Hotspots is
+ * gone: it rendered a *second* galaxy map
  * on the churn lens directly under this page's, so churn became a lens here and
  * what the lens cannot say — bus factor, the ranked table — became a section
  * under the map. Blast radius keeps its `impact` tab id (existing file-card and
@@ -34,6 +36,7 @@ import type { DeadCodeSummary } from "@repowise-dev/types/dead-code";
 import { TriageTab } from "@/components/code-health/triage-tab";
 import { HotspotsSection } from "@/components/code-health/hotspots-section";
 import { FindingsTab } from "@/components/code-health/findings-tab";
+import { PerformanceTab } from "@/components/code-health/performance-tab";
 import { CoverageTab } from "@/components/code-health/coverage-tab";
 import { TrendSection } from "@/components/code-health/trend-tab";
 import { DeadCodeTab } from "@/components/risk/dead-code-tab";
@@ -53,13 +56,22 @@ import {
   type HealthFilesResponse,
 } from "@/lib/api/code-health";
 
-const TABS = ["triage", "findings", "coverage", "dead-code", "security", "impact"] as const;
+const TABS = [
+  "triage",
+  "performance",
+  "findings",
+  "coverage",
+  "dead-code",
+  "security",
+  "impact",
+] as const;
 type TabId = (typeof TABS)[number];
 
 const TAB_LABELS: Record<TabId, string> = {
   triage: "Overview",
+  performance: "Performance",
   findings: "Findings",
-  coverage: "Coverage",
+  coverage: "Tests",
   "dead-code": "Dead code",
   security: "Security",
   impact: "Blast radius",
@@ -137,23 +149,22 @@ export default function CodeHealthPage() {
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      await mutateAll(
-        (key) => typeof key === "string" && key.includes(repoId),
-        undefined,
-        { revalidate: true },
-      );
+      await mutateAll((key) => typeof key === "string" && key.includes(repoId), undefined, {
+        revalidate: true,
+      });
     } finally {
       setRefreshing(false);
     }
   }, [mutateAll, repoId]);
 
   // Trend fetched ONCE here, fed to the folded Trend section — no second fetch.
-  const { data: trend, isLoading: trendLoading, error: trendError } =
-    useSWR<HealthTrendResponse>(
-      `code-health-trend:${repoId}`,
-      () => getHealthTrend(repoId, 20),
-      { revalidateOnFocus: false },
-    );
+  const {
+    data: trend,
+    isLoading: trendLoading,
+    error: trendError,
+  } = useSWR<HealthTrendResponse>(`code-health-trend:${repoId}`, () => getHealthTrend(repoId, 20), {
+    revalidateOnFocus: false,
+  });
 
   // Every file (NLOC-first) for the map — one big pull, shared across overlays
   // so switching the lens never refetches. `fields: "summary"` because the map
@@ -211,7 +222,15 @@ export default function CodeHealthPage() {
   // to anyone who asks for it.
   const { data: coverage } = useSWR<HealthCoverageResponse>(
     `code-health-coverage-summary:${repoId}`,
-    () => getHealthCoverage(repoId, { limit: 1, module_limit: 0 }),
+    () =>
+      getHealthCoverage(repoId, {
+        limit: 1,
+        module_limit: 0,
+        // And declines the graph fallback, which would read every call edge in
+        // the repo to answer a question this badge cannot render anyway: the
+        // inferred basis has no percentage to show.
+        include_inferred: false,
+      }),
     { revalidateOnFocus: false },
   );
   const coveragePct = coverage?.summary.line_coverage_pct;
@@ -301,6 +320,7 @@ export default function CodeHealthPage() {
           />
         )}
         {activeTab === "findings" && <FindingsTab repoId={repoId} />}
+        {activeTab === "performance" && <PerformanceTab repoId={repoId} />}
         {activeTab === "coverage" && <CoverageTab repoId={repoId} />}
         {activeTab === "dead-code" && <DeadCodeTab repoId={repoId} />}
         {activeTab === "security" && <SecurityTab repoId={repoId} />}

@@ -8,7 +8,6 @@ auto-detection contract stays stable across refactors.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import click
@@ -136,9 +135,9 @@ def test_unknown_repo_alias_raises(fake_workspace, chdir):
 # ---------------------------------------------------------------------------
 
 
-def test_explicit_path_to_workspace_root_auto_promotes(fake_workspace, tmp_path):
+def test_explicit_path_to_workspace_root_auto_promotes(fake_workspace, tmp_path, monkeypatch):
     # Run from somewhere unrelated, but point path at the workspace root.
-    os.chdir(tmp_path)
+    monkeypatch.chdir(tmp_path)
     target = resolve_command_target(path=str(fake_workspace))
     assert target.mode == "workspace"
     assert target.ws_root == fake_workspace

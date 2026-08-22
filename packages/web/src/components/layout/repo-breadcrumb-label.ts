@@ -4,7 +4,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   chat: "Chat",
   architecture: "Architecture",
   "code-health": "Code Health",
-  coverage: "Coverage",
+  coverage: "Tests",
   "refactoring-targets": "Refactoring Targets",
   trend: "Trend",
   search: "Search",

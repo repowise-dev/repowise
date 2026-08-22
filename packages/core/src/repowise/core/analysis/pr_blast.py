@@ -265,23 +265,41 @@ class PRBlastRadiusAnalyzer:
         return reviewers[:5]
 
     async def _find_test_gaps(self, affected_files: list[str]) -> list[str]:
-        """Return files that lack a test, coverage-backed where the map has data.
+        """Return the files nothing can be shown to test.
 
-        A file with >=1 per-test coverage row (from ``repowise coverage add``) is
-        coverage-*proven* to be exercised by some test, so it is never a gap -
-        this supersedes the filename guess for files the map can speak to. Where
-        the per-test map has no data for a file, fall back to the filename
-        pattern (test_<name>, <name>_test, <name>.spec.*) - an honest "unknown",
-        never asserted as untested. Test files themselves are excluded; they
-        don't need their own tests.
+        Three signals, checked in descending order of what they can prove, and a
+        file only becomes a gap when all three stay silent. Asserting "nothing
+        tests this" is the one claim here that costs a reader something if it is
+        wrong, so the bar for making it is no evidence at all.
+
+        1. A per-test coverage row (from ``repowise coverage add``) is
+           execution-*proof*: never a gap.
+        2. A test file reaching it in the dependency graph is evidence, not
+           proof - control reaching a file is not a run exercising it - but it
+           is a recorded edge rather than a guess, and it finds the suites that
+           name their tests for behaviour instead of for the file under test.
+           Used only as this floor; nothing downstream reads a coverage figure
+           off it.
+        3. Otherwise the filename pattern (test_<name>, <name>_test,
+           <name>.spec.*) - an honest "unknown", never asserted as untested.
+
+        Test files themselves are excluded; they don't need their own tests.
         """
         if not affected_files:
             return []
 
+        from repowise.core.analysis.test_reachability import tests_reaching
         from repowise.core.persistence.crud import covered_source_files
 
         # Coverage-proven-tested files: absent from gaps regardless of naming.
         covered = await covered_source_files(self._session, self._repo_id, set(affected_files))
+
+        # Graph-reached files: likewise absent. Degrades to "no signal" rather
+        # than raising - a failed walk must not turn into a false accusation.
+        try:
+            reached = set(await tests_reaching(self._session, self._repo_id, affected_files))
+        except Exception:
+            reached = set()
 
         node_res = await self._session.execute(
             select(GraphNode.node_id, GraphNode.is_test).where(
@@ -308,6 +326,9 @@ class PRBlastRadiusAnalyzer:
                 continue
             # Coverage proves a test exercises this file: not a gap.
             if path in covered:
+                continue
+            # The graph records a test reaching it: not a gap either.
+            if path in reached:
                 continue
             base = os.path.splitext(os.path.basename(path))[0]
             ext = os.path.splitext(path)[1].lstrip(".")
@@ -343,11 +364,22 @@ class PRBlastRadiusAnalyzer:
         file-level; ``repowise impacted-tests`` gives the line-level answer from
         a real diff.
 
-        Returns ``{map_present, tests_to_run, by_file}``. ``map_present`` is
-        False when no per-test map is ingested at all - the honest "unknown",
-        distinct from "this change has no guarding tests".
+        Falls back to the graph when no coverage report has been ingested, which
+        is most repositories: a test file that reaches a changed file is a
+        candidate worth running. ``basis`` says which of the two answered, and
+        the two are never merged. A run-list the coverage map proved and one the
+        graph suggests are different claims, and averaging them would leave the
+        reader unable to tell a measured test from a guessed one. The
+        inferred list names test *files* rather than test ids, because reaching
+        is a file-level fact; both forms are runnable arguments to pytest.
+
+        Returns ``{map_present, basis, tests_to_run, by_file}``.
+        ``map_present`` stays the measured-map flag it always was.
+        ``basis`` is ``"measured"``, ``"inferred"``, or ``"none"`` - and
+        ``"none"`` is the honest "unknown", distinct from "this change has no
+        guarding tests".
         """
-        empty = {"map_present": False, "tests_to_run": [], "by_file": {}}
+        empty = {"map_present": False, "basis": "none", "tests_to_run": [], "by_file": {}}
         if not changed_files:
             return empty
 
@@ -355,7 +387,7 @@ class PRBlastRadiusAnalyzer:
 
         summary = await get_test_coverage_summary(self._session, self._repo_id)
         if summary.get("pair_count", 0) == 0:
-            return empty
+            return await self._inferred_guarding_tests(changed_files, empty)
 
         by_file: dict[str, list[str]] = {}
         all_ids: set[str] = set()
@@ -367,9 +399,43 @@ class PRBlastRadiusAnalyzer:
             by_file[path] = ids
             all_ids.update(ids)
 
+        if not all_ids:
+            # The map exists but says nothing about these files. The graph may
+            # still know something, and saying so beats an empty list that
+            # reads as "nothing guards this change".
+            blank = {"map_present": True, "basis": "none", "tests_to_run": [], "by_file": {}}
+            return await self._inferred_guarding_tests(changed_files, blank)
+
         return {
             "map_present": True,
+            "basis": "measured",
             "tests_to_run": sorted(all_ids),
+            "by_file": by_file,
+        }
+
+    async def _inferred_guarding_tests(self, changed_files: list[str], empty: dict) -> dict:
+        """Graph-inferred run-list: test files that reach the changed files.
+
+        Never execution-proven. Isolated behind its own method and its own
+        ``basis`` value so no caller can pick it up while believing it read the
+        measured map. Degrades to *empty* rather than raising: a run-list is an
+        aid, and failing the whole risk assessment to withhold one is the wrong
+        trade.
+        """
+        from repowise.core.analysis.test_reachability import tests_reaching
+
+        try:
+            reaching = await tests_reaching(self._session, self._repo_id, changed_files)
+        except Exception:
+            return empty
+        if not reaching:
+            return empty
+        by_file = {path: sorted(tests) for path, tests in reaching.items() if tests}
+        all_tests = sorted({t for tests in by_file.values() for t in tests})
+        return {
+            "map_present": empty["map_present"],
+            "basis": "inferred",
+            "tests_to_run": all_tests,
             "by_file": by_file,
         }
 

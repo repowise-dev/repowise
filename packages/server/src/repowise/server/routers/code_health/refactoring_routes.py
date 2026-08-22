@@ -1,4 +1,8 @@
-"""Refactoring-target ranking route (impact / effort)."""
+"""Health work/triage queue (impact / effort).
+
+The legacy URL is retained for compatibility; these file-level findings are
+not structured refactoring plans.
+"""
 
 from __future__ import annotations
 
@@ -47,7 +51,7 @@ def _effort_for_nloc(nloc: int) -> str:
 
 
 @router.get("/api/repos/{repo_id}/health/refactoring-targets")
-async def refactoring_targets(
+async def health_work_queue(
     repo_id: str,
     limit: int = Query(200, ge=1, le=500),
     module: str | None = Query(None, description="Filter to files in this module path"),
@@ -59,7 +63,7 @@ async def refactoring_targets(
     ),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    """Refactoring candidates ranked by impact / effort.
+    """Health work items ranked by impact / effort.
 
     A target carries its *primary* finding plus ``finding_count``, not the
     findings themselves. Serializing every file's full finding list here cost

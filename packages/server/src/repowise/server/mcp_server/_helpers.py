@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import os.path
 from collections.abc import Collection
@@ -22,11 +23,47 @@ from repowise.core.persistence.models import (
 from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like  # noqa: F401
 from repowise.server.mcp_server import _state
 
+_log = logging.getLogger("repowise.mcp")
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 _CODE_EXTS = _LANG_REGISTRY.all_code_extensions()
+
+# Ceiling on one vector-store query, seconds. The first query in a process pays
+# for the store open, the first embed and the first ANN probe; #1678 measured
+# 6.3s + 13.4s on a cold Windows index where a warm query takes 0.19s. The old
+# 8s budget therefore expired on the first query of every process and the
+# vector leg degraded to full-text with nothing said. Raise it with
+# REPOWISE_VECTOR_SEARCH_TIMEOUT_S on a slow disk or a very large index.
+_VECTOR_TIMEOUT_ENV = "REPOWISE_VECTOR_SEARCH_TIMEOUT_S"
+_VECTOR_TIMEOUT_DEFAULT_S = 30.0
+# A search an agent blocks on; past this the client's own tool timeout fires
+# first, so a larger value cannot produce results anyone still accepts.
+_VECTOR_TIMEOUT_MAX_S = 120.0
+
+
+def vector_search_timeout_s() -> float:
+    """Seconds one vector query may take, from env or the cold-start default.
+
+    An unparseable or non-positive value warns and keeps the default instead of
+    silently disabling the leg, matching how REPOWISE_EMBEDDING_TIMEOUT is
+    resolved.
+    """
+    raw = (os.environ.get(_VECTOR_TIMEOUT_ENV) or "").strip()
+    if not raw:
+        return _VECTOR_TIMEOUT_DEFAULT_S
+    try:
+        seconds = float(raw)
+    except ValueError:
+        seconds = float("nan")
+    # NaN fails this too, so it lands on the default rather than on a budget
+    # asyncio.wait_for would treat as already expired.
+    if not seconds > 0:
+        _log.warning("Ignoring unusable %s=%r", _VECTOR_TIMEOUT_ENV, raw)
+        return _VECTOR_TIMEOUT_DEFAULT_S
+    return min(seconds, _VECTOR_TIMEOUT_MAX_S)
 
 # Words that mark a string as a natural-language question rather than a path.
 # Keep this small — false positives here send genuine paths to the NL branch,

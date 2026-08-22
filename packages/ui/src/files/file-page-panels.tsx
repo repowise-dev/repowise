@@ -27,6 +27,12 @@ export interface BuildFilePanelsOptions {
    */
   healthPanel?: ReactNode;
   /**
+   * The graph-inferred test list for the Tests tab. Supplied already wrapped by
+   * the host for the same reason as `healthPanel`: it fetches on the client, and
+   * a fetcher function cannot cross the server boundary as a prop.
+   */
+  testsPanel?: ReactNode;
+  /**
    * Router link, forwarded to every tab body that renders one.
    *
    * The tab bodies are server components and stay server components: a
@@ -62,6 +68,7 @@ export function buildFilePanels({
   docSlot,
   coverageCodeHtml,
   healthPanel,
+  testsPanel,
   LinkComponent,
 }: BuildFilePanelsOptions): Partial<Record<FilePageTab, ReactNode>> {
   const link = LinkComponent ? { LinkComponent } : {};
@@ -102,7 +109,11 @@ export function buildFilePanels({
       />
     ),
     coverage: (
-      <FileCoverageTab coverage={data.coverage} coverageCodeHtml={coverageCodeHtml} />
+      <FileCoverageTab
+        coverage={data.coverage}
+        coverageCodeHtml={coverageCodeHtml}
+        testsPanel={testsPanel}
+      />
     ),
   };
 }

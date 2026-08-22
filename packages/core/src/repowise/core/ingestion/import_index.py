@@ -52,11 +52,17 @@ def build_import_name_maps(parsed_files: dict[str, ParsedFile]) -> ImportNameMap
                 for binding in imp.bindings:
                     if binding.local_name == "*":
                         continue
-                    binding.source_file = resolved
-                    maps.import_names[path][binding.local_name] = resolved
+                    # A binding whose source_file was already pinned to a
+                    # submodule file (``from pkg import submodule`` fan-out,
+                    # #1193) must keep it: ``imp.resolved_file`` is the package
+                    # ``__init__.py``, which declares nothing the submodule
+                    # name resolves to. Only back-fill when unset.
+                    if binding.source_file is None:
+                        binding.source_file = resolved
+                    maps.import_names[path][binding.local_name] = binding.source_file
                     maps.import_bindings[path][binding.local_name] = binding
                     if binding.is_module_alias:
-                        maps.module_aliases[path][binding.local_name] = resolved
+                        maps.module_aliases[path][binding.local_name] = binding.source_file
             else:
                 # Fallback for imports without binding data
                 for name in imp.imported_names:

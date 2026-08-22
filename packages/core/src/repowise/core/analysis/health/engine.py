@@ -37,6 +37,7 @@ from ...ingestion.git_indexer.function_blame import (
 from ...ingestion.package_roots import module_for as _module_for
 from ...ingestion.package_roots import package_roots_from_paths as _package_roots
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
+from ..test_reachability import files_reached_by_tests
 from .biomarkers import FileContext, detect_all
 from .biomarkers.base import HasEdge
 from .complexity import FileComplexity, FunctionComplexity, walk_file
@@ -48,14 +49,17 @@ from .perf import (
     CallGraphIndex,
     PerfRanker,
     apply_perf_promotions,
+    build_performance_opportunities,
     collect_blocking_io_under_lock,
     collect_centrality_gated,
     collect_crossfn_io_in_loop,
+    link_performance_findings,
 )
 from .refactoring import (
     RefactoringContext,
     RefactoringSuggestion,
     detect_refactorings,
+    performance_fix_suggestions,
     rank_suggestions,
 )
 from .refactoring.graph_signals import build_file_scc_index, build_methods_by_file
@@ -83,7 +87,19 @@ log = structlog.get_logger(__name__)
 #
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
-HEALTH_ANALYZER_VERSION = 1
+#
+# 2: ``untested_hotspot`` gained a second test signal, and the persisted
+# ``has_test_file`` widened to match it. Both stored values are wrong on an
+# index built before that, and wrong in the direction that accuses a tested
+# file, so they should not wait out the decay timer.
+# 3: that signal moved from the import graph to the call graph, so the same two
+# values are wrong again on an index stamped 2 - this time in both directions.
+# 4: performance now uses reliable execution edges and exact call-site identity,
+# so cross-function findings produced by the calls-only graph must be refreshed.
+# 5: raw performance findings gain stable causal linkage and structured
+# performance-fix plans; incremental execution slices widen to preserve those
+# interprocedural interpretations.
+HEALTH_ANALYZER_VERSION = 5
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.
@@ -111,8 +127,6 @@ def _log_duplication_diagnostics(report: DuplicationReport) -> None:
         )
     ):
         log.debug("health_duplication_limits", **diag)
-
-
 
 
 def _read_source_lines(abs_path: str) -> list[str] | None:
@@ -271,9 +285,10 @@ def _has_paired_test_file(rel_path: str, path_basenames: set[str]) -> bool:
     """
     p = Path(rel_path)
     stem = p.stem
+    test_suffix = ".exs" if p.suffix == ".ex" else p.suffix
     candidates = {
         f"test_{stem}.py",
-        f"{stem}_test.py",
+        f"{stem}_test{test_suffix}",
         f"{stem}.test.ts",
         f"{stem}.test.tsx",
         f"{stem}.test.js",
@@ -283,7 +298,6 @@ def _has_paired_test_file(rel_path: str, path_basenames: set[str]) -> bool:
         f"{stem}.spec.js",
         f"{stem}.spec.mts",
         f"{stem}.spec.cts",
-        f"{stem}_test.go",
     }
     return not candidates.isdisjoint(path_basenames)
 
@@ -295,6 +309,7 @@ class HealthAnalyzer:
         self,
         graph: Any,  # networkx.DiGraph
         git_meta_map: dict[str, dict] | None = None,
+        performance_git_meta_map: dict[str, dict] | None = None,
         parsed_files: list[Any] | None = None,
         coverage_map: dict[str, dict[str, Any]] | None = None,
         module_map: dict[str, str] | None = None,
@@ -303,6 +318,7 @@ class HealthAnalyzer:
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
+        self.performance_git_meta_map = performance_git_meta_map or self.git_meta_map
         self.parsed_files = list(parsed_files or [])
         # Per-file coverage keyed by repo-relative POSIX path. Each value
         # is ``{line_coverage_pct, branch_coverage_pct, covered_lines,
@@ -324,6 +340,33 @@ class HealthAnalyzer:
         # only the manifests the traverser emitted.
         self.repo_root = repo_root
         self._package_roots_cache: set[str] | None = None
+        self._tests_reach_cache: set[str] | None = None
+        self._execution_graph_cache: CallGraphIndex | None = None
+
+    def _execution_graph(self) -> CallGraphIndex | None:
+        """Build the reliable execution index at most once per analysis."""
+        if self.graph is not None and self._execution_graph_cache is None:
+            self._execution_graph_cache = CallGraphIndex(self.graph)
+        return self._execution_graph_cache
+
+    def _files_reached_by_tests(self) -> set[str]:
+        """Non-test files that some test file can execute into, per the call graph.
+
+        The graph-backed half of "is this file tested". Computed once per
+        analyzer over the whole file set (one multi-source walk, not one per
+        file), because every ``_evaluate_file`` call asks the same question of
+        the same graph.
+
+        Inferred, and it over-claims: a call edge says control *can* reach the
+        file, not that a given run did. Consumers must use it only as a floor -
+        "something tests this" - never as a coverage quantity. See
+        ``analysis.test_reachability``.
+        """
+        if self._tests_reach_cache is None:
+            test_files = {pf.file_info.path for pf in self.parsed_files if pf.file_info.is_test}
+            index = self._execution_graph()
+            self._tests_reach_cache = files_reached_by_tests(index or CallGraphIndex(), test_files)
+        return self._tests_reach_cache
 
     def _package_boundaries(self, analyzed_paths: set[str]) -> set[str]:
         """Package roots for this repo, decided once per analyzer.
@@ -516,6 +559,17 @@ class HealthAnalyzer:
         else:
             kpis = {}
 
+        self._mark_perf_entry_reachability(findings)
+        link_performance_findings(findings)
+        opportunities = build_performance_opportunities(findings)
+        if refactoring_enabled and "performance_fix" not in disabled_refactorings:
+            suggestions.extend(
+                performance_fix_suggestions(
+                    opportunities,
+                    nloc_by_file={metric.file_path: metric.nloc for metric in metrics},
+                    min_confidence=refactoring_min_confidence,
+                )
+            )
         suggestions = rank_suggestions(
             suggestions, centrality=self._refactoring_centrality(suggestions)
         )
@@ -699,6 +753,17 @@ class HealthAnalyzer:
         else:
             kpis = {}
 
+        self._mark_perf_entry_reachability(findings)
+        link_performance_findings(findings)
+        opportunities = build_performance_opportunities(findings)
+        if refactoring_enabled and "performance_fix" not in disabled_refactorings:
+            suggestions.extend(
+                performance_fix_suggestions(
+                    opportunities,
+                    nloc_by_file={metric.file_path: metric.nloc for metric in metrics},
+                    min_confidence=refactoring_min_confidence,
+                )
+            )
         suggestions = rank_suggestions(
             suggestions, centrality=self._refactoring_centrality(suggestions)
         )
@@ -738,7 +803,7 @@ class HealthAnalyzer:
         """Run the graph-dependent perf passes over the walked files, in place.
 
         Four sources of extra ``perf_hits``, all sharing one
-        :class:`CallGraphIndex` (built once over the resolved ``calls`` graph):
+        :class:`CallGraphIndex` (built once over reliable execution edges):
 
           1. cross-function ``io_in_loop`` / N+1 (PR4);
           2. cross-function ``blocking_io_under_lock`` (Phase 7b) — the lock→I/O
@@ -755,7 +820,7 @@ class HealthAnalyzer:
         ship a centrality-gated marker we cannot establish centrality for).
         """
         try:
-            index = CallGraphIndex(self.graph) if self.graph is not None else None
+            index = self._execution_graph()
             by_file: dict[str, list] = {}
             if self.graph is not None and index is not None:
                 for src in (
@@ -764,7 +829,7 @@ class HealthAnalyzer:
                 ):
                     for path, hits in src.items():
                         by_file.setdefault(path, []).extend(hits)
-            ranker = PerfRanker(index, self.git_meta_map)
+            ranker = PerfRanker(index, self.performance_git_meta_map)
             for path, hits in collect_centrality_gated(walked, ranker).items():
                 by_file.setdefault(path, []).extend(hits)
             for _pf, fcx in walked:
@@ -774,6 +839,29 @@ class HealthAnalyzer:
         except Exception as exc:
             log.debug("health_crossfn_perf_failed", error=str(exc))
             return
+
+    def _mark_perf_entry_reachability(self, findings: list[HealthFindingData]) -> None:
+        """Stamp reliable entry reachability without walking once per row."""
+        index = self._execution_graph()
+        if index is None or self.graph is None:
+            return
+        entry_files: set[str] = set()
+        try:
+            for node_id, data in self.graph.nodes(data=True):
+                if data.get("node_type") == "file" and data.get("is_entry_point"):
+                    entry_files.add(node_id)
+        except Exception:
+            return
+        seeds = {symbol for path in entry_files for symbol in index.declares.get(path, ())}
+        if not seeds:
+            return
+        reachable = index.forward_reachable(seeds)
+        for finding in findings:
+            if finding.dimension != "performance":
+                continue
+            path = finding.details.get("path")
+            if isinstance(path, list) and path:
+                finding.details["reliable_entry_reachability"] = path[0] in reachable
 
     def _function_blame_rows(self, walked: list[tuple[Any, FileComplexity]]) -> list[dict]:
         """Build the per-function blame rollup from the walked files + the
@@ -916,6 +1004,12 @@ class HealthAnalyzer:
             or pf.file_info.is_test
             or _coverage_is_test_file(file_path)
             or fcx.has_inline_tests,
+            # Kept separate from ``has_test_file`` on purpose. That flag means
+            # "a file named like this one's test exists"; this one means "the
+            # call graph records a test reaching this file". They disagree
+            # often, and collapsing them would leave no way to say which signal
+            # answered, or that one of them over-claims.
+            reached_by_tests=file_path in self._files_reached_by_tests(),
             module=module,
             function_metrics=fn_metrics,
             class_metrics=fcx.classes,
@@ -957,7 +1051,15 @@ class HealthAnalyzer:
             max_ccn=max_ccn,
             max_nesting=max_nesting,
             nloc=nloc,
-            has_test_file=ctx.has_test_file,
+            # The stored field answers "does something test this file" - that is
+            # how the MCP payload documents it and how every UI renders it
+            # ("has tests" / "untested"). So it carries the union, not just the
+            # naming convention. Keeping it filename-only left the file table
+            # labelling a file untested while ``untested_hotspot`` stayed
+            # silent about it, which is the same disagreement issue #1740 is
+            # about, one layer further out. The two inputs stay separable on
+            # ``FileContext`` and in the biomarker's ``details``.
+            has_test_file=ctx.has_test_file or ctx.reached_by_tests,
             module=module,
             line_coverage_pct=line_cov,
             branch_coverage_pct=branch_cov,

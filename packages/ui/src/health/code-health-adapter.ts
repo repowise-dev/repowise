@@ -5,9 +5,13 @@ import type {
   HealthFilesResponse,
   HealthFinding,
   HealthOverviewResponse,
-  RefactoringQuery,
-  RefactoringTargetsResponse,
+  HealthWorkQueueQuery,
+  HealthWorkQueueResponse,
+  PerformanceOpportunityPage,
+  TestsReachingFile,
 } from "@repowise-dev/types/health";
+import type { Paginated } from "@repowise-dev/types";
+import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
 
 /** Subset of the findings list query the shared views need. */
 export interface CodeHealthFindingsQuery {
@@ -46,10 +50,25 @@ export interface CodeHealthAdapter {
 
   getOverview(limit: number): Promise<HealthOverviewResponse>;
   listFindings(opts?: CodeHealthFindingsQuery): Promise<HealthFinding[]>;
+  getPerformanceOpportunities?(opts?: {
+    context?: "production_tooling" | "test" | "all";
+    limit?: number;
+    offset?: number;
+  }): Promise<PerformanceOpportunityPage>;
+  getPerformanceOpportunityFindings?(
+    opportunityId: string,
+    opts?: { limit?: number; offset?: number },
+  ): Promise<Paginated<HealthFinding>>;
+  /** Fetch one exact canonical plan for the performance drawer. */
+  getRefactoringPlan?(planId: string): Promise<RefactoringPlan>;
   listFiles(opts?: HealthFilesQuery): Promise<HealthFilesResponse>;
-  getRefactoringTargets(
-    opts?: RefactoringQuery,
-  ): Promise<RefactoringTargetsResponse>;
+  getHealthWorkQueue?(
+    opts?: HealthWorkQueueQuery,
+  ): Promise<HealthWorkQueueResponse>;
+  /** @deprecated Legacy adapter name; FindingsView accepts it during migration. */
+  getRefactoringTargets?(
+    opts?: HealthWorkQueueQuery,
+  ): Promise<HealthWorkQueueResponse>;
   updateFindingStatus(
     findingId: string,
     status: FindingStatusValue,
@@ -58,12 +77,24 @@ export interface CodeHealthAdapter {
     file_path?: string;
     limit?: number;
     module_limit?: number;
+    /** False declines the graph-inferred fallback. For cheap summary reads. */
+    include_inferred?: boolean;
   }): Promise<HealthCoverageResponse>;
+
+  /**
+   * Which tests reach one file, per the dependency graph. Optional: a host that
+   * has not wired it yet renders no test list rather than an error, which is
+   * the same degradation the response types use for a frontend ahead of its
+   * backend.
+   */
+  getTestsReaching?(filePath: string): Promise<TestsReachingFile>;
 
   /** Build an href to a file detail page. */
   fileHref(path: string): string;
   /** Build an href to a symbol detail page, or `undefined` if not linkable. */
   symbolHref?(symbolId: string): string | undefined;
+  /** Exact stable-id handoff into the existing structured-plan page. */
+  refactoringPlanHref?(planId: string, opportunityId: string): string;
   /** Navigate to an href (host wires this to its router). */
   navigate(href: string): void;
 

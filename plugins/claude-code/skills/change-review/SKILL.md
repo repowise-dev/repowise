@@ -61,10 +61,13 @@ The response carries a `directive` block — read it first, it's a few short lis
 - **`missing_cochanges`** — files that historically change together with the
   changed files but were left untouched. Often a forgotten update.
 - **`missing_tests`** — changed code with a test gap. Flag for new/updated tests.
-- **`tests_to_run`** — the positive complement of `missing_tests`: the tests the
-  per-test coverage map proves execute the changed files (pytest-runnable ids).
-  Recommend running these to validate the change. Empty until a coverage map is
-  ingested (`repowise coverage add`); empty is "unknown", never "no tests exist".
+- **`tests_to_run`**: the positive complement of `missing_tests`, the tests that
+  exercise the changed files. Recommend running these to validate the change.
+  Read **`tests_to_run_basis`** with it: `measured` means a coverage map proves
+  those tests execute the changed files (pytest-runnable ids); `inferred` means
+  the call graph shows those test *files* reaching the change, with the import
+  graph filling in where it is silent, which needs no coverage ingest but is a
+  candidate list, so say so rather than presenting it as proof; `none` with an empty list is "unknown", never "no tests exist".
 
 `pr_blast_radius` holds the fuller dossier behind those lists (including the
 per-changed-file `guarding_tests` breakdown behind `tests_to_run`).

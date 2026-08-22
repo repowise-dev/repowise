@@ -135,7 +135,7 @@ You can edit this file directly. Changes take effect on the next `init`,
 |-----|---------|---------|
 | `provider` | auto-detected | `anthropic`, `openai`, `gemini`, `openrouter`, `deepseek`, `kimi`, `ollama`, `litellm`, `opencode` |
 | `model` | provider default | Model identifier passed to the provider |
-| `embedder` | `mock` | `openai`, `gemini`, `ollama`, `openrouter`, `mock` |
+| `embedder` | `mock` | `openai`, `gemini`, `ollama`, `openrouter`, `edenai`, `mock` |
 | `embedding_model` | provider default | Embedding model identifier |
 | `reasoning` | `auto` | `auto`, `off`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `max_tokens` | `16384` | Maximum output tokens requested for each model-written documentation page |
@@ -589,6 +589,53 @@ export LITELLM_API_KEY="..."
 repowise init --provider litellm --model azure/gpt-4
 ```
 
+### Eden AI (hosted, with an EU endpoint)
+
+[Eden AI](https://www.edenai.co/) is a hosted gateway with an EU endpoint, so
+inference can stay in the EU without self-hosting anything. That is the reason to
+reach for it here: every other hosted provider in this list terminates in the US,
+and the alternatives for a team working under a DPA are Ollama or LiteLLM on your
+own infrastructure.
+
+Point at the EU endpoint with `EDENAI_BASE_URL`. It covers the embedder as well,
+since both read the same variable:
+
+```bash
+export EDENAI_API_KEY="..."
+export EDENAI_BASE_URL="https://api.eu.edenai.run/v3"
+repowise init --provider edenai --model mistral/mistral-small-latest
+```
+
+Without that variable, requests go to the global endpoint:
+
+```bash
+export EDENAI_API_KEY="..."
+repowise init --provider edenai --model openai/gpt-5-mini --reasoning low
+```
+
+Beyond residency it is also an aggregator: one key reaches many vendors (Mistral,
+GPT, Claude, Gemini, Cohere, DeepSeek, Llama) through a single
+OpenAI-compatible endpoint, with models addressed as `vendor/model`. The live
+catalogue is public and needs no authentication at
+<https://api.edenai.run/v3/models>, with the embedding models at
+<https://api.edenai.run/v3/embeddings/models>.
+
+The same key also selects `edenai` as the embedder for semantic search. Its
+default is `amazon/amazon.titan-embed-text-v2:0`, chosen because it is served
+from an EU region and is the cheapest per token of the models this adapter
+declares. Pick another with `REPOWISE_EMBEDDING_MODEL`:
+
+```bash
+export REPOWISE_EMBEDDING_MODEL="google/gemini-embedding-001"
+```
+
+Only the models in `EdenAIEmbedder._DIMS` are accepted, because a wrong
+dimension count would silently mis-size stored vectors. Adding one means adding
+its measured width to that table.
+
+`reasoning` is forwarded as OpenAI `reasoning_effort` for OpenAI reasoning models
+routed through Eden (e.g. `openai/gpt-5*`); other models expose only `auto`.
+
 ### Provider auto-detection
 
 If you don't pass `--provider`, repowise detects your provider by checking, in
@@ -596,7 +643,7 @@ order:
 
 1. `REPOWISE_PROVIDER` environment variable
 2. `provider` in `.repowise/config.yaml`
-3. API key env vars: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY`
+3. API key env vars: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `OPENROUTER_API_KEY` → `OLLAMA_BASE_URL` → `GEMINI_API_KEY` → `DEEPSEEK_API_KEY` → `KIMI_API_KEY` → `EDENAI_API_KEY`
 
 ---
 
@@ -631,7 +678,7 @@ store would be rebuilt from scratch, discarding what the reindex just built.
 `REPOWISE_EMBEDDING_MODEL` overrides the model for whichever embedder is
 active. `REPOWISE_EMBEDDING_DIMS` and `REPOWISE_EMBEDDING_TIMEOUT` apply the
 same way; the provider-prefixed variants below (`OPENAI_*`, `GEMINI_*`,
-`OLLAMA_*`, `OPENROUTER_*`) narrow a setting to one embedder and take
+`OLLAMA_*`, `OPENROUTER_*`, `EDENAI_*`) narrow a setting to one embedder and take
 precedence over the shared name.
 
 ---
@@ -689,13 +736,15 @@ The `.repowise/.env` file is gitignored automatically.
 
 | Variable | Description |
 |----------|-------------|
-| `REPOWISE_EMBEDDER` | Embedder: `gemini`, `openai`, `ollama`, `openrouter`, or `mock` |
+| `REPOWISE_EMBEDDER` | Embedder: `gemini`, `openai`, `ollama`, `openrouter`, `edenai`, or `mock` |
 | `REPOWISE_EMBEDDING_MODEL` | Embedding model, applies to any embedder |
 | `REPOWISE_EMBEDDING_DIMS` | Embedding output dimensions (optional; inferred from the model otherwise) |
 | `REPOWISE_EMBEDDING_TIMEOUT` | Embed request timeout in seconds (default: `30` for `ollama`, `10` elsewhere). Raise it for a local endpoint — one request embeds a whole batch, and an expired batch is reported only as `N/N items failed to embed`. An unparseable value warns and keeps the default |
+| `REPOWISE_VECTOR_SEARCH_TIMEOUT_S` | Seconds one vector-store query may take (default: `30`, capped at `120`). The first query in a process pays for the store open, the first embed and the first ANN probe, which can run past 13s on a cold index where a warm query takes under a second. Raise it on a slow disk or a very large wiki; a timeout drops the semantic leg and logs a warning, leaving full-text hits only. An unparseable value warns and keeps the default |
 | `OPENAI_EMBEDDING_TIMEOUT` | As above, `openai` only; takes precedence over the shared variable |
 | `GEMINI_EMBEDDING_TIMEOUT` | As above, `gemini` only |
 | `OPENROUTER_EMBEDDING_TIMEOUT` | As above, `openrouter` only |
+| `EDENAI_EMBEDDING_TIMEOUT` | As above, `edenai` only |
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model (also selects the `ollama` embedder) |
 | `OLLAMA_EMBEDDING_DIMS` | Ollama embedding output dimensions (optional; inferred from the model otherwise) |
 | `OLLAMA_EMBEDDING_TIMEOUT` | As above, `ollama` only; raise it for long pages on slow local models |

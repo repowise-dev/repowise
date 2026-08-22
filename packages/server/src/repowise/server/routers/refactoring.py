@@ -2,10 +2,9 @@
 
 The refactoring layer writes one structured ``RefactoringSuggestion`` row per
 opportunity (Extract Class, Extract Helper, Move Method, Break Cycle). These
-endpoints read those rows from SQL and re-apply the unified rank so the order
-the web tab shows matches every other surface (CLI / MCP): a plan on a central
-hub file outranks the same plan on a leaf, blast radius amplifies, confidence
-breaks ties.
+endpoints read those rows through the canonical recommendation service so the
+web tab, CLI, and MCP share priority components and ordering. Centrality is
+leverage; a larger change surface raises cost and risk rather than benefit.
 
 No on-disk work happens here, so this works on hosted backends without a
 checkout — the same property the C4 endpoints rely on.
@@ -13,26 +12,20 @@ checkout — the same property the C4 endpoints rely on.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
-from repowise.core.analysis.health.refactoring.rank import rank_suggestions, score
+from repowise.core.analysis.health.refactoring.recommendations import (
+    apply_view,
+    blast_size,
+    hydrate_recommendations,
+)
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
-
-
-def blast_files(sug: RefactoringSuggestion) -> list[str]:
-    """The other files a plan drags along, from whichever blast-radius shape it
-    carries — used to scope the detail endpoint's centrality lookup."""
-    files = (sug.blast_radius or {}).get("files")
-    return [f for f in files if isinstance(f, str)] if isinstance(files, list) else []
-
 
 router = APIRouter(
     prefix="/api/repos",
@@ -63,6 +56,10 @@ class RefactoringPlanResponse(BaseModel):
     blast_radius: dict[str, Any] = Field(default_factory=dict)
     confidence: str = "medium"
     source_biomarker: str = ""
+    benefit: float = 0.0
+    leverage: float = 0.0
+    cost: float = 0.0
+    risk: float = 0.0
     # The unified-rank score (higher = surface sooner). Carried so the tab can
     # plot/sort without recomputing the blend client-side.
     rank_score: float = 0.0
@@ -79,6 +76,8 @@ class RefactoringPlanResponse(BaseModel):
     # same place a missing field would have.
     dependents: int = 0
     file_nloc: int = 0
+    file_weighted_deficit: int = 0
+    validation: dict[str, Any] = Field(default_factory=dict)
 
 
 class RefactoringTypeCount(BaseModel):
@@ -89,6 +88,13 @@ class RefactoringTypeCount(BaseModel):
 class RefactoringSummary(BaseModel):
     total: int
     by_type: list[RefactoringTypeCount]
+    files_total: int | None = None
+    structural_total: int | None = None
+    performance_total: int | None = None
+    small_effort_total: int | None = None
+    health_recovery_total: int | None = None
+    negligible_health_total: int | None = None
+    best_health_gain: float | None = None
 
 
 class RefactoringTargetsResponse(BaseModel):
@@ -96,84 +102,106 @@ class RefactoringTargetsResponse(BaseModel):
     plans: list[RefactoringPlanResponse]
 
 
+class RefactoringPlanPageResponse(BaseModel):
+    """Bounded product page; the legacy targets response remains unpaged."""
+
+    items: list[RefactoringPlanResponse]
+    total: int
+    has_more: bool
+    next_offset: int | None
+    summary: RefactoringSummary
+    structural_leads: list[RefactoringPlanResponse]
+
+
 # ---------------------------------------------------------------------------
 # Row → dataclass → response adapters
 # ---------------------------------------------------------------------------
 
 
-def _row_to_suggestion(row: Any) -> RefactoringSuggestion:
-    """Re-hydrate a persisted ORM row into the ranking dataclass.
-
-    The rank module operates on ``RefactoringSuggestion`` dataclasses (open
-    ``plan`` / ``blast_radius`` dicts); the DB stores those as ``*_json`` text.
-    We stash the row id on the instance so the ranked order can be serialized
-    back with its id intact (dataclass instances accept extra attributes)."""
-
-    def _loads(value: Any) -> dict[str, Any]:
-        if not value:
-            return {}
-        try:
-            parsed = json.loads(value)
-        except (TypeError, ValueError):
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-
-    sug = RefactoringSuggestion(
-        refactoring_type=row.refactoring_type,
-        file_path=row.file_path,
-        target_symbol=row.target_symbol,
-        line_start=row.line_start,
-        line_end=row.line_end,
-        plan=_loads(row.plan_json),
-        evidence=_loads(row.evidence_json),
-        impact_delta=row.impact_delta,
-        effort_bucket=row.effort_bucket,
-        blast_radius=_loads(row.blast_radius_json),
-        confidence=row.confidence,
-        source_biomarker=row.source_biomarker,
-    )
-    sug.id = row.id  # type: ignore[attr-defined]
-    return sug
+def _to_response(data: dict[str, Any]) -> RefactoringPlanResponse:
+    return RefactoringPlanResponse(**data)
 
 
-def _to_response(
-    sug: RefactoringSuggestion,
-    centrality: dict[str, float],
-    nloc: dict[str, int] | None = None,
-) -> RefactoringPlanResponse:
-    return RefactoringPlanResponse(
-        id=getattr(sug, "id", ""),
-        refactoring_type=sug.refactoring_type,
-        file_path=sug.file_path,
-        target_symbol=sug.target_symbol,
-        line_start=sug.line_start,
-        line_end=sug.line_end,
-        plan=sug.plan or {},
-        evidence=sug.evidence or {},
-        impact_delta=sug.impact_delta,
-        effort_bucket=sug.effort_bucket,
-        blast_radius=sug.blast_radius or {},
-        confidence=sug.confidence,
-        source_biomarker=sug.source_biomarker,
-        rank_score=round(score(sug, centrality), 4),
-        dependents=int(centrality.get(sug.file_path, 0.0)),
-        file_nloc=int((nloc or {}).get(sug.file_path, 0)),
+_STRUCTURAL_TYPES = {"split_file", "break_cycle", "extract_class", "move_method"}
+_EFFORT_ORDER = {"S": 0, "M": 1, "L": 2, "XL": 3}
+
+
+def _summary(recommendations: list[Any]) -> RefactoringSummary:
+    by_type: dict[str, int] = {}
+    for recommendation in recommendations:
+        suggestion = recommendation.suggestion
+        by_type[suggestion.refactoring_type] = by_type.get(suggestion.refactoring_type, 0) + 1
+    return RefactoringSummary(
+        total=len(recommendations),
+        by_type=[
+            RefactoringTypeCount(type=kind, count=count)
+            for kind, count in sorted(by_type.items(), key=lambda item: (-item[1], item[0]))
+        ],
+        files_total=len({item.suggestion.file_path for item in recommendations}),
+        structural_total=sum(
+            item.suggestion.refactoring_type in _STRUCTURAL_TYPES for item in recommendations
+        ),
+        performance_total=by_type.get("performance_fix", 0),
+        small_effort_total=sum(item.suggestion.effort_bucket == "S" for item in recommendations),
+        health_recovery_total=sum(item.suggestion.impact_delta >= 0.1 for item in recommendations),
+        negligible_health_total=sum(item.suggestion.impact_delta < 0.5 for item in recommendations),
+        best_health_gain=round(
+            max((float(item.suggestion.impact_delta) for item in recommendations), default=0.0),
+            3,
+        ),
     )
 
 
-async def _nloc_map(session: AsyncSession, repo_id: str) -> dict[str, int]:
-    """File-path → line count, from the health pass. Empty when no health
-    snapshot exists yet, which leaves every plan's ``file_nloc`` at 0."""
-    metrics = await crud.get_health_metrics(session, repo_id)
-    return {m.file_path: int(m.nloc or 0) for m in metrics}
+def _csv_values(value: str | None) -> set[str]:
+    return {part.strip() for part in (value or "").split(",") if part.strip()}
 
 
-async def _centrality_map(session: AsyncSession, repo_id: str) -> dict[str, float]:
-    """File-path → in-degree (importer count), the cheap dependency-centrality
-    proxy the unified rank reads. Empty when no graph metrics are materialized
-    (the rank then degrades to impact × blast × confidence)."""
-    metrics = await crud.get_graph_metrics(session, repo_id)
-    return {node_id: float(m.get("in_degree") or 0) for node_id, m in metrics.items()}
+def _matches_search(recommendation: Any, query: str) -> bool:
+    suggestion = recommendation.suggestion
+    plan = suggestion.plan or {}
+    haystack = " ".join(
+        (
+            suggestion.file_path,
+            suggestion.target_symbol,
+            suggestion.refactoring_type,
+            suggestion.source_biomarker,
+            str(plan.get("strategy") or ""),
+            str(plan.get("intervention_symbol") or ""),
+        )
+    ).lower()
+    return query in haystack
+
+
+def _sort_recommendations(recommendations: list[Any], sort: str) -> list[Any]:
+    canonical_position = {item.id: index for index, item in enumerate(recommendations)}
+    if sort == "canonical":
+        return recommendations
+    if sort == "health":
+        return sorted(
+            recommendations,
+            key=lambda item: (-item.suggestion.impact_delta, canonical_position[item.id]),
+        )
+    if sort == "effort":
+        return sorted(
+            recommendations,
+            key=lambda item: (
+                _EFFORT_ORDER.get(item.suggestion.effort_bucket, 2),
+                canonical_position[item.id],
+            ),
+        )
+    if sort == "blast":
+        return sorted(
+            recommendations,
+            key=lambda item: (-blast_size(item.suggestion), canonical_position[item.id]),
+        )
+    return sorted(
+        recommendations,
+        key=lambda item: (
+            item.suggestion.file_path,
+            item.suggestion.target_symbol,
+            item.id,
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +219,9 @@ async def get_refactoring_targets(
     ),
     min_confidence: str | None = Query(None, description="low | medium | high"),
     file_path: str | None = Query(None, description="Filter plans to one repo-relative file path"),
+    view: Literal["canonical", "file_spread"] = Query(
+        "canonical", description="Named ordering view; canonical is the product default"
+    ),
     session: AsyncSession = Depends(get_db_session),
 ) -> RefactoringTargetsResponse:
     """Ranked refactoring plans for the repo, filterable by type, confidence,
@@ -201,9 +232,6 @@ async def get_refactoring_targets(
     honor *min_confidence* — so the summary and the plan list stay consistent
     under a confidence filter.
     """
-    centrality = await _centrality_map(session, repo_id)
-    nloc = await _nloc_map(session, repo_id)
-
     # Summary is computed over the unfiltered-by-type set so the chips can show
     # every type's count even while one type is selected.
     all_rows = await crud.get_refactoring_suggestions(
@@ -227,11 +255,71 @@ async def get_refactoring_targets(
     )
     if file_path is not None:
         rows = [r for r in rows if r.file_path == file_path]
-    suggestions = [_row_to_suggestion(r) for r in rows]
-    ranked = rank_suggestions(suggestions, centrality=centrality)
+    recommendations = await hydrate_recommendations(session, repo_id, rows, view=view)
     return RefactoringTargetsResponse(
         summary=summary,
-        plans=[_to_response(s, centrality, nloc) for s in ranked],
+        plans=[_to_response(recommendation.as_dict()) for recommendation in recommendations],
+    )
+
+
+@router.get("/{repo_id}/refactoring/targets/page", response_model=RefactoringPlanPageResponse)
+async def get_refactoring_plan_page(
+    repo_id: str,
+    refactoring_type: str | None = Query(None),
+    min_confidence: str | None = Query(None, description="Compatibility confidence floor"),
+    confidence: str | None = Query(None, description="Comma-separated exact confidence values"),
+    effort: str | None = Query(None, description="Comma-separated effort buckets"),
+    file_path: str | None = Query(None),
+    search: str | None = Query(None, max_length=200),
+    sort: Literal["canonical", "health", "effort", "blast", "file"] = Query("canonical"),
+    view: Literal["canonical", "file_spread"] = Query("canonical"),
+    limit: int = Query(60, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_db_session),
+) -> RefactoringPlanPageResponse:
+    """Bounded list with server-owned filters and deterministic ordering.
+
+    Hydration remains one batched pass over the repository plans so validation
+    and priority have exactly the Phase 3 semantics and a constant SQL shape.
+    Only the requested page crosses the wire.
+    """
+    rows = await crud.get_refactoring_suggestions(session, repo_id, min_confidence=min_confidence)
+    canonical = await hydrate_recommendations(session, repo_id, rows, view="canonical")
+    summary = _summary(canonical)
+    structural_leads = [
+        item for item in canonical if item.suggestion.refactoring_type in _STRUCTURAL_TYPES
+    ][:12]
+
+    ordered = apply_view(canonical, view)
+    if refactoring_type == "structural":
+        ordered = [
+            item for item in ordered if item.suggestion.refactoring_type in _STRUCTURAL_TYPES
+        ]
+    elif refactoring_type:
+        ordered = [item for item in ordered if item.suggestion.refactoring_type == refactoring_type]
+    if file_path is not None:
+        ordered = [item for item in ordered if item.suggestion.file_path == file_path]
+    confidences = _csv_values(confidence)
+    if confidences:
+        ordered = [item for item in ordered if item.suggestion.confidence in confidences]
+    efforts = _csv_values(effort)
+    if efforts:
+        ordered = [item for item in ordered if item.suggestion.effort_bucket in efforts]
+    normalized_search = (search or "").strip().lower()
+    if normalized_search:
+        ordered = [item for item in ordered if _matches_search(item, normalized_search)]
+    ordered = _sort_recommendations(ordered, sort)
+
+    total = len(ordered)
+    page = ordered[offset : offset + limit]
+    next_offset = offset + len(page) if offset + len(page) < total else None
+    return RefactoringPlanPageResponse(
+        items=[_to_response(item.as_dict()) for item in page],
+        total=total,
+        has_more=next_offset is not None,
+        next_offset=next_offset,
+        summary=summary,
+        structural_leads=[_to_response(item.as_dict()) for item in structural_leads],
     )
 
 
@@ -346,30 +434,8 @@ async def get_refactoring_plan(
     row = await crud.get_refactoring_suggestion(session, repo_id, suggestion_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"refactoring plan not found: {suggestion_id}")
-    sug = _row_to_suggestion(row)
-    # Only this plan's file and its blast files affect its score / caller rollup,
-    # so fetch in-degree for just those rather than the whole graph_metrics table.
-    files = {sug.file_path, *(f for f in blast_files(sug) if isinstance(f, str))}
-    centrality: dict[str, float] = {}
-    for path in files:
-        degrees = await crud.get_node_degree_counts(session, repo_id, path)
-        centrality[path] = float(degrees.get("in_degree") or 0)
-    # The list endpoint reads in-degree from the materialized `graph_metrics`
-    # snapshot; the loop above counts live edges. The two can disagree, and a
-    # plan whose `dependents` changed between the row you clicked and the panel
-    # that opened is the bug this field exists to end. The snapshot wins for the
-    # plan's own file; edge counts still serve the blast-file caller rollup,
-    # which is a different question.
-    metrics = await crud.get_graph_metrics(session, repo_id)
-    snapshot = metrics.get(sug.file_path)
-    if snapshot is not None and snapshot.get("in_degree") is not None:
-        centrality[sug.file_path] = float(snapshot["in_degree"])
-    # Enrich the blast radius the same way the ranking does, so the detail view
-    # carries the caller rollup the list ranked on.
-    rank_suggestions([sug], centrality=centrality)
-    metrics = await crud.get_health_metrics(session, repo_id, file_paths=[sug.file_path])
-    nloc = {m.file_path: int(m.nloc or 0) for m in metrics}
-    return _to_response(sug, centrality, nloc)
+    recommendation = (await hydrate_recommendations(session, repo_id, [row]))[0]
+    return _to_response(recommendation.as_dict())
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +511,8 @@ async def generate_refactoring_code(
     row = await crud.get_refactoring_suggestion(session, repo_id, suggestion_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"refactoring plan not found: {suggestion_id}")
-    sug = _row_to_suggestion(row)
+    recommendation = (await hydrate_recommendations(session, repo_id, [row]))[0]
+    sug = recommendation.suggestion
 
     body = body or GenerateCodeRequest()
     try:

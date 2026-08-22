@@ -4,16 +4,20 @@ Fires when a file is **all three** of:
 
 - a *hotspot* (``git_meta['is_hotspot']`` true OR commit_count_90d ≥ 8)
 - under-tested (``line_coverage_pct`` < 40 when coverage is available,
-  OR no paired test file when coverage isn't)
+  OR, when it isn't, neither a paired test file nor a test reaching it
+  through the call graph)
 - centrally depended on (``dependents_count`` ≥ 4 OR temporal_hotspot
   in the top decile)
 
 Severity grades on how bad the coverage is and how many dependents the
 file has.
 
-When no coverage report has been ingested the biomarker still fires for
-hotspots without a paired test file — this is the conservative fallback
-mode and matches the Phase 1 "has_test_file" heuristic.
+When no coverage report has been ingested the biomarker falls back to two
+signals that both mean "something tests this": the paired-test-file naming
+convention, and ``reached_by_tests``, a test file whose calls reach this one in
+the dependency graph. Either suppresses the finding. Both over-claim relative to
+real execution, which is the right direction of error for a check whose output
+is an accusation.
 """
 
 from __future__ import annotations
@@ -58,9 +62,17 @@ class UntestedHotspotDetector:
 
         cov = ctx.line_coverage_pct
         if cov is None:
-            # Fallback: no coverage data. Flag only when there's also
-            # no paired test file, to avoid noise.
-            if ctx.has_test_file:
+            # Fallback: no coverage data. Flag only when nothing says a test
+            # touches this file. Two independent things can say so, and either
+            # is enough. This is the one place the biomarker is asserting a
+            # negative, so the bar for asserting it is "no signal at all".
+            #
+            # ``reached_by_tests`` is the graph one, and it is what stops the
+            # long-standing false positive: a suite that names its tests for
+            # behaviour rather than for the file under test satisfies no naming
+            # convention, so ``has_test_file`` was False and this fired on files
+            # the graph records several test files importing.
+            if ctx.has_test_file or ctx.reached_by_tests:
                 return []
             cov_for_severity = 0.0
             reason = (
@@ -94,6 +106,7 @@ class UntestedHotspotDetector:
                     "dependents_count": ctx.dependents_count,
                     "commit_count_90d": meta.get("commit_count_90d"),
                     "has_test_file": ctx.has_test_file,
+                    "reached_by_tests": ctx.reached_by_tests,
                 },
                 reason=reason,
             )

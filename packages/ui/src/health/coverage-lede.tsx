@@ -120,9 +120,10 @@ export function CoverageLede({
           </strong>{" "}
           across {formatNumber(summary.file_count)} instrumented files
           {moduleCount > 0 ? ` in ${formatNumber(moduleCount)} directories` : ""}.
-          {band ? ` We rate that ${band.label.toLowerCase()}.` : ""} Coverage is read
-          from your own test run, not inferred: nothing here is a guess about which
-          lines a test would have touched.
+          {band ? ` We rate that ${band.label.toLowerCase()}.` : ""} These are the
+          lines your own test run executed, so every figure on this tab is
+          line-level and exact. Without a report we can still name which tests
+          reach which files, but not how much of a file they run.
         </p>
 
         <p className="mt-2.5">

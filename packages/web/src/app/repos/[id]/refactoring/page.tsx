@@ -12,7 +12,7 @@
  * a plan you can send to someone.
  */
 
-import { use, useCallback, useMemo, useState } from "react";
+import { use, useCallback, useDeferredValue, useMemo, useState } from "react";
 import useSWR from "swr";
 import { parseAsString, parseAsStringLiteral, useQueryState } from "nuqs";
 import { Wrench, RotateCw } from "lucide-react";
@@ -25,18 +25,27 @@ import {
   STRUCTURAL_TYPES,
   TYPE_ORDER,
   typeMeta,
+  type RefactoringSortKey,
 } from "@repowise-dev/ui/refactoring";
-import type { RefactoringPlan, RefactoringTargets } from "@repowise-dev/ui/refactoring";
+import type {
+  Confidence,
+  EffortBucket,
+  RefactoringPlan,
+  RefactoringPlanPage,
+} from "@repowise-dev/types/refactoring";
 import { AiPromptModal, buildRefactoringPlanPrompt } from "@repowise-dev/ui/health";
 import {
   generateRefactoringCode,
   getRefactoringSettings,
+  getRefactoringPlan,
+  getRefactoringPlansPage,
   getRefactoringTargets,
   type RefactoringSettings,
 } from "@/lib/api/refactoring";
 
 const TYPE_VALUES = ["all", "structural", ...TYPE_ORDER] as const;
 type TypeFilter = (typeof TYPE_VALUES)[number];
+type RefactoringPageData = RefactoringPlanPage & { legacy?: boolean };
 
 export default function RefactoringPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: repoId } = use(params);
@@ -45,24 +54,67 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
     parseAsStringLiteral(TYPE_VALUES).withDefault("all"),
   );
   const [openPlanId, setOpenPlanId] = useQueryState("plan", parseAsString);
+  const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
+  const [sort, setSort] = useState<RefactoringSortKey>("canonical");
+  const [efforts, setEfforts] = useState<EffortBucket[]>([]);
+  const [confidences, setConfidences] = useState<Confidence[]>([]);
+  const [offset, setOffset] = useState(0);
 
-  const { data, error, isLoading, mutate } = useSWR<RefactoringTargets>(
-    `refactoring:${repoId}`,
-    () => getRefactoringTargets(repoId),
-    { revalidateOnFocus: false },
+  const { data, error, isLoading, mutate } = useSWR<RefactoringPageData>(
+    [
+      "refactoring-page",
+      repoId,
+      type,
+      deferredQuery,
+      sort,
+      efforts.join(","),
+      confidences.join(","),
+      offset,
+    ],
+    async () => {
+      try {
+        return await getRefactoringPlansPage(repoId, {
+          refactoringType: type === "all" ? undefined : type,
+          search: deferredQuery || undefined,
+          sort,
+          effort: efforts.join(",") || undefined,
+          confidence: confidences.join(",") || undefined,
+          limit: 60,
+          offset,
+        });
+      } catch (caught) {
+        const status = Number((caught as { status?: number }).status);
+        if (status !== 404 && status !== 405) throw caught;
+        const legacy = await getRefactoringTargets(repoId, {
+          refactoringType:
+            type === "all" || type === "structural" ? undefined : type,
+        });
+        const items =
+          type === "structural"
+            ? legacy.plans.filter((plan) =>
+                (STRUCTURAL_TYPES as readonly string[]).includes(plan.refactoring_type),
+              )
+            : legacy.plans;
+        return {
+          items,
+          total: items.length,
+          has_more: false,
+          next_offset: null,
+          summary: legacy.summary,
+          structural_leads: legacy.plans
+            .filter((plan) =>
+              (STRUCTURAL_TYPES as readonly string[]).includes(plan.refactoring_type),
+            )
+            .slice(0, 12),
+          legacy: true,
+        };
+      }
+    },
+    { revalidateOnFocus: false, keepPreviousData: true },
   );
 
-  const allPlans = useMemo(() => data?.plans ?? [], [data?.plans]);
-
-  const filtered = useMemo(() => {
-    if (type === "all") return allPlans;
-    if (type === "structural") {
-      return allPlans.filter((p) =>
-        (STRUCTURAL_TYPES as readonly string[]).includes(p.refactoring_type),
-      );
-    }
-    return allPlans.filter((p) => p.refactoring_type === type);
-  }, [allPlans, type]);
+  const plans = useMemo(() => data?.items ?? [], [data?.items]);
 
   const prefix = `/repos/${repoId}`;
   // `PlanRows` offers a second `line` argument and this deliberately ignores
@@ -73,10 +125,16 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
 
   // The open plan comes from the URL, so a reload or a shared link lands on the
   // same drawer rather than the top of the list.
-  const openPlan = useMemo(
-    () => allPlans.find((p) => p.id === openPlanId) ?? null,
-    [allPlans, openPlanId],
+  const openPlanOnPage = useMemo(
+    () => plans.find((p) => p.id === openPlanId) ?? null,
+    [plans, openPlanId],
   );
+  const { data: linkedPlan } = useSWR<RefactoringPlan>(
+    openPlanId && !openPlanOnPage ? ["refactoring-plan", repoId, openPlanId] : null,
+    () => getRefactoringPlan(repoId, openPlanId!),
+    { revalidateOnFocus: false, shouldRetryOnError: false },
+  );
+  const openPlan = openPlanOnPage ?? linkedPlan ?? null;
 
   const [promptPlan, setPromptPlan] = useState<RefactoringPlan | null>(null);
   const onAiPrompt = useCallback((plan: RefactoringPlan) => setPromptPlan(plan), []);
@@ -105,7 +163,11 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
   const tabs = [
     { id: "all" as const, label: "All", badge: data?.summary.total },
     { id: "structural" as const, label: "Structural", badge: structuralCount },
-    ...TYPE_ORDER.map((t) => ({ id: t, label: typeMeta(t).label, badge: counts.get(t) ?? 0 })),
+    ...TYPE_ORDER.map((t) => ({
+      id: t,
+      label: typeMeta(t).label,
+      badge: counts.get(t) ?? 0,
+    })),
   ].filter((t) => t.id === "all" || (t.badge ?? 0) > 0);
 
   return (
@@ -128,7 +190,10 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
         <ViewTabs
           tabs={tabs}
           value={type}
-          onValueChange={(id) => void setType(id as TypeFilter)}
+          onValueChange={(id) => {
+            setOffset(0);
+            void setType(id as TypeFilter);
+          }}
         />
 
         {error ? (
@@ -145,16 +210,54 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
           </div>
         ) : (
           <RefactoringBoard
-            plans={filtered}
-            allPlans={allPlans}
+            plans={plans}
+            allPlans={data?.legacy ? data.items : data?.structural_leads}
+            structuralPlans={
+              data?.legacy
+                ? data.items.filter((plan) =>
+                    (STRUCTURAL_TYPES as readonly string[]).includes(plan.refactoring_type),
+                  )
+                : data?.structural_leads
+            }
+            summary={data?.summary}
+            serverState={
+              data?.legacy
+                ? undefined
+                : {
+                    query,
+                    sort,
+                    efforts,
+                    confidences,
+                    total: data?.total ?? 0,
+                    offset,
+                    nextOffset: data?.next_offset ?? null,
+                  }
+            }
+            onServerStateChange={(change) => {
+              if (change.query !== undefined) setQuery(change.query);
+              if (change.sort !== undefined) setSort(change.sort);
+              if (change.efforts !== undefined) setEfforts(change.efforts);
+              if (change.confidences !== undefined) setConfidences(change.confidences);
+              if (change.offset !== undefined) setOffset(change.offset);
+            }}
             onOpen={(plan) => void setOpenPlanId(plan.id)}
             onAiPrompt={onAiPrompt}
-            onSeeStructural={() => void setType("structural")}
+            onSeeStructural={() => {
+              setOffset(0);
+              void setType("structural");
+            }}
             fileHref={fileHref}
             // The lede and Start here describe the whole repo, so they only
             // belong on the unfiltered view — under a type filter they would
             // be talking about a set the list below is not showing.
             showLede={type === "all"}
+            sectionTitle={
+              type === "all"
+                ? "All plans"
+                : type === "structural"
+                  ? "Structural plans"
+                  : `${typeMeta(type).label} plans`
+            }
           />
         )}
       </div>

@@ -177,3 +177,19 @@ class TestTypeDeclarationFlag:
         assert graph.get_edge_data("def_first.h", "def_first.h::Shape") == {
             "edge_type": "defines"
         }
+
+    def test_bodiless_template_type_is_marked(self, tmp_path: Path) -> None:
+        # ``template <typename T> class Foo;`` — the wrapper node carries no
+        # ``body`` field of its own, so the check has to ask the type it wraps
+        # or every template reads as a declaration.
+        (tmp_path / "t.hh").write_text(
+            "template <typename T> class Foo;\n"
+            "template <typename T> class Bar { int x; };\n"
+            "template <typename... T>\nclass Multi;\n"
+            "template <typename T> T fn() { return T(); }\n"
+        )
+        graph = _build(tmp_path)
+        assert graph.nodes["t.hh::Foo"]["is_declaration"] is True
+        assert graph.nodes["t.hh::Multi"]["is_declaration"] is True
+        assert graph.nodes["t.hh::Bar"]["is_declaration"] is False
+        assert graph.nodes["t.hh::fn"]["is_declaration"] is False

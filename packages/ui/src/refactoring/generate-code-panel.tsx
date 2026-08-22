@@ -5,10 +5,9 @@ import { Check, Copy, Loader2, RotateCw, Sparkles, TriangleAlert, Wand2 } from "
 import { DiffView } from "./diff-view";
 import {
   generatedVerdict,
-  type GeneratedCode,
-  type RefactoringPlan,
   type VerdictTone,
 } from "./types";
+import type { GeneratedCode, RefactoringPlan } from "@repowise-dev/types/refactoring";
 import { toFriendlyMessage } from "../lib/errors";
 
 /**

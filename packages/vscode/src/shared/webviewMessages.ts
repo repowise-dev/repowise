@@ -35,7 +35,7 @@ import type { RiskRangeResponse } from "@repowise-dev/api-client/risk";
 import type { ReviewerSuggestion } from "@repowise-dev/api-client/types";
 import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
 import type { ArchitectureView } from "@repowise-dev/ui/c4";
-import type { RefactoringPlan, RefactoringTargets } from "@repowise-dev/ui/refactoring/types";
+import type { RefactoringPlan, RefactoringTargets } from "@repowise-dev/types/refactoring";
 import type { AiPromptFlavor } from "@repowise-dev/ui/health/ai-prompt-builder";
 
 /** Every editor-tab webview panel the extension can open. */

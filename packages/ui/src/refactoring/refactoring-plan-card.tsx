@@ -5,10 +5,12 @@ import { CONFIDENCE_DOT, CONFIDENCE_LABEL, EFFORT_LABEL, typeAccent, typeMeta } 
 import {
   blastCount,
   planSynopsis,
-  type Confidence,
-  type EffortBucket,
-  type RefactoringPlan,
 } from "./types";
+import type {
+  Confidence,
+  EffortBucket,
+  RefactoringPlan,
+} from "@repowise-dev/types/refactoring";
 
 export interface RefactoringPlanCardProps {
   plan: RefactoringPlan;

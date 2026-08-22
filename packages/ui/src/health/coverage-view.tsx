@@ -42,6 +42,7 @@ import {
   type UntestedHotspotEntry,
 } from "./untested-hotspot-warning";
 import { RiskCoverageScatter } from "./risk-coverage-scatter";
+import { InferredTestsView } from "./inferred-tests-view";
 import {
   buildCoverageAiPrompt,
   type CoverageFilePromptInput,
@@ -80,6 +81,16 @@ export function CoverageView({ adapter }: { adapter: CodeHealthAdapter }) {
         <EmptyState
           title="Couldn't load coverage data"
           description="The coverage endpoint returned an error. Try refreshing, or re-run the health pass."
+        />
+      ) : data?.basis === "inferred" && data.inferred ? (
+        // No report was ever ingested, and the graph can answer anyway. This
+        // branch never renders a measured field: the two bases are separate
+        // objects in the payload precisely so one cannot leak into the other's
+        // code path.
+        <InferredTestsView
+          data={data}
+          untestedFindings={untestedFindings ?? []}
+          onOpenFile={openFilePage}
         />
       ) : !data || data.summary.file_count === 0 ? (
         <NoCoverageState />
@@ -447,21 +458,28 @@ function CoverageBody({
 }
 
 /**
- * Says what will fill the page, not that something is missing. The two commands
- * are the whole setup, so they are the content rather than a footnote under a
- * dashed placeholder box.
+ * The last resort: no report, and the graph had nothing to say either — an
+ * unindexed repository, or one with no test files at all. When the graph *can*
+ * answer, `InferredTestsView` renders instead and the reader never reaches here.
+ *
+ * It used to be the only thing behind "no coverage", and it claimed "Nothing is
+ * inferred: we read the lines your tests really executed" — which stopped being
+ * true once the graph could answer, and turned a solved question into a wall.
+ * What is left is the honest version: this is genuinely unknown, and here is
+ * what would fill it.
  */
 function NoCoverageState() {
   return (
     <div className="flex max-w-[62ch] flex-col gap-3">
       <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
-        No coverage report ingested yet
+        Nothing here can say whether your code is tested
       </h2>
       <p className="text-[13px] leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
-        Run your test suite with coverage on and hand us the report. This tab then
-        plots every file by health against coverage, names the files where a gap
-        actually costs something, and rolls the numbers up per directory. Nothing is
-        inferred: we read the lines your tests really executed.
+        No coverage report has been ingested, and the dependency graph found no
+        test files to trace either. Either would fill this tab: a report gives the
+        lines your tests executed, and the graph alone can name which tests reach
+        which files with no setup at all. Run your suite with coverage on and hand
+        us the report.
       </p>
       <pre className="w-fit overflow-x-auto rounded-md bg-[var(--color-bg-inset)] px-3 py-2 font-mono text-xs text-[var(--color-text-primary)]">
         pytest --cov --cov-report=lcov{"\n"}
