@@ -135,7 +135,11 @@ def test_pascal_no_class_metrics():
     # Pascal method bodies live in a top-level ``defProc`` outside the
     # ``declClass`` node (see languages.py's ``_PASCAL`` comment) -- class
     # metrics are deliberately unmapped rather than emitting a misleading
-    # zero-method class, same posture as Go.
+    # zero-method class, same posture as Go. Calls walk_file() directly
+    # (rather than through _walk_classes(), which skips on ``not
+    # fcx.classes`` -- exactly what this test asserts), so it needs its own
+    # best-effort guard rather than inheriting one from a helper.
+    pytest.importorskip("tree_sitter_pascal", reason="run `uv sync --all-packages`")
     fcx = walk_file(
         "unsupported.pas",
         "pascal",
