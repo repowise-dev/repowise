@@ -104,6 +104,49 @@ def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
         return 0, 0
 
 
+def _path_mapping_valid(repo_path: Path) -> bool:
+    """True when a ``Repository`` row matches *repo_path*'s ``local_path``.
+
+    ``repowise status`` used to treat ``.repowise/`` existence alone as
+    "indexed", so a store whose repository/path identity no longer resolves
+    the current checkout was presented as healthy — with 0 files — and the
+    downstream coverage ingestion silently lost most of the tree (issue
+    #1748). The repository row is the identity ingestion actually uses; when
+    it does not match, the index and the checkout have diverged.
+    """
+
+    async def _check() -> bool:
+        from sqlalchemy import select as sa_select
+
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+        )
+        from repowise.core.persistence.models import Repository
+
+        url = get_db_url_for_repo(repo_path)
+        await reconcile_schema_best_effort(url)
+        engine = create_engine(url)
+        sf = create_session_factory(engine)
+        try:
+            async with get_session(sf) as session:
+                res = await session.execute(
+                    sa_select(Repository.id).where(Repository.local_path == str(repo_path))
+                )
+                return res.scalar_one_or_none() is not None
+        finally:
+            await engine.dispose()
+
+    db_path = get_repowise_dir(repo_path) / "wiki.db"
+    if not db_path.exists() and not db_configured():
+        return True  # nothing to diverge from
+    try:
+        return run_async(_check())
+    except Exception:
+        return False
+
+
 def _query_page_count(repo_path: Path) -> int:
     """Return the number of generated wiki pages for a repo, or 0."""
 
@@ -341,6 +384,7 @@ def _workspace_rows(target: CommandTarget) -> list[dict]:
             "head": None,
             "stale": None,
             "commits_behind": None,
+            "mapping_valid": None,
         }
         if not row["indexed"]:
             rows.append(row)
@@ -360,6 +404,9 @@ def _workspace_rows(target: CommandTarget) -> list[dict]:
             head=current_head,
             stale=is_stale,
             commits_behind=behind,
+            # False when a Repository row no longer resolves this checkout,
+            # even though .repowise/ exists (issue #1748).
+            mapping_valid=_path_mapping_valid(abs_path),
         )
         rows.append(row)
     return rows
