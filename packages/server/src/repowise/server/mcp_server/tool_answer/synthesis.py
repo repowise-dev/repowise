@@ -17,6 +17,7 @@ from pathlib import Path
 
 from repowise.server.mcp_server.tool_answer.config import (
     _SYNTHESIS_MAX_TOKENS,
+    _SYNTHESIS_MAX_TOKENS_ENV,
     _SYNTHESIS_TEMPERATURE,
 )
 
@@ -300,8 +301,9 @@ def _empty_completion_note(provider, response) -> str:
         return (
             f"DEGRADED: the model used its entire {_SYNTHESIS_MAX_TOKENS}-token "
             f"budget without emitting an answer ({who}). Reasoning models spend "
-            "that budget on hidden thinking; try a non-reasoning model for "
-            "synthesis. Read the listed files to answer meanwhile."
+            "that budget on hidden thinking before any answer token; raise it "
+            f"with {_SYNTHESIS_MAX_TOKENS_ENV}=<tokens>, or use a non-reasoning "
+            "model for synthesis. Read the listed files to answer meanwhile."
         )
     return (
         f"DEGRADED: the model returned an empty completion ({who}). "

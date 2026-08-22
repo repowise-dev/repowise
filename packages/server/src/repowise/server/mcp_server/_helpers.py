@@ -65,6 +65,42 @@ def vector_search_timeout_s() -> float:
         return _VECTOR_TIMEOUT_DEFAULT_S
     return min(seconds, _VECTOR_TIMEOUT_MAX_S)
 
+
+# Budget for embedding a get_answer question before question_vector() gives up
+# and falls back to a lexical-only answer. 8s suits a warm hosted endpoint; a
+# locally served model that has just been swapped in pays a cold load first
+# and blows it — the run still succeeds (question_vector logs a warning and
+# returns None), so nothing an operator isn't already tailing structlog for
+# marks the semantic leg as lost. Raise it with REPOWISE_EMBED_TIMEOUT_S to
+# buy a cold local model the time a warm hosted one never needed.
+_EMBED_TIMEOUT_ENV = "REPOWISE_EMBED_TIMEOUT_S"
+_EMBED_TIMEOUT_DEFAULT_S = 8.0
+# Same client-side constraint as _VECTOR_TIMEOUT_MAX_S above: past this the
+# MCP client's own tool-call timeout fires first, so a larger value here
+# cannot produce results anyone still accepts.
+_EMBED_TIMEOUT_MAX_S = 120.0
+
+
+def embed_timeout_s() -> float:
+    """Seconds one question-embedding call may take, from env or the default.
+
+    An unparseable or non-positive value warns and keeps the default instead of
+    silently disabling the leg, matching :func:`vector_search_timeout_s` and
+    REPOWISE_EMBEDDING_TIMEOUT.
+    """
+    raw = (os.environ.get(_EMBED_TIMEOUT_ENV) or "").strip()
+    if not raw:
+        return _EMBED_TIMEOUT_DEFAULT_S
+    try:
+        seconds = float(raw)
+    except ValueError:
+        seconds = float("nan")
+    if not seconds > 0:
+        _log.warning("Ignoring unusable %s=%r", _EMBED_TIMEOUT_ENV, raw)
+        return _EMBED_TIMEOUT_DEFAULT_S
+    return min(seconds, _EMBED_TIMEOUT_MAX_S)
+
+
 # Words that mark a string as a natural-language question rather than a path.
 # Keep this small — false positives here send genuine paths to the NL branch,
 # which is harmless (path lookup also runs as a fallback) but slower.
