@@ -238,6 +238,13 @@ def _statement_smells(text: str, dialect: str | None) -> list[PerfHit]:
         for sel in stmt.find_all(exp.Select):
             if sel.args.get("where"):
                 continue
+            # ``SELECT ... INTO a, b`` — a multi-target INTO — is parsed with
+            # the trailing target (``b``) as a comma-join FROM item, so a
+            # table-creating statement looks like a cartesian join (issue
+            # #1502). ``into`` is present exactly when the trailing names are
+            # INTO targets, not joins; skip those.
+            if sel.args.get("into"):
+                continue
             for join in sel.args.get("joins") or ():
                 if (
                     not join.args.get("kind")  # CROSS/OUTER etc. are explicit intent
