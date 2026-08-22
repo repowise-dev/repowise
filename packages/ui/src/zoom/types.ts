@@ -64,6 +64,9 @@ export interface ZoomMap {
   root_id: string;
   project_name: string;
   total_files: number;
+  /** Files curation placed in no layer, so they are on no tree. Optional: an
+   *  older server does not send it. */
+  unclaimed_files?: number;
   max_depth: number;
   truncated: boolean;
   nodes: ZoomNode[];

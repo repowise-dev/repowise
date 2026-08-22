@@ -61,6 +61,10 @@ class ZoomMapResponse(BaseModel):
     root_id: str
     project_name: str
     total_files: int
+    # Files in the repository view that curation put in no layer, so they are on
+    # no tree. Additive and defaulted: an older consumer reading ``total_files``
+    # gets the same number it always did.
+    unclaimed_files: int = 0
     max_depth: int
     truncated: bool = False
     nodes: list[ZoomNodeResponse]

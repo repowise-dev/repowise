@@ -97,3 +97,7 @@ class ZoomMap:
     total_files: int
     max_depth: int                # deepest level present in this (possibly pruned) map
     truncated: bool = False       # True when depth/focus pruning dropped deeper nodes
+    # Files the view knows about that curation assigned to no layer, so they are
+    # in no tree at all. ``total_files`` stays the count actually placed; this is
+    # the rest of the denominator, so a map can say what it is not showing.
+    unclaimed_files: int = 0

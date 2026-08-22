@@ -35,6 +35,11 @@ import { HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
 interface ZoomMapKeyProps {
   /** Every verb present in the loaded map, descending by count. */
   verbs: VerbCount[];
+  /** Files placed in the tree, and files curation left in no layer. The second
+   *  is the map's missing denominator: without it, a map short one file in
+   *  seven reads as complete. */
+  totalFiles: number;
+  unclaimedFiles: number;
   /** Null = every relation draws; otherwise only these verbs do. */
   selected: ReadonlySet<string> | null;
   onSelectedChange: (verbs: ReadonlySet<string> | null) => void;
@@ -44,7 +49,13 @@ function Dot({ className }: { className: string }) {
   return <span aria-hidden className={`inline-block h-2 w-2 shrink-0 rounded-full ${className}`} />;
 }
 
-export function ZoomMapKey({ verbs, selected, onSelectedChange }: ZoomMapKeyProps) {
+export function ZoomMapKey({
+  verbs,
+  totalFiles,
+  unclaimedFiles,
+  selected,
+  onSelectedChange,
+}: ZoomMapKeyProps) {
   const filtered = selected !== null;
 
   return (
@@ -63,6 +74,15 @@ export function ZoomMapKey({ verbs, selected, onSelectedChange }: ZoomMapKeyProp
             <>
               Hover a card to see what it depends on. Arrow weight is how many file pairs the
               dependency covers.
+            </>
+          )}
+          {unclaimedFiles > 0 && (
+            /* Silence when nothing is missing: "0 not shown" is noise. */
+            <>
+              {" "}
+              {unclaimedFiles.toLocaleString()} of{" "}
+              {(totalFiles + unclaimedFiles).toLocaleString()} files are not on the map; they
+              belong to no layer.
             </>
           )}
         </p>

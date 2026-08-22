@@ -155,6 +155,8 @@ def assemble_zoom_map(
     # about but that curation assigned to no layer is not in the tree, so
     # counting file_stats would over-report). Taken before depth/focus pruning.
     total_files = sum(1 for n in nodes.values() if n.kind == "file")
+    # ...and the rest of that denominator, so the map can say how much it omits.
+    unclaimed_files = max(len(file_stats) - total_files, 0)
 
     root_id, nodes, relations, truncated = _prune(
         root_id, nodes, relations, max_depth=max_depth, focus=focus
@@ -169,6 +171,7 @@ def assemble_zoom_map(
         total_files=total_files,
         max_depth=present_depth,
         truncated=truncated,
+        unclaimed_files=unclaimed_files,
     )
 
 

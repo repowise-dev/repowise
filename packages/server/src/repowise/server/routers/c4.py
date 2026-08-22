@@ -275,6 +275,7 @@ def _zoom_response(zoom: ZoomMap) -> ZoomMapResponse:
         root_id=zoom.root_id,
         project_name=zoom.project_name,
         total_files=zoom.total_files,
+        unclaimed_files=zoom.unclaimed_files,
         max_depth=zoom.max_depth,
         truncated=zoom.truncated,
         nodes=[

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from repowise.server.services.c4_builder.models import (
     ArchEdge,
     ArchitectureView,
@@ -537,6 +539,23 @@ def test_assemble_zoom_map_full():
     main = zoom.nodes[file_id("pkg/main.py")]
     assert main.is_entry_point and main.sibling_rank == 1
     assert not zoom.truncated
+    # every file the view knows about landed in a layer, so nothing is hidden
+    assert zoom.unclaimed_files == 0
+
+
+def test_assemble_zoom_map_counts_files_no_layer_claimed():
+    # A file the view knows about but that curation assigned to no layer is on
+    # no tree at all, so total_files cannot see it. Report it separately rather
+    # than letting an incomplete map read as complete.
+    view = _view()
+    orphan = _node("pkg/core/orphan.py", pagerank_percentile=5.0)
+    view = replace(view, nodes=[*view.nodes, orphan], total_files=4)
+
+    zoom = assemble_zoom_map(view)
+
+    assert zoom.total_files == 3
+    assert zoom.unclaimed_files == 1
+    assert file_id("pkg/core/orphan.py") not in zoom.nodes
 
 
 def test_assemble_zoom_map_health_rolls_up():

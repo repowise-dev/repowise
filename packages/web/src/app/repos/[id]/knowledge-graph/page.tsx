@@ -166,6 +166,8 @@ export default function KnowledgeGraphPage({ params }: { params: Promise<{ id: s
 
           <ZoomMapKey
             verbs={verbs}
+            totalFiles={zoomMap.total_files}
+            unclaimedFiles={zoomMap.unclaimed_files ?? 0}
             selected={relationVerbs}
             onSelectedChange={setRelationVerbs}
           />
