@@ -58,7 +58,7 @@ your agent in under five minutes, with no API key.
 | [layers/GRAPH.md](layers/GRAPH.md) | The dependency graph: what is in it, how every edge is resolved, and how much to trust each one |
 | [layers/DECISIONS.md](layers/DECISIONS.md) | Architectural decisions mined from your repo and from your own agent sessions |
 | [layers/DEAD_CODE.md](layers/DEAD_CODE.md) | Unreachable files, unused exports, and zombie packages by confidence tier |
-| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language: 19 parsed to a full AST, 35 on the five-rung ladder |
+| [layers/LANGUAGE_SUPPORT.md](layers/LANGUAGE_SUPPORT.md) | What works per language, across 20 parsed languages and 13 at the Full tier |
 | [layers/WIKI.md](layers/WIKI.md) | The generated wiki: page types, what `update` re-renders, styles, output language |
 
 ## Scale it

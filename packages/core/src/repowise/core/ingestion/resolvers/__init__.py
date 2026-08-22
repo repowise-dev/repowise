@@ -12,6 +12,7 @@ from .dart import resolve_dart_import
 from .elixir import resolve_elixir_import
 from .erlang import resolve_erlang_import
 from .fsharp import resolve_fsharp_import
+from .gdscript import resolve_gdscript_import
 from .generic import resolve_generic_import
 from .go import resolve_go_import
 from .haskell import resolve_haskell_import
@@ -47,6 +48,8 @@ _RESOLVERS: dict[str, ResolverFn] = {
     "java": resolve_java_import,
     "kotlin": resolve_kotlin_import,
     "luau": resolve_luau_import,
+    # res:// resolved against the nearest project.godot, not the repo root.
+    "gdscript": resolve_gdscript_import,
     "ruby": resolve_ruby_import,
     "csharp": resolve_csharp_import,
     "swift": resolve_swift_import,

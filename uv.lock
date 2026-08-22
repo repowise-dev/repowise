@@ -3084,6 +3084,7 @@ dependencies = [
     { name = "tree-sitter-c-sharp" },
     { name = "tree-sitter-cpp" },
     { name = "tree-sitter-dart" },
+    { name = "tree-sitter-gdscript" },
     { name = "tree-sitter-go" },
     { name = "tree-sitter-html" },
     { name = "tree-sitter-java" },
@@ -3179,6 +3180,7 @@ requires-dist = [
     { name = "tree-sitter-c-sharp", specifier = ">=0.23,<1" },
     { name = "tree-sitter-cpp", specifier = ">=0.23,<1" },
     { name = "tree-sitter-dart", specifier = ">=0.1,<1" },
+    { name = "tree-sitter-gdscript", git = "https://github.com/PrestonKnopp/tree-sitter-gdscript.git?rev=v6.1.0" },
     { name = "tree-sitter-go", specifier = ">=0.23,<1" },
     { name = "tree-sitter-html", specifier = ">=0.23,<1" },
     { name = "tree-sitter-java", specifier = ">=0.23,<1" },
@@ -4032,6 +4034,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/43/e3/ebee709bdd1e472bfbd1f824e5377993cfcfb7437c9e9fedeac243480ac1/tree_sitter_dart-0.1.0-cp38-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:05906d65a1c8688a0a0358c2e1b65ade0eec2ec7be7364c75de2f5c1e2844e0c", size = 162621, upload-time = "2026-06-21T16:01:56.698Z" },
     { url = "https://files.pythonhosted.org/packages/f7/a7/e8af7fb56dfd0d39df6f96e180d47d822407a7c98edc485b0c18ddd7ee28/tree_sitter_dart-0.1.0-cp38-abi3-win_amd64.whl", hash = "sha256:ee1d5f2109d2a206583227cfc4e2b0890f48700a0796207c2eecb5c3d7f23f63", size = 128126, upload-time = "2026-06-21T16:01:57.878Z" },
 ]
+
+[[package]]
+name = "tree-sitter-gdscript"
+version = "6.1.0"
+source = { git = "https://github.com/PrestonKnopp/tree-sitter-gdscript.git?rev=v6.1.0#d2a0ee914d297b873a40dd4596bd1f7157ebc52b" }
 
 [[package]]
 name = "tree-sitter-go"

@@ -134,7 +134,7 @@ queryable from the CLI, the MCP tools, and the local dashboard.
 
 | Layer | What it gives you | Edge |
 |---|---|---|
-| **◈ Graph** | Dependency graph across 19 languages · file + symbol nodes · confidence-scored call resolution · Leiden communities · PageRank and execution flows · route→handler edges across 22 frameworks | A real graph most tools never build |
+| **◈ Graph** | Dependency graph across 20 languages · file + symbol nodes · 3-tier call resolution · Leiden communities · PageRank and execution flows · route→handler edges across 22 frameworks | A real graph most tools never build |
 | **◈ Git** | Hotspots (decayed churn + activity floors) · ownership % · co-change pairs (hidden coupling) · bus factor · which files actually get bug-fixed, and how recently | Behavioural signals static analysis cannot see |
 | **◈ Docs** | A generated wiki page per module and file · rebuilt incrementally every commit · freshness and confidence scoring · hybrid search (full-text + vector) · selectable style and output language | Stays current instead of rotting |
 | **◈ Decisions** | Architectural decisions mined from five sources, evidence-backed, each traced to a verbatim source span and stamped exact / fuzzy / unverified | **★ Captured nowhere else** |
@@ -443,11 +443,7 @@ the orchestrators. Full matrix and the contributor recipe:
 
 ## Supported languages
 
-**19 languages parsed to AST · 35 on a five-rung ladder · framework-aware across
-all of them.**
-
-"Do you support X" has five useful answers, not two, so languages land on a
-ladder and every rung says what it buys you.
+**20 languages parsed to AST · 13 at the Full tier · framework-aware across all of them.**
 
 <p>
   <strong>Full tier &nbsp;</strong>
@@ -472,6 +468,7 @@ ladder and every rung says what it buys you.
   <img src="https://img.shields.io/badge/PHP-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP" />
   <img src="https://img.shields.io/badge/Dart-0175C2?style=flat-square&logo=dart&logoColor=white" alt="Dart" />
   <img src="https://img.shields.io/badge/Delphi-EE1F35?style=flat-square&logo=delphi&logoColor=white" alt="Object Pascal / Delphi" />
+  <img src="https://img.shields.io/badge/GDScript-478CBF?style=flat-square&logo=godotengine&logoColor=white" alt="GDScript / Godot" />
   &nbsp;<strong>· Partial &nbsp;</strong>
   <img src="https://img.shields.io/badge/Luau-00A2FF?style=flat-square&logo=lua&logoColor=white" alt="Luau" />
 </p>
@@ -482,7 +479,7 @@ still doing real work rather than being ignored:
 | Rung | Languages | What you get |
 |---|---|---|
 | **Full** (13) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges, **and code-health markers** |
-| **Good** (5) | C · Swift · PHP · Dart · Object Pascal | All of the above except the full health suite |
+| **Good** (6) | C · Swift · PHP · Dart · Object Pascal · GDScript | All of the above except the full health suite |
 | **Partial** (1) | Luau / Roblox | AST symbols and `require()` resolution, Rojo and `.luaurc` aware |
 | | | ⎯⎯ *tree-sitter parsing stops here; the rungs below come from git and imports* ⎯⎯ |
 | **Lightweight** (7) | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# · HTML | A real file-to-file import graph, and no symbol-level claims |

@@ -135,6 +135,9 @@ _FULL = {
     # dart promoted with the tree-sitter grammar (the regex tier stays as
     # the no-grammar fallback).
     "dart",
+    # res:// is an absolute path from the nearest project.godot, so GDScript
+    # import targets resolve exactly rather than through a stem guess.
+    "gdscript",
     "go",
     "java",
     "javascript",

@@ -41,12 +41,11 @@ scale, in a regulated or security-sensitive environment**:
 
 All of the following ship in `pip install repowise` today, free for internal use.
 
-- **[Five intelligence layers](../layers/INTELLIGENCE_LAYERS.md)**: Graph
-  (tree-sitter AST across 19 languages, two-tier dependency graph, call
-  resolution, heritage extraction, Leiden communities, PageRank / betweenness /
-  SCC), Git (hotspots, ownership, co-change pairs, bus factor, significant
-  commits, contributor profiles, module health), Documentation (a wiki page per
-  module and file, freshness scoring, hybrid search), Decision (architectural
+- **Five intelligence layers** — Graph (tree-sitter AST across 20 languages, two-tier
+  dependency graph, call resolution, heritage extraction, Leiden communities,
+  PageRank / betweenness / SCC), Git (hotspots, ownership, co-change pairs, bus
+  factor, significant commits, contributor profiles, module health), Documentation
+  (LLM-generated wiki, freshness scoring, RAG search), Decision (architectural
   decision records linked to graph nodes, staleness tracking), and Code Health
   (49 deterministic detectors, 1–10 score per file, coverage ingestion, trend
   alerts). Full detail on each, and what every layer costs to build:
@@ -99,7 +98,7 @@ All of the following ship in `pip install repowise` today, free for internal use
 
 ## 3. First-class language coverage
 
-Repowise parses **19 languages to a full AST** and places **35 on a five-rung
+Repowise parses **20 languages to a full AST** and places **35 on a five-rung
 ladder**, so "do you support X" gets the rung as its answer rather than a yes or a
 no. Both numbers matter and neither is worth quoting alone.
 
