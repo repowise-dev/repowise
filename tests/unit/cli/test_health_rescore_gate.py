@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from repowise.cli.commands.update_cmd.persistence import (
+    _full_rescore_interval_days,
     full_rescore_due,
     health_analyzer_changed,
 )
@@ -161,3 +162,71 @@ def test_init_never_stamps_the_cadence_for_a_run_that_scored_nothing(module_name
             f"{module_name} resolves the cadence stamp without checking that this "
             f"run produced a health report: {line.strip()}"
         )
+
+
+def _capture_warnings(monkeypatch) -> list[str]:
+    """Collect what ``_full_rescore_interval_days`` warns, via the shared err_console."""
+    from repowise.cli import helpers
+
+    printed: list[str] = []
+    monkeypatch.setattr(
+        helpers.err_console, "print", lambda *a, **k: printed.append(" ".join(str(x) for x in a))
+    )
+    return printed
+
+
+class TestFullRescoreIntervalWarningOnce:
+    """#1371: a malformed REPOWISE_FULL_RESCORE_INTERVAL_DAYS must warn once per invocation.
+
+    ``_full_rescore_interval_days`` is consulted once per repo in a workspace
+    fan-out, ``repowise watch`` and post-commit hook updates. A naive warn-in-
+    except spams one line per repo; the module-level guard collapses it to a
+    single warning.
+    """
+
+    def test_warns_once_across_many_repos(self, monkeypatch):
+        monkeypatch.setenv("REPOWISE_FULL_RESCORE_INTERVAL_DAYS", "not-a-number")
+        monkeypatch.setattr(
+            "repowise.cli.commands.update_cmd.persistence._FULL_RESCORE_WARNING_SENT", False
+        )
+        printed = _capture_warnings(monkeypatch)
+
+        # Simulate the per-repo fan-out: many independent reads in one invocation.
+        for _ in range(5):
+            assert _full_rescore_interval_days() == 7.0
+
+        (line,) = printed
+        assert "REPOWISE_FULL_RESCORE_INTERVAL_DAYS" in line
+        assert "not-a-number" in line
+        assert len(printed) == 1  # not once per repo
+
+    def test_valid_value_stays_silent(self, monkeypatch):
+        monkeypatch.setenv("REPOWISE_FULL_RESCORE_INTERVAL_DAYS", "7")
+        monkeypatch.setattr(
+            "repowise.cli.commands.update_cmd.persistence._FULL_RESCORE_WARNING_SENT", False
+        )
+        printed = _capture_warnings(monkeypatch)
+
+        assert _full_rescore_interval_days() == 7.0
+        assert printed == []
+
+    def test_default_is_unchanged(self, monkeypatch):
+        monkeypatch.delenv("REPOWISE_FULL_RESCORE_INTERVAL_DAYS", raising=False)
+        monkeypatch.setattr(
+            "repowise.cli.commands.update_cmd.persistence._FULL_RESCORE_WARNING_SENT", False
+        )
+        assert _full_rescore_interval_days() == 7.0
+
+    def test_warning_survives_valid_reads_after_invalid(self, monkeypatch):
+        """A valid read after the invalid one must not re-arm the guard."""
+        monkeypatch.setenv("REPOWISE_FULL_RESCORE_INTERVAL_DAYS", "oops")
+        monkeypatch.setattr(
+            "repowise.cli.commands.update_cmd.persistence._FULL_RESCORE_WARNING_SENT", False
+        )
+        printed = _capture_warnings(monkeypatch)
+
+        assert _full_rescore_interval_days() == 7.0
+        # Valid now: still no re-warning.
+        monkeypatch.setenv("REPOWISE_FULL_RESCORE_INTERVAL_DAYS", "7")
+        assert _full_rescore_interval_days() == 7.0
+        assert len(printed) == 1

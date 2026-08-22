@@ -16,7 +16,7 @@ from typing import Any
 
 import structlog
 
-from repowise.cli.helpers import console, head_commit_ts, run_async, save_state
+from repowise.cli.helpers import console, err_console, head_commit_ts, run_async, save_state
 from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 
 from .incremental import _build_repo_graph
@@ -1251,14 +1251,27 @@ def _run_full_health_rescore(
 # REPOWISE_GIT_WINDOW_ANCHOR / historical checkouts; override for tests.
 _FULL_RESCORE_INTERVAL_DAYS = 7.0
 
+# The malformed-value warning is global, not per-repo. `_full_rescore_interval_days`
+# is consulted once per repo in a workspace fan-out, `repowise watch` and post-commit
+# hook updates, so a naive warn-in-except would spam the terminal once per repo. Hoist
+# the once-per-invocation guarantee into a module-level guard (#1371).
+_FULL_RESCORE_WARNING_SENT = False
+
 
 def _full_rescore_interval_days() -> float:
+    global _FULL_RESCORE_WARNING_SENT
     raw = os.environ.get("REPOWISE_FULL_RESCORE_INTERVAL_DAYS", "").strip()
     if raw:
         try:
             return max(0.0, float(raw))
         except ValueError:
-            pass
+            if not _FULL_RESCORE_WARNING_SENT:
+                _FULL_RESCORE_WARNING_SENT = True
+                err_console.print(
+                    "[yellow]Warning:[/yellow] "
+                    f"REPOWISE_FULL_RESCORE_INTERVAL_DAYS must be a number "
+                    f"(got '{raw}'); using {_FULL_RESCORE_INTERVAL_DAYS:.0f}-day default"
+                )
     return _FULL_RESCORE_INTERVAL_DAYS
 
 
