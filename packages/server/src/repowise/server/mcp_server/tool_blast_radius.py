@@ -21,6 +21,11 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 #: tight and report the true count in ``total_impacted``.
 _MCP_IMPACTED_LIMIT = 25
 
+#: How many symbol-level consumers each symbol target carries inline. The
+#: service-level ``impacted`` list already covers the breadth; this block is the
+#: precise hop, so it stays short.
+_SYMBOL_CONSUMER_LIMIT = 10
+
 
 @mcp.tool(requires_workspace=True)
 async def get_blast_radius(
@@ -36,8 +41,14 @@ async def get_blast_radius(
     co-change. Call before changing a high-fan-out provider to see who consumes
     it across repo boundaries.
 
+    A target may also be a symbol id ("path/to/file.ts::Name"). It resolves to
+    the service that publishes that symbol, and ``symbol_targets`` additionally
+    names the consuming *symbols* on the far side of each contract link, which
+    is the one hop the service-level graph cannot express.
+
     Args:
-        targets: node ids ("repo" or "repo::service/path") or repo aliases.
+        targets: node ids ("repo" or "repo::service/path"), repo aliases, or
+            symbol ids of a published symbol.
         max_depth: reachability depth (1-8, default 3).
         include_behavioral: include co-change (behavioral) edges (default true).
     """
@@ -58,13 +69,17 @@ async def get_blast_radius(
             "_meta": _build_meta(),
         }
 
-    from repowise.core.workspace.blast_radius import cross_repo_blast_radius
+    from repowise.core.workspace.blast_radius import cross_repo_blast_radius, resolve_targets
     from repowise.core.workspace.system_graph import SystemGraph
 
     graph = SystemGraph.from_dict(raw)
+    # Only targets the node/alias resolver rejected are tried as symbol ids, so
+    # a string that already names a node keeps its existing meaning.
+    _, unresolved = resolve_targets(graph, targets)
+    symbol_targets, effective = _resolve_symbol_targets(enricher, graph, targets, unresolved)
     result = cross_repo_blast_radius(
         graph,
-        targets,
+        effective,
         max_depth=max(1, min(max_depth, 8)),
         include_behavioral=include_behavioral,
     )
@@ -77,13 +92,19 @@ async def get_blast_radius(
         f"{result.structural_count} via a real dependency, "
         f"{result.behavioral_count} via co-change only."
     )
+    if symbol_targets:
+        consumers = sum(len(t["consumers"]) for t in symbol_targets)
+        summary += (
+            f" {len(symbol_targets)} symbol target(s) are consumed by "
+            f"{consumers} symbol(s) across the contract links."
+        )
     if not result.targets:
         summary = (
             f"None of the requested targets matched a service in the graph: "
             f"{result.unresolved_targets}."
         )
 
-    return {
+    payload = {
         "targets": result.targets,
         "target_repos": result.target_repos,
         "impacted": impacted,
@@ -97,3 +118,75 @@ async def get_blast_radius(
         "summary": summary,
         "_meta": _build_meta(),
     }
+    if symbol_targets:
+        payload["symbol_targets"] = symbol_targets
+    return payload
+
+
+def _graph_node_for(node_ids: set[str], contract: dict[str, Any]) -> str | None:
+    """The system-graph node that carries *contract*, or ``None``.
+
+    Membership-checked rather than formula-derived: the node id is built by the
+    graph assembler, and a contract whose service never became its own node
+    still belongs to its repo's node.
+    """
+    repo = contract.get("repo") or ""
+    service = contract.get("service")
+    if service and (candidate := f"{repo}::{service}") in node_ids:
+        return candidate
+    return repo if repo in node_ids else None
+
+
+def _resolve_symbol_targets(
+    enricher: Any,
+    graph: Any,
+    targets: list[str],
+    unresolved: list[str],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Expand symbol-id targets into graph nodes plus their symbol-level consumers.
+
+    Returns the per-symbol blocks and the target list to traverse from: the
+    caller's targets with each matched symbol id swapped for the node(s) that
+    publish it. A symbol id matching nothing is left in place, so it still lands
+    in the result's ``unresolved_targets``.
+    """
+    blocks: list[dict[str, Any]] = []
+    replacements: dict[str, list[str]] = {}
+    node_ids = {n.id for n in graph.nodes}
+    for raw in unresolved:
+        contracts = enricher.get_contracts_for_symbol(raw) if enricher is not None else []
+        nodes = sorted({node for c in contracts if (node := _graph_node_for(node_ids, c))})
+        if not nodes:
+            continue
+        links = enricher.get_contract_links_by_provider_symbol(raw)
+        consumers = [
+            {
+                "repo": link.get("consumer_repo"),
+                "file": link.get("consumer_file"),
+                "contract_id": link.get("contract_id"),
+                "contract_type": link.get("contract_type"),
+                "match_type": link.get("match_type"),
+                "confidence": link.get("confidence"),
+                # symbol_id only when the consumer contract bound to one. An
+                # import sits at file scope, so code contracts carry none.
+                **({"symbol_id": sid} if (sid := link.get("consumer_symbol_id")) else {}),
+            }
+            for link in links[:_SYMBOL_CONSUMER_LIMIT]
+        ]
+        blocks.append(
+            {
+                "symbol_id": raw,
+                "nodes": nodes,
+                "contract_ids": sorted({c["contract_id"] for c in contracts if c.get("contract_id")}),
+                "consumers": consumers,
+                "consumers_truncated": max(0, len(links) - len(consumers)),
+            }
+        )
+        replacements[raw] = nodes
+
+    if not replacements:
+        return [], targets
+    effective: list[str] = []
+    for raw in targets:
+        effective.extend(replacements.get(raw, [raw]))
+    return blocks, effective

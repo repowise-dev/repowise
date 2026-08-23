@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +87,7 @@ def _workspace_update(
     from .mode import _resolve_index_only_mode
 
     start = time.monotonic()
+    started_at = datetime.now(UTC)
     ws_root = target.ws_root
     ws_config = target.ws_config
     repo_alias = target.repo_filter
@@ -249,6 +251,8 @@ def _workspace_update(
 
     from .reporting import show_workspace_completion
 
+    _print_breaking_changes(ws_root, started_at)
+
     show_workspace_completion(
         ws_name=ws_root.name,
         updated=updated,
@@ -257,6 +261,32 @@ def _workspace_update(
         total_files=total_files,
         total_symbols=total_symbols,
         elapsed=time.monotonic() - start,
+    )
+
+
+def _print_breaking_changes(ws_root: Path, started_at: datetime) -> None:
+    """One line naming the contracts this update broke, if any.
+
+    The report is written by the cross-repo hooks during this run, so it is only
+    ours when it was stamped after we started; an older one belongs to a
+    previous update and saying nothing beats attributing it here.
+    """
+    from repowise.core.workspace.breaking_change import load_breaking_change_report
+
+    report = load_breaking_change_report(ws_root)
+    if report is None or not report.ran or not report.changes:
+        return
+    try:
+        if datetime.fromisoformat(report.generated_at or "") < started_at:
+            return
+    except (TypeError, ValueError):
+        return
+    console.print(
+        f"\n[yellow]![/yellow] {len(report.changes)} contract change(s) "
+        f"({report.breaking_count} breaking, {report.warning_count} warning) impacting "
+        f"{report.total_impacted_consumers} consumer(s) in "
+        f"{', '.join(report.impacted_repos) or 'no other repo'}. "
+        "[dim]repowise workspace check[/dim]"
     )
 
 

@@ -38,12 +38,20 @@ _IMPACTED_TESTS_LIMIT = 10
 #: per-file blocks in this response stay the same size.
 _PRIOR_FIXES_LIMIT = 10
 
+#: Caps on the cross-repo block. It answers "does this commit cross a repo
+#: boundary", not "list every consumer" — get_blast_radius is the tool for the
+#: full traversal, so both lists stay short and report their own overflow.
+_CROSS_REPO_BREAKING_LIMIT = 5
+_CROSS_REPO_CONSUMER_LIMIT = 10
+
 # Cheapest loss first; the score, its drivers and fix_history's numbers are the
-# answer and never shed.
+# answer and never shed. cross_repo outlives the run-list: a test list is
+# recoverable by running the suite, a broken consumer in another repo is not.
 _SHED_ORDER: tuple[str, ...] = (
     "exclude_patterns",
     "prior_fixes",
     "impacted_tests",
+    "cross_repo",
     "fix_history.files",
 )
 
@@ -76,6 +84,12 @@ async def get_change_risk(
     "untested": ``no_map`` means run the suite. On ``truncated``, expand
     ``omission_marker`` for the tail. ``prior_fixes``
     counts past fixes whose lines overlap this diff.
+
+    In workspace mode ``cross_repo`` names the consumers in *other* repos that
+    this commit's files provide a contract to, and any breaking change the last
+    workspace update attributed to them. Present only when the commit touches a
+    published surface; its evidence is that update's artifacts, not this
+    checkout's git, so ``as_of`` stamps when it was built.
 
     Args:
         revspec: Commit or ``base..head`` range to score. Omit it to score the
@@ -134,6 +148,9 @@ async def get_change_risk(
     prior_fixes = await _prior_fixes_block(ctx, changed)
     if prior_fixes is not None:
         payload["prior_fixes"] = prior_fixes
+    cross_repo = _cross_repo_block(getattr(ctx, "alias", ""), sorted(changed))
+    if cross_repo is not None:
+        payload["cross_repo"] = cross_repo
     # source: live_git marks that the *score* is computed from the working
     # checkout's git. The two blocks above are index-backed, so the freshness
     # fields do apply to them, scoped to the change's files. None (not []) when
@@ -205,6 +222,118 @@ def _filter_changed(
             continue
         out[path] = lines
     return out
+
+
+def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | None:
+    """What this commit does to consumers in other repos, or ``None``.
+
+    A commit that changes a published signature is the same class of fact as
+    its fix history, so it belongs beside it. Two sources, both from the last
+    ``repowise update --workspace``: the contract links whose provider file this
+    commit touched (who calls it), and the breaking-change report entries
+    attributed to those same files (what broke). ``None`` outside workspace
+    mode, without artifacts, or when the commit touches no published file, so
+    the block never appears just to say nothing. Never raises.
+    """
+    try:
+        from repowise.server.mcp_server import _state
+        from repowise.server.mcp_server._helpers import _is_workspace_mode
+
+        if not changed_files or not _is_workspace_mode():
+            return None
+        enricher = _state._cross_repo_enricher
+        if enricher is None or not getattr(enricher, "has_contract_data", False):
+            return None
+
+        touched = set(changed_files)
+        consumers: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for path in changed_files:
+            for link in enricher.get_contract_links_as_provider(alias, path):
+                if link.get("consumer_repo") == alias:
+                    continue
+                key = (link.get("consumer_repo") or "", link.get("consumer_file") or "", path)
+                if key in seen:
+                    continue
+                seen.add(key)
+                consumers.append(
+                    {
+                        "provider_file": path,
+                        "repo": link.get("consumer_repo"),
+                        "file": link.get("consumer_file"),
+                        "contract_id": link.get("contract_id"),
+                        "contract_type": link.get("contract_type"),
+                        "match_type": link.get("match_type"),
+                        **(
+                            {"provider_symbol_id": psid}
+                            if (psid := link.get("provider_symbol_id"))
+                            else {}
+                        ),
+                        **(
+                            {"symbol_id": sid}
+                            if (sid := link.get("consumer_symbol_id"))
+                            else {}
+                        ),
+                    }
+                )
+
+        breaking: list[dict[str, Any]] = []
+        breaking_total = 0
+        if getattr(enricher, "has_breaking_changes", False):
+            for change in enricher.get_breaking_changes_for_repo(alias):
+                if change.get("provider_file") not in touched:
+                    continue
+                cross = [
+                    c for c in change.get("impacted_consumers", []) if c.get("repo") != alias
+                ]
+                if not cross:
+                    continue
+                breaking_total += 1
+                if len(breaking) >= _CROSS_REPO_BREAKING_LIMIT:
+                    continue
+                breaking.append(
+                    {
+                        "contract_id": change.get("contract_id"),
+                        "type": change.get("contract_type"),
+                        "kind": change.get("kind"),
+                        "severity": change.get("severity"),
+                        "detail": change.get("detail"),
+                        "provider_file": change.get("provider_file"),
+                        "impacted_repos": sorted({c.get("repo") or "" for c in cross}),
+                        **(
+                            {"provider_symbol_id": psid}
+                            if (psid := change.get("provider_symbol_id"))
+                            else {}
+                        ),
+                    }
+                )
+
+        if not consumers and not breaking:
+            return None
+        report = enricher.get_breaking_changes() or {}
+        repos = sorted({c["repo"] for c in consumers if c.get("repo")})
+        summary = (
+            f"{len(consumers)} consumer(s) in {len(repos)} other repo(s) depend on the "
+            f"files this change touches"
+        )
+        summary += (
+            f"; {breaking_total} of the changed contracts broke them."
+            if breaking_total
+            else "; the last workspace update found no break in them."
+        )
+        return {
+            "consumers": consumers[:_CROSS_REPO_CONSUMER_LIMIT],
+            "consumers_truncated": max(0, len(consumers) - _CROSS_REPO_CONSUMER_LIMIT),
+            "consumer_repos": repos,
+            "breaking_changes": breaking,
+            "breaking_changes_truncated": breaking_total - len(breaking),
+            # When the artifacts were built. The score above is live git; this
+            # block is only as current as the last workspace update.
+            "as_of": report.get("generated_at"),
+            "summary": summary,
+        }
+    except Exception:
+        return None
 
 
 def _empty_impacted(status: str, summary: str) -> dict[str, Any]:

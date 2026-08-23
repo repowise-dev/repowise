@@ -54,29 +54,36 @@ _WILL_BREAK_TESTS_LIMIT = 3
 _TESTS_TO_RUN_LIMIT = 10
 
 
-def _breaking_change_directive(repo_alias: str) -> list[dict[str, Any]]:
+def _breaking_change_directive(repo_alias: str) -> tuple[list[dict[str, Any]], int]:
     """Breaking-change half of the PR directive: incompatible provider changes.
 
     Reads the persisted breaking-change report (current HEAD vs the previously
     indexed contracts), filtered to providers in the changed repo, and reports
-    each change with the consumers it endangers across repos. Returns an empty
-    list when not in workspace mode or no report is available. Never raises.
+    each change with the consumers it endangers across repos. Carries every
+    contract type the report holds, ``code`` (a published package symbol)
+    included. Returns ``(changes, dropped)`` where ``dropped`` counts the
+    cross-repo changes the cap left out — a shared-package bump can produce
+    more than the cap, and the ids sort by contract type, so silence here would
+    read as "nothing else broke". Empty when not in workspace mode or no report
+    is available. Never raises.
     """
     out: list[dict[str, Any]] = []
+    dropped = 0
     try:
         if not _is_workspace_mode():
-            return out
+            return out, 0
         enricher = _state._cross_repo_enricher
         if enricher is None or not getattr(enricher, "has_breaking_changes", False):
-            return out
+            return out, 0
         for change in enricher.get_breaking_changes_for_repo(repo_alias):
-            if len(out) >= _BC_PROVIDER_LIMIT:
-                break
             consumers = change.get("impacted_consumers", [])
             # Only surface changes that actually endanger a cross-repo consumer —
             # an internal-only removed endpoint isn't a cross-repo break.
             cross = [c for c in consumers if c.get("repo") != repo_alias]
             if not cross:
+                continue
+            if len(out) >= _BC_PROVIDER_LIMIT:
+                dropped += 1
                 continue
             out.append(
                 {
@@ -85,6 +92,15 @@ def _breaking_change_directive(repo_alias: str) -> list[dict[str, Any]]:
                     "kind": change.get("kind"),
                     "severity": change.get("severity"),
                     "detail": change.get("detail"),
+                    "provider_file": change.get("provider_file"),
+                    # The changed symbol itself, when the contract bound to one.
+                    # It is what the reader passes to get_symbol to see the
+                    # signature that broke.
+                    **(
+                        {"provider_symbol_id": psid}
+                        if (psid := change.get("provider_symbol_id"))
+                        else {}
+                    ),
                     "impacted_consumers": [
                         # symbol_id only when the contract bound to one: it is
                         # what the reader can pass to get_symbol, and a null
@@ -100,8 +116,8 @@ def _breaking_change_directive(repo_alias: str) -> list[dict[str, Any]]:
                 }
             )
     except Exception:
-        return []
-    return out
+        return [], 0
+    return out, dropped
 
 
 def _conformance_directive(repo_alias: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -396,7 +412,7 @@ def _build_pr_directive(
     # Breaking-change guard — incompatible provider changes (removed route /
     # field, type change, ...) in this repo and the consumers they endanger.
     # Schema-level truth, distinct from the topology-level will_break_consumers.
-    breaking_changes = _breaking_change_directive(alias)
+    breaking_changes, breaking_changes_dropped = _breaking_change_directive(alias)
     bc_suffix = ""
     if breaking_changes:
         bc_consumers = sum(len(b["impacted_consumers"]) for b in breaking_changes)
@@ -404,6 +420,8 @@ def _build_pr_directive(
             f" Breaking changes: {len(breaking_changes)} provider contract(s) changed "
             f"incompatibly, endangering {bc_consumers} consumer(s)."
         )
+        if breaking_changes_dropped:
+            bc_suffix += f" {breaking_changes_dropped} more not listed."
 
     # Architecture conformance — declared dependency-rule violations and
     # dependency cycles this repo participates in. Governance-level truth,
@@ -427,6 +445,7 @@ def _build_pr_directive(
         "will_break_consumers": will_break_consumers,
         "missing_cross_repo_cochanges": missing_cross_repo_cochanges,
         "breaking_changes": breaking_changes,
+        "breaking_changes_truncated": breaking_changes_dropped,
         "conformance_violations": conformance_violations,
         "dependency_cycles": dependency_cycles,
         "governance_risk": governance_risk,
