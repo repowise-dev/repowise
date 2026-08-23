@@ -18,9 +18,9 @@ subgraph the static parser can't see on its own.
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING, Any
 
+from ..framework_routes import next_app_router_file as _is_app_router_file
 from ..resolvers import ResolverContext
 from .base import (
     DetectionContext,
@@ -31,26 +31,6 @@ from .base import (
 
 if TYPE_CHECKING:
     import networkx as nx
-
-
-_APP_ROUTER_BASENAMES: frozenset[str] = frozenset({
-    "page", "layout", "route", "middleware", "template", "default",
-    "error", "loading", "not-found", "global-error", "forbidden",
-    "unauthorized", "instrumentation",
-})
-_APP_ROUTER_EXTS: tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx", ".mjs")
-_APP_DIR_RE = re.compile(r"(?:^|/)app/")
-
-
-def _is_app_router_file(path: str) -> bool:
-    if not _APP_DIR_RE.search(path):
-        return False
-    for ext in _APP_ROUTER_EXTS:
-        if path.endswith(ext):
-            stem = path.rsplit("/", 1)[-1][: -len(ext)]
-            if stem in _APP_ROUTER_BASENAMES:
-                return True
-    return False
 
 
 class _NextAppRouterHandler:

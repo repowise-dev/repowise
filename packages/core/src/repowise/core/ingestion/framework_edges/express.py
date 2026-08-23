@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
-from ..framework_routes import express_routes, match_paren
+from ..framework_routes import express_routes, js_router_bindings, match_paren
 from ..resolvers import ResolverContext
 from .base import (
     DetectionContext,
@@ -29,9 +29,6 @@ _NEST_MODULE_RE = re.compile(r"@Module\s*\(\s*\{([^}]*)\}\s*\)", re.DOTALL)
 _NEST_ARRAY_FIELD_RE = re.compile(r"\b(?:controllers|providers|imports|exports)\s*:\s*\[([^\]]*)\]")
 _IDENT_RE = re.compile(r"\b([A-Z]\w*)\b")
 
-_EXPRESS_RECEIVER_RE = re.compile(
-    r"\b(\w+)\s*(?::[^=;\n]+)?=\s*(?:express\s*\(\s*\)|(?:express\s*\.\s*)?Router\s*\()"
-)
 _STRING_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`(?:[^`\\]|\\.)*`")
 _ARG_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*")
 
@@ -78,7 +75,9 @@ def _add_express_edges(
                 for sym in parsed.symbols
                 if sym.kind in ("function", "method")
             }
-            receivers = {m.group(1) for m in _EXPRESS_RECEIVER_RE.finditer(text)}
+            receivers = {
+                var for var, fw in js_router_bindings(text).items() if fw == "express"
+            }
             if local_funcs and receivers:
                 module_sym = f"{path}::__module__"
                 for route in express_routes(text):

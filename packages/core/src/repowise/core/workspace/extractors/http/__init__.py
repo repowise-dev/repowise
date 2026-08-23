@@ -17,12 +17,15 @@ from ..langs import PYTHON
 from .aspnet import AspNetDialect
 from .csharp_http import CSharpHttpDialect
 from .dialect import HttpDialect
+from .django import DjangoDialect
 from .express import ExpressDialect
 from .fastapi import FastApiDialect
 from .go import GoDialect
+from .jaxrs import JaxRsDialect
 from .js_clients import JsClientsDialect
 from .laravel import LaravelDialect
 from .mounts import merge_mount_maps
+from .next_app import NextAppDialect
 from .paths import normalize_http_path
 from .python_clients import PythonClientsDialect
 from .rust_axum import RustAxumDialect
@@ -47,6 +50,9 @@ PROVIDER_DIALECTS: tuple[HttpDialect, ...] = (
     GoDialect(),
     AspNetDialect(),
     RustAxumDialect(),
+    DjangoDialect(),
+    JaxRsDialect(),
+    NextAppDialect(),
 )
 
 # HTTP-client call recognisers (one client/language each).

@@ -145,6 +145,44 @@ _EXPRESS_ROUTE_RE = re.compile(
 )
 
 
+# What binds a variable to a router object, per framework. Hono, Fastify, Koa
+# and Elysia all serve routes through Express's ``<var>.get('/path', handler)``
+# DSL, so ``express_routes`` already matches their call sites; only the binding
+# ever told them apart, and each consumer spelled that out for Express alone
+# (``_EXPRESS_RECEIVER_RE`` graph-side, ``_ROUTER_BIND_RE`` contract-side, with
+# different reach). One table, so a route is attributed to the framework that
+# serves it rather than to whichever recogniser claimed the variable first.
+_JS_ROUTER_CTORS: tuple[tuple[str, str], ...] = (
+    # express(), express.Router(), require('express').Router(), bare Router().
+    ("express", r"(?:[\w$]+\s*\.\s*)?Router\s*\(|express\s*\("),
+    ("hono", r"new\s+Hono\s*[(<]"),
+    ("fastify", r"[Ff]astify\s*\("),
+    ("koa", r"new\s+[Kk]oa\s*\("),
+    ("elysia", r"new\s+Elysia\s*[(<]"),
+)
+
+_JS_ROUTER_BIND_RE = re.compile(
+    r"(?<![\w$])(?P<var>[\w$]+)\s*(?::[^=;\n]+)?=\s*(?:"
+    + "|".join(f"(?P<{name}>{alt})" for name, alt in _JS_ROUTER_CTORS)
+    + r")"
+)
+
+#: Names conventionally holding a router where no binding is in scope, because
+#: the framework instance is created in another file.
+JS_DEFAULT_ROUTER_NAMES = frozenset({"app", "router"})
+
+
+def js_router_bindings(content: str) -> dict[str, str]:
+    """Every variable bound to a router in *content*, mapped to its framework."""
+    out: dict[str, str] = {}
+    for m in _JS_ROUTER_BIND_RE.finditer(content):
+        for name, _alt in _JS_ROUTER_CTORS:
+            if m.group(name) is not None:
+                out[m.group("var")] = name
+                break
+    return out
+
+
 def express_routes(content: str) -> Iterator[RouteMatch]:
     """Router/app route registrations in *content*.
 
@@ -378,3 +416,209 @@ def axum_routes(content: str) -> Iterator[RouteMatch]:
                 offset=head.start(),
                 paren_offset=head.start("paren"),
             )
+
+
+# ---------------------------------------------------------------------------
+# Django — urls.py
+# ---------------------------------------------------------------------------
+
+# path("users/<int:pk>/", views.detail) / re_path(r"^users/$", View.as_view()) /
+# path("api/", include("api.urls")) — one call shape, split by the handler below.
+# A URLconf entry names no verb (the view chooses), so every match is `*`.
+_DJANGO_ENTRY_RE = re.compile(
+    r"(?<![\w.])(?P<verb>re_path|path|url)\s*(?P<paren>\()"
+    r"""\s*(?:r|rb|b)?(?P<q>['"])(?P<path>[^'"]*)(?P=q)\s*,\s*"""
+    r"(?P<handler>[\w.]+)\s*(?P<after>[,)(])"
+)
+
+_DJANGO_INCLUDE_ARG_RE = re.compile(
+    r"""\s*(?:(?P<q>['"])(?P<mod>[^'"]+)(?P=q)|(?P<expr>[\w.]+))"""
+)
+
+
+def _django_path(raw: str, verb: str) -> str:
+    """A URLconf pattern as a path.
+
+    Both spellings of a capture become ``{name}``: ``path()``'s
+    ``<converter:name>`` and ``re_path()``'s ``(?P<name>...)``, whose anchors go
+    with it. ``normalize_http_path`` reads neither, so a path left as written
+    would carry the converter into the contract id.
+    """
+    if verb == "path":
+        return re.sub(r"<(?:\w+:)?(\w+)>", r"{\1}", raw)
+    raw = re.sub(r"\(\?P<(\w+)>[^)]*\)", r"{\1}", raw)
+    return raw.strip("^$")
+
+
+def django_routes(content: str) -> Iterator[RouteMatch]:
+    """URLconf entries in *content* that name a view.
+
+    ``verb`` is always ``*``; ``handler`` is the view expression as written. An
+    ``include(...)`` entry is not a route — see :func:`django_includes`.
+    """
+    for m in _DJANGO_ENTRY_RE.finditer(content):
+        handler = m.group("handler")
+        if handler == "include":
+            continue
+        yield RouteMatch(
+            verb="*",
+            path=_django_path(m.group("path"), m.group("verb")),
+            receiver=None,
+            handler=handler,
+            offset=m.start(),
+            paren_offset=m.start("paren"),
+            # `path("x/", login_required(view))` names a decorator, not the view.
+            handler_call=m.group("after") == "(",
+        )
+
+
+def django_includes(content: str) -> Iterator[tuple[str, str]]:
+    """``(prefix, module)`` per ``include(...)`` entry — dotted as written."""
+    for m in _DJANGO_ENTRY_RE.finditer(content):
+        if m.group("handler") != "include":
+            continue
+        arg = _DJANGO_INCLUDE_ARG_RE.match(content, m.end("after"))
+        module = (arg.group("mod") or arg.group("expr")) if arg else None
+        if module:
+            yield _django_path(m.group("path"), m.group("verb")), module
+
+
+# ---------------------------------------------------------------------------
+# JAX-RS — Jakarta EE, Quarkus, Jersey, RESTEasy, Dropwizard
+# ---------------------------------------------------------------------------
+
+# A JAX-RS route is two annotations: @GET names the verb, an optional @Path
+# names the sub-path, and the class's own @Path is the prefix. The graph side
+# recognised these as substrings only, to stamp a role; nothing read the paths.
+_JAXRS_VERBS = "GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS"
+
+# `@PathParam` is not a match: the `(` is required.
+_JAXRS_PATH_RE = re.compile(r"""@Path\s*\(\s*(?:value\s*=\s*)?["'](?P<path>[^"']*)["']""")
+
+_JAXRS_VERB_RE = re.compile(rf"@(?P<verb>{_JAXRS_VERBS})\b")
+
+_JAXRS_TYPE_RE = re.compile(
+    r"^[^\S\n]*(?:public|final|abstract|open|internal|sealed|data|\s)*"
+    r"(?:class|interface)\s+\w+",
+    re.MULTILINE,
+)
+
+
+def _jaxrs_decl_end(content: str, start: int) -> int:
+    """End of the declaration annotated at *start* — its ``{`` or ``;``.
+
+    Scanned rather than matched: an annotation run carries parens of its own
+    (``@Produces(MediaType.APPLICATION_JSON)``) and swagger nests them several
+    deep, so anything that stops at the first paren stops inside the run.
+    """
+    for i, c, depth in scan_code(content, start, quotes='"'):
+        if depth == 0 and c in ";{":
+            return i
+    return len(content)
+
+
+def jaxrs_class_paths(content: str) -> list[tuple[int, str]]:
+    """``(offset, prefix)`` per type-level ``@Path``, ascending.
+
+    A class and its methods share the annotation, so the only thing separating a
+    prefix from a sub-path is which declaration the annotation run reaches.
+    """
+    types = [m.start() for m in _JAXRS_TYPE_RE.finditer(content)]
+    out: list[tuple[int, str]] = []
+    for m in _JAXRS_PATH_RE.finditer(content):
+        end = _jaxrs_decl_end(content, m.start())
+        if any(m.start() < t < end for t in types):
+            out.append((m.start(), m.group("path").rstrip("/")))
+    return out
+
+
+def jaxrs_routes(content: str) -> Iterator[RouteMatch]:
+    """Verb-annotated resource methods in *content*.
+
+    ``path`` is the method's own ``@Path`` or ``""``; the class prefix is
+    stitched on by the consumer, the only side that knows how to compose one.
+    """
+    for m in _JAXRS_VERB_RE.finditer(content):
+        end = _jaxrs_decl_end(content, m.start())
+        sub = _JAXRS_PATH_RE.search(content, m.end(), end)
+        yield RouteMatch(
+            verb=m.group("verb").upper(),
+            path=sub.group("path") if sub else "",
+            receiver=None,
+            handler=None,
+            offset=m.start(),
+            paren_offset=m.start(),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Next.js App Router
+# ---------------------------------------------------------------------------
+
+#: App Router files loaded by filesystem convention rather than by import.
+NEXT_APP_ROUTER_BASENAMES: frozenset[str] = frozenset({
+    "page", "layout", "route", "middleware", "template", "default",
+    "error", "loading", "not-found", "global-error", "forbidden",
+    "unauthorized", "instrumentation",
+})
+NEXT_APP_ROUTER_EXTS: tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx", ".mjs")
+
+_NEXT_APP_DIR_RE = re.compile(r"(?:^|/)app/")
+
+# Segments naming no URL segment: route group `(marketing)`, parallel route
+# `@modal`, private folder `_lib`.
+_NEXT_INERT_SEG_RE = re.compile(r"\(.*\)|@.*|_.*")
+
+# `[id]`, `[...slug]`, `[[...slug]]` -> `{id}` / `{slug}`.
+_NEXT_DYNAMIC_SEG_RE = re.compile(r"^\[+\.{0,3}(?P<name>[^\]]+)\]+$")
+
+# The App Router takes the verb from the exported name and the path from the
+# file's location, so a route handler's text holds no path literal at all.
+_NEXT_HANDLER_RE = re.compile(
+    r"export\s+(?:async\s+)?(?:function\s+|const\s+|let\s+|var\s+)"
+    r"(?P<verb>GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b"
+)
+
+
+def next_app_router_file(rel_path: str) -> bool:
+    """True when *rel_path* is loaded by App Router filesystem convention."""
+    if not _NEXT_APP_DIR_RE.search(rel_path):
+        return False
+    name = rel_path.rsplit("/", 1)[-1]
+    for ext in NEXT_APP_ROUTER_EXTS:
+        if name.endswith(ext) and name[: -len(ext)] in NEXT_APP_ROUTER_BASENAMES:
+            return True
+    return False
+
+
+def next_route_path(rel_path: str) -> str | None:
+    """The URL an ``app/**/route.ts`` handler serves, else None.
+
+    Only ``route.*`` is an endpoint; ``page``/``layout`` and the rest render UI
+    and publish no API surface.
+    """
+    if not next_app_router_file(rel_path):
+        return None
+    parts = rel_path.split("/")
+    if parts[-1].rsplit(".", 1)[0] != "route":
+        return None
+    app_at = len(parts) - 2 - parts[-2::-1].index("app")  # the nearest `app/`
+    segments: list[str] = []
+    for seg in parts[app_at + 1 : -1]:
+        if _NEXT_INERT_SEG_RE.fullmatch(seg):
+            continue
+        dyn = _NEXT_DYNAMIC_SEG_RE.match(seg)
+        segments.append("{" + dyn.group("name") + "}" if dyn else seg)
+    return "/" + "/".join(segments)
+
+
+def next_route_verbs(content: str) -> list[tuple[str, int]]:
+    """``(verb, offset)`` per exported handler, in declaration order."""
+    out: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    for m in _NEXT_HANDLER_RE.finditer(content):
+        verb = m.group("verb")
+        if verb not in seen:
+            seen.add(verb)
+            out.append((verb, m.start("verb")))
+    return out

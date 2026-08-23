@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from ..framework_routes import jaxrs_class_paths, jaxrs_routes
 from ..resolvers import ResolverContext
 from .base import (
     DetectionContext,
@@ -60,11 +61,6 @@ _JPA_ASSOC_FIELD_RE = re.compile(
     r"(?:[A-Z][\w.]*\s*<\s*([A-Z][\w.]*)\s*>|([A-Z][\w.]*))"
 )
 
-# JAX-RS routing verbs — used for routing detection (currently we mark
-# the class file as ``framework_role="jax_rs_resource"``; full ROUTE node
-# emission can be layered on top in a follow-up).
-_JAX_RS_VERBS = ("@GET", "@POST", "@PUT", "@DELETE",
-                 "@PATCH", "@HEAD", "@OPTIONS")
 
 
 def _has_jakarta_imports(parsed_files: dict[str, Any]) -> bool:
@@ -113,7 +109,9 @@ def _add_jakarta_edges(
             continue
 
         has_stereotype = any(annot in text for annot in _JAKARTA_STEREOTYPE_ANNOT)
-        has_jax_rs = "@Path" in text or any(v in text for v in _JAX_RS_VERBS)
+        # The same recognition the contract extractor reads the routes from,
+        # so a resource is one here exactly when it publishes an endpoint there.
+        has_jax_rs = bool(jaxrs_class_paths(text)) or any(True for _ in jaxrs_routes(text))
         has_jpa = "@Entity" in text or "@MappedSuperclass" in text or "@Embeddable" in text
 
         if not (has_stereotype or has_jpa):
