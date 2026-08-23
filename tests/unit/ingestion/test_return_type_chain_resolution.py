@@ -237,3 +237,94 @@ def test_module_level_chain_keeps_structural_receiver(tmp_path: Path) -> None:
 
     assert result[0].caller_id == "example.ts::__module__"
     assert result[0].callee_id.endswith("::Product::run")
+
+
+def _java_chain_call(parsed: dict[str, ParsedFile], path: str, outer: str):
+    return next(
+        c
+        for c in parsed[path].calls
+        if c.target_name == outer and getattr(c, "receiver_call", None)
+    )
+
+
+def test_java_external_chain_head_refuses_a_bare_name_fallback(tmp_path: Path) -> None:
+    """`Duration.ofSeconds(3).toNanos()` is not a call to whatever declares toNanos.
+
+    Java has no extension methods, so an external receiver type implies an
+    external callee. That makes the bare-name answer disproved rather than
+    merely unevidenced, which is what lets the tier refuse the site outright.
+    """
+    source = (
+        "import java.time.Duration;\n"
+        "class Expiry { long toNanos() { return 0; } }\n"
+        "class Use { long go() { return Duration.ofSeconds(3).toNanos(); } }\n"
+    )
+    parsed = _parse(tmp_path, "Example.java", "java", source)
+    call = _java_chain_call(parsed, "Example.java", "toNanos")
+
+    before = CallResolver(parsed, {}, repo_path=str(tmp_path)).resolve_file(
+        "Example.java", [call]
+    )
+    assert before == []
+
+
+def test_java_external_chain_head_is_exempt_when_the_file_rebinds_the_name(
+    tmp_path: Path,
+) -> None:
+    """A file importing the repository's own `Duration` means that one.
+
+    The same call in the same table entry, differing only in the import, which
+    is the claim stated as a test rather than as prose. Java imports resolve to
+    repository files, so the file's import list is what separates the two.
+    """
+    own = "package a;\npublic class Duration { public long toNanos() { return 0; } }\n"
+    use = (
+        "package b;\nimport a.Duration;\n"
+        "class Use { long go() { return Duration.ofSeconds(3).toNanos(); } }\n"
+    )
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    parsed = {}
+    parsed.update(_parse(tmp_path, "a/Duration.java", "java", own))
+    parsed.update(_parse(tmp_path, "b/Use.java", "java", use))
+    # Stands in for the import-resolution phase, which unit tests do not run.
+    for imp in parsed["b/Use.java"].imports:
+        imp.resolved_file = "a/Duration.java"
+    call = _java_chain_call(parsed, "b/Use.java", "toNanos")
+
+    resolved = CallResolver(
+        parsed, {"b/Use.java": {"a/Duration.java"}}, repo_path=str(tmp_path)
+    ).resolve_file("b/Use.java", [call])
+    assert len(resolved) == 1
+    assert resolved[0].callee_id.endswith("::Duration::toNanos")
+
+
+def test_a_table_admits_only_its_own_lane(tmp_path: Path) -> None:
+    """The table reaches the tier; it does not switch on the inferred lane too.
+
+    Without this, adding a table to a language would silently enable return-type
+    inference over every chained site it has, which is a different and much
+    larger population than the one measured.
+    """
+    source = (
+        "class Product { void run() {} }\nclass Wrong { void run() {} }\n"
+        "class Use {\n Product make() { return new Product(); }\n"
+        " void go() { make().run(); }\n}\n"
+    )
+    parsed = _parse(tmp_path, "Example.java", "java", source)
+    call = _java_chain_call(parsed, "Example.java", "run")
+
+    resolved = CallResolver(parsed, {}, repo_path=str(tmp_path)).resolve_file(
+        "Example.java", [call]
+    )
+    assert not any(edge.origin.startswith("return_type_") for edge in resolved)
+
+
+def test_java_is_the_only_language_carrying_a_chain_head_table() -> None:
+    """The no-op-elsewhere argument, enforced rather than remembered."""
+    from repowise.core.ingestion.languages.registry import REGISTRY
+
+    populated = {
+        spec.tag for spec in REGISTRY.all_specs() if spec.external_return_types
+    }
+    assert populated == {"java"}
