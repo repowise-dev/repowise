@@ -77,7 +77,7 @@ async def get_change_risk(
     calibrated per commit; ``risk_percentile`` ranks that shape against recent
     commits.
 
-    ``impacted_tests.tests_to_run`` names the tests to run; ``missing_tests``
+    ``impacted_tests.tests_to_run`` names the tests to run; ``line_coverage``
     the uncovered lines. ``basis``: ``measured`` = a coverage map proves those
     tests run the changed *lines*; ``inferred`` = test files the graph shows
     reaching it (file-level candidates). No map is never "untested":
@@ -366,7 +366,7 @@ def _empty_impacted(status: str, summary: str) -> dict[str, Any]:
         "tests_to_run": [],
         "total": 0,
         "truncated": False,
-        "missing_tests": {
+        "line_coverage": {
             "untested_changes": [],
             "stale_test_candidates": [],
             "covered": [],
@@ -610,7 +610,7 @@ async def _inferred_impacted(
     measured answer.
 
     Deliberately file-level and line-blind. Reaching carries no line
-    attribution, so ``missing_tests`` stays empty rather than being filled from
+    attribution, so ``line_coverage`` stays empty rather than being filled from
     a signal that cannot speak to lines - the distinction this whole block
     exists to keep.
     """
@@ -707,7 +707,7 @@ async def _impacted_tests_block(
         "tests_to_run": _cap_tests(tests, collector, "measured"),
         "total": total,
         "truncated": total > _IMPACTED_TESTS_LIMIT,
-        "missing_tests": _serialize_missing(report),
+        "line_coverage": _serialize_missing(report),
         "summary": (
             f"{total} test(s) cover the changed lines"
             + (f"; showing first {_IMPACTED_TESTS_LIMIT}" if total > _IMPACTED_TESTS_LIMIT else "")

@@ -221,7 +221,7 @@ async def test_impacted_tests_line_precise_hit_and_miss(tmp_path, monkeypatch) -
     assert it["total"] == 1
     assert it["truncated"] is False
 
-    mt = it["missing_tests"]
+    mt = it["line_coverage"]
     # other.py is in the map but its changed lines (1,2,3) are uncovered.
     assert mt["untested_changes"] == [
         {"source_file": "src/other.py", "uncovered_lines": [1, 2, 3], "changed_line_count": 3}
@@ -256,7 +256,7 @@ async def test_impacted_tests_no_map_is_unknown_not_untested(tmp_path, monkeypat
     assert it["map_present"] is False
     assert it["tests_to_run"] == []
     # Honest degradation: no untested claim, a "run the suite" summary instead.
-    assert it["missing_tests"]["untested_changes"] == []
+    assert it["line_coverage"]["untested_changes"] == []
     assert "run the full suite" in it["summary"]
 
 
@@ -266,7 +266,7 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
 
     Replaces a bare "run the full suite" with a candidate list on every repo
     that never ingested a report. Labelled ``inferred`` and file-level: reaching
-    carries no line attribution, so ``missing_tests`` stays empty rather than
+    carries no line attribution, so ``line_coverage`` stays empty rather than
     being filled from a signal that cannot speak to lines.
     """
     from repowise.core.persistence.models import GraphEdge, GraphNode
@@ -305,7 +305,7 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
     assert it["basis"] == "inferred"
     assert it["map_present"] is False
     assert it["tests_to_run"] == ["tests/test_round_trips.py"]
-    assert it["missing_tests"]["untested_changes"] == []
+    assert it["line_coverage"]["untested_changes"] == []
     # Answered by the import tier: there is no call edge here, which is exactly
     # when the weaker tier is allowed to speak.
     assert "reach the changed files in the graph" in it["summary"]
@@ -362,3 +362,32 @@ async def test_impacted_tests_no_session_factory_degrades_to_no_index(tmp_path, 
 
     assert result["impacted_tests"]["status"] == "no_index"
     assert result["impacted_tests"]["map_present"] is False
+
+
+@pytest.mark.asyncio
+async def test_the_two_risk_tools_do_not_share_a_key_for_different_questions() -> None:
+    """``missing_tests`` asked two different questions under one name.
+
+    get_risk's is a list of file paths with no test; this one bucketed changed
+    files by line coverage. An agent that learned one misread the other.
+    """
+    import importlib
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+    empty = module._empty_impacted("no_map", "run the suite")
+
+    assert "missing_tests" not in empty
+    assert set(empty["line_coverage"]) == {
+        "untested_changes",
+        "stale_test_candidates",
+        "covered",
+        "no_coverage_data",
+    }
+
+
+def test_score_measures_names_the_other_zero_to_ten() -> None:
+    """Whichever risk tool an agent calls first, it learns the other is not it."""
+    from repowise.core.analysis.change_risk import SCORE_MEASURES
+
+    assert "diff size and spread" in SCORE_MEASURES
+    assert "overall_risk_score" in SCORE_MEASURES

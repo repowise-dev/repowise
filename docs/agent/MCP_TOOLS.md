@@ -507,13 +507,13 @@ so a narrower set than `get_risk`'s file-level `tests_to_run` — same field nam
 because it is the same concern). It is capped at ten, with `total` and
 `truncated` reporting the overflow and the tail written to the omission store:
 on `truncated: true` the response carries an `omission_marker`, and
-`repowise expand <ref>` returns the rest. Its `missing_tests` buckets flag
+`repowise expand <ref>` returns the rest. Its `line_coverage` buckets flag
 `untested_changes` (covered file, uncovered change), `stale_test_candidates`
 (covered lines whose guarding test file is absent from the diff), `covered`, and
 `no_coverage_data` (files absent from the map). When no map is ingested the
 change is never reported as untested: `status` becomes `inferred` when the
 import graph can name test files reaching the change (candidates, file-level, no
-line attribution, and `missing_tests` stays empty because reaching cannot speak
+line attribution, and `line_coverage` stays empty because reaching cannot speak
 to lines), and `no_map` ("run the full suite") when it cannot. `basis` carries
 the same distinction in one word: `measured`, `inferred`, or absent. Build the
 measured map with `coverage run --contexts=test` followed by

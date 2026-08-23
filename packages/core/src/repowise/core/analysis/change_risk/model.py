@@ -138,7 +138,10 @@ SCORE_UNIT = "per-commit"
 #: blamed by a later fix. Ranking changes by lines-added alone beats the fitted
 #: model on that benchmark. So the score is reported as what it demonstrably is —
 #: a diff-size statistic — and ``fix_history`` carries the part that is not.
-SCORE_MEASURES = "diff size and spread; not where the change lands"
+SCORE_MEASURES = (
+    "diff size and spread; not where the change lands - overall_risk_score "
+    "is the separate 0-10 for that"
+)
 
 
 def _level(score: float) -> str:
