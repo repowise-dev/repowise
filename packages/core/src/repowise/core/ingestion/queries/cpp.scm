@@ -16,6 +16,7 @@
 (function_definition
   type: (class_specifier
     name: (type_identifier) @symbol.cpp_export_macro
+    !body
   ) @symbol.def
   declarator: (identifier) @symbol.name
   body: (compound_statement)
@@ -24,6 +25,7 @@
 (function_definition
   type: (struct_specifier
     name: (type_identifier) @symbol.cpp_export_macro
+    !body
   ) @symbol.def
   declarator: (identifier) @symbol.name
   body: (compound_statement)
