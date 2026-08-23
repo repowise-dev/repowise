@@ -194,6 +194,7 @@ def _workspace_update(
             repo_filter=repo_alias,
             docs_aliases=docs_aliases,
             start=start,
+            started_at=started_at,
             agents_md=agents_md,
             verbose=verbose,
             docs_flag=docs_flag,
@@ -273,7 +274,10 @@ def _print_breaking_changes(ws_root: Path, started_at: datetime) -> None:
     """
     from rich.markup import escape
 
-    from repowise.core.workspace.breaking_change import load_breaking_change_report
+    from repowise.core.workspace.breaking_change import (
+        SEVERITY_BREAKING,
+        load_breaking_change_report,
+    )
 
     report = load_breaking_change_report(ws_root)
     if report is None or not report.ran or not report.changes:
@@ -283,12 +287,27 @@ def _print_breaking_changes(ws_root: Path, started_at: datetime) -> None:
             return
     except (TypeError, ValueError):
         return
+    # Counted the way `workspace check` gates, so the two never contradict.
+    gating = [
+        c
+        for c in report.changes
+        if c.severity == SEVERITY_BREAKING
+        and any(ic.repo != c.provider_repo for ic in c.impacted_consumers)
+    ]
+    repos = sorted(
+        {ic.repo for c in gating for ic in c.impacted_consumers if ic.repo != c.provider_repo}
+    )
+    others = len(report.changes) - len(gating)
+    if not gating:
+        console.print(
+            f"\n[dim]{others} contract change(s) recorded; none breaks another repo.[/dim]"
+        )
+        return
     console.print(
-        f"\n[yellow]![/yellow] {len(report.changes)} contract change(s) "
-        f"({report.breaking_count} breaking, {report.warning_count} warning) impacting "
-        f"{report.total_impacted_consumers} consumer(s) in "
-        f"{escape(', '.join(report.impacted_repos)) or 'no other repo'}. "
-        "[dim]repowise workspace check[/dim]"
+        f"\n[yellow]![/yellow] {len(gating)} breaking contract change(s) impacting "
+        f"{escape(', '.join(repos))}"
+        + (f", plus {others} non-breaking" if others else "")
+        + ". [dim]repowise workspace check[/dim]"
     )
 
 
@@ -299,6 +318,7 @@ def _workspace_docs_update(
     repo_filter: str | None,
     docs_aliases: set[str],
     start: float,
+    started_at: datetime,
     agents_md: bool | None,
     verbose: bool,
     docs_flag: bool | None,
@@ -498,6 +518,7 @@ def _workspace_docs_update(
             f"[green]Workspace update complete[/green]: {summary} "
             f"[dim]({time.monotonic() - start:.1f}s)[/dim]"
         )
+        _print_breaking_changes(ws_root, started_at)
 
 
 def _refresh_workspace_editor_project_files(

@@ -138,7 +138,7 @@ def test_no_report_is_reported_as_silence_not_as_an_all_clear(tmp_path: Path):
     """Nothing has looked, so the block must not say nothing was found."""
     block = _block(_enricher(tmp_path, [_link()]), [PROVIDER_FILE])
     assert block["breaking_changes_available"] is False
-    assert block["as_of"] is None
+    assert block["breaking_changes_as_of"] is None
     assert block["summary"] == (
         "1 consumer link(s) in 1 other repo(s) touch the files this change edits"
         "; no breaking-change report has been built for them."
@@ -150,6 +150,15 @@ def test_a_clean_report_is_reported_as_an_all_clear(tmp_path: Path):
     block = _block(_enricher(tmp_path, [_link()], clean), [PROVIDER_FILE])
     assert block["breaking_changes_available"] is True
     assert block["summary"].endswith("; the last workspace update found no break in them.")
+
+
+def test_an_unstamped_report_is_silence_not_an_all_clear(tmp_path: Path):
+    """A file exists but no pass produced it; zero changes prove nothing."""
+    never_ran = BreakingChangeReport(generated_at=None)
+    block = _block(_enricher(tmp_path, [_link()], never_ran), [PROVIDER_FILE])
+    assert block["breaking_changes_available"] is False
+    assert block["breaking_changes_as_of"] is None
+    assert block["summary"].endswith("; no breaking-change report has been built for them.")
 
 
 def test_carries_the_break_attributed_to_that_file(tmp_path: Path):
@@ -184,7 +193,7 @@ def test_carries_the_break_attributed_to_that_file(tmp_path: Path):
     assert entry["kind"] == "removed_endpoint"
     assert entry["impacted_repos"] == ["frontend"]
     assert entry["provider_symbol_id"] == f"{PROVIDER_FILE}::Order"
-    assert block["as_of"] == "2026-08-23T00:00:00+00:00"
+    assert block["breaking_changes_as_of"] == "2026-08-23T00:00:00+00:00"
     # consumers is empty, but the repo count must still come from the break.
     assert block["consumers"] == []
     assert block["consumer_repos"] == ["frontend"]

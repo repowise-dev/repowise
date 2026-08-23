@@ -1226,6 +1226,7 @@ def workspace_check(path: str | None, breaking: bool, fmt: str, as_json: bool) -
     # Gate on wire-incompatible changes that endanger another repo. A warning
     # severity is source-compat only and must not fail a build.
     bc_report = load_breaking_change_report(ws_root) if breaking else None
+    bc_ran = bc_report is not None and bc_report.ran
     breaking_changes = (
         [
             c
@@ -1233,7 +1234,7 @@ def workspace_check(path: str | None, breaking: bool, fmt: str, as_json: bool) -
             if c.severity == SEVERITY_BREAKING
             and any(ic.repo != c.provider_repo for ic in c.impacted_consumers)
         ]
-        if bc_report is not None and bc_report.ran
+        if bc_ran
         else []
     )
 
@@ -1246,6 +1247,8 @@ def workspace_check(path: str | None, breaking: bool, fmt: str, as_json: bool) -
             payload["breaking_changes_generated_at"] = (
                 bc_report.generated_at if bc_report is not None else None
             )
+            # False = never detected, so the empty list above is not a pass.
+            payload["breaking_changes_available"] = bc_ran
         emit_json(payload)
         if report.has_findings or breaking_changes:
             sys.exit(1)
@@ -1316,13 +1319,15 @@ def workspace_check(path: str | None, breaking: bool, fmt: str, as_json: bool) -
             )
         else:
             console.print("\n[green]✓[/green] No dependency cycles.")
-        if breaking and bc_report is not None and bc_report.ran:
+        if bc_ran:
             console.print("[green]✓[/green] No breaking contract changes.")
         return
 
+    # Only claim a breaking-change count when a detection pass produced one.
+    tail = f", {len(breaking_changes)} breaking contract change(s)" if bc_ran else ""
     console.print(
         f"\n[red]Architecture check failed:[/red] {len(report.violations)} violation(s), "
-        f"{len(report.cycles)} cycle(s), {len(breaking_changes)} breaking contract change(s)."
+        f"{len(report.cycles)} cycle(s){tail}."
     )
     sys.exit(1)
 

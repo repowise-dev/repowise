@@ -282,6 +282,7 @@ async def test_symbol_target_names_the_consuming_symbol(workspace_state):
     assert blocks[0]["contract_ids"] == ["http::GET::/users"]
     assert blocks[0]["consumers"] == [
         {
+            "provider_repo": "backend",
             "repo": "frontend",
             "file": "client.ts",
             "contract_id": "http::GET::/users",
@@ -292,7 +293,11 @@ async def test_symbol_target_names_the_consuming_symbol(workspace_state):
         }
     ]
     assert blocks[0]["consumers_truncated"] == 0
-    assert "symbol(s) across the contract links" in result["summary"]
+    assert blocks[0]["consumer_count"] == 1
+    assert "ambiguous_in_repos" not in blocks[0]
+    assert result["summary"].endswith(
+        " 1 symbol target(s) have 1 consumer(s) across the contract links."
+    )
 
 
 @pytest.mark.asyncio

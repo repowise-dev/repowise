@@ -126,12 +126,12 @@ async def get_change_risk(
     # extensions + riskignore + request excludes), so nothing downstream
     # disagrees with the score about which files the change touches. Read once
     # and shared: both blocks below need it and git is the expensive part.
-    # Skipped without an index *and* outside workspace mode: the test and fix
-    # blocks need the index, but the cross-repo block reads workspace artifacts
-    # and would go silently blind on a member whose own index is missing.
+    # The test and fix blocks need the index; the cross-repo block needs only
+    # workspace contracts, so an unindexed member still gets one rather than
+    # going silently blind. Nothing else pays the git call.
     changed: dict[str, set[int]] = {}
     changed_error: tuple[str, str] | None = None
-    if getattr(ctx, "session_factory", None) is not None or _is_workspace_mode():
+    if getattr(ctx, "session_factory", None) is not None or _has_contract_data():
         changed, changed_error = await _changed_in_scope(
             str(ctx.path),
             revspec,
@@ -220,6 +220,16 @@ def _filter_changed(
             continue
         out[path] = lines
     return out
+
+
+def _has_contract_data() -> bool:
+    """Whether workspace contracts are loaded, so the cross-repo block can speak."""
+    from repowise.server.mcp_server import _state
+
+    if not _is_workspace_mode():
+        return False
+    enricher = _state._cross_repo_enricher
+    return bool(enricher is not None and getattr(enricher, "has_contract_data", False))
 
 
 def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | None:
@@ -339,9 +349,9 @@ def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | 
             "breaking_changes_truncated": breaking_total - len(breaking),
             # False = no detection pass ran, so the empty list is silence.
             "breaking_changes_available": has_breaking_report,
-            # When the artifacts were built. The score above is live git; this
-            # block is only as current as the last workspace update.
-            "as_of": report.get("generated_at"),
+            # Stamps the breaking half only; the consumer list comes from the
+            # contract artifact, which carries no exposed stamp.
+            "breaking_changes_as_of": report.get("generated_at") or None,
             "summary": summary,
         }
     except Exception:

@@ -19,8 +19,10 @@ from repowise.server.mcp_server.tool_blast_radius import (
 )
 
 
-def _enricher(tmp_path: Path, contracts, links) -> CrossRepoEnricher:
-    graph = build_system_graph(contracts, links, CrossRepoOverlay(), {}, generated_at="t")
+def _enricher(tmp_path: Path, contracts, links, boundaries=None) -> CrossRepoEnricher:
+    graph = build_system_graph(
+        contracts, links, CrossRepoOverlay(), boundaries or {}, generated_at="t"
+    )
     (tmp_path / "system_graph.json").write_text(json.dumps(graph.to_dict()), encoding="utf-8")
     (tmp_path / "contracts.json").write_text(
         json.dumps(
@@ -161,14 +163,31 @@ async def test_symbol_consumers_are_capped_and_counted(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_a_service_scoped_symbol_resolves_to_its_service_node(tmp_path: Path):
-    """The provider's service is its own graph node, not just its repo."""
+    """Graph nodes come from service boundaries, not from ``Contract.service``."""
+    from repowise.core.workspace.extractors.service_boundary import ServiceBoundary
+
     provider = _provider(file_path="packages/types/src/types.ts", service="packages/types")
-    consumer = _consumer(service="app")
-    with _in_workspace(_enricher(tmp_path, [provider, consumer], [_link(provider, consumer)])):
+    consumer = _consumer(file_path="app/src/api.ts", service="app")
+    boundaries = {
+        "backend": [ServiceBoundary(service_path="packages/types", service_name="types")],
+        "frontend": [ServiceBoundary(service_path="app", service_name="app")],
+    }
+    enricher = _enricher(tmp_path, [provider, consumer], [_link(provider, consumer)], boundaries)
+    with _in_workspace(enricher):
         result = await get_blast_radius(["packages/types/src/types.ts::Order"])
     assert result["symbol_targets"][0]["nodes"] == ["backend::packages/types"]
     assert result["targets"] == ["backend::packages/types"]
     assert {n["id"] for n in result["impacted"]} == {"frontend::app"}
+
+
+@pytest.mark.asyncio
+async def test_a_stale_contract_service_does_not_invent_a_node(tmp_path: Path):
+    """``Contract.service`` naming no node falls back to the repo node."""
+    provider = _provider(file_path="src/types.ts", service="packages/gone")
+    with _in_workspace(_enricher(tmp_path, [provider], [])):
+        result = await get_blast_radius(["src/types.ts::Order"])
+    assert result["symbol_targets"][0]["nodes"] == ["backend"]
+    assert result["unresolved_targets"] == []
 
 
 @pytest.mark.asyncio

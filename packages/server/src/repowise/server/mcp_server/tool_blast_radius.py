@@ -9,6 +9,7 @@ services carry an impact ``score`` and a ``distance``.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any
 
 from repowise.core.registry import mcp_tool_registry as mcp
@@ -109,7 +110,8 @@ async def get_blast_radius(
         "targets": result.targets,
         "target_repos": result.target_repos,
         "impacted": impacted,
-        "impacted_truncated": max(0, len(result.impacted) - len(impacted)),
+        # Against the true total: result.impacted is itself already capped.
+        "impacted_truncated": max(0, result.total_impacted - len(impacted)),
         "impacted_repos": result.impacted_repos,
         "structural_count": result.structural_count,
         "behavioral_count": result.behavioral_count,
@@ -124,18 +126,24 @@ async def get_blast_radius(
     return payload
 
 
-def _graph_node_for(node_ids: set[str], contract: dict[str, Any]) -> str | None:
+def _graph_node_for(nodes_by_repo: dict[str, list[Any]], contract: dict[str, Any]) -> str | None:
     """The system-graph node that carries *contract*, or ``None``.
 
-    Membership-checked rather than formula-derived: the node id is built by the
-    graph assembler, and a contract whose service never became its own node
-    still belongs to its repo's node.
+    Resolved by longest service-path prefix over the graph's own nodes, the
+    inverse of the ``assign_service`` walk that built them. ``Contract.service``
+    is a different derivation and does not always name a node.
     """
-    repo = contract.get("repo") or ""
-    service = contract.get("service")
-    if service and (candidate := f"{repo}::{service}") in node_ids:
-        return candidate
-    return repo if repo in node_ids else None
+    path = (contract.get("file_path") or "").replace("\\", "/")
+    best: str | None = None
+    best_len = -1
+    for node in nodes_by_repo.get(contract.get("repo") or "", ()):
+        service = node.service_path
+        if service is None:
+            if best_len < 0:
+                best, best_len = node.id, 0
+        elif path.startswith(service + "/") and len(service) > best_len:
+            best, best_len = node.id, len(service)
+    return best
 
 
 def _resolve_symbol_targets(
@@ -153,7 +161,9 @@ def _resolve_symbol_targets(
     """
     blocks: list[dict[str, Any]] = []
     replacements: dict[str, list[str]] = {}
-    node_ids = {n.id for n in graph.nodes}
+    nodes_by_repo: dict[str, list[Any]] = defaultdict(list)
+    for node in graph.nodes:
+        nodes_by_repo[node.repo].append(node)
     for raw in dict.fromkeys(unresolved):
         # Providers only: a consumer contract's symbol calls a surface rather
         # than publishing one, so it has no downstream to traverse.
@@ -162,10 +172,17 @@ def _resolve_symbol_targets(
             for c in enricher.get_contracts_for_symbol(raw)
             if c.get("role") == "provider"
         ]
-        nodes = sorted({node for c in contracts if (node := _graph_node_for(node_ids, c))})
+        nodes = sorted({node for c in contracts if (node := _graph_node_for(nodes_by_repo, c))})
         if not nodes:
             continue
-        links = enricher.get_contract_links_by_provider_symbol(raw)
+        # Both indexes are repo-blind, so scope the links to the repos actually
+        # traversed; otherwise the count includes a namesake's consumers.
+        repos = sorted({c["repo"] for c in contracts if c.get("repo")})
+        links = [
+            lk
+            for lk in enricher.get_contract_links_by_provider_symbol(raw)
+            if lk.get("provider_repo") in set(repos)
+        ]
         consumers = [
             {
                 "provider_repo": link.get("provider_repo"),
@@ -191,7 +208,7 @@ def _resolve_symbol_targets(
             "consumers_truncated": max(0, len(links) - len(consumers)),
         }
         # Symbol ids are repo-relative, so one id can name two symbols.
-        if len(repos := sorted({c["repo"] for c in contracts if c.get("repo")})) > 1:
+        if len(repos) > 1:
             block["ambiguous_in_repos"] = repos
         blocks.append(block)
         replacements[raw] = nodes

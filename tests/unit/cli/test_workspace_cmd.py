@@ -785,4 +785,66 @@ class TestWorkspaceCheckBreaking:
         result = runner.invoke(cli, ["workspace", "check", str(tmp_path), "--json"])
         data = json.loads(result.output)
         assert data["breaking_changes_generated_at"] == "2026-08-23T00:00:00+00:00"
-        assert data["generated_at"] != data["breaking_changes_generated_at"]
+        assert data["breaking_changes_available"] is True
+
+    def test_json_says_when_nothing_ever_looked(self, runner, tmp_path):
+        """An empty list without this flag reads as a pass in CI."""
+        import json
+
+        self._write_config(tmp_path)
+        self._save_graph(tmp_path)
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path), "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["breaking_changes"] == []
+        assert data["breaking_changes_available"] is False
+
+    def test_the_failure_line_omits_a_count_nothing_produced(self, runner, tmp_path):
+        """With no report there is no 0 to claim."""
+        self._write_config_with_rule_and_violation(tmp_path)
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "breaking contract change(s)." not in result.output
+        assert "cycle(s)." in result.output
+
+    def _write_config_with_rule_and_violation(self, root: Path) -> None:
+        from repowise.core.workspace.system_graph import (
+            SystemEdge,
+            SystemGraph,
+            SystemNode,
+            save_system_graph,
+        )
+
+        data = {
+            "version": 1,
+            "default_repo": "frontend",
+            "repos": [
+                {"path": "frontend", "alias": "frontend"},
+                {"path": "api", "alias": "api"},
+            ],
+            "conformance": {"rules": [{"source": "frontend", "target": "api"}]},
+        }
+        (root / WORKSPACE_CONFIG_FILENAME).write_text(
+            yaml.dump(data, default_flow_style=False), encoding="utf-8"
+        )
+        save_system_graph(
+            SystemGraph(
+                nodes=[
+                    SystemNode(id=n, repo=n, service_path=None, name=n)
+                    for n in ("api", "frontend")
+                ],
+                edges=[
+                    SystemEdge(
+                        id="frontend->api:http",
+                        source="frontend",
+                        target="api",
+                        kind="http",
+                        match_type="exact",
+                        confidence=1.0,
+                        weight=1,
+                        structural=True,
+                    )
+                ],
+            ),
+            root,
+        )
