@@ -7,7 +7,7 @@ description: Score the defect risk of a change — a commit or a base..head rang
 Score a *change* (not a file) for defect risk. The response leads with
 `fix_history`: the recency-weighted bug-fix record of the files the change
 touches, which of them carry it, and where that sits among the repo's own
-fix-bearing files. The 0–10 score sits beside it and measures diff size and
+recent commits. The 0–10 score sits beside it and measures diff size and
 spread (named in `score_measures`) rather than danger, so read the fix history
 first. Pure git + learned constants: no LLM, no network. A natural pre-merge /
 PR gate.

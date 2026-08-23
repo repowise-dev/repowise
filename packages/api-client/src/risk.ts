@@ -13,7 +13,8 @@ export interface RiskRangeParams {
   head?: string;
   /**
    * How many recent commits to build the percentile baseline from. 0 skips
-   * the percentile (risk_percentile and review_priority come back null).
+   * every percentile (risk_percentile, review_priority and
+   * fix_history.percentile all come back null).
    */
   baseline?: number;
 }
@@ -34,7 +35,7 @@ export interface FixHistory {
   available: boolean;
   /** Churn-weighted mean fix pressure across the changed files. */
   density: number;
-  /** Rank against this repo's own fix-bearing files; null if too few to rank. */
+  /** Rank against the fix density of this repo's own recent commits; null if too few to rank. */
   percentile: number | null;
   files: FixHistoryFile[];
 }

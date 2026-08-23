@@ -506,7 +506,7 @@ def risk_command(
     elif result.hot_files:
         where = (
             f" · {_ordinal(round(result.fix_percentile))} percentile of this repo's "
-            "fix-bearing files"
+            "recent commits"
             if result.fix_percentile is not None
             else ""
         )

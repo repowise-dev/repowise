@@ -49,7 +49,7 @@ The first block in the result is `fix_history`, and it is the one to act on. It
 answers a question the diff shape cannot: **have these files broken before?**
 
 ```
-These files have broken before · 82nd percentile of this repo's fix-bearing files
+These files have broken before · 82nd percentile of this repo's recent commits
 ┌──────────────────────────────────────────┬───────┬─────────────┐
 │ File                                     │ Lines │ Prior fixes │
 ├──────────────────────────────────────────┼───────┼─────────────┤
@@ -69,11 +69,16 @@ These files have broken before · 82nd percentile of this repo's fix-bearing fil
   a one-line drive-by next door. It is a *ratio*, so unlike the score it does
   not grow with the size of the diff: one line in a file fixed twenty times
   outranks a thousand lines in files never fixed at all.
-- **`percentile`** ranks that density against the repository's own fix-bearing
-  files, since a bare "3.4 decayed fixes" means nothing on its own. Both sides
-  are the same unit, so the comparison is like for like. It is `null` when the
-  repo has fewer than eight files with any fix history, or when the change
-  touches none of it.
+- **`percentile`** ranks that density against the same measure over the
+  repository's own recent commits, since a bare "3.4 decayed fixes" means
+  nothing on its own. Ranking against whole commits rather than against
+  individual per-file numbers is what keeps it readable: a change spread over
+  several files averages below any single hot file, so a per-file population
+  pinned every multi-file change to the bottom. Commits that touch no
+  fix-bearing file stay in the population; they are a legitimate answer to how
+  much fix pressure a change here usually stands on. It is `null` when the
+  change touches no fix history, or when fewer than eight sampled commits are
+  available to rank against.
 
 This comes from one `git log` walk (up to 20 000 commits, memoized per
 repository state) using the same bug-fix classifier the indexer uses. It needs
