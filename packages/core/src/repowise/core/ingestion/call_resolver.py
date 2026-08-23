@@ -31,7 +31,7 @@ from typing import Any
 
 import structlog
 
-from .language_data import get_builtin_methods
+from .language_data import get_builtin_methods, get_external_receiver_types
 from .languages.receiver_types import (
     FRAMEWORK_DECORATOR_LANGUAGES,
     IMPLICIT_FIELD_LANGUAGES,
@@ -317,6 +317,7 @@ class CallResolver:
         # {file: {name: type}} — module-level defs a framework decorator retyped.
         self._framework_types: dict[str, dict[str, str]] = {}
         self._external_names: dict[str, frozenset[str]] = {}
+        self._repo_rebound_names: dict[str, frozenset[str]] = {}
         self._method_name_set: frozenset[str] | None = None
         self._framework_name_set: frozenset[str] | None = None
 
@@ -1259,6 +1260,8 @@ class CallResolver:
                 return ResolvedCall(caller_id, sym_id, 0.93, call.line, "receiver_same_file")
             if tier == "import":
                 return ResolvedCall(caller_id, sym_id, 0.88, call.line, "receiver_import")
+            if self._answers_for_a_foreign_type(file_path, receiver_name):
+                return None
             return ResolvedCall(caller_id, sym_id, 0.75, call.line, "receiver_global")
 
         # Strategy 3: receiver is "self" or "this" — look in same class.
@@ -1599,6 +1602,59 @@ class CallResolver:
         if len(self._external_names) >= _SOURCE_CACHE_FILES:
             self._external_names.clear()
         self._external_names[file_path] = names
+        return names
+
+    def _answers_for_a_foreign_type(self, file_path: str, receiver_name: str) -> bool:
+        """Is the repo-wide tier about to answer a call on a type we do not own?
+
+        Asked only of the ``global`` tier, which takes the first file-order
+        match for a ``(type, method)`` pair with no uniqueness check. A
+        repository that writes ``impl RelationshipSourceCollection for
+        Vec<Entity>`` declares a ``Vec::new``, and without this the tier hands
+        it to every ``Vec::new()`` in the tree whatever the element type is.
+
+        The narrower tiers above are deliberately left alone: both are grounded
+        in the caller's own file or its imports, and a same-file ``impl
+        From<LocalIndex> for usize`` really is what ``usize::from(i)`` means
+        there.
+        """
+        if receiver_name not in get_external_receiver_types(
+            self._language_of(file_path) or ""
+        ):
+            return False
+        return receiver_name not in self._names_rebound_from_a_repo_package(file_path)
+
+    def _names_rebound_from_a_repo_package(self, file_path: str) -> frozenset[str]:
+        """Names this file imports from one of the repository's own packages.
+
+        A file writing ``use bevy_platform::collections::HashMap`` means its own
+        ``HashMap``, so the repo answer is right and the refusal above must not
+        fire. The import list is what separates that from
+        ``use std::collections::HashMap`` two files away; the name cannot.
+
+        Read off the raw import statements because a rust import resolves to no
+        repository file at all - measured 0 of 843 candidate rows - so
+        ``_import_names`` cannot answer this. The package index is what does,
+        and the exemption is only ever as good as the one the language has: a
+        language given a non-empty ``external_receiver_types`` without a
+        workspace index would refuse where it should exempt.
+        """
+        cached = self._repo_rebound_names.get(file_path)
+        if cached is not None:
+            return cached
+
+        packages = self._get_rust_crate_src()  # keys are already `-`-normalised
+        found: set[str] = set()
+        parsed = self._parsed_files.get(file_path)
+        for imp in parsed.imports if parsed and packages else ():
+            head = imp.module_path.split("::")[0].replace("-", "_")
+            if head in packages:
+                found.update(n for n in (imp.local_names or ()) if n)
+
+        names = frozenset(found)
+        if len(self._repo_rebound_names) >= _SOURCE_CACHE_FILES:
+            self._repo_rebound_names.clear()
+        self._repo_rebound_names[file_path] = names
         return names
 
     def _declared_types_in(

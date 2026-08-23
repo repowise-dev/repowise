@@ -645,3 +645,78 @@ class TestImportedTypeThroughAReExport:
             for origin in origins.values()
         ]
         assert not [o for o in recorded if o.startswith("external:")]
+
+
+class TestForeignReceiverTypes:
+    """The repo-wide receiver tier must not answer a call on a type we do not own.
+
+    Both tests write the *same* call. Only the import differs, which is the
+    whole claim: the name cannot decide this and the caller's import list can.
+    """
+
+    @staticmethod
+    def _workspace(tmp_path: Path) -> None:
+        (tmp_path / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["crates/a", "crates/b"]\n'
+        )
+        for name in ("a", "b"):
+            crate = tmp_path / "crates" / name
+            crate.mkdir(parents=True, exist_ok=True)
+            (crate / "Cargo.toml").write_text(
+                f'[package]\nname = "{name}"\nversion = "0.1.0"\n'
+            )
+
+    _DECLARES = (
+        "rust",
+        "pub struct HashMap;\n\nimpl HashMap {\n    pub fn new() -> Self {\n"
+        "        HashMap\n    }\n}\n",
+    )
+
+    def test_a_std_named_receiver_gets_no_repo_wide_guess(self, tmp_path: Path) -> None:
+        self._workspace(tmp_path)
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "crates/a/src/lib.rs": self._DECLARES,
+                "crates/b/src/lib.rs": (
+                    "rust",
+                    "use std::collections::HashMap;\n\npub fn run() {\n"
+                    "    let m = HashMap::new();\n}\n",
+                ),
+            },
+        )
+        assert _edges(parsed, tmp_path) == []
+
+    def test_the_same_call_resolves_when_the_file_rebinds_the_name(
+        self, tmp_path: Path
+    ) -> None:
+        self._workspace(tmp_path)
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "crates/a/src/lib.rs": self._DECLARES,
+                "crates/b/src/lib.rs": (
+                    "rust",
+                    "use a::HashMap;\n\npub fn run() {\n"
+                    "    let m = HashMap::new();\n}\n",
+                ),
+            },
+        )
+        assert (
+            "crates/b/src/lib.rs::run",
+            "crates/a/src/lib.rs::HashMap::new",
+            0.75,
+            "receiver_global",
+        ) in _edges(parsed, tmp_path)
+
+    def test_no_other_language_carries_the_set(self) -> None:
+        """The refusal is a no-op elsewhere by construction, not by measurement."""
+        from repowise.core.ingestion.language_data import get_external_receiver_types
+        from repowise.core.ingestion.languages.registry import REGISTRY
+
+        populated = {
+            spec.tag
+            for spec in REGISTRY.all_specs()
+            if get_external_receiver_types(spec.tag)
+        }
+        assert populated == {"rust"}

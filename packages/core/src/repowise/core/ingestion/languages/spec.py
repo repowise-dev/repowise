@@ -154,6 +154,17 @@ class LanguageSpec:
     # that set is matched receiver-blind in the parser and drops the call site
     # outright, which would also delete a real ``obj.unwrap()`` edge.
     builtin_methods: frozenset[str] = field(default_factory=frozenset)
+    # Type names a call may be made ON that this repository does not own:
+    # ``Vec::new()``, ``HashMap::default()``. Read only by the repo-wide
+    # receiver tier in ``CallResolver``, which has no uniqueness gate, so a
+    # repository that writes ``impl SomeTrait for Vec<Entity>`` otherwise hands
+    # that method back for every ``Vec`` in the tree whatever its element type.
+    #
+    # Deliberately its own field rather than a reuse of ``builtin_types``,
+    # which answers a different question - whether a *type reference* can point
+    # at a repo file - and is populated for nine languages. Keeping them apart
+    # is what makes this change a no-op on every language but the one measured.
+    external_receiver_types: frozenset[str] = field(default_factory=frozenset)
 
     # -- Display ---------------------------------------------------------
     color_hex: str = "#8b5cf6"  # fallback purple ("other")
