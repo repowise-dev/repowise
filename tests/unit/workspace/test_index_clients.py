@@ -684,3 +684,216 @@ def test_literal_url_recognition(args: str, expected: str | None):
     from repowise.core.workspace.extractors.http.index_clients import _literal_url
 
     assert _literal_url(args) == expected
+
+
+# ---------------------------------------------------------------------------
+# Python: the client-instance receiver
+# ---------------------------------------------------------------------------
+
+
+def _py_symbols(path: str, source: str) -> list[IndexedSymbol]:
+    """Python symbols as the rows ingestion persists them."""
+    info = FileInfo(
+        path=path,
+        abs_path=f"C:/fake/{path}",
+        language="python",
+        size_bytes=len(source),
+        git_hash="",
+        last_modified=datetime.now(UTC),
+        is_test=False,
+        is_config=False,
+        is_api_contract=False,
+        is_entry_point=False,
+    )
+    return [
+        IndexedSymbol(
+            symbol_id=sym.id,
+            name=sym.name,
+            qualified_name=sym.qualified_name,
+            kind=sym.kind,
+            signature=sym.signature,
+            file_path=path,
+            start_line=sym.start_line,
+            end_line=sym.end_line,
+            visibility=sym.visibility,
+        )
+        for sym in ASTParser().parse_file(info, source.encode()).symbols
+    ]
+
+
+def _run_py(source: str, path: str = "app/services/caller.py"):
+    ctx = ScanContext("backend", path, ".py", source, {})
+    return extract_consumers(ctx, _py_symbols(path, source))
+
+
+# The shape backend/app/services/frontend_cache.py really uses: a module
+# constant for the path, an f-string joining it to a configured base, and the
+# call through the variable the async context manager binds.
+PURGE_PY = """\
+import httpx
+
+_PURGE_PATH = "/api/revalidate/snapshot"
+
+
+async def _post_purge(short_id: str) -> bool:
+    url = f"{settings.app_base_url.rstrip('/')}{_PURGE_PATH}"
+    async with httpx.AsyncClient(follow_redirects=True) as http:
+        resp = await http.post(url, json={"short_id": short_id})
+    return resp.status_code // 100 == 2
+"""
+
+
+class TestBoundClientReceiver:
+    """``http.post(url)`` on an ``httpx.AsyncClient`` — the shape with no wrapper."""
+
+    def test_the_call_becomes_a_contract(self):
+        contracts, unresolved = _run_py(PURGE_PY)
+        assert _ids(contracts) == {"http::POST::/api/revalidate/snapshot"}
+        assert unresolved == 0
+
+    def test_the_contract_names_the_library_and_strips_the_base(self):
+        (contract,) = _run_py(PURGE_PY)[0]
+        assert contract.meta["client"] == "httpx"
+        assert contract.meta["base_stripped"] is True
+        assert contract.meta["base_token"] == "app_base_url"
+        assert contract.meta[EXTRACTION_LAYER_KEY] == LAYER_INDEX
+
+    def test_the_verb_names_the_method(self):
+        source = (
+            "import httpx\n"
+            "async def f():\n"
+            "    async with httpx.AsyncClient() as c:\n"
+            "        await c.patch('/things/1')\n"
+        )
+        assert _ids(_run_py(source)[0]) == {"http::PATCH::/things/1"}
+
+    def test_request_is_not_read_as_a_path(self):
+        """``client.request(method, url)`` puts the verb first, so it is skipped."""
+        source = (
+            "import httpx\n"
+            "async def f():\n"
+            "    async with httpx.AsyncClient() as c:\n"
+            "        await c.request('GET', '/things')\n"
+        )
+        contracts, unresolved = _run_py(source)
+        assert contracts == []
+        assert unresolved == 0
+
+
+class TestBindingIsRequired:
+    """A receiver is a client because the file constructs one, never by name."""
+
+    def test_a_dict_named_client_yields_nothing(self):
+        source = (
+            "def register(client: dict) -> dict:\n"
+            "    return {\n"
+            "        'name': client.get('/client_name'),\n"
+            "        'uris': client.get('/redirect_uris'),\n"
+            "    }\n"
+        )
+        assert _run_py(source) == ([], 0)
+
+    def test_a_binding_does_not_escape_its_function(self):
+        """Measured on content_engine_chain.py: two objects, one name, one file."""
+        source = (
+            "import httpx\n"
+            "async def notify():\n"
+            "    async with httpx.AsyncClient() as client:\n"
+            "        await client.post('/internal/notify')\n"
+            "\n"
+            "async def read(store):\n"
+            "    client = await store.get_supabase()\n"
+            "    return client.get('/rows/all')\n"
+        )
+        contracts, _ = _run_py(source)
+        assert _ids(contracts) == {"http::POST::/internal/notify"}
+
+    def test_an_attribute_binding_reaches_the_other_methods(self):
+        source = (
+            "import httpx\n"
+            "class Osv:\n"
+            "    def __init__(self):\n"
+            "        self._client = httpx.Client(base_url='https://osv.dev')\n"
+            "\n"
+            "    def query(self):\n"
+            "        return self._client.post('/v1/query')\n"
+        )
+        assert _ids(_run_py(source)[0]) == {"http::POST::/v1/query"}
+
+
+class TestPathsAreReadNeverGuessed:
+    def test_a_call_shaped_string_is_not_a_call(self):
+        """The masked scan is what keeps prose out; ``content`` still has the bytes."""
+        source = (
+            "import httpx\n"
+            "async def f(log):\n"
+            "    c = httpx.AsyncClient()\n"
+            "    log.info(\"call c.get('/api/leak') to see\")\n"
+            "    await c.get('/api/real')\n"
+        )
+        assert _ids(_run_py(source)[0]) == {"http::GET::/api/real"}
+
+    def test_an_example_in_a_docstring_is_not_an_assignment(self):
+        source = (
+            "import httpx\n"
+            "async def f(build):\n"
+            '    """Example:\n'
+            "\n"
+            '        url = "/docs/example"\n'
+            '    """\n'
+            "    url = build()\n"
+            "    c = httpx.AsyncClient()\n"
+            "    await c.get(url)\n"
+        )
+        contracts, unresolved = _run_py(source)
+        assert contracts == []
+        assert unresolved == 1
+
+    def test_a_docstring_quote_does_not_desynchronise_the_rest_of_the_file(self):
+        """A ``"`` inside a docstring used to close it early and mask real code."""
+        source = (
+            "import httpx\n"
+            "async def f():\n"
+            '    """He said "hi" there."""\n'
+            "    async with httpx.AsyncClient() as c:\n"
+            "        await c.get('/after/the/docstring')\n"
+        )
+        assert _ids(_run_py(source)[0]) == {"http::GET::/after/the/docstring"}
+
+    def test_a_name_assigned_twice_is_not_folded(self):
+        source = (
+            "import httpx\n"
+            "async def f(flag):\n"
+            "    url = '/one'\n"
+            "    url = '/two'\n"
+            "    c = httpx.AsyncClient()\n"
+            "    await c.get(url)\n"
+        )
+        contracts, unresolved = _run_py(source)
+        assert contracts == []
+        assert unresolved == 1
+
+    def test_an_unresolvable_call_is_counted_not_dropped(self):
+        source = (
+            "import httpx\n"
+            "async def f(build):\n"
+            "    c = httpx.AsyncClient()\n"
+            "    await c.get(build('x'))\n"
+        )
+        assert _run_py(source) == ([], 1)
+
+    def test_a_literal_brace_is_refused_rather_than_corrupted(self):
+        """``{{`` survives normalization as a dangling ``}``, so it is not claimed."""
+        source = (
+            "import httpx\n"
+            "async def f(v):\n"
+            "    c = httpx.AsyncClient()\n"
+            '    await c.get(f"/q/{{literal}}/{v}")\n'
+        )
+        assert _run_py(source) == ([], 1)
+
+
+class TestPythonLeavesTheJsPassAlone:
+    def test_a_python_file_with_no_client_yields_nothing(self):
+        source = "import os\ndef f():\n    return os.environ.get('/not/a/url')\n"
+        assert _run_py(source) == ([], 0)

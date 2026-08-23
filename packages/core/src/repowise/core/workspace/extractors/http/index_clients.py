@@ -270,13 +270,18 @@ def extract_consumers(
     # argument scanner. Masking preserves offsets and length, so slices taken
     # against this text are the real argument text.
     content = mask_source(ctx.content, ctx.suffix)
-    # Masked, so a client constructed in a comment does not bind a name.
-    clients = bound_clients(content, ctx.suffix, symbols)
+    # A second mask, with string bodies blanked too. Offsets are preserved, so
+    # this locates code positions while the text above supplies their bytes.
+    # Everything Python-side is found through it, because a log line reading
+    # ``"call foo.get('/api/x') to see"`` is prose, not a call, and reading it
+    # off ``content`` would mint a contract for an endpoint nobody calls.
+    code = mask_source(ctx.content, ctx.suffix, strings=True)
+    clients = bound_clients(code, ctx.suffix, symbols)
     if not confirmed and not sinks and not clients:
         return [], 0
 
     is_python = ctx.suffix in PYTHON
-    constants = string_constants(content) if is_python else {}
+    constants = string_constants(content, code) if is_python else {}
     declarations = _declaration_sites(symbols)
 
     # Pass 1: every call site of a confirmed wrapper, split into resolved
@@ -334,7 +339,7 @@ def extract_consumers(
     # Pass 1b: calls through a variable bound to an HTTP client instance. No
     # wrapper confirmation applies — the binding already proves the receiver.
     client_unresolved = 0
-    for m in _CLIENT_CALL_RE.finditer(content):
+    for m in _CLIENT_CALL_RE.finditer(code) if clients else ():
         verb = m.group("verb")
         if verb not in _HTTP_VERBS:
             continue

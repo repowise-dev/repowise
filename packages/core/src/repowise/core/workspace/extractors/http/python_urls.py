@@ -31,17 +31,23 @@ _LITERAL_RE = re.compile(
 _NAME_RE = re.compile(r"[A-Za-z_]\w*")
 
 # ``NAME = <expr>`` at any indentation, RHS to end of line. The whitespace
-# around ``=`` is required, and separates a statement from a keyword argument on
-# its own line (``url=str(resp.url),``), which otherwise reads as a second
-# assignment and retires the very name being folded. Misreading it costs a fold,
-# never a fabricated path.
+# around ``=`` is required, which excludes the usual unspaced keyword argument
+# on its own line (``url=str(resp.url),``) — that otherwise reads as a second
+# assignment and retires the very name being folded. A *spaced* kwarg still
+# retires it, so the guard is partial; either way the cost is a lost fold, never
+# a fabricated path.
 _ASSIGN_RE = re.compile(
     r"^[ \t]*([A-Za-z_]\w*)(?:[ \t]*:[^=\n]+)?[ \t]+=[ \t]+(.*)$", re.MULTILINE
 )
 
-# One ``{expr}`` interpolation. ``{{`` / ``}}`` are escaped braces in an
-# f-string and are deliberately left alone.
+# One ``{expr}`` interpolation.
 _INTERP_RE = re.compile(r"(?<!\{)\{([^{}]+)\}(?!\})")
+
+# ``{{`` / ``}}`` are an escaped brace, which no downstream step distinguishes
+# from a path parameter: ``normalize_http_path`` would eat one half and leave
+# the other dangling, and the surviving ``}`` passes the unusable-path check.
+# A URL needing a literal brace is refused rather than corrupted.
+_ESCAPED_BRACE_RE = re.compile(r"\{\{|\}\}")
 
 # Dropped from a base expression (``settings.base.rstrip('/')``) so
 # :func:`.paths.base_token_identifier` reads the attribute, not ``rstrip``.
@@ -59,17 +65,20 @@ def _parse_literal(text: str) -> tuple[str, str] | None:
     return m.group("prefix").lower(), body
 
 
-def string_constants(content: str) -> dict[str, str]:
+def string_constants(content: str, code: str) -> dict[str, str]:
     """Names this file assigns exactly once, to one string literal.
 
     The value is the literal's raw text with its prefix, so an f-string keeps
-    its interpolations for :func:`resolve_url_argument` to fold. *content*
-    should already have its comments masked, or a trailing ``# note`` will make
-    an otherwise foldable assignment unreadable.
+    its interpolations for :func:`resolve_url_argument` to fold.
+
+    Assignments are located in *code* — the same text as *content* with comments
+    and string bodies blanked — and their values are then read from *content* at
+    the same offsets. Searching *content* directly would read the example code
+    in a docstring (``    url = "/docs/example"``) as a real assignment.
     """
     seen: dict[str, str | None] = {}
-    for m in _ASSIGN_RE.finditer(content):
-        name, rhs = m.group(1), m.group(2).rstrip()
+    for m in _ASSIGN_RE.finditer(code):
+        name, rhs = m.group(1), content[m.start(2) : m.end(2)].rstrip()
         # A second assignment retires the name whatever it assigns: the reader
         # cannot tell which one reaches the call site.
         seen[name] = None if name in seen or _parse_literal(rhs) is None else rhs.strip()
@@ -109,4 +118,6 @@ def resolve_url_argument(arg: str, constants: dict[str, str]) -> str | None:
     prefix, body = parsed
     if "b" in prefix:
         return None  # bytes, not a URL this layer records
-    return _template(body, constants) if "f" in prefix else body
+    if "f" not in prefix:
+        return body
+    return None if _ESCAPED_BRACE_RE.search(body) else _template(body, constants)

@@ -121,6 +121,17 @@ _JS_LIKE = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs"})
 _REGEX_PRECEDERS = frozenset("(,=:[!&|?{};+-*%~^<>")
 
 
+def _string_prefix(text: str, quote_idx: int) -> str:
+    """The ``rb``/``f``/``u`` prefix letters immediately before a quote, if any."""
+    k = quote_idx
+    while k > 0 and text[k - 1] in "rRbBuUfF":
+        k -= 1
+    # Preceded by more identifier means those letters end a name, not a prefix.
+    if k > 0 and (text[k - 1].isalnum() or text[k - 1] == "_"):
+        return ""
+    return text[k:quote_idx]
+
+
 def mask_source(text: str, suffix: str, *, strings: bool = False) -> str:
     """Blank out comments — and optionally string bodies — preserving offsets.
 
@@ -136,29 +147,44 @@ def mask_source(text: str, suffix: str, *, strings: bool = False) -> str:
     reappearing through the back door. The call-site scanner masks comments
     only, since it still has to read the URL literal it is looking for.
     """
-    if suffix.lower() not in _JS_LIKE:
-        # Python: ``#`` to end of line. Triple-quoted strings are left alone;
-        # no sink pattern here matches inside one without a call following it.
-        if suffix.lower() != ".py":
-            return text
+    if suffix.lower() != ".py" and suffix.lower() not in _JS_LIKE:
+        return text
+
+    if suffix.lower() == ".py":
+        # Python: ``#`` to end of line, plus string bodies when asked. Both the
+        # triple-quoted delimiter and the ``r`` prefix are read, because getting
+        # either wrong desynchronises the scan for the rest of the file — a
+        # docstring containing a ``"`` would close early and leave real code
+        # masked, and ``r"\"`` would swallow its own closing quote.
         out = list(text)
-        i, n, in_str = 0, len(text), ""
+        i, n = 0, len(text)
         while i < n:
             ch = text[i]
-            if in_str:
-                if ch == "\\":
-                    i += 2
-                    continue
-                if ch == in_str:
-                    in_str = ""
-            elif ch in "'\"":
-                in_str = ch
-            elif ch == "#":
+            if ch == "#":
                 while i < n and text[i] != "\n":
                     out[i] = " "
                     i += 1
                 continue
-            i += 1
+            if ch not in "'\"":
+                i += 1
+                continue
+            delim = text[i : i + 3] if text[i : i + 3] in ("'''", '"""') else ch
+            raw = "r" in _string_prefix(text, i).lower()
+            i += len(delim)
+            while i < n:
+                if text[i] == "\\" and not raw:
+                    if strings:
+                        out[i] = " "
+                        if i + 1 < n and text[i + 1] != "\n":
+                            out[i + 1] = " "
+                    i += 2
+                    continue
+                if text.startswith(delim, i):
+                    i += len(delim)
+                    break
+                if strings and text[i] != "\n":
+                    out[i] = " "
+                i += 1
         return "".join(out)
 
     out = list(text)

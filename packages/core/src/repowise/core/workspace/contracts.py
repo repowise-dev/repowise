@@ -1070,8 +1070,8 @@ async def run_contract_extraction(
         unresolved = stats.get("http_consumer_unresolved", 0)
         if unresolved:
             _log.info(
-                "%s: %d HTTP client call(s) reach a confirmed wrapper but their "
-                "path could not be resolved statically; counted, not extracted",
+                "%s: %d HTTP client call(s) located but their path could not be "
+                "resolved statically; counted, not extracted",
                 alias,
                 unresolved,
             )
