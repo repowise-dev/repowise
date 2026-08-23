@@ -73,7 +73,7 @@ async def test_co_change_partner_is_not_blast_radius(setup_mcp, factory):
     ``_transitive_affected`` collects the sources of every edge pointing at a
     changed file and calls them "affected". A co_changes row made a file that
     merely tends to change alongside the diff look like an importer of it, and
-    the next BFS depth then walked through *that* file's partners. will_break
+    the next BFS depth then walked through *that* file's partners. may_break
     is capped and depth-sorted, so the noise crowds out the real importers.
     """
     from repowise.server.mcp_server import get_risk

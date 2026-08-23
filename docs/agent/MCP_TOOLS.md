@@ -453,13 +453,21 @@ Modification risk assessment for files or a set of changed files.
 
 > **Scales.** `overall_risk_score` (in `pr_blast_radius`, with an `overall_risk_score_measures` note beside it) reads where the change lands. It is not comparable to `get_change_risk.score`, which is also 0-10 and reads the shape of the diff. Ratios derived from ownership or percentile columns are 0-1 (`hotspot_score`, `owner_pct`, `recent_owner_pct`); coverage and gap fields are 0-100 (`coverage_pct`, `branch_coverage_pct`, `share_of_repo_gap_pct`, `change_entropy_pct`, `churn_percentile`). The `_pct` suffix alone does not tell you which — check this table. Every emitted float is rounded to 4 significant digits.
 
-When `changed_files` is passed, the response leads with a `directive` block. Its core lists are the local blast radius: `will_break` (production files that depend on the diff and are likely to break), `will_break_tests` (test files impacted the same way, kept separate so a burst of broken tests doesn't crowd production impact out of the capped list), `missing_cochanges` (historical co-changers absent from the diff), `missing_tests` (changed files without test coverage), and `tests_to_run` (the positive complement of `missing_tests`: the tests that exercise the changed files, as pytest-runnable arguments). Read `tests_to_run_basis` beside it, because the ids alone do not say where they came from: `measured` means the per-test coverage map proves those tests execute the changed files; `inferred` means the import graph shows those test *files* reaching the change, which is a candidate list rather than proof and needs no coverage ingest; `none` means neither source knows of a test, which is unknown and not "untested". The two are never mixed in one list. In workspace mode that directive also carries the cross-repo fallout of the changed repo:
+When `changed_files` is passed, the response leads with a `directive` block. Its core lists are the local blast radius: `may_break` (production files that reach the diff through the import graph and so may break), `may_break_tests` (test files impacted the same way, kept separate so a burst of broken tests doesn't crowd production impact out of the capped list), `missing_cochanges` (historical co-changers absent from the diff), `missing_tests` (changed files without test coverage), and `tests_to_run` (the positive complement of `missing_tests`: the tests that exercise the changed files, as pytest-runnable arguments). Read `tests_to_run_basis` beside it, because the ids alone do not say where they came from: `measured` means the per-test coverage map proves those tests execute the changed files; `inferred` means the import graph shows those test *files* reaching the change, which is a candidate list rather than proof and needs no coverage ingest; `none` means neither source knows of a test, which is unknown and not "untested". The two are never mixed in one list. In workspace mode that directive also carries the cross-repo fallout of the changed repo:
 
 - `will_break_consumers`: services in *other* repos that depend on this one (structural impact), each with `repo`, `service`, `distance`, `score`, and the edge kinds carrying the impact.
 - `missing_cross_repo_cochanges`: services in other repos that historically co-change with this one but aren't in the diff.
 - `breaking_changes`: provider contracts in this repo that changed *incompatibly* since the last index (a removed route or field, a type or field-number change, a newly-required field), each with the changed `contract_id`, the change `kind`/`severity`, and the `impacted_consumers` (repo, service, file) it endangers across repos. Schema-level truth, distinct from the topology-level `will_break_consumers`; non-breaking changes (added optional field, new endpoint) never appear. See [Breaking-Change Guard](../scale/WORKSPACES.md#breaking-change-guard).
 - `conformance_violations`: declared dependency-rule breaches the diff's repo participates in, each with the offending `source`/`target` services, the `rule` (e.g. `frontend !-> db`), and `edge_kind`. See [Architecture Conformance](../scale/WORKSPACES.md#architecture-conformance).
 - `dependency_cycles`: circular service dependencies involving this repo, each with the participating `nodes` and `length`.
+
+> **Output-schema change.** `directive.will_break` is now `directive.may_break`,
+> and `directive.will_break_tests` is now `directive.may_break_tests`. Both are
+> a reverse-import reachability walk: `get_risk` is given a file list, never a
+> diff, so it cannot know whether the symbol an importer actually uses changed.
+> The old name promised a precision the analyzer does not have.
+> `will_break_consumers` and `breaking_changes` keep "will" — those come from
+> real contract diffing.
 
 **When to use:** Before modifying files, especially hotspots. Understand what could break, who to involve in review, and whether tests cover the affected area.
 
@@ -525,6 +533,14 @@ measured map with `coverage run --contexts=test` followed by
 
 > **Output-schema change.** `impacted_tests.tests` is now
 > `impacted_tests.tests_to_run`, matching `get_risk`'s directive.
+
+`is_fix` is the defect benchmark's keyword rule read over the commit subject,
+not the conventional-commit type, so a `feat:` commit whose subject says it
+fixes something reads true; the rule is frozen for comparability rather than
+tuned. `prior_fixes` below is the tuned view: it applies a diff-shape filter on
+top of that rule, counting only commits that actually edited production code.
+`fix_history` above runs the same unfiltered rule, and `prior_fixes` is the one
+block of the three that needs an index.
 
 When the changed files carry counted bug fixes, the response also holds
 `prior_fixes`: per file, how many past bug-fix commits touched it

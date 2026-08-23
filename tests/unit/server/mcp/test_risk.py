@@ -95,7 +95,7 @@ async def test_get_risk_stable_file(setup_mcp):
 
 @pytest.mark.asyncio
 async def test_get_risk_pr_directive_splits_test_breakage(setup_mcp):
-    """PR mode splits test-file fallout out of will_break into will_break_tests (#672)."""
+    """PR mode splits test-file fallout out of may_break into may_break_tests (#672)."""
     from repowise.server.mcp_server import get_risk
 
     # Pass changed_files to trigger PR mode + blast-radius directive.
@@ -103,15 +103,21 @@ async def test_get_risk_pr_directive_splits_test_breakage(setup_mcp):
     directive = result["directive"]
 
     # middleware.py imports service.py → production breakage.
-    assert "src/auth/middleware.py" in directive["will_break"]
-    assert "src/auth/middleware.py" not in directive["will_break_tests"]
+    assert "src/auth/middleware.py" in directive["may_break"]
+    assert "src/auth/middleware.py" not in directive["may_break_tests"]
 
     # test_service.py imports service.py but is is_test=True → segmented out.
-    assert "tests/test_service.py" in directive["will_break_tests"]
-    assert "tests/test_service.py" not in directive["will_break"]
+    assert "tests/test_service.py" in directive["may_break_tests"]
+    assert "tests/test_service.py" not in directive["may_break"]
 
     # Summary reflects the test count.
-    assert "test(s) likely broken" in directive["summary"]
+    assert "test(s) may break" in directive["summary"]
+
+    # The savings estimator reads these lists by name; a rename that misses it
+    # undercounts silently rather than raising.
+    from repowise.server.mcp_server._savings.counterfactual import RISK_RELATED_FILE_KEYS
+
+    assert set(RISK_RELATED_FILE_KEYS) <= set(directive)
 
 
 @pytest.mark.asyncio

@@ -170,8 +170,8 @@ RISK_PAYLOAD = {
 PR_RISK_PAYLOAD = {
     "targets": RISK_PAYLOAD["targets"],
     "directive": {
-        "will_break": ["packages/core/src/repowise/core/pipeline/orchestrator.py"],
-        "will_break_tests": ["tests/unit/persistence/test_models.py"],
+        "may_break": ["packages/core/src/repowise/core/pipeline/orchestrator.py"],
+        "may_break_tests": ["tests/unit/persistence/test_models.py"],
         "missing_cochanges": ["packages/core/src/repowise/core/persistence/models.py"],
         "missing_tests": ["packages/core/src/repowise/core/pipeline/persist.py"],
         "tests_to_run": ["tests/unit/pipeline/test_persist.py::test_tombstone"],
@@ -199,7 +199,7 @@ PR_RISK_PAYLOAD = {
              "status": "accepted", "reason": "stale_governance"}
         ],
         "overall_risk_score": 7.4,
-        "summary": "PR touches 1 file(s). ~1 downstream file(s) likely affected.",
+        "summary": "PR touches 1 file(s). ~1 downstream file(s) may be affected.",
     },
     "pr_blast_radius": {
         "transitive_affected": ["packages/core/src/repowise/core/pipeline/orchestrator.py"],
@@ -715,7 +715,7 @@ def test_risk_table_renders_the_directive_first(monkeypatch, repo):
     # Unconditional: a guarded `assert A < B if cond else True` degrades to
     # `assert True` the moment rich wraps the line the guard looked for.
     assert out.index("Directive") < out.index("Co-changes with")
-    for expected in ("Will break", "Tests to run", "Missing co-changes",
+    for expected in ("May break", "Tests to run", "Missing co-changes",
                      "Conformance violations", "cli !-> core", "layering rule",
                      "persist tombstones", "billing-api", "removed_route",
                      "a.py -> b.py -> a.py"):

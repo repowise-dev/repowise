@@ -144,11 +144,11 @@ def _render_target_risk(projected: dict, requested: tuple[str, ...]) -> None:
     directive = projected.get("directive")
     if directive:
         # PR mode leads with the directive because that is the tool's contract:
-        # what will break, what is missing, what to run.
+        # what may break, what is missing, what to run.
         console.print(f"\n[bold]Directive[/bold] {escape(str(directive.get('summary', '')))}")
         for label, key in (
-            ("Will break", "will_break"),
-            ("Tests likely broken", "will_break_tests"),
+            ("May break", "may_break"),
+            ("Tests that may break", "may_break_tests"),
             ("Missing co-changes", "missing_cochanges"),
             ("Files without tests", "missing_tests"),
             ("Tests to run", "tests_to_run"),
@@ -429,7 +429,7 @@ def _ordinal(n: int) -> str:
     multiple=True,
     metavar="PATH",
     help="With --target: PR mode. The response leads with a directive naming "
-    "what will break, which co-changes and tests are missing, and what to run.",
+    "what may break, which co-changes and tests are missing, and what to run.",
 )
 @format_option()
 @full_option()

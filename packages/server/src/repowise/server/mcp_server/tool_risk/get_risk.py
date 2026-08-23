@@ -78,7 +78,7 @@ async def get_risk(
     bus factor) with graph topology (dependents, co-changes, impact surface)
     and security findings. Consult before editing a bug-fixed or busy file. Pass
     changed_files for PR mode: the response leads with a directive block
-    (will_break, missing_cochanges, missing_tests, tests_to_run) — read it
+    (may_break, missing_cochanges, missing_tests, tests_to_run) — read it
     first. tests_to_run_basis backs the run-list: measured (a coverage map
     proves those tests run the changed files) or inferred (test files the import
     graph shows reaching them; candidates, no ingest needed). To score a commit

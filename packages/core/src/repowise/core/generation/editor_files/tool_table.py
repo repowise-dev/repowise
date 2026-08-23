@@ -88,7 +88,7 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
     "get_risk": (
         "get_risk(targets, changed_files?, include?)",
         "Call before editing: what history says about touching these files. "
-        "PR mode (`changed_files`) leads with a `directive`: read `will_break` "
+        "PR mode (`changed_files`) leads with a `directive`: read `may_break` "
         "/ `missing_cochanges` / `missing_tests` / `tests_to_run`.",
     ),
     "get_change_risk": (

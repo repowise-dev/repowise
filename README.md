@@ -190,7 +190,7 @@ Three deterministic signals, all computed from the graph and git history, no LLM
 
 - **Change risk.** Score any commit or `base..HEAD` range **0-10** from the shape of
   the diff, ranked against your repo's own recent commits. PR mode returns directives
-  rather than vibes: `will_break`, `missing_cochanges`, `missing_tests`, `tests_to_run`.
+  rather than vibes: `may_break`, `missing_cochanges`, `missing_tests`, `tests_to_run`.
   One command: `repowise risk main..HEAD`. ([reference →](docs/layers/CHANGE_RISK.md))
 - **Bug history.** Which files and symbols actually get bug-fixed, and how recently.
   Doc, test and config commits are filtered out so the count means what it says, and a

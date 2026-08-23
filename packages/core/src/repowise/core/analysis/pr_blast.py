@@ -208,14 +208,14 @@ class PRBlastRadiusAnalyzer:
         "this file imports that one" and walked through it, then walked
         through *that* file's co-change partners at the next depth. On this
         repository a PR touching ``core/__init__.py`` reached five co-change
-        rows and two real importers at depth 1, and since ``will_break`` is
+        rows and two real importers at depth 1, and since ``may_break`` is
         capped at five and sorted by depth, the noise crowded out the answer.
         Those partners are already reported, correctly labelled, by
         :meth:`_cochange_warnings`.
         """
         visited: dict[str, int] = {}  # path -> depth at which it was first reached
         # Sorted, not just deduped. This walk's output is cut twice downstream
-        # — ``will_break`` takes 15 of it, and that is the first field
+        # — ``may_break`` takes 15 of it, and that is the first field
         # ``get_risk``'s PR directive tells an agent to read — so the order
         # inside a depth band decides what an agent is shown. A hash-ordered
         # seed plus an unordered ``SELECT DISTINCT`` made that order vary

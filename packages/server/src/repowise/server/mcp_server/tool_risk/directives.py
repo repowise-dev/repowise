@@ -44,12 +44,12 @@ _BC_CONSUMER_LIMIT = 5
 _CF_VIOLATION_LIMIT = 5
 _CF_CYCLE_LIMIT = 3
 
-#: Caps on the will-break split. Production impact leads the directive, so it
+#: Caps on the may-break split. Production impact leads the directive, so it
 #: keeps the larger budget; test fallout is a secondary signal capped tighter.
-_WILL_BREAK_LIMIT = 5
-_WILL_BREAK_TESTS_LIMIT = 3
+_MAY_BREAK_LIMIT = 5
+_MAY_BREAK_TESTS_LIMIT = 3
 #: Cap on the coverage-backed run-list. A validate-this-change set can be longer
-#: than the will-break lists (it is what you actually run), but stays glanceable;
+#: than the may-break lists (it is what you actually run), but stays glanceable;
 #: the overflow and the full per-file map live in pr_blast_radius.guarding_tests.
 _TESTS_TO_RUN_LIMIT = 10
 
@@ -166,9 +166,10 @@ def _cross_repo_directive(repo_alias: str) -> tuple[list[dict[str, Any]], list[d
     """Cross-repo half of the PR directive: downstream services in other repos.
 
     Resolves the changed repo to its system-graph nodes and ranks reachable
-    services in OTHER repos by impact, splitting structural (``will_break``) from
-    behavioral co-change (``missing_cochanges``). Returns two empty lists when
-    not in workspace mode or no system graph is available. Never raises.
+    services in OTHER repos by impact, splitting structural
+    (``will_break_consumers``) from behavioral co-change (``missing_cochanges``).
+    Returns two empty lists when not in workspace mode or no system graph is
+    available. Never raises.
     """
     will_break_consumers: list[dict[str, Any]] = []
     missing_cross_repo_cochanges: list[dict[str, Any]] = []
@@ -338,8 +339,12 @@ def _build_pr_directive(
         [p for p in (_as_path(e) for e in trimmed_blast.get("transitive_affected", [])) if p],
         exclude_spec,
     )
-    will_break = [p for p in affected if p not in test_paths][:_WILL_BREAK_LIMIT]
-    will_break_tests = [p for p in affected if p in test_paths][:_WILL_BREAK_TESTS_LIMIT]
+    # "may", not "will": this is a reverse-import reachability walk over a file
+    # list, and get_risk is never given a diff, so nothing here knows whether the
+    # symbol an importer uses actually changed. The diff-backed fields below keep
+    # "will".
+    may_break = [p for p in affected if p not in test_paths][:_MAY_BREAK_LIMIT]
+    may_break_tests = [p for p in affected if p in test_paths][:_MAY_BREAK_TESTS_LIMIT]
 
     missing_cochanges = filter_path_list(
         [p for p in (_as_path(e) for e in trimmed_blast.get("cochange_warnings", [])) if p],
@@ -454,8 +459,8 @@ def _build_pr_directive(
         )
 
     response["directive"] = {
-        "will_break": will_break,
-        "will_break_tests": will_break_tests,
+        "may_break": may_break,
+        "may_break_tests": may_break_tests,
         "missing_cochanges": missing_cochanges,
         "missing_tests": missing_tests,
         "tests_to_run": tests_to_run,
@@ -469,8 +474,8 @@ def _build_pr_directive(
         "governance_risk": governance_risk,
         "summary": (
             f"PR touches {len(changed_files)} file(s). "
-            f"~{len(will_break)} downstream file(s) likely affected, "
-            f"{len(will_break_tests)} test(s) likely broken, "
+            f"~{len(may_break)} downstream file(s) may be affected, "
+            f"{len(may_break_tests)} test(s) may break, "
             f"{len(missing_cochanges)} historical co-changer(s) missing, "
             f"{len(missing_tests)} file(s) without tests."
             f"{tests_to_run_suffix}{gov_suffix}{xr_suffix}{bc_suffix}{cf_suffix}"
