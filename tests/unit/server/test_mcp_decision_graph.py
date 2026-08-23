@@ -594,7 +594,7 @@ async def test_get_risk_no_changed_files_no_governance_risk(setup_mcp_decisions)
     """Without changed_files (non-PR mode), directive is absent and no governance_risk."""
     from repowise.server.mcp_server import get_risk
 
-    result = await get_risk(["src/auth/service.py"])
+    result = await get_risk(["src/auth/service.py", "src/db/models.py"])
     # No directive in standard mode
     assert "directive" not in result
     assert "global_hotspots" in result

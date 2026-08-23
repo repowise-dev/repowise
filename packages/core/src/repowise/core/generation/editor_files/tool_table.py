@@ -86,10 +86,10 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
         "rationale comments. Call before a refactor or a pattern divergence.",
     ),
     "get_risk": (
-        "get_risk(targets, changed_files?)",
-        "What history says about touching these files. PR mode (`changed_files`) "
-        "leads with a `directive`: read `will_break` / `missing_cochanges` / "
-        "`missing_tests` / `tests_to_run` first.",
+        "get_risk(targets, changed_files?, include?)",
+        "Call before editing: what history says about touching these files. "
+        "PR mode (`changed_files`) leads with a `directive`: read `will_break` "
+        "/ `missing_cochanges` / `missing_tests` / `tests_to_run`.",
     ),
     "get_change_risk": (
         "get_change_risk(revspec, extensions?, exclude_patterns?)",

@@ -40,6 +40,45 @@ def rank_tests_by_reach(by_file: Mapping[str, Iterable[str]]) -> list[str]:
     return sorted(reach, key=lambda t: (-reach[t], t))
 
 
+#: Prefixes that name a module for its slot in a dispatch table rather than for
+#: its subject, so its tests are named after the subject alone: ``tool_dead_code``
+#: is tested by ``test_dead_code``, not ``test_tool_dead_code``.
+_ROLE_PREFIXES = ("tool_", "get_")
+
+#: Below this, a stripped stem is too generic to be evidence of anything.
+_MIN_STEM_LENGTH = 3
+
+
+def test_name_stems(base: str) -> list[tuple[str, bool]]:
+    """Stems a test file for ``base`` could be named after, each with whether the
+    match has to be exact.
+
+    The full stem keeps the historical substring match, which absorbs suffixes
+    like ``test_parser_edge_cases``. A stripped stem is shorter and so collides
+    far more easily (``tool_repos`` -> ``repos``, a prefix of ``repository``),
+    and clearing a gap on a coincidence is the one error that costs a reader.
+    """
+    stems = [(base, False)]
+    for prefix in _ROLE_PREFIXES:
+        stripped = base[len(prefix) :]
+        if base.startswith(prefix) and len(stripped) >= _MIN_STEM_LENGTH:
+            stems.append((stripped, True))
+    return stems
+
+
+def _names_a_test_for(stem: str, ext: str, test_path: str, exact: bool) -> bool:
+    """Whether ``test_path`` follows a naming convention for ``stem``."""
+    if exact:
+        named = os.path.splitext(os.path.basename(test_path))[0]
+        return named in (f"test_{stem}", f"{stem}_test", f"{stem}.spec")
+    return (
+        f"test_{stem}" in test_path
+        or f"{stem}_test" in test_path
+        or f"{stem}.spec.{ext}" in test_path
+        or f"{stem}.spec." in test_path
+    )
+
+
 class PRBlastRadiusAnalyzer:
     """Compute blast radius for a proposed PR given its changed files."""
 
@@ -294,7 +333,8 @@ class PRBlastRadiusAnalyzer:
            Used only as this floor; nothing downstream reads a coverage figure
            off it.
         3. Otherwise the filename pattern (test_<name>, <name>_test,
-           <name>.spec.*) - an honest "unknown", never asserted as untested.
+           <name>.spec.*), tried against every stem in ``test_name_stems`` - an
+           honest "unknown", never asserted as untested.
 
         Test files themselves are excluded; they don't need their own tests.
         """
@@ -346,12 +386,8 @@ class PRBlastRadiusAnalyzer:
             base = os.path.splitext(os.path.basename(path))[0]
             ext = os.path.splitext(path)[1].lstrip(".")
             has_test = any(
-                (
-                    f"test_{base}" in tp
-                    or f"{base}_test" in tp
-                    or f"{base}.spec.{ext}" in tp
-                    or f"{base}.spec." in tp
-                )
+                _names_a_test_for(stem, ext, tp, exact)
+                for stem, exact in test_name_stems(base)
                 for tp in test_paths
             )
             if not has_test:

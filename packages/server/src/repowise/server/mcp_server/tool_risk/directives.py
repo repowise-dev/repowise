@@ -53,6 +53,13 @@ _WILL_BREAK_TESTS_LIMIT = 3
 #: the overflow and the full per-file map live in pr_blast_radius.guarding_tests.
 _TESTS_TO_RUN_LIMIT = 10
 
+#: get_risk and get_change_risk both render 0-10 and measure unrelated things.
+#: Whichever an agent reads first, this says the other is not the same scale.
+_OVERALL_SCORE_MEASURES = (
+    "where the change lands: centrality of the changed files and how far it "
+    "reaches; not comparable to get_change_risk.score, which measures diff shape"
+)
+
 
 def _breaking_change_directive(repo_alias: str) -> tuple[list[dict[str, Any]], int]:
     """Breaking-change half of the PR directive: incompatible provider changes.
@@ -235,6 +242,8 @@ def _trim_blast_lists(
                     f"pr_blast_radius.{key} beyond cap={cap} ({len(value) - cap} dropped)",
                     value[cap:],
                 )
+    if trimmed_blast.get("overall_risk_score") is not None:
+        trimmed_blast["overall_risk_score_measures"] = _OVERALL_SCORE_MEASURES
     return trimmed_blast
 
 
@@ -374,7 +383,8 @@ def _build_pr_directive(
     if tests_to_run_basis == "inferred":
         all_tests_to_run = filter_path_list(all_tests_to_run, exclude_spec)
     tests_to_run = all_tests_to_run[:_TESTS_TO_RUN_LIMIT]
-    if len(all_tests_to_run) > _TESTS_TO_RUN_LIMIT:
+    capped = len(all_tests_to_run) > _TESTS_TO_RUN_LIMIT
+    if capped:
         collector.add(
             f"directive.tests_to_run beyond cap={_TESTS_TO_RUN_LIMIT} "
             f"({len(all_tests_to_run) - _TESTS_TO_RUN_LIMIT} dropped)",
@@ -390,6 +400,14 @@ def _build_pr_directive(
         tests_to_run_suffix = (
             f" {len(all_tests_to_run)} test file(s) reach the change per the import graph "
             f"(inferred, not coverage-proven) - run these first."
+        )
+    if capped:
+        # The cap is fine; nothing told the reader the full list is in the same
+        # response. guarding_tests is uncapped and carries the per-file map.
+        tests_to_run_suffix += (
+            f" Showing {_TESTS_TO_RUN_LIMIT} of {len(all_tests_to_run)}; "
+            f"all of them, and which file each guards, are in "
+            f"pr_blast_radius.guarding_tests."
         )
 
     gov_count = len(governance_risk)
@@ -449,7 +467,6 @@ def _build_pr_directive(
         "conformance_violations": conformance_violations,
         "dependency_cycles": dependency_cycles,
         "governance_risk": governance_risk,
-        "overall_risk_score": trimmed_blast.get("overall_risk_score"),
         "summary": (
             f"PR touches {len(changed_files)} file(s). "
             f"~{len(will_break)} downstream file(s) likely affected, "

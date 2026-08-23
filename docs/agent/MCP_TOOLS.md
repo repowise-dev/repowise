@@ -444,11 +444,14 @@ Modification risk assessment for files or a set of changed files.
 |-----------|------|----------|-------------|
 | `targets` | list[string] | No | File paths to assess |
 | `changed_files` | list[string] | No | Files in a PR/changeset for blast radius analysis; passing this switches the response into PR-directive mode |
+| `include` | list[string] | No | Opt-in blocks: `graph` (`impact_surface`, `direct_risks`), `churn` (`change_magnitude`, `risk_type`, `change_pattern`) |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 
 **Returns:** Per-file `hotspot_score` (0-1 churn percentile), `health_score` (0-10), hotspot status, dependent count, co-change partners (each with a recency-decayed `weight`, not an integer count), blast radius, recommended reviewers, test gap analysis, security signals. In workspace mode, enriched with cross-repo co-change partners and contract dependencies.
 
-> **Scales.** Ratios derived from ownership or percentile columns are 0-1 (`hotspot_score`, `owner_pct`, `recent_owner_pct`); coverage and gap fields are 0-100 (`coverage_pct`, `branch_coverage_pct`, `share_of_repo_gap_pct`, `change_entropy_pct`, `churn_percentile`). The `_pct` suffix alone does not tell you which — check this table. Every emitted float is rounded to 4 significant digits.
+> **Opt-in blocks.** `impact_surface` and `direct_risks` are pagerank floats an agent cannot rank; `change_magnitude`, `risk_type` and `change_pattern` restate numbers printed beside them. All five are computed regardless and feed `risk_summary`; `include` only decides whether they ship. `global_hotspots` accompanies a multi-target call only, being ambient orientation that a single named file does not need; it ranks by fix history the same way `defect_profile` does.
+
+> **Scales.** `overall_risk_score` (in `pr_blast_radius`, with an `overall_risk_score_measures` note beside it) reads where the change lands. It is not comparable to `get_change_risk.score`, which is also 0-10 and reads the shape of the diff. Ratios derived from ownership or percentile columns are 0-1 (`hotspot_score`, `owner_pct`, `recent_owner_pct`); coverage and gap fields are 0-100 (`coverage_pct`, `branch_coverage_pct`, `share_of_repo_gap_pct`, `change_entropy_pct`, `churn_percentile`). The `_pct` suffix alone does not tell you which — check this table. Every emitted float is rounded to 4 significant digits.
 
 When `changed_files` is passed, the response leads with a `directive` block. Its core lists are the local blast radius: `will_break` (production files that depend on the diff and are likely to break), `will_break_tests` (test files impacted the same way, kept separate so a burst of broken tests doesn't crowd production impact out of the capped list), `missing_cochanges` (historical co-changers absent from the diff), `missing_tests` (changed files without test coverage), and `tests_to_run` (the positive complement of `missing_tests`: the tests that exercise the changed files, as pytest-runnable arguments). Read `tests_to_run_basis` beside it, because the ids alone do not say where they came from: `measured` means the per-test coverage map proves those tests execute the changed files; `inferred` means the import graph shows those test *files* reaching the change, which is a candidate list rather than proof and needs no coverage ingest; `none` means neither source knows of a test, which is unknown and not "untested". The two are never mixed in one list. In workspace mode that directive also carries the cross-repo fallout of the changed repo:
 
@@ -465,6 +468,7 @@ When `changed_files` is passed, the response leads with a `directive` block. Its
 ```
 get_risk(targets=["src/auth/middleware.ts"])
 get_risk(changed_files=["src/api/routes.ts", "src/middleware/cors.ts"])
+get_risk(targets=["src/auth/middleware.ts"], include=["graph", "churn"])
 ```
 
 ---

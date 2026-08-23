@@ -55,7 +55,7 @@ async def test_global_hotspots_surfaces_a_bug_magnet_that_is_not_a_churn_hotspot
 
     await _add_bug_magnet(session, repo_id, "src/quiet/breaks_a_lot.py", fixes=6, days=10)
 
-    result = await get_risk(["src/auth/service.py"])
+    result = await get_risk(["src/auth/service.py", "src/db/models.py"])
     listed = {h["file_path"]: h for h in result["global_hotspots"]}
 
     assert "src/quiet/breaks_a_lot.py" in listed
@@ -73,7 +73,7 @@ async def test_global_hotspots_ranks_fix_history_ahead_of_churn(setup_mcp, sessi
 
     # models.py is in the fixture with no fix history; target something else so
     # both candidates are eligible for the list.
-    result = await get_risk(["src/auth/middleware.py"])
+    result = await get_risk(["src/auth/middleware.py", "src/db/models.py"])
     paths = [h["file_path"] for h in result["global_hotspots"]]
 
     assert paths, "expected an attention list"
@@ -85,7 +85,7 @@ async def test_global_hotspots_stays_silent_on_files_without_fix_history(setup_m
     """A repo with no fix data pays nothing: no keys, not zeroed keys."""
     from repowise.server.mcp_server import get_risk
 
-    result = await get_risk(["src/auth/middleware.py"])
+    result = await get_risk(["src/auth/middleware.py", "src/db/models.py"])
     for entry in result["global_hotspots"]:
         assert "fix_count" not in entry
         assert "bug_magnet" not in entry

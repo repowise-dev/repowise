@@ -57,7 +57,9 @@ _PRIORITY_LEAD = {
 #: ``_base_dep_count`` is bookkeeping the tool uses to rebuild ``risk_summary``
 #: after enrichment. ``impact_surface`` is the transitive dependent set, the one
 #: genuinely unbounded block, and its own summary counts survive in
-#: ``risk_summary`` and ``dependents_count``.
+#: ``risk_summary`` and ``dependents_count``. It is opt-in on the tool now and
+#: this command does not ask for it; the entry stays so that a caller passing a
+#: hand-built payload gets the same projection.
 _DROPPED_TARGET_KEYS = ("_base_dep_count", "impact_surface")
 
 
@@ -117,6 +119,8 @@ def _target_risk(
         return get_risk(
             targets=list(targets),
             changed_files=list(changed_files) or None,
+            # _render_target_risk prints risk_type and change_magnitude.
+            include=["churn"],
         )
 
     payload = _ta.run(repo, _factory, "get_risk")
