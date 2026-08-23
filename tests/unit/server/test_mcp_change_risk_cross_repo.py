@@ -295,3 +295,27 @@ def test_breaking_list_is_capped_and_says_by_how_much(tmp_path: Path):
     assert len(block["breaking_changes"]) == _CROSS_REPO_BREAKING_LIMIT
     assert block["breaking_changes_truncated"] == 2
     assert f"{over} of the changed contracts broke them" in block["summary"]
+
+
+def test_cross_repo_participates_in_the_response_ceiling(tmp_path: Path):
+    """A payload block outside the shed order can never be shed (#1876)."""
+    from repowise.server.mcp_server._budget import OmissionCollector, fit_to_budget
+    from repowise.server.mcp_server.tool_change_risk import _SHED_ORDER
+
+    assert "cross_repo" in _SHED_ORDER
+    # Shed after the run-list, before fix_history's numbers.
+    assert _SHED_ORDER.index("impacted_tests") < _SHED_ORDER.index("cross_repo")
+    assert _SHED_ORDER.index("cross_repo") < _SHED_ORDER.index("fix_history.files")
+
+    payload = {
+        "score": 7.0,
+        "fix_history": {"density": 1.0, "files": ["f.py"]},
+        "impacted_tests": {"tests_to_run": ["t.py"]},
+        "cross_repo": {"consumers": [{"repo": "frontend", "pad": "x" * 400}] * 200},
+    }
+    collector = OmissionCollector("get_change_risk", repo_root=tmp_path)
+    fit_to_budget(payload, _SHED_ORDER, collector)
+    assert "cross_repo" not in payload
+    assert payload["truncated"] is True
+    # The score and its drivers are the answer and survive.
+    assert payload["fix_history"]["density"] == 1.0
