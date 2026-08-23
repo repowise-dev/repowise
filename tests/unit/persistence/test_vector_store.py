@@ -479,3 +479,46 @@ async def test_lancedb_embed_batch_isolates_failed_chunk(tmp_path):
         assert len(ids) == EMBED_BATCH_MAX_ITEMS * 2
     finally:
         await store.close()
+
+@pytest.mark.asyncio
+async def test_lancedb_list_page_ids_handles_corrupt_store(tmp_path, mock_embedder, caplog):
+    """A damaged LanceDB table must not crash resume generation."""
+    pytest.importorskip("lancedb")
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+
+    db_path = tmp_path / "lance"
+
+    store = LanceDBVectorStore(str(db_path), mock_embedder)
+
+    try:
+        await store.embed_and_upsert(
+            "p1",
+            "test content",
+            {"target_path": "a.py"},
+        )
+
+        # Healthy store still returns its page IDs.
+        assert await store.list_page_ids() == {"p1"}
+
+        # Simulate a corrupted LanceDB read.
+        class BrokenQuery:
+            def select(self, columns):
+                return self
+
+            async def to_list(self):
+                raise RuntimeError("simulated LanceDB corruption")
+
+        class BrokenTable:
+            def query(self):
+                return BrokenQuery()
+
+        store._table = BrokenTable()
+
+        # Corruption must degrade safely instead of crashing.
+        assert await store.list_page_ids() == set()
+
+        assert "vector store may be damaged" in caplog.text.lower()
+        assert "repowise reindex" in caplog.text.lower()
+
+    finally:
+        await store.close()
