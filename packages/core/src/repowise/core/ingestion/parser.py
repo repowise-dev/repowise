@@ -1249,6 +1249,11 @@ class ASTParser:
                     line=line,
                     argument_count=arg_count,
                     receiver_call=receiver_call,
+                    edge_type=(
+                        "references"
+                        if site_node.type in config.reference_call_node_types
+                        else "calls"
+                    ),
                 )
             )
 

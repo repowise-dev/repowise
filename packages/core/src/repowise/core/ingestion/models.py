@@ -261,6 +261,14 @@ class CallReceiver:
     argument_count: int | None
 
 
+#: What a resolved call site becomes in the graph. A syntactic form that names
+#: a symbol without invoking it still runs the call tiers -- deciding which
+#: symbol a name means is the same problem -- but must not reach the graph as
+#: ``calls``. Both members are ``EdgeType`` members; this is the subset a call
+#: site may produce.
+CallSiteEdgeType = Literal["calls", "references"]
+
+
 @dataclass
 class CallSite:
     """A function or method call extracted from a source file.
@@ -274,6 +282,7 @@ class CallSite:
     line: int  # 1-indexed line number of the call
     argument_count: int | None  # number of arguments (None if unknown)
     receiver_call: CallReceiver | None = None  # set only for a captured chained call
+    edge_type: CallSiteEdgeType = "calls"  # see ``CallSiteEdgeType``
 
 
 HeritageKind = Literal["extends", "implements", "trait_impl", "mixin"]

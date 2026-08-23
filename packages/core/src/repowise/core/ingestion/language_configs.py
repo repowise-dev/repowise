@@ -63,6 +63,12 @@ class LanguageConfig:
     # what tells them apart downstream (see ``Symbol.is_declaration``).
     declaration_node_types: frozenset[str] = field(default_factory=frozenset)
 
+    # Call-site node types that name a symbol without invoking it. Rust's
+    # ``foo!(..)`` expands a ``macro_rules! foo``; which symbol the name means
+    # is the same question a call asks, so these still run the call tiers, but
+    # the edge they produce is ``references`` rather than ``calls``.
+    reference_call_node_types: frozenset[str] = field(default_factory=frozenset)
+
 
 LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     "python": LanguageConfig(
@@ -152,6 +158,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=rust_visibility,
         parent_extraction="impl",
         parent_class_types=frozenset({"impl_item", "mod_item"}),
+        reference_call_node_types=frozenset({"macro_invocation"}),
     ),
     "java": LanguageConfig(
         symbol_node_types={

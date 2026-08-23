@@ -46,6 +46,7 @@ from .languages.receiver_types import (
 )
 from .models import (
     CallSite,
+    CallSiteEdgeType,
     NamedBinding,
     ParsedFile,
     ResolutionOrigin,
@@ -185,6 +186,7 @@ class ResolvedCall:
     confidence: float  # 0.0–1.0
     line: int  # call site line number (for diagnostics)
     origin: ResolutionOrigin  # which strategy below produced it
+    edge_type: CallSiteEdgeType = "calls"  # carried through from the CallSite
 
 
 class CallResolver:
@@ -884,7 +886,14 @@ class CallResolver:
 
             resolved = self._resolve_one(file_path, call)
             if resolved:
-                results.append(self._redirect_to_definition(resolved))
+                resolved = self._redirect_to_definition(resolved)
+                # Stamped once here rather than in each tier: what a site
+                # produces is a property of the syntax, not of the strategy
+                # that answered it. No tier sets it, so this compares against
+                # the default rather than against a tier's opinion.
+                if call.edge_type != "calls":
+                    resolved = replace(resolved, edge_type=call.edge_type)
+                results.append(resolved)
 
         return results
 
