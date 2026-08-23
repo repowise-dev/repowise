@@ -187,16 +187,27 @@ well as a float. `get_health` reports the same thing under its own older name,
 
 ## `get_overview`
 
-Architecture summary, module map, entry points, git health, and community summary.
+Architecture summary, module map, and entry points.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` |
-| `include` | list[string] | No | `"content"` returns the full overview essay in `content_md` instead of the compact summary section |
+| `include` | list[string] | No | Opt-in blocks, any combination of `"content"`, `"outline"`, `"tour"`, `"decisions"`, `"graph"`, `"ownership"` (see below) |
 
-**Returns:** Architecture description, key modules with purpose and owner, entry points, tech stack, hotspot files, knowledge silos, community summary (top communities by size with labels and cohesion scores). `content_md` is compact by default (summary + tech stack + layers); pass `include=["content"]` for the full essay.
+**Returns (default):** `title`, `content_md` (the overview essay's summary section), `key_modules` (name, path, outline section), `entry_points`, `architecture` (layer names, file counts, layer order), `code_health`, `git_health`, `_meta`, and in workspace mode a `workspace` footer. The response's `more` field names the opt-in blocks.
+
+**Opt-in blocks** — omitted unless named in `include`, and not computed at all when they are not:
+
+| `include` key | Adds |
+|---|---|
+| `"content"` | the full overview essay in `content_md` |
+| `"outline"` | `outline` — the stored wiki page tree, two rungs deep. `key_modules[].section` indexes into it |
+| `"tour"` | `guided_tour` and `reading_order` — onboarding walks |
+| `"decisions"` | `key_decisions`. `get_why` is the richer route |
+| `"graph"` | `community_summary` — code-community clusters |
+| `"ownership"` | `knowledge_map` — top owners and knowledge silos |
 
 **When to use:** First call on any unfamiliar codebase. Gives the agent a mental map before diving into specifics. Skip on later calls in the same session; it doesn't change mid-session.
 
@@ -204,8 +215,14 @@ Architecture summary, module map, entry points, git health, and community summar
 
 ```
 get_overview()
-get_overview(include=["content"])
+get_overview(include=["outline", "content"])
 ```
+
+> **Output-schema change.** `guided_tour`, `reading_order`, `key_decisions`,
+> `community_summary` and `knowledge_map` moved behind `include`; `outline` did
+> too (`include=["outline"]` previously only deepened an always-present tree).
+> `key_modules` no longer carries `description`, `page_id` or `parent_page_id`,
+> and `architecture.layers[].description` is gone.
 
 ---
 

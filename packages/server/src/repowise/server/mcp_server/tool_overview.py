@@ -62,9 +62,6 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
-# Leading markdown-header boilerplate on module page content ("## Overview").
-_MD_HEADER_RE = re.compile(r"^\s*#{1,6}\s+.*$", re.MULTILINE)
-
 # Orientation, not a directory listing — the top few modules are enough to
 # point a fresh agent at the interesting subsystems. The rest are persisted
 # to the omission store, not dropped.
@@ -85,24 +82,6 @@ def _compact_overview_content(content: str) -> str:
     if not text:
         return text
     return _H2_SPLIT_RE.split(text, maxsplit=1)[0].strip()
-
-
-def _truncate_at_word(text: str, limit: int) -> str:
-    """Truncate at a word boundary with an ellipsis — never mid-word.
-
-    Hard slices ("request/response ha") read as rendering bugs to the
-    caller; same budget, honest cut.
-    """
-    text = text.strip()
-    if len(text) <= limit:
-        return text
-    return text[:limit].rsplit(" ", 1)[0].rstrip(".,;:") + "…"
-
-
-def _module_description(content: str, limit: int = 200) -> str:
-    """First prose of a module page, minus the "## Overview" boilerplate."""
-    prose = _MD_HEADER_RE.sub("", content or "").strip()
-    return _truncate_at_word(prose, limit)
 
 
 # ---------------------------------------------------------------------------
@@ -524,10 +503,10 @@ async def _build_architecture(session: Any, repository: Any) -> dict[str, Any]:
     if not kg_layers:
         return {}
     return {
+        # Names and sizes only: the layer prose restates the overview essay.
         "layers": [
             {
                 "name": layer.name,
-                "description": _truncate_at_word(layer.description or "", 120),
                 "file_count": len(json.loads(layer.node_ids_json) if layer.node_ids_json else []),
             }
             for layer in kg_layers
@@ -858,16 +837,19 @@ def _dedupe_tour_steps(tour: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _build_guided_tour(
-    overview_page: Page, result: dict[str, Any], sections: dict[str, str | None]
+    overview_page: Page,
+    result: dict[str, Any],
+    sections: dict[str, str | None],
+    want_tour: bool,
 ) -> None:
-    """Attach the topology-driven guided tour + layer order from overview page metadata."""
+    """Attach the layer order always; the tour steps only behind include=["tour"]."""
     from repowise.core.generation.models import compute_page_id
 
     try:
         ov_meta = json.loads(overview_page.metadata_json or "{}")
     except (json.JSONDecodeError, TypeError):
         ov_meta = {}
-    tour = _dedupe_tour_steps(ov_meta.get("guided_tour") or [])
+    tour = _dedupe_tour_steps(ov_meta.get("guided_tour") or []) if want_tour else []
     if tour:
         steps = []
         for s in tour:
@@ -901,16 +883,15 @@ def _build_guided_tour(
 async def get_overview(repo: str | None = None, include: list[str] | None = None) -> dict:
     """Architecture map for an unfamiliar repo — first call when you don't know your way around.
 
-    Returns the synthesised overview plus the wiki outline (the stored page
-    tree, top rung), key modules, entry points, repo-wide git health (hotspot
-    count, churn trend, bus-factor distribution), the knowledge map (top
-    owners, knowledge silos), and the community summary.
+    Returns the synthesised overview summary, key modules, entry points,
+    architecture layers, code health, and repo-wide git health (hotspot count,
+    churn trend, bus-factor distribution).
     Skip this on subsequent calls — once you have the map, jump straight to
     ``get_context`` / ``get_answer``.
 
     Compact by default: ``content_md`` carries only the overview essay's summary
-    section — the rest of the essay repeats ``key_modules`` / ``entry_points`` /
-    ``architecture.layers``. Pass ``include=["content"]`` for the full essay.
+    section, and the outline, onboarding, ownership and graph blocks ship only
+    on request. The response's ``more`` field names them.
 
     In workspace mode:
     - Omit ``repo`` for the default repo's overview plus a workspace footer.
@@ -920,9 +901,13 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
 
     Args:
         repo: Repository alias, path, or ID. Use ``"all"`` for workspace overview.
-        include: Opt-in extras. ``"content"`` returns the full overview essay in
-            ``content_md`` instead of the compact summary section. ``"outline"``
-            expands the page tree one rung deeper (modules under their layer).
+        include: Opt-in extras, any combination of:
+            ``"content"`` — the full overview essay instead of its summary.
+            ``"outline"`` — the stored wiki page tree, two rungs deep.
+            ``"tour"`` — ``guided_tour`` + ``reading_order`` onboarding walks.
+            ``"decisions"`` — ``key_decisions``; ``get_why`` is richer.
+            ``"graph"`` — ``community_summary``, code-community clusters.
+            ``"ownership"`` — ``knowledge_map``: top owners, knowledge silos.
     """
     if repo == "all":
         return await _workspace_overview()
@@ -947,43 +932,63 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
         )
         all_git = filter_rows_by_attr(list(git_res.scalars().all()), "file_path", exclude_spec)
 
+        want = set(include or [])
+        want_full_content = "content" in want
+
         git_health = _build_git_health(all_git)
-        knowledge_map = _build_knowledge_map(all_git)
-        all_nodes = await _load_community_nodes(session, repository, exclude_spec, all_git)
-        community_summary = _build_community_summary(all_nodes)
         architecture = await _build_architecture(session, repository)
-        reading_order = await _build_reading_order(session, repository)
-        tree_rows = await _load_tree_rows(session, repository)
-        sections = {r.id: r.section_number for r in tree_rows}
-        outline = _build_outline(tree_rows, 2 if "outline" in set(include or []) else 1, collector)
         title = _resolve_title(overview_page, repository)
         code_health = await _build_code_health(session, repository)
-        key_decisions_section = await _build_key_decisions(session, repository, exclude_spec)
+
+        # Gated blocks: not built at all unless asked for.
+        knowledge_map = _build_knowledge_map(all_git) if "ownership" in want else {}
+        community_summary: list[dict[str, Any]] = []
+        if "graph" in want:
+            all_nodes = await _load_community_nodes(session, repository, exclude_spec, all_git)
+            community_summary = _build_community_summary(all_nodes)
+        reading_order = await _build_reading_order(session, repository) if "tour" in want else []
+        key_decisions_section = (
+            await _build_key_decisions(session, repository, exclude_spec)
+            if "decisions" in want
+            else []
+        )
+
+        # The tree backs the outline and the tour's section labels.
+        sections: dict[str, str | None] = {}
+        outline: dict[str, Any] = {}
+        if want & {"outline", "tour"}:
+            tree_rows = await _load_tree_rows(session, repository)
+            sections = {r.id: r.section_number for r in tree_rows}
+            if "outline" in want:
+                outline = _build_outline(tree_rows, 2, collector)
 
         full_content = overview_page.content if overview_page else "No overview generated yet."
-        want_full_content = "content" in set(include or [])
         content_md = full_content if want_full_content else _compact_overview_content(full_content)
 
         result = {
             "title": title,
             "content_md": content_md,
             "code_health": code_health,
+            # Names and paths only. get_context(path) carries the prose, and
+            # section indexes into include=["outline"].
             "key_modules": [
-                {
-                    "name": p.title,
-                    "path": p.target_path,
-                    "description": _module_description(p.content),
-                    "page_id": p.id,
-                    "section": p.section_number,
-                    "parent_page_id": p.parent_page_id,
-                }
+                {"name": p.title, "path": p.target_path, "section": p.section_number}
                 for p in module_pages
             ],
             "entry_points": _capped_entry_points(entry_point_ids, collector),
             "git_health": git_health,
-            "knowledge_map": knowledge_map,
-            "community_summary": community_summary,
+            "more": (
+                'get_overview(include=[...]) also serves: "outline" (the wiki '
+                'page tree), "tour" (guided_tour + reading_order), "decisions", '
+                '"graph" (code communities), "ownership" (top owners, silos), '
+                '"content" (the full essay).'
+            ),
         }
+
+        if knowledge_map:
+            result["knowledge_map"] = knowledge_map
+        if community_summary:
+            result["community_summary"] = community_summary
 
         if not want_full_content and content_md != full_content:
             result["content_hint"] = (
@@ -997,9 +1002,8 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
                 "The stored page tree — the same outline the web app and the "
                 "editor extension render. Every 'section' in this response "
                 "indexes into it, and 'descendants' is how much sits below an "
-                "entry. Top rung only by default; call "
-                'get_overview(include=["outline"]) for one level deeper, then '
-                "get_context on an entry's target_path to read it."
+                "entry. Two rungs deep; get_context on an entry's target_path "
+                "to read it."
             )
 
         if architecture:
@@ -1020,7 +1024,7 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
         # from the import graph (entry points first, then inward, infra last).
         # Persisted on the repo_overview page metadata at generation time.
         if overview_page:
-            _build_guided_tour(overview_page, result, sections)
+            _build_guided_tour(overview_page, result, sections, "tour" in want)
 
         # Append workspace context footer when in workspace mode
         ws_footer = _build_workspace_footer()
