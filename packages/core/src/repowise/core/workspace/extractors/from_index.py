@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING
 
 from .http.dialect import build_provider_contract
 from .http.mounts import compose_prefix, router_prefixes
-from .langs import JS_TS
+from .langs import JS_TS, PYTHON
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -97,7 +97,7 @@ INDEX_SUFFIXES = frozenset({".py"})
 # counting braces. Kept separate from INDEX_SUFFIXES because the two passes read
 # different things off the same rows: providers read the declaration above a
 # span, consumers read the span itself.
-CONSUMER_INDEX_SUFFIXES = frozenset(JS_TS)
+CONSUMER_INDEX_SUFFIXES = frozenset(JS_TS) | frozenset(PYTHON)
 
 
 def _decorator_head_and_arg(decorator: str) -> tuple[str, str | None]:

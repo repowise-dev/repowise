@@ -109,6 +109,9 @@ _SINK_CALL_NAMES_BY_SUFFIX: dict[str, frozenset[str]] = {
     ".js": frozenset({"fetch"}),
     ".jsx": frozenset({"fetch"}),
     ".mjs": frozenset({"fetch"}),
+    # ``urlopen(url)`` is stdlib and takes its URL as the first argument, so a
+    # receiverless call to it is an HTTP call outright.
+    ".py": frozenset({"urlopen"}),
 }
 
 
@@ -267,6 +270,76 @@ def symbol_body(lines: list[str], symbol: IndexedSymbol) -> str:
     head = decl[brace + 1 :] if brace >= 0 else ""
     rest = lines[first + 1 : end]
     return "\n".join([head, *rest]) if head else "\n".join(rest)
+
+
+# A construction of an HTTP client *instance*. The module qualifier is required
+# and is the whole safety of this: a bare ``Session(`` is SQLAlchemy far more
+# often than requests, and binding it would turn every ``session.get(Model, pk)``
+# into an endpoint call.
+_PY_CLIENT_CTOR = (
+    r"(?P<lib>httpx|requests|aiohttp)\s*\.\s*"
+    r"(?:AsyncClient|Client|ClientSession|Session)\s*\("
+)
+
+# ``client = httpx.AsyncClient(...)``, ``self._c: httpx.Client = httpx.Client()``.
+# ``(?!=)`` after the ``=`` keeps ``x == httpx.Client()`` out.
+_PY_CLIENT_ASSIGN_RE = re.compile(
+    r"^[ \t]*(?P<attr>self\s*\.\s*)?(?P<var>[A-Za-z_]\w*)\s*(?::[^=\n]+)?=\s*(?!=)"
+    r"(?:[^\n=]*?\bor\s+)?(?:await\s+)?" + _PY_CLIENT_CTOR,
+    re.MULTILINE,
+)
+
+# ``async with httpx.AsyncClient(...) as client:``
+_PY_CLIENT_WITH_RE = re.compile(
+    r"\bwith\s+(?:await\s+)?" + _PY_CLIENT_CTOR + r"[^\n]*?\bas\s+(?P<var>[A-Za-z_]\w*)"
+)
+
+
+def bound_clients(
+    content: str, suffix: str, symbols: Sequence[IndexedSymbol]
+) -> list[tuple[str, str, int, int]]:
+    """``(var, library, from_line, to_line)`` for each HTTP client instance bound.
+
+    Python's dominant client shape binds the client to a variable first
+    (``async with httpx.AsyncClient() as http``) and calls the endpoint through
+    it (``http.post(url)``). That receiver is neither absent nor ``self``, so
+    :func:`confirm_wrappers` cannot see the call at all — the sink *is* the call.
+
+    **The binding is scoped to the enclosing symbol, not to the file.** Measured
+    on ``backend/modal_app/content_engine_chain.py``: ``client`` is an
+    ``httpx.AsyncClient`` in one function and a Supabase client in another, so a
+    file-wide binding would let a database call be read as an endpoint call. A
+    binding written as an *attribute* (``self._client = httpx.Client()``) is
+    file-scoped instead, because an instance attribute assigned in ``__init__``
+    is by construction read from other methods.
+
+    Returns an empty list for a language with no entry, like the sink tables.
+    """
+    if suffix.lower() != ".py":
+        return []
+    spans = sorted(
+        ((s.start_line, s.end_line) for s in symbols if s.kind in _CALLABLE_KINDS),
+        key=lambda se: se[1] - se[0],
+    )
+    n_lines = content.count("\n") + 1
+
+    def scope(line: int, file_wide: bool) -> tuple[int, int]:
+        if file_wide:
+            return 1, n_lines
+        # Innermost first: spans are sorted by width, so the first hit is the
+        # tightest one, which is the scope a local binding actually has.
+        for start, end in spans:
+            if start <= line <= end:
+                return start, end
+        return 1, n_lines  # module level: the client really is file-wide
+
+    out: list[tuple[str, str, int, int]] = []
+    for regex in (_PY_CLIENT_ASSIGN_RE, _PY_CLIENT_WITH_RE):
+        for m in regex.finditer(content):
+            line = content.count("\n", 0, m.start()) + 1
+            start, end = scope(line, m.groupdict().get("attr") is not None)
+            out.append((m.group("var"), m.group("lib"), start, end))
+    return out
 
 
 def _callable_symbols(symbols: Sequence[IndexedSymbol]) -> dict[str, list[IndexedSymbol]]:

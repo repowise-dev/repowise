@@ -1,0 +1,118 @@
+"""Resolve a Python HTTP call's URL argument to text this package can normalize.
+
+Python spells a client call's URL two ways the whole-literal test in
+:mod:`.index_clients` cannot read: an f-string (``f"{base}/users"``), and a name
+bound to one earlier (``url = f"..."`` then ``client.post(url)``). Both are
+settled where they are written, so reading them is substitution rather than
+analysis, and no dataflow is claimed by doing it.
+
+**What folds and what is refused.** A name folds only when the file assigns it
+exactly once and that assignment is a single string literal on one line. A name
+assigned twice — or assigned anything else anywhere in the file — is left
+unresolved, and the call is then *counted* as unresolved rather than guessed.
+This is file scope, not lexical scope: a single static assignment means the same
+thing wherever it is read, and tracking scopes would only add cases a second
+assignment already vetoes.
+
+f-string interpolations come out in the ``${expr}`` form the rest of this
+package already speaks, so :func:`.paths.strip_leading_base_expr` strips a
+Python base placeholder and :func:`.paths.normalize_http_path` collapses a
+Python path parameter with no per-language branch in either.
+"""
+
+from __future__ import annotations
+
+import re
+
+# A whole-argument string literal, prefix included. ``.*`` is greedy against an
+# anchored end, so the quote-inside check below is what rejects a concatenation
+# (``"/a" + b``) that this would otherwise read as one long literal.
+_LITERAL_RE = re.compile(
+    r"^(?P<prefix>[A-Za-z]*)(?P<q>'''|\"\"\"|'|\")(?P<body>.*)(?P=q)$", re.DOTALL
+)
+
+_NAME_RE = re.compile(r"[A-Za-z_]\w*")
+
+# ``NAME = <expr>`` at any indentation, RHS to end of line. The whitespace
+# around ``=`` is required, and is what separates a statement from a keyword
+# argument written on its own line (``url=str(resp.url),``) — which otherwise
+# reads as a second assignment and retires the very name being folded. PEP 8
+# mandates the spacing either way, and misreading it costs a fold, never a
+# fabricated path.
+_ASSIGN_RE = re.compile(
+    r"^[ \t]*([A-Za-z_]\w*)(?:[ \t]*:[^=\n]+)?[ \t]+=[ \t]+(.*)$", re.MULTILINE
+)
+
+# One ``{expr}`` interpolation. ``{{`` / ``}}`` are escaped braces in an
+# f-string and are deliberately left alone.
+_INTERP_RE = re.compile(r"(?<!\{)\{([^{}]+)\}(?!\})")
+
+# A trailing method call on a base expression: ``settings.base.rstrip('/')``.
+# Dropped so :func:`.paths.base_token_identifier` reads the attribute that names
+# the service rather than ``rstrip``.
+_TRAILING_CALL_RE = re.compile(r"\.\s*\w+\s*\([^()]*\)\s*$")
+
+
+def _parse_literal(text: str) -> tuple[str, str] | None:
+    """``(lowercased prefix, body)`` when *text* is exactly one string literal."""
+    m = _LITERAL_RE.match(text.strip())
+    if m is None:
+        return None
+    body = m.group("body")
+    if m.group("q") in body:
+        return None  # the literal ended and something else followed it
+    return m.group("prefix").lower(), body
+
+
+def string_constants(content: str) -> dict[str, str]:
+    """Names this file assigns exactly once, to one string literal.
+
+    The value is the literal's raw text with its prefix, so an f-string keeps
+    its interpolations for :func:`resolve_url_argument` to fold. *content*
+    should already have its comments masked, or a trailing ``# note`` will make
+    an otherwise foldable assignment unreadable.
+    """
+    seen: dict[str, str | None] = {}
+    for m in _ASSIGN_RE.finditer(content):
+        name, rhs = m.group(1), m.group(2).rstrip()
+        # A second assignment retires the name whatever it assigns: the reader
+        # cannot tell which one reaches the call site.
+        seen[name] = None if name in seen or _parse_literal(rhs) is None else rhs.strip()
+    return {name: text for name, text in seen.items() if text is not None}
+
+
+def _template(body: str, constants: dict[str, str]) -> str:
+    """An f-string body as ``${expr}`` text, folding names bound to a plain string."""
+
+    def sub(m: re.Match[str]) -> str:
+        expr = m.group(1).strip()
+        const = constants.get(expr)
+        if const is not None:
+            inner = _parse_literal(const)
+            # Only a plain literal folds. An f-string constant carries its own
+            # interpolations, and resolving those here would be a second level
+            # of substitution for no case the corpus actually spells.
+            if inner is not None and "f" not in inner[0]:
+                return inner[1]
+        return "${" + _TRAILING_CALL_RE.sub("", expr) + "}"
+
+    return _INTERP_RE.sub(sub, body)
+
+
+def resolve_url_argument(arg: str, constants: dict[str, str]) -> str | None:
+    """The URL text of *arg*, or ``None`` when it cannot be resolved."""
+    text = arg.strip()
+    parsed = _parse_literal(text)
+    if parsed is None:
+        # A bare name. Its folded value is a literal by construction, so one
+        # step always reaches the text and no recursion is needed.
+        if _NAME_RE.fullmatch(text) is None:
+            return None
+        folded = constants.get(text)
+        parsed = _parse_literal(folded) if folded is not None else None
+        if parsed is None:
+            return None
+    prefix, body = parsed
+    if "b" in prefix:
+        return None  # bytes, not a URL this layer records
+    return _template(body, constants) if "f" in prefix else body

@@ -12,6 +12,15 @@ bulk of the missing recall: the frontend spells every call
 ``this.fetch<SnapshotResponse>(`/snapshots/${id}`)``, and the existing dialect's
 ``fetch\\s*\\(`` cannot match across the ``<SnapshotResponse>`` type argument.
 
+Python reaches its endpoints a second way, which no amount of wrapper
+confirmation can see: the call goes through a *variable* bound to a client
+instance (``async with httpx.AsyncClient() as http`` … ``http.post(url)``), so
+its receiver is neither absent nor ``self``. Those bindings come from
+:func:`.wrappers.bound_clients` and are matched here as sink calls in their own
+right. Measured on a FastAPI service that calls its frontend: 42 such calls
+against 3 with a literal ``httpx.``/``requests.`` receiver, which is the only
+shape the text dialect can match.
+
 Unresolved paths are counted, never guessed and never silently dropped — see
 :func:`extract_consumers`' ``unresolved`` return value.
 """
@@ -22,10 +31,13 @@ import re
 from typing import TYPE_CHECKING
 
 from ..base import line_at
+from ..langs import PYTHON
 from .dialect import build_consumer_contract
+from .python_urls import resolve_url_argument, string_constants
 from .wrappers import (
     DEFAULT_HOP_BUDGET,
     GENERIC_ARGS,
+    bound_clients,
     confirm_wrappers,
     mask_source,
     sink_call_names,
@@ -48,6 +60,20 @@ _CALL_RE = re.compile(
     + GENERIC_ARGS
     + r"\(",
 )
+
+# A method call through an instance receiver, optionally an attribute of
+# ``self``. Kept apart from ``_CALL_RE`` rather than folded into it: this shape
+# is only ever consulted against the client bindings :func:`bound_clients`
+# found, which are Python-only, and widening the shared pattern would change
+# what the JS/TS pass sees for every file in a repo.
+_CLIENT_CALL_RE = re.compile(
+    r"(?<![.\w])(?:self\s*\.\s*)?(?P<recv>[A-Za-z_]\w*)\s*\.\s*(?P<verb>\w+)\s*\(",
+)
+
+# Verbs an HTTP client instance exposes one-per-method. ``request`` is absent on
+# purpose: it takes the method as its *first* argument and the URL as its
+# second, so reading it with this rule would record the verb as the path.
+_HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "head", "options"})
 
 # A first argument concrete enough to be a URL: a path, a base placeholder, or
 # an absolute URL. Mirrors the concreteness test the regex dialect already
@@ -164,6 +190,30 @@ def _literal_url(arg: str) -> str | None:
     return inner if _CONCRETE_URL_RE.match(inner) else None
 
 
+def _first_arg_url(arg: str, is_python: bool, constants: dict[str, str]) -> str | None:
+    """The URL a call's first argument names, or ``None`` if it is not one.
+
+    Python goes through :mod:`.python_urls`, which additionally reads an
+    f-string and folds a name bound to a single string literal; both paths then
+    face the same concreteness test, so neither language can claim a path the
+    other would reject.
+    """
+    if not is_python:
+        return _literal_url(arg)
+    url = resolve_url_argument(arg, constants)
+    return url if url is not None and _CONCRETE_URL_RE.match(url) else None
+
+
+def _client_library(
+    clients: list[tuple[str, str, int, int]], receiver: str, line: int
+) -> str | None:
+    """The client library *receiver* is bound to at *line*, or ``None``."""
+    for var, lib, start, end in clients:
+        if var == receiver and start <= line <= end:
+            return lib
+    return None
+
+
 def _declaration_sites(symbols: Sequence[IndexedSymbol]) -> set[tuple[int, str]]:
     """``(line, name)`` for each callable's own declaration.
 
@@ -203,9 +253,12 @@ def extract_consumers(
 
     The second element counts call sites of a wrapper *known to take a URL path*
     — proven by another call site in the same file passing it a concrete literal
-    — whose own path argument could not be resolved statically. Those are real
-    endpoint calls this layer cannot name; reporting the number is what keeps
-    the recall figure honest rather than flattering.
+    — whose own path argument could not be resolved statically, plus every call
+    through a bound client instance that could not be resolved (there the
+    receiver's binding already proves the first argument is a URL, so no such
+    gate applies). Those are real endpoint calls this layer cannot name;
+    reporting the number is what keeps the recall figure honest rather than
+    flattering.
     """
     # No sink anywhere in the raw text means no wrapper can be confirmed and no
     # receiverless sink call can exist, so the two O(n) masking passes below
@@ -216,8 +269,6 @@ def extract_consumers(
 
     confirmed = confirm_wrappers(symbols, ctx.content, ctx.suffix, budget)
     sinks = sink_call_names(ctx.suffix)
-    if not confirmed and not sinks:
-        return [], 0
 
     # Comments are blanked (string bodies are not — the URL literal is what we
     # are here to read). This both stops a commented-out call becoming a
@@ -225,6 +276,14 @@ def extract_consumers(
     # argument scanner. Masking preserves offsets and length, so slices taken
     # against this text are the real argument text.
     content = mask_source(ctx.content, ctx.suffix)
+    # Read off the masked text so a client constructed inside a comment or a
+    # docstring example does not bind a name.
+    clients = bound_clients(content, ctx.suffix, symbols)
+    if not confirmed and not sinks and not clients:
+        return [], 0
+
+    is_python = ctx.suffix in PYTHON
+    constants = string_constants(content) if is_python else {}
     declarations = _declaration_sites(symbols)
 
     # Pass 1: every call site of a confirmed wrapper, split into resolved
@@ -265,7 +324,7 @@ def extract_consumers(
             parse_failures += 1
             continue
         first, rest = _split_first_arg(content[open_idx + 1 : close_idx])
-        url = _literal_url(first)
+        url = _first_arg_url(first, is_python, constants)
         if url is None:
             # The wrapper's own plumbing — ``fetch(path)`` inside the very
             # function that wraps it — is not a lost endpoint. Whatever flows
@@ -278,6 +337,34 @@ def extract_consumers(
         path_taking.add(name)
         opt = _METHOD_OPT_RE.search(rest)
         resolved.append((name, url, opt.group(1).upper() if opt else "GET", line))
+
+    # Pass 1b: calls through a variable bound to an HTTP client instance. No
+    # wrapper confirmation applies — the binding already proves the receiver is
+    # a client, and the verb names the method outright.
+    client_unresolved = 0
+    for m in _CLIENT_CALL_RE.finditer(content):
+        verb = m.group("verb")
+        if verb not in _HTTP_VERBS:
+            continue
+        line = line_at(content, m.start())
+        lib = _client_library(clients, m.group("recv"), line)
+        if lib is None:
+            continue
+        open_idx = m.end() - 1
+        close_idx = _match_paren(content, open_idx)
+        if close_idx < 0:
+            parse_failures += 1
+            continue
+        first, _ = _split_first_arg(content[open_idx + 1 : close_idx])
+        url = _first_arg_url(first, is_python, constants)
+        if url is None:
+            # Unconditional, unlike the wrapper tally above: a client instance's
+            # ``.post`` takes a URL by definition, so there is no ambiguity for
+            # a ``path_taking`` gate to resolve and every miss here is a real
+            # endpoint call this layer could not name.
+            client_unresolved += 1
+            continue
+        resolved.append((lib, url, verb.upper(), line))
 
     from ..from_index import EXTRACTION_LAYER_KEY, LAYER_INDEX
 
@@ -298,4 +385,4 @@ def extract_consumers(
     # API method, whose first argument is an id and never was a path — would be
     # reported as an unresolved endpoint, and the number would mean nothing.
     unresolved = sum(n for name, n in unresolved_by_callee.items() if name in path_taking)
-    return out, unresolved + parse_failures
+    return out, unresolved + parse_failures + client_unresolved

@@ -120,10 +120,11 @@ class HttpExtractor:
         route in a comment becoming a contract and an empty path being lost.
 
         *stats* is an optional out-dict of counters. ``http_consumer_unresolved``
-        counts calls to a *confirmed* HTTP wrapper whose path argument could not
-        be resolved statically — real endpoint calls that were located but
-        cannot be named. They are counted rather than dropped, so a recall
-        figure built from these contracts states its own denominator.
+        counts calls to a *confirmed* HTTP wrapper, or through a variable bound
+        to an HTTP client instance, whose path argument could not be resolved
+        statically — real endpoint calls that were located but cannot be named.
+        They are counted rather than dropped, so a recall figure built from
+        these contracts states its own denominator.
         """
         scanned = select_files(repo_path, self.source_extensions(), exclude, files)
         mounts = self._collect_mounts(scanned)
@@ -138,7 +139,10 @@ class HttpExtractor:
         contracts: list[Contract] = []
         for rel_path, suffix, content in scanned:
             ctx = ScanContext(repo_alias, rel_path, suffix, content, mounts, repo_index)
-            indexed = suffix in PYTHON or suffix in CONSUMER_INDEX_SUFFIXES
+            # Python sits in both sets now, so one test covers the provider
+            # pass (which reads the declarations above a span) and the consumer
+            # pass (which reads the span itself).
+            indexed = suffix in CONSUMER_INDEX_SUFFIXES
             # Only spans that can still describe this file's text supersede the
             # regex; a missing or overrun entry leaves the dialect in charge.
             symbols = (
