@@ -12,14 +12,14 @@ bulk of the missing recall: the frontend spells every call
 ``this.fetch<SnapshotResponse>(`/snapshots/${id}`)``, and the existing dialect's
 ``fetch\\s*\\(`` cannot match across the ``<SnapshotResponse>`` type argument.
 
-Python reaches its endpoints a second way, which no amount of wrapper
-confirmation can see: the call goes through a *variable* bound to a client
-instance (``async with httpx.AsyncClient() as http`` … ``http.post(url)``), so
-its receiver is neither absent nor ``self``. Those bindings come from
-:func:`.wrappers.bound_clients` and are matched here as sink calls in their own
-right. Measured on a FastAPI service that calls its frontend: 42 such calls
-against 3 with a literal ``httpx.``/``requests.`` receiver, which is the only
-shape the text dialect can match.
+Python reaches its endpoints a second way no wrapper confirmation can see: the
+call goes through a *variable* bound to a client instance
+(``async with httpx.AsyncClient() as http`` … ``http.post(url)``), so its
+receiver is neither absent nor ``self``. Those bindings come from
+:func:`.wrappers.bound_clients` and count as sink calls in their own right.
+Measured on a FastAPI service that calls its frontend: 42 such calls against 3
+with a literal ``httpx.``/``requests.`` receiver, the only shape the text
+dialect matches.
 
 Unresolved paths are counted, never guessed and never silently dropped — see
 :func:`extract_consumers`' ``unresolved`` return value.
@@ -61,18 +61,15 @@ _CALL_RE = re.compile(
     + r"\(",
 )
 
-# A method call through an instance receiver, optionally an attribute of
-# ``self``. Kept apart from ``_CALL_RE`` rather than folded into it: this shape
-# is only ever consulted against the client bindings :func:`bound_clients`
-# found, which are Python-only, and widening the shared pattern would change
-# what the JS/TS pass sees for every file in a repo.
+# A method call through an instance receiver. Kept apart from ``_CALL_RE``
+# rather than folded into it: widening that shared pattern would change what
+# the JS/TS pass sees in every file.
 _CLIENT_CALL_RE = re.compile(
     r"(?<![.\w])(?:self\s*\.\s*)?(?P<recv>[A-Za-z_]\w*)\s*\.\s*(?P<verb>\w+)\s*\(",
 )
 
-# Verbs an HTTP client instance exposes one-per-method. ``request`` is absent on
-# purpose: it takes the method as its *first* argument and the URL as its
-# second, so reading it with this rule would record the verb as the path.
+# ``request`` is absent on purpose: it takes the method as its first argument
+# and the URL as its second, so this rule would record the verb as the path.
 _HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "head", "options"})
 
 # A first argument concrete enough to be a URL: a path, a base placeholder, or
@@ -193,10 +190,8 @@ def _literal_url(arg: str) -> str | None:
 def _first_arg_url(arg: str, is_python: bool, constants: dict[str, str]) -> str | None:
     """The URL a call's first argument names, or ``None`` if it is not one.
 
-    Python goes through :mod:`.python_urls`, which additionally reads an
-    f-string and folds a name bound to a single string literal; both paths then
-    face the same concreteness test, so neither language can claim a path the
-    other would reject.
+    Python additionally reads an f-string and folds a name bound to a string
+    literal, then faces the same concreteness test as every other language.
     """
     if not is_python:
         return _literal_url(arg)
@@ -253,12 +248,11 @@ def extract_consumers(
 
     The second element counts call sites of a wrapper *known to take a URL path*
     — proven by another call site in the same file passing it a concrete literal
-    — whose own path argument could not be resolved statically, plus every call
-    through a bound client instance that could not be resolved (there the
-    receiver's binding already proves the first argument is a URL, so no such
-    gate applies). Those are real endpoint calls this layer cannot name;
-    reporting the number is what keeps the recall figure honest rather than
-    flattering.
+    — whose own path argument could not be resolved statically, plus every
+    unresolved call through a bound client instance (whose binding already
+    proves the first argument is a URL, so no such gate applies). Those are real
+    endpoint calls this layer cannot name; reporting the number is what keeps
+    the recall figure honest rather than flattering.
     """
     # No sink anywhere in the raw text means no wrapper can be confirmed and no
     # receiverless sink call can exist, so the two O(n) masking passes below
@@ -276,8 +270,7 @@ def extract_consumers(
     # argument scanner. Masking preserves offsets and length, so slices taken
     # against this text are the real argument text.
     content = mask_source(ctx.content, ctx.suffix)
-    # Read off the masked text so a client constructed inside a comment or a
-    # docstring example does not bind a name.
+    # Masked, so a client constructed in a comment does not bind a name.
     clients = bound_clients(content, ctx.suffix, symbols)
     if not confirmed and not sinks and not clients:
         return [], 0
@@ -339,8 +332,7 @@ def extract_consumers(
         resolved.append((name, url, opt.group(1).upper() if opt else "GET", line))
 
     # Pass 1b: calls through a variable bound to an HTTP client instance. No
-    # wrapper confirmation applies — the binding already proves the receiver is
-    # a client, and the verb names the method outright.
+    # wrapper confirmation applies — the binding already proves the receiver.
     client_unresolved = 0
     for m in _CLIENT_CALL_RE.finditer(content):
         verb = m.group("verb")
@@ -358,10 +350,9 @@ def extract_consumers(
         first, _ = _split_first_arg(content[open_idx + 1 : close_idx])
         url = _first_arg_url(first, is_python, constants)
         if url is None:
-            # Unconditional, unlike the wrapper tally above: a client instance's
-            # ``.post`` takes a URL by definition, so there is no ambiguity for
-            # a ``path_taking`` gate to resolve and every miss here is a real
-            # endpoint call this layer could not name.
+            # Unconditional, unlike the wrapper tally above: a client's
+            # ``.post`` takes a URL by definition, so ``path_taking`` has no
+            # ambiguity to resolve and every miss here is a real endpoint call.
             client_unresolved += 1
             continue
         resolved.append((lib, url, verb.upper(), line))
