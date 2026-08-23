@@ -169,6 +169,16 @@ async def test_fetch_repo_name(session, repo, tmp_path):
     assert data.repo_name == "test-repo"
 
 
+async def test_fetch_indexed_commit_uses_commit_stored_with_index(session, repo, tmp_path):
+    repo.head_commit = "indexed-commit-sha"
+    await session.commit()
+
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+
+    assert data.indexed_commit == "indexed"
+
+
 async def test_fetch_architecture_summary(session, repo, tmp_path):
     content = (
         "## Overview\n\n"
