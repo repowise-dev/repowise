@@ -200,20 +200,30 @@ def test_section_sort_key_is_numeric_and_puts_unplaced_last():
 
 
 def test_guided_tour_renumbers_steps_after_deduplication():
+    metadata = {
+        "guided_tour": [
+            {"order": 1, "page_type": "file_page", "target_path": "a.py", "kind": "entry", "reason": "first"},
+            {"order": 2, "page_type": "file_page", "target_path": "b.py", "kind": "layer", "reason": "same"},
+            {"order": 3, "page_type": "file_page", "target_path": "c.py", "kind": "layer", "reason": "same"},
+            {"order": 4, "page_type": "file_page", "target_path": "d.py", "kind": "leaf", "reason": "last"},
+        ]
+    }
     page = SimpleNamespace(
-        metadata_json=json.dumps(
-            {
-                "guided_tour": [
-                    {"order": 1, "page_type": "file_page", "target_path": "a.py", "kind": "entry", "reason": "first"},
-                    {"order": 2, "page_type": "file_page", "target_path": "b.py", "kind": "layer", "reason": "same"},
-                    {"order": 3, "page_type": "file_page", "target_path": "c.py", "kind": "layer", "reason": "same"},
-                    {"order": 4, "page_type": "file_page", "target_path": "d.py", "kind": "leaf", "reason": "last"},
-                ]
-            }
-        )
+        metadata_json=json.dumps(metadata)
     )
     result = {}
 
     _build_guided_tour(page, result, {}, want_tour=True)
 
     assert [step["order"] for step in result["guided_tour"]] == [1, 2, 3]
+    assert [step["target_path"] for step in result["guided_tour"]] == ["a.py", "b.py", "d.py"]
+    assert json.loads(page.metadata_json) == metadata
+
+
+def test_guided_tour_is_omitted_when_not_requested():
+    page = SimpleNamespace(metadata_json=json.dumps({"guided_tour": [{"order": 1}]}))
+    result = {}
+
+    _build_guided_tour(page, result, {}, want_tour=False)
+
+    assert "guided_tour" not in result
