@@ -145,7 +145,6 @@ function LinkSection({
   repoIds: Record<string, string>;
 }) {
   const isProvider = contract.role === "provider";
-  const where = contract.service ? `${contract.repo}/${contract.service}` : contract.repo;
 
   if (links.length === 0) {
     return (
@@ -153,7 +152,7 @@ function LinkSection({
         title={isProvider ? "No caller found" : unmatchedTitle(unmatchedReason)}
         description={
           isProvider
-            ? unlinkedProviderProse(where)
+            ? unlinkedProviderProse(contract)
             : unmatchedConsumerProse(unmatchedReason, contract)
         }
       />
@@ -183,9 +182,12 @@ function providerLinkedProse(
   sameRepoOnly: boolean,
   repo: string,
 ): string {
-  const head = `${countPhrase(linkCount, "call site", "call sites")} resolve${linkCount === 1 ? "s" : ""} to this contract`;
+  const one = linkCount === 1;
+  const head = `${countPhrase(linkCount, "call site", "call sites")} resolve${one ? "s" : ""} to this contract`;
   if (sameRepoOnly) {
-    return `${head}, all of them inside ${repo}. A pair is skipped only when the repository and the service are both the same, so these are calls made from a different service in the same repository.`;
+    // Every provider in this state on a real workspace has exactly one caller,
+    // so the singular is the sentence that actually ships.
+    return `${head}, ${one ? `and it is inside ${repo}` : `all of them inside ${repo}`}. A pair is skipped only when the repository and the service are both the same, so ${one ? "that is a call" : "these are calls"} made from a different service in the same repository.`;
   }
   return `${head} across ${countPhrase(repoCount, "repository", "repositories")}.`;
 }
@@ -200,8 +202,15 @@ function providerLinkedProse(
  * that do. A reader who correctly inferred a colour here would be taught a
  * rule that makes them wrong about the next mark they see.
  */
-function unlinkedProviderProse(where: string): string {
-  return `Nothing in this workspace resolves to this contract. Read that as two possibilities rather than one. Matching joins a call to the code that serves it only when the call crosses a service boundary, so every call made from inside ${where} is excluded by construction and never appears here. And a call written in a form extraction could not follow looks exactly the same from this side. Neither reading makes this dead code.`;
+function unlinkedProviderProse(contract: WorkspaceContractEntry): string {
+  // A pair is skipped when the repository *and* the service both match, so the
+  // excluded set is not "everything in this repo" unless this declaration sits
+  // outside a service too. Naming the wrong set here would send somebody
+  // looking for a caller the page had told them could not exist.
+  const excluded = contract.service
+    ? `a call made from inside ${contract.repo}/${contract.service}`
+    : `a call made from elsewhere in ${contract.repo} that also sits outside any service`;
+  return `Nothing in this workspace resolves to this contract. Read that as two possibilities rather than one. A call is joined to the code that serves it only when the two do not share both a repository and a service, so ${excluded} is excluded by construction and never appears here. And a call written in a form extraction could not follow looks exactly the same from this side. Neither reading makes this dead code.`;
 }
 
 /**

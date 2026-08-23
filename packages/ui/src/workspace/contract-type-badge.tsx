@@ -1,7 +1,5 @@
 "use client";
 
-import { cn } from "../lib/cn";
-
 /**
  * Display label per contract type.
  *
@@ -33,11 +31,9 @@ export function contractTypeLabel(type: string): string {
  * the colour goes nowhere — the type is what the filter already selects on. A
  * quiet word says the same thing, and a new type costs nothing.
  */
-export function ContractTypeBadge({ type, className }: { type: string; className?: string }) {
+export function ContractTypeBadge({ type }: { type: string }) {
   return (
-    <span className={cn("text-xs text-[var(--color-text-secondary)]", className)}>
-      {contractTypeLabel(type)}
-    </span>
+    <span className="text-xs text-[var(--color-text-secondary)]">{contractTypeLabel(type)}</span>
   );
 }
 
@@ -50,9 +46,9 @@ export function ContractTypeBadge({ type, className }: { type: string; className
  * green was the default state wearing the colour of a verdict — a mark every
  * row carries says nothing.
  */
-export function RoleBadge({ role, className }: { role: string; className?: string }) {
+export function RoleBadge({ role }: { role: string }) {
   return (
-    <span className={cn("text-xs text-[var(--color-text-secondary)]", className)}>
+    <span className="text-xs text-[var(--color-text-secondary)]">
       {role === "provider" ? "Provider" : "Consumer"}
     </span>
   );
