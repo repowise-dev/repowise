@@ -665,6 +665,31 @@ class TestPathSearch:
         assert result["mode"] == "path"
         assert any(r["file"] == "src/db/models.py" for r in result["results"])
 
+    @pytest.mark.asyncio
+    async def test_trailing_glob_wildcard_is_not_literal(self, setup_mcp):
+        """Regression for #1871: ``foo*`` must search like ``foo``.
+
+        ``*`` is not a SQL LIKE metacharacter, so before the strip it survived
+        into the pattern literally and matched nothing — silently.
+        """
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("service.py*", mode="path")
+        assert any(r["file"] == "src/auth/service.py" for r in result["results"])
+
+        result = await search_codebase("*service.py", mode="path")
+        assert any(r["file"] == "src/auth/service.py" for r in result["results"])
+
+    @pytest.mark.asyncio
+    async def test_mid_string_glob_is_not_silently_stripped(self, setup_mcp):
+        """A mid-string glob is a real glob; stripping it would change the
+        question, so it is left alone (substring match may return nothing,
+        but must not mis-match)."""
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("src/*/service.py", mode="path")
+        assert all("*" not in r["file"] for r in result["results"])
+
 
 class TestHybridSearch:
     """Mixed natural-language + identifier queries run hybrid."""

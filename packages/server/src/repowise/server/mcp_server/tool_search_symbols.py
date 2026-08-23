@@ -271,7 +271,14 @@ def _path_score(target_path: str, qnorm: str) -> float:
 
 async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
     """Path search against one repo context. Returns ranked file result dicts."""
-    qnorm = query.strip().lower().replace("\\", "/")
+    # Strip leading/trailing glob chars: the match below is a substring search
+    # (``%...%`` on both sides), so a trailing/leading ``*`` or ``?`` carries no
+    # extra information. Without this, ``foo*`` survives into the LIKE pattern
+    # as a literal asterisk (``*`` is not a LIKE metacharacter) and matches
+    # nothing, silently. Mid-string globs (``src/*/main.py``) are left alone —
+    # a substring match cannot honour them, so stripping there would answer a
+    # different question than the one asked.
+    qnorm = query.strip().lower().replace("\\", "/").strip("*?")
     if not qnorm:
         return []
 
