@@ -70,7 +70,7 @@ class EditorFileDataFetcher:
         return EditorFileData(
             repo_name=repo_name,
             indexed_at=datetime.now(UTC).strftime("%Y-%m-%d"),
-            indexed_commit=_get_head_short_sha(self._repo_path),
+            indexed_commit=(repo.head_commit or "")[:7] or _get_head_short_sha(self._repo_path),
             architecture_summary=await self._get_architecture_summary(),
             key_modules=await self._get_key_modules(),
             entry_points=await self._get_entry_points(),

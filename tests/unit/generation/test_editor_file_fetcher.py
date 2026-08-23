@@ -372,3 +372,12 @@ async def test_fetch_indexed_at_is_date_string(session, repo, tmp_path):
     import re
 
     assert re.match(r"^\d{4}-\d{2}-\d{2}$", data.indexed_at)
+
+
+async def test_fetch_uses_indexed_repository_commit(session, repo, tmp_path):
+    repo.head_commit = "indexed-commit-sha"
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.indexed_commit == "indexed"
