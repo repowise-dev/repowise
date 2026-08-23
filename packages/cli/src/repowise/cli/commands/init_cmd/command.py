@@ -335,7 +335,10 @@ def _run_generation_phase(
         console.print(f"  Languages: {', '.join(lang_parts)}")
 
     # Warn when a local provider runs with default concurrency
-    if provider.provider_name in ("ollama", "codex_cli", "opencode") and concurrency > 4:
+    if (
+        provider.provider_name in ("ollama", "codex_cli", "opencode", "devin_cli")
+        and concurrency > 4
+    ):
         console.print(
             f"  [{WARN}]Warning:[/] {provider.provider_name} is a local provider "
             f"running with concurrency={concurrency}. "
@@ -411,7 +414,7 @@ def _run_generation_phase(
     default=None,
     help=(
         "LLM provider name (anthropic, openai, openrouter, gemini, "
-        "deepseek, kimi, ollama, litellm, codex_cli, opencode, edenai, mock)."
+        "deepseek, kimi, ollama, litellm, codex_cli, opencode, edenai, devin_cli, mock)."
     ),
 )
 @click.option("--model", default=None, help="Model identifier override.")
@@ -827,9 +830,7 @@ def init_command(
             include_submodules=include_submodules,
         )
         if seeded:
-            console.print(
-                f"[{OK}]Worktree index seeded successfully. Delegating to update...[/]"
-            )
+            console.print(f"[{OK}]Worktree index seeded successfully. Delegating to update...[/]")
             from repowise.cli.commands.update_cmd.command import run_update
 
             is_workspace = len(scan.repos) > 1 and not no_workspace
