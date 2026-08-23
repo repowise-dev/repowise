@@ -217,7 +217,7 @@ async def test_impacted_tests_line_precise_hit_and_miss(tmp_path, monkeypatch) -
     assert it["basis"] == "measured"
     assert it["map_present"] is True
     # app.py line 3 is covered -> its test is named; other/new are not covering.
-    assert it["tests"] == ["tests/test_app.py::test_app"]
+    assert it["tests_to_run"] == ["tests/test_app.py::test_app"]
     assert it["total"] == 1
     assert it["truncated"] is False
 
@@ -254,7 +254,7 @@ async def test_impacted_tests_no_map_is_unknown_not_untested(tmp_path, monkeypat
     # Nothing is seeded in the graph either, so neither tier can speak.
     assert it["status"] == "no_map"
     assert it["map_present"] is False
-    assert it["tests"] == []
+    assert it["tests_to_run"] == []
     # Honest degradation: no untested claim, a "run the suite" summary instead.
     assert it["missing_tests"]["untested_changes"] == []
     assert "run the full suite" in it["summary"]
@@ -304,7 +304,7 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
     assert it["status"] == "inferred"
     assert it["basis"] == "inferred"
     assert it["map_present"] is False
-    assert it["tests"] == ["tests/test_round_trips.py"]
+    assert it["tests_to_run"] == ["tests/test_round_trips.py"]
     assert it["missing_tests"]["untested_changes"] == []
     # Answered by the import tier: there is no call edge here, which is exactly
     # when the weaker tier is allowed to speak.
@@ -337,8 +337,11 @@ async def test_impacted_tests_overflow_cap_is_honest(tmp_path, monkeypatch) -> N
 
     it = result["impacted_tests"]
     assert it["total"] == 12
-    assert len(it["tests"]) == 10
+    assert len(it["tests_to_run"]) == 10
     assert it["truncated"] is True
+    # The 2 over the cap are recoverable, not dropped.
+    assert "omission_marker" in result
+    assert result["_meta"]["omitted"]["refs"]
 
 
 @pytest.mark.asyncio

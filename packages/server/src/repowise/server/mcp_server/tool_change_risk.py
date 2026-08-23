@@ -21,6 +21,7 @@ from repowise.core.analysis.change_risk import (
 )
 from repowise.core.analysis.pr_blast import rank_tests_by_reach
 from repowise.core.registry import mcp_tool_registry as mcp
+from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import (
     _get_repo,
     _resolve_repo_context,
@@ -29,8 +30,8 @@ from repowise.server.mcp_server._helpers import (
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
 #: Cap on the line-precise impacted-test list, matching the get_risk directive's
-#: ``tests_to_run`` cap so both surfaces stay glanceable. ``total`` and
-#: ``truncated`` report the overflow rather than silently dropping it.
+#: ``tests_to_run`` cap so both surfaces stay glanceable. The tail goes to the
+#: omission store, so ``truncated: true`` is recoverable rather than a dead end.
 _IMPACTED_TESTS_LIMIT = 10
 
 #: Cap on the per-file prior-fix list, matching ``_IMPACTED_TESTS_LIMIT`` so both
@@ -49,22 +50,22 @@ async def get_change_risk(
     """Score a live commit, ``base..head`` range, or uncommitted work.
 
     Use this for a pre-merge read on a commit or PR range. Distinct from
-    ``get_risk``, which assesses indexed files and PR blast radius. The filters
-    below also apply to the baseline behind the repository percentile.
+    ``get_risk``, which scores indexed files and PR blast radius. The filters
+    below also apply to the percentile baseline.
 
     Lead with ``fix_history``: the recency-weighted bug-fix record of the files
     touched, ``files`` naming where the pressure sits. It separates a surgical
-    edit to a file that keeps breaking from a bulk rename of files that never
-    have. ``score`` measures diff size and spread, not where the change lands
+    edit to a bug magnet from a bulk rename of files that never break. ``score`` measures diff size and spread, not where the change lands
     (see ``score_measures``); calibrated per commit, so a PR-sized change reads
     high by construction. ``risk_percentile`` ranks that shape against recent
     commits.
 
-    ``impacted_tests`` names the tests for this change; ``missing_tests`` the
-    uncovered lines. ``basis``: ``measured`` = a coverage map proves those tests
-    run the changed *lines*; ``inferred`` = test files the graph shows
-    reaching it (candidates, file-level, no ingest needed). No map is never
-    "untested": ``status`` ``no_map`` means run the suite. ``prior_fixes``
+    ``impacted_tests.tests_to_run`` names the tests for this change;
+    ``missing_tests`` the uncovered lines. ``basis``: ``measured`` = a coverage
+    map proves those tests run the changed *lines*; ``inferred`` = test files
+    the graph shows reaching it (candidates, file-level). No map is never
+    "untested": ``no_map`` means run the suite. On ``truncated``, expand
+    ``omission_marker`` for the tail. ``prior_fixes``
     counts past fixes whose lines overlap this diff.
 
     Args:
@@ -117,7 +118,10 @@ async def get_change_risk(
             result.riskignore_excludes + result.request_excludes,
             working_tree=result.working_tree,
         )
-    payload["impacted_tests"] = await _impacted_tests_block(ctx, changed, changed_error)
+    collector = OmissionCollector("get_change_risk", repo_root=ctx.path)
+    payload["impacted_tests"] = await _impacted_tests_block(
+        ctx, changed, changed_error, collector
+    )
     prior_fixes = await _prior_fixes_block(ctx, changed)
     if prior_fixes is not None:
         payload["prior_fixes"] = prior_fixes
@@ -132,6 +136,7 @@ async def get_change_risk(
         targets=sorted(changed) or None,
         extra={"source": "live_git"},
     )
+    collector.attach(payload)
     return payload
 
 
@@ -197,7 +202,7 @@ def _empty_impacted(status: str, summary: str) -> dict[str, Any]:
     return {
         "status": status,
         "map_present": False,
-        "tests": [],
+        "tests_to_run": [],
         "total": 0,
         "truncated": False,
         "missing_tests": {
@@ -420,8 +425,19 @@ def _overlap_count(changed_lines_now: set[int], old_ranges_json: str) -> int:
     return hits
 
 
+def _cap_tests(tests: list[str], collector: OmissionCollector, label: str) -> list[str]:
+    """First _IMPACTED_TESTS_LIMIT ids; the tail goes to the omission store."""
+    if len(tests) > _IMPACTED_TESTS_LIMIT:
+        collector.add(
+            f"impacted_tests.tests_to_run ({label}) beyond cap={_IMPACTED_TESTS_LIMIT} "
+            f"({len(tests) - _IMPACTED_TESTS_LIMIT} dropped)",
+            tests[_IMPACTED_TESTS_LIMIT:],
+        )
+    return tests[:_IMPACTED_TESTS_LIMIT]
+
+
 async def _inferred_impacted(
-    session: Any, repo_id: str, changed_files: list[str]
+    session: Any, repo_id: str, changed_files: list[str], collector: OmissionCollector
 ) -> dict[str, Any]:
     """Graph-inferred candidates for a repo with no coverage map.
 
@@ -460,7 +476,7 @@ async def _inferred_impacted(
     block.update(
         {
             "basis": "inferred",
-            "tests": tests[:_IMPACTED_TESTS_LIMIT],
+            "tests_to_run": _cap_tests(tests, collector, "inferred"),
             "total": total,
             "truncated": total > _IMPACTED_TESTS_LIMIT,
             "summary": (
@@ -482,6 +498,7 @@ async def _impacted_tests_block(
     ctx: Any,
     changed: dict[str, set[int]],
     changed_error: tuple[str, str] | None,
+    collector: OmissionCollector,
 ) -> dict[str, Any]:
     """Line-precise impacted tests + honest missing-test buckets for the change.
 
@@ -510,7 +527,7 @@ async def _impacted_tests_block(
             repo_id = (await _get_repo(session)).id
             report = await detect_missing_tests(session, repo_id, changed)
             if report.map_empty:
-                return await _inferred_impacted(session, repo_id, sorted(changed))
+                return await _inferred_impacted(session, repo_id, sorted(changed), collector)
             by_file: dict[str, list[str]] = {}
             for source_file, lines in changed.items():
                 rows = await tests_covering(session, repo_id, source_file, lines=lines)
@@ -526,7 +543,7 @@ async def _impacted_tests_block(
         "status": "map_present",
         "basis": "measured",
         "map_present": True,
-        "tests": tests[:_IMPACTED_TESTS_LIMIT],
+        "tests_to_run": _cap_tests(tests, collector, "measured"),
         "total": total,
         "truncated": total > _IMPACTED_TESTS_LIMIT,
         "missing_tests": _serialize_missing(report),

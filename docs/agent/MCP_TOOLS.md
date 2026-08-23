@@ -482,10 +482,13 @@ subject. `baseline_sample_size` reports how many filtered commits informed the
 percentile; `features`, `drivers`, and combined `exclude_patterns` make the
 result auditable.
 
-It also returns `impacted_tests`: the tests the per-test coverage map proves
-execute the change's changed *lines* (line-precise, so a narrower set than
-`get_risk`'s file-level `tests_to_run`), capped at ten with `total` and
-`truncated` reporting any overflow. Its `missing_tests` buckets flag
+It also returns `impacted_tests`, whose `tests_to_run` names the tests the
+per-test coverage map proves execute the change's changed *lines* (line-precise,
+so a narrower set than `get_risk`'s file-level `tests_to_run` — same field name,
+because it is the same concern). It is capped at ten, with `total` and
+`truncated` reporting the overflow and the tail written to the omission store:
+on `truncated: true` the response carries an `omission_marker`, and
+`repowise expand <ref>` returns the rest. Its `missing_tests` buckets flag
 `untested_changes` (covered file, uncovered change), `stale_test_candidates`
 (covered lines whose guarding test file is absent from the diff), `covered`, and
 `no_coverage_data` (files absent from the map). When no map is ingested the
@@ -496,6 +499,9 @@ to lines), and `no_map` ("run the full suite") when it cannot. `basis` carries
 the same distinction in one word: `measured`, `inferred`, or absent. Build the
 measured map with `coverage run --contexts=test` followed by
 `repowise coverage add`.
+
+> **Output-schema change.** `impacted_tests.tests` is now
+> `impacted_tests.tests_to_run`, matching `get_risk`'s directive.
 
 When the changed files carry counted bug fixes, the response also holds
 `prior_fixes`: per file, how many past bug-fix commits touched it
