@@ -270,17 +270,17 @@ def extract_consumers(
     # argument scanner. Masking preserves offsets and length, so slices taken
     # against this text are the real argument text.
     content = mask_source(ctx.content, ctx.suffix)
-    # A second mask, with string bodies blanked too. Offsets are preserved, so
-    # this locates code positions while the text above supplies their bytes.
-    # Everything Python-side is found through it, because a log line reading
-    # ``"call foo.get('/api/x') to see"`` is prose, not a call, and reading it
-    # off ``content`` would mint a contract for an endpoint nobody calls.
-    code = mask_source(ctx.content, ctx.suffix, strings=True)
+    # A second mask for Python, with string bodies blanked too. Offsets are
+    # preserved, so this locates code positions while the text above supplies
+    # their bytes. Everything Python-side is found through it, because a log
+    # line reading ``"call foo.get('/api/x') to see"`` is prose, not a call, and
+    # reading it off ``content`` would mint a contract for an unmade request.
+    is_python = ctx.suffix in PYTHON
+    code = mask_source(ctx.content, ctx.suffix, strings=True) if is_python else ""
     clients = bound_clients(code, ctx.suffix, symbols)
     if not confirmed and not sinks and not clients:
         return [], 0
 
-    is_python = ctx.suffix in PYTHON
     constants = string_constants(content, code) if is_python else {}
     declarations = _declaration_sites(symbols)
 
