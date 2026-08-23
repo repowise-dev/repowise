@@ -281,6 +281,7 @@ def _contract_link(lk: dict) -> WorkspaceContractLinkEntry:
         consumer_file=lk.get("consumer_file", ""),
         consumer_symbol=lk.get("consumer_symbol", ""),
         provider_service=lk.get("provider_service"),
+        consumer_service=lk.get("consumer_service"),
         provider_symbol_id=lk.get("provider_symbol_id"),
         consumer_symbol_id=lk.get("consumer_symbol_id"),
     )
@@ -386,10 +387,11 @@ async def get_contract_detail(
     unique, several repos declare the same ``http::GET::/user``.
 
     The triple is the shareable identity, not a primary key. One file may call
-    the same endpoint from two lines; when it does, the first row wins. Such
-    rows differ only in ``line`` and ``symbol_name`` — the link list is filtered
-    by the same triple, so it is identical either way — and keying on the line
-    instead would rot every saved link on an edit above the call.
+    the same endpoint from two lines; when it does, the first row wins. The link
+    list is filtered by the same triple, so it is identical whichever row wins;
+    the enclosing symbol is not, so the response names one of the call sites.
+    Keying on the line instead would rot every saved link on an edit above the
+    call.
     """
     _require_workspace(ws_config)
 

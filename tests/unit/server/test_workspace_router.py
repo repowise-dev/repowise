@@ -122,7 +122,11 @@ def _make_enricher(tmp_path: Path) -> CrossRepoEnricher:
                     "line": 42,
                     "symbol_id": "routes.py::get_users",
                     "meta": {"extraction_layer": "index", "framework": "fastapi"},
-                    "schema": {"response": {"fields": [{"name": "id", "type": "int"}]}},
+                    "schema": {
+                        "source": "signature",
+                        "request_fields": [{"name": "limit", "type": "int"}],
+                        "response_fields": [{"name": "id", "type": "int", "required": True}],
+                    },
                 },
                 {
                     "repo": "frontend",
@@ -174,6 +178,7 @@ def _make_enricher(tmp_path: Path) -> CrossRepoEnricher:
                     "consumer_file": "client.ts",
                     "consumer_symbol": "fetchUsers",
                     "provider_service": "services/api",
+                    "consumer_service": "services/web",
                     "provider_symbol_id": "routes.py::get_users",
                     "consumer_symbol_id": "client.ts::fetchUsers",
                 },
@@ -484,6 +489,7 @@ class TestContractWireFields:
             resp = await c.get("/api/workspace/contracts")
         link = resp.json()["links"][0]
         assert link["provider_service"] == "services/api"
+        assert link["consumer_service"] == "services/web"
         assert link["provider_symbol_id"] == "routes.py::get_users"
         assert link["consumer_symbol_id"] == "client.ts::fetchUsers"
 
@@ -521,7 +527,8 @@ class TestGetContractDetail:
         assert resp.status_code == 200
         data = resp.json()
         assert data["contract"]["symbol_name"] == "get_users"
-        assert data["contract_schema"]["response"]["fields"][0]["name"] == "id"
+        assert data["contract_schema"]["source"] == "signature"
+        assert data["contract_schema"]["response_fields"][0]["name"] == "id"
         assert len(data["links"]) == 1
         assert data["links"][0]["consumer_repo"] == "frontend"
         assert data["unmatched_reason"] is None

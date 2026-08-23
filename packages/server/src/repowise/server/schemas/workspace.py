@@ -108,9 +108,12 @@ class WorkspaceContractLinkEntry(BaseModel):
     consumer_file: str
     consumer_symbol: str
     #: Service boundary the provider sits behind, when the workspace declares
-    #: one. Same-repo same-service pairs never link, so this is what explains a
-    #: cross-repo link between two services of one monorepo.
+    #: one. Matching skips a pair only when the repo *and* the service are the
+    #: same, so this is what explains a link between two services inside one
+    #: repo.
     provider_service: str | None = None
+    #: The same, for the calling side.
+    consumer_service: str | None = None
     #: The linked contracts' symbol ids, so a caller can name the code rather
     #: than a display label. None when that side never bound to one.
     provider_symbol_id: str | None = None
