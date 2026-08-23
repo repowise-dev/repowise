@@ -3,15 +3,58 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useTransition } from "react";
 import { Filter } from "lucide-react";
+import { contractTypeLabel } from "@repowise-dev/ui/workspace/contract-type-badge";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 
-const TYPE_OPTIONS = [
-  { value: "", label: "All types" },
-  { value: "http", label: "HTTP" },
-  { value: "grpc", label: "gRPC" },
-  { value: "socket", label: "Socket" },
-  { value: "topic", label: "Topic" },
-  { value: "data", label: "Table" },
-];
+/**
+ * Every type the extractors can emit, in the order the select lists them.
+ * Which of them a workspace actually holds is a separate question — see
+ * `typeOptions`.
+ */
+const ALL_TYPES = ["http", "grpc", "socket", "topic", "data", "code"];
+
+/**
+ * The type options this workspace can act on.
+ *
+ * A control that cannot act must look like it, and three of the five options
+ * this select used to offer could not return a row on any workspace here:
+ * `grpc`, `socket` and `topic` are all zero, while `code` — the single largest
+ * type — had no option at all. The distribution is already on the workspace
+ * payload, so the control is built from it rather than from the vocabulary,
+ * and the count goes on the label so a reader knows what a filter is worth
+ * before spending a click on it.
+ *
+ * `byType` must be the workspace-wide breakdown, not the one on the contracts
+ * response: that one is computed after the filters are applied, so selecting a
+ * type would delete every other option and strand the reader inside it.
+ *
+ * With no breakdown available the full vocabulary comes back rather than an
+ * empty select — an unfiltered list is a worse failure than an option that
+ * returns nothing.
+ */
+function typeOptions(byType: Record<string, number> | null | undefined, selected: string) {
+  const present = byType
+    ? ALL_TYPES.filter((t) => (byType[t] ?? 0) > 0)
+    : ALL_TYPES;
+  // A type the vocabulary does not name still gets an option when the
+  // workspace holds one, so a new extractor is filterable before this list is.
+  const extra = byType
+    ? Object.keys(byType).filter((t) => !ALL_TYPES.includes(t) && byType[t]! > 0)
+    : [];
+  const values = [...present, ...extra];
+  // A type someone linked to directly stays selectable even when the workspace
+  // holds none of it, or the select would render blank against its own URL.
+  if (selected && !values.includes(selected)) values.push(selected);
+  return [
+    { value: "", label: "All types" },
+    ...values.map((value) => ({
+      value,
+      label: byType?.[value]
+        ? `${contractTypeLabel(value)} ${formatNumber(byType[value]!)}`
+        : contractTypeLabel(value),
+    })),
+  ];
+}
 
 const ROLE_OPTIONS = [
   { value: "", label: "All roles" },
@@ -30,10 +73,18 @@ const SELECT_CLASS =
  * with the new filter, so a filtered view is linkable and the table's counts
  * come from the same request that drew the rows.
  */
-export function ContractFilters({ repos }: { repos: string[] }) {
+export function ContractFilters({
+  repos,
+  byType,
+}: {
+  repos: string[];
+  /** Workspace-wide contracts per type, from `contract_summary`. */
+  byType?: Record<string, number> | null;
+}) {
   const router = useRouter();
   const params = useSearchParams();
   const [pending, startTransition] = useTransition();
+  const types = typeOptions(byType, params.get("type") ?? "");
 
   const set = useCallback(
     (key: string, value: string) => {
@@ -64,7 +115,7 @@ export function ContractFilters({ repos }: { repos: string[] }) {
         value={params.get("type") ?? ""}
         onChange={(e) => set("type", e.target.value)}
       >
-        {TYPE_OPTIONS.map((o) => (
+        {types.map((o) => (
           <option key={o.value} value={o.value}>
             {o.label}
           </option>
