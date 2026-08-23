@@ -1194,7 +1194,12 @@ def workspace_check(path: str | None, breaking: bool, fmt: str, as_json: bool) -
     """
     import sys
 
-    from repowise.core.workspace.breaking_change import load_breaking_change_report
+    from rich.markup import escape
+
+    from repowise.core.workspace.breaking_change import (
+        SEVERITY_BREAKING,
+        load_breaking_change_report,
+    )
     from repowise.core.workspace.conformance import (
         build_conformance_report,
         tags_by_repo_from_config,
@@ -1218,15 +1223,15 @@ def workspace_check(path: str | None, breaking: bool, fmt: str, as_json: bool) -
         tags_by_repo_from_config(ws_config),
     )
 
-    # Only changes that endanger a consumer in *another* repo count: an
-    # internal-only removal is one repo's own business, and that is the same
-    # filter get_risk's directive applies.
+    # Gate on wire-incompatible changes that endanger another repo. A warning
+    # severity is source-compat only and must not fail a build.
     bc_report = load_breaking_change_report(ws_root) if breaking else None
     breaking_changes = (
         [
             c
             for c in bc_report.changes
-            if any(ic.repo != c.provider_repo for ic in c.impacted_consumers)
+            if c.severity == SEVERITY_BREAKING
+            and any(ic.repo != c.provider_repo for ic in c.impacted_consumers)
         ]
         if bc_report is not None and bc_report.ran
         else []
@@ -1236,6 +1241,11 @@ def workspace_check(path: str | None, breaking: bool, fmt: str, as_json: bool) -
         payload = report.to_dict()
         if breaking:
             payload["breaking_changes"] = [c.to_dict() for c in breaking_changes]
+            # The conformance half is recomputed now; this half is an artifact
+            # of arbitrary age, so it carries its own stamp.
+            payload["breaking_changes_generated_at"] = (
+                bc_report.generated_at if bc_report is not None else None
+            )
         emit_json(payload)
         if report.has_findings or breaking_changes:
             sys.exit(1)
@@ -1281,16 +1291,22 @@ def workspace_check(path: str | None, breaking: bool, fmt: str, as_json: bool) -
 
     # Breaking contract changes
     if breaking_changes:
-        console.print(f"\n[red]✗ {len(breaking_changes)} breaking contract change(s):[/red]")
+        stamp = bc_report.generated_at if bc_report is not None else None
+        console.print(
+            f"\n[red]✗ {len(breaking_changes)} breaking contract change(s)[/red]"
+            + (f" [dim](detected {stamp})[/dim]" if stamp else "")
+            + "[red]:[/red]"
+        )
         for c in breaking_changes:
-            repos = sorted({ic.repo for ic in c.impacted_consumers if ic.repo != c.provider_repo})
+            cross = [ic for ic in c.impacted_consumers if ic.repo != c.provider_repo]
+            repos = sorted({ic.repo for ic in cross})
             console.print(
-                f"  [red]{c.contract_id}[/red] ([dim]{c.contract_type}[/dim]) "
-                f"{c.kind}: {c.detail}"
+                f"  [red]{escape(c.contract_id)}[/red] ([dim]{escape(c.contract_type)}[/dim]) "
+                f"{escape(c.kind)}: {escape(c.detail)}"
             )
             console.print(
-                f"      [dim]{c.provider_repo}/{c.provider_file} -> "
-                f"{len(c.impacted_consumers)} consumer(s) in {', '.join(repos)}[/dim]"
+                f"      [dim]{escape(c.provider_repo)}/{escape(c.provider_file)} -> "
+                f"{len(cross)} consumer(s) in {escape(', '.join(repos))}[/dim]"
             )
 
     if not report.has_findings and not breaking_changes:

@@ -271,6 +271,8 @@ def _print_breaking_changes(ws_root: Path, started_at: datetime) -> None:
     ours when it was stamped after we started; an older one belongs to a
     previous update and saying nothing beats attributing it here.
     """
+    from rich.markup import escape
+
     from repowise.core.workspace.breaking_change import load_breaking_change_report
 
     report = load_breaking_change_report(ws_root)
@@ -285,7 +287,7 @@ def _print_breaking_changes(ws_root: Path, started_at: datetime) -> None:
         f"\n[yellow]![/yellow] {len(report.changes)} contract change(s) "
         f"({report.breaking_count} breaking, {report.warning_count} warning) impacting "
         f"{report.total_impacted_consumers} consumer(s) in "
-        f"{', '.join(report.impacted_repos) or 'no other repo'}. "
+        f"{escape(', '.join(report.impacted_repos)) or 'no other repo'}. "
         "[dim]repowise workspace check[/dim]"
     )
 

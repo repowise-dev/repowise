@@ -24,6 +24,7 @@ from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._budget import OmissionCollector, fit_to_budget
 from repowise.server.mcp_server._helpers import (
     _get_repo,
+    _is_workspace_mode,
     _resolve_repo_context,
     _unsupported_repo_all,
 )
@@ -66,30 +67,26 @@ async def get_change_risk(
 ) -> dict:
     """Score a live commit, ``base..head`` range, or uncommitted work.
 
-    Use this for a pre-merge read on a commit or PR range. Distinct from
-    ``get_risk``, which scores indexed files and PR blast radius. The filters
-    below also apply to the percentile baseline.
+    For a pre-merge read on a commit or PR range; ``get_risk`` scores indexed
+    files instead. The filters also apply to the percentile baseline.
 
-    Lead with ``fix_history``: the recency-weighted bug-fix record of the files
-    touched, ``files`` naming where the pressure sits. It separates a surgical
-    edit to a bug magnet from a bulk rename of files that never break. ``score`` measures diff size and spread, not where the change lands
-    (see ``score_measures``); calibrated per commit, so a PR-sized change reads
-    high by construction. ``risk_percentile`` ranks that shape against recent
+    Lead with ``fix_history``: the recency-weighted bug-fix record of the
+    touched files, ``files`` naming where the pressure sits. It separates a
+    surgical edit to a bug magnet from a bulk rename. ``score`` measures diff
+    size and spread, not where the change lands (see ``score_measures``),
+    calibrated per commit; ``risk_percentile`` ranks that shape against recent
     commits.
 
-    ``impacted_tests.tests_to_run`` names the tests for this change;
-    ``missing_tests`` the uncovered lines. ``basis``: ``measured`` = a coverage
-    map proves those tests run the changed *lines*; ``inferred`` = test files
-    the graph shows reaching it (candidates, file-level). No map is never
-    "untested": ``no_map`` means run the suite. On ``truncated``, expand
+    ``impacted_tests.tests_to_run`` names the tests to run; ``missing_tests``
+    the uncovered lines. ``basis``: ``measured`` = a coverage map proves those
+    tests run the changed *lines*; ``inferred`` = test files the graph shows
+    reaching it (file-level candidates). No map is never "untested":
+    ``no_map`` means run the suite. On ``truncated``, expand
     ``omission_marker`` for the tail. ``prior_fixes``
     counts past fixes whose lines overlap this diff.
 
-    In workspace mode ``cross_repo`` names the consumers in *other* repos that
-    this commit's files provide a contract to, and any breaking change the last
-    workspace update attributed to them. Present only when the commit touches a
-    published surface; its evidence is that update's artifacts, not this
-    checkout's git, so ``as_of`` stamps when it was built.
+    ``cross_repo`` (workspace mode) names other repos' consumers of the changed
+    files and what broke, as of the last workspace update.
 
     Args:
         revspec: Commit or ``base..head`` range to score. Omit it to score the
@@ -129,11 +126,12 @@ async def get_change_risk(
     # extensions + riskignore + request excludes), so nothing downstream
     # disagrees with the score about which files the change touches. Read once
     # and shared: both blocks below need it and git is the expensive part.
-    # Skipped entirely without an index, because neither block can say anything
-    # then and the git call is the expensive half of this response.
+    # Skipped without an index *and* outside workspace mode: the test and fix
+    # blocks need the index, but the cross-repo block reads workspace artifacts
+    # and would go silently blind on a member whose own index is missing.
     changed: dict[str, set[int]] = {}
     changed_error: tuple[str, str] | None = None
-    if getattr(ctx, "session_factory", None) is not None:
+    if getattr(ctx, "session_factory", None) is not None or _is_workspace_mode():
         changed, changed_error = await _changed_in_scope(
             str(ctx.path),
             revspec,
@@ -237,7 +235,6 @@ def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | 
     """
     try:
         from repowise.server.mcp_server import _state
-        from repowise.server.mcp_server._helpers import _is_workspace_mode
 
         if not changed_files or not _is_workspace_mode():
             return None
@@ -247,12 +244,18 @@ def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | 
 
         touched = set(changed_files)
         consumers: list[dict[str, Any]] = []
-        seen: set[tuple[str, str, str]] = set()
+        seen: set[tuple[str, str, str, str]] = set()
         for path in changed_files:
             for link in enricher.get_contract_links_as_provider(alias, path):
                 if link.get("consumer_repo") == alias:
                     continue
-                key = (link.get("consumer_repo") or "", link.get("consumer_file") or "", path)
+                # Keyed by contract too: collapsing loses a contract_id.
+                key = (
+                    link.get("consumer_repo") or "",
+                    link.get("consumer_file") or "",
+                    link.get("contract_id") or "",
+                    path,
+                )
                 if key in seen:
                     continue
                 seen.add(key)
@@ -279,7 +282,8 @@ def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | 
 
         breaking: list[dict[str, Any]] = []
         breaking_total = 0
-        if getattr(enricher, "has_breaking_changes", False):
+        has_breaking_report = bool(getattr(enricher, "has_breaking_changes", False))
+        if has_breaking_report:
             for change in enricher.get_breaking_changes_for_repo(alias):
                 if change.get("provider_file") not in touched:
                     continue
@@ -311,22 +315,30 @@ def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | 
         if not consumers and not breaking:
             return None
         report = enricher.get_breaking_changes() or {}
-        repos = sorted({c["repo"] for c in consumers if c.get("repo")})
+        # A removed endpoint has no current link, so its repos survive only on
+        # the breaking side.
+        repos = sorted(
+            {c["repo"] for c in consumers if c.get("repo")}
+            | {r for b in breaking for r in b["impacted_repos"] if r}
+        )
         summary = (
-            f"{len(consumers)} consumer(s) in {len(repos)} other repo(s) depend on the "
-            f"files this change touches"
+            f"{len(consumers)} consumer link(s) in {len(repos)} other repo(s) touch the "
+            f"files this change edits"
         )
-        summary += (
-            f"; {breaking_total} of the changed contracts broke them."
-            if breaking_total
-            else "; the last workspace update found no break in them."
-        )
+        if breaking_total:
+            summary += f"; {breaking_total} of the changed contracts broke them."
+        elif has_breaking_report:
+            summary += "; the last workspace update found no break in them."
+        else:
+            summary += "; no breaking-change report has been built for them."
         return {
             "consumers": consumers[:_CROSS_REPO_CONSUMER_LIMIT],
             "consumers_truncated": max(0, len(consumers) - _CROSS_REPO_CONSUMER_LIMIT),
             "consumer_repos": repos,
             "breaking_changes": breaking,
             "breaking_changes_truncated": breaking_total - len(breaking),
+            # False = no detection pass ran, so the empty list is silence.
+            "breaking_changes_available": has_breaking_report,
             # When the artifacts were built. The score above is live git; this
             # block is only as current as the last workspace update.
             "as_of": report.get("generated_at"),

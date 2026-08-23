@@ -132,11 +132,52 @@ def test_names_the_consumers_of_a_touched_provider_file(tmp_path: Path):
         }
     ]
     assert block["breaking_changes"] == []
-    assert "no break in them" in block["summary"]
+
+
+def test_no_report_is_reported_as_silence_not_as_an_all_clear(tmp_path: Path):
+    """Nothing has looked, so the block must not say nothing was found."""
+    block = _block(_enricher(tmp_path, [_link()]), [PROVIDER_FILE])
+    assert block["breaking_changes_available"] is False
+    assert block["as_of"] is None
+    assert block["summary"] == (
+        "1 consumer link(s) in 1 other repo(s) touch the files this change edits"
+        "; no breaking-change report has been built for them."
+    )
+
+
+def test_a_clean_report_is_reported_as_an_all_clear(tmp_path: Path):
+    clean = BreakingChangeReport(generated_at="2026-08-23T00:00:00+00:00")
+    block = _block(_enricher(tmp_path, [_link()], clean), [PROVIDER_FILE])
+    assert block["breaking_changes_available"] is True
+    assert block["summary"].endswith("; the last workspace update found no break in them.")
 
 
 def test_carries_the_break_attributed_to_that_file(tmp_path: Path):
-    block = _block(_enricher(tmp_path, [_link()], _report()), [PROVIDER_FILE])
+    """Driven through real detection: a removal leaves no *current* link."""
+    from repowise.core.workspace.breaking_change import detect_breaking_changes
+    from repowise.core.workspace.contracts import Contract, ContractStore
+
+    previous = ContractStore(
+        contracts=[
+            Contract(
+                repo="api",
+                contract_id="code::@acme/types::Order",
+                contract_type="code",
+                role="provider",
+                file_path=PROVIDER_FILE,
+                symbol_name="Order",
+                confidence=0.9,
+                service="packages/types",
+                symbol_id=f"{PROVIDER_FILE}::Order",
+            )
+        ],
+        contract_links=[_link()],
+    )
+    report = detect_breaking_changes(
+        previous, ContractStore(), generated_at="2026-08-23T00:00:00+00:00"
+    )
+    # The contract is gone, so the current store has no link for it.
+    block = _block(_enricher(tmp_path, [], report), [PROVIDER_FILE])
     assert len(block["breaking_changes"]) == 1
     entry = block["breaking_changes"][0]
     assert entry["type"] == "code"
@@ -144,7 +185,13 @@ def test_carries_the_break_attributed_to_that_file(tmp_path: Path):
     assert entry["impacted_repos"] == ["frontend"]
     assert entry["provider_symbol_id"] == f"{PROVIDER_FILE}::Order"
     assert block["as_of"] == "2026-08-23T00:00:00+00:00"
-    assert "1 of the changed contracts broke them" in block["summary"]
+    # consumers is empty, but the repo count must still come from the break.
+    assert block["consumers"] == []
+    assert block["consumer_repos"] == ["frontend"]
+    assert block["summary"] == (
+        "0 consumer link(s) in 1 other repo(s) touch the files this change edits"
+        "; 1 of the changed contracts broke them."
+    )
 
 
 def test_absent_when_the_commit_touches_no_published_file(tmp_path: Path):
@@ -171,3 +218,71 @@ def test_one_row_per_consumer_file_not_per_link(tmp_path: Path):
     links = [_link(), _link(), _link(consumer_file="src/other.ts")]
     block = _block(_enricher(tmp_path, links), [PROVIDER_FILE])
     assert [c["file"] for c in block["consumers"]] == ["src/api.ts", "src/other.ts"]
+
+
+def test_two_contracts_between_the_same_files_stay_two_rows(tmp_path: Path):
+    """Collapsing them would silently drop a contract_id."""
+    other = _link()
+    other.contract_id = "code::@acme/types::Invoice"
+    block = _block(_enricher(tmp_path, [_link(), other]), [PROVIDER_FILE])
+    assert [c["contract_id"] for c in block["consumers"]] == [
+        "code::@acme/types::Order",
+        "code::@acme/types::Invoice",
+    ]
+
+
+def test_consumer_list_is_capped_and_says_by_how_much(tmp_path: Path):
+    from repowise.server.mcp_server.tool_change_risk import _CROSS_REPO_CONSUMER_LIMIT
+
+    over = _CROSS_REPO_CONSUMER_LIMIT + 3
+    links = [_link(consumer_file=f"src/api{i}.ts") for i in range(over)]
+    block = _block(_enricher(tmp_path, links), [PROVIDER_FILE])
+    assert len(block["consumers"]) == _CROSS_REPO_CONSUMER_LIMIT
+    assert block["consumers_truncated"] == 3
+    assert f"{over} consumer link(s)" in block["summary"]
+
+
+def test_breaking_list_is_capped_and_says_by_how_much(tmp_path: Path):
+    from repowise.core.workspace.breaking_change import detect_breaking_changes
+    from repowise.core.workspace.contracts import Contract, ContractStore
+    from repowise.server.mcp_server.tool_change_risk import _CROSS_REPO_BREAKING_LIMIT
+
+    over = _CROSS_REPO_BREAKING_LIMIT + 2
+    names = [f"Type{i}" for i in range(over)]
+    previous = ContractStore(
+        contracts=[
+            Contract(
+                repo="api",
+                contract_id=f"code::@acme/types::{n}",
+                contract_type="code",
+                role="provider",
+                file_path=PROVIDER_FILE,
+                symbol_name=n,
+                confidence=0.9,
+                symbol_id=f"{PROVIDER_FILE}::{n}",
+            )
+            for n in names
+        ],
+        contract_links=[
+            ContractLink(
+                contract_id=f"code::@acme/types::{n}",
+                contract_type="code",
+                match_type="exact",
+                confidence=0.9,
+                provider_repo="api",
+                provider_file=PROVIDER_FILE,
+                provider_symbol=n,
+                provider_service=None,
+                consumer_repo="frontend",
+                consumer_file="src/api.ts",
+                consumer_symbol=f"@acme/types:{n}",
+                consumer_service=None,
+            )
+            for n in names
+        ],
+    )
+    report = detect_breaking_changes(previous, ContractStore(), generated_at="t")
+    block = _block(_enricher(tmp_path, [], report), [PROVIDER_FILE])
+    assert len(block["breaking_changes"]) == _CROSS_REPO_BREAKING_LIMIT
+    assert block["breaking_changes_truncated"] == 2
+    assert f"{over} of the changed contracts broke them" in block["summary"]

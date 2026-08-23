@@ -92,16 +92,17 @@ async def get_blast_radius(
         f"{result.structural_count} via a real dependency, "
         f"{result.behavioral_count} via co-change only."
     )
-    if symbol_targets:
-        consumers = sum(len(t["consumers"]) for t in symbol_targets)
-        summary += (
-            f" {len(symbol_targets)} symbol target(s) are consumed by "
-            f"{consumers} symbol(s) across the contract links."
-        )
     if not result.targets:
         summary = (
             f"None of the requested targets matched a service in the graph: "
             f"{result.unresolved_targets}."
+        )
+    # After the override: an unmatched-targets response must not claim consumers.
+    if symbol_targets and result.targets:
+        consumers = sum(t["consumer_count"] for t in symbol_targets)
+        summary += (
+            f" {len(symbol_targets)} symbol target(s) have {consumers} "
+            f"consumer(s) across the contract links."
         )
 
     payload = {
@@ -153,35 +154,46 @@ def _resolve_symbol_targets(
     blocks: list[dict[str, Any]] = []
     replacements: dict[str, list[str]] = {}
     node_ids = {n.id for n in graph.nodes}
-    for raw in unresolved:
-        contracts = enricher.get_contracts_for_symbol(raw) if enricher is not None else []
+    for raw in dict.fromkeys(unresolved):
+        # Providers only: a consumer contract's symbol calls a surface rather
+        # than publishing one, so it has no downstream to traverse.
+        contracts = [
+            c
+            for c in enricher.get_contracts_for_symbol(raw)
+            if c.get("role") == "provider"
+        ]
         nodes = sorted({node for c in contracts if (node := _graph_node_for(node_ids, c))})
         if not nodes:
             continue
         links = enricher.get_contract_links_by_provider_symbol(raw)
         consumers = [
             {
+                "provider_repo": link.get("provider_repo"),
                 "repo": link.get("consumer_repo"),
                 "file": link.get("consumer_file"),
                 "contract_id": link.get("contract_id"),
                 "contract_type": link.get("contract_type"),
                 "match_type": link.get("match_type"),
                 "confidence": link.get("confidence"),
-                # symbol_id only when the consumer contract bound to one. An
-                # import sits at file scope, so code contracts carry none.
+                # An import sits at file scope, so code contracts carry none.
                 **({"symbol_id": sid} if (sid := link.get("consumer_symbol_id")) else {}),
             }
             for link in links[:_SYMBOL_CONSUMER_LIMIT]
         ]
-        blocks.append(
-            {
-                "symbol_id": raw,
-                "nodes": nodes,
-                "contract_ids": sorted({c["contract_id"] for c in contracts if c.get("contract_id")}),
-                "consumers": consumers,
-                "consumers_truncated": max(0, len(links) - len(consumers)),
-            }
-        )
+        block: dict[str, Any] = {
+            "symbol_id": raw,
+            "nodes": nodes,
+            "contract_ids": sorted(
+                {c["contract_id"] for c in contracts if c.get("contract_id")}
+            ),
+            "consumers": consumers,
+            "consumer_count": len(links),
+            "consumers_truncated": max(0, len(links) - len(consumers)),
+        }
+        # Symbol ids are repo-relative, so one id can name two symbols.
+        if len(repos := sorted({c["repo"] for c in contracts if c.get("repo")})) > 1:
+            block["ambiguous_in_repos"] = repos
+        blocks.append(block)
         replacements[raw] = nodes
 
     if not replacements:

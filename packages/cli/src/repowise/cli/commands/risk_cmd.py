@@ -151,7 +151,12 @@ def _render_target_risk(projected: dict, requested: tuple[str, ...]) -> None:
         ):
             _print_list(label, directive.get(key) or [])
         for label, key in _DIRECTIVE_RECORD_BLOCKS:
-            _print_records(label, directive.get(key) or [], key)
+            _print_records(
+                label,
+                directive.get(key) or [],
+                key,
+                truncated=directive.get(f"{key}_truncated") or 0,
+            )
 
     targets = projected.get("targets") or {}
     for name in requested:
@@ -353,7 +358,7 @@ def _record_text(key: str, entry: dict) -> str:
     return str(entry)
 
 
-def _print_records(label: str, values: list, key: str) -> None:
+def _print_records(label: str, values: list, key: str, truncated: int = 0) -> None:
     """A directive block whose entries are dicts, one line each."""
     from rich.markup import escape
 
@@ -363,6 +368,8 @@ def _print_records(label: str, values: list, key: str) -> None:
     for entry in values:
         text = _record_text(key, entry) if isinstance(entry, dict) else str(entry)
         console.print(f"    {escape(str(text))}")
+    if truncated:
+        console.print(f"    [dim]... and {truncated} more[/dim]")
 
 
 def _ordinal(n: int) -> str:

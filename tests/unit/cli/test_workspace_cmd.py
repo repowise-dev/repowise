@@ -653,7 +653,14 @@ class TestWorkspaceCheckBreaking:
             root,
         )
 
-    def _save_report(self, root: Path, *, consumer_repo: str) -> None:
+    def _save_report(
+        self,
+        root: Path,
+        *,
+        consumer_repo: str,
+        severity: str = "breaking",
+        extra_consumers: tuple[str, ...] = (),
+    ) -> None:
         from repowise.core.workspace.breaking_change import (
             BreakingChange,
             BreakingChangeReport,
@@ -667,7 +674,7 @@ class TestWorkspaceCheckBreaking:
                 changes=[
                     BreakingChange(
                         kind="removed_endpoint",
-                        severity="breaking",
+                        severity=severity,
                         contract_id="code::@acme/types::Order",
                         contract_type="code",
                         provider_repo="api",
@@ -677,14 +684,15 @@ class TestWorkspaceCheckBreaking:
                         detail="code::@acme/types::Order was removed",
                         impacted_consumers=[
                             ImpactedConsumer(
-                                repo=consumer_repo,
+                                repo=repo,
                                 service=None,
-                                node_id=consumer_repo,
-                                file="src/api.ts",
+                                node_id=repo,
+                                file=f"src/{i}.ts",
                                 symbol="@acme/types:Order",
                                 match_type="exact",
                                 confidence=0.9,
                             )
+                            for i, repo in enumerate((consumer_repo, *extra_consumers))
                         ],
                     )
                 ],
@@ -739,3 +747,42 @@ class TestWorkspaceCheckBreaking:
         result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "breaking contract" not in result.output
+
+    def test_a_warning_severity_does_not_fail_the_build(self, runner, tmp_path):
+        """A removed request field is source-compat only, not wire-incompatible."""
+        self._write_config(tmp_path)
+        self._save_graph(tmp_path)
+        self._save_report(tmp_path, consumer_repo="frontend", severity="warning")
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "No breaking contract changes" in result.output
+
+    def test_the_consumer_count_is_the_cross_repo_one(self, runner, tmp_path):
+        """Two of the three consumers are in the provider's own repo."""
+        self._write_config(tmp_path)
+        self._save_graph(tmp_path)
+        self._save_report(
+            tmp_path, consumer_repo="frontend", extra_consumers=("api", "api")
+        )
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        assert "1 consumer(s) in frontend" in result.output
+
+    def test_the_report_stamp_is_shown_beside_the_finding(self, runner, tmp_path):
+        """The graph is recomputed now; this artifact can be any age."""
+        self._write_config(tmp_path)
+        self._save_graph(tmp_path)
+        self._save_report(tmp_path, consumer_repo="frontend")
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path)])
+        assert "2026-08-23T00:00:00+00:00" in result.output
+
+    def test_json_stamps_the_breaking_half_separately(self, runner, tmp_path):
+        import json
+
+        self._write_config(tmp_path)
+        self._save_graph(tmp_path)
+        self._save_report(tmp_path, consumer_repo="frontend")
+        result = runner.invoke(cli, ["workspace", "check", str(tmp_path), "--json"])
+        data = json.loads(result.output)
+        assert data["breaking_changes_generated_at"] == "2026-08-23T00:00:00+00:00"
+        assert data["generated_at"] != data["breaking_changes_generated_at"]
