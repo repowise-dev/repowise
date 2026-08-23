@@ -40,6 +40,18 @@ export interface WorkspaceContractLinkEntry {
   consumer_repo: string;
   consumer_file: string;
   consumer_symbol: string;
+  /**
+   * Service boundary the provider sits behind, when the workspace declares one.
+   * Same-repo same-service pairs never link, so this is what explains a
+   * cross-repo link between two services of one monorepo.
+   */
+  provider_service: string | null;
+  /**
+   * The linked contracts' symbol ids, so a caller can name the code rather than
+   * a display label. Null when that side never bound to one.
+   */
+  provider_symbol_id: string | null;
+  consumer_symbol_id: string | null;
 }
 
 export interface WorkspaceCoChangeEntry {
