@@ -897,3 +897,122 @@ class TestPythonLeavesTheJsPassAlone:
     def test_a_python_file_with_no_client_yields_nothing(self):
         source = "import os\ndef f():\n    return os.environ.get('/not/a/url')\n"
         assert _run_py(source) == ([], 0)
+
+
+class TestTrailingQueryExpressionIsNotAPathSegment:
+    """An interpolated query string must not become a segment of the path.
+
+    The ``?`` lives inside the expression, so :func:`normalize_http_path` never
+    sees it and the call used to key on ``/snapshots/{param}/graph{param}``,
+    which no provider declares.
+    """
+
+    QUERY_SUFFIX_TS = """\
+const API_BASE = "https://api.example.com";
+
+export class HostedApiClient {
+  private async request(path: string, init?: RequestInit): Promise<Response> {
+    const res = await fetch(`${API_BASE}${path}`, init);
+    if (!res.ok) throw new Error("bad");
+    return res;
+  }
+
+  private async fetch<T>(path: string, init?: RequestInit): Promise<T> {
+    return (await this.request(path, init)).json();
+  }
+
+  getGraph(id: string, limit?: number) {
+    const q = limit != null ? `?limit=${limit}` : "";
+    return this.fetch<GraphResponse>(`/snapshots/${id}/graph${q}`);
+  }
+
+  getFile(id: string, path: string) {
+    return this.fetch<FileResponse>(`/repos/${id}/files/${path}`);
+  }
+}
+"""
+
+    def test_the_suffix_is_dropped_from_the_key(self):
+        contracts, _u, _c = _run(self.QUERY_SUFFIX_TS)
+        assert "http::GET::/snapshots/{param}/graph" in _ids(contracts)
+
+    def test_a_final_path_parameter_is_kept(self):
+        """The discriminator is the ``/`` separator, not the interpolation."""
+        contracts, _u, _c = _run(self.QUERY_SUFFIX_TS)
+        assert "http::GET::/repos/{param}/files/{param}" in _ids(contracts)
+
+    def test_it_now_reaches_the_provider_that_exists(self):
+        """End to end against a provider built by the product's own normalizer."""
+        from repowise.core.workspace.contracts import match_contracts
+        from repowise.core.workspace.extractors.http.dialect import build_provider_contract
+
+        consumers, _u, _c = _run(self.QUERY_SUFFIX_TS)
+        backend_ctx = ScanContext("backend", "app/routers/graph.py", ".py", "", {})
+        provider = build_provider_contract(
+            backend_ctx,
+            method="GET",
+            path_raw="/snapshots/{snapshot_id}/graph",
+            framework="fastapi",
+        )
+        links = match_contracts([provider, *consumers])
+        assert {lk.contract_id for lk in links} == {"http::GET::/snapshots/{param}/graph"}
+
+    def test_the_shared_normalizer_was_not_widened(self):
+        """Providers share ``normalize_http_path``; the fix stays consumer-side."""
+        from repowise.core.workspace.extractors.http.paths import normalize_http_path
+
+        assert (
+            normalize_http_path("/snapshots/{id}/graph${q}")
+            == "/snapshots/{param}/graph{param}"
+        )
+
+
+class TestTheCalleeNameCarriesTheVerb:
+    """``apiPost(...)`` is a POST. Defaulting it to GET matched no provider."""
+
+    # The shape packages/api-client/src/providers.ts really uses: verb-named
+    # wrappers imported from a sibling module, called with no `method:` option.
+    PROVIDERS_TS = """\
+import { apiPost, apiDelete } from "./client";
+
+export async function addProviderKey(providerId: string, apiKey: string) {
+  await apiPost(`/api/providers/${providerId}/key`, { api_key: apiKey });
+}
+
+export async function removeProviderKey(providerId: string, repoId?: string) {
+  const qs = repoId ? `?repo_id=${encodeURIComponent(repoId)}` : "";
+  await apiDelete(`/api/providers/${providerId}/key${qs}`);
+}
+"""
+
+    def test_the_verb_wrappers_record_their_own_methods(self):
+        ctx = ScanContext(
+            "repowise",
+            "packages/api-client/src/providers.ts",
+            ".ts",
+            self.PROVIDERS_TS,
+            {},
+        )
+        assert _ids(JsClientsDialect().extract(ctx)) == {
+            "http::POST::/api/providers/{param}/key",
+            "http::DELETE::/api/providers/{param}/key",
+        }
+
+    @pytest.mark.parametrize(
+        ("callee", "expected"),
+        [
+            ("apiPost", "POST"),
+            ("apiDelete", "DELETE"),
+            # A leading verb wins outright, so the noun `Post` cannot steal it.
+            ("getPostById", "GET"),
+        ],
+    )
+    def test_the_verb_is_read_from_the_name(self, callee, expected):
+        from repowise.core.workspace.extractors.http.dialect import method_from_callee
+
+        assert method_from_callee(callee) == expected
+
+    def test_a_name_with_no_verb_falls_back(self):
+        from repowise.core.workspace.extractors.http.dialect import method_from_callee
+
+        assert method_from_callee("fetchJSON") == "GET"

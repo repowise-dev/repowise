@@ -106,6 +106,24 @@ def strip_leading_base_expr(path: str) -> tuple[str, str]:
     return new_path, m.group(1).strip()
 
 
+# A trailing interpolated query string, e.g. ``/repos${qs}``. Required to follow
+# an alphanumeric so a composed segment value (``/users/user-${id}``) is spared.
+_TRAILING_QUERY_EXPR_RE = re.compile(r"(?<=[A-Za-z0-9])(?:\$\{[^}]*\})+$")
+
+
+def strip_trailing_query_expr(path: str) -> str:
+    """Drop a trailing interpolated query string from a consumer URL path.
+
+    ``/snapshots/${id}/graph${q}`` becomes ``/snapshots/${id}/graph``. The
+    expression holds ``?limit=...`` at run time, but the ``?`` is inside it, so
+    :func:`normalize_http_path` cannot see it and the call normalizes to
+    ``/snapshots/{param}/graph{param}`` — a path no provider declares. A real
+    path parameter occupies its own segment (``/users/${id}``), so only an
+    expression glued onto the preceding segment is read as a query string.
+    """
+    return _TRAILING_QUERY_EXPR_RE.sub("", path)
+
+
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 

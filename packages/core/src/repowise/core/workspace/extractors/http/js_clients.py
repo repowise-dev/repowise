@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from ..base import line_at
 from ..langs import JS_TS
-from .dialect import METHODS, build_consumer_contract
+from .dialect import METHODS, build_consumer_contract, method_from_callee
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -106,7 +106,11 @@ class JsClientsDialect:
             # Require an HTTP signal: an HTTP-ish callee name or a method option.
             if not (_HTTP_NAME_RE.search(callee) or method_opt):
                 continue
-            method = method_opt.group(1).upper() if method_opt else "GET"
+            # No `method:` option: the callee name is the only verb evidence
+            # there is, and `apiPost`/`apiDelete` carry it.
+            method = (
+                method_opt.group(1).upper() if method_opt else method_from_callee(callee)
+            )
             emit(
                 method=method,
                 url=m.group(2),

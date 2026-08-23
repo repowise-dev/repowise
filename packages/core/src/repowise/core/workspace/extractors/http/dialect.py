@@ -9,6 +9,7 @@ place.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from ..base import ScanContext
@@ -19,6 +20,7 @@ from .paths import (
     is_unusable_consumer_path,
     normalize_http_path,
     strip_leading_base_expr,
+    strip_trailing_query_expr,
 )
 
 if TYPE_CHECKING:
@@ -27,6 +29,26 @@ if TYPE_CHECKING:
 # Regex fragments for the HTTP method verbs, shared by every dialect's patterns.
 METHODS = r"get|post|put|delete|patch"
 METHODS_UPPER = r"GET|POST|PUT|DELETE|PATCH"
+
+_VERB_TOKENS = frozenset(METHODS.split("|"))
+
+# Identifier tokens, splitting camelCase and acronym runs: ``apiJSONPost`` ->
+# ``api``, ``JSON``, ``Post``.
+_CAMEL_TOKEN_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
+
+
+def method_from_callee(callee: str, default: str = "GET") -> str:
+    """Read the HTTP verb a wrapper's *name* encodes, else *default*.
+
+    ``apiPost`` -> ``POST``, ``apiDelete`` -> ``DELETE``. A leading verb wins
+    outright so ``getPostById`` stays ``GET``; failing that, a single verb token
+    names the method, and anything more ambiguous falls back rather than guess.
+    """
+    tokens = [t.lower() for t in _CAMEL_TOKEN_RE.findall(callee)]
+    if tokens and tokens[0] in _VERB_TOKENS:
+        return tokens[0].upper()
+    verbs = [t for t in tokens if t in _VERB_TOKENS]
+    return verbs[0].upper() if len(verbs) == 1 else default
 
 
 @runtime_checkable
@@ -124,6 +146,7 @@ def build_consumer_contract(
     host = absolute_host(url)
     path = extract_path_from_url(url)
     path, base_token = strip_leading_base_expr(path)
+    path = strip_trailing_query_expr(path)
     norm_path = normalize_http_path(path)
     if is_unusable_consumer_path(norm_path):
         return None
