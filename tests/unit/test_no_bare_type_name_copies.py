@@ -86,6 +86,10 @@ _KNOWN: dict[str, int] = {
     _PREFIX + "dynamic_hints/swift.py": 1,
     # Splits an import statement's package path, not a type reference.
     _PREFIX + "languages/jvm_same_package.py": 1,
+    # Takes the head of a URLconf's `views.detail` to reach the Python module
+    # declaring the view. The trailing segment is the view function and the
+    # head is a module path, so neither end is a type.
+    _PREFIX + "framework_edges/django.py": 1,
     # Split a route handler's path to reach a function name, and keep the
     # prefix to resolve the package it came from. Neither wants a type.
     _PREFIX + "framework_edges/rust.py": 1,

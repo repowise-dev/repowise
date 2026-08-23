@@ -90,6 +90,8 @@ def _add_urlconf_edges(
         text = read_text(parsed)
         if not text:
             continue
+        # The head of `views.detail` is a module path, not a declaring type:
+        # the module resolves to a file, the trailing segment is the view.
         modules = [
             route.handler.rpartition(".")[0]
             for route in django_routes(text)
