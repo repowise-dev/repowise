@@ -852,11 +852,11 @@ def _build_guided_tour(
     tour = _dedupe_tour_steps(ov_meta.get("guided_tour") or []) if want_tour else []
     if tour:
         steps = []
-        for s in tour:
+        for n, s in enumerate(tour, start=1):
             page_id = compute_page_id(s.get("page_type", "file_page"), s.get("target_path", ""))
             steps.append(
                 {
-                    "order": s.get("order"),
+                    "order": n,
                     "title": s.get("title"),
                     "kind": s.get("kind"),
                     "reason": s.get("reason"),
