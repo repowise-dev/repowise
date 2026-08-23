@@ -14,6 +14,7 @@ import logging
 import math
 import os
 from pathlib import Path
+from typing import NamedTuple
 
 from repowise.server.mcp_server.tool_answer.config import (
     _SYNTHESIS_MAX_TOKENS,
@@ -46,9 +47,26 @@ def _hash_question(question: str) -> str:
     return hashlib.sha256(norm.encode("utf-8")).hexdigest()
 
 
+class _RepoProviderConfig(NamedTuple):
+    """Persisted provider intent for one repo, as the resolver consumes it.
+
+    ``provider``/``model`` drive generation and are the historical answer
+    fallback. ``answer_provider``/``answer_model`` are the answer surface's
+    own choice: serving a question is a different workload from writing a
+    wiki (short grounded prose against excerpts vs. long-form synthesis), so
+    the two no longer have to share a model. Any field may be None.
+    """
+
+    provider: str | None
+    model: str | None
+    answer_provider: str | None
+    answer_model: str | None
+    env_overlay: dict[str, str]
+
+
 def _load_repo_provider_config(
     repo_path: Path | None,
-) -> tuple[str | None, str | None, dict[str, str]]:
+) -> _RepoProviderConfig:
     """Read persisted provider config for a repo.
 
     `repowise init` writes the chosen provider + model into
@@ -59,11 +77,11 @@ def _load_repo_provider_config(
     launched Claude Code. This recovers the persisted values so the same
     provider used for init / update is reused for get_answer.
 
-    Returns ``(provider_name, model, env_overlay)``. Any field may be
-    None / empty — callers should fall back to process env when missing.
+    Returns a :class:`_RepoProviderConfig`. Any field may be None / empty —
+    callers should fall back to process env when missing.
     """
     if repo_path is None:
-        return None, None, {}
+        return _RepoProviderConfig(None, None, None, None, {})
 
     config_path = repo_path / ".repowise" / "config.yaml"
     state_path = repo_path / ".repowise" / "state.json"
@@ -71,6 +89,8 @@ def _load_repo_provider_config(
 
     name: str | None = None
     model: str | None = None
+    answer_name: str | None = None
+    answer_model: str | None = None
     overlay: dict[str, str] = {}
 
     # config.yaml first: it is the user-editable intent. state.json only
@@ -86,6 +106,12 @@ def _load_repo_provider_config(
             if isinstance(data, dict):
                 name = data.get("provider") or None
                 model = data.get("model") or None
+                # Answer-surface intent lives in config.yaml only: state.json
+                # records what the last index run used, and no index run ever
+                # uses the answer model, so a state fallback could only serve
+                # stale or meaningless values.
+                answer_name = data.get("answer_provider") or None
+                answer_model = data.get("answer_model") or None
     except Exception:
         _log.debug("Failed to read %s", config_path, exc_info=True)
 
@@ -111,7 +137,7 @@ def _load_repo_provider_config(
     except Exception:
         _log.debug("Failed to read %s", env_path, exc_info=True)
 
-    return name, model, overlay
+    return _RepoProviderConfig(name, model, answer_name, answer_model, overlay)
 
 
 def _resolve_provider_for_answer(repo_path: Path | None = None):
@@ -122,11 +148,18 @@ def _resolve_provider_for_answer(repo_path: Path | None = None):
     the two cannot drift apart. Returns a BaseProvider or None if no API key /
     provider is configured.
 
-    Resolution order: process env vars first, then ``.repowise/config.yaml``
-    / ``state.json`` + ``.repowise/.env`` for the active repo. The persisted
-    values are the same ones ``repowise init`` and ``repowise update`` use, so
-    get_answer follows the user's existing provider choice without a separate
-    config.
+    Resolution order: the answer surface's own settings first —
+    ``REPOWISE_ANSWER_PROVIDER`` / ``REPOWISE_ANSWER_MODEL`` in the process
+    env, then ``answer_provider`` / ``answer_model`` in
+    ``.repowise/config.yaml`` — because answering questions (short grounded
+    prose over excerpts) and writing wiki pages (long-form synthesis) are
+    different workloads that need not share a model. Absent those, the
+    generation chain applies unchanged: process env
+    (``REPOWISE_PROVIDER`` / ``REPOWISE_DOC_MODEL`` / ``REPOWISE_MODEL``),
+    then ``.repowise/config.yaml`` / ``state.json`` + ``.repowise/.env`` for
+    the active repo — the same values ``repowise init`` and ``repowise
+    update`` use, so get_answer follows the existing provider choice without
+    a separate config.
     """
     try:
         from repowise.core.providers.llm.registry import (
@@ -140,17 +173,35 @@ def _resolve_provider_for_answer(repo_path: Path | None = None):
         _log.warning("Provider registry import failed", exc_info=True)
         return None
 
-    persisted_name, persisted_model, env_overlay = _load_repo_provider_config(repo_path)
+    persisted = _load_repo_provider_config(repo_path)
 
     def _env(key: str) -> str | None:
         # Prefer real process env so an explicit shell export still wins;
         # fall back to .repowise/.env only when the process env is empty.
-        return os.environ.get(key) or env_overlay.get(key) or None
+        return os.environ.get(key) or persisted.env_overlay.get(key) or None
 
-    name = os.environ.get("REPOWISE_PROVIDER") or persisted_name
-    model = (
-        os.environ.get("REPOWISE_DOC_MODEL") or os.environ.get("REPOWISE_MODEL") or persisted_model
-    )
+    # Answer-specific intent outranks the generation settings: writing a wiki
+    # and answering a question are different workloads, and a deployment that
+    # names an answer model has said so explicitly. Within each tier, process
+    # env beats persisted config, matching the rest of this function.
+    answer_name = os.environ.get("REPOWISE_ANSWER_PROVIDER") or persisted.answer_provider
+    answer_model = os.environ.get("REPOWISE_ANSWER_MODEL") or persisted.answer_model
+
+    if answer_name:
+        name = answer_name
+        # A generic doc/generation model belongs to the generation provider;
+        # pairing it with a different answer provider would request a model
+        # that provider does not serve. No answer model means the answer
+        # provider's own default.
+        model = answer_model
+    else:
+        name = os.environ.get("REPOWISE_PROVIDER") or persisted.provider
+        model = (
+            answer_model
+            or os.environ.get("REPOWISE_DOC_MODEL")
+            or os.environ.get("REPOWISE_MODEL")
+            or persisted.model
+        )
 
     def _try(provider_name: str, provider_model: str | None):
         kwargs = provider_kwargs(
@@ -182,7 +233,11 @@ def _resolve_provider_for_answer(repo_path: Path | None = None):
             "auto-detection from available API keys.",
             name,
         )
-        if not (os.environ.get("REPOWISE_DOC_MODEL") or os.environ.get("REPOWISE_MODEL")):
+        if not (
+            os.environ.get("REPOWISE_ANSWER_MODEL")
+            or os.environ.get("REPOWISE_DOC_MODEL")
+            or os.environ.get("REPOWISE_MODEL")
+        ):
             model = None  # persisted model was provider-specific
 
     # Auto-detect from whatever credentials the environment carries. Only the
