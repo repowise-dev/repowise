@@ -328,3 +328,27 @@ def test_java_is_the_only_language_carrying_a_chain_head_table() -> None:
         spec.tag for spec in REGISTRY.all_specs() if spec.external_return_types
     }
     assert populated == {"java"}
+
+
+def test_java_external_chain_head_is_exempt_when_the_repo_declares_the_name(
+    tmp_path: Path,
+) -> None:
+    """A same-package repository type needs no import, so the import list misses it.
+
+    The table records the JDK's return type, which is the wrong answer for a
+    repository type whose factory returns something else, so refusing on it
+    would drop a correct edge. Any repo-declared receiver name is exempted.
+    """
+    own = "package a;\nclass Duration { static Duration ofSeconds(int s) { return null; }\n long toNanos() { return 0; } }\n"
+    use = "package a;\nclass Use { long go() { return Duration.ofSeconds(3).toNanos(); } }\n"
+    (tmp_path / "a").mkdir()
+    parsed = {}
+    parsed.update(_parse(tmp_path, "a/Duration.java", "java", own))
+    parsed.update(_parse(tmp_path, "a/Use.java", "java", use))
+    call = _java_chain_call(parsed, "a/Use.java", "toNanos")
+
+    resolved = CallResolver(parsed, {}, repo_path=str(tmp_path)).resolve_file(
+        "a/Use.java", [call]
+    )
+    assert len(resolved) == 1
+    assert resolved[0].callee_id.endswith("::Duration::toNanos")

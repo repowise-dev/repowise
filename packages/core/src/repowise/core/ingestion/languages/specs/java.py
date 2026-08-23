@@ -32,6 +32,11 @@ _EXTERNAL_RETURN_TYPES: dict[str, dict[str, str]] = {
         "rangeClosed": "LongStream",
     },
     # java.util / java.math / java.lang / java.util.concurrent
+    # `Arrays.stream` is overloaded and returns IntStream/LongStream/DoubleStream
+    # for a primitive array. Recording `Stream` is a ceiling, not an oversight:
+    # the type is only used to ask whether the repository declares one of that
+    # name, all four are external, and the resolver exempts any name the
+    # repository does declare - so both readings refuse, and refusing is right.
     "Arrays": {"asList": "List", "stream": "Stream"},
     "BigInteger": {"valueOf": "BigInteger"},
     "ThreadLocal": {"withInitial": "ThreadLocal"},

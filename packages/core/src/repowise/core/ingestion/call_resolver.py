@@ -1014,12 +1014,22 @@ class CallResolver:
         is recorded as an ``external:`` marker, so a truthiness check exempts
         ``import com.google.common.collect.Maps`` and silently drops 36 of
         caffeine's 96 measured sites.
+
+        The import list alone is not enough, because java's same-package types
+        need no import. A repository declaring its own ``Duration`` anywhere is
+        exempted outright rather than same-package-checked: the table records
+        the *JDK's* return type, which is the wrong answer for a repository
+        type whose factory returns something else, and refusing on it would
+        drop a correct edge. Costs nothing measured - 0 of the 106 sites has a
+        repo-declared receiver name, by construction of the population.
         """
         receiver = inner.receiver_name
         if not receiver:
             return None
         methods = get_external_return_types(language).get(receiver)
         if methods is None:
+            return None
+        if receiver in self._known_type_names:
             return None
         bound = self._import_names.get(file_path, {}).get(receiver)
         if bound and not bound.startswith("external:"):
