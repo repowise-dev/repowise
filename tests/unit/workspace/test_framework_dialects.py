@@ -181,6 +181,26 @@ class TestDjangoContracts:
         # Without the mount this was "/items", which matches nothing a client calls.
         assert "http::*::/api/items" in self._extract(tmp_path)
 
+    def test_a_path_call_outside_django_is_not_an_endpoint(self, tmp_path: Path) -> None:
+        # `path` is an ordinary name, and the dialect reads every .py file, so
+        # without the import gate any repo with a helper of that shape gained
+        # fabricated endpoints.
+        (tmp_path / "router.py").write_text(
+            'def path(p, h): ...\n\nroutes = [path("admin/", handlers.admin)]\n',
+            encoding="utf-8",
+        )
+        assert _providers(tmp_path) == {}
+
+    def test_a_urlconf_away_from_urls_py_is_still_read(self, tmp_path: Path) -> None:
+        # Django's own admin publishes most of its surface from `get_urls()` in
+        # options.py, so the gate is the import and not the filename.
+        (tmp_path / "options.py").write_text(
+            "from django.urls import path\n\n"
+            "def get_urls():\n    return [path('add/', self.add_view)]\n",
+            encoding="utf-8",
+        )
+        assert "http::*::/add" in _providers(tmp_path)
+
     def test_a_wrapped_view_records_no_handler(self, tmp_path: Path) -> None:
         contracts = self._extract(tmp_path)
         assert contracts["http::*::/healthz"].meta["handler"] == "views.healthz"
@@ -218,14 +238,41 @@ class TestJaxRsRecognition:
             ("GET", ""),
         ]
 
-    def test_an_annotation_with_parens_does_not_end_the_run(self) -> None:
-        # `@Produces(...)` sits between @GET and its @Path; a scan that stopped
-        # at the first paren read no path at all.
-        (first,) = [r for r in jaxrs_routes(ACCOUNT_RESOURCE_JAVA) if r.verb == "GET"][:1]
-        assert first.path == "/data_report"
+    def test_an_annotation_carrying_braces_does_not_end_the_run(self) -> None:
+        # `@Produces({...})` puts a brace between @GET and its @Path. Only the
+        # paren-depth check keeps the run open across it; a scan for the next
+        # bare `{` stops here and reads no path at all.
+        source = (
+            "@Path(\"/v1\")\npublic class R {\n"
+            '  @GET\n  @Produces({"application/json", "text/plain"})\n'
+            '  @Path("/report")\n  public Report r() { return null; }\n}\n'
+        )
+        assert [(r.verb, r.path) for r in jaxrs_routes(source)] == [("GET", "/report")]
 
-    def test_a_path_param_annotation_is_not_a_path(self) -> None:
-        assert not jaxrs_class_paths('@PathParam("id") String id;')
+    def test_a_text_block_does_not_swallow_the_rest_of_the_file(self) -> None:
+        # A Java text block holding an odd number of quotes: pairwise quote
+        # matching reads the opening `\"\"\"` as an empty string plus an
+        # unterminated one, and every later route is lost inside it.
+        source = (
+            "@Path(\"/v1\")\npublic class R {\n"
+            '  @GET\n  @Operation(description = """\n'
+            'He said "gotcha then { boom } ; done\n""")\n'
+            '  @Path("/first")\n  public R a() { return null; }\n'
+            '  @POST\n  @Path("/second")\n  public R b() { return null; }\n}\n'
+        )
+        assert [(r.verb, r.path) for r in jaxrs_routes(source)] == [
+            ("GET", "/first"),
+            ("POST", "/second"),
+        ]
+        assert [p for _off, p in jaxrs_class_paths(source)] == ["/v1"]
+
+    def test_a_method_path_is_not_read_as_the_class_prefix(self) -> None:
+        # Both are spelled `@Path`; only the declaration each one reaches apart.
+        source = (
+            "@Path(\"/v1\")\npublic class R {\n"
+            '  @GET\n  @Path("/inner")\n  public R a() { return null; }\n}\n'
+        )
+        assert [p for _off, p in jaxrs_class_paths(source)] == ["/v1"]
 
 
 class TestJaxRsContracts:
@@ -350,6 +397,14 @@ class TestRouterDslContracts:
         )
         ids = _providers(tmp_path)
         assert ids["http::GET::/api/users"].meta["framework"] == "express"
+
+    def test_a_nested_namespace_constructor_still_binds(self, tmp_path: Path) -> None:
+        # The regex this table replaced took any dotted prefix; a one-segment
+        # prefix would have dropped these routes outright.
+        (tmp_path / "server.js").write_text(
+            "const r = services.http.Router();\nr.get('/deep', h);\n", encoding="utf-8"
+        )
+        assert _providers(tmp_path)["http::GET::/deep"].meta["framework"] == "express"
 
 
 # ---------------------------------------------------------------------------

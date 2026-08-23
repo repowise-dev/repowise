@@ -154,7 +154,9 @@ _EXPRESS_ROUTE_RE = re.compile(
 # serves it rather than to whichever recogniser claimed the variable first.
 _JS_ROUTER_CTORS: tuple[tuple[str, str], ...] = (
     # express(), express.Router(), require('express').Router(), bare Router().
-    ("express", r"(?:[\w$]+\s*\.\s*)?Router\s*\(|express\s*\("),
+    # The dotted prefix is `[\w$.]*` so a router built off a nested namespace
+    # (`services.http.Router()`) still binds, as it did before this table.
+    ("express", r"(?:[\w$.]*\s*\.\s*)?Router\s*\(|express\s*\("),
     ("hono", r"new\s+Hono\s*[(<]"),
     ("fastify", r"[Ff]astify\s*\("),
     ("koa", r"new\s+[Kk]oa\s*\("),
@@ -207,7 +209,12 @@ def express_routes(content: str) -> Iterator[RouteMatch]:
 
 
 def scan_code(
-    text: str, start: int = 0, *, quotes: str = "\"'`", hash_comments: bool = False
+    text: str,
+    start: int = 0,
+    *,
+    quotes: str = "\"'`",
+    hash_comments: bool = False,
+    text_blocks: bool = False,
 ) -> Iterator[tuple[int, str, int]]:
     """``(index, char, paren_depth)`` over *text*, skipping strings and comments.
 
@@ -217,12 +224,18 @@ def scan_code(
 
     *quotes* is what opens a string literal — Rust must pass ``'"'``, because its
     ``'`` is a lifetime. *hash_comments* adds PHP's ``#``, excluding the ``#[``
-    of an attribute.
+    of an attribute. *text_blocks* adds Java's ``\"\"\"``, which pairwise quote
+    matching otherwise reads as an empty string followed by an unterminated one,
+    swallowing the rest of the file at the first quote inside the block.
     """
     depth = 0
     i, n = start, len(text)
     while i < n:
         c = text[i]
+        if text_blocks and text[i : i + 3] == '"""':
+            end = text.find('"""', i + 3)
+            i = n if end == -1 else end + 3
+            continue
         if c in quotes:
             i += 1
             while i < n and text[i] != c:
@@ -511,7 +524,7 @@ def _jaxrs_decl_end(content: str, start: int) -> int:
     (``@Produces(MediaType.APPLICATION_JSON)``) and swagger nests them several
     deep, so anything that stops at the first paren stops inside the run.
     """
-    for i, c, depth in scan_code(content, start, quotes='"'):
+    for i, c, depth in scan_code(content, start, quotes='"', text_blocks=True):
         if depth == 0 and c in ";{":
             return i
     return len(content)

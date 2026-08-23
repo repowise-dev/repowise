@@ -28,6 +28,12 @@ if TYPE_CHECKING:
 # variable in the one mount map they share.
 _MOUNT_PREFIX = "django:"
 
+# `path`/`url`/`re_path` are ordinary names, so the file has to prove they are
+# Django's before its calls become endpoints. Not a `urls.py` filename gate:
+# `ModelAdmin.get_urls` builds a real URLconf from `options.py`, and Django's
+# own admin publishes most of its surface that way.
+_DJANGO_URLS_IMPORT = ("django.urls", "django.conf.urls")
+
 
 def _module_suffixes(rel_path: str) -> list[str]:
     """Dotted modules ``rel_path`` could be imported as, longest first.
@@ -45,9 +51,13 @@ class DjangoDialect:
 
     def collect_mounts(self, content: str) -> dict[str, str]:
         """``include("api.urls")`` mounts declared in *content*, keyed by module."""
+        if not any(mod in content for mod in _DJANGO_URLS_IMPORT):
+            return {}
         return {_MOUNT_PREFIX + module: prefix for prefix, module in django_includes(content)}
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
+        if not any(mod in ctx.content for mod in _DJANGO_URLS_IMPORT):
+            return []
         mount = next(
             (
                 p
