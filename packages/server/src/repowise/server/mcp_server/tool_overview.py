@@ -49,7 +49,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._budget import OmissionCollector, fit_to_budget
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -180,6 +180,9 @@ async def _workspace_overview() -> dict:
     if cross_repo_topology:
         result["cross_repo_topology"] = cross_repo_topology
 
+    collector = OmissionCollector("get_overview", repo_root=registry.workspace_root if registry else None)
+    fit_to_budget(result, _WORKSPACE_SHED_ORDER, collector)
+    collector.attach(result)
     return result
 
 
@@ -879,6 +882,25 @@ def _build_guided_tour(
         result.setdefault("architecture", {})["layer_order"] = layer_order
 
 
+# Cheapest loss first. Everything not listed answers a question that changes an
+# agent's next action, so it is never shed.
+_WORKSPACE_SHED_ORDER: tuple[str, ...] = ("cross_repo_topology", "repos[]")
+
+_SHED_ORDER: tuple[str, ...] = (
+    "tool_guide",
+    "guided_tour_hint",
+    "guided_tour",
+    "reading_order_hint",
+    "reading_order",
+    "community_summary",
+    "knowledge_map",
+    "key_decisions",
+    "outline_hint",
+    "outline",
+    "key_modules[]",
+)
+
+
 @mcp.tool()
 async def get_overview(repo: str | None = None, include: list[str] | None = None) -> dict:
     """Architecture map for an unfamiliar repo — first call when you don't know your way around.
@@ -1059,6 +1081,7 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
         }
 
         result["_meta"] = _build_meta(repository=repository)
+        fit_to_budget(result, _SHED_ORDER, collector)
         collector.attach(result)
         return result
 

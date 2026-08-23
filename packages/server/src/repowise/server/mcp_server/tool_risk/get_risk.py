@@ -14,7 +14,7 @@ from repowise.core.persistence.models import (
     GraphNode,
 )
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._budget import OmissionCollector, fit_to_budget
 from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -29,6 +29,14 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 from .assessment import _assess_one_target, _get_active_contributor_count, fix_annotation
 from .directives import _build_pr_directive, _governance_directive
 from .enrichment import _enrich_cross_repo, _enrich_health, _finalize_dep_summaries
+
+# Cheapest loss first; the target cards and the directive are never shed.
+# ``guarding_tests`` leads the dossier: _trim_blast_lists leaves it uncapped.
+_SHED_ORDER: tuple[str, ...] = (
+    "global_hotspots",
+    "pr_blast_radius.guarding_tests",
+    "pr_blast_radius",
+)
 
 
 @mcp.tool()
@@ -224,5 +232,6 @@ async def get_risk(
         repository=repository,
         targets=[*targets, *(changed_files or [])] if targets or changed_files else None,
     )
+    fit_to_budget(response, _SHED_ORDER, collector)
     collector.attach(response)
     return response

@@ -5,6 +5,8 @@ Covers:
   and the degrade-to-silent-drop posture on store failure.
 * truncate_to_budget — dropped symbols / targets / skeleton texts are
   recoverable, and keep/drop decisions are unchanged by the collector.
+* fit_to_budget — the block-shedding ceiling: a no-op under budget, sheds in
+  the tool's declared order over it, and every drop stays expandable.
 * get_symbol — omission-ref overload (``repowise#<12-hex>``), query
   filtering, and byte-identical normal symbol resolution.
 * Migrated tools (get_dead_code, get_risk trim helper, get_overview) — no
@@ -28,7 +30,9 @@ from repowise.server.mcp_server._budget import (
     HOST_MCP_TOKEN_CAP_DEFAULT,
     OmissionCollector,
     effective_char_budget,
+    fit_to_budget,
     host_token_cap,
+    over_budget,
     truncate_to_budget,
 )
 
@@ -46,6 +50,11 @@ def _store_get(repo: Path, ref: str, query: str | None = None) -> str | None:
         return store.get(ref, query=query)
     finally:
         store.close()
+
+
+def _joined(repo: Path, refs: list[str]) -> str:
+    """Every omission doc the refs point at, concatenated."""
+    return chr(10).join(_store_get(repo, r) or "" for r in refs)
 
 
 def _store_record(repo: Path, ref: str) -> dict | None:
@@ -225,6 +234,91 @@ def test_budgeter_decisions_unchanged_by_collector(repo_root: Path):
     )
 
 
+# ---------------------------------------------------------------------------
+# fit_to_budget — the block-shedding ceiling
+# ---------------------------------------------------------------------------
+
+
+def _blocks_response(pad: int = 0) -> dict:
+    return {
+        "title": "repo",
+        "keep_me": {"entry_points": ["main.py"]},
+        "cheap": "c" * pad,
+        "dear": {"rows": ["d" * pad]},
+        "nested": {"heavy": "h" * pad, "light": 1},
+        "ranked": [{"row": i, "body": "r" * pad} for i in range(6)],
+        "_meta": {"timing_ms": 1.0},
+    }
+
+
+_ORDER = ("cheap", "nested.heavy", "dear", "ranked[]")
+
+
+def _narrow_budget(monkeypatch, tokens: int) -> None:
+    """Pull the host cap down so a small fixture counts as oversized."""
+    monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", str(tokens))
+
+
+def test_fit_to_budget_is_a_noop_under_budget(repo_root: Path):
+    """The common case: a response that fits keeps every block, untouched."""
+    response = _blocks_response(pad=50)
+    before = json.dumps(response, sort_keys=True, default=str)
+    collector = OmissionCollector("get_overview", repo_root=repo_root)
+
+    out = fit_to_budget(response, _ORDER, collector)
+
+    assert json.dumps(out, sort_keys=True, default=str) == before
+    assert "truncated" not in out
+    assert collector.empty
+
+
+def test_fit_to_budget_sheds_in_declared_order(repo_root: Path, monkeypatch):
+    _narrow_budget(monkeypatch, 1200)
+    response = _blocks_response(pad=1200)
+    collector = OmissionCollector("get_overview", repo_root=repo_root)
+
+    out = fit_to_budget(response, _ORDER, collector)
+    collector.attach(out)
+
+    assert out["truncated"] is True
+    # Cheapest first, and shedding stops as soon as it fits.
+    assert "cheap" not in out
+    assert out["title"] == "repo"
+    assert out["keep_me"] == {"entry_points": ["main.py"]}
+    assert not over_budget(out)
+    refs = out["_meta"]["omitted"]["refs"]
+    stored = _joined(repo_root, refs)
+    assert "cccc" in stored
+
+
+def test_fit_to_budget_sheds_a_nested_block(repo_root: Path, monkeypatch):
+    _narrow_budget(monkeypatch, 900)
+    response = _blocks_response(pad=1500)
+    collector = OmissionCollector("get_overview", repo_root=repo_root)
+
+    fit_to_budget(response, ("nested.heavy",), collector)
+
+    assert "heavy" not in response["nested"]
+    assert response["nested"]["light"] == 1
+
+
+def test_fit_to_budget_trims_a_ranked_tail_but_never_empties_it(
+    repo_root: Path, monkeypatch
+):
+    _narrow_budget(monkeypatch, 700)
+    response = {"results": [{"row": i, "body": "r" * 900} for i in range(6)]}
+    collector = OmissionCollector("search_codebase", repo_root=repo_root)
+
+    fit_to_budget(response, ("results[]",), collector)
+    collector.attach(response)
+
+    assert len(response["results"]) == 1
+    assert response["results"][0]["row"] == 0  # best-ranked survives
+    refs = response["_meta"]["omitted"]["refs"]
+    stored = _joined(repo_root, refs)
+    assert '"row": 5' in stored
+
+
 def _skeleton_response(text_chars: int = 12000) -> dict:
     return {
         "targets": {
@@ -367,6 +461,30 @@ async def test_get_dead_code_truncation_is_expandable(setup_mcp, repo_root: Path
     assert "medium-tier findings beyond limit=1" in stored
     rec = _store_record(repo_root, omitted["refs"][0])
     assert rec["source"] == "mcp:get_dead_code"
+
+
+@pytest.mark.asyncio
+async def test_get_overview_stays_under_a_narrowed_host_cap(
+    setup_mcp, repo_root: Path, monkeypatch
+):
+    """The ceiling is real end to end: no block of a live tool escapes it."""
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server import get_overview
+
+    mcp_mod._repo_path = str(repo_root)
+    full = await get_overview()
+    assert "truncated" not in full  # normal cap: nothing sheds
+    assert full["tool_guide"]
+
+    monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", "700")
+    trimmed = await get_overview()
+
+    assert trimmed["truncated"] is True
+    assert "tool_guide" not in trimmed  # first in the declared shed order
+    assert trimmed["title"] == full["title"]
+    assert not over_budget(trimmed)
+    stored = _joined(repo_root, trimmed["_meta"]["omitted"]["refs"])
+    assert "first_call" in stored
 
 
 def test_risk_trim_blast_lists_collects_drops(repo_root: Path):

@@ -19,6 +19,7 @@ from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.core.test_paths import is_test_path, is_test_related_path
 from repowise.server.mcp_server._answer_pipeline import _RRF_K, _RRF_SCORE_SCALE
+from repowise.server.mcp_server._budget import OmissionCollector, fit_to_budget
 from repowise.server.mcp_server._helpers import (
     _VECTOR_TIMEOUT_ENV,
     _get_exclude_spec,
@@ -773,6 +774,21 @@ async def _federated_search(
         response["candidates"] = candidates
     # Last, so nothing above has to know the field is on its way out.
     _drop_derivable_page_ids(output)
+    return _fit_search_response(response, contexts[0].path if contexts else None)
+
+
+# A search response is one ranked list, so past the derived ``candidates`` there
+# is nothing to shed but the weakest hits.
+_SHED_ORDER: tuple[str, ...] = ("candidates", "results[]")
+
+
+def _fit_search_response(response: dict, repo_root: Any) -> dict:
+    """Bring a search response under the transport ceiling, recoverably."""
+    collector = OmissionCollector("search_codebase", repo_root=repo_root)
+    fit_to_budget(response, _SHED_ORDER, collector)
+    if response.get("truncated") and isinstance(response.get("_meta"), dict):
+        response["_meta"]["targets"] = _result_paths(response.get("results") or [])
+    collector.attach(response)
     return response
 
 
@@ -976,7 +992,7 @@ async def _structured_search(
         response["grep_hint"] = grep_hint
     # Last, so nothing above has to know the field is on its way out.
     _drop_derivable_page_ids(results)
-    return response
+    return _fit_search_response(response, contexts[0].path if contexts else None)
 
 
 @mcp.tool()
@@ -1114,4 +1130,4 @@ async def search_codebase(
     attach_ignored_arguments(response, ignored)
     # Last, so nothing above has to know the field is on its way out.
     _drop_derivable_page_ids(output)
-    return response
+    return _fit_search_response(response, ctx.path)

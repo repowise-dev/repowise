@@ -130,6 +130,8 @@ envelope lists how to get it back:
 
 Truncated skeleton blocks are replaced in place by a `[repowise#<ref>: ...]`
 marker; everything else is captured into one combined document per response.
+A response that would still oversize sheds whole blocks, in an order each tool
+declares cheapest-loss-first, and reports `truncated: true` alongside the refs.
 Resolve refs with `repowise expand <ref>` from a shell, or
 `get_symbol("repowise#<ref>")` from any MCP client. See
 [DISTILL.md](DISTILL.md) for the full reversibility model.

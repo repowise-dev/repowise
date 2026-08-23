@@ -1,12 +1,17 @@
-"""Staged whole-response truncation — the shared budgeter.
+"""Whole-response budget enforcement — the shared ceilings.
 
-Ported from ``tool_context/truncation.py`` (which now re-exports from here)
-so every tool shares one budget strategy instead of ad-hoc caps. The
-keep/drop decisions are byte-identical to the original implementation; the
-only additions are (a) an optional :class:`OmissionCollector` that makes
-every drop recoverable, and (b) a skeleton-stripping stage for the
-``include=["skeleton"]`` blocks that did not exist when the original was
-written.
+Two strategies, for two payload shapes:
+
+* :func:`truncate_to_budget` — the staged truncator ported from
+  ``tool_context/truncation.py`` (which now re-exports from here). Every stage
+  walks ``result["targets"][name]["docs"|"skeleton"|"symbols"]``, so it is
+  ``get_context``-shaped and has one caller by design. Keep/drop decisions are
+  byte-identical to the original; the additions are an optional
+  :class:`OmissionCollector` and a skeleton-stripping stage.
+* :func:`fit_to_budget` — sheds whole named blocks in a tool-declared order,
+  for the tools whose payload is a bag of independent blocks.
+
+``get_health`` keeps a third strategy (trims the longest ranked list by rows).
 
 The MCP host caps the size of a tool result. An over-cap result is **spilled to
 a sidecar file** the agent must Read back, not rejected: it comes back worded as
@@ -30,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Sequence
 from typing import Any
 
 from repowise.server.mcp_server._budget.collector import OmissionCollector
@@ -89,6 +95,77 @@ def estimate_response_tokens(obj: Any) -> int:
     names) is non-trivial and is what the downstream tokenizer actually sees.
     """
     return len(json.dumps(obj, separators=(",", ":"), default=str)) // CHARS_PER_TOKEN
+
+
+# Reserved for what the collector appends after the last fit check: the
+# omission marker and ``_meta.omitted``.
+FIT_HEADROOM_CHARS = 400
+
+
+def response_chars(response: Any) -> int:
+    """Serialised size of *response* in the compact JSON the MCP layer emits."""
+    return len(json.dumps(response, separators=(",", ":"), default=str))
+
+
+def over_budget(response: Any, *, headroom: int = FIT_HEADROOM_CHARS) -> bool:
+    """True when *response* would exceed the transport ceiling once markers land."""
+    return response_chars(response) > effective_char_budget() - headroom
+
+
+def fit_to_budget(
+    response: dict[str, Any],
+    order: Sequence[str],
+    collector: OmissionCollector,
+    *,
+    headroom: int = FIT_HEADROOM_CHARS,
+) -> dict[str, Any]:
+    """Shed whole blocks named by *order* until *response* fits the budget.
+
+    *order* is the tool's cheapest-loss-first ranking of the blocks it can live
+    without. ``"parent.child"`` sheds a nested block; ``"key[]"`` drops rows
+    from the tail of a ranked list instead of the list itself, keeping the
+    first. Shedding stops the moment the response fits, so an under-budget
+    response — the common case — is untouched.
+
+    Drops go to *collector* as expandable ``[repowise#<ref>]`` markers and set
+    ``truncated``. Call before the caller's :meth:`OmissionCollector.attach`,
+    which is what ``headroom`` reserves for.
+    """
+    for key in order:
+        if not over_budget(response, headroom=headroom):
+            break
+        container, _, leaf = key.rpartition(".")
+        target: Any = response
+        for part in container.split(".") if container else ():
+            target = target.get(part) if isinstance(target, dict) else None
+        if not isinstance(target, dict):
+            continue
+        if leaf.endswith("[]"):
+            _shed_tail(response, target, leaf[:-2], key[:-2], collector, headroom)
+        elif target.get(leaf):
+            collector.add(key, target.pop(leaf))
+            response["truncated"] = True
+    return response
+
+
+def _shed_tail(
+    response: dict[str, Any],
+    container: dict[str, Any],
+    leaf: str,
+    label: str,
+    collector: OmissionCollector,
+    headroom: int,
+) -> None:
+    """Drop ranked rows from the tail of ``container[leaf]`` until it fits."""
+    rows = container.get(leaf)
+    if not isinstance(rows, list):
+        return
+    dropped: list[Any] = []
+    while len(rows) > 1 and over_budget(response, headroom=headroom):
+        dropped.append(rows.pop())
+    if dropped:
+        collector.add(label, list(reversed(dropped)))
+        response["truncated"] = True
 
 
 # Heavy optional fields we can strip from a target's docs block without losing
