@@ -102,6 +102,35 @@ async def test_path_search_accepts_trailing_glob(setup_mcp, glob):
     assert [item["file"] for item in result] == ["packages/server/tool_overview.py"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("tool_overview.py", ["packages/server/tool_overview.py"]),
+        ("  *tool_overview?  ", ["packages/server/tool_overview.py"]),
+        ("*", []),
+        ("?", []),
+        ("tool_*_overview", []),
+    ],
+)
+async def test_path_search_preserves_non_trailing_glob_behavior(setup_mcp, query, expected):
+    """Only boundary glob markers are supported by path-mode substring search."""
+    import types
+
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server.tool_search_symbols import search_paths_single
+
+    await _seed_page("file_page:tool_overview.py", "packages/server/tool_overview.py")
+
+    ctx = types.SimpleNamespace(
+        session_factory=mcp_mod._session_factory,
+        path="/tmp/test-repo",
+    )
+    result = await search_paths_single(ctx, query, limit=10)
+
+    assert [item["file"] for item in result] == expected
+
+
 class TestDecisionDownweight:
     """Decision records must not crowd file pages out of the top ranks."""
 
