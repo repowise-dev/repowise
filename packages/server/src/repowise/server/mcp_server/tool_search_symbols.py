@@ -271,7 +271,7 @@ def _path_score(target_path: str, qnorm: str) -> float:
 
 async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
     """Path search against one repo context. Returns ranked file result dicts."""
-    qnorm = query.strip().lower().replace("\\", "/")
+    qnorm = query.strip().lower().replace("\\", "/").strip("*?")
     if not qnorm:
         return []
 
