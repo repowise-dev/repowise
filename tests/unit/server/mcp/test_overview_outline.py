@@ -8,11 +8,13 @@ built, and that a parent cycle cannot hang the walk.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server.tool_overview import (
     _build_outline,
+    _build_guided_tour,
     _module_order_key,
     _outline_index,
     _section_sort_key,
@@ -195,3 +197,23 @@ def test_key_modules_lead_with_the_top_of_the_spine_not_the_alphabet():
 def test_section_sort_key_is_numeric_and_puts_unplaced_last():
     ordered = sorted(["8.10", "8.9", None, "10.1", "2"], key=_section_sort_key)
     assert ordered == ["2", "8.9", "8.10", "10.1", None]
+
+
+def test_guided_tour_renumbers_steps_after_deduplication():
+    page = SimpleNamespace(
+        metadata_json=json.dumps(
+            {
+                "guided_tour": [
+                    {"order": 1, "page_type": "file_page", "target_path": "a.py", "kind": "entry", "reason": "first"},
+                    {"order": 2, "page_type": "file_page", "target_path": "b.py", "kind": "layer", "reason": "same"},
+                    {"order": 3, "page_type": "file_page", "target_path": "c.py", "kind": "layer", "reason": "same"},
+                    {"order": 4, "page_type": "file_page", "target_path": "d.py", "kind": "leaf", "reason": "last"},
+                ]
+            }
+        )
+    )
+    result = {}
+
+    _build_guided_tour(page, result, {}, want_tour=True)
+
+    assert [step["order"] for step in result["guided_tour"]] == [1, 2, 3]
