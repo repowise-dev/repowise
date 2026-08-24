@@ -403,8 +403,8 @@
         "icon": "$(pulse)",
         "tags": ["repowise"],
         "when": "repowise.agentToolsEnabled",
-        "modelDescription": "Report on the current branch's changes against a base branch. Lead with fix_history: the recency-weighted bug-fix record of the files touched, which is what separates a small dangerous change from a large boring one. The 0-10 score measures diff size and spread, not danger. Use it after making changes to judge whether the change set needs extra review or tests before pushing.",
-        "userDescription": "Defect risk score for the current branch.",
+        "modelDescription": "Report on the current branch's changes against a base branch. Lead with the benchmarked repo-relative percentile and classification. Fix history is separate historical evidence; the supporting 0-10 score measures diff size and spread and is not a probability. Use it after making changes to judge whether the change set needs extra review or tests before pushing.",
+        "userDescription": "Repo-relative review priority for the current branch.",
         "inputSchema": {
           "type": "object",
           "properties": {

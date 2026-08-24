@@ -26,6 +26,15 @@ const REPORT: RiskRangeReport = {
       percentile: 74,
       files: [{ path: "src/core.ts", churn: 40, fix_pressure: 5.5 }],
     },
+    risk_authority: {
+      authoritative_for: "live_change_review",
+      primary_fields: ["risk_percentile", "classification"],
+      primary_basis: "benchmarked_population_relative",
+      fallback_field: "fallback_band",
+      fallback_basis: "absolute_model_score_band",
+      score_role: "supporting_diff_shape_signal",
+    },
+    risk_scales: [],
     score: 7.4,
     score_measures: "diff size and spread; not where the change lands",
     score_unit: "per-commit",
@@ -82,12 +91,14 @@ const IMPACT: ChangeImpactReport = {
     direct_risks: [
       {
         path: "src/a.ts",
+        structural_score: 0.3,
         risk_score: 0.3,
         temporal_hotspot: 0.1,
         centrality: 0.8,
       },
       {
         path: "src/b.ts",
+        structural_score: 0.82,
         risk_score: 0.82,
         temporal_hotspot: 0.9,
         centrality: 0.1,
@@ -162,7 +173,26 @@ const IMPACT: ChangeImpactReport = {
         basis_categories: ["measured"],
       },
     },
+    structural_impact_score: 5.6,
+    structural_impact_band: "moderate",
+    structural_impact_scale: {
+      field: "structural_impact_score",
+      kind: "heuristic_structural_score",
+      unit: "normalized_points",
+      range: { minimum: 0, maximum: 10 },
+      measures: "indexed structural exposure",
+      deterministic: true,
+      calibration: { status: "uncalibrated", source: null },
+      authoritative_for_change_review: false,
+      runtime_breakage_probability: false,
+    },
     overall_risk_score: 5.6,
+    overall_risk_score_compatibility: {
+      deprecated: true,
+      replacement: "structural_impact_score",
+      equivalent_value: true,
+      historical_meaning: "uncalibrated 0-10 structural blast-radius heuristic",
+    },
   },
   reviewers: [
     {
@@ -311,11 +341,11 @@ describe("risk App", () => {
     );
 
     expect(
-      await screen.findByText("Riskiest files in this change"),
+      await screen.findByText("Highest structural weight in this change"),
     ).toBeTruthy();
     expect(screen.getByText("hotspot")).toBeTruthy();
     const bars = screen.getAllByTitle(
-      "Risk relative to the riskiest file in this change",
+      "Structural weight relative to the strongest file in this change",
     );
     expect(bars).toHaveLength(2);
     // Sorted riskiest first: b.ts (0.82) gets the full bar, a.ts a partial one.

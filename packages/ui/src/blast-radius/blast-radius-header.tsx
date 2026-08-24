@@ -20,23 +20,23 @@ interface Band {
   ring: string;
 }
 
-function band(score: number): Band {
-  if (score >= 7)
+function band(value: BlastRadiusResponse["structural_impact_band"]): Band {
+  if (value === "broad")
     return {
-      label: "High risk",
+      label: "Broad structural impact",
       color: "var(--color-error)",
       text: "text-[var(--color-error)]",
       ring: "border-[var(--color-error)]/30 bg-[var(--color-error)]/5",
     };
-  if (score >= 4)
+  if (value === "moderate")
     return {
-      label: "Medium risk",
+      label: "Moderate structural impact",
       color: "var(--color-warning)",
       text: "text-[var(--color-warning)]",
       ring: "border-[var(--color-warning)]/30 bg-[var(--color-warning)]/5",
     };
   return {
-    label: "Low risk",
+    label: "Localized structural impact",
     color: "var(--color-success)",
     text: "text-[var(--color-success)]",
     ring: "border-[var(--color-success)]/30 bg-[var(--color-success)]/5",
@@ -69,9 +69,12 @@ function arcPath(
   return `M ${start.x} ${start.y} A ${r} ${r} 0 ${largeArc} 1 ${end.x} ${end.y}`;
 }
 
-/** A 180° gauge that fills proportionally to the 0–10 score. */
-function RiskGauge({ score }: { score: number }) {
-  const b = band(score);
+/** A 180° gauge for the server-classified 0–10 structural heuristic. */
+function StructuralImpactGauge({ score, impactBand }: {
+  score: number;
+  impactBand: BlastRadiusResponse["structural_impact_band"];
+}) {
+  const b = band(impactBand);
   const frac = Math.max(0, Math.min(1, score / 10));
   const valueEnd = 180 + frac * 180;
   return (
@@ -187,7 +190,7 @@ function verdict(result: BlastRadiusResponse, changedCount: number): string {
 }
 
 /**
- * The blast-radius headline: a risk gauge, four signal tiles, and a one-line
+ * The blast-radius headline: a structural-impact gauge, four signal tiles, and a one-line
  * plain-English verdict — replacing the old centred-number card + flat stat
  * grid so the result reads as a conclusion, not a row of figures.
  */
@@ -195,10 +198,10 @@ export function BlastRadiusHeader({
   result,
   changedFiles = [],
 }: BlastRadiusHeaderProps) {
-  const b = band(result.overall_risk_score);
+  const b = band(result.structural_impact_band);
   const tiles: Tile[] = [
     {
-      label: "Direct risks",
+      label: "Changed files scored",
       value: result.direct_risks.length,
       icon: <AlertTriangle className="h-5 w-5" />,
       tone: "text-[var(--color-error)]",
@@ -230,7 +233,10 @@ export function BlastRadiusHeader({
   return (
     <div className={cn("rounded-xl border p-4 sm:p-5", b.ring)}>
       <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
-        <RiskGauge score={result.overall_risk_score} />
+        <StructuralImpactGauge
+          score={result.structural_impact_score}
+          impactBand={result.structural_impact_band}
+        />
 
         <div className="min-w-0 flex-1 space-y-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -238,7 +244,7 @@ export function BlastRadiusHeader({
               {b.label}
             </span>
             <span className="text-xs text-[var(--color-text-tertiary)]">
-              · blast radius of this change
+              · uncalibrated structural heuristic, not breakage probability
             </span>
           </div>
           <p className="text-sm leading-relaxed text-[var(--color-text-secondary)]">

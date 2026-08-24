@@ -48,10 +48,10 @@ const FEATURE_LABELS: ReadonlyArray<readonly [string, string]> = [
 
 type Tone = "low" | "medium" | "high";
 
-/** Buckets a 0-10 score into the three risk tones the palette defines. */
-function scoreTone(score: number): Tone {
-  if (score >= 6.5) return "high";
-  if (score >= 3.5) return "medium";
+/** Maps the server's authoritative absolute fallback band to presentation. */
+function fallbackBandTone(band: string | null): Tone {
+  if (band === "high") return "high";
+  if (band === "moderate") return "medium";
   return "low";
 }
 
@@ -79,7 +79,7 @@ function scrollToSection(id: string) {
     ?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-/** Formats a contribution with an explicit sign (positive raises risk). */
+/** Formats a contribution with an explicit sign (positive raises the model score). */
 function signed(value: number): string {
   return `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(2)}`;
 }
@@ -125,7 +125,7 @@ export function App({ host, repo, refreshToken }: ViewProps<"risk">) {
         ),
       )
       .finally(() => setLoading(false));
-    // Impact is independent: a git-less workspace still shows the risk score.
+    // Structural impact is independent: a git-less workspace still shows it.
     host.api
       .changeImpact()
       .then((r) => setImpact(r))
@@ -249,7 +249,7 @@ function ScoreHero({ report }: { report: RiskRangeReport }) {
   const ranked = percentile != null && priority != null;
   const color = ranked
     ? TONE_VAR[PRIORITY_TONE[priority] ?? "medium"]
-    : TONE_VAR[scoreTone(r.score)];
+    : TONE_VAR[fallbackBandTone(r.fallback_band)];
   return (
     <PageLede
       // Not "Change risk" again: the page's h1 two lines above already says
@@ -261,7 +261,7 @@ function ScoreHero({ report }: { report: RiskRangeReport }) {
       band={
         ranked
           ? { label: `${ordinal(percentile)} percentile`, color }
-          : { label: `${r.fallback_band ?? "unranked"} risk`, color }
+          : { label: `${r.fallback_band ?? "unranked"} absolute per-commit band`, color }
       }
       layout="beside"
       badge={
@@ -590,7 +590,7 @@ function ChangeImpact({
           ? "Test analysis is partial; recommendations may not cover every evidence input."
           : "Recommendations keep measured coverage evidence separate from structural inference.";
   const reviewers = impact.reviewers;
-  const overall = blast?.overall_risk_score ?? null;
+  const structuralImpact = blast?.structural_impact_score ?? null;
 
   const scopeLabel =
     impact.scope === "branch" ? "uncommitted and unpushed" : "uncommitted";
@@ -602,11 +602,12 @@ function ChangeImpact({
         <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
           {impact.changed.length} {scopeLabel} file
           {impact.changed.length === 1 ? "" : "s"}
-          {overall != null && (
+          {structuralImpact != null && (
             <>
               {" · "}
               <span className="font-medium text-[var(--color-text-secondary)]">
-                impact {overall.toFixed(1)}/10
+                structural impact {structuralImpact.toFixed(1)}/10 (
+                {blast?.structural_impact_band}; heuristic)
               </span>
             </>
           )}
@@ -618,8 +619,8 @@ function ChangeImpact({
         <ImpactBlock
           id={SECTION_IDS.directRisks}
           icon={<Gauge className="h-4 w-4" />}
-          title="Riskiest files in this change"
-          hint="Per-file risk from history and structure. Start your review here."
+          title="Highest structural weight in this change"
+          hint="Relative pagerank-weighted hotspot heuristic. It is not a breakage probability."
         >
           {directRisks.slice(0, 10).map((f) => (
             <DirectRiskRow
@@ -814,7 +815,7 @@ function DirectRiskRow({
       )}
       <span
         className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-[var(--color-bg-elevated)]"
-        title="Risk relative to the riskiest file in this change"
+        title="Structural weight relative to the strongest file in this change"
       >
         <span
           className="block h-full rounded-full"

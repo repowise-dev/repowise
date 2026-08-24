@@ -22,10 +22,10 @@ function basename(path: string): string {
   return path.split("/").pop() || path;
 }
 
-/** Health-band ink for a direct-risk node, mirroring the coupling vocabulary. */
-function riskInk(risk: number): string {
-  if (risk >= 0.66) return "var(--color-error)";
-  if (risk >= 0.33) return "var(--color-warning)";
+/** Within-change visual emphasis, not a public risk classification. */
+function structuralInk(share: number): string {
+  if (share >= 0.66) return "var(--color-error)";
+  if (share >= 0.33) return "var(--color-warning)";
   return "var(--color-success)";
 }
 
@@ -43,13 +43,17 @@ interface PlacedNode {
 
 /**
  * The impact map: changed files at the hub, direct risks on an inner ring
- * (sized by centrality, health-banded, high-risk nodes haloed), and transitive
+ * (sized by centrality, emphasized relative to the strongest changed file), and transitive
  * dependents on an outer ring graded by reach depth. Curved hairline edges and
  * faint ring guides give the blast radius a readable shape before the tables.
  */
 export function ImpactGraph({ result, changedFiles }: ImpactGraphProps) {
   const { centre, direct, transitive, maxDepth, truncDirect, truncTrans } = useMemo(() => {
     const directRows = result.direct_risks.slice(0, MAX_DIRECT);
+    const maxStructuralScore = directRows.reduce(
+      (value, row) => Math.max(value, row.structural_score),
+      0,
+    );
     const transitiveRows = result.transitive_affected.slice(0, MAX_TRANSITIVE);
     const depthCeil = Math.max(
       1,
@@ -74,16 +78,18 @@ export function ImpactGraph({ result, changedFiles }: ImpactGraphProps) {
 
     const directNodes: PlacedNode[] = directRows.map((d, i) => {
       const angle = (i / Math.max(1, directRows.length)) * 2 * Math.PI - Math.PI / 2;
+      const structuralShare =
+        maxStructuralScore > 0 ? d.structural_score / maxStructuralScore : 0;
       const node: PlacedNode = {
         key: `d-${d.path}`,
         label: basename(d.path),
-        full: `${d.path} · risk ${(d.risk_score * 10).toFixed(1)} · centrality ${(d.centrality * 100).toFixed(0)}%`,
+        full: `${d.path} · raw structural weight ${d.structural_score.toFixed(4)} · centrality ${(d.centrality * 100).toFixed(0)}%`,
         x: CX + Math.cos(angle) * INNER_R,
         y: CY + Math.sin(angle) * INNER_R,
         r: 5 + d.centrality * 6,
-        fill: riskInk(d.risk_score),
+        fill: structuralInk(structuralShare),
       };
-      if (d.risk_score >= 0.66) node.glow = "var(--color-error)";
+      if (structuralShare >= 0.66) node.glow = "var(--color-error)";
       return node;
     });
 
@@ -209,11 +215,11 @@ export function ImpactGraph({ result, changedFiles }: ImpactGraphProps) {
         </span>
         <span className="flex items-center gap-1.5">
           <span className="h-2.5 w-2.5 rounded-full bg-[var(--color-error)]" />
-          Direct, high risk
+          Highest relative structural weight
         </span>
         <span className="flex items-center gap-1.5">
           <span className="h-2.5 w-2.5 rounded-full bg-[var(--color-success)]" />
-          Direct, lower risk
+          Lower relative structural weight
         </span>
         <span className="flex items-center gap-1.5">
           <span className="h-2.5 w-2.5 rounded-full bg-[var(--color-text-secondary)]" />

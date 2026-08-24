@@ -15,6 +15,7 @@ const fixture: BlastRadiusResponse = {
   direct_risks: [
     {
       path: "src/auth/login.py",
+      structural_score: 0.82,
       risk_score: 0.82,
       temporal_hotspot: 0.74,
       centrality: 0.045,
@@ -102,19 +103,38 @@ const fixture: BlastRadiusResponse = {
       basis_categories: ["measured"],
     },
   },
+  structural_impact_score: 7.6,
+  structural_impact_band: "broad",
+  structural_impact_scale: {
+    field: "structural_impact_score",
+    kind: "heuristic_structural_score",
+    unit: "normalized_points",
+    range: { minimum: 0, maximum: 10 },
+    measures: "indexed structural exposure",
+    deterministic: true,
+    calibration: { status: "uncalibrated", source: null },
+    authoritative_for_change_review: false,
+    runtime_breakage_probability: false,
+  },
   overall_risk_score: 7.6,
+  overall_risk_score_compatibility: {
+    deprecated: true,
+    replacement: "structural_impact_score",
+    equivalent_value: true,
+    historical_meaning: "uncalibrated 0-10 structural blast-radius heuristic",
+  },
 };
 
 describe("RiskScoreCard", () => {
-  it("labels High Risk for score >= 7", () => {
-    render(<RiskScoreCard score={7.6} />);
-    expect(screen.getByText("High Risk")).toBeTruthy();
+  it("uses the server-provided broad structural band", () => {
+    render(<RiskScoreCard score={7.6} band="broad" />);
+    expect(screen.getByText("Broad structural impact")).toBeTruthy();
     expect(screen.getByText("7.6")).toBeTruthy();
   });
 
-  it("labels Low Risk for score < 4", () => {
+  it("does not derive a risk band when a legacy caller omits one", () => {
     render(<RiskScoreCard score={2.1} />);
-    expect(screen.getByText("Low Risk")).toBeTruthy();
+    expect(screen.getByText("Structural impact")).toBeTruthy();
   });
 });
 
@@ -140,9 +160,9 @@ describe("TableSection", () => {
 });
 
 describe("DirectRisksTable", () => {
-  it("scales risk_score 0–1 → 0–10", () => {
+  it("shows the raw structural weight instead of inventing a 0–10 scale", () => {
     render(<DirectRisksTable rows={fixture.direct_risks} />);
-    expect(screen.getByText("8.2")).toBeTruthy();
+    expect(screen.getByText("0.8200")).toBeTruthy();
     expect(screen.getByText("7.4")).toBeTruthy();
   });
 });
@@ -195,7 +215,7 @@ describe("BlastRadiusResults", () => {
       />,
     );
     // Header band label + gauge score.
-    expect(screen.getByText("High risk")).toBeTruthy();
+    expect(screen.getByText("Broad structural impact")).toBeTruthy();
     expect(screen.getByText("7.6")).toBeTruthy();
     // The header tile and the collapsible toggle share the "Direct risks" /
     // "Test gaps" copy, so each appears more than once.
@@ -213,16 +233,19 @@ describe("BlastRadiusResults", () => {
 
   it("shows an empty impact map when nothing is affected", () => {
     const empty: BlastRadiusResponse = {
+      ...fixture,
       direct_risks: [],
       transitive_affected: [],
       cochange_warnings: [],
       recommended_reviewers: [],
       test_gaps: [],
+      structural_impact_score: 1.5,
+      structural_impact_band: "localized",
       overall_risk_score: 1.5,
     };
     render(<BlastRadiusResults result={empty} />);
     expect(screen.getByText("No downstream impact found")).toBeTruthy();
-    expect(screen.getByText("Low risk")).toBeTruthy();
+    expect(screen.getByText("Localized structural impact")).toBeTruthy();
   });
 
   it("keeps older server payloads compatible without assuming test availability", () => {

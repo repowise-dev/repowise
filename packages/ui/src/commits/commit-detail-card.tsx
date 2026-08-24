@@ -21,21 +21,9 @@ export interface CommitDetailCardProps {
 /**
  * Drill-down for one commit.
  *
- * Rebuilt on the section style, and reorganised around one rule: say each fact
- * once. The card used to state the percentile four times over — a 24px
- * `100%ile`, a priority pill, "Riskier than 100% of this repo's commits", and
- * then "Riskier than most commits in this repo (100th percentile)" — with the
- * summary paragraph restating the box immediately above it.
- *
- * What leads is now the raw score against this repo's own review line, for two
- * reasons. The queue this sheet opens from already carries a percentile column
- * per row, so repeating it here spends the largest figure on the page on
- * something the reader just clicked past. And the percentile cannot honestly be
- * turned into a rank: the raw score is rounded to one decimal before ranking,
- * so 886 commits share 86 distinct percentiles, and "the 1st riskiest of 886"
- * would be a computed guess printed as a measurement.
- *
- * The tercile still appears, once, as the badge beside the figure.
+ * The benchmarked repo-relative percentile and its server-owned priority lead.
+ * The supporting raw score remains visible with its per-commit unit and
+ * diff-shape interpretation, never as a probability.
  */
 export function CommitDetailCard({ commit, reviewCut, className }: CommitDetailCardProps) {
   const c = commit;
@@ -84,12 +72,18 @@ export function CommitDetailCard({ commit, reviewCut, className }: CommitDetailC
       <div className="mt-7">
         {/* Named for what it measures: diff size, not danger. */}
         <PageLede
-          label="Diff-size score"
-          value={c.change_risk_score != null ? c.change_risk_score.toFixed(1) : "—"}
-          unit="out of 10"
+          label="Review priority"
+          value={`${Math.round(c.risk_percentile)}th`}
+          unit="percentile in this repo"
           badge={<PriorityBadge priority={c.review_priority} />}
         >
           <p>{riskSentence(c, reviewCut)}</p>
+          {c.change_risk_score != null && (
+            <p>
+              Supporting diff-size score: {c.change_risk_score.toFixed(1)} out of 10,
+              calibrated per commit and not a probability.
+            </p>
+          )}
         </PageLede>
       </div>
 
@@ -113,19 +107,16 @@ export function CommitDetailCard({ commit, reviewCut, className }: CommitDetailC
 /**
  * The sentence that makes the score mean something.
  *
- * It leads with where the commit sits in this repo rather than with the raw
- * number, because the raw number is anchored to a calibration corpus and skews
- * high on any repo whose typical commit is large — this index has 296 of 884
- * commits in the top tercile and a score distribution piled against the 10
- * ceiling. The percentile is deliberately absent: the queue row the reader
- * arrived from already carried it.
+ * It explains where the commit sits in this repo. The headline already carries
+ * the exact percentile; this sentence explains its tercile without inventing a
+ * defect probability from the supporting model score.
  */
 function riskSentence(c: CommitDetail, reviewCut: number | null | undefined): string {
   const tercile: Record<string, string> = {
-    high: "sits in the top third of this repo's own risk distribution, the band worth reviewing",
+    high: "sits in the top third of this repo's own diff-shape distribution, the review-priority band worth reviewing",
     moderate:
-      "sits in the middle third of this repo's own risk distribution, so it is about as risky as the work around it",
-    low: "sits in the bottom third of this repo's own risk distribution",
+      "sits in the middle third of this repo's own diff-shape distribution, so its review priority is typical here",
+    low: "sits in the bottom third of this repo's own diff-shape distribution",
   };
   let out = `This commit ${tercile[c.review_priority] ?? tercile.moderate}`;
 
@@ -139,7 +130,7 @@ function riskSentence(c: CommitDetail, reviewCut: number | null | undefined): st
   out += ".";
 
   if (c.change_risk_score != null) {
-    // `drivers` arrive strongest-first, and only the risk-raising ones explain
+    // `drivers` arrive strongest-first, and only score-raising ones explain
     // why the score landed where it did.
     const raising = c.drivers.filter((d) => d.value !== null && d.contribution > 0);
     if (raising.length === 0) {
