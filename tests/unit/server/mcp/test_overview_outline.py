@@ -13,12 +13,44 @@ from types import SimpleNamespace
 
 from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server.tool_overview import (
+    _build_guided_tour,
     _build_outline,
     _build_guided_tour,
     _module_order_key,
     _outline_index,
     _section_sort_key,
 )
+
+
+def test_guided_tour_renumbers_surviving_steps_without_mutating_metadata():
+    metadata = {
+        "guided_tour": [
+            {"order": 1, "kind": "entry", "reason": "root", "target_path": "a.py"},
+            {"order": 2, "kind": "module", "reason": "import", "target_path": "b.py"},
+            {"order": 4, "kind": "module", "reason": "import", "target_path": "b.py"},
+            {"order": 5, "kind": "leaf", "reason": "import", "target_path": "d.py"},
+        ]
+    }
+    page = SimpleNamespace(metadata_json=json.dumps(metadata))
+    result = {}
+
+    _build_guided_tour(page, result, {}, True)
+
+    assert [step["order"] for step in result["guided_tour"]] == [1, 2, 3]
+    assert [step["target_path"] for step in result["guided_tour"]] == ["a.py", "b.py", "d.py"]
+    assert json.loads(page.metadata_json) == metadata
+
+
+def test_guided_tour_is_omitted_when_not_requested():
+    page = SimpleNamespace(
+        metadata_json='{"guided_tour": [{"order": 1, "kind": "entry", "reason": "root"}]}'
+    )
+    result = {}
+
+    _build_guided_tour(page, result, {}, False)
+
+    assert "guided_tour" not in result
+    assert "guided_tour_hint" not in result
 
 
 def _row(pid: str, **kw) -> SimpleNamespace:
