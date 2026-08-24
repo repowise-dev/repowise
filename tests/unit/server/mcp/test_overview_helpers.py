@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from repowise.server.mcp_server.tool_overview import (
     _compact_overview_content,
     _dedupe_tour_steps,
@@ -59,3 +61,23 @@ class TestDedupeTourSteps:
 
     def test_empty(self):
         assert _dedupe_tour_steps([]) == []
+
+
+class TestBuildGuidedTourOrder:
+    def test_order_is_contiguous_after_dedupe(self):
+        from types import SimpleNamespace
+
+        from repowise.server.mcp_server.tool_overview import _build_guided_tour
+
+        tour = [
+            {"order": 1, "title": "a.py", "kind": "code", "reason": "entry"},
+            {"order": 2, "title": "b.py", "kind": "code", "reason": "hub"},
+            {"order": 3, "title": "c.py", "kind": "code", "reason": "hub"},
+            {"order": 4, "title": "d.py", "kind": "code", "reason": "infra"},
+        ]
+        page = SimpleNamespace(metadata_json=json.dumps({"guided_tour": tour}))
+        result: dict = {}
+        _build_guided_tour(page, result, {}, want_tour=True)
+
+        orders = [step["order"] for step in result["guided_tour"]]
+        assert orders == list(range(1, len(orders) + 1))

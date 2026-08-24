@@ -40,7 +40,7 @@
 
 ; Decorated function or class — captures the decorator as a modifier
 (decorated_definition
-  (decorator) @symbol.modifiers
+  (decorator)+ @symbol.modifiers
   (function_definition
     name: (identifier) @symbol.name
     parameters: (parameters) @symbol.params
@@ -48,7 +48,7 @@
 )
 
 (decorated_definition
-  (decorator) @symbol.modifiers
+  (decorator)+ @symbol.modifiers
   (class_definition
     name: (identifier) @symbol.name
   ) @symbol.def
