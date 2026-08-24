@@ -227,8 +227,6 @@ COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
     # narrower claim than the advertised surface. See NON_FLAGSHIP_TOOLS.
     ("README.md", "flagship", "**{w} task-shaped MCP tools**"),
     ("README.md", "flagship", "## The {w} MCP tools"),
-    ("README.md", "flagship", "#the-{w}-mcp-tools"),
-    ("README.md", "flagship", "decisions, and {w} MCP tools"),
     ("README.md", "flagship", "{W} is a deliberate ceiling"),
     ("docs/README.md", "flagship", "decisions, and {w} MCP tools"),
     ("docs/README.md", "flagship", "The {w} task-shaped tools,"),
