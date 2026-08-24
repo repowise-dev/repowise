@@ -119,11 +119,11 @@ def _resolve(repo_path: Path, relative: str) -> str | None:
     finally:
         conn.close()
 
-    # ``node_type = 'file'`` also covers resolved external packages, spelled
-    # ``external:pkg/mod``. They are not paths in this tree, and the on-disk
-    # test below is what rules them out along with rows whose file has since
-    # been deleted. Both filters run before the uniqueness test, so a stale row
-    # cannot hide the single live answer behind an apparent tie.
+    # Resolved external packages are stored as ``external:pkg/mod`` with
+    # ``node_type='external'`` and never match a basename scan, but a stale
+    # ``file`` row whose file has since been deleted can still appear. The
+    # on-disk test below rules both out before the uniqueness check, so a
+    # stale row cannot hide the single live answer behind an apparent tie.
     live = [m for m in matches if (repo_path / m).exists()]
     if len(live) != 1:
         return None
