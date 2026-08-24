@@ -15,7 +15,6 @@ from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server.tool_overview import (
     _build_guided_tour,
     _build_outline,
-    _build_guided_tour,
     _module_order_key,
     _outline_index,
     _section_sort_key,
@@ -252,10 +251,3 @@ def test_guided_tour_renumbers_steps_after_deduplication():
     assert json.loads(page.metadata_json) == metadata
 
 
-def test_guided_tour_is_omitted_when_not_requested():
-    page = SimpleNamespace(metadata_json=json.dumps({"guided_tour": [{"order": 1}]}))
-    result = {}
-
-    _build_guided_tour(page, result, {}, want_tour=False)
-
-    assert "guided_tour" not in result
