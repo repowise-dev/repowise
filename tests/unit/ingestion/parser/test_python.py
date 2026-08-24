@@ -86,6 +86,26 @@ class TestPythonParser:
         )
         assert calc_add.parent_name == "Calculator"
 
+    def test_function_single_decorator_recorded_once(self, parser: ASTParser) -> None:
+        fi = _make_file_info("pkg/routes.py", "python")
+        result = parser.parse_file(
+            fi,
+            b"@app.get('/users')\ndef list_users():\n    return []\n",
+        )
+        list_users = next(s for s in result.symbols if s.name == "list_users")
+        assert list_users.decorators == ["@app.get('/users')"]
+
+    def test_function_multiple_decorators_recorded_once_in_source_order(
+        self, parser: ASTParser
+    ) -> None:
+        fi = _make_file_info("pkg/routes.py", "python")
+        result = parser.parse_file(
+            fi,
+            b"@cache\n@app.post('/items')\ndef create_item():\n    pass\n",
+        )
+        create_item = next(s for s in result.symbols if s.name == "create_item")
+        assert create_item.decorators == ["@cache", "@app.post('/items')"]
+
     def test_private_visibility(self, parser: ASTParser) -> None:
         fi = _make_file_info("pkg/calc.py", "python")
         result = parser.parse_file(fi, PYTHON_SOURCE)

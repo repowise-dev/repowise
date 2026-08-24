@@ -130,6 +130,18 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "requires_key": True,
     },
     {
+        "id": "claude_cli",
+        "name": "Claude Code (Local CLI)",
+        "default_model": "claude_cli/claude-haiku-4-5",
+        "models": [
+            "claude_cli/claude-haiku-4-5",
+            "claude_cli/claude-sonnet-4-6",
+            "claude_cli/claude-opus-4-6",
+        ],
+        "env_keys": [],
+        "requires_key": False,
+    },
+    {
         "id": "opencode",
         "name": "OpenCode (Local CLI)",
         "default_model": "opencode/default",

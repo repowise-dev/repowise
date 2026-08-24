@@ -210,8 +210,13 @@ def build_repo_graph(
         graph_builder.add_dynamic_edges(dynamic_edges)
         if dynamic_edges:
             log(f"Dynamic hint edges added: [cyan]{len(dynamic_edges)}[/cyan]")
-    except Exception:
-        pass  # dynamic hints are best-effort, same as the init phase
+
+    except Exception as exc:
+        logger.warning("dynamic_hints_extraction_failed", error=str(exc))
+        log(
+            f"[yellow]Dynamic hint extraction failed: {exc}. Dynamic edges"
+            "will be missing from this update.[/yellow]"
+        )
 
     return parsed_files, source_map, graph_builder, repo_structure, len(file_infos)
 

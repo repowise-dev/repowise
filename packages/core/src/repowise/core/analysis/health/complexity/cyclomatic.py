@@ -43,10 +43,18 @@ _BODY_FIELD_NAMES = (
 
 # The ``if``-shaped node types that can appear as an ``else if`` / ``elif``
 # chain continuation. Ternaries / ``if_element`` collection-``if`` are
-# deliberately excluded — only statement-level if chains flatten.
+# deliberately excluded — only statement-level if chains flatten. Pascal's
+# ``if`` (bare then, no else) and ``ifElse`` (then/else) are two distinct
+# node types for the same construct -- either can be a chain's last arm
+# (bare ``if`` when it has no further ``else``, ``ifElse`` when it does).
 _ELSE_IF_NODE_KINDS = frozenset(
-    {"if_statement", "if_expression", "elif_clause", "elsif", "if_let_expression"}
+    {"if_statement", "if_expression", "elif_clause", "elsif", "if_let_expression", "if", "ifElse"}
 )
+
+# Token spelling(s) an else-if continuation's previous sibling carries when
+# the grammar has no dedicated wrapper node for it (Java / Go / C# / Dart /
+# Kotlin spell it "else"; Pascal spells it "kElse").
+_ELSE_TOKEN_KINDS = frozenset({"else", "kElse"})
 
 # Branch nodes that are a decision point (count toward CCN) but do NOT open a
 # nesting level: a comprehension filter (``[x for x in xs if a]``) and a match
@@ -81,8 +89,9 @@ def _is_elif_continuation(node: Node) -> bool:
     - Python: a dedicated ``elif_clause`` node (always a continuation).
     - Ruby: a dedicated ``elsif`` node (always a continuation).
     - TypeScript / Rust / C++: the else-if is wrapped in an ``else_clause``.
-    - Java / Go / C# / Dart / Kotlin: the else-if node is the sibling that
-      immediately follows the parent ``if``'s ``else`` token.
+    - Java / Go / C# / Dart / Kotlin / Pascal: the else-if node is the
+      sibling that immediately follows the parent ``if``'s else token
+      (spelled ``else`` in those grammars, ``kElse`` in Pascal's).
     """
     if node.type not in _ELSE_IF_NODE_KINDS:
         return False
@@ -94,7 +103,7 @@ def _is_elif_continuation(node: Node) -> bool:
     if parent.type == "else_clause":
         return True
     prev = node.prev_sibling
-    return prev is not None and prev.type == "else"
+    return prev is not None and prev.type in _ELSE_TOKEN_KINDS
 
 
 def _count_boolean_ops_in_condition(node: Node, lmap: LanguageNodeMap) -> int:

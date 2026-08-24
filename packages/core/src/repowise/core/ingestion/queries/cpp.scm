@@ -8,6 +8,29 @@
 ; Symbols
 ; ---------------------------------------------------------------------------
 
+; Export-macro class/struct definitions are parsed as function definitions:
+; ``struct MYLIB_EXPORT WriteOptions { ... }``. The grammar treats the macro
+; as the specifier's name and the real type name as a bare declarator. Keep
+; the specifier as ``@symbol.def`` so kind/signature handling stays class- or
+; struct-shaped, while the outer capture identifies the aggregate body.
+(function_definition
+  type: (class_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (identifier) @symbol.name
+  body: (compound_statement)
+) @symbol.cpp_export_type
+
+(function_definition
+  type: (struct_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (identifier) @symbol.name
+  body: (compound_statement)
+) @symbol.cpp_export_type
+
 ; Function definition: ReturnType funcName(params) { body }
 ; The name is nested inside function_declarator
 (function_definition
