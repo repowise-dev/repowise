@@ -306,7 +306,16 @@ async def test_prompts_and_sampling_are_passed_through_unchanged():
         "user_prompt": "the user prompt",
         "max_tokens": _SYNTHESIS_MAX_TOKENS,
         "temperature": _SYNTHESIS_TEMPERATURE,
+        "reasoning": "auto",
     }
+
+
+async def test_reasoning_mode_is_passed_to_the_provider():
+    provider = _SlowProvider(duration=0, budget=30.0)
+
+    await synthesize(provider, "system", "user", reasoning="off")
+
+    assert provider.calls[0]["reasoning"] == "off"
 
 
 async def test_a_non_timeout_failure_is_not_reported_as_a_budget_overrun():
