@@ -77,7 +77,7 @@ _INCLUDE_BLOCKS = frozenset(
 )
 
 
-@mcp.tool()
+@mcp.tool(surface_order=20)
 async def get_context(
     targets: list[str],
     include: list[str] | None = None,

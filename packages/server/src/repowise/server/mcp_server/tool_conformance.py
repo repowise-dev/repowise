@@ -14,6 +14,7 @@ from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import _is_workspace_mode
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import persisted_analysis_meta as _analysis_meta
 
 #: Inline caps so the agent payload stays tight; true counts are reported and the
 #: full set is on the REST endpoint.
@@ -21,7 +22,12 @@ _MCP_VIOLATION_LIMIT = 25
 _MCP_CYCLE_LIMIT = 25
 
 
-@mcp.tool(default=False, requires_workspace=True)
+@mcp.tool(
+    default=False,
+    requires_workspace=True,
+    surface_order=250,
+    trust_kind="structural",
+)
 async def get_conformance(repo: str | None = None) -> dict[str, Any]:
     """Architecture conformance — dependency-rule violations + cycles.
 
@@ -79,6 +85,12 @@ async def get_conformance(repo: str | None = None) -> dict[str, Any]:
 
     shown_violations = violations[:_MCP_VIOLATION_LIMIT]
     shown_cycles = cycles[:_MCP_CYCLE_LIMIT]
+    graph = enricher.get_system_graph() or {}
+    analysis_commits = {
+        alias: provenance.get("head")
+        for alias, provenance in graph.get("repo_provenance", {}).items()
+        if provenance.get("head")
+    }
 
     if violations or cycles:
         summary = (
@@ -105,5 +117,5 @@ async def get_conformance(repo: str | None = None) -> dict[str, Any]:
         "total_cycles": total_cycles,
         "checked_at": report.get("generated_at"),
         "summary": summary,
-        "_meta": _build_meta(),
+        "_meta": _build_meta(extra=_analysis_meta(report.get("generated_at"), analysis_commits)),
     }

@@ -72,9 +72,10 @@ _KNOWN: dict[str, int] = {
     # separator is ours rather than the language's, so the shared helper would
     # be answering about a type where these ask about an ID. `models.py` holds
     # the one both resolvers used to duplicate. Six of `call_resolver.py`'s
-    # seven are symbol IDs; the seventh takes the tail of an import's module
-    # path, which is a module name, not a type.
-    _PREFIX + "call_resolver.py": 7,
+    # eight are symbol IDs; the other two are both an import's module path,
+    # which is a module name and not a type: one takes its tail and one takes
+    # its head, to ask whether the package it names is one of ours.
+    _PREFIX + "call_resolver.py": 8,
     _PREFIX + "models.py": 1,
     # Reads the head to decide whether taking a bare name is safe at all: a
     # qualifier that is a type rather than a package must not be discarded.
@@ -86,10 +87,19 @@ _KNOWN: dict[str, int] = {
     _PREFIX + "dynamic_hints/swift.py": 1,
     # Splits an import statement's package path, not a type reference.
     _PREFIX + "languages/jvm_same_package.py": 1,
+    # Takes the head of a URLconf's `views.detail` to reach the Python module
+    # declaring the view. The trailing segment is the view function and the
+    # head is a module path, so neither end is a type.
+    _PREFIX + "framework_edges/django.py": 1,
     # Split a route handler's path to reach a function name, and keep the
     # prefix to resolve the package it came from. Neither wants a type.
     _PREFIX + "framework_edges/rust.py": 1,
     _PREFIX + "framework_edges/go.py": 1,
+    # Takes the qualifier HEAD of `OrderHandlers.GetOrder` to reach the
+    # declaring type. It does want a type, but the shared helper returns the
+    # trailing segment, which is the member — the opposite end, the same reason
+    # `receiver_types.py` is exempt.
+    _PREFIX + "framework_edges/aspnet.py": 1,
     # Real copies, each held by a consumer no gate here measures: converting
     # them moves framework edges, C++ symbol parent names and Go
     # `method_implements` edges respectively. Removable once those are covered.

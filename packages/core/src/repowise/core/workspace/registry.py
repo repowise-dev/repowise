@@ -39,6 +39,26 @@ class RepoContext:
     _engine: Any = field(default=None, repr=False)  # AsyncEngine, for dispose
 
 
+def repo_db_path(repo_path: Path) -> Path:
+    """Where a repo's index database lives."""
+    return repo_path / ".repowise" / "wiki.db"
+
+
+async def open_repo_db(repo_path: Path) -> tuple[Any, async_sessionmaker[AsyncSession]]:
+    """Open a repo's ``wiki.db``, returning ``(engine, session_factory)``.
+
+    SQLite creates the file if it is absent, so check :func:`repo_db_path`
+    first when "never indexed" needs a different answer than "empty". The
+    caller owns the engine and must dispose it. Shared with :mod:`.repo_index`,
+    which needs the same connection without the search and vector stores.
+    """
+    from repowise.core.persistence.database import create_engine, get_db_url, init_db
+
+    engine = create_engine(get_db_url(f"sqlite:///{repo_db_path(repo_path).as_posix()}"))
+    await init_db(engine)
+    return engine, async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+
 # ---------------------------------------------------------------------------
 # RepoRegistry — lazy loading + LRU eviction
 # ---------------------------------------------------------------------------
@@ -150,37 +170,15 @@ class RepoRegistry:
             raise ValueError(f"No repo with alias '{alias}' in workspace config")
 
         repo_path = (self._workspace_root / entry.path).resolve()
-        db_path = repo_path / ".repowise" / "wiki.db"
 
-        if not db_path.exists():
-            _log.warning("No wiki.db for repo '%s' at %s", alias, db_path)
-
-        from sqlalchemy.ext.asyncio import (
-            AsyncSession as _AsyncSession,
-        )
-        from sqlalchemy.ext.asyncio import (
-            async_sessionmaker as _async_sessionmaker,
-        )
-
-        from repowise.core.persistence.database import (
-            create_engine,
-            get_db_url,
-            init_db,
-        )
         from repowise.core.persistence.search import FullTextSearch
         from repowise.core.persistence.vector_store import InMemoryVectorStore
         from repowise.core.providers.embedding.base import KeylessEmbedder
 
-        db_url = get_db_url(f"sqlite:///{db_path.as_posix()}")
-
-        engine = create_engine(db_url)
-        await init_db(engine)
-
-        session_factory = _async_sessionmaker(
-            engine,
-            expire_on_commit=False,
-            class_=_AsyncSession,
-        )
+        db_path = repo_db_path(repo_path)
+        if not db_path.exists():
+            _log.warning("No wiki.db for repo '%s' at %s", alias, db_path)
+        engine, session_factory = await open_repo_db(repo_path)
 
         fts = FullTextSearch(engine)
         await fts.ensure_index()

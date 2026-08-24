@@ -40,6 +40,11 @@ from sqlalchemy import select
 
 from repowise.core.persistence.models import GraphEdge, Page, WikiSymbol
 from repowise.core.test_paths import is_test_related_path
+from repowise.server.mcp_server._graph_files import (
+    file_ext,
+    keep_projected_edge,
+    node_to_file,
+)
 
 # Edge kinds that form the file-level dependency graph. ``imports`` is
 # file-to-file already; ``calls`` is symbol-to-symbol and gets projected to
@@ -47,11 +52,6 @@ from repowise.core.test_paths import is_test_related_path
 # are either not directed dependency flow or not answer-bearing, so they stay
 # out of the path search.
 _FLOW_EDGE_TYPES = ("imports", "calls")
-
-# Confidence floor for ``calls`` edges. Imports are always 1.0; calls average
-# 0.90 but have a low-confidence tail (heuristic resolution). 0.5 keeps every
-# genuine call and drops the noise. Imports are never filtered.
-_FLOW_CALLS_CONF_FLOOR = 0.5
 
 # Depth cap for the path search. Endpoints connect in 2-4 hops on the measured
 # graph; past 4 a "path" is a coincidence, not a flow.
@@ -92,12 +92,6 @@ def _basename_stem(path: str) -> str:
     base = os.path.basename(path)
     stem = base.rsplit(".", 1)[0] if "." in base else base
     return stem.lower()
-
-
-def _ext(path: str) -> str:
-    """Lower-case file extension (``retrieval.py`` -> ``py``), ``""`` if none."""
-    base = os.path.basename(path)
-    return base.rsplit(".", 1)[1].lower() if "." in base else ""
 
 
 def _is_plumbing(path: str) -> bool:
@@ -229,18 +223,9 @@ async def _load_file_adjacency(session: Any, repo_id: str) -> dict[str, list[str
     )
     adj: dict[str, set[str]] = {}
     for src, tgt, etype, conf in res.all():
-        if etype == "calls":
-            if (conf or 0.0) < _FLOW_CALLS_CONF_FLOOR:
-                continue
-            src = src.split("::", 1)[0]
-            tgt = tgt.split("::", 1)[0]
-        if not src or not tgt or src == tgt:
-            continue
-        # A flow the answer traverses is single-language: cross-extension edges
-        # (a Python module and a same-named TypeScript re-export, a test that
-        # imports both ends) are graph coincidences, not dependency flow. Keeping
-        # them lets BFS stitch unrelated files across package boundaries.
-        if _ext(src) != _ext(tgt):
+        src = node_to_file(src or "")
+        tgt = node_to_file(tgt or "")
+        if not keep_projected_edge(src, tgt, etype, conf):
             continue
         adj.setdefault(src, set()).add(tgt)
         adj.setdefault(tgt, set()).add(src)
@@ -345,9 +330,9 @@ async def expand_via_flow_path(
     # language (``symbols.ts`` for a ``symbols.py`` question) is not an endpoint.
     # Dropping off-language anchors here keeps the pairwise BFS from stitching
     # two coincidental cross-package matches of a generic token.
-    primary_ext = _ext(top_hit) if top_hit else ""
+    primary_ext = file_ext(top_hit) if top_hit else ""
     if primary_ext:
-        anchors = {p: src for p, src in anchors.items() if _ext(p) == primary_ext}
+        anchors = {p: src for p, src in anchors.items() if file_ext(p) == primary_ext}
     if len(anchors) < _FLOW_MIN_QUESTION_ANCHORS:
         return hits, []
 

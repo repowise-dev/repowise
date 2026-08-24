@@ -11,8 +11,15 @@ This is deliberately NOT ``derive_modules`` (which right-sizes wiki modules to
 8-120 files): the zoom tree wants the true directory nesting so a viewer can
 zoom folder by folder.
 
+A folder whose path is one a module page documents takes that page's title and
+summary instead of its directory name. The nesting is unchanged; only the label
+is. Below the layer rung every card used to read as a path segment (``core``,
+``resolvers``, ``src``) while the docs reader, working off the same repository,
+called those same directories "Repository Ingestion" and "Symbol Resolution".
+Two names for one thing, on two pages of one product.
+
 Pure and framework-agnostic: inputs are plain specs, output is a dict of frozen
-``ZoomNode``. Importance, metrics, and layout are filled by later passes.
+``ZoomNode``. Importance and metrics are filled by later passes.
 """
 
 from __future__ import annotations
@@ -40,6 +47,15 @@ class LayerSpec:
     display_order: int
     node_ids: list[str]  # repo-relative file paths (every file in the layer)
     sub_groups: list[GroupSpec] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ModuleInfo:
+    """The documented identity of a directory, from its module page."""
+
+    title: str
+    summary: str = ""
+    page_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -123,15 +139,25 @@ def _insert(root: _Dir, path: str) -> None:
     cur.files.append(path)
 
 
-def _compress(node: _Dir) -> tuple[str, _Dir]:
-    """Collapse single-child folder chains. Returns the (joined-name, deepest
-    folder) so ``a/(only)b/(only)c`` becomes one node named ``a/b/c``."""
+def _compress(node: _Dir) -> tuple[str, _Dir, list[str]]:
+    """Collapse single-child folder chains.
+
+    Returns ``(joined-name, deepest folder, every path the chain swallowed)``
+    so ``a/(only)b/(only)c`` becomes one node named ``a/b/c``. The path list is
+    ordered shallowest-first and is what lets a caller ask whether *any* rung of
+    the chain is a directory something knows about: the collapsed rungs are real
+    directories that simply have no branch of their own, and a repository whose
+    source sits under `packages/x/src/pkg/name` collapses most of its documented
+    directories into exactly such a chain.
+    """
     name = node.name
+    covered = [node.path]
     while len(node.subdirs) == 1 and not node.files:
         (only,) = node.subdirs.values()
         name = f"{name}/{only.name}"
         node = only
-    return name, node
+        covered.append(node.path)
+    return name, node, covered
 
 
 # ---------------------------------------------------------------------------
@@ -140,8 +166,11 @@ def _compress(node: _Dir) -> tuple[str, _Dir]:
 
 
 class _Builder:
-    def __init__(self, leaf_info: dict[str, LeafInfo]) -> None:
+    def __init__(
+        self, leaf_info: dict[str, LeafInfo], modules: dict[str, ModuleInfo]
+    ) -> None:
         self.leaf_info = leaf_info
+        self.modules = modules
         self.nodes: dict[str, ZoomNode] = {}
 
     def add(self, node: ZoomNode) -> str:
@@ -171,23 +200,38 @@ class _Builder:
             )
         )
 
+    def module_for(self, covered: list[str]) -> ModuleInfo | None:
+        """The documented identity of a compressed chain, deepest rung first.
+
+        Deepest wins because it is the most specific: on `a -> a/b`, a page for
+        `a/b` describes this card more precisely than one for `a`.
+        """
+        for path in reversed(covered):
+            module = self.modules.get(path)
+            if module is not None:
+                return module
+        return None
+
     def emit_dir(self, dnode: _Dir, parent_id: str, level: int, scope: str) -> str:
-        name, node = _compress(dnode)
+        name, node, covered = _compress(dnode)
         fid = folder_id(scope, node.path)
         children: list[str] = []
         for sub in sorted(node.subdirs.values(), key=lambda d: d.name):
             children.append(self.emit_dir(sub, fid, level + 1, scope))
         for path in sorted(node.files):
             children.append(self.emit_file(path, fid, level + 1))
+        module = self.module_for(covered)
         self.add(
             ZoomNode(
                 id=fid,
                 parent_id=parent_id,
                 level=level,
                 kind="folder",
-                name=name,
+                name=module.title if module else name,
                 path=node.path,
                 children=tuple(children),
+                summary=module.summary if module else "",
+                page_id=module.page_id if module else "",
             )
         )
         return fid
@@ -217,14 +261,19 @@ def build_tree(
     project_name: str,
     layers: list[LayerSpec],
     leaf_info: dict[str, LeafInfo],
+    modules: dict[str, ModuleInfo] | None = None,
 ) -> tuple[str, dict[str, ZoomNode]]:
     """Build the containment tree. Returns ``(root_id, nodes)``.
 
     ``layers`` should already be ordered (the caller passes them by
     ``display_order``); files not claimed by any sub-group attach directly under
     their layer so the file partition is preserved (every file appears once).
+
+    ``modules`` maps a repo-relative directory path to the module page that
+    documents it. Optional: without it every folder keeps its directory name,
+    which is what a repository with no generated wiki has.
     """
-    b = _Builder(leaf_info)
+    b = _Builder(leaf_info, modules or {})
     layer_ids: list[str] = []
 
     for layer in sorted(layers, key=lambda layer_: layer_.display_order):

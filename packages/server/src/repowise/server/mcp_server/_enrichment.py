@@ -41,6 +41,10 @@ class CrossRepoEnricher:
         self._contract_links: list[dict] = []
         self._contract_provider_index: dict[tuple[str, str], list[dict]] = defaultdict(list)
         self._contract_consumer_index: dict[tuple[str, str], list[dict]] = defaultdict(list)
+        # Keyed by the ingestion symbol id, so a caller holding a symbol can
+        # cross the contract link without scanning every contract.
+        self._contract_symbol_index: dict[str, list[dict]] = defaultdict(list)
+        self._link_provider_symbol_index: dict[str, list[dict]] = defaultdict(list)
 
         # System graph — the service-granular structure built during workspace
         # update. Read-only pass-through; views over it live in core/types.
@@ -186,6 +190,14 @@ class CrossRepoEnricher:
                 continue
             self._contract_provider_index[provider_key].append(link)
             self._contract_consumer_index[consumer_key].append(link)
+            provider_symbol = link.get("provider_symbol_id")
+            if provider_symbol:
+                self._link_provider_symbol_index[provider_symbol].append(link)
+
+        for contract in self._contracts:
+            symbol_id = contract.get("symbol_id")
+            if symbol_id:
+                self._contract_symbol_index[symbol_id].append(contract)
 
         _log.debug(
             "Contract enricher loaded: %d contracts, %d links",
@@ -265,6 +277,8 @@ class CrossRepoEnricher:
         self._contract_links = []
         self._contract_provider_index = defaultdict(list)
         self._contract_consumer_index = defaultdict(list)
+        self._contract_symbol_index = defaultdict(list)
+        self._link_provider_symbol_index = defaultdict(list)
         self._system_graph = None
         self._breaking_changes = None
         self._breaking_changes_by_repo = defaultdict(list)
@@ -388,7 +402,9 @@ class CrossRepoEnricher:
             conformance_violations=violations,
             generated_at=self._system_graph.get("generated_at", ""),
         )
-        return metrics.to_dict()
+        payload = metrics.to_dict()
+        payload["repo_provenance"] = self._system_graph.get("repo_provenance", {})
+        return payload
 
     def get_diagnostics(self) -> dict | None:
         """Return just the extraction diagnostics block of the system graph."""
@@ -476,6 +492,18 @@ class CrossRepoEnricher:
     def get_contract_links_as_consumer(self, repo_alias: str, file_path: str) -> list[dict]:
         """Contract links where this file is the consumer (depends on providers)."""
         return self._contract_consumer_index.get((repo_alias, file_path), [])
+
+    def get_contracts_for_symbol(self, symbol_id: str) -> list[dict]:
+        """Contracts bound to this ingestion symbol id, across every repo.
+
+        A symbol id is repo-relative, so the same string can name a symbol in
+        more than one repo; the caller decides what to do with several hits.
+        """
+        return self._contract_symbol_index.get(symbol_id, [])
+
+    def get_contract_links_by_provider_symbol(self, symbol_id: str) -> list[dict]:
+        """Contract links whose provider is this symbol — the consumers it has."""
+        return self._link_provider_symbol_index.get(symbol_id, [])
 
     def get_contract_summary(self) -> dict:
         """High-level contract stats for the overview footer."""

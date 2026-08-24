@@ -19,7 +19,7 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
-from ..base import ScanContext
+from ..base import ScanContext, line_at
 from ..langs import CSHARP, GO, JAVA, JS_TS, KOTLIN, PHP, PYTHON, RUBY
 from .dialect import build_table_consumer
 
@@ -126,7 +126,7 @@ class SqlStringsDialect:
     def extract(self, ctx: ScanContext) -> list[Contract]:
         out: list[Contract] = []
         seen: set[str] = set()
-        for literal in self._sql_literals(ctx.content):
+        for literal, line in self._sql_literals(ctx.content):
             for table_raw, verb in self._tables_in(literal):
                 if table_raw.lower().strip('"`[]') in _SQL_KEYWORDS:
                     continue
@@ -135,15 +135,16 @@ class SqlStringsDialect:
                     continue
                 seen.add(key)
                 contract = build_table_consumer(
-                    ctx, table_raw=table_raw, verb=verb, client=self.name
+                    ctx, table_raw=table_raw, verb=verb, client=self.name, line=line
                 )
                 if contract is not None:
                     out.append(contract)
         return out
 
     @staticmethod
-    def _sql_literals(content: str) -> list[str]:
-        literals: list[str] = []
+    def _sql_literals(content: str) -> list[tuple[str, int]]:
+        """``(literal, line)`` for each SQL-looking string literal in *content*."""
+        literals: list[tuple[str, int]] = []
         for m in _STRING_RE.finditer(content):
             s = next(g for g in m.groups() if g is not None)
             if (
@@ -152,7 +153,7 @@ class SqlStringsDialect:
                 and _SQL_VERB_RE.search(s)
                 and (_UPPER_VERB_RE.search(s) or _SQL_PUNCT_RE.search(s))
             ):
-                literals.append(s)
+                literals.append((s, line_at(content, m.start())))
         return literals
 
     def _tables_in(self, literal: str) -> list[tuple[str, str]]:

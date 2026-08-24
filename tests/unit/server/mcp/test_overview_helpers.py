@@ -2,45 +2,12 @@
 
 from __future__ import annotations
 
+import json
+
 from repowise.server.mcp_server.tool_overview import (
     _compact_overview_content,
     _dedupe_tour_steps,
-    _module_description,
-    _truncate_at_word,
 )
-
-
-class TestTruncateAtWord:
-    def test_short_unchanged(self):
-        assert _truncate_at_word("short", 120) == "short"
-
-    def test_cuts_at_word_boundary_with_ellipsis(self):
-        text = (
-            "Implements the server-side application logic for MCP tooling, "
-            "including budget/risk/meta helpers and request/response handling"
-        )
-        out = _truncate_at_word(text, 120)
-        assert out.endswith("…")
-        # No mid-word fragment: every word emitted exists in the source.
-        for word in out.rstrip("…").split():
-            assert word in text
-
-
-class TestModuleDescription:
-    def test_strips_overview_boilerplate(self):
-        content = "## Overview\n\nThe `core/distill` module is the distillation subsystem."
-        out = _module_description(content)
-        assert not out.startswith("##")
-        assert out.startswith("The `core/distill` module")
-
-    def test_truncates_long_prose_at_word(self):
-        content = "## Overview\n\n" + ("word " * 100)
-        out = _module_description(content, limit=50)
-        assert len(out) <= 51
-        assert out.endswith("…")
-
-    def test_empty_content(self):
-        assert _module_description("") == ""
 
 
 class TestCompactOverviewContent:
@@ -94,3 +61,23 @@ class TestDedupeTourSteps:
 
     def test_empty(self):
         assert _dedupe_tour_steps([]) == []
+
+
+class TestBuildGuidedTourOrder:
+    def test_order_is_contiguous_after_dedupe(self):
+        from types import SimpleNamespace
+
+        from repowise.server.mcp_server.tool_overview import _build_guided_tour
+
+        tour = [
+            {"order": 1, "title": "a.py", "kind": "code", "reason": "entry"},
+            {"order": 2, "title": "b.py", "kind": "code", "reason": "hub"},
+            {"order": 3, "title": "c.py", "kind": "code", "reason": "hub"},
+            {"order": 4, "title": "d.py", "kind": "code", "reason": "infra"},
+        ]
+        page = SimpleNamespace(metadata_json=json.dumps({"guided_tour": tour}))
+        result: dict = {}
+        _build_guided_tour(page, result, {}, want_tour=True)
+
+        orders = [step["order"] for step in result["guided_tour"]]
+        assert orders == list(range(1, len(orders) + 1))

@@ -413,6 +413,7 @@ async def _assess_one_target(
 
     if meta is None:
         result_data["hotspot_score"] = 0.0
+        result_data["is_hotspot"] = False
         result_data["dependents_count"] = dep_count
         result_data["co_change_partners"] = []
         result_data["primary_owner"] = None
@@ -453,6 +454,12 @@ async def _assess_one_target(
     bus_factor = getattr(meta, "bus_factor", 0) or 0
 
     result_data["hotspot_score"] = hotspot_score
+    # Emit the backend's hotspot classification, not a client re-derivation.
+    # ``is_hotspot`` lives on the stored GitMetadata row and already applies
+    # the absolute activity floors (issue #361); a client that thresholds the
+    # score alone can reproduce the churn half but not the floors, so on a
+    # quiet repo it would badge files the backend does not consider hotspots.
+    result_data["is_hotspot"] = bool(getattr(meta, "is_hotspot", False))
     result_data["dependents_count"] = dep_count
     result_data["co_change_partners"] = co_changes
     result_data["primary_owner"] = owner

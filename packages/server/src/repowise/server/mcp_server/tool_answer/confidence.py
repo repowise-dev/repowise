@@ -89,6 +89,15 @@ def _numbers_in(text: str) -> set[str]:
     return set(_NUMBER_RE.findall(_THOUSANDS_SEP_RE.sub("", text or "")))
 
 
+def _asserted_numbers(answer_text: str) -> set[str]:
+    """Standalone numbers the answer asserts, citation line refs removed.
+
+    Shared by :func:`_ungrounded_numbers` and the value-grounding gate so the
+    two never disagree about what counts as an asserted value.
+    """
+    return _numbers_in(_FILE_LINE_REF_RE.sub(" ", answer_text or ""))
+
+
 def _is_value_question(question: str) -> bool:
     """True when the question asks for a concrete value."""
     return bool(_VALUE_QUESTION_RE.search(question or ""))
@@ -142,8 +151,7 @@ def _ungrounded_numbers(answer_text: str, hits: list[dict]) -> list[str]:
     everything the LLM was shown for the hits — titles, summaries, snippets,
     and hydrated symbols (signatures, docstrings, source excerpts).
     """
-    text = _FILE_LINE_REF_RE.sub(" ", answer_text or "")
-    asserted = _numbers_in(text)
+    asserted = _asserted_numbers(answer_text)
     if not asserted:
         return []
 
@@ -756,12 +764,23 @@ def _grade_answer(
     # appear somewhere in the material retrieval actually contained. A
     # number synthesis produced from thin air is a factual error delivered
     # with authority — the single worst calibration failure, because the
-    # consumer was told not to verify. Cap at low and say why.
+    # consumer was told not to verify. Cap and say why.
     ungrounded_values: list[str] = []
     if not hedged and _is_value_question(question):
         ungrounded_values = _ungrounded_numbers(answer_text, hits)
         if ungrounded_values:
-            confidence = "low"
+            # A value derived from grounded operands is not a fabrication, so
+            # soften one notch instead of capping — but only on a clean high over
+            # dominant retrieval (earn_high on weak retrieval stays capped), and
+            # only when some OTHER asserted number is grounded. Without that
+            # second clause a lone invented value would soften too, which is the
+            # case this gate exists to catch. The note and next_action_hint fire
+            # on ungrounded_values regardless of tier.
+            grounded_sibling = len(_asserted_numbers(answer_text)) > len(ungrounded_values)
+            if grounded_sibling and confidence == "high" and dominant:
+                confidence = "medium"
+            else:
+                confidence = "low"
 
     # Fifth gate — citation-source gate: a high-confidence answer must cite
     # at least one page that contributed actual source material (hydrated

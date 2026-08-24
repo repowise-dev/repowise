@@ -1,5 +1,7 @@
 "use client";
 
+import { formatDate } from "../lib/format";
+
 export interface TrendSeriesPoint {
   taken_at: string | null;
   hotspot_health: number;
@@ -85,11 +87,11 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
         {history.length > 1 ? (
           <>
             <text x={padL} y={H - 8} fontSize={10} fill="currentColor" opacity={0.5}>
-              {history[0]?.taken_at ? new Date(history[0]!.taken_at!).toLocaleDateString() : ""}
+              {history[0]?.taken_at ? formatDate(history[0]!.taken_at!) : ""}
             </text>
             <text x={W - padR} y={H - 8} fontSize={10} textAnchor="end" fill="currentColor" opacity={0.5}>
               {history[history.length - 1]?.taken_at
-                ? new Date(history[history.length - 1]!.taken_at!).toLocaleDateString()
+                ? formatDate(history[history.length - 1]!.taken_at!)
                 : ""}
             </text>
           </>

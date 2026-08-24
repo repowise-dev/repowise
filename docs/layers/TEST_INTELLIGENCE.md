@@ -213,7 +213,7 @@ changed *lines*, so it is a strictly narrower and more useful set:
   "tests": ["tests/test_auth.py::test_login", "..."],
   "total": 23,
   "truncated": true,
-  "missing_tests": {
+  "line_coverage": {
     "untested_changes": [{"source_file": "...", "uncovered_lines": [...]}],
     "stale_test_candidates": [...],
     "covered": [...],
@@ -223,7 +223,7 @@ changed *lines*, so it is a strictly narrower and more useful set:
 }
 ```
 
-The `missing_tests` buckets are the honest breakdown: `untested_changes` is the
+The `line_coverage` buckets are the honest breakdown: `untested_changes` is the
 strong signal (the file *is* in the map, but nothing covers the lines you
 touched), `stale_test_candidates` flags covered lines whose guarding test file is
 absent from the diff, and `no_coverage_data` means the file is simply not in the

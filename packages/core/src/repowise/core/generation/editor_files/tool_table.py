@@ -69,7 +69,7 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
         'verified, `["callers"|"decisions"]` for depth. Batch targets.',
     ),
     "get_symbol": (
-        "get_symbol(id)",
+        "get_symbol(id, depth?)",
         "**Follow-up, not an entry point** — one verified body for an id a prior "
         "response named (`path.py::Name`, `path.py:140-180`, `repowise#<hex>`). Never "
         "walk a file symbol by symbol; Read it.",
@@ -86,15 +86,15 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
         "rationale comments. Call before a refactor or a pattern divergence.",
     ),
     "get_risk": (
-        "get_risk(targets, changed_files?)",
-        "What history says about touching these files. PR mode (`changed_files`) "
-        "leads with a `directive`: read `will_break` / `missing_cochanges` / "
-        "`missing_tests` / `tests_to_run` first.",
+        "get_risk(targets, changed_files?, include?)",
+        "Call before editing: what history says about touching these files. "
+        "PR mode (`changed_files`) leads with a `directive`: read `may_break` "
+        "/ `missing_cochanges` / `missing_tests` / `tests_to_run`.",
     ),
     "get_change_risk": (
-        "get_change_risk(revspec, extensions?, exclude_patterns?)",
+        "get_change_risk(revspec?, extensions?, exclude_patterns?)",
         "Defect score for a whole commit or `base..head` range, from its diff on the "
-        "live checkout. Lead with `risk_percentile`. Scores a range; `get_risk` "
+        "live checkout. Lead with `fix_history`. Scores a range; `get_risk` "
         "scores paths.",
     ),
     "get_health": (
@@ -103,7 +103,7 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
         "files you touched before finishing.",
     ),
     "get_dead_code": (
-        "get_dead_code()",
+        "get_dead_code(tier?, min_confidence?, safe_only?)",
         "Confidence-tiered unreachable files / unused exports / zombie packages. For "
         "cleanup sweeps, not targeted fixes.",
     ),

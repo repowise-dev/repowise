@@ -27,6 +27,7 @@ from repowise.server.schemas import (
     WorkspaceCoChangeEntry,
     WorkspaceCoChangesResponse,
     WorkspaceConformanceResponse,
+    WorkspaceContractDetail,
     WorkspaceContractEntry,
     WorkspaceContractLinkEntry,
     WorkspaceContractsResponse,
@@ -245,6 +246,47 @@ async def get_workspace(
     )
 
 
+def _contract_entry(c: dict) -> WorkspaceContractEntry:
+    """Project one raw ``contracts.json`` row onto the wire model.
+
+    ``schema`` is dropped on purpose — it is the one field the list endpoint
+    cannot afford and the detail endpoint carries separately.
+    """
+    return WorkspaceContractEntry(
+        contract_id=c.get("contract_id", ""),
+        contract_type=c.get("contract_type", ""),
+        role=c.get("role", ""),
+        repo=c.get("repo", ""),
+        file_path=c.get("file_path", ""),
+        symbol_name=c.get("symbol_name", ""),
+        confidence=c.get("confidence", 0.0),
+        service=c.get("service"),
+        line=c.get("line"),
+        symbol_id=c.get("symbol_id"),
+        meta=c.get("meta") or {},
+    )
+
+
+def _contract_link(lk: dict) -> WorkspaceContractLinkEntry:
+    """Project one raw ``contract_links`` row onto the wire model."""
+    return WorkspaceContractLinkEntry(
+        contract_id=lk.get("contract_id", ""),
+        contract_type=lk.get("contract_type", ""),
+        match_type=lk.get("match_type", "exact"),
+        confidence=lk.get("confidence", 0.0),
+        provider_repo=lk.get("provider_repo", ""),
+        provider_file=lk.get("provider_file", ""),
+        provider_symbol=lk.get("provider_symbol", ""),
+        consumer_repo=lk.get("consumer_repo", ""),
+        consumer_file=lk.get("consumer_file", ""),
+        consumer_symbol=lk.get("consumer_symbol", ""),
+        provider_service=lk.get("provider_service"),
+        consumer_service=lk.get("consumer_service"),
+        provider_symbol_id=lk.get("provider_symbol_id"),
+        consumer_symbol_id=lk.get("consumer_symbol_id"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # GET /api/workspace/contracts
 # ---------------------------------------------------------------------------
@@ -299,37 +341,96 @@ async def get_contracts(
     contracts_page = contracts[offset : offset + limit]
 
     return WorkspaceContractsResponse(
-        contracts=[
-            WorkspaceContractEntry(
-                contract_id=c.get("contract_id", ""),
-                contract_type=c.get("contract_type", ""),
-                role=c.get("role", ""),
-                repo=c.get("repo", ""),
-                file_path=c.get("file_path", ""),
-                symbol_name=c.get("symbol_name", ""),
-                confidence=c.get("confidence", 0.0),
-                service=c.get("service"),
-            )
-            for c in contracts_page
-        ],
-        links=[
-            WorkspaceContractLinkEntry(
-                contract_id=lk.get("contract_id", ""),
-                contract_type=lk.get("contract_type", ""),
-                match_type=lk.get("match_type", "exact"),
-                confidence=lk.get("confidence", 0.0),
-                provider_repo=lk.get("provider_repo", ""),
-                provider_file=lk.get("provider_file", ""),
-                provider_symbol=lk.get("provider_symbol", ""),
-                consumer_repo=lk.get("consumer_repo", ""),
-                consumer_file=lk.get("consumer_file", ""),
-                consumer_symbol=lk.get("consumer_symbol", ""),
-            )
-            for lk in links
-        ],
+        contracts=[_contract_entry(c) for c in contracts_page],
+        links=[_contract_link(lk) for lk in links],
         total_contracts=total_contracts,
         total_links=total_links,
         by_type=by_type,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/contracts/detail
+# ---------------------------------------------------------------------------
+
+
+def _unmatched_reason(enricher, repo: str, file_path: str, contract_id: str) -> str | None:
+    """Look up why one consumer matched nothing, from the system graph.
+
+    The reasons live in ``system_graph.json``, not ``contracts.json``, and are
+    keyed by the same ``(repo, file_path, contract_id)`` triple this endpoint
+    takes. Returns None when no graph is built or the consumer did match.
+    """
+    diagnostics = enricher.get_diagnostics() or {}
+    for u in diagnostics.get("unmatched_consumers", []):
+        if (
+            u.get("repo") == repo
+            and u.get("file_path") == file_path
+            and u.get("contract_id") == contract_id
+        ):
+            return u.get("reason")
+    return None
+
+
+@router.get("/contracts/detail", response_model=WorkspaceContractDetail)
+async def get_contract_detail(
+    ws_config=Depends(get_workspace_config),
+    enricher=Depends(get_cross_repo_enricher),
+    repo: str = Query(..., description="Repo alias the contract was extracted from"),
+    file: str = Query(..., description="File path, relative to that repo's root"),
+    id: str = Query(..., description="Contract id, e.g. 'http::GET::/api/users'"),
+):
+    """One contract with its schema, its links, and its unmatched reason.
+
+    Keyed by query parameters rather than a path segment because ``file`` is a
+    path and carries slashes. All three are required: ``id`` alone is not
+    unique, several repos declare the same ``http::GET::/user``.
+
+    The triple is the shareable identity, not a primary key. One file may call
+    the same endpoint from two lines; when it does, the first row wins. The link
+    list is filtered by the same triple, so it is identical whichever row wins;
+    the enclosing symbol is not, so the response names one of the call sites.
+    Keying on the line instead would rot every saved link on an edit above the
+    call.
+    """
+    _require_workspace(ws_config)
+
+    if enricher is None:
+        raise HTTPException(status_code=404, detail="No contract data for this workspace")
+
+    match = next(
+        (
+            c
+            for c in getattr(enricher, "_contracts", [])
+            if c.get("repo") == repo
+            and c.get("file_path") == file
+            and c.get("contract_id") == id
+        ),
+        None,
+    )
+    if match is None:
+        raise HTTPException(status_code=404, detail="Contract not found")
+
+    role = match.get("role", "")
+    if role == "consumer":
+        repo_key, file_key = "consumer_repo", "consumer_file"
+    else:
+        repo_key, file_key = "provider_repo", "provider_file"
+    links = [
+        lk
+        for lk in getattr(enricher, "_contract_links", [])
+        if lk.get("contract_id") == id and lk.get(repo_key) == repo and lk.get(file_key) == file
+    ]
+
+    reason = None
+    if role == "consumer" and not links:
+        reason = _unmatched_reason(enricher, repo, file, id)
+
+    return WorkspaceContractDetail(
+        contract=_contract_entry(match),
+        contract_schema=match.get("schema"),
+        links=[_contract_link(lk) for lk in links],
+        unmatched_reason=reason,
     )
 
 

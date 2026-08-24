@@ -59,7 +59,7 @@ describe("chat artifact renderers", () => {
         data={{
           targets: [
             // Wire scores are 0–1 fractions (rank / total), not 0–100.
-            { file_path: "src/hot.ts", churn_percentile: 0.99 },
+            { file_path: "src/hot.ts", churn_percentile: 0.99, is_hotspot: true },
           ],
           global_hotspots: [{ path: "src/other.ts", churn_percentile: 0.88 }],
         }}
@@ -79,8 +79,10 @@ describe("chat artifact renderers", () => {
           targets: {
             "src/auth.py": {
               target: "src/auth.py",
-              // No is_hotspot on the MCP row — badge comes from score >= 0.75.
+              // Backend now emits is_hotspot directly; the badge trusts it
+              // rather than re-deriving from the score.
               hotspot_score: 0.91,
+              is_hotspot: true,
               risk_type: "churn-heavy",
               trend: "increasing",
             },

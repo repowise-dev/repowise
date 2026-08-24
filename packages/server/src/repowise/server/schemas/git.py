@@ -299,8 +299,9 @@ class FixHistoryResponse(BaseModel):
 
     The size-orthogonal half of the answer: unlike ``score``, none of this grows
     with the diff. ``density`` is the churn-weighted mean fix pressure of the
-    touched files; ``percentile`` ranks it against the repository's own
-    fix-bearing files, and is ``None`` when there is too little history to rank.
+    touched files; ``percentile`` ranks it against the same measure over the
+    repository's own recent commits, and is ``None`` when there is no sample to
+    rank against.
     """
 
     #: False when the history walk could not run — distinguishes "no fixes

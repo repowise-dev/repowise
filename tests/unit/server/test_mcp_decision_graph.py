@@ -594,7 +594,7 @@ async def test_get_risk_no_changed_files_no_governance_risk(setup_mcp_decisions)
     """Without changed_files (non-PR mode), directive is absent and no governance_risk."""
     from repowise.server.mcp_server import get_risk
 
-    result = await get_risk(["src/auth/service.py"])
+    result = await get_risk(["src/auth/service.py", "src/db/models.py"])
     # No directive in standard mode
     assert "directive" not in result
     assert "global_hotspots" in result
@@ -630,7 +630,8 @@ async def test_get_overview_key_decisions_present(setup_mcp_decisions):
     """get_overview returns key_decisions when active decisions exist."""
     from repowise.server.mcp_server import get_overview
 
-    result = await get_overview()
+    assert "key_decisions" not in await get_overview(), "key_decisions is opt-in"
+    result = await get_overview(include=["decisions"])
     assert "key_decisions" in result, "key_decisions should appear when active decisions exist"
 
     kd = result["key_decisions"]
@@ -660,7 +661,7 @@ async def test_get_overview_key_decisions_sorted_by_confidence(setup_mcp_decisio
     """top_active is sorted by confidence descending."""
     from repowise.server.mcp_server import get_overview
 
-    result = await get_overview()
+    result = await get_overview(include=["decisions"])
     top = result["key_decisions"]["top_active"]
     if len(top) > 1:
         confidences = [e["confidence"] for e in top]
@@ -675,7 +676,7 @@ async def test_get_overview_recent_reversals(setup_mcp_decisions):
     """recent_reversals lists supersedes edges with src/dst titles."""
     from repowise.server.mcp_server import get_overview
 
-    result = await get_overview()
+    result = await get_overview(include=["decisions"])
     kd = result["key_decisions"]
     assert "recent_reversals" in kd
     reversals = kd["recent_reversals"]
@@ -704,6 +705,6 @@ async def test_get_overview_key_decisions_capped_at_five(setup_mcp_decisions):
     """top_active is capped at 5 entries."""
     from repowise.server.mcp_server import get_overview
 
-    result = await get_overview()
+    result = await get_overview(include=["decisions"])
     top = result["key_decisions"]["top_active"]
     assert len(top) <= 5

@@ -1,4 +1,4 @@
-﻿"""MCP Tool: get_execution_flows — trace how the codebase executes.
+"""MCP Tool: get_execution_flows — trace how the codebase executes.
 
 Hybrid approach: reads persisted entry-point scores from community_meta_json,
 then recomputes BFS call-path traces on demand from stored call edges. This
@@ -37,7 +37,7 @@ from repowise.server.mcp_server._helpers import (
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
 
-@mcp.tool(default=False)
+@mcp.tool(default=False, surface_order=230, trust_kind="structural")
 async def get_execution_flows(
     top_n: int = 10,
     max_depth: int = 8,
@@ -85,9 +85,7 @@ async def get_execution_flows(
             entry_nodes = [(node, _ep_score(node))]
         else:
             # Top-N scored entry points from DB
-            top_nodes = await get_top_entry_points(
-                session, repo_id, min_score=0.0, limit=top_n
-            )
+            top_nodes = await get_top_entry_points(session, repo_id, min_score=0.0, limit=top_n)
             for n in top_nodes:
                 entry_nodes.append((n, _ep_score(n)))
 

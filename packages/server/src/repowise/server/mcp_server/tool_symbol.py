@@ -620,7 +620,7 @@ async def _render_ambiguous(
     return response
 
 
-@mcp.tool()
+@mcp.tool(surface_order=30)
 async def get_symbol(
     symbol_id: str | None = None,
     context_lines: int = 0,

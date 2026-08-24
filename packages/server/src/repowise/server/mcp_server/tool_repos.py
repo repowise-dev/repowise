@@ -57,7 +57,7 @@ def _workspace_repos(registry: Any) -> list[dict[str, Any]]:
     return repos
 
 
-@mcp.tool()
+@mcp.tool(tier="utility", requires_workspace=True, surface_order=110)
 async def list_repos() -> dict[str, Any]:
     """List repos available through this MCP server.
 

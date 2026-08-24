@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { BookOpen } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
-import { formatRelativeTime } from "../lib/format";
+import { formatDateTime, formatRelativeTime } from "../lib/format";
 import type { FileWikiPageRef } from "@repowise-dev/types/files";
 
 interface FileDocTabProps {
@@ -37,7 +37,7 @@ export function FileDocTab({ wikiPage, docSlot }: FileDocTabProps) {
       {wikiPage.updated_at && (
         <p
           className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]"
-          title={new Date(wikiPage.updated_at).toLocaleString()}
+          title={formatDateTime(wikiPage.updated_at)}
         >
           Written {formatRelativeTime(wikiPage.updated_at)}
         </p>

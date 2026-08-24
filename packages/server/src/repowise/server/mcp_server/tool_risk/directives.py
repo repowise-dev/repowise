@@ -44,39 +44,53 @@ _BC_CONSUMER_LIMIT = 5
 _CF_VIOLATION_LIMIT = 5
 _CF_CYCLE_LIMIT = 3
 
-#: Caps on the will-break split. Production impact leads the directive, so it
+#: Caps on the may-break split. Production impact leads the directive, so it
 #: keeps the larger budget; test fallout is a secondary signal capped tighter.
-_WILL_BREAK_LIMIT = 5
-_WILL_BREAK_TESTS_LIMIT = 3
+_MAY_BREAK_LIMIT = 5
+_MAY_BREAK_TESTS_LIMIT = 3
 #: Cap on the coverage-backed run-list. A validate-this-change set can be longer
-#: than the will-break lists (it is what you actually run), but stays glanceable;
+#: than the may-break lists (it is what you actually run), but stays glanceable;
 #: the overflow and the full per-file map live in pr_blast_radius.guarding_tests.
 _TESTS_TO_RUN_LIMIT = 10
 
+#: get_risk and get_change_risk both render 0-10 and measure unrelated things.
+#: Whichever an agent reads first, this says the other is not the same scale.
+_OVERALL_SCORE_MEASURES = (
+    "where the change lands: centrality of the changed files and how far it "
+    "reaches; not comparable to get_change_risk.score, which measures diff shape"
+)
 
-def _breaking_change_directive(repo_alias: str) -> list[dict[str, Any]]:
+
+def _breaking_change_directive(repo_alias: str) -> tuple[list[dict[str, Any]], int]:
     """Breaking-change half of the PR directive: incompatible provider changes.
 
     Reads the persisted breaking-change report (current HEAD vs the previously
     indexed contracts), filtered to providers in the changed repo, and reports
-    each change with the consumers it endangers across repos. Returns an empty
-    list when not in workspace mode or no report is available. Never raises.
+    each change with the consumers it endangers across repos. Carries every
+    contract type the report holds, ``code`` (a published package symbol)
+    included. Returns ``(changes, dropped)`` where ``dropped`` counts the
+    cross-repo changes the cap left out — a shared-package bump can produce
+    more than the cap, and the ids sort by contract type, so silence here would
+    read as "nothing else broke". Empty when not in workspace mode or no report
+    is available. Never raises.
     """
     out: list[dict[str, Any]] = []
+    dropped = 0
     try:
         if not _is_workspace_mode():
-            return out
+            return out, 0
         enricher = _state._cross_repo_enricher
         if enricher is None or not getattr(enricher, "has_breaking_changes", False):
-            return out
+            return out, 0
         for change in enricher.get_breaking_changes_for_repo(repo_alias):
-            if len(out) >= _BC_PROVIDER_LIMIT:
-                break
             consumers = change.get("impacted_consumers", [])
             # Only surface changes that actually endanger a cross-repo consumer —
             # an internal-only removed endpoint isn't a cross-repo break.
             cross = [c for c in consumers if c.get("repo") != repo_alias]
             if not cross:
+                continue
+            if len(out) >= _BC_PROVIDER_LIMIT:
+                dropped += 1
                 continue
             out.append(
                 {
@@ -85,19 +99,32 @@ def _breaking_change_directive(repo_alias: str) -> list[dict[str, Any]]:
                     "kind": change.get("kind"),
                     "severity": change.get("severity"),
                     "detail": change.get("detail"),
+                    "provider_file": change.get("provider_file"),
+                    # The changed symbol itself, when the contract bound to one.
+                    # It is what the reader passes to get_symbol to see the
+                    # signature that broke.
+                    **(
+                        {"provider_symbol_id": psid}
+                        if (psid := change.get("provider_symbol_id"))
+                        else {}
+                    ),
                     "impacted_consumers": [
+                        # symbol_id only when the contract bound to one: it is
+                        # what the reader can pass to get_symbol, and a null
+                        # would just cost budget.
                         {
                             "repo": c.get("repo"),
                             "service": c.get("service"),
                             "file": c.get("file"),
+                            **({"symbol_id": sid} if (sid := c.get("symbol_id")) else {}),
                         }
                         for c in cross[:_BC_CONSUMER_LIMIT]
                     ],
                 }
             )
     except Exception:
-        return []
-    return out
+        return [], 0
+    return out, dropped
 
 
 def _conformance_directive(repo_alias: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -139,9 +166,10 @@ def _cross_repo_directive(repo_alias: str) -> tuple[list[dict[str, Any]], list[d
     """Cross-repo half of the PR directive: downstream services in other repos.
 
     Resolves the changed repo to its system-graph nodes and ranks reachable
-    services in OTHER repos by impact, splitting structural (``will_break``) from
-    behavioral co-change (``missing_cochanges``). Returns two empty lists when
-    not in workspace mode or no system graph is available. Never raises.
+    services in OTHER repos by impact, splitting structural
+    (``will_break_consumers``) from behavioral co-change (``missing_cochanges``).
+    Returns two empty lists when not in workspace mode or no system graph is
+    available. Never raises.
     """
     will_break_consumers: list[dict[str, Any]] = []
     missing_cross_repo_cochanges: list[dict[str, Any]] = []
@@ -215,6 +243,8 @@ def _trim_blast_lists(
                     f"pr_blast_radius.{key} beyond cap={cap} ({len(value) - cap} dropped)",
                     value[cap:],
                 )
+    if trimmed_blast.get("overall_risk_score") is not None:
+        trimmed_blast["overall_risk_score_measures"] = _OVERALL_SCORE_MEASURES
     return trimmed_blast
 
 
@@ -309,8 +339,12 @@ def _build_pr_directive(
         [p for p in (_as_path(e) for e in trimmed_blast.get("transitive_affected", [])) if p],
         exclude_spec,
     )
-    will_break = [p for p in affected if p not in test_paths][:_WILL_BREAK_LIMIT]
-    will_break_tests = [p for p in affected if p in test_paths][:_WILL_BREAK_TESTS_LIMIT]
+    # "may", not "will": this is a reverse-import reachability walk over a file
+    # list, and get_risk is never given a diff, so nothing here knows whether the
+    # symbol an importer uses actually changed. The diff-backed fields below keep
+    # "will".
+    may_break = [p for p in affected if p not in test_paths][:_MAY_BREAK_LIMIT]
+    may_break_tests = [p for p in affected if p in test_paths][:_MAY_BREAK_TESTS_LIMIT]
 
     missing_cochanges = filter_path_list(
         [p for p in (_as_path(e) for e in trimmed_blast.get("cochange_warnings", [])) if p],
@@ -354,7 +388,8 @@ def _build_pr_directive(
     if tests_to_run_basis == "inferred":
         all_tests_to_run = filter_path_list(all_tests_to_run, exclude_spec)
     tests_to_run = all_tests_to_run[:_TESTS_TO_RUN_LIMIT]
-    if len(all_tests_to_run) > _TESTS_TO_RUN_LIMIT:
+    capped = len(all_tests_to_run) > _TESTS_TO_RUN_LIMIT
+    if capped:
         collector.add(
             f"directive.tests_to_run beyond cap={_TESTS_TO_RUN_LIMIT} "
             f"({len(all_tests_to_run) - _TESTS_TO_RUN_LIMIT} dropped)",
@@ -370,6 +405,14 @@ def _build_pr_directive(
         tests_to_run_suffix = (
             f" {len(all_tests_to_run)} test file(s) reach the change per the import graph "
             f"(inferred, not coverage-proven) - run these first."
+        )
+    if capped:
+        # The cap is fine; nothing told the reader the full list is in the same
+        # response. guarding_tests is uncapped and carries the per-file map.
+        tests_to_run_suffix += (
+            f" Showing {_TESTS_TO_RUN_LIMIT} of {len(all_tests_to_run)}; "
+            f"all of them, and which file each guards, are in "
+            f"pr_blast_radius.guarding_tests."
         )
 
     gov_count = len(governance_risk)
@@ -392,7 +435,7 @@ def _build_pr_directive(
     # Breaking-change guard — incompatible provider changes (removed route /
     # field, type change, ...) in this repo and the consumers they endanger.
     # Schema-level truth, distinct from the topology-level will_break_consumers.
-    breaking_changes = _breaking_change_directive(alias)
+    breaking_changes, breaking_changes_dropped = _breaking_change_directive(alias)
     bc_suffix = ""
     if breaking_changes:
         bc_consumers = sum(len(b["impacted_consumers"]) for b in breaking_changes)
@@ -400,6 +443,8 @@ def _build_pr_directive(
             f" Breaking changes: {len(breaking_changes)} provider contract(s) changed "
             f"incompatibly, endangering {bc_consumers} consumer(s)."
         )
+        if breaking_changes_dropped:
+            bc_suffix += f" {breaking_changes_dropped} more not listed."
 
     # Architecture conformance — declared dependency-rule violations and
     # dependency cycles this repo participates in. Governance-level truth,
@@ -414,8 +459,8 @@ def _build_pr_directive(
         )
 
     response["directive"] = {
-        "will_break": will_break,
-        "will_break_tests": will_break_tests,
+        "may_break": may_break,
+        "may_break_tests": may_break_tests,
         "missing_cochanges": missing_cochanges,
         "missing_tests": missing_tests,
         "tests_to_run": tests_to_run,
@@ -423,14 +468,14 @@ def _build_pr_directive(
         "will_break_consumers": will_break_consumers,
         "missing_cross_repo_cochanges": missing_cross_repo_cochanges,
         "breaking_changes": breaking_changes,
+        "breaking_changes_truncated": breaking_changes_dropped,
         "conformance_violations": conformance_violations,
         "dependency_cycles": dependency_cycles,
         "governance_risk": governance_risk,
-        "overall_risk_score": trimmed_blast.get("overall_risk_score"),
         "summary": (
             f"PR touches {len(changed_files)} file(s). "
-            f"~{len(will_break)} downstream file(s) likely affected, "
-            f"{len(will_break_tests)} test(s) likely broken, "
+            f"~{len(may_break)} downstream file(s) may be affected, "
+            f"{len(may_break_tests)} test(s) may break, "
             f"{len(missing_cochanges)} historical co-changer(s) missing, "
             f"{len(missing_tests)} file(s) without tests."
             f"{tests_to_run_suffix}{gov_suffix}{xr_suffix}{bc_suffix}{cf_suffix}"

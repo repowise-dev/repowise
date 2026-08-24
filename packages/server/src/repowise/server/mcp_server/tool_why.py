@@ -20,7 +20,11 @@ from repowise.core.persistence.models import (
 from repowise.core.precedent.currency import describe_decision_currency
 from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.mcp_server._budget import OmissionCollector, effective_char_budget
+from repowise.server.mcp_server._budget import (
+    OmissionCollector,
+    fit_to_budget,
+    over_budget,
+)
 from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
 from repowise.server.mcp_server._episodes import bank_overflow, episode_evidence
 from repowise.server.mcp_server._helpers import (
@@ -47,7 +51,7 @@ from repowise.server.mcp_server._why_relevance import (
 )
 
 
-@mcp.tool()
+@mcp.tool(surface_order=70)
 async def get_why(
     query: str | None = None,
     targets: list[str] | None = None,
@@ -401,12 +405,9 @@ def _fit_path_response(
     under-budget path still attaches: a response that fits can still carry a
     capped body whose remainder needs advertising.
     """
-    # Reserved so the marker the collector appends after the last check cannot
-    # itself push the response back over the host cap.
-    budget = effective_char_budget() - _COLLECTOR_HEADROOM_CHARS
 
     def _over() -> bool:
-        return len(json.dumps(result_data, separators=(",", ":"), default=str)) > budget
+        return over_budget(result_data, headroom=_COLLECTOR_HEADROOM_CHARS)
 
     if not _over():
         if collector is not None:
@@ -416,21 +417,15 @@ def _fit_path_response(
     if collector is None:
         collector = OmissionCollector("get_why", repo_root=repo_root)
 
-    def _drop_block(key: str, container: dict) -> None:
-        if _over() and container.get(key):
-            collector.add(key, container.pop(key))
-            result_data["truncated"] = True
+    def _shed(*order: str) -> None:
+        fit_to_budget(result_data, order, collector, headroom=_COLLECTOR_HEADROOM_CHARS)
 
-    origin_story = result_data.get("origin_story")
-    if isinstance(origin_story, dict):
-        _drop_block("linked_decisions", origin_story)
-
-    # Before the governing records, not after them: episodes are the newest
+    # Episodes go before the governing records, not after: they are the newest
     # evidence kind here and must only ever spend slack. Dropping them later in
     # the sequence meant the decisions loop ran with the episode block still
     # inflating the response, and a governing record was evicted to make room
     # for an episode that then survived — measured, not theorised.
-    _drop_block("episodes", result_data)
+    _shed("origin_story.linked_decisions", "episodes")
 
     decisions: list = result_data.get("decisions") or []
     while decisions and _over():
@@ -439,8 +434,7 @@ def _fit_path_response(
         result_data["truncated"] = True
         result_data.setdefault("dropped_decisions", []).append(dropped.get("id", ""))
 
-    for key in ("code_rationale", "git_archaeology", "origin_story"):
-        _drop_block(key, result_data)
+    _shed("code_rationale", "git_archaeology", "origin_story")
 
     collector.attach(result_data)
     return result_data
@@ -994,9 +988,7 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
     # distinct decisions — and only walk lineage for what survives.
     ranked = _rank_keyword_matches(all_decisions, query, target_set)
     if not ranked:
-        return await _why_no_match(
-            query, targets, ctx, repository, all_decisions, target_git
-        )
+        return await _why_no_match(query, targets, ctx, repository, all_decisions, target_git)
     collapsed = _collapse_restatements(ranked)[:_MAX_SEARCH_DECISIONS]
     decision_results, doc_results = await _semantic_lanes(ctx, query)
     lineage_by_id = await _lineage_for_matches(ctx, [d for d, _ in collapsed])

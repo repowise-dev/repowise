@@ -16,11 +16,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.change_risk import (
     SCORE_MEASURES,
     SCORE_UNIT,
+    BaselineSample,
     FixHistoryUnavailableError,
     RiskNormalizer,
     baseline_samples,
     change_features_from_stored,
     change_fix_density,
+    densities_excluding,
     extract_range_features,
     fix_density_percentile,
     fix_pressure,
@@ -697,6 +699,7 @@ def get_risk_range(
 
     percentile: float | None = None
     priority: str | None = None
+    samples: list[BaselineSample] = []
     if baseline:
         # Same anchor rule as the CLI/MCP scorer, so both surfaces rank a range
         # against the history it forked from rather than against its own commits.
@@ -725,7 +728,7 @@ def get_risk_range(
         fix_history=FixHistoryResponse(
             available=fix_available,
             density=round(density, 3),
-            percentile=fix_density_percentile(pressure, density),
+            percentile=fix_density_percentile(densities_excluding(samples, "", pressure), density),
             files=[
                 FixHistoryFileResponse(path=path, churn=churn, fix_pressure=p)
                 for path, churn, p in hot_files(pressure, features.file_churn)

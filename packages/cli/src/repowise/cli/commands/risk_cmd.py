@@ -57,7 +57,9 @@ _PRIORITY_LEAD = {
 #: ``_base_dep_count`` is bookkeeping the tool uses to rebuild ``risk_summary``
 #: after enrichment. ``impact_surface`` is the transitive dependent set, the one
 #: genuinely unbounded block, and its own summary counts survive in
-#: ``risk_summary`` and ``dependents_count``.
+#: ``risk_summary`` and ``dependents_count``. It is opt-in on the tool now and
+#: this command does not ask for it; the entry stays so that a caller passing a
+#: hand-built payload gets the same projection.
 _DROPPED_TARGET_KEYS = ("_base_dep_count", "impact_surface")
 
 
@@ -117,6 +119,8 @@ def _target_risk(
         return get_risk(
             targets=list(targets),
             changed_files=list(changed_files) or None,
+            # _render_target_risk prints risk_type and change_magnitude.
+            include=["churn"],
         )
 
     payload = _ta.run(repo, _factory, "get_risk")
@@ -140,18 +144,23 @@ def _render_target_risk(projected: dict, requested: tuple[str, ...]) -> None:
     directive = projected.get("directive")
     if directive:
         # PR mode leads with the directive because that is the tool's contract:
-        # what will break, what is missing, what to run.
+        # what may break, what is missing, what to run.
         console.print(f"\n[bold]Directive[/bold] {escape(str(directive.get('summary', '')))}")
         for label, key in (
-            ("Will break", "will_break"),
-            ("Tests likely broken", "will_break_tests"),
+            ("May break", "may_break"),
+            ("Tests that may break", "may_break_tests"),
             ("Missing co-changes", "missing_cochanges"),
             ("Files without tests", "missing_tests"),
             ("Tests to run", "tests_to_run"),
         ):
             _print_list(label, directive.get(key) or [])
         for label, key in _DIRECTIVE_RECORD_BLOCKS:
-            _print_records(label, directive.get(key) or [], key)
+            _print_records(
+                label,
+                directive.get(key) or [],
+                key,
+                truncated=directive.get(f"{key}_truncated") or 0,
+            )
 
     targets = projected.get("targets") or {}
     for name in requested:
@@ -353,7 +362,7 @@ def _record_text(key: str, entry: dict) -> str:
     return str(entry)
 
 
-def _print_records(label: str, values: list, key: str) -> None:
+def _print_records(label: str, values: list, key: str, truncated: int = 0) -> None:
     """A directive block whose entries are dicts, one line each."""
     from rich.markup import escape
 
@@ -363,6 +372,8 @@ def _print_records(label: str, values: list, key: str) -> None:
     for entry in values:
         text = _record_text(key, entry) if isinstance(entry, dict) else str(entry)
         console.print(f"    {escape(str(text))}")
+    if truncated:
+        console.print(f"    [dim]... and {truncated} more[/dim]")
 
 
 def _ordinal(n: int) -> str:
@@ -418,7 +429,7 @@ def _ordinal(n: int) -> str:
     multiple=True,
     metavar="PATH",
     help="With --target: PR mode. The response leads with a directive naming "
-    "what will break, which co-changes and tests are missing, and what to run.",
+    "what may break, which co-changes and tests are missing, and what to run.",
 )
 @format_option()
 @full_option()
@@ -495,7 +506,7 @@ def risk_command(
     elif result.hot_files:
         where = (
             f" · {_ordinal(round(result.fix_percentile))} percentile of this repo's "
-            "fix-bearing files"
+            "recent commits"
             if result.fix_percentile is not None
             else ""
         )

@@ -101,6 +101,7 @@ from repowise.server.mcp_server._helpers import (
     _unsupported_repo_all,
     filter_dicts_by_key,
 )
+from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT as _NO_HITS_RECOVERY_HINT
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._neighbor_rerank import (
@@ -177,8 +178,11 @@ from repowise.server.mcp_server.tool_answer.symbols import (
     _hydrate_symbols_for_hits,
 )
 from repowise.server.mcp_server.tool_answer.synthesis import (
-    _hash_question,
+    _hash_answer_identity,
+    _hash_question,  # backward-compatible re-export for cache migrations/tests
+    _normalize_scope,
     _resolve_provider_for_answer,
+    _resolve_reasoning_for_answer,
     synthesize,
 )
 
@@ -257,7 +261,7 @@ async def _run_retrieval_pipeline(
     # (consumer instead of orchestrator). Adds up to 3 neighbors with a
     # damped score, then re-sorts.
     with contextlib.suppress(Exception):
-        hits = await _expand_via_graph(hits, ctx)
+        hits = await _expand_via_graph(hits, ctx, repo_id)
     # Re-filter: graph expansion can pull excluded neighbors back in (before the
     # cap, so an excluded neighbor can't occupy a top-5 slot).
     hits = filter_dicts_by_key(hits, "target_path", exclude_spec)
@@ -356,7 +360,7 @@ async def _run_retrieval_pipeline(
     return _Retrieved(hits, resolved_pool, question_ids, homonyms, flow_paths)
 
 
-@mcp.tool()
+@mcp.tool(surface_order=10)
 async def get_answer(
     question: str,
     scope: str | None = None,
@@ -424,11 +428,10 @@ async def get_answer(
         if grounded is not None:
             return build_data_shape_payload(grounded, t0, repository)
 
-    # --- Cache lookup --------------------------------------------------------
-    # Scope: ignore the (rare) `scope` argument in the cache key for now;
-    # scoped queries are uncommon and including scope would balloon hit rate
-    # variance. We hash on (repo_id, normalized_question) only.
-    qhash = _hash_question(question)
+    # Normalize once, then use the same value for retrieval and cache identity.
+    # The versioned identity deliberately misses legacy question-only rows.
+    normalized_scope = _normalize_scope(scope)
+    qhash = _hash_answer_identity(question, normalized_scope)
     cache_disabled = _cache_disabled()
     if not cache_disabled:
         served = await _serve_cached_answer(
@@ -444,7 +447,7 @@ async def get_answer(
             return served
 
     retrieved = await _run_retrieval_pipeline(
-        question, ctx, scope=scope, exclude_spec=exclude_spec, repo_id=repo_id
+        question, ctx, scope=normalized_scope, exclude_spec=exclude_spec, repo_id=repo_id
     )
     hits = retrieved.hits
     resolved_pool = retrieved.resolved_pool
@@ -522,10 +525,7 @@ async def get_answer(
         return _with_candidates(
             _no_answer_payload(
                 "No wiki hits for this question. Rephrase around the code "
-                'concept, or use search_codebase (mode="symbol" for an '
-                'identifier, mode="path" for a file name); if the question '
-                "names a file, call get_context on it directly. Grep only "
-                "if those come back empty too.",
+                "concept. " + _NO_HITS_RECOVERY_HINT,
                 repository=repository,
                 t0=t0,
             ),
@@ -669,6 +669,7 @@ async def get_answer(
         provider,
         _SYSTEM_PROMPT,
         user_prompt,
+        reasoning=_resolve_reasoning_for_answer(getattr(ctx, "path", None)),
         session_factory=getattr(ctx, "session_factory", None),
         repo_id=repo_id,
     )
@@ -739,6 +740,13 @@ async def get_answer(
     if candidates:
         payload["candidates"] = candidates
 
+    # Persist only the trust-relevant retrieval state. The cache read rebuilds
+    # timing/freshness metadata for the current request, then restores this
+    # synthesis-time fact so fresh and cached envelopes mean the same thing.
+    degraded = _degraded_legs(_retrieval_legs())
+    if degraded:
+        payload["_retrieval_degraded"] = degraded
+
     if answer_text and not cache_disabled:
         await _write_answer_cache(
             payload,
@@ -747,12 +755,15 @@ async def get_answer(
             repository=repository,
             repo_id=repo_id,
             qhash=qhash,
+            legacy_qhash=_hash_question(question),
             provider=provider,
         )
 
+    payload.pop("_retrieval_degraded", None)
+
     payload["_meta"] = _build_meta(
         timing_ms=(time.perf_counter() - t0) * 1000,
-        hint=_answer_hint(confidence, len(hits)),
+        hint=_answer_hint(confidence),
         repository=repository,
         targets=[*citations, *fallback_targets],
     )
@@ -762,7 +773,7 @@ async def get_answer(
     # see it, and ``embedder_live`` stayed true because a configured embedder is
     # live whether or not this call beat its budget. Named only when a leg
     # actually fell over, so a healthy response pays nothing for it.
-    if degraded := _degraded_legs(_retrieval_legs()):
+    if degraded:
         payload["_meta"]["retrieval_degraded"] = degraded
     _apply_lean_high(payload, question)
     # After the cache write above and after lean-high (which can remove

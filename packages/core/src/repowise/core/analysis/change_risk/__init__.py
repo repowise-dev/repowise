@@ -9,7 +9,7 @@ and is a natural pre-merge / PR gate.
 
 from __future__ import annotations
 
-from .baseline import baseline_samples, scores_excluding
+from .baseline import BaselineSample, baseline_samples, densities_excluding, scores_excluding
 from .features import (
     WORKING_TREE_REF,
     ChangeFeatures,
@@ -43,6 +43,7 @@ __all__ = [
     "SCORE_MEASURES",
     "SCORE_UNIT",
     "WORKING_TREE_REF",
+    "BaselineSample",
     "ChangeFeatures",
     "ChangeRisk",
     "ChangeRiskResult",
@@ -54,6 +55,7 @@ __all__ = [
     "change_fix_density",
     "change_risk_payload",
     "clear_fix_pressure_cache",
+    "densities_excluding",
     "extract_commit_features",
     "extract_range_features",
     "extract_worktree_features",

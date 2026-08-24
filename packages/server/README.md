@@ -11,7 +11,7 @@ FastAPI REST API, webhook handlers, MCP server, and background job scheduler for
 | Component | Description |
 |-----------|-------------|
 | **REST API** | FastAPI application with full CRUD for repos, pages (with version history), symbols, jobs, git analytics, dead code, decisions, graph intelligence, blast radius, costs, knowledge map, security findings, providers, chat, CLAUDE.md generation, and multi-repo workspace |
-| **MCP Server** | 17 registered MCP tools (11 advertised by default in single-repo mode: ten flagship + `list_repos`) for AI coding assistants (Claude Code, Cursor, Cline) |
+| **MCP Server** | 17 registered MCP tools (10 advertised by default in single-repo mode: the canonical set) for AI coding assistants (Claude Code, Cursor, Cline) |
 | **Webhooks** | GitHub and GitLab push event handlers — trigger sync jobs automatically on push |
 | **Scheduler** | APScheduler background jobs — polling fallback (auto-syncs diverged repos), stale page detection |
 
@@ -232,9 +232,10 @@ Job progress events (`JobProgressEvent`) carry: `event` type, `file` currently b
 
 ## MCP Server
 
-repowise registers 17 MCP tools and advertises **11 by default** in single-repo
-mode (the ten flagship tools plus `list_repos`). Workspace mode adds two more;
-four further tools are opt-in. See [`docs/agent/MCP_TOOLS.md`](../../docs/agent/MCP_TOOLS.md).
+repowise registers 17 MCP tools and advertises **10 by default** in single-repo
+mode (10 advertised by default, exactly the canonical set). Workspace mode adds
+`list_repos`; six specialist tools are opt-in where eligible. See
+[`docs/agent/MCP_TOOLS.md`](../../docs/agent/MCP_TOOLS.md).
 Start the MCP server via:
 
 ```bash

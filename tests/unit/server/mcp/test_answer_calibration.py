@@ -358,6 +358,31 @@ async def test_grounded_value_keeps_high_confidence(setup_mcp, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_derived_value_softens_to_medium_not_low(setup_mcp, monkeypatch):
+    """Grounded 2 plus a computed 6 softens to medium.
+
+    ``test_ungrounded_value_caps_confidence_low`` is the negative control: a
+    lone invented value with no grounded sibling still caps at low.
+    """
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, with_symbols=True, symbol=_FN_SYMBOL)
+    _patch_provider(
+        monkeypatch,
+        answer_mod,
+        "min_count_policy returns 2, and the three retry tiers "
+        "multiply it to 6 (pkg/alpha/one.py).",
+    )
+
+    result = await get_answer("What is the default value of min_count_policy?")
+    assert result["confidence"] == "medium"
+    # Still told to verify: the note and hint key off ungrounded_values, not tier.
+    assert "6" in result["note"]
+    assert "next_action_hint" in result
+
+
+@pytest.mark.asyncio
 async def test_high_confidence_requires_source_backed_citation(setup_mcp, monkeypatch):
     """No cited page contributed symbols → high is downgraded to medium."""
     import repowise.server.mcp_server.tool_answer.answer as answer_mod
@@ -657,6 +682,27 @@ async def test_anchor_injects_defining_file_as_dominant_hit():
     assert out[0]["_symbol_anchored"] is True
     assert out[0]["score"] > 3.6  # dominates the fuzzy top hit
     assert not homonyms["union"]  # single resolved def, no union
+
+
+@pytest.mark.asyncio
+async def test_anchor_skips_a_symbol_with_no_file_path():
+    """A pathless symbol must not become a hit."""
+    from repowise.server.mcp_server.tool_answer.symbols import _anchor_symbol_hits
+
+    rows = [
+        _Sym(
+            "extract_all",
+            "",
+            parent_name="DecisionExtractor",
+            qualified_name="DecisionExtractor.extract_all",
+        )
+    ]
+    hits = [{"target_path": "core/pipeline/incremental.py", "score": 3.6}]
+    out, _ = await _anchor_symbol_hits(
+        _FakeSession(rows), "repo1", {"extract_all", "DecisionExtractor"}, hits
+    )
+    assert all(h.get("target_path") for h in out)
+    assert out[0]["target_path"] == "core/pipeline/incremental.py"
 
 
 @pytest.mark.asyncio

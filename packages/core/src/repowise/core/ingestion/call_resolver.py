@@ -31,7 +31,11 @@ from typing import Any
 
 import structlog
 
-from .language_data import get_builtin_methods
+from .language_data import (
+    get_builtin_methods,
+    get_external_receiver_types,
+    get_external_return_types,
+)
 from .languages.receiver_types import (
     FRAMEWORK_DECORATOR_LANGUAGES,
     IMPLICIT_FIELD_LANGUAGES,
@@ -45,7 +49,9 @@ from .languages.receiver_types import (
     types_in_span,
 )
 from .models import (
+    CallReceiver,
     CallSite,
+    CallSiteEdgeType,
     NamedBinding,
     ParsedFile,
     ResolutionOrigin,
@@ -150,7 +156,13 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     # the typed-receiver fallback too. One `name: Type` shape reaches its
     # typed vals, vars and parameters alike, so the language gate no longer
     # declines the moment the fallback asks.
-    "java": replace(_JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER),
+    # Java takes the uniqueness-gated package tier, Kotlin the open one; see
+    # ``_resolve_java_same_package_unique`` for why that is a language rule.
+    "java": replace(
+        _JVM_STRATEGIES,
+        free=("_resolve_java_same_package_unique",),
+        member_fallback=_TYPED_RECEIVER,
+    ),
     "kotlin": replace(_JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER),
     "csharp": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
     "python": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
@@ -179,6 +191,7 @@ class ResolvedCall:
     confidence: float  # 0.0–1.0
     line: int  # call site line number (for diagnostics)
     origin: ResolutionOrigin  # which strategy below produced it
+    edge_type: CallSiteEdgeType = "calls"  # carried through from the CallSite
 
 
 class CallResolver:
@@ -309,6 +322,7 @@ class CallResolver:
         # {file: {name: type}} — module-level defs a framework decorator retyped.
         self._framework_types: dict[str, dict[str, str]] = {}
         self._external_names: dict[str, frozenset[str]] = {}
+        self._repo_rebound_names: dict[str, frozenset[str]] = {}
         self._method_name_set: frozenset[str] | None = None
         self._framework_name_set: frozenset[str] | None = None
 
@@ -578,16 +592,53 @@ class CallResolver:
         identifier ``Helper`` may be a class or method defined in any sibling
         file of the same package, with no import statement.
         """
+        return self._jvm_same_package(file_path, call, caller_id, unique_only=False)
+
+    def _resolve_java_same_package_unique(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Same tier as ``_resolve_jvm_same_package``, refusing on ambiguity.
+
+        Java-only because Kotlin has package-scope top-level and extension
+        functions, so a bare name there really is a package lookup; Java has
+        none, so it is a static import, an inherited member, or a member call
+        whose receiver the grammar dropped. Hand-read, the removals agree:
+        20 of 20 wrong on caffeine, 16 of 20 right on exposed and ktor.
+
+        Refusing is not deleting. The chain continues into the import tiers,
+        which answer 14,307 of caffeine's 18,390 refused sites.
+        """
+        return self._jvm_same_package(file_path, call, caller_id, unique_only=True)
+
+    def _jvm_same_package(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+        *,
+        unique_only: bool,
+    ) -> ResolvedCall | None:
         index = self._get_jvm_index()
         if index is None:
             return None
-        siblings = index.same_package_files(file_path)
-        for sibling in siblings:
-            syms = self._file_symbols.get(sibling, {})
-            sym_id = syms.get(call.target_name)
+        found: str | None = None
+        for sibling in index.same_package_files(file_path):
+            sym_id = self._file_symbols.get(sibling, {}).get(call.target_name)
             if sym_id is not None and sym_id != caller_id:
-                return ResolvedCall(caller_id, sym_id, 0.90, call.line, "same_package")
-        return None
+                if not unique_only:
+                    return ResolvedCall(caller_id, sym_id, 0.90, call.line, "same_package")
+                if found is not None:
+                    # Two siblings declare it and nothing here can tell them
+                    # apart; this used to answer with whichever the index
+                    # walked first.
+                    return None
+                found = sym_id
+        if found is None:
+            return None
+        return ResolvedCall(caller_id, found, 0.90, call.line, "same_package")
 
     def _resolve_jvm_receiver_same_package(
         self,
@@ -841,7 +892,14 @@ class CallResolver:
 
             resolved = self._resolve_one(file_path, call)
             if resolved:
-                results.append(self._redirect_to_definition(resolved))
+                resolved = self._redirect_to_definition(resolved)
+                # Stamped once here rather than in each tier: what a site
+                # produces is a property of the syntax, not of the strategy
+                # that answered it. No tier sets it, so this compares against
+                # the default rather than against a tier's opinion.
+                if call.edge_type != "calls":
+                    resolved = replace(resolved, edge_type=call.edge_type)
+                results.append(resolved)
 
         return results
 
@@ -852,7 +910,12 @@ class CallResolver:
 
         language = self._language_of(file_path) or ""
         receiver_call = call.receiver_call
-        if receiver_call is not None and language in self._return_type_chain_languages:
+        # A language with an `external_return_types` table reaches the tier for
+        # that table alone; only the constant above admits the full lane.
+        if receiver_call is not None and (
+            language in self._return_type_chain_languages
+            or get_external_return_types(language)
+        ):
             handled, resolved = self._resolve_return_typed_chain(
                 file_path, call, caller_id, language
             )
@@ -883,45 +946,36 @@ class CallResolver:
 
         inner = call.receiver_call
         assert inner is not None
-        inner_call = CallSite(
-            target_name=inner.target_name,
-            receiver_name=inner.receiver_name,
-            caller_symbol_id=caller_id,
-            line=call.line,
-            argument_count=inner.argument_count,
-        )
-        resolved_inner = self._resolve_one(file_path, inner_call)
-        if resolved_inner is None:
-            return False, None
 
-        symbol = self._symbols_by_id.get(resolved_inner.callee_id)
-        if symbol is None:
+        tabled = self._external_chain_return_type(file_path, inner, language)
+        from_table = tabled is not None
+        if tabled is not None:
+            type_name = tabled
+        elif language not in self._return_type_chain_languages:
+            # Admitted by its table alone. Inferring the head's type from the
+            # declared return type of a repository symbol is a separate and much
+            # larger population, and it is unmeasured here.
             return False, None
-        if symbol.kind in _TYPE_KINDS:
-            type_name = symbol.name
         else:
-            raw_return = declared_return_type(symbol.signature or "")
-            type_name = normalize_return_type(raw_return, language) if raw_return else None
-            symbol_path = self._symbol_paths_by_id.get(resolved_inner.callee_id)
-            if symbol_path is None:
-                return False, None
-            overload_key = (
-                symbol_path,
-                symbol.parent_name,
-                symbol.name,
-                inner.argument_count,
+            inferred = self._inferred_chain_return_type(
+                file_path, call, inner, caller_id, language
             )
-            if len(self._overload_return_types.get(overload_key, ())) > 1:
+            if inferred is None:
                 return False, None
-        if type_name is None:
-            return False, None
+            type_name = inferred
 
         found = self._typed_receiver_target(file_path, call, caller_id, type_name)
         if language == "java":
             # A simple type name is not repository-unique.  Java package and
             # import binding settle its identity; the global tier does not.
+            #
+            # When the name came from the table it is external *in this file*,
+            # and java has no extension methods, so the repository cannot
+            # declare that type's method either.  That makes the bare-name
+            # answer disproved rather than merely unevidenced, which is the
+            # difference between refusing the site and falling through to it.
             if found is None or found[1] == "global":
-                return False, None
+                return from_table, None
         elif language == "cpp":
             # P17 admits only the measured Seastar debt family.  Broader C++
             # return-name matching remains probe evidence, not production
@@ -941,6 +995,87 @@ class CallResolver:
         assert found is not None
         sym_id, tier = found
         return True, self._return_typed_call(caller_id, sym_id, tier, call.line)
+
+    def _external_chain_return_type(
+        self,
+        file_path: str,
+        inner: CallReceiver,
+        language: str,
+    ) -> str | None:
+        """The table's return type for ``Type.method(..)`` at the head of a chain.
+
+        None when the head is not a table entry, and — the part the rust half of
+        this phase bought — when this file rebinds the name to something the
+        repository owns. Java imports resolve to repository files, so
+        ``_import_names`` answers that directly, where rust needs its raw import
+        text read against the workspace index.
+
+        The bound value has to be read, not merely tested: an unresolved import
+        is recorded as an ``external:`` marker, so a truthiness check exempts
+        ``import com.google.common.collect.Maps`` and silently drops 36 of
+        caffeine's 96 measured sites.
+
+        The import list alone is not enough, because java's same-package types
+        need no import. A repository declaring its own ``Duration`` anywhere is
+        exempted outright rather than same-package-checked: the table records
+        the *JDK's* return type, which is the wrong answer for a repository
+        type whose factory returns something else, and refusing on it would
+        drop a correct edge. Costs nothing measured - 0 of the 106 sites has a
+        repo-declared receiver name, by construction of the population.
+        """
+        receiver = inner.receiver_name
+        if not receiver:
+            return None
+        methods = get_external_return_types(language).get(receiver)
+        if methods is None:
+            return None
+        if receiver in self._known_type_names:
+            return None
+        bound = self._import_names.get(file_path, {}).get(receiver)
+        if bound and not bound.startswith("external:"):
+            return None
+        return methods.get(inner.target_name)
+
+    def _inferred_chain_return_type(
+        self,
+        file_path: str,
+        call: CallSite,
+        inner: CallReceiver,
+        caller_id: str,
+        language: str,
+    ) -> str | None:
+        """The head's type read off the repository symbol the inner call resolves to."""
+        inner_call = CallSite(
+            target_name=inner.target_name,
+            receiver_name=inner.receiver_name,
+            caller_symbol_id=caller_id,
+            line=call.line,
+            argument_count=inner.argument_count,
+        )
+        resolved_inner = self._resolve_one(file_path, inner_call)
+        if resolved_inner is None:
+            return None
+
+        symbol = self._symbols_by_id.get(resolved_inner.callee_id)
+        if symbol is None:
+            return None
+        if symbol.kind in _TYPE_KINDS:
+            return symbol.name
+
+        raw_return = declared_return_type(symbol.signature or "")
+        type_name = normalize_return_type(raw_return, language) if raw_return else None
+        symbol_path = self._symbol_paths_by_id.get(resolved_inner.callee_id)
+        if symbol_path is None:
+            return None
+        overload_key = (
+            symbol_path,
+            symbol.parent_name,
+            symbol.name,
+            inner.argument_count,
+        )
+        if len(self._overload_return_types.get(overload_key, ())) > 1:
+            return None
+        return type_name
 
     def _return_typed_call(self, caller_id: str, sym_id: str, tier: str, line: int) -> ResolvedCall:
         """Stamp an edge whose receiver is the inner callee's return type."""
@@ -1207,6 +1342,8 @@ class CallResolver:
                 return ResolvedCall(caller_id, sym_id, 0.93, call.line, "receiver_same_file")
             if tier == "import":
                 return ResolvedCall(caller_id, sym_id, 0.88, call.line, "receiver_import")
+            if self._answers_for_a_foreign_type(file_path, receiver_name):
+                return None
             return ResolvedCall(caller_id, sym_id, 0.75, call.line, "receiver_global")
 
         # Strategy 3: receiver is "self" or "this" — look in same class.
@@ -1526,6 +1663,10 @@ class CallResolver:
         Read off the raw import statements rather than ``_import_names``, which
         only carries bindings that resolved to a file — precisely the ones this
         needs to exclude.
+
+        The names wanted here are the ones *this file writes*, which is what
+        ``Import.local_names`` answers: ``imported_names`` carries the source
+        module's name, and under an alias the two differ.
         """
         names = self._external_names.get(file_path)
         if names is not None:
@@ -1536,13 +1677,66 @@ class CallResolver:
         for imp in parsed.imports if parsed else ():
             if imp.resolved_file and not imp.resolved_file.startswith("external:"):
                 continue
-            bound = (*imp.imported_names, imp.module_path.rsplit(".", 1)[-1])
+            bound = (*imp.local_names, imp.module_path.rsplit(".", 1)[-1])
             found.update(name for name in bound if name and name != "*")
 
         names = frozenset(found)
         if len(self._external_names) >= _SOURCE_CACHE_FILES:
             self._external_names.clear()
         self._external_names[file_path] = names
+        return names
+
+    def _answers_for_a_foreign_type(self, file_path: str, receiver_name: str) -> bool:
+        """Is the repo-wide tier about to answer a call on a type we do not own?
+
+        Asked only of the ``global`` tier, which takes the first file-order
+        match for a ``(type, method)`` pair with no uniqueness check. A
+        repository that writes ``impl RelationshipSourceCollection for
+        Vec<Entity>`` declares a ``Vec::new``, and without this the tier hands
+        it to every ``Vec::new()`` in the tree whatever the element type is.
+
+        The narrower tiers above are deliberately left alone: both are grounded
+        in the caller's own file or its imports, and a same-file ``impl
+        From<LocalIndex> for usize`` really is what ``usize::from(i)`` means
+        there.
+        """
+        if receiver_name not in get_external_receiver_types(
+            self._language_of(file_path) or ""
+        ):
+            return False
+        return receiver_name not in self._names_rebound_from_a_repo_package(file_path)
+
+    def _names_rebound_from_a_repo_package(self, file_path: str) -> frozenset[str]:
+        """Names this file imports from one of the repository's own packages.
+
+        A file writing ``use bevy_platform::collections::HashMap`` means its own
+        ``HashMap``, so the repo answer is right and the refusal above must not
+        fire. The import list is what separates that from
+        ``use std::collections::HashMap`` two files away; the name cannot.
+
+        Read off the raw import statements because a rust import resolves to no
+        repository file at all - measured 0 of 843 candidate rows - so
+        ``_import_names`` cannot answer this. The package index is what does,
+        and the exemption is only ever as good as the one the language has: a
+        language given a non-empty ``external_receiver_types`` without a
+        workspace index would refuse where it should exempt.
+        """
+        cached = self._repo_rebound_names.get(file_path)
+        if cached is not None:
+            return cached
+
+        packages = self._get_rust_crate_src()  # keys are already `-`-normalised
+        found: set[str] = set()
+        parsed = self._parsed_files.get(file_path)
+        for imp in parsed.imports if parsed and packages else ():
+            head = imp.module_path.split("::")[0].replace("-", "_")
+            if head in packages:
+                found.update(n for n in (imp.local_names or ()) if n)
+
+        names = frozenset(found)
+        if len(self._repo_rebound_names) >= _SOURCE_CACHE_FILES:
+            self._repo_rebound_names.clear()
+        self._repo_rebound_names[file_path] = names
         return names
 
     def _declared_types_in(

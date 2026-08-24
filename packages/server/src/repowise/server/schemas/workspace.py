@@ -84,6 +84,16 @@ class WorkspaceContractEntry(BaseModel):
     symbol_name: str
     confidence: float
     service: str | None = None
+    #: 1-indexed line of the declaration or call. None when the contract never
+    #: bound to a line.
+    line: int | None = None
+    #: Ingestion symbol id (``"<rel_path>::<name>"``). None when the repo has no
+    #: index or nothing is declared at ``line`` — the contract still matches, it
+    #: just cannot be traversed into the call graph.
+    symbol_id: str | None = None
+    #: Extractor-supplied detail (``extraction_layer``, ``framework``, ``method``,
+    #: ``path``, ``table``, ``package``...). Keys vary by contract type.
+    meta: dict = {}
 
 
 class WorkspaceContractLinkEntry(BaseModel):
@@ -97,6 +107,17 @@ class WorkspaceContractLinkEntry(BaseModel):
     consumer_repo: str
     consumer_file: str
     consumer_symbol: str
+    #: Service boundary the provider sits behind, when the workspace declares
+    #: one. Matching skips a pair only when the repo *and* the service are the
+    #: same, so this is what explains a link between two services inside one
+    #: repo.
+    provider_service: str | None = None
+    #: The same, for the calling side.
+    consumer_service: str | None = None
+    #: The linked contracts' symbol ids, so a caller can name the code rather
+    #: than a display label. None when that side never bound to one.
+    provider_symbol_id: str | None = None
+    consumer_symbol_id: str | None = None
 
 
 class WorkspaceContractsResponse(BaseModel):
@@ -105,6 +126,27 @@ class WorkspaceContractsResponse(BaseModel):
     total_contracts: int
     total_links: int
     by_type: dict[str, int] = {}
+
+
+class WorkspaceContractDetail(BaseModel):
+    """One contract, keyed by ``(repo, file_path, contract_id)``.
+
+    Carries the request/response shape that the list endpoint deliberately
+    withholds: ``schema`` is present on roughly a third of contracts and single
+    rows run to full inline type declarations, so it is affordable one at a time
+    and not 200 at a time.
+    """
+
+    contract: WorkspaceContractEntry
+    #: The artifact's ``schema`` block, named around Pydantic — a field literally
+    #: called ``schema`` shadows an attribute of ``BaseModel``.
+    contract_schema: dict | None = None
+    #: Links this contract participates in, on whichever side it plays.
+    links: list[WorkspaceContractLinkEntry] = []
+    #: Why this consumer matched no provider (``external_host``,
+    #: ``internal_only``, ``no_provider``), from the system graph's diagnostics.
+    #: None for providers, for linked consumers, and when no graph is built.
+    unmatched_reason: str | None = None
 
 
 class WorkspaceCoChangeEntry(BaseModel):
@@ -274,7 +316,8 @@ class WorkspaceImpactedConsumer(BaseModel):
     service: str | None = None
     node_id: str
     file: str
-    symbol: str
+    symbol: str  # display label; symbol_id is the one a tool can look up
+    symbol_id: str | None = None
     match_type: str = "exact"
     confidence: float = 0.0
 

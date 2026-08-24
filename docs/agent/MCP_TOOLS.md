@@ -2,7 +2,7 @@
 
 repowise exposes a curated set of tools via the [Model Context Protocol](https://modelcontextprotocol.io) (MCP). These tools give AI coding assistants (Claude Code, Codex, Cursor, Cline, Windsurf) structured access to your codebase intelligence: dependency graph, git history, documentation, and architectural decisions.
 
-17 tools are registered in total. A single-repo server advertises 11 by default: the ten flagship tools below plus `list_repos`. Workspace mode adds 2 more automatically (`get_architecture`, `get_blast_radius`), for 13. Four further tools are off by default everywhere and must be opted in. The surface is configurable; see [Configuring the tool surface](#configuring-the-tool-surface).
+17 tools are registered in total. A single-repo server advertises 10 by default: exactly the canonical tools. Workspace mode adds the `list_repos` discovery utility, for 11. 6 specialist tools are opt-in where eligible. The surface is configurable; see [Configuring the tool surface](#configuring-the-tool-surface).
 
 **Start the MCP server:**
 
@@ -20,7 +20,7 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 
 ## Contents
 
-**Default tools (single-repo, 11)**
+**Canonical tools (default in both modes, 10)**
 [get_overview](#get_overview) &middot;
 [get_answer](#get_answer) &middot;
 [get_context](#get_context) &middot;
@@ -30,14 +30,14 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 [get_change_risk](#get_change_risk) &middot;
 [get_why](#get_why) &middot;
 [get_dead_code](#get_dead_code) &middot;
-[get_health](#get_health) &middot;
+[get_health](#get_health)
+
+**Workspace discovery utility (default in workspace mode, 1)**
 [list_repos](#list_repos)
 
-**Workspace-only tools (added automatically, 2)**
+**Opt-in specialists (6; workspace eligibility still applies)**
 [get_architecture](#get_architecture) &middot;
-[get_blast_radius](#get_blast_radius)
-
-**Opt-in tools (off by default everywhere, 4)**
+[get_blast_radius](#get_blast_radius) &middot;
 [get_dependency_path](#get_dependency_path) &middot;
 [get_execution_flows](#get_execution_flows) &middot;
 [generate_refactoring_code](#generate_refactoring_code) &middot;
@@ -62,7 +62,7 @@ Also see [Configuring the tool surface](#configuring-the-tool-surface), [Reversi
 | `get_dead_code` | Unreachable code | Cleanup tasks |
 | `get_health` | Code-health marker scores | Before refactoring, find the worst files |
 
-Also always on by default: `list_repos` (repo aliases). See [Supplementary tools](#supplementary-tools).
+In workspace mode, `list_repos` is also on by default so repository aliases are discoverable. It is unavailable in single-repo mode because the server is already bound to the only repository. See [Supplementary tools](#supplementary-tools).
 
 ---
 
@@ -70,9 +70,9 @@ Also always on by default: `list_repos` (repo aliases). See [Supplementary tools
 
 The default surface is deliberately small: fewer, richer tools mean fewer round-trips and less schema overhead per task. What a server advertises is resolved from three things: each tool's `default`/`requires_workspace` metadata, whether the server is in workspace mode, and an optional override.
 
-- **Default (single-repo):** 11 tools, the ten flagship tools plus `list_repos`.
-- **Default (workspace):** those 11 plus `get_architecture` and `get_blast_radius`, added automatically when the server starts inside a workspace. They are never advertised outside one.
-- **Opt-in tools:** `get_dependency_path`, `get_execution_flows`, `generate_refactoring_code`, and `get_conformance` are registered but off by default. Turn them on per repo; `get_conformance` only does useful work in workspace mode (name it there).
+- **Default (single-repo):** 10 tools, exactly the canonical intelligence set.
+- **Default (workspace):** those 10 plus `list_repos`, the workspace discovery utility.
+- **Opt-in tools:** `get_dependency_path`, `get_execution_flows`, and `generate_refactoring_code` are eligible in either mode. `get_architecture`, `get_blast_radius`, and `get_conformance` are workspace-only. All six are off by default.
 
 **Configure it in `.repowise/config.yaml`** under an `mcp.tools` key. Four shapes are supported:
 
@@ -130,6 +130,8 @@ envelope lists how to get it back:
 
 Truncated skeleton blocks are replaced in place by a `[repowise#<ref>: ...]`
 marker; everything else is captured into one combined document per response.
+A response that would still oversize sheds whole blocks, in an order each tool
+declares cheapest-loss-first, and reports `truncated: true` alongside the refs.
 Resolve refs with `repowise expand <ref>` from a shell, or
 `get_symbol("repowise#<ref>")` from any MCP client. See
 [DISTILL.md](DISTILL.md) for the full reversibility model.
@@ -187,16 +189,27 @@ well as a float. `get_health` reports the same thing under its own older name,
 
 ## `get_overview`
 
-Architecture summary, module map, entry points, git health, and community summary.
+Architecture summary, module map, and entry points.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` |
-| `include` | list[string] | No | `"content"` returns the full overview essay in `content_md` instead of the compact summary section |
+| `include` | list[string] | No | Opt-in blocks, any combination of `"content"`, `"outline"`, `"tour"`, `"decisions"`, `"graph"`, `"ownership"` (see below) |
 
-**Returns:** Architecture description, key modules with purpose and owner, entry points, tech stack, hotspot files, knowledge silos, community summary (top communities by size with labels and cohesion scores). `content_md` is compact by default (summary + tech stack + layers); pass `include=["content"]` for the full essay.
+**Returns (default):** `title`, `content_md` (the overview essay's summary section), `key_modules` (name, path, outline section), `entry_points`, `architecture` (layer names, file counts, layer order), `code_health`, `git_health`, `_meta`, and in workspace mode a `workspace` footer. The response's `more` field names the opt-in blocks.
+
+**Opt-in blocks** — omitted unless named in `include`, and not computed at all when they are not:
+
+| `include` key | Adds |
+|---|---|
+| `"content"` | the full overview essay in `content_md` |
+| `"outline"` | `outline` — the stored wiki page tree, two rungs deep. `key_modules[].section` indexes into it |
+| `"tour"` | `guided_tour` and `reading_order` — onboarding walks |
+| `"decisions"` | `key_decisions`. `get_why` is the richer route |
+| `"graph"` | `community_summary` — code-community clusters |
+| `"ownership"` | `knowledge_map` — top owners and knowledge silos |
 
 **When to use:** First call on any unfamiliar codebase. Gives the agent a mental map before diving into specifics. Skip on later calls in the same session; it doesn't change mid-session.
 
@@ -204,8 +217,14 @@ Architecture summary, module map, entry points, git health, and community summar
 
 ```
 get_overview()
-get_overview(include=["content"])
+get_overview(include=["outline", "content"])
 ```
+
+> **Output-schema change.** `guided_tour`, `reading_order`, `key_decisions`,
+> `community_summary` and `knowledge_map` moved behind `include`; `outline` did
+> too (`include=["outline"]` previously only deepened an always-present tree).
+> `key_modules` no longer carries `description`, `page_id` or `parent_page_id`,
+> and `architecture.layers[].description` is gone.
 
 ---
 
@@ -220,7 +239,7 @@ One-call RAG: retrieves over the wiki, gates synthesis on confidence, and return
 | `question` | string | Yes | Natural language question about the codebase |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 
-**Returns:** A synthesized answer with file/symbol citations and a confidence label (`high`, `medium`, `low`). High-confidence answers can be cited directly. Low-confidence answers return ranked wiki excerpts instead.
+**Returns:** A synthesized answer with file/symbol citations and a confidence label (`high`, `medium`, `low`). High-confidence answers can be cited directly. Low-confidence answers return ranked wiki candidates instead, with the page excerpt served on the highest-scoring few; the rest carry path, title and summary, and one follow-up call opens any of them.
 
 Two path-bearing blocks, with different jobs:
 
@@ -425,19 +444,30 @@ Modification risk assessment for files or a set of changed files.
 |-----------|------|----------|-------------|
 | `targets` | list[string] | No | File paths to assess |
 | `changed_files` | list[string] | No | Files in a PR/changeset for blast radius analysis; passing this switches the response into PR-directive mode |
+| `include` | list[string] | No | Opt-in blocks: `graph` (`impact_surface`, `direct_risks`), `churn` (`change_magnitude`, `risk_type`, `change_pattern`) |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 
 **Returns:** Per-file `hotspot_score` (0-1 churn percentile), `health_score` (0-10), hotspot status, dependent count, co-change partners (each with a recency-decayed `weight`, not an integer count), blast radius, recommended reviewers, test gap analysis, security signals. In workspace mode, enriched with cross-repo co-change partners and contract dependencies.
 
-> **Scales.** Ratios derived from ownership or percentile columns are 0-1 (`hotspot_score`, `owner_pct`, `recent_owner_pct`); coverage and gap fields are 0-100 (`coverage_pct`, `branch_coverage_pct`, `share_of_repo_gap_pct`, `change_entropy_pct`, `churn_percentile`). The `_pct` suffix alone does not tell you which — check this table. Every emitted float is rounded to 4 significant digits.
+> **Opt-in blocks.** `impact_surface` and `direct_risks` are pagerank floats an agent cannot rank; `change_magnitude`, `risk_type` and `change_pattern` restate numbers printed beside them. All five are computed regardless and feed `risk_summary`; `include` only decides whether they ship. `global_hotspots` accompanies a multi-target call only, being ambient orientation that a single named file does not need; it ranks by fix history the same way `defect_profile` does.
 
-When `changed_files` is passed, the response leads with a `directive` block. Its core lists are the local blast radius: `will_break` (production files that depend on the diff and are likely to break), `will_break_tests` (test files impacted the same way, kept separate so a burst of broken tests doesn't crowd production impact out of the capped list), `missing_cochanges` (historical co-changers absent from the diff), `missing_tests` (changed files without test coverage), and `tests_to_run` (the positive complement of `missing_tests`: the tests that exercise the changed files, as pytest-runnable arguments). Read `tests_to_run_basis` beside it, because the ids alone do not say where they came from: `measured` means the per-test coverage map proves those tests execute the changed files; `inferred` means the import graph shows those test *files* reaching the change, which is a candidate list rather than proof and needs no coverage ingest; `none` means neither source knows of a test, which is unknown and not "untested". The two are never mixed in one list. In workspace mode that directive also carries the cross-repo fallout of the changed repo:
+> **Scales.** `overall_risk_score` (in `pr_blast_radius`, with an `overall_risk_score_measures` note beside it) reads where the change lands. It is not comparable to `get_change_risk.score`, which is also 0-10 and reads the shape of the diff. Ratios derived from ownership or percentile columns are 0-1 (`hotspot_score`, `owner_pct`, `recent_owner_pct`); coverage and gap fields are 0-100 (`coverage_pct`, `branch_coverage_pct`, `share_of_repo_gap_pct`, `change_entropy_pct`, `churn_percentile`). The `_pct` suffix alone does not tell you which — check this table. Every emitted float is rounded to 4 significant digits.
+
+When `changed_files` is passed, the response leads with a `directive` block. Its core lists are the local blast radius: `may_break` (production files that reach the diff through the import graph and so may break), `may_break_tests` (test files impacted the same way, kept separate so a burst of broken tests doesn't crowd production impact out of the capped list), `missing_cochanges` (historical co-changers absent from the diff), `missing_tests` (changed files without test coverage), and `tests_to_run` (the positive complement of `missing_tests`: the tests that exercise the changed files, as pytest-runnable arguments). Read `tests_to_run_basis` beside it, because the ids alone do not say where they came from: `measured` means the per-test coverage map proves those tests execute the changed files; `inferred` means the import graph shows those test *files* reaching the change, which is a candidate list rather than proof and needs no coverage ingest; `none` means neither source knows of a test, which is unknown and not "untested". The two are never mixed in one list. In workspace mode that directive also carries the cross-repo fallout of the changed repo:
 
 - `will_break_consumers`: services in *other* repos that depend on this one (structural impact), each with `repo`, `service`, `distance`, `score`, and the edge kinds carrying the impact.
 - `missing_cross_repo_cochanges`: services in other repos that historically co-change with this one but aren't in the diff.
 - `breaking_changes`: provider contracts in this repo that changed *incompatibly* since the last index (a removed route or field, a type or field-number change, a newly-required field), each with the changed `contract_id`, the change `kind`/`severity`, and the `impacted_consumers` (repo, service, file) it endangers across repos. Schema-level truth, distinct from the topology-level `will_break_consumers`; non-breaking changes (added optional field, new endpoint) never appear. See [Breaking-Change Guard](../scale/WORKSPACES.md#breaking-change-guard).
 - `conformance_violations`: declared dependency-rule breaches the diff's repo participates in, each with the offending `source`/`target` services, the `rule` (e.g. `frontend !-> db`), and `edge_kind`. See [Architecture Conformance](../scale/WORKSPACES.md#architecture-conformance).
 - `dependency_cycles`: circular service dependencies involving this repo, each with the participating `nodes` and `length`.
+
+> **Output-schema change.** `directive.will_break` is now `directive.may_break`,
+> and `directive.will_break_tests` is now `directive.may_break_tests`. Both are
+> a reverse-import reachability walk: `get_risk` is given a file list, never a
+> diff, so it cannot know whether the symbol an importer actually uses changed.
+> The old name promised a precision the analyzer does not have.
+> `will_break_consumers` and `breaking_changes` keep "will" — those come from
+> real contract diffing.
 
 **When to use:** Before modifying files, especially hotspots. Understand what could break, who to involve in review, and whether tests cover the affected area.
 
@@ -446,6 +476,7 @@ When `changed_files` is passed, the response leads with a `directive` block. Its
 ```
 get_risk(targets=["src/auth/middleware.ts"])
 get_risk(changed_files=["src/api/routes.ts", "src/middleware/cors.ts"])
+get_risk(targets=["src/auth/middleware.ts"], include=["graph", "churn"])
 ```
 
 ---
@@ -464,11 +495,12 @@ shape of the live diff and needs no index refresh.
 | `repo` | string | No | *(workspace only)* Target repo alias |
 | `extensions` | list[string] | No | File suffixes to count, such as `[".py", ".ts"]` |
 | `exclude_patterns` | list[string] | No | Gitignore-style paths to omit; combined with root `.riskignore` rules |
-| `baseline` | int | No | Recent commits to sample for percentile ranking (default `200`; `0` disables percentile ranking) |
+| `baseline` | int | No | Recent commits to sample for percentile ranking (default `200`; `0` disables every percentile, `risk_percentile` and `fix_history.percentile` alike) |
 
 **Returns:** `fix_history` first — the recency-weighted bug-fix record of the
 files the change touches, with `files` naming where the pressure sits and
-`percentile` ranking it against the repo's own fix-bearing files. Triage on
+`percentile` ranking it against the same measure over the repo's own recent
+commits. Triage on
 this: it is the part that separates a small edit to a fragile file from a large
 edit to a safe one. `available` is false when the history walk could not run.
 
@@ -482,20 +514,34 @@ subject. `baseline_sample_size` reports how many filtered commits informed the
 percentile; `features`, `drivers`, and combined `exclude_patterns` make the
 result auditable.
 
-It also returns `impacted_tests`: the tests the per-test coverage map proves
-execute the change's changed *lines* (line-precise, so a narrower set than
-`get_risk`'s file-level `tests_to_run`), capped at ten with `total` and
-`truncated` reporting any overflow. Its `missing_tests` buckets flag
+It also returns `impacted_tests`, whose `tests_to_run` names the tests the
+per-test coverage map proves execute the change's changed *lines* (line-precise,
+so a narrower set than `get_risk`'s file-level `tests_to_run` — same field name,
+because it is the same concern). It is capped at ten, with `total` and
+`truncated` reporting the overflow and the tail written to the omission store:
+on `truncated: true` the response carries an `omission_marker`, and
+`repowise expand <ref>` returns the rest. Its `line_coverage` buckets flag
 `untested_changes` (covered file, uncovered change), `stale_test_candidates`
 (covered lines whose guarding test file is absent from the diff), `covered`, and
 `no_coverage_data` (files absent from the map). When no map is ingested the
 change is never reported as untested: `status` becomes `inferred` when the
 import graph can name test files reaching the change (candidates, file-level, no
-line attribution, and `missing_tests` stays empty because reaching cannot speak
+line attribution, and `line_coverage` stays empty because reaching cannot speak
 to lines), and `no_map` ("run the full suite") when it cannot. `basis` carries
 the same distinction in one word: `measured`, `inferred`, or absent. Build the
 measured map with `coverage run --contexts=test` followed by
 `repowise coverage add`.
+
+> **Output-schema change.** `impacted_tests.tests` is now
+> `impacted_tests.tests_to_run`, matching `get_risk`'s directive.
+
+`is_fix` is the defect benchmark's keyword rule read over the commit subject,
+not the conventional-commit type, so a `feat:` commit whose subject says it
+fixes something reads true; the rule is frozen for comparability rather than
+tuned. `prior_fixes` below is the tuned view: it applies a diff-shape filter on
+top of that rule, counting only commits that actually edited production code.
+`fix_history` above runs the same unfiltered rule, and `prior_fixes` is the one
+block of the three that needs an index.
 
 When the changed files carry counted bug fixes, the response also holds
 `prior_fixes`: per file, how many past bug-fix commits touched it

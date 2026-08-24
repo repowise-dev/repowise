@@ -17,7 +17,8 @@ from __future__ import annotations
 import json
 import math
 import os
-from collections import defaultdict
+from collections import Counter, defaultdict
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from sqlalchemy import select, text
@@ -25,6 +26,57 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.ingestion.models import NON_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.models import GitMetadata, GraphNode
+
+
+def rank_tests_by_reach(by_file: Mapping[str, Iterable[str]]) -> list[str]:
+    """Test ids ordered by how many changed files each one reaches.
+
+    Callers cap this list and tell the agent to run the head of it first, so a
+    flat alphabetical sort hands over the head of the alphabet rather than the
+    tests that cover most of the change. Ties keep alphabetical order, which
+    leaves a single-file change ordered exactly as before.
+    """
+    reach = Counter(test_id for tests in by_file.values() for test_id in tests)
+    return sorted(reach, key=lambda t: (-reach[t], t))
+
+
+#: Prefixes that name a module for its slot in a dispatch table rather than for
+#: its subject, so its tests are named after the subject alone: ``tool_dead_code``
+#: is tested by ``test_dead_code``, not ``test_tool_dead_code``.
+_ROLE_PREFIXES = ("tool_", "get_")
+
+#: Below this, a stripped stem is too generic to be evidence of anything.
+_MIN_STEM_LENGTH = 3
+
+
+def test_name_stems(base: str) -> list[tuple[str, bool]]:
+    """Stems a test file for ``base`` could be named after, each with whether the
+    match has to be exact.
+
+    The full stem keeps the historical substring match, which absorbs suffixes
+    like ``test_parser_edge_cases``. A stripped stem is shorter and so collides
+    far more easily (``tool_repos`` -> ``repos``, a prefix of ``repository``),
+    and clearing a gap on a coincidence is the one error that costs a reader.
+    """
+    stems = [(base, False)]
+    for prefix in _ROLE_PREFIXES:
+        stripped = base[len(prefix) :]
+        if base.startswith(prefix) and len(stripped) >= _MIN_STEM_LENGTH:
+            stems.append((stripped, True))
+    return stems
+
+
+def _names_a_test_for(stem: str, ext: str, test_path: str, exact: bool) -> bool:
+    """Whether ``test_path`` follows a naming convention for ``stem``."""
+    if exact:
+        named = os.path.splitext(os.path.basename(test_path))[0]
+        return named in (f"test_{stem}", f"{stem}_test", f"{stem}.spec")
+    return (
+        f"test_{stem}" in test_path
+        or f"{stem}_test" in test_path
+        or f"{stem}.spec.{ext}" in test_path
+        or f"{stem}.spec." in test_path
+    )
 
 
 class PRBlastRadiusAnalyzer:
@@ -156,14 +208,14 @@ class PRBlastRadiusAnalyzer:
         "this file imports that one" and walked through it, then walked
         through *that* file's co-change partners at the next depth. On this
         repository a PR touching ``core/__init__.py`` reached five co-change
-        rows and two real importers at depth 1, and since ``will_break`` is
+        rows and two real importers at depth 1, and since ``may_break`` is
         capped at five and sorted by depth, the noise crowded out the answer.
         Those partners are already reported, correctly labelled, by
         :meth:`_cochange_warnings`.
         """
         visited: dict[str, int] = {}  # path -> depth at which it was first reached
         # Sorted, not just deduped. This walk's output is cut twice downstream
-        # — ``will_break`` takes 15 of it, and that is the first field
+        # — ``may_break`` takes 15 of it, and that is the first field
         # ``get_risk``'s PR directive tells an agent to read — so the order
         # inside a depth band decides what an agent is shown. A hash-ordered
         # seed plus an unordered ``SELECT DISTINCT`` made that order vary
@@ -281,7 +333,8 @@ class PRBlastRadiusAnalyzer:
            Used only as this floor; nothing downstream reads a coverage figure
            off it.
         3. Otherwise the filename pattern (test_<name>, <name>_test,
-           <name>.spec.*) - an honest "unknown", never asserted as untested.
+           <name>.spec.*), tried against every stem in ``test_name_stems`` - an
+           honest "unknown", never asserted as untested.
 
         Test files themselves are excluded; they don't need their own tests.
         """
@@ -333,12 +386,8 @@ class PRBlastRadiusAnalyzer:
             base = os.path.splitext(os.path.basename(path))[0]
             ext = os.path.splitext(path)[1].lstrip(".")
             has_test = any(
-                (
-                    f"test_{base}" in tp
-                    or f"{base}_test" in tp
-                    or f"{base}.spec.{ext}" in tp
-                    or f"{base}.spec." in tp
-                )
+                _names_a_test_for(stem, ext, tp, exact)
+                for stem, exact in test_name_stems(base)
                 for tp in test_paths
             )
             if not has_test:
@@ -409,7 +458,7 @@ class PRBlastRadiusAnalyzer:
         return {
             "map_present": True,
             "basis": "measured",
-            "tests_to_run": sorted(all_ids),
+            "tests_to_run": rank_tests_by_reach(by_file),
             "by_file": by_file,
         }
 
@@ -431,11 +480,10 @@ class PRBlastRadiusAnalyzer:
         if not reaching:
             return empty
         by_file = {path: sorted(tests) for path, tests in reaching.items() if tests}
-        all_tests = sorted({t for tests in by_file.values() for t in tests})
         return {
             "map_present": empty["map_present"],
             "basis": "inferred",
-            "tests_to_run": all_tests,
+            "tests_to_run": rank_tests_by_reach(by_file),
             "by_file": by_file,
         }
 

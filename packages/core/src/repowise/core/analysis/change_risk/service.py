@@ -6,7 +6,7 @@ import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .baseline import baseline_samples_cached, scores_excluding
+from .baseline import BaselineSample, baseline_samples_cached, densities_excluding, scores_excluding
 from .features import (
     GIT_TIMEOUT_SECONDS,
     ChangeFeatures,
@@ -43,8 +43,9 @@ class ChangeRiskResult:
     working_tree: bool = False  # scored the uncommitted change, not a commit
     # Bug-fix history of the ground this change stands on. ``density`` is the
     # churn-weighted mean fix pressure of the touched files, ``percentile`` ranks
-    # it against the repo's own fix-bearing files, and ``hot_files`` names where
-    # the pressure is. Unlike the score, none of these grow with diff size.
+    # it against the same measure over the repo's own recent commits, and
+    # ``hot_files`` names where the pressure is. Unlike the score, none of
+    # these grow with diff size.
     fix_density: float = 0.0
     fix_percentile: float | None = None
     hot_files: tuple[tuple[str, int, float], ...] = ()  # (path, churn, pressure)
@@ -192,6 +193,7 @@ def score_live_change(
     percentile: float | None = None
     priority: str | None = None
     baseline_sample_size = 0
+    samples: list[BaselineSample] = []
     if baseline:
         samples = baseline_samples_cached(
             repo_path,
@@ -218,7 +220,9 @@ def score_live_change(
         request_excludes=exclude_patterns,
         working_tree=working_tree,
         fix_density=round(density, 3),
-        fix_percentile=fix_density_percentile(pressure, density),
+        fix_percentile=fix_density_percentile(
+            densities_excluding(samples, excluded_ref, pressure), density
+        ),
         hot_files=fix_bearing,
         fix_history_available=fix_history_available,
     )

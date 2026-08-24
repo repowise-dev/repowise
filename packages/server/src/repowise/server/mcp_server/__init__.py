@@ -1,13 +1,12 @@
 """repowise MCP Server — a curated, configurable tool surface for AI agents.
 
-By default a single-repo server exposes eleven tools (get_answer, get_context,
+By default a single-repo server exposes ten tools (get_answer, get_context,
 get_symbol, search_codebase, get_overview, get_risk, get_change_risk, get_why,
-get_dead_code, get_health, list_repos); two more (get_blast_radius, get_architecture) are added
-automatically in workspace mode. Four further tools (get_dependency_path,
-get_execution_flows, generate_refactoring_code, get_conformance) are registered
-but off by default and can be opted in via the ``mcp.tools`` config block or the
-``repowise mcp --tools`` flag; get_conformance only does useful work in workspace
-mode. The selection layer lives in :mod:`._tool_selection`.
+get_dead_code, get_health). Workspace mode also exposes the ``list_repos``
+discovery utility by default. Six specialist tools are registered but off by
+default and can be opted in via the ``mcp.tools`` config block or the
+``repowise mcp --tools`` flag; architecture, blast radius, and conformance are
+workspace-only. The selection layer lives in :mod:`._tool_selection`.
 
 Exposes the full repowise wiki as queryable tools via the MCP protocol.
 Supports stdio transport (Claude Code, Cursor, Cline), streamable HTTP, and
@@ -104,11 +103,25 @@ def tool_middleware(fn: Any) -> Any:
     the real composition; ``tests/unit/server/mcp/test_number_precision.py``
     relies on that to prove no raw double reaches an agent.
     """
+    from functools import wraps
+
     from repowise.server.mcp_server._failure_shield import shield
+    from repowise.server.mcp_server._meta import finalize_trust_envelope
     from repowise.server.mcp_server._rounding import quantize
     from repowise.server.mcp_server._savings import instrument
 
-    return instrument(quantize(shield(fn)))
+    evidence_kind = getattr(fn, "__repowise_trust_kind__", None)
+
+    def trust(inner: Any) -> Any:
+        @wraps(inner)
+        async def wrapped(*args: Any, **kwargs: Any) -> Any:
+            return finalize_trust_envelope(
+                await inner(*args, **kwargs), evidence_kind=evidence_kind
+            )
+
+        return wrapped
+
+    return instrument(quantize(trust(shield(fn))))
 
 
 def ensure_full_surface() -> Any:
@@ -188,9 +201,7 @@ def __getattr__(name: str) -> Any:
         # has to exist by the time it is handed over.
         value: Any = ensure_full_surface()
     elif name in _TOOL_MODULES:
-        value = getattr(
-            importlib.import_module(f"{__name__}.{_TOOL_MODULES[name]}"), name
-        )
+        value = getattr(importlib.import_module(f"{__name__}.{_TOOL_MODULES[name]}"), name)
     elif name in _LAZY_ATTRS:
         module_name, attr = _LAZY_ATTRS[name]
         value = getattr(importlib.import_module(f"{__name__}.{module_name}"), attr)

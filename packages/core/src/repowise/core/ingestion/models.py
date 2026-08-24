@@ -229,6 +229,24 @@ class Import:
     bindings: list[NamedBinding] = field(default_factory=list)
     is_reexport: bool = False  # True for `pub use` (Rust) or re-export patterns
 
+    @property
+    def local_names(self) -> list[str]:
+        """The names this statement writes into the importing file's namespace.
+
+        ``imported_names`` carries names as they exist in the *source* module,
+        because that is what reachability matches against — under an alias
+        (``import { A as B }``, ``from m import a as b``) the two differ. A
+        caller that wants to recognise an identifier *as it appears in this
+        file* — a router DSL naming a handler, an exclusion list for call
+        resolution — must read the bindings instead, and this is that read.
+
+        Falls back to ``imported_names`` for the languages whose extractors
+        emit no bindings, where the two are the same list by construction. For
+        a re-export nothing is truly bound locally; the alias is returned,
+        being the token that appears in this file.
+        """
+        return [b.local_name for b in self.bindings] or list(self.imported_names)
+
 
 @dataclass
 class CallReceiver:
@@ -241,6 +259,14 @@ class CallReceiver:
     target_name: str
     receiver_name: str | None
     argument_count: int | None
+
+
+#: What a resolved call site becomes in the graph. A syntactic form that names
+#: a symbol without invoking it still runs the call tiers -- deciding which
+#: symbol a name means is the same problem -- but must not reach the graph as
+#: ``calls``. Both members are ``EdgeType`` members; this is the subset a call
+#: site may produce.
+CallSiteEdgeType = Literal["calls", "references"]
 
 
 @dataclass
@@ -256,6 +282,7 @@ class CallSite:
     line: int  # 1-indexed line number of the call
     argument_count: int | None  # number of arguments (None if unknown)
     receiver_call: CallReceiver | None = None  # set only for a captured chained call
+    edge_type: CallSiteEdgeType = "calls"  # see ``CallSiteEdgeType``
 
 
 HeritageKind = Literal["extends", "implements", "trait_impl", "mixin"]

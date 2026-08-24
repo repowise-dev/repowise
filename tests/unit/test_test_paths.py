@@ -141,3 +141,20 @@ def test_case_sensitive_rules_stay_case_sensitive() -> None:
     assert is_test_path("src/FooTest.java")
     assert not is_test_path("src/latest.java")
     assert not is_test_path("src/Test.java")
+
+
+def test_camel_prefix_rule_mirrors_the_suffix_rule() -> None:
+    """``TestKeymap.dpr`` is a test (Pascal's camel-boundary prefix
+    convention); ``Testing.dpr`` and bare ``Test.dpr`` are not.
+
+    The prefix rule needs an uppercase boundary right after "Test", the
+    mirror of the suffix rule's lowercase-boundary requirement.
+    """
+    assert is_test_path("src/tools/TestKeymap.dpr", "pascal")
+    assert not is_test_path("src/tools/Testing.dpr", "pascal")
+    assert not is_test_path("src/tools/Test.dpr", "pascal")
+    # Case-sensitive and scoped to Pascal's own extensions -- a bare
+    # lowercase-boundary word never matches, and the convention doesn't
+    # leak onto an unrelated extension.
+    assert not is_test_path("src/testkeymap.dpr", "pascal")
+    assert not is_test_path("src/TestKeymap.txt", "pascal")

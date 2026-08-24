@@ -19,6 +19,7 @@ from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.core.test_paths import is_test_path, is_test_related_path
 from repowise.server.mcp_server._answer_pipeline import _RRF_K, _RRF_SCORE_SCALE
+from repowise.server.mcp_server._budget import OmissionCollector, fit_to_budget
 from repowise.server.mcp_server._helpers import (
     _VECTOR_TIMEOUT_ENV,
     _get_exclude_spec,
@@ -31,6 +32,7 @@ from repowise.server.mcp_server._helpers import (
     resolve_enum_argument,
     vector_search_timeout_s,
 )
+from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._page_paths import file_candidates, hit_file_path
 from repowise.server.mcp_server._prose_symbols import symbol_backed_pages
@@ -772,6 +774,21 @@ async def _federated_search(
         response["candidates"] = candidates
     # Last, so nothing above has to know the field is on its way out.
     _drop_derivable_page_ids(output)
+    return _fit_search_response(response, contexts[0].path if contexts else None)
+
+
+# A search response is one ranked list, so past the derived ``candidates`` there
+# is nothing to shed but the weakest hits.
+_SHED_ORDER: tuple[str, ...] = ("candidates", "results[]")
+
+
+def _fit_search_response(response: dict, repo_root: Any) -> dict:
+    """Bring a search response under the transport ceiling, recoverably."""
+    collector = OmissionCollector("search_codebase", repo_root=repo_root)
+    fit_to_budget(response, _SHED_ORDER, collector)
+    if response.get("truncated") and isinstance(response.get("_meta"), dict):
+        response["_meta"]["targets"] = _result_paths(response.get("results") or [])
+    collector.attach(response)
     return response
 
 
@@ -806,17 +823,14 @@ def _grep_hint_for(query: str) -> str | None:
     if _looks_like_exact_token(query):
         return (
             f"No indexed match for identifier {query!r}. Retry with "
-            'mode="symbol" (or check spelling/casing); if you need every '
-            "literal usage for an exhaustive sweep such as a rename, Grep "
-            "is the right tool for that."
+            'mode="symbol" (or check spelling/casing). ' + EXHAUSTIVE_SWEEP_HINT
         )
     if idents := _embedded_identifiers(query):
         shown = ", ".join(repr(t) for t in idents[:3])
         return (
             f"Query names identifier(s) {shown} but nothing matched. Search "
             'the identifier alone with mode="symbol", then pipe the hit '
-            "into get_symbol for its body. For an exhaustive every-usage "
-            "sweep, Grep the literal name."
+            "into get_symbol for its body. " + EXHAUSTIVE_SWEEP_HINT
         )
     return None
 
@@ -972,17 +986,16 @@ async def _structured_search(
                 f"No indexed symbol exactly matches {shown}. The results are "
                 "fuzzy neighbours ranked by token overlap — confirm a hit names "
                 "what you meant before relying on it. If you expected an exact "
-                "symbol, recheck spelling/casing, or Grep the literal name for "
-                "an exhaustive usage sweep."
+                "symbol, recheck spelling/casing. " + EXHAUSTIVE_SWEEP_HINT
             )
     if grep_hint and not results:
         response["grep_hint"] = grep_hint
     # Last, so nothing above has to know the field is on its way out.
     _drop_derivable_page_ids(results)
-    return response
+    return _fit_search_response(response, contexts[0].path if contexts else None)
 
 
-@mcp.tool()
+@mcp.tool(surface_order=40)
 async def search_codebase(
     query: str,
     limit: int = 5,
@@ -1117,4 +1130,4 @@ async def search_codebase(
     attach_ignored_arguments(response, ignored)
     # Last, so nothing above has to know the field is on its way out.
     _drop_derivable_page_ids(output)
-    return response
+    return _fit_search_response(response, ctx.path)

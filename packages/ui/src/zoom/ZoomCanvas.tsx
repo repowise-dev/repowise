@@ -24,7 +24,7 @@ import { buildScene } from "./scene";
 import { resolveZoomPalette } from "./theme";
 import type { ZoomMap, ZoomNode, ZoomRelation } from "./types";
 import { describeRelations, summarizeRelations } from "./relation-summary";
-import { healthBandLabel, nodeRoles } from "./node-signals";
+import { healthBandLabel, KIND_LABEL, nodeRoles } from "./node-signals";
 import { useThemeVersion } from "../shared/use-theme-tokens";
 
 export interface ZoomCanvasHandle {
@@ -45,10 +45,10 @@ export interface ZoomCanvasProps {
   /** Show a small live frame-stat overlay (drawn/culled/fps). Dev aid. */
   showStats?: boolean;
   /**
-   * Draw only relations carrying this verb, or every relation when unset.
-   * See `DrawOptions.relationVerb` for why this is one verb and not a set.
+   * Draw only relations whose verb is in this set, or every relation when
+   * unset. See `DrawOptions.relationVerbs` for why this is a set.
    */
-  relationVerb?: string | null;
+  relationVerbs?: ReadonlySet<string> | null;
   /**
    * Relations incident to a node, for the hover card's one-line summary. The
    * host already indexes these for its detail panel, so it passes the lookup in
@@ -89,7 +89,7 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
     onFocusChange,
     initialFocusId,
     showStats,
-    relationVerb = null,
+    relationVerbs = null,
     relationsByNode,
   },
   ref,
@@ -164,8 +164,8 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
   }, [scene]);
 
   useEffect(() => {
-    rendererRef.current?.setRelationVerb(relationVerb);
-  }, [relationVerb]);
+    rendererRef.current?.setRelationVerbs(relationVerbs);
+  }, [relationVerbs]);
 
   // One-shot: jump to the URL-provided focus node once the canvas has done its
   // initial fit (it needs a real viewport size before a node rect can be framed).
@@ -370,14 +370,6 @@ export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function
   );
 });
 
-const HOVER_KIND_LABEL: Record<ZoomNode["kind"], string> = {
-  system: "System",
-  layer: "Layer",
-  group: "Group",
-  folder: "Folder",
-  file: "File",
-};
-
 /**
  * A deliberately light tooltip: kind, name, path, a one-line summary and, when
  * the host supplies the index, what this box's arrows mean. The full metric
@@ -413,7 +405,7 @@ function HoverCard({
       style={{ left: hover.sx, top: hover.sy, transform: `translate(${tx}, ${ty})` }}
     >
       <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-        {HOVER_KIND_LABEL[node.kind]}
+        {KIND_LABEL[node.kind]}
       </div>
       <div className="mt-0.5 font-semibold text-[var(--color-text-primary)]">{node.name}</div>
       {node.path && node.path !== node.name && (

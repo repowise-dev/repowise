@@ -312,7 +312,7 @@ function FixHistoryNote({ history }: { history: RiskRangeReport["result"]["fix_h
       {history.percentile != null ? (
         <>
           {" "}
-          — {ordinal(history.percentile)} percentile of this repo&apos;s fix-bearing files
+          — {ordinal(history.percentile)} percentile of this repo&apos;s recent commits
         </>
       ) : null}
       .

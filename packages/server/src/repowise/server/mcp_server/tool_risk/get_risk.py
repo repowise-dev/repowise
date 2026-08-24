@@ -14,15 +14,17 @@ from repowise.core.persistence.models import (
     GraphNode,
 )
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._budget import OmissionCollector, fit_to_budget
 from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
     _unsupported_repo_all,
+    attach_ignored_arguments,
     filter_path_list,
     filter_rows_by_attr,
+    resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
@@ -30,12 +32,45 @@ from .assessment import _assess_one_target, _get_active_contributor_count, fix_a
 from .directives import _build_pr_directive, _governance_directive
 from .enrichment import _enrich_cross_repo, _enrich_health, _finalize_dep_summaries
 
+# Cheapest loss first; the target cards and the directive are never shed.
+# ``guarding_tests`` leads the dossier: _trim_blast_lists leaves it uncapped.
+_SHED_ORDER: tuple[str, ...] = (
+    "global_hotspots",
+    "pr_blast_radius.guarding_tests",
+    "pr_blast_radius",
+)
 
-@mcp.tool()
+
+#: Fields an agent cannot rank or act on: uncalibrated pagerank floats, and
+#: labels derived from numbers already printed beside them. Computed either way
+#: (``risk_summary`` reads them); ``include`` only decides whether they ship.
+_TARGET_CARD_INCLUDES: dict[str, tuple[str, ...]] = {
+    "graph": ("impact_surface",),
+    "churn": ("change_magnitude", "risk_type", "change_pattern"),
+}
+_BLAST_INCLUDES: dict[str, tuple[str, ...]] = {"graph": ("direct_risks",)}
+_INCLUDE_BLOCKS = frozenset(_TARGET_CARD_INCLUDES) | frozenset(_BLAST_INCLUDES)
+
+
+def _drop_opt_in_blocks(response: dict, include: set[str]) -> None:
+    """Strip the opt-in fields no ``include`` key asked for."""
+    cards = list(response.get("targets", {}).values())
+    blast = response.get("pr_blast_radius") or {}
+    for source, keys_by_block in ((cards, _TARGET_CARD_INCLUDES), ([blast], _BLAST_INCLUDES)):
+        for block, keys in keys_by_block.items():
+            if block in include:
+                continue
+            for holder in source:
+                for key in keys:
+                    holder.pop(key, None)
+
+
+@mcp.tool(surface_order=50)
 async def get_risk(
     targets: list[str],
     repo: str | None = None,
     changed_files: list[str] | None = None,
+    include: list[str] | None = None,
 ) -> dict:
     """What history says about touching these files — bug fixes, churn, owners.
 
@@ -43,7 +78,7 @@ async def get_risk(
     bus factor) with graph topology (dependents, co-changes, impact surface)
     and security findings. Consult before editing a bug-fixed or busy file. Pass
     changed_files for PR mode: the response leads with a directive block
-    (will_break, missing_cochanges, missing_tests, tests_to_run) — read it
+    (may_break, missing_cochanges, missing_tests, tests_to_run) — read it
     first. tests_to_run_basis backs the run-list: measured (a coverage map
     proves those tests run the changed files) or inferred (test files the import
     graph shows reaching them; candidates, no ingest needed). To score a commit
@@ -54,7 +89,7 @@ async def get_risk(
     for sustained recent fix pressure, and top_symbols. Read top_symbols as
     "mostly here" rather than exact — symbol spans are current-tree while each
     fix's line ranges are numbered on its own parent commit. Nothing names the
-    commit that introduced a bug. global_hotspots ranks the same way.
+    commit that introduced a bug.
 
     episodes counts the dated records bound to a target — what happened here and
     why, evidenced by a commit or a filesystem fact. It appears only when there
@@ -65,9 +100,16 @@ async def get_risk(
         targets: file paths to assess.
         repo: usually omitted.
         changed_files: PR-changed files for blast-radius mode.
+        include: opt-in blocks - "graph", "churn".
     """
     if repo == "all":
         return _unsupported_repo_all("get_risk")
+    ignored: list[dict] = []
+    include_set = {
+        block
+        for block in (include or [])
+        if resolve_enum_argument(block, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
+    }
     ctx = await _resolve_repo_context(repo)
     exclude_spec = _get_exclude_spec(ctx.path)
     targets = filter_path_list(targets, exclude_spec)
@@ -161,6 +203,7 @@ async def get_risk(
             entry = {
                 "file_path": h.file_path,
                 "hotspot_score": h.churn_percentile,
+                "is_hotspot": True,
                 "primary_owner": h.primary_owner_name,
             }
             # Silent on files with no counted fixes, so a repo without fix
@@ -215,14 +258,17 @@ async def get_risk(
             test_paths,
             ctx.alias,
         )
-    else:
-        # Standard per-file risk request (no diff) — keep global hotspots as
-        # ambient awareness. Cheap (≤5 entries) and useful for orientation.
+    elif len(targets) > 1:
+        # Standard per-file risk request (no diff) — ambient orientation across
+        # a set of targets. On one file the caller already named, it is noise.
         response["global_hotspots"] = global_hotspots
 
     response["_meta"] = _build_meta(
         repository=repository,
         targets=[*targets, *(changed_files or [])] if targets or changed_files else None,
     )
+    _drop_opt_in_blocks(response, include_set)
+    attach_ignored_arguments(response, ignored)
+    fit_to_budget(response, _SHED_ORDER, collector)
     collector.attach(response)
     return response

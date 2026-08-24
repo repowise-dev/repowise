@@ -15,12 +15,13 @@ from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import _is_workspace_mode
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import persisted_analysis_meta as _analysis_meta
 
 #: Cap the per-role member lists in the agent payload; full roles are on REST.
 _MCP_CORE_MEMBER_LIMIT = 25
 
 
-@mcp.tool(requires_workspace=True)
+@mcp.tool(default=False, requires_workspace=True, surface_order=200, trust_kind="structural")
 async def get_architecture() -> dict[str, Any]:
     """Workspace architecture metrics — coupling, core, and a 1-10 score.
 
@@ -79,5 +80,14 @@ async def get_architecture() -> dict[str, Any]:
         "conformance_violations": metrics.get("conformance_violations", 0),
         "role_breakdown": breakdown,
         "summary": summary,
-        "_meta": _build_meta(),
+        "_meta": _build_meta(
+            extra=_analysis_meta(
+                metrics.get("generated_at"),
+                {
+                    alias: provenance.get("head")
+                    for alias, provenance in metrics.get("repo_provenance", {}).items()
+                    if provenance.get("head")
+                },
+            )
+        ),
     }

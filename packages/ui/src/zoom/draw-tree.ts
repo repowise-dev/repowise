@@ -42,17 +42,18 @@ export interface DrawOptions {
   /** Shared ruled-paper card texture; null until the asset loads (or on SSR). */
   paper?: PaperTexture | null;
   /**
-   * Draw only relations carrying this verb (`ZoomRelation.label`), or every
-   * relation when null.
+   * Draw only relations whose verb (`ZoomRelation.label`) is in this set, or
+   * every relation when null. Null rather than "the set of all verbs" so the
+   * unfiltered case costs no lookup and needs no knowledge of the vocabulary.
    *
-   * Deliberately one verb and not a set. Measured on a live index, 80.5% of
-   * relations are `imports` and 89% of boxes carry a single verb across all
-   * their relations, so a general multi-verb filter would be a no-op on nine
-   * boxes in ten. The one subset that earns a control is `co-changes` (5.3%):
-   * files that change together without importing each other, which no other
-   * view surfaces.
+   * This was a single verb while the map was fed file-level edges only, where
+   * the arrows carried three verbs, 80.5% of them `imports`, and 89% of boxes
+   * had one verb across every relation — a multi-select would have been inert.
+   * Projecting the call graph onto file pairs changed that: the vocabulary runs
+   * to seven verbs on Ocelot, and the share of boxes carrying more than one
+   * goes 48% -> 67% there and 8% -> 32% on jhipster-sample-app.
    */
-  relationVerb?: string | null;
+  relationVerbs?: ReadonlySet<string> | null;
 }
 
 /**
@@ -214,7 +215,7 @@ export function drawScene(
       child,
       opts.lowDetail,
       focusId,
-      opts.relationVerb ?? null,
+      opts.relationVerbs ?? null,
     );
 
     for (const kid of visible) drawNode(kid, child, depth + 1);
@@ -243,7 +244,7 @@ function drawEdges(
   alpha: number,
   lowDetail: boolean,
   focusId: string | null,
-  relationVerb: string | null,
+  relationVerbs: ReadonlySet<string> | null,
 ): void {
   // Relations are revealed only for the box the user is pointing at / has
   // selected, so the canvas is not a thicket of arrows. No focus -> no edges.
@@ -255,7 +256,7 @@ function drawEdges(
     (r) =>
       r.source_id !== r.target_id &&
       (r.source_id === focusId || r.target_id === focusId) &&
-      (relationVerb === null || r.label === relationVerb) &&
+      (relationVerbs === null || relationVerbs.has(r.label)) &&
       childRects.has(r.source_id) &&
       childRects.has(r.target_id),
   );

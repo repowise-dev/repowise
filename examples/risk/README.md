@@ -24,8 +24,8 @@ repowise risk HEAD~5..HEAD    # recent local work
 ```
 
 The headline is **fix history**: which of the touched files have needed bug
-fixes before, recency-weighted, and where that sits among this repo's
-fix-bearing files. Below it, the diff shape — percentile and review priority
+fixes before, recency-weighted, and where that sits among this repo's own
+recent commits. Below it, the diff shape — percentile and review priority
 (`Below typical` / `Typical` / `Elevated`) among recent commits, and the 0–10
 score, which measures how large and spread out the change is rather than how
 dangerous.
