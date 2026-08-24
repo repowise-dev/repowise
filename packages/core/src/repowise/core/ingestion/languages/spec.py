@@ -12,6 +12,7 @@ a leaf dependency — it imports nothing from the ingestion pipeline.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 
@@ -165,6 +166,18 @@ class LanguageSpec:
     # at a repo file - and is populated for nine languages. Keeping them apart
     # is what makes this change a no-op on every language but the one measured.
     external_receiver_types: frozenset[str] = field(default_factory=frozenset)
+    # ``{external type: {static method: the type name it returns}}``, for the
+    # head of a chained call: ``Duration.ofSeconds(3).toNanos()``. Read only by
+    # the chained-call tier in ``CallResolver``, which otherwise resolves the
+    # outer ``toNanos`` by bare name and hands it whatever same-named method the
+    # repository happens to declare.
+    #
+    # A return type rather than a refusal set, because the recorded type is what
+    # decides which of the two answers is right: a repository declaring its own
+    # type of that name gets a retarget, one that does not gets a refusal.
+    # Populated only where the return type is external for *every* repository,
+    # so a name a repository plausibly declares in its own right stays off it.
+    external_return_types: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
     # -- Display ---------------------------------------------------------
     color_hex: str = "#8b5cf6"  # fallback purple ("other")

@@ -71,7 +71,14 @@ export function ContractsTable({ contracts }: { contracts: WorkspaceContractEntr
   return (
     <ResponsiveTable
       columns={CONTRACT_COLUMNS}
-      rows={contracts.map((c, i) => ({ ...c, _key: `${c.contract_id}|${i}` }))}
+      rows={contracts.map((c) => ({
+        // The contract identity, not the array index: an index renumbers every
+        // row whenever a filter changes. `line` is part of the key because one
+        // file can call the same endpoint from two places, which is a duplicate
+        // React key without it.
+        ...c,
+        _key: `${c.repo}|${c.file_path}|${c.contract_id}|${c.line ?? ""}`,
+      }))}
       rowKey={(c) => c._key}
       caption="All detected contracts"
       stacked="md"
