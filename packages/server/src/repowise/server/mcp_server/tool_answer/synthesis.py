@@ -15,6 +15,8 @@ import math
 import os
 from pathlib import Path
 
+from repowise.core.reasoning import ReasoningMode, resolve_reasoning
+from repowise.core.repo_config import load_repo_config
 from repowise.server.mcp_server.tool_answer.config import (
     _SYNTHESIS_MAX_TOKENS,
     _SYNTHESIS_TEMPERATURE,
@@ -44,6 +46,12 @@ def _hash_question(question: str) -> str:
     """Stable SHA-256 of the normalized question. Lowercase + strip + collapse ws."""
     norm = " ".join(question.lower().strip().split())
     return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+
+
+def _resolve_reasoning_for_answer(repo_path: Path | None) -> ReasoningMode:
+    """Resolve the synthesis reasoning mode from env and repo config."""
+    config = load_repo_config(repo_path) if repo_path is not None else None
+    return resolve_reasoning(config=config)
 
 
 def _load_repo_provider_config(
@@ -392,6 +400,7 @@ async def synthesize(
     system_prompt: str,
     user_prompt: str,
     *,
+    reasoning: ReasoningMode = "auto",
     session_factory=None,
     repo_id: str | None = None,
 ) -> tuple[str, str | None]:
@@ -424,6 +433,7 @@ async def synthesize(
                     user_prompt=user_prompt,
                     max_tokens=_SYNTHESIS_MAX_TOKENS,
                     temperature=_SYNTHESIS_TEMPERATURE,
+                    reasoning=reasoning,
                 ),
                 None,
             )

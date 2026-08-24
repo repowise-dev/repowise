@@ -180,6 +180,7 @@ from repowise.server.mcp_server.tool_answer.symbols import (
 from repowise.server.mcp_server.tool_answer.synthesis import (
     _hash_question,
     _resolve_provider_for_answer,
+    _resolve_reasoning_for_answer,
     synthesize,
 )
 
@@ -667,6 +668,7 @@ async def get_answer(
         provider,
         _SYSTEM_PROMPT,
         user_prompt,
+        reasoning=_resolve_reasoning_for_answer(getattr(ctx, "path", None)),
         session_factory=getattr(ctx, "session_factory", None),
         repo_id=repo_id,
     )
