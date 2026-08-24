@@ -267,6 +267,18 @@ def check_repo_staleness(
         return True, current_head, 0
 
     if current_head == last_commit:
+        db_path = repo_path / ".repowise" / "wiki.db"
+        if db_path.exists():
+            try:
+                from repowise.cli.commands.update_cmd.deterministic import (
+                    load_stale_structural_file_paths,
+                )
+
+                stale_db_paths = load_stale_structural_file_paths(repo_path)
+                if stale_db_paths:
+                    return True, current_head, 0
+            except Exception:
+                pass
         return False, current_head, 0
 
     behind = count_commits_between(repo_path, last_commit, current_head)

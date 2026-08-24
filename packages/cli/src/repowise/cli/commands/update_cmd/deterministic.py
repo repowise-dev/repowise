@@ -428,3 +428,54 @@ async def _load_spotlight_render_keys(repo_path: Path) -> dict[str, list[str]]:
         return {}
     finally:
         await engine.dispose()
+
+
+def load_stale_structural_file_paths(repo_path: Path) -> list[str]:
+    """Return file paths of structural pages currently marked stale or expired in DB.
+
+    Covers file_page rows and other structural pages whose freshness_status is 'stale'
+    or 'expired'. Extracting their file paths allows `repowise update` to reconcile
+    lingering stale structural pages even when the repo is already at HEAD.
+    """
+    return run_async(_load_stale_structural_file_paths(repo_path))
+
+
+async def _load_stale_structural_file_paths(repo_path: Path) -> list[str]:
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+
+    db_path = repo_path / ".repowise" / "wiki.db"
+    if not db_path.exists():
+        return []
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        from sqlalchemy import select as sa_select
+
+        from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
+        from repowise.core.persistence.models import Page
+
+        async with get_session(create_session_factory(engine)) as session:
+            rows = await session.execute(
+                sa_select(Page.id, Page.page_type, Page.target_path).where(
+                    Page.freshness_status.in_(["stale", "expired"])
+                )
+            )
+            stale_paths: list[str] = []
+            for pid, page_type, target_path in rows:
+                if page_type in STRUCTURAL_PAGE_TYPES or page_type == "file_page":
+                    if page_type == "file_page" and target_path:
+                        stale_paths.append(target_path)
+                    elif pid.startswith("file_page:"):
+                        stale_paths.append(pid[len("file_page:") :])
+                    elif target_path:
+                        file_path = target_path.split("::", 1)[0]
+                        if file_path:
+                            stale_paths.append(file_path)
+            return list(dict.fromkeys(stale_paths))
+    except Exception as exc:
+        console.print(f"[yellow]Could not read stale structural pages: {exc}[/yellow]")
+        return []
+    finally:
+        await engine.dispose()
+

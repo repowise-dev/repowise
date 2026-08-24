@@ -819,12 +819,19 @@ def run_update(
     if not dry_run:
         _repair_module_attribution(repo_path)
 
+    # Stale structural pages (e.g. file_page rows marked stale or expired) in
+    # the DB must be reconciled even when HEAD has not moved.
+    from .deterministic import load_stale_structural_file_paths
+
+    stale_db_paths = load_stale_structural_file_paths(repo_path)
+
     if (
         head
         and head == base_ref
         and not config_changed
         and not renderer_changed
         and not working_tree_diffs
+        and not stale_db_paths
     ):
         console.print("[green]Already up to date.[/green]")
         # D7: on a template (index-only) wiki, "up to date" is true of the code
@@ -1198,9 +1205,13 @@ def run_update(
     # and no model will come along later to fix it. Appended rather than merged
     # so the cascade's own ordering is preserved.
     stale_renderer_paths = _stale_renderer_paths(repo_path, parsed_files)
-    if stale_renderer_paths:
-        affected.regenerate = list(dict.fromkeys([*affected.regenerate, *stale_renderer_paths]))
-        console.print(f"Pages from an older renderer: [cyan]{len(stale_renderer_paths)}[/cyan]")
+    stale_extra = list(dict.fromkeys([*stale_renderer_paths, *stale_db_paths]))
+    if stale_extra:
+        affected.regenerate = list(dict.fromkeys([*affected.regenerate, *stale_extra]))
+        if stale_renderer_paths:
+            console.print(f"Pages from an older renderer: [cyan]{len(stale_renderer_paths)}[/cyan]")
+        if stale_db_paths and not stale_renderer_paths:
+            console.print(f"Reconciling stale structural pages: [cyan]{len(stale_db_paths)}[/cyan]")
 
     console.print(f"Pages to regenerate: [cyan]{len(affected.regenerate)}[/cyan]")
     if affected.decay_only:
