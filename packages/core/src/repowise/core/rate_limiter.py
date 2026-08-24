@@ -68,6 +68,10 @@ PROVIDER_DEFAULTS: dict[str, RateLimitConfig] = {
     "deepseek": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=5_000_000),
     "kimi": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=5_000_000),
     "edenai": RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=2_000_000),
+    # Subscription-backed local CLI: the real ceiling is the account's, and
+    # each call is a process, so the provider's own semaphore is the binding
+    # limit. Kept loose here so this does not double-throttle it.
+    "claude_cli": RateLimitConfig(requests_per_minute=120, tokens_per_minute=2_000_000),
 }
 
 

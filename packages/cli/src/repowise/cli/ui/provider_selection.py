@@ -32,6 +32,7 @@ _PROVIDER_DEFAULTS: dict[str, str] = {
     "kimi": "kimi-for-coding",
     "edenai": "mistral/mistral-small-latest",
     "codex_cli": "codex_cli/default",
+    "claude_cli": "claude_cli/claude-haiku-4-5",
     "opencode": "opencode/default",
     "ollama": "qwen3.5:4b",
     "openrouter": "google/gemini-3.5-flash-lite",
@@ -46,6 +47,7 @@ _PROVIDER_ENV: dict[str, str] = {
     "kimi": "KIMI_API_KEY",
     "edenai": "EDENAI_API_KEY",
     "codex_cli": "__CODEX_CLI__",
+    "claude_cli": "__CLAUDE_CLI__",
     "opencode": "__OPENCODE_CLI__",
     "ollama": "OLLAMA_BASE_URL",
     "openrouter": "OPENROUTER_API_KEY",
@@ -63,6 +65,7 @@ _PROVIDER_SIGNUP: dict[str, str] = {
     "kimi": "https://www.kimi.com/code/console",
     "edenai": "https://app.edenai.run/user/register",
     "codex_cli": "https://developers.openai.com/codex/cli",
+    "claude_cli": "https://claude.com/claude-code",
     "opencode": "https://opencode.ai",
     "ollama": "https://ollama.com/download",
     "openrouter": "https://openrouter.ai/keys",
@@ -76,6 +79,7 @@ _PROVIDER_SIGNUP: dict[str, str] = {
 _PROVIDER_NOTES: dict[str, str] = {
     "gemini": "recommended",
     "codex_cli": "uses your Codex CLI login",
+    "claude_cli": "uses your Claude Code login",
     "opencode": "uses your opencode CLI setup",
     "ollama": "runs on your machine, no key",
     "litellm": "proxy in front of another provider",
@@ -102,6 +106,19 @@ def _detect_codex_cli_status() -> tuple[bool, bool]:
 
     installed = is_codex_cli_installed()
     return installed, is_codex_logged_in() if installed else False
+
+
+def _detect_claude_cli_status() -> bool:
+    """Return ``True`` if the Claude Code CLI is installed on PATH.
+
+    Login state is not probed: ``claude`` keeps its credentials in a keychain or
+    an OAuth token store with no cheap, side-effect-free "am I logged in" query,
+    so the readiness signal stops at "installed" and an unauthenticated CLI
+    surfaces as a provider error on first use.
+    """
+    import shutil
+
+    return shutil.which("claude") is not None
 
 
 def _detect_opencode_status() -> bool:
@@ -178,6 +195,9 @@ def _detect_provider_status() -> dict[str, str]:
             installed, logged_in = _detect_codex_cli_status()
             if installed and logged_in:
                 status[prov] = "codex CLI"
+        elif prov == "claude_cli":
+            if _detect_claude_cli_status():
+                status[prov] = "claude CLI"
         elif prov == "opencode":
             if _detect_opencode_status():
                 status[prov] = "opencode CLI"
@@ -201,6 +221,28 @@ def _codex_cli_setup_lines() -> list[str]:
         "",
         f"  [{WARN}]{problem}[/] Set it up and retry, or select another provider.",
     ]
+
+
+def _claude_cli_setup_lines() -> list[str]:
+    installed = _detect_claude_cli_status()
+    lines = [
+        "  [bold]claude_cli[/bold] uses the Claude Code CLI's own login, so a "
+        "Claude subscription works here. No API key here.",
+        f"  Install: [{BRAND}]https://claude.com/claude-code[/]",
+        f"  Set up:  [{BRAND}]claude login[/]",
+        "",
+        f"  To pick a specific model: [{BRAND}]repowise init --provider claude_cli "
+        "--model claude_cli/claude-sonnet-4-6[/]",
+    ]
+    if not installed:
+        lines.extend(
+            [
+                "",
+                f"  [{WARN}]claude CLI not found on PATH.[/] Install it and retry, "
+                "or select another provider.",
+            ]
+        )
+    return lines
 
 
 def _opencode_setup_lines() -> list[str]:
@@ -247,6 +289,7 @@ def _ollama_setup_lines() -> list[str]:
 # interactively, so the picker keeps its own narrower list.
 _LOCAL_PROVIDER_SETUP: dict[str, Callable[[], list[str]]] = {
     "codex_cli": _codex_cli_setup_lines,
+    "claude_cli": _claude_cli_setup_lines,
     "opencode": _opencode_setup_lines,
     "ollama": _ollama_setup_lines,
 }
