@@ -153,13 +153,9 @@ def test_migration_0041_upgrades_sqlite() -> None:
                 assert "commit_sha" in cols
                 assert "commit_at" in cols
                 uqs = await conn.run_sync(
-                    lambda sync_conn: inspect(sync_conn).get_unique_constraints(
-                        "security_findings"
-                    )
+                    lambda sync_conn: inspect(sync_conn).get_unique_constraints("security_findings")
                 )
-                assert any(
-                    uq.get("name") == "uq_security_finding_provenance" for uq in uqs
-                )
+                assert any(uq.get("name") == "uq_security_finding_provenance" for uq in uqs)
 
         import asyncio
 
@@ -348,9 +344,7 @@ async def test_history_default_skips_test_fixtures_and_placeholders(
     assert "docs.py" not in paths, "elided placeholder reported as a credential"
 
 
-async def test_all_patterns_lifts_the_noise_gate(
-    session: AsyncSession, secret_repo: Path
-) -> None:
+async def test_all_patterns_lifts_the_noise_gate(session: AsyncSession, secret_repo: Path) -> None:
     """The filtering is the default's promise, not a hard exclusion."""
     (secret_repo / "tests").mkdir(exist_ok=True)
     (secret_repo / "tests" / "test_client.py").write_text('password = "fixture-value"\n')
@@ -365,6 +359,35 @@ async def test_all_patterns_lifts_the_noise_gate(
         for r in (await session.execute(text("SELECT file_path FROM security_findings"))).all()
     }
     assert "tests/test_client.py" in paths
+
+
+async def test_history_all_patterns_uses_call_aware_eval_semantics(
+    session: AsyncSession, secret_repo: Path
+) -> None:
+    path = secret_repo / "calls.py"
+    path.write_text(
+        "# eval(commented)\n"
+        'text = "eval(in_string)"\n'
+        "retrieval (payload)\n"
+        "my_eval(payload)\n"
+        "eval (payload)\n",
+        encoding="utf-8",
+    )
+    _git(secret_repo, "add", ".")
+    _git(secret_repo, "commit", "-m", "add eval corpus")
+
+    scanner = HistorySecurityScanner(session, "repo-1")
+    await scanner.scan_history(secret_repo, secrets_only=False)
+
+    rows = (
+        await session.execute(
+            text(
+                "SELECT kind, line_number FROM security_findings "
+                "WHERE file_path = 'calls.py' AND kind IN ('eval_call', 'exec_call')"
+            )
+        )
+    ).all()
+    assert [tuple(row) for row in rows] == [("eval_call", 5)]
 
 
 async def test_blob_introductions_resolves_real_blobs(secret_repo: Path) -> None:

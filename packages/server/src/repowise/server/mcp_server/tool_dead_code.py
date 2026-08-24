@@ -261,7 +261,7 @@ def _resolve_min_confidence(value: float | str, ignored: list[dict[str, Any]]) -
         return RISK_CAP_CONFIDENCE
 
 
-@mcp.tool()
+@mcp.tool(surface_order=100)
 async def get_dead_code(
     repo: str | None = None,
     kind: str | None = None,

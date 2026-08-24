@@ -995,7 +995,7 @@ async def _structured_search(
     return _fit_search_response(response, contexts[0].path if contexts else None)
 
 
-@mcp.tool()
+@mcp.tool(surface_order=40)
 async def search_codebase(
     query: str,
     limit: int = 5,

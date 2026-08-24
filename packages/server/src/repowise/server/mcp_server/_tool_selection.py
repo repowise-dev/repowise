@@ -56,6 +56,7 @@ _LEAN_WORKSPACE_EXTRAS = frozenset({"list_repos"})
 # re-add a tool a previous call removed (the FastMCP manager only supports
 # removal, not re-registration).
 _full_surface: dict[str, Any] | None = None
+_selected_surface: tuple[bool, frozenset[str]] | None = None
 
 
 def _ensure_registered() -> None:
@@ -148,9 +149,7 @@ def resolve_enabled_tools(
             _log.warning("Ignoring unknown MCP tool in selection: %r", raw)
             return None
         if not usable(entry):
-            _log.warning(
-                "Ignoring workspace-only MCP tool %r outside workspace mode", raw
-            )
+            _log.warning("Ignoring workspace-only MCP tool %r outside workspace mode", raw)
             return None
         return raw
 
@@ -216,11 +215,14 @@ def apply_tool_selection(
     if override is None:
         override = _read_config_override(repo_path)
 
+    is_workspace = _is_workspace(repo_path)
     enabled = resolve_enabled_tools(
         mcp_tool_registry.entries(),
-        is_workspace=_is_workspace(repo_path),
+        is_workspace=is_workspace,
         override=override,
     )
+    global _selected_surface
+    _selected_surface = (is_workspace, frozenset(enabled))
 
     manager = getattr(mcp, "_tool_manager", None)
     registered = getattr(manager, "_tools", None)
@@ -247,11 +249,40 @@ def apply_tool_selection(
     return enabled
 
 
+def selected_tool_names(*, is_workspace: bool) -> set[str]:
+    """Return the surface selected for this running server, or its default."""
+    _ensure_registered()
+    if _selected_surface is not None and _selected_surface[0] == is_workspace:
+        return set(_selected_surface[1])
+    return resolve_enabled_tools(mcp_tool_registry.entries(), is_workspace=is_workspace)
+
+
 def _tool_description(name: str) -> str:
     """One-line description for a tool, from its registered FastMCP schema."""
     tool = (_full_surface or {}).get(name)
     desc = getattr(tool, "description", "") or ""
     return desc.strip().split("\n", 1)[0].strip()
+
+
+def registry_tool_rows(entries: Iterable[ToolEntry] | None = None) -> list[dict[str, Any]]:
+    """Mode-independent tool catalog derived only from registry metadata."""
+    _ensure_registered()
+    catalog = list(entries) if entries is not None else mcp_tool_registry.entries()
+    single_default = resolve_enabled_tools(catalog, is_workspace=False)
+    workspace_default = resolve_enabled_tools(catalog, is_workspace=True)
+    return [
+        {
+            "name": entry.name,
+            "description": _tool_description(entry.name),
+            "tier": entry.tier,
+            "default_single_repo": entry.name in single_default,
+            "default_workspace": entry.name in workspace_default,
+            "eligible_single_repo": not entry.requires_workspace,
+            "eligible_workspace": True,
+            "requires_workspace": entry.requires_workspace,
+        }
+        for entry in sorted(catalog, key=lambda item: (item.surface_order, item.name))
+    ]
 
 
 def describe_tool_surface(repo_path: str | None) -> dict[str, Any]:
@@ -269,22 +300,18 @@ def describe_tool_surface(repo_path: str | None) -> dict[str, Any]:
     is_workspace = _is_workspace(repo_path)
     override = _read_config_override(repo_path)
 
-    default_surface = resolve_enabled_tools(
-        entries, is_workspace=is_workspace, override=None
-    )
-    enabled = resolve_enabled_tools(
-        entries, is_workspace=is_workspace, override=override
-    )
+    default_surface = resolve_enabled_tools(entries, is_workspace=is_workspace, override=None)
+    enabled = resolve_enabled_tools(entries, is_workspace=is_workspace, override=override)
 
+    rows = registry_tool_rows(entries)
     tools = [
         {
-            "name": e.name,
-            "description": _tool_description(e.name),
-            "default": e.name in default_surface,
-            "requires_workspace": e.requires_workspace,
-            "enabled": e.name in enabled,
+            **row,
+            "default": row["name"] in default_surface,
+            "eligible": row["eligible_workspace"] if is_workspace else row["eligible_single_repo"],
+            "enabled": row["name"] in enabled,
         }
-        for e in sorted(entries, key=lambda e: e.name)
+        for row in rows
     ]
     return {
         "is_workspace": is_workspace,

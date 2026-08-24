@@ -57,7 +57,7 @@ _SHED_ORDER: tuple[str, ...] = (
 )
 
 
-@mcp.tool()
+@mcp.tool(surface_order=60)
 async def get_change_risk(
     revspec: str | None = None,
     repo: str | None = None,
@@ -140,9 +140,7 @@ async def get_change_risk(
             working_tree=result.working_tree,
         )
     collector = OmissionCollector("get_change_risk", repo_root=ctx.path)
-    payload["impacted_tests"] = await _impacted_tests_block(
-        ctx, changed, changed_error, collector
-    )
+    payload["impacted_tests"] = await _impacted_tests_block(ctx, changed, changed_error, collector)
     prior_fixes = await _prior_fixes_block(ctx, changed)
     if prior_fixes is not None:
         payload["prior_fixes"] = prior_fixes
@@ -282,11 +280,7 @@ def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | 
                             if (psid := link.get("provider_symbol_id"))
                             else {}
                         ),
-                        **(
-                            {"symbol_id": sid}
-                            if (sid := link.get("consumer_symbol_id"))
-                            else {}
-                        ),
+                        **({"symbol_id": sid} if (sid := link.get("consumer_symbol_id")) else {}),
                     }
                 )
 
@@ -297,9 +291,7 @@ def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | 
             for change in enricher.get_breaking_changes_for_repo(alias):
                 if change.get("provider_file") not in touched:
                     continue
-                cross = [
-                    c for c in change.get("impacted_consumers", []) if c.get("repo") != alias
-                ]
+                cross = [c for c in change.get("impacted_consumers", []) if c.get("repo") != alias]
                 if not cross:
                     continue
                 breaking_total += 1

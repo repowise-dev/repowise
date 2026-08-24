@@ -1,6 +1,6 @@
 """The get_answer answer cache: when a stored row may be served, and how one is written.
 
-Keyed on (repo, normalized question). The read side is mostly a list of reasons
+Keyed on (repo, normalized question, normalized scope). The read side is mostly a list of reasons
 NOT to serve a row — a stale row is worse than a re-synthesis, because it pins a
 bad answer until the TTL expires and hides every improvement made since.
 """
@@ -153,20 +153,20 @@ async def _serve_cached_answer(
     with contextlib.suppress(Exception):
         payload = _json.loads(cached.payload_json)
         cached_paths = _cached_payload_paths(payload)
-        if _cache_bypass_reason(
-            payload, cached.created_at, repository, exclude_spec, cached_paths
-        ):
+        if _cache_bypass_reason(payload, cached.created_at, repository, exclude_spec, cached_paths):
             return None
         # Cache-internal fields never reach the consumer (response keys must not
         # start with "_" except _meta).
         payload.pop("_indexed_commit", None)
         payload.pop("_schema_version", None)
+        retrieval_degraded = payload.pop("_retrieval_degraded", None)
         payload["_meta"] = _build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
             cached=True,
             hint=_answer_hint(payload.get("confidence", "low")),
             repository=repository,
             targets=[p for p in cached_paths if isinstance(p, str) and p],
+            extra=({"retrieval_degraded": retrieval_degraded} if retrieval_degraded else None),
         )
         _apply_lean_high(payload, question)
         _trim_served_payload(payload)
@@ -184,7 +184,15 @@ async def _serve_cached_answer(
 
 
 async def _write_answer_cache(
-    payload: dict, *, ctx, question: str, repository, repo_id, qhash: str, provider
+    payload: dict,
+    *,
+    ctx,
+    question: str,
+    repository,
+    repo_id,
+    qhash: str,
+    legacy_qhash: str,
+    provider,
 ) -> None:
     """Persist this answer as the cache row for the question (upsert).
 
@@ -192,8 +200,10 @@ async def _write_answer_cache(
     LOGGED rather than suppressed. A plain INSERT under a blanket suppress
     violated ``uq_answer_cache_q`` on every bypass-and-resynthesize round and
     failed silently, so hedged and stale rows were never upgraded.
-    Delete-then-insert in one transaction is the dialect-agnostic upsert, and
-    the stamped ``_indexed_commit`` is what the read-side freshness check reads.
+    Delete-then-insert in one transaction is the dialect-agnostic upsert. It
+    also removes the legacy question-only identity on the first successful
+    synthesis, while the versioned lookup guarantees that row is never served.
+    The stamped ``_indexed_commit`` is what the read-side freshness check reads.
 
     The row is a shallow copy taken here, so anything the caller attaches to the
     payload after this point reaches the caller and never the cache.
@@ -208,7 +218,7 @@ async def _write_answer_cache(
             await session.execute(
                 delete(AnswerCache).where(
                     AnswerCache.repository_id == repo_id,
-                    AnswerCache.question_hash == qhash,
+                    AnswerCache.question_hash.in_({qhash, legacy_qhash}),
                 )
             )
             row = AnswerCache(

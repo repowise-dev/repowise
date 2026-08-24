@@ -16,6 +16,7 @@ from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import _is_workspace_mode
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import persisted_analysis_meta as _analysis_meta
 
 #: How many impacted services the MCP response carries inline. The full set is
 #: available via the REST endpoint / the map; here we keep the agent payload
@@ -28,7 +29,7 @@ _MCP_IMPACTED_LIMIT = 25
 _SYMBOL_CONSUMER_LIMIT = 10
 
 
-@mcp.tool(requires_workspace=True)
+@mcp.tool(default=False, requires_workspace=True, surface_order=210, trust_kind="structural")
 async def get_blast_radius(
     targets: list[str],
     max_depth: int = 3,
@@ -119,7 +120,16 @@ async def get_blast_radius(
         "total_impacted": result.total_impacted,
         "unresolved_targets": result.unresolved_targets,
         "summary": summary,
-        "_meta": _build_meta(),
+        "_meta": _build_meta(
+            extra=_analysis_meta(
+                raw.get("generated_at"),
+                {
+                    alias: provenance.get("head")
+                    for alias, provenance in raw.get("repo_provenance", {}).items()
+                    if provenance.get("head")
+                },
+            )
+        ),
     }
     if symbol_targets:
         payload["symbol_targets"] = symbol_targets
@@ -168,9 +178,7 @@ def _resolve_symbol_targets(
         # Providers only: a consumer contract's symbol calls a surface rather
         # than publishing one, so it has no downstream to traverse.
         contracts = [
-            c
-            for c in enricher.get_contracts_for_symbol(raw)
-            if c.get("role") == "provider"
+            c for c in enricher.get_contracts_for_symbol(raw) if c.get("role") == "provider"
         ]
         nodes = sorted({node for c in contracts if (node := _graph_node_for(nodes_by_repo, c))})
         if not nodes:
@@ -200,9 +208,7 @@ def _resolve_symbol_targets(
         block: dict[str, Any] = {
             "symbol_id": raw,
             "nodes": nodes,
-            "contract_ids": sorted(
-                {c["contract_id"] for c in contracts if c.get("contract_id")}
-            ),
+            "contract_ids": sorted({c["contract_id"] for c in contracts if c.get("contract_id")}),
             "consumers": consumers,
             "consumer_count": len(links),
             "consumers_truncated": max(0, len(links) - len(consumers)),

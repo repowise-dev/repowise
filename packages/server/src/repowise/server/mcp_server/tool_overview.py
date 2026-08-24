@@ -61,6 +61,7 @@ from repowise.server.mcp_server._helpers import (
     is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._tool_selection import registry_tool_rows, selected_tool_names
 
 # Orientation, not a directory listing — the top few modules are enough to
 # point a fresh agent at the interesting subsystems. The rest are persisted
@@ -69,6 +70,26 @@ _MODULE_CAP = 8
 
 # Split point between markdown H2 sections ("\n## ...").
 _H2_SPLIT_RE = re.compile(r"\n(?=#{1,2}\s)")
+
+
+def _tool_surface_guide(*, is_workspace: bool) -> dict[str, Any]:
+    """The advertised surface, projected from the live registry catalog."""
+    rows = registry_tool_rows()
+    enabled = selected_tool_names(is_workspace=is_workspace)
+    default_key = "default_workspace" if is_workspace else "default_single_repo"
+    eligible_key = "eligible_workspace" if is_workspace else "eligible_single_repo"
+    return {
+        "mode": "workspace" if is_workspace else "single_repo",
+        "canonical": [row["name"] for row in rows if row["tier"] == "canonical"],
+        "default": [row["name"] for row in rows if row[default_key]],
+        "enabled": [row["name"] for row in rows if row["name"] in enabled],
+        "utilities": [
+            row["name"] for row in rows if row["tier"] == "utility" and row[eligible_key]
+        ],
+        "opt_in": [
+            row["name"] for row in rows if row["tier"] == "specialist" and row[eligible_key]
+        ],
+    }
 
 
 def _compact_overview_content(content: str) -> str:
@@ -176,12 +197,16 @@ async def _workspace_overview() -> dict:
         "total_symbols": total_symbols,
         "repos": repos_info,
         "hint": ("Use repo='<alias>' to query a specific repo. Omit repo to use the default."),
+        "tool_surface": _tool_surface_guide(is_workspace=True),
+        "_meta": _build_meta(),
     }
     if cross_repo_topology:
         result["cross_repo_topology"] = cross_repo_topology
 
-    collector = OmissionCollector("get_overview", repo_root=registry.workspace_root if registry else None)
-    fit_to_budget(result, _WORKSPACE_SHED_ORDER, collector)
+    collector = OmissionCollector(
+        "get_overview", repo_root=registry.workspace_root if registry else None
+    )
+    fit_to_budget(result, _WORKSPACE_SHED_ORDER, collector, headroom=800)
     collector.attach(result)
     return result
 
@@ -884,10 +909,21 @@ def _build_guided_tour(
 
 # Cheapest loss first. Everything not listed answers a question that changes an
 # agent's next action, so it is never shed.
-_WORKSPACE_SHED_ORDER: tuple[str, ...] = ("cross_repo_topology", "repos[]")
+_WORKSPACE_SHED_ORDER: tuple[str, ...] = (
+    "cross_repo_topology",
+    "tool_surface.canonical",
+    "tool_surface.default",
+    "tool_surface.utilities",
+    "tool_surface.opt_in",
+    "repos[]",
+)
 
 _SHED_ORDER: tuple[str, ...] = (
     "tool_guide",
+    "tool_surface.canonical",
+    "tool_surface.default",
+    "tool_surface.utilities",
+    "tool_surface.opt_in",
     "guided_tour_hint",
     "guided_tour",
     "reading_order_hint",
@@ -897,11 +933,13 @@ _SHED_ORDER: tuple[str, ...] = (
     "key_decisions",
     "outline_hint",
     "outline",
+    "tool_surface",
     "key_modules[]",
+    "content_md",
 )
 
 
-@mcp.tool()
+@mcp.tool(surface_order=80)
 async def get_overview(repo: str | None = None, include: list[str] | None = None) -> dict:
     """Architecture map for an unfamiliar repo — first call when you don't know your way around.
 
@@ -1079,9 +1117,10 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
             "stale_warning in _meta, or a search hit whose sources are [fts] "
             "only (keyword match, no semantic agreement).",
         }
+        result["tool_surface"] = _tool_surface_guide(is_workspace=_state._registry is not None)
 
         result["_meta"] = _build_meta(repository=repository)
-        fit_to_budget(result, _SHED_ORDER, collector)
+        fit_to_budget(result, _SHED_ORDER, collector, headroom=800)
         collector.attach(result)
         return result
 

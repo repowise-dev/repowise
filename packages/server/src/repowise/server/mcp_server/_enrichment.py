@@ -402,7 +402,9 @@ class CrossRepoEnricher:
             conformance_violations=violations,
             generated_at=self._system_graph.get("generated_at", ""),
         )
-        return metrics.to_dict()
+        payload = metrics.to_dict()
+        payload["repo_provenance"] = self._system_graph.get("repo_provenance", {})
+        return payload
 
     def get_diagnostics(self) -> dict | None:
         """Return just the extraction diagnostics block of the system graph."""

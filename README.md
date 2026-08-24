@@ -131,7 +131,8 @@ it written this way? Which files are actually dangerous?* Without an index, the 
 rediscovers that answer on every task: grep, read, re-read, forget.
 
 Repowise exposes **ten task-shaped MCP tools** to Claude Code, Codex, Cursor, VS Code
-and anything else that speaks MCP. Most tools are built around data entities (one
+and anything else that speaks MCP: graph, git, docs, decisions, and ten MCP tools
+behind one index. See [the canonical surface](#the-ten-mcp-tools). Most tools are built around data entities (one
 file, one symbol), which forces agents into long chains of sequential calls. These are
 built around **tasks**: pass several targets in one call, get complete context back.
 

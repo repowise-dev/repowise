@@ -65,7 +65,7 @@ def _drop_opt_in_blocks(response: dict, include: set[str]) -> None:
                     holder.pop(key, None)
 
 
-@mcp.tool()
+@mcp.tool(surface_order=50)
 async def get_risk(
     targets: list[str],
     repo: str | None = None,

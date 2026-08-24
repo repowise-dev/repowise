@@ -14,6 +14,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import text
 
 from repowise.core.analysis.security_scan import SecurityScanner
@@ -31,10 +32,7 @@ CLEAN = b"""def add(a, b):
 
 
 def _fake_result(files: dict[str, bytes]):
-    parsed = [
-        SimpleNamespace(file_info=SimpleNamespace(path=p), symbols=[])
-        for p in files
-    ]
+    parsed = [SimpleNamespace(file_info=SimpleNamespace(path=p), symbols=[]) for p in files]
     return SimpleNamespace(parsed_files=parsed, source_map=dict(files))
 
 
@@ -73,9 +71,7 @@ async def _rows(sf) -> list[tuple]:
 class TestScanFile:
     def test_line_patterns_fire_on_real_source(self) -> None:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
-        findings = asyncio.run(
-            scanner.scan_file("a.py", SNIPPY.decode(), symbols=[])
-        )
+        findings = asyncio.run(scanner.scan_file("a.py", SNIPPY.decode(), symbols=[]))
         kinds = {f["kind"] for f in findings}
         assert "hardcoded_password" in kinds
         assert "pickle_loads" in kinds
@@ -87,6 +83,53 @@ class TestScanFile:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
         findings = asyncio.run(scanner.scan_file("b.py", CLEAN.decode(), symbols=[]))
         assert findings == []
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("eval(payload)\n", {"eval_call"}),
+            ("exec (payload)\n", {"exec_call"}),
+            ("eval(\n    payload\n)\n", {"eval_call"}),
+            ("builtins.eval(payload)\n", {"eval_call"}),
+            ("retrieval (payload)\n", set()),
+            ("my_eval(payload)\n", set()),
+            ("# eval(payload)\n", set()),
+            ('text = "eval(payload)"\n', set()),
+            ('"""exec(payload)"""\n', set()),
+        ],
+    )
+    def test_python_eval_exec_call_corpus(self, source: str, expected: set[str]) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("calls.py", source, symbols=[]))
+        assert {row["kind"] for row in findings if row["kind"].endswith("_call")} == expected
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("eval (payload);\n", {"eval_call"}),
+            ("exec\n  (payload);\n", {"exec_call"}),
+            ("window.eval(payload);\n", {"eval_call"}),
+            ("const result = `${eval(payload)}`;\n", {"eval_call"}),
+            ("retrieval (payload);\n", set()),
+            ("my_eval(payload);\n", set()),
+            ("// eval(payload)\n", set()),
+            ("/* exec(payload) */\n", set()),
+            ('const text = "eval(payload)";\n', set()),
+        ],
+    )
+    def test_fallback_eval_exec_call_corpus(self, source: str, expected: set[str]) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("calls.js", source, symbols=[]))
+        assert {row["kind"] for row in findings if row["kind"].endswith("_call")} == expected
+
+    def test_combined_prefilter_uses_the_same_safe_call_boundaries(self) -> None:
+        from repowise.core.analysis.security_scan import _ANY_PATTERN
+
+        assert _ANY_PATTERN.search("eval (")
+        assert _ANY_PATTERN.search("exec(")
+        assert _ANY_PATTERN.search("window.eval(")
+        assert not _ANY_PATTERN.search("retrieval (")
+        assert not _ANY_PATTERN.search("my_eval(")
 
     def test_single_line_subprocess_shell_true_is_flagged(self) -> None:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
@@ -122,11 +165,7 @@ class TestScanFile:
     def test_spanning_pass_does_not_jump_to_later_shell_true(self) -> None:
         """A closed subprocess call must not claim a later column-0 shell=True."""
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
-        source = (
-            'subprocess.run(["ls"], capture_output=True)\n'
-            "\n"
-            "os.popen(cmd, shell=True)\n"
-        )
+        source = 'subprocess.run(["ls"], capture_output=True)\n\nos.popen(cmd, shell=True)\n'
         findings = asyncio.run(scanner.scan_file("a.py", source, symbols=[]))
         hits = [f for f in findings if f["kind"] == "subprocess_shell_true"]
         assert hits == []
@@ -182,13 +221,9 @@ class TestPersistSecurityFindings:
             from repowise.core.persistence import get_session
 
             async with get_session(sf) as session:
-                await persist_security_findings(
-                    _fake_result({"a.py": SNIPPY}), session, "repo-1"
-                )
+                await persist_security_findings(_fake_result({"a.py": SNIPPY}), session, "repo-1")
             async with get_session(sf) as session:
-                await persist_security_findings(
-                    _fake_result({"a.py": CLEAN}), session, "repo-1"
-                )
+                await persist_security_findings(_fake_result({"a.py": CLEAN}), session, "repo-1")
             rows = await _rows(sf)
             await engine.dispose()
             return rows
@@ -209,9 +244,7 @@ class TestPersistSecurityFindings:
             sym = SimpleNamespace(name="auth", start_line=7)
             result = SimpleNamespace(
                 parsed_files=[
-                    SimpleNamespace(
-                        file_info=SimpleNamespace(path="auth.py"), symbols=[sym]
-                    )
+                    SimpleNamespace(file_info=SimpleNamespace(path="auth.py"), symbols=[sym])
                 ],
             )
             async with get_session(sf) as session:

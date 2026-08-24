@@ -2,7 +2,7 @@
 
 repowise exposes a curated set of tools via the [Model Context Protocol](https://modelcontextprotocol.io) (MCP). These tools give AI coding assistants (Claude Code, Codex, Cursor, Cline, Windsurf) structured access to your codebase intelligence: dependency graph, git history, documentation, and architectural decisions.
 
-17 tools are registered in total. A single-repo server advertises 11 by default: the ten flagship tools below plus `list_repos`. Workspace mode adds 2 more automatically (`get_architecture`, `get_blast_radius`), for 13. Four further tools are off by default everywhere and must be opted in. The surface is configurable; see [Configuring the tool surface](#configuring-the-tool-surface).
+17 tools are registered in total. A single-repo server advertises 10 by default: exactly the canonical tools. Workspace mode adds the `list_repos` discovery utility, for 11. 6 specialist tools are opt-in where eligible. The surface is configurable; see [Configuring the tool surface](#configuring-the-tool-surface).
 
 **Start the MCP server:**
 
@@ -20,7 +20,7 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 
 ## Contents
 
-**Default tools (single-repo, 11)**
+**Canonical tools (default in both modes, 10)**
 [get_overview](#get_overview) &middot;
 [get_answer](#get_answer) &middot;
 [get_context](#get_context) &middot;
@@ -30,14 +30,14 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 [get_change_risk](#get_change_risk) &middot;
 [get_why](#get_why) &middot;
 [get_dead_code](#get_dead_code) &middot;
-[get_health](#get_health) &middot;
+[get_health](#get_health)
+
+**Workspace discovery utility (default in workspace mode, 1)**
 [list_repos](#list_repos)
 
-**Workspace-only tools (added automatically, 2)**
+**Opt-in specialists (6; workspace eligibility still applies)**
 [get_architecture](#get_architecture) &middot;
-[get_blast_radius](#get_blast_radius)
-
-**Opt-in tools (off by default everywhere, 4)**
+[get_blast_radius](#get_blast_radius) &middot;
 [get_dependency_path](#get_dependency_path) &middot;
 [get_execution_flows](#get_execution_flows) &middot;
 [generate_refactoring_code](#generate_refactoring_code) &middot;
@@ -62,7 +62,7 @@ Also see [Configuring the tool surface](#configuring-the-tool-surface), [Reversi
 | `get_dead_code` | Unreachable code | Cleanup tasks |
 | `get_health` | Code-health marker scores | Before refactoring, find the worst files |
 
-Also always on by default: `list_repos` (repo aliases). See [Supplementary tools](#supplementary-tools).
+In workspace mode, `list_repos` is also on by default so repository aliases are discoverable. It is unavailable in single-repo mode because the server is already bound to the only repository. See [Supplementary tools](#supplementary-tools).
 
 ---
 
@@ -70,9 +70,9 @@ Also always on by default: `list_repos` (repo aliases). See [Supplementary tools
 
 The default surface is deliberately small: fewer, richer tools mean fewer round-trips and less schema overhead per task. What a server advertises is resolved from three things: each tool's `default`/`requires_workspace` metadata, whether the server is in workspace mode, and an optional override.
 
-- **Default (single-repo):** 11 tools, the ten flagship tools plus `list_repos`.
-- **Default (workspace):** those 11 plus `get_architecture` and `get_blast_radius`, added automatically when the server starts inside a workspace. They are never advertised outside one.
-- **Opt-in tools:** `get_dependency_path`, `get_execution_flows`, `generate_refactoring_code`, and `get_conformance` are registered but off by default. Turn them on per repo; `get_conformance` only does useful work in workspace mode (name it there).
+- **Default (single-repo):** 10 tools, exactly the canonical intelligence set.
+- **Default (workspace):** those 10 plus `list_repos`, the workspace discovery utility.
+- **Opt-in tools:** `get_dependency_path`, `get_execution_flows`, and `generate_refactoring_code` are eligible in either mode. `get_architecture`, `get_blast_radius`, and `get_conformance` are workspace-only. All six are off by default.
 
 **Configure it in `.repowise/config.yaml`** under an `mcp.tools` key. Four shapes are supported:
 

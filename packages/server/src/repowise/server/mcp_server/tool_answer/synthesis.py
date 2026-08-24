@@ -13,6 +13,7 @@ import json as _json
 import logging
 import math
 import os
+import posixpath
 from pathlib import Path
 
 from repowise.core.reasoning import ReasoningMode, resolve_reasoning
@@ -46,6 +47,28 @@ def _hash_question(question: str) -> str:
     """Stable SHA-256 of the normalized question. Lowercase + strip + collapse ws."""
     norm = " ".join(question.lower().strip().split())
     return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+
+
+def _normalize_scope(scope: str | None) -> str | None:
+    """Canonical repo-relative scope used by retrieval and cache identity."""
+    if scope is None or not scope.strip():
+        return None
+    normalized = posixpath.normpath(scope.strip().replace("\\", "/"))
+    normalized = normalized.removeprefix("./").strip("/")
+    return normalized if normalized and normalized != "." else None
+
+
+def _hash_answer_identity(question: str, normalized_scope: str | None) -> str:
+    """Versioned answer-cache identity for one normalized question and scope."""
+    normalized_question = " ".join(question.lower().strip().split())
+    # JSON preserves the distinction between null and every possible scope
+    # string (including a literal "<unscoped>") without a sentinel collision.
+    identity = _json.dumps(
+        ["v2", normalized_question, normalized_scope],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
 def _resolve_reasoning_for_answer(repo_path: Path | None) -> ReasoningMode:

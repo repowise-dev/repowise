@@ -889,7 +889,7 @@ def _compute_kpis(
     }
 
 
-@mcp.tool()
+@mcp.tool(surface_order=90)
 async def get_health(
     targets: list[str] | None = None,
     include: list[str] | None = None,
@@ -1856,8 +1856,7 @@ async def get_health(
     ):
         result["_meta"]["truncated_to_fit"] = dropped
         result["_meta"]["truncated_recovery"] = (
-            "Response exceeded the MCP result cap. Re-request a single block with "
-            "only=[...] — each list's *_total says what was there."
+            "Over MCP result cap. Re-request only=[...] — each list's *_total says what was there."
         )
     # Server-side wall clock, as ``get_context`` already reports. Without it a
     # regression in here is invisible until someone profiles it by hand.
