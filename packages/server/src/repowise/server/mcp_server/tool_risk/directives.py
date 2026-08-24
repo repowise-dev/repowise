@@ -162,50 +162,102 @@ def _conformance_directive(repo_alias: str) -> tuple[list[dict[str, Any]], list[
     return violations, cycles
 
 
-def _cross_repo_directive(repo_alias: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _cross_repo_relationships(repo_alias: str) -> dict[str, Any]:
     """Cross-repo half of the PR directive: downstream services in other repos.
 
     Resolves the changed repo to its system-graph nodes and ranks reachable
-    services in OTHER repos by impact, splitting structural
-    (``will_break_consumers``) from behavioral co-change (``missing_cochanges``).
+    services in OTHER repos by impact, splitting structural reach (the legacy
+    ``will_break_consumers`` field) from behavioral co-change
+    (``missing_cochanges``). Structural reach is not runtime-breakage proof.
     Returns two empty lists when not in workspace mode or no system graph is
     available. Never raises.
     """
-    will_break_consumers: list[dict[str, Any]] = []
-    missing_cross_repo_cochanges: list[dict[str, Any]] = []
+    unavailable = {
+        "structural": [],
+        "structural_total": 0,
+        "historical": [],
+        "historical_total": 0,
+        "analysis": {"status": "unavailable", "reason": "system_graph_unavailable"},
+    }
     try:
         if not _is_workspace_mode():
-            return will_break_consumers, missing_cross_repo_cochanges
+            return unavailable
         enricher = _state._cross_repo_enricher
         raw_graph = enricher.get_system_graph() if enricher is not None else None
         if not raw_graph:
-            return will_break_consumers, missing_cross_repo_cochanges
+            return unavailable
 
         from repowise.core.workspace.blast_radius import cross_repo_blast_radius
         from repowise.core.workspace.system_graph import SystemGraph
 
+        structural: list[dict[str, Any]] = []
+        historical: list[dict[str, Any]] = []
         result = cross_repo_blast_radius(SystemGraph.from_dict(raw_graph), [repo_alias])
         for n in result.impacted:
             if n.repo == repo_alias:
                 continue  # cross-repo only — intra-repo impact is the single-repo blast
             if n.structural:
-                if len(will_break_consumers) < _XR_WILL_BREAK_LIMIT:
-                    will_break_consumers.append(
-                        {
-                            "repo": n.repo,
-                            "service": n.name,
-                            "distance": n.distance,
-                            "score": n.score,
-                            "via": n.edge_kinds,
-                        }
-                    )
-            elif len(missing_cross_repo_cochanges) < _XR_COCHANGE_LIMIT:
-                missing_cross_repo_cochanges.append(
-                    {"repo": n.repo, "service": n.name, "score": n.score}
+                structural.append(
+                    {
+                        "repo": n.repo,
+                        "service": n.name,
+                        "consumer_repository": n.repo,
+                        "dependency_repository": repo_alias,
+                        "distance": n.distance,
+                        "direct": n.distance == 1,
+                        "score": n.score,
+                        "via": n.edge_kinds,
+                        "relationship_type": "structural_dependency",
+                        "direction": "consumer_to_dependency",
+                        "evidence_kind": "structural",
+                        "claim": "structural_reach",
+                        "runtime_breakage_claim": False,
+                    }
                 )
+            else:
+                historical.append(
+                    {
+                        "repo": n.repo,
+                        "service": n.name,
+                        "source_repository": repo_alias,
+                        "target_repository": n.repo,
+                        "score": n.score,
+                        "relationship_type": "co_change",
+                        "direction": "undirected",
+                        "evidence_kind": "historical",
+                        "provenance": "workspace_system_graph",
+                    }
+                )
+        return {
+            "structural": structural[:_XR_WILL_BREAK_LIMIT],
+            "structural_total": len(structural),
+            "historical": historical[:_XR_COCHANGE_LIMIT],
+            "historical_total": len(historical),
+            "analysis": {
+                "status": "partial" if structural else "available",
+                "scope": "workspace_system_graph",
+                "evidence_resolution": "aggregated_path_edge_kinds",
+                "inference_detail": "unavailable",
+                "generated_at": raw_graph.get("generated_at"),
+                "repo_provenance": raw_graph.get("repo_provenance", {}),
+                "freshness": {
+                    "status": "unavailable",
+                    "reason": "live_repository_heads_not_compared",
+                },
+                **({"reason": "per_edge_match_provenance_not_retained"} if structural else {}),
+            },
+        }
     except Exception:
-        return [], []
-    return will_break_consumers, missing_cross_repo_cochanges
+        return {
+            **unavailable,
+            "analysis": {"status": "degraded", "reason": "analysis_failed"},
+        }
+
+
+def _cross_repo_directive(repo_alias: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Compatibility wrapper returning the two legacy directive lists."""
+    relationships = _cross_repo_relationships(repo_alias)
+    return relationships["structural"], relationships["historical"]
 
 
 def _trim_blast_lists(
@@ -235,6 +287,7 @@ def _trim_blast_lists(
         if exclude_spec:
             value = [e for e in value if not is_excluded(_as_path(e), exclude_spec)]
             trimmed_blast[key] = value
+        total = len(value)
         if len(value) > cap:
             trimmed_blast[key] = value[:cap]
             trimmed_blast[f"{key}_truncated_total"] = len(value)
@@ -243,6 +296,9 @@ def _trim_blast_lists(
                     f"pr_blast_radius.{key} beyond cap={cap} ({len(value) - cap} dropped)",
                     value[cap:],
                 )
+        trimmed_blast[f"{key}_total"] = total
+        trimmed_blast[f"{key}_emitted"] = len(trimmed_blast.get(key, []))
+        trimmed_blast[f"{key}_truncated"] = total > len(trimmed_blast.get(key, []))
     if trimmed_blast.get("overall_risk_score") is not None:
         trimmed_blast["overall_risk_score_measures"] = _OVERALL_SCORE_MEASURES
     return trimmed_blast
@@ -327,6 +383,10 @@ def _build_pr_directive(
                 f"{r.get('target')} :: co_change_partners beyond 3",
                 partners[3:],
             )
+        emitted = len(r.get("co_change_partners") or [])
+        total = r.get("co_change_partners_total", emitted)
+        r["co_change_partners_emitted"] = emitted
+        r["co_change_partners_truncated"] = emitted < total
 
     trimmed_blast = _trim_blast_lists(pr_blast_radius, exclude_spec, collector)
     response["pr_blast_radius"] = trimmed_blast
@@ -424,12 +484,18 @@ def _build_pr_directive(
     # (co-change only). Repo-scoped: it answers "can this PR's repo break
     # something across a repo boundary?" using the same reachability the map
     # and get_blast_radius use.
-    will_break_consumers, missing_cross_repo_cochanges = _cross_repo_directive(alias)
+    cross_repo_relationships = _cross_repo_relationships(alias)
+    will_break_consumers = cross_repo_relationships["structural"]
+    missing_cross_repo_cochanges = cross_repo_relationships["historical"]
+    will_break_total = cross_repo_relationships["structural_total"]
+    missing_cross_repo_total = cross_repo_relationships["historical_total"]
     xr_suffix = ""
     if will_break_consumers or missing_cross_repo_cochanges:
         xr_suffix = (
-            f" Cross-repo: {len(will_break_consumers)} consumer service(s) may break, "
-            f"{len(missing_cross_repo_cochanges)} cross-repo co-changer(s) missing."
+            f" Cross-repo: showing {len(will_break_consumers)} of {will_break_total} "
+            f"consumer service(s) in structural reach, showing "
+            f"{len(missing_cross_repo_cochanges)} of {missing_cross_repo_total} "
+            f"cross-repo co-changer(s) missing."
         )
 
     # Breaking-change guard — incompatible provider changes (removed route /
@@ -466,7 +532,18 @@ def _build_pr_directive(
         "tests_to_run": tests_to_run,
         "tests_to_run_basis": tests_to_run_basis,
         "will_break_consumers": will_break_consumers,
+        "will_break_consumers_semantics": "structural_reach_only",
+        "will_break_consumers_deprecated": True,
+        "will_break_consumers_total": will_break_total,
+        "will_break_consumers_emitted": len(will_break_consumers),
+        "will_break_consumers_truncated": len(will_break_consumers) < will_break_total,
         "missing_cross_repo_cochanges": missing_cross_repo_cochanges,
+        "missing_cross_repo_cochanges_total": missing_cross_repo_total,
+        "missing_cross_repo_cochanges_emitted": len(missing_cross_repo_cochanges),
+        "missing_cross_repo_cochanges_truncated": (
+            len(missing_cross_repo_cochanges) < missing_cross_repo_total
+        ),
+        "cross_repo_relationship_analysis": cross_repo_relationships["analysis"],
         "breaking_changes": breaking_changes,
         "breaking_changes_truncated": breaking_changes_dropped,
         "conformance_violations": conformance_violations,

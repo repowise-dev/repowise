@@ -6,7 +6,7 @@ import asyncio
 
 from sqlalchemy import select
 
-from repowise.core.ingestion.models import NON_DEPENDENCY_EDGE_TYPES
+from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     GitMetadata,
@@ -30,7 +30,7 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 
 from .assessment import _assess_one_target, _get_active_contributor_count, fix_annotation
 from .directives import _build_pr_directive, _governance_directive
-from .enrichment import _enrich_cross_repo, _enrich_health, _finalize_dep_summaries
+from .enrichment import _enrich_cross_repo, _enrich_health
 
 # Cheapest loss first; the target cards and the directive are never shed.
 # ``guarding_tests`` leads the dossier: _trim_blast_lists leaves it uncapped.
@@ -45,7 +45,27 @@ _SHED_ORDER: tuple[str, ...] = (
 #: labels derived from numbers already printed beside them. Computed either way
 #: (``risk_summary`` reads them); ``include`` only decides whether they ship.
 _TARGET_CARD_INCLUDES: dict[str, tuple[str, ...]] = {
-    "graph": ("impact_surface",),
+    "graph": (
+        "impact_surface",
+        "impact_surface_total",
+        "impact_surface_emitted",
+        "impact_surface_truncated",
+        "dependents",
+        "dependents_total",
+        "dependents_emitted",
+        "dependents_truncated",
+        "direct_dependents_total",
+        "transitive_dependents_total",
+        "consumers",
+        "consumers_total",
+        "consumers_emitted",
+        "consumers_truncated",
+        "cross_repo_links",
+        "cross_repo_links_total",
+        "cross_repo_links_emitted",
+        "cross_repo_links_truncated",
+        "relationship_analysis",
+    ),
     "churn": ("change_magnitude", "risk_type", "change_pattern"),
 }
 _BLAST_INCLUDES: dict[str, tuple[str, ...]] = {"graph": ("direct_risks",)}
@@ -75,8 +95,11 @@ async def get_risk(
     """What history says about touching these files — bug fixes, churn, owners.
 
     Fuses git temporal signals (``hotspot_score``/``owner_pct`` are 0-1; trend;
-    bus factor) with graph topology (dependents, co-changes, impact surface)
-    and security findings. Consult before editing a bug-fixed or busy file. Pass
+    bus factor) with graph topology. ``dependents`` are directed structural
+    reach (source depends on target), ``consumers`` require typed contract links,
+    and ``co_change_partners`` are historical correlation only. Structural reach
+    is not proof of runtime breakage. The response also includes security
+    findings. Consult before editing a bug-fixed or busy file. Pass
     changed_files for PR mode: the response leads with a directive block
     (may_break, missing_cochanges, missing_tests, tests_to_run) — read it
     first. tests_to_run_basis backs the run-list: measured (a coverage map
@@ -84,12 +107,8 @@ async def get_risk(
     graph shows reaching them; candidates, no ingest needed). To score a commit
     or ``base..head`` range instead, use ``get_change_risk``.
 
-    defect_profile appears only on files with counted bug fixes: how many landed
-    in the trailing 6 months, how long ago the last one was, a bug_magnet flag
-    for sustained recent fix pressure, and top_symbols. Read top_symbols as
-    "mostly here" rather than exact — symbol spans are current-tree while each
-    fix's line ranges are numbered on its own parent commit. Nothing names the
-    commit that introduced a bug.
+    defect_profile appears only with counted fixes; top_symbols is approximate
+    attribution, and nothing names a bug-inducing commit.
 
     episodes counts the dated records bound to a target — what happened here and
     why, evidenced by a commit or a filesystem fact. It appears only when there
@@ -119,6 +138,14 @@ async def get_risk(
         repository = await _get_repo(session)
         repo_id = repository.id
 
+        # File-node endpoints and the positive dependency vocabulary are both
+        # required: an untyped or symbol edge must not become a file dependent.
+        node_res = await session.execute(
+            select(GraphNode).where(GraphNode.repository_id == repo_id)
+        )
+        node_meta = {n.node_id: n for n in node_res.scalars().all()}
+        file_node_ids = {node_id for node_id, node in node_meta.items() if node.node_type == "file"}
+
         # Pre-load edges. Dependency edges only: everything below reads these as
         # "X depends on Y", and the graph also carries containment and co-change
         # edges. Leaving co_changes in made the relation circular: a co-change
@@ -128,24 +155,29 @@ async def get_risk(
         res = await session.execute(
             select(GraphEdge).where(
                 GraphEdge.repository_id == repo_id,
-                GraphEdge.edge_type.notin_(NON_DEPENDENCY_EDGE_TYPES),
+                GraphEdge.edge_type.in_(FILE_DEPENDENCY_EDGE_TYPES),
+                GraphEdge.source_node_id.in_(file_node_ids),
+                GraphEdge.target_node_id.in_(file_node_ids),
             )
         )
         all_edges = res.scalars().all()
-        dep_counts: dict[str, int] = {}
-        import_links: dict[str, set[str]] = {}
-        reverse_deps: dict[str, set[str]] = {}  # target -> set of importers
+        import_links: dict[str, dict[str, set[str]]] = {}
+        reverse_deps: dict[str, dict[str, set[str]]] = {}
         for e in all_edges:
-            dep_counts[e.target_node_id] = dep_counts.get(e.target_node_id, 0) + 1
-            import_links.setdefault(e.source_node_id, set()).add(e.target_node_id)
-            import_links.setdefault(e.target_node_id, set()).add(e.source_node_id)
-            reverse_deps.setdefault(e.target_node_id, set()).add(e.source_node_id)
+            edge_type = str(e.edge_type)
+            import_links.setdefault(e.source_node_id, {}).setdefault(e.target_node_id, set()).add(
+                edge_type
+            )
+            import_links.setdefault(e.target_node_id, {}).setdefault(e.source_node_id, set()).add(
+                edge_type
+            )
+            reverse_deps.setdefault(e.target_node_id, {}).setdefault(e.source_node_id, set()).add(
+                edge_type
+            )
+        # Count unique incoming dependent nodes, not parallel edge rows. A file
+        # with both an import and a type-use edge is still one direct dependent.
+        dep_counts = {target: len(sources) for target, sources in reverse_deps.items()}
 
-        # Pre-load graph nodes for pagerank / impact surface
-        node_res = await session.execute(
-            select(GraphNode).where(GraphNode.repository_id == repo_id)
-        )
-        node_meta = {n.node_id: n for n in node_res.scalars().all()}
         test_paths = {nid for nid, n in node_meta.items() if n.is_test}
 
         # Team size is repo-wide — compute once, share across targets
@@ -220,14 +252,10 @@ async def get_risk(
             from repowise.core.analysis.pr_blast import PRBlastRadiusAnalyzer
 
             analyzer = PRBlastRadiusAnalyzer(session, repo_id)
-            pr_blast_radius = await analyzer.analyze_files(changed_files)
+            pr_blast_radius = await analyzer.analyze_files(changed_files, exclude_spec=exclude_spec)
 
     # Cross-repo blast radius enrichment (Phase 3 + 4)
     await _enrich_cross_repo(results, ctx.alias)
-
-    # Final risk_summary rebuild for any remaining dependents_count updates
-    # (e.g. contract provider links) and cleanup of internal keys.
-    _finalize_dep_summaries(results)
 
     # ---- Code-health enrichment --------------------------------------------
     # Attach per-file health_score + top_biomarkers (up to 3) drawn from the
@@ -246,6 +274,7 @@ async def get_risk(
 
     collector = OmissionCollector("get_risk", repo_root=ctx.path)
     if pr_blast_radius is not None:
+        assert changed_files is not None
         # Governance risk — bounded query over changed_files (small set).
         governance_risk = await _governance_directive(ctx, changed_files)
         _build_pr_directive(

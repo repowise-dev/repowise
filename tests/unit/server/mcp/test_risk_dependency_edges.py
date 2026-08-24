@@ -90,6 +90,35 @@ async def test_co_change_partner_is_not_blast_radius(setup_mcp, factory):
 
 
 @pytest.mark.asyncio
+async def test_pr_relationship_rows_are_typed_and_totals_match(setup_mcp, factory):
+    from repowise.server.mcp_server import get_risk
+
+    await _add_doc_co_change(factory, setup_mcp)
+    result = await get_risk([_TARGET], changed_files=[_TARGET])
+    blast = result["pr_blast_radius"]
+
+    assert blast["transitive_affected_total"] >= len(blast["transitive_affected"])
+    assert blast["transitive_affected_emitted"] == len(blast["transitive_affected"])
+    assert blast["transitive_affected_truncated"] is (
+        blast["transitive_affected_total"] > blast["transitive_affected_emitted"]
+    )
+    assert all(
+        row["evidence_kind"] == "structural"
+        and row["claim"] == "structural_reach"
+        and row["runtime_breakage_claim"] is False
+        for row in blast["transitive_affected"]
+    )
+
+    warning = next(row for row in blast["cochange_warnings"] if row["missing_partner"] == _DOC)
+    assert warning["relationship_type"] == "co_change"
+    assert warning["evidence_kind"] == "historical"
+    assert warning["direction"] == "undirected"
+    assert warning["provenance"] == "git_history"
+    assert blast["cochange_warnings_total"] >= blast["cochange_warnings_emitted"]
+    assert blast["cochange_warnings_emitted"] == len(blast["cochange_warnings"])
+
+
+@pytest.mark.asyncio
 async def test_containment_edges_are_not_dependents(setup_mcp, factory):
     from repowise.server.mcp_server import get_risk
 

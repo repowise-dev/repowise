@@ -24,7 +24,8 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.ingestion.models import NON_DEPENDENCY_EDGE_TYPES
+from repowise.core.exclusion import is_excluded
+from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.models import GitMetadata, GraphNode
 
 
@@ -90,6 +91,7 @@ class PRBlastRadiusAnalyzer:
         self,
         changed_files: list[str],
         max_depth: int = 3,
+        exclude_spec: Any = None,
     ) -> dict:
         """Return full blast-radius analysis for the given changed files.
 
@@ -106,7 +108,9 @@ class PRBlastRadiusAnalyzer:
         direct_risks = await self._score_files(changed_files)
 
         # 2. Transitive affected files
-        transitive_affected = await self._transitive_affected(changed_files, max_depth)
+        transitive_affected = await self._transitive_affected(
+            changed_files, max_depth, exclude_spec
+        )
         # Sorted, because this list is cut before it is shown. ``test_gaps``
         # preserves this order and ``get_risk``'s PR directive renders three of
         # it as ``missing_tests``, the third line an agent is told to read.
@@ -169,7 +173,7 @@ class PRBlastRadiusAnalyzer:
         )
         node_by_path: dict[str, Any] = {n.node_id: n for n in node_res.scalars().all()}
 
-        results = []
+        results: list[dict[str, Any]] = []
         for path in paths:
             meta = meta_by_path.get(path)
             node = node_by_path.get(path)
@@ -185,7 +189,7 @@ class PRBlastRadiusAnalyzer:
                 }
             )
 
-        results.sort(key=lambda x: -x["risk_score"])
+        results.sort(key=lambda x: -float(x["risk_score"]))
         return results
 
     @staticmethod
@@ -193,7 +197,9 @@ class PRBlastRadiusAnalyzer:
         """Compute file-level risk: centrality * (1 + temporal_hotspot_score)."""
         return centrality * (1.0 + temporal_hotspot_score)
 
-    async def _transitive_affected(self, changed_files: list[str], max_depth: int) -> list[dict]:
+    async def _transitive_affected(
+        self, changed_files: list[str], max_depth: int, exclude_spec: Any = None
+    ) -> list[dict]:
         """BFS over reverse graph edges (source_node_id -> target_node_id direction).
 
         We want files that *import* the changed files (i.e. are affected when a
@@ -227,22 +233,30 @@ class PRBlastRadiusAnalyzer:
                 break
             # SQLite / SQLAlchemy compatible IN query via text()
             placeholders = ",".join(f":p{i}" for i in range(len(frontier)))
-            excluded = ",".join(f":e{i}" for i in range(len(NON_DEPENDENCY_EDGE_TYPES)))
+            allowed = ",".join(f":e{i}" for i in range(len(FILE_DEPENDENCY_EDGE_TYPES)))
             params: dict[str, Any] = {"repo_id": self._repo_id}
             params.update({f"p{i}": v for i, v in enumerate(frontier)})
-            params.update({f"e{i}": v for i, v in enumerate(sorted(NON_DEPENDENCY_EDGE_TYPES))})
+            params.update({f"e{i}": v for i, v in enumerate(sorted(FILE_DEPENDENCY_EDGE_TYPES))})
             rows = await self._session.execute(
                 text(
-                    f"SELECT DISTINCT source_node_id FROM graph_edges "
-                    f"WHERE repository_id = :repo_id "
-                    f"AND target_node_id IN ({placeholders}) "
-                    f"AND edge_type NOT IN ({excluded})"
+                    f"SELECT DISTINCT e.source_node_id FROM graph_edges e "
+                    f"JOIN graph_nodes source ON source.repository_id = e.repository_id "
+                    f"AND source.node_id = e.source_node_id AND source.node_type = 'file' "
+                    f"JOIN graph_nodes target ON target.repository_id = e.repository_id "
+                    f"AND target.node_id = e.target_node_id AND target.node_type = 'file' "
+                    f"WHERE e.repository_id = :repo_id "
+                    f"AND e.target_node_id IN ({placeholders}) "
+                    f"AND e.edge_type IN ({allowed})"
                 ),
                 params,
             )
             next_frontier = []
             for (src,) in rows:
-                if src not in visited and src not in set(changed_files):
+                if (
+                    src not in visited
+                    and src not in set(changed_files)
+                    and not is_excluded(src, exclude_spec)
+                ):
                     visited[src] = depth
                     next_frontier.append(src)
             frontier = next_frontier
@@ -250,7 +264,16 @@ class PRBlastRadiusAnalyzer:
         # Depth first, then path: a sort on depth alone is stable, so files
         # sharing a depth kept the row order the query happened to return.
         return [
-            {"path": p, "depth": d}
+            {
+                "path": p,
+                "depth": d,
+                "distance": d,
+                "direct": d == 1,
+                "direction": "dependent_to_dependency",
+                "evidence_kind": "structural",
+                "claim": "structural_reach",
+                "runtime_breakage_claim": False,
+            }
             for p, d in sorted(visited.items(), key=lambda item: (item[1], item[0]))
         ]
 
@@ -280,6 +303,15 @@ class PRBlastRadiusAnalyzer:
                             "changed": meta.file_path,
                             "missing_partner": partner_path,
                             "score": score,
+                            "relationship_type": "co_change",
+                            "direction": "undirected",
+                            "evidence_kind": "historical",
+                            "provenance": "git_history",
+                            **(
+                                {"support": partner["frequency"]}
+                                if partner.get("frequency") is not None
+                                else {}
+                            ),
                         }
                     )
 
@@ -305,7 +337,7 @@ class PRBlastRadiusAnalyzer:
             if email:
                 owner_files[email].append(pct)
 
-        reviewers = [
+        reviewers: list[dict[str, Any]] = [
             {
                 "email": email,
                 "files": len(pcts),
@@ -313,7 +345,7 @@ class PRBlastRadiusAnalyzer:
             }
             for email, pcts in owner_files.items()
         ]
-        reviewers.sort(key=lambda x: (-x["files"], -x["ownership_pct"]))
+        reviewers.sort(key=lambda x: (-int(x["files"]), -float(x["ownership_pct"])))
         return reviewers[:5]
 
     async def _find_test_gaps(self, affected_files: list[str]) -> list[str]:

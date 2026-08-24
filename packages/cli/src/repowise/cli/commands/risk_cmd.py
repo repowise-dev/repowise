@@ -213,7 +213,7 @@ def _render_card(name: str, card: dict) -> None:
     trend = card.get("trend") or "unknown"
     console.print(
         f"  [dim]hotspot {float(card.get('hotspot_score') or 0.0):.0%} ({trend}) · "
-        f"{card.get('dependents_count', 0)} dependents · "
+        f"{card.get('dependents_count', 0)} direct dependents · "
         f"{card.get('risk_type', 'unknown')} · owned "
         f"{_ta.owner_share(card.get('owner_pct'))} by "
         f"{escape(str(card.get('primary_owner') or 'unknown'))}[/dim]"
@@ -262,11 +262,17 @@ def _render_card(name: str, card: dict) -> None:
     cross = card.get("cross_repo_impact") or {}
     if cross:
         repos = cross.get("affected_repos") or []
-        consumers = cross.get("cross_repo_consumers") or []
+        historical = cross.get("cross_repo_consumers") or []
         contracts = cross.get("contract_consumers") or []
         console.print(
-            f"  [bold]Crosses repo boundaries[/bold] [dim]{len(consumers)} consumer(s)"
-            + (f", {len(contracts)} contract link(s)" if contracts else "")
+            "  [bold]Crosses repo boundaries[/bold] [dim]"
+            f"{cross.get('cross_repo_consumers_total', len(historical))} historical co-change(s)"
+            + (
+                f", {cross.get('contract_consumers_total', len(contracts))} "
+                "typed contract consumer(s)"
+                if contracts
+                else ""
+            )
             + (f" in {', '.join(str(r) for r in repos)}" if repos else "")
             + "[/dim]"
         )
@@ -297,13 +303,13 @@ def _render_card(name: str, card: dict) -> None:
     if partners:
         console.print("  [bold]Co-changes with[/bold]")
         for p in partners[:8]:
-            link = " [dim](imports)[/dim]" if p.get("has_import_link") else ""
+            link = " [dim](also imports)[/dim]" if p.get("has_import_link") else ""
             # A recency-decayed weight rather than a raw tally, so it is not an
             # integer; ``:g`` keeps a whole number whole and trims the rest.
             weight = p.get("weight", 0)
-            shown = f"{float(weight):.1f}".rstrip("0").rstrip(".") if weight else "0"
+            weight_text = f"{float(weight):.1f}".rstrip("0").rstrip(".") if weight else "0"
             console.print(
-                f"    {escape(str(p.get('file_path', '')))} [dim]x{shown}[/dim]{link}"
+                f"    {escape(str(p.get('file_path', '')))} [dim]x{weight_text}[/dim]{link}"
             )
         if len(partners) > 8:
             console.print(f"    [dim]… and {len(partners) - 8} more (--format json).[/dim]")
@@ -328,7 +334,7 @@ def _print_list(label: str, values: list[str], *, indent: str = "  ") -> None:
 #: four printed as raw Python dict reprs. Each formatter is written against
 #: that module's construction site.
 _DIRECTIVE_RECORD_BLOCKS = (
-    ("Consumers that may break", "will_break_consumers"),
+    ("Consumer structural reach", "will_break_consumers"),
     ("Missing cross-repo co-changes", "missing_cross_repo_cochanges"),
     ("Breaking contract changes", "breaking_changes"),
     ("Conformance violations", "conformance_violations"),
