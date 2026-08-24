@@ -6,9 +6,16 @@
  * Both backends produce the same shape; this is the canonical TS contract.
  */
 
+import type {
+  RiskCompatibilityField,
+  RiskScalarSemantics,
+} from "./risk-semantics.js";
+
 export interface DirectRiskEntry {
   path: string;
-  /** centrality * (1 + temporal_hotspot); unbounded, compare within a change set. */
+  /** Raw unbounded structural heuristic; compare only within this change set. */
+  structural_score: number;
+  /** @deprecated Exact alias of structural_score for older clients. */
   risk_score: number;
   /** 0-1 normalised. */
   temporal_hotspot: number;
@@ -119,8 +126,13 @@ export interface BlastRadiusResponse {
   test_gaps: string[];
   /** Canonical typed test-impact population. Optional for older servers. */
   test_impact?: TestImpactResponse;
-  /** 0–10. */
+  /** Deterministic, uncalibrated structural-impact heuristic, 0–10. */
+  structural_impact_score: number;
+  structural_impact_band: "localized" | "moderate" | "broad";
+  structural_impact_scale: RiskScalarSemantics;
+  /** @deprecated Exact alias of structural_impact_score; not a probability. */
   overall_risk_score: number;
+  overall_risk_score_compatibility: RiskCompatibilityField;
 }
 
 export interface BlastRadiusRequest {

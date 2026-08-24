@@ -9,7 +9,16 @@ diffs, and only approach 10 asymptotically.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from repowise.core.analysis.pr_blast import PRBlastRadiusAnalyzer
+from repowise.core.analysis.risk_semantics import (
+    structural_impact_band,
+    structural_impact_contract,
+)
+
+_CORPUS = Path(__file__).parents[2] / "fixtures" / "risk_scale_corpus.json"
 
 
 def _direct(*scores: float) -> list[dict]:
@@ -63,3 +72,65 @@ class TestOverallRiskCalibration:
             _direct(5.0, 5.0, 5.0), _transitive(500)
         )
         assert score <= 10.0
+
+
+def test_deterministic_corpus_preserves_separation_without_ordinary_saturation() -> None:
+    fixtures = json.loads(_CORPUS.read_text(encoding="utf-8"))
+    scored: dict[str, float] = {}
+    for fixture in fixtures:
+        score = PRBlastRadiusAnalyzer._compute_overall_risk(
+            _direct(*fixture["direct_scores"]),
+            _transitive(fixture["transitive_dependents"]),
+        )
+        scored[fixture["name"]] = score
+        assert structural_impact_band(score) == fixture["expected_band"]
+
+    ordinary = [
+        score
+        for name, score in scored.items()
+        if name
+        in {
+            "documentation_low_signal",
+            "small_ordinary_source",
+            "historical_fix_limited_reach",
+            "cochange_only_relationship",
+        }
+    ]
+    assert max(ordinary) < 4.0
+    assert all(score < 10.0 for score in scored.values())
+    assert scored["documentation_low_signal"] < scored["moderate_multi_file"]
+    assert scored["moderate_multi_file"] < scored["structurally_broad_low_history"]
+    assert scored["structurally_broad_low_history"] < scored["genuinely_broad_high_control"]
+
+
+def test_historical_evidence_does_not_change_structural_impact_score() -> None:
+    fixtures = {item["name"]: item for item in json.loads(_CORPUS.read_text(encoding="utf-8"))}
+    ordinary = fixtures["small_ordinary_source"]
+    historical = fixtures["historical_fix_limited_reach"]
+    assert ordinary["direct_scores"] == historical["direct_scores"]
+    assert ordinary["transitive_dependents"] == historical["transitive_dependents"]
+    assert ordinary["historical_fix_evidence"] is False
+    assert historical["historical_fix_evidence"] is True
+    assert PRBlastRadiusAnalyzer._compute_overall_risk(
+        _direct(*ordinary["direct_scores"]), _transitive(ordinary["transitive_dependents"])
+    ) == PRBlastRadiusAnalyzer._compute_overall_risk(
+        _direct(*historical["direct_scores"]), _transitive(historical["transitive_dependents"])
+    )
+
+
+def test_structural_contract_is_typed_and_legacy_alias_cannot_contradict() -> None:
+    contract = structural_impact_contract(6.25)
+    assert contract["structural_impact_score"] == contract["overall_risk_score"] == 6.25
+    assert contract["structural_impact_band"] == "moderate"
+    scale = contract["structural_impact_scale"]
+    assert scale["unit"] == "normalized_points"
+    assert scale["calibration"]["status"] == "uncalibrated"
+    assert scale["runtime_breakage_probability"] is False
+    assert scale["authoritative_for_change_review"] is False
+    direct_alias = scale["component_fields"]["direct_risks.risk_score"]
+    assert direct_alias["deprecated"] is True
+    assert direct_alias["replacement"] == "direct_risks.structural_score"
+    assert direct_alias["equivalent_value"] is True
+    assert contract["overall_risk_score_compatibility"]["replacement"] == (
+        "structural_impact_score"
+    )

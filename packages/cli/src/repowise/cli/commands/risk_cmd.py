@@ -4,7 +4,8 @@ Two questions, one command, because they are the same question asked of
 different subjects.
 
 A REVSPEC scores a *change* from its diff shape — size, diffusion, author
-familiarity — and prints a 0-10 risk with an attributable breakdown. Runs
+familiarity — and prints a benchmarked review priority plus a supporting 0-10
+diff-shape score with an attributable breakdown. Runs
 in-process: pure git + learned constants, no LLM, no network. A natural
 pre-merge / PR gate, complementary to ``repowise health`` (which scores files).
 
@@ -39,9 +40,9 @@ from repowise.core.analysis.change_risk import (
 )
 
 _PRIORITY_LEAD = {
-    "low": "Lower risk than a typical commit in this repo",
-    "moderate": "About as risky as a typical commit in this repo",
-    "high": "Riskier than most commits in this repo",
+    "low": "Smaller or more focused than a typical commit in this repo",
+    "moderate": "Typical diff size and spread for this repo",
+    "high": "Larger or more dispersed than most commits in this repo",
 }
 
 
@@ -88,7 +89,7 @@ def project_risk(payload: dict) -> dict:
     out["targets"] = {
         name: _project_target(card) for name, card in (payload.get("targets") or {}).items()
     }
-    for key in ("pr_blast_radius", "global_hotspots", "omission_marker"):
+    for key in ("risk_scales", "pr_blast_radius", "global_hotspots", "omission_marker"):
         if payload.get(key):
             out[key] = payload[key]
     note = _ta.index_note(payload)
@@ -411,7 +412,7 @@ def _ordinal(n: int) -> str:
     default=200,
     type=click.IntRange(min=0),
     help="Sample this many recent commits to rank the change within the repo "
-    "(0 disables; shows only the absolute calibrated band).",
+    "(0 disables; shows only the absolute per-commit model-score band).",
 )
 @click.option(
     "--exclude",
@@ -436,7 +437,7 @@ def _ordinal(n: int) -> str:
     multiple=True,
     metavar="PATH",
     help="With --target: PR mode. The response leads with a directive naming "
-    "what may break, which co-changes and tests are missing, and what to run.",
+    "structural review candidates, missing co-changes/tests, and what to run.",
 )
 @format_option()
 @full_option()
@@ -451,7 +452,7 @@ def risk_command(
     fmt: str,
     full: bool,
 ) -> None:
-    """Score the defect risk of a change, or of touching some files.
+    """Assess a change's review priority, or the history of named files.
 
     With no --target this scores REVSPEC (a commit, or a ``base..head``
     range) from its diff. Omit REVSPEC to score your uncommitted work, or
@@ -503,8 +504,23 @@ def risk_command(
         click.echo(json.dumps(change_risk_payload(result), indent=2))
         return
 
-    # The headline is the fix record, not the score: the score restates diff
-    # size, so leading with it put the least informative number first.
+    # Lead with the benchmarked population-relative authority. Without a usable
+    # baseline, label the offline absolute band explicitly as the fallback.
+    if percentile is not None and priority is not None:
+        console.print(
+            f"\n[bold]Benchmarked review priority[/bold]: "
+            f"{review_priority_classification(priority)} · "
+            f"{_ordinal(round(percentile))} percentile of recent commits by size and spread"
+        )
+        console.print(f"  [dim]{_PRIORITY_LEAD[priority]}.[/dim]")
+    else:
+        color = {"high": "red", "moderate": "yellow", "low": "green"}[risk.level]
+        console.print(
+            f"\n[bold]Absolute fallback band[/bold]: [{color}]{risk.level}[/{color}] "
+            "(absolute per-commit band — no repo baseline to rank against)"
+        )
+
+    # Fix history remains separate evidence about where the change lands.
     if not result.fix_history_available:
         console.print(
             f"\n[bold]Change risk[/bold] for [cyan]{features.ref}[/cyan]: "
@@ -552,22 +568,6 @@ def risk_command(
             "one from a year earlier counts a half.[/dim]"
         )
 
-    # Diff shape second, and labelled for what it measures rather than as a
-    # verdict. The absolute band appears only when no percentile outranks it.
-    if percentile is not None and priority is not None:
-        console.print(
-            f"\n[bold]Diff shape[/bold]: {review_priority_classification(priority)} · "
-            f"{_ordinal(round(percentile))} percentile of recent commits by size and spread"
-        )
-        console.print(f"  [dim]{_PRIORITY_LEAD[priority]}.[/dim]")
-    else:
-        # No usable baseline (shallow repo, --baseline 0): fall back to the
-        # absolute calibrated band, labelled honestly as such.
-        color = {"high": "red", "moderate": "yellow", "low": "green"}[risk.level]
-        console.print(
-            f"\n[bold]Diff shape[/bold]: [{color}]{risk.level}[/{color}] "
-            "(absolute per-commit band — no repo baseline to rank against)"
-        )
     console.print(
         f"  [dim]Diff-size score: {risk.score:.1f}/10 — how big and spread out the change is, "
         f"not where it lands. Corpus-anchored to a single commit.[/dim]"

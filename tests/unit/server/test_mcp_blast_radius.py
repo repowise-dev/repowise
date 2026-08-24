@@ -119,6 +119,11 @@ async def test_changing_provider_impacts_consumer(workspace_state):
     assert "frontend" in result["impacted_repos"]
     assert "backend" in result["targets"]
     assert "downstream service" in result["summary"]
+    semantics = result["impact_score_semantics"]
+    assert semantics["field"] == "impacted[].score"
+    assert semantics["unit"] == "relative_weight"
+    assert semantics["calibration"]["status"] == "uncalibrated"
+    assert semantics["runtime_breakage_probability"] is False
 
 
 @pytest.mark.asyncio

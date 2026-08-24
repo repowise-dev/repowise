@@ -118,7 +118,7 @@ _TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "get_change_risk",
-        "description": "Score the defect risk of a live commit or branch range from diff size, diffusion, and author familiarity. Use for pre-merge ranking; use get_risk for per-file history and blast radius.",
+        "description": "Rank a live commit or branch range against recent repository changes. The percentile/classification is authoritative; the 0-10 diff-shape score is supporting, not a probability. Use get_risk for indexed file history and structural reach.",
         "parameters": {
             "type": "object",
             "properties": {

@@ -6,6 +6,7 @@ import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from ..risk_semantics import change_risk_authority, change_risk_scales
 from .baseline import BaselineSample, baseline_samples_cached, densities_excluding, scores_excluding
 from .features import (
     GIT_TIMEOUT_SECONDS,
@@ -235,7 +236,7 @@ def change_risk_payload(result: ChangeRiskResult) -> dict:
     a file that keeps breaking from a bulk rename of files that never have.
     ``score`` and ``risk_percentile`` describe the *shape* of the diff and are
     kept for continuity, labelled for what they measure — see ``score_measures``.
-    ``fallback_band`` is the absolute calibrated band, non-null only when there
+    ``fallback_band`` is the absolute model-score band, non-null only when there
     was no baseline to rank against. ``score_unit`` names the unit that band
     assumes.
     """
@@ -252,6 +253,8 @@ def change_risk_payload(result: ChangeRiskResult) -> dict:
                 for path, churn, pressure in result.hot_files
             ],
         },
+        "risk_authority": change_risk_authority(),
+        "risk_scales": change_risk_scales(),
         "score": risk.score,
         "score_measures": SCORE_MEASURES,
         "score_unit": SCORE_UNIT,

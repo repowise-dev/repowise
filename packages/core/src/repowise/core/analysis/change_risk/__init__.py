@@ -1,10 +1,10 @@
 """Just-in-time change-risk scoring.
 
-Scores a *change* (a commit or a ``base..head`` range) for defect risk from its
-diff shape — size, diffusion, authorship — using a linear, interpretable model
-with offline-calibrated constants. Complements the file-level health score: it
-is not size-dominated, so it flags risky *small* changes the file delta misses,
-and is a natural pre-merge / PR gate.
+Assesses a *change* (a commit or a ``base..head`` range) from its diff shape —
+size, diffusion, and authorship — using a linear, interpretable model with
+offline-calibrated constants. The repo-relative percentile/classification is
+the review authority; the 0-10 model output is a supporting diff-shape signal,
+not a probability. Complements the indexed file-health score.
 """
 
 from __future__ import annotations

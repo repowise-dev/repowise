@@ -87,15 +87,15 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
     ),
     "get_risk": (
         "get_risk(targets, changed_files?, include?)",
-        "Call before editing for file history and blast radius. PR mode "
-        "(`changed_files`) leads with `directive`; read typed "
-        "`test_recommendations` and coverage state first.",
+        "File history and structural reach. PR mode leads with `directive`; its "
+        "0-10 structural heuristic is uncalibrated, not a probability. Read typed "
+        "test recommendations and coverage state first.",
     ),
     "get_change_risk": (
         "get_change_risk(revspec?, extensions?, exclude_patterns?)",
-        "Defect score for a whole commit or `base..head` range, from its diff on the "
-        "live checkout. Lead with `fix_history`. Scores a range; `get_risk` "
-        "scores paths.",
+        "Deterministic live-diff review signal for a commit or range. Lead with "
+        "benchmarked percentile/classification; the 0-10 diff-shape score is "
+        "supporting, not a probability. `get_risk` scores paths.",
     ),
     "get_health": (
         "get_health(targets?, include?)",

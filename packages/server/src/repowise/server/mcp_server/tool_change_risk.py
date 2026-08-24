@@ -70,23 +70,20 @@ async def get_change_risk(
     For a pre-merge read on a commit or PR range; ``get_risk`` scores indexed
     files instead. The filters also apply to the percentile baseline.
 
-    Lead with ``fix_history``: the recency-weighted bug-fix record of the
-    touched files, ``files`` naming where the pressure sits. It separates a
-    surgical edit to a bug magnet from a bulk rename. ``score`` measures diff
-    size and spread, not where the change lands (see ``score_measures``),
-    calibrated per commit; ``risk_percentile`` ranks that shape against recent
-    commits.
+    ``risk_authority`` states that ``risk_percentile`` + ``classification`` are
+    the benchmarked change-review authority and ``fallback_band`` is the
+    explicit absolute fallback when no baseline is available. ``score`` is a
+    supporting 0-10 calibrated model score for diff size and spread, not a
+    probability or a measure of where the change lands. ``risk_scales`` gives
+    every scalar's units, range, calibration, and role. ``fix_history`` then
+    names the recency-weighted bug-fix record of the touched files.
 
-    ``impacted_tests.tests_to_run`` names the tests to run; ``line_coverage``
-    the uncovered lines. ``basis``: ``measured`` = a coverage map proves those
-    tests run the changed *lines*; ``inferred`` = test files the graph shows
-    reaching it (file-level candidates). No map is never "untested":
-    ``no_map`` means run the suite. On ``truncated``, expand
-    ``omission_marker`` for the tail. ``prior_fixes``
-    counts past fixes whose lines overlap this diff.
+    ``impacted_tests`` keeps measured coverage and inferred graph candidates
+    distinct, labels unavailable analysis, and exposes truncation metadata.
+    ``prior_fixes`` counts past fixes whose lines overlap this diff.
 
-    ``cross_repo`` (workspace mode) names other repos' consumers of the changed
-    files and what broke, as of the last workspace update.
+    ``cross_repo`` names typed consumers and contract breaks from the last
+    workspace update.
 
     Args:
         revspec: Commit or ``base..head`` range to score. Omit it to score the

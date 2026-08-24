@@ -6,6 +6,7 @@ import asyncio
 
 from sqlalchemy import select
 
+from repowise.core.analysis.risk_semantics import file_risk_scales
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -108,13 +109,14 @@ async def get_risk(
     availability and freshness are explicit. To score a commit
     or ``base..head`` range instead, use ``get_change_risk``.
 
-    defect_profile appears only with counted fixes; top_symbols is approximate
-    attribution, and nothing names a bug-inducing commit.
+    ``risk_scales`` gives the units and evidence basis for every indexed-file
+    scalar. In PR mode, ``structural_impact_score`` is a deterministic,
+    uncalibrated 0-10 structural heuristic, never a runtime-breakage
+    probability. ``overall_risk_score`` is its deprecated exact alias.
 
-    episodes counts the dated records bound to a target — what happened here and
-    why, evidenced by a commit or a filesystem fact. It appears only when there
-    is at least one, and get_why serves the bodies. A directory target
-    aggregates everything beneath it, so compare within a kind of target.
+    ``defect_profile`` appears only with counted fixes; ``top_symbols`` is
+    approximate attribution. Directory targets aggregate everything beneath
+    them, so compare within a kind of target.
 
     Args:
         targets: file paths to assess.
@@ -271,6 +273,7 @@ async def get_risk(
 
     response: dict = {
         "targets": {r["target"]: r for r in results},
+        "risk_scales": file_risk_scales(),
     }
 
     collector = OmissionCollector("get_risk", repo_root=ctx.path)

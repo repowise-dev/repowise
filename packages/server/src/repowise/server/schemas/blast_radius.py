@@ -6,6 +6,11 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from repowise.server.schemas.risk_semantics import (
+    RiskCompatibilityField,
+    RiskScalarSemantics,
+)
+
 
 class BlastRadiusRequest(BaseModel):
     changed_files: list[str]
@@ -14,6 +19,8 @@ class BlastRadiusRequest(BaseModel):
 
 class DirectRiskEntry(BaseModel):
     path: str
+    structural_score: float
+    #: Deprecated exact alias of ``structural_score`` for older clients.
     risk_score: float
     temporal_hotspot: float
     centrality: float
@@ -124,4 +131,9 @@ class BlastRadiusResponse(BaseModel):
     recommended_reviewers: list[ReviewerEntry]
     test_gaps: list[str]
     test_impact: TestImpactResponse
+    structural_impact_score: float
+    structural_impact_band: Literal["localized", "moderate", "broad"]
+    structural_impact_scale: RiskScalarSemantics
+    #: Deprecated exact alias; never repurposed to a new unit.
     overall_risk_score: float
+    overall_risk_score_compatibility: RiskCompatibilityField

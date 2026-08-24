@@ -78,6 +78,15 @@ async def test_rest_and_shared_analyzer_return_identical_test_impact(client, ses
     assert response.status_code == 200
     external = response.json()
     assert external["test_impact"] == internal["test_impact"]
+    assert external["structural_impact_score"] == external["overall_risk_score"]
+    assert external["structural_impact_band"] in {"localized", "moderate", "broad"}
+    assert external["structural_impact_scale"]["unit"] == "normalized_points"
+    assert external["structural_impact_scale"]["calibration"]["status"] == "uncalibrated"
+    assert external["structural_impact_scale"]["runtime_breakage_probability"] is False
+    assert external["overall_risk_score_compatibility"]["replacement"] == (
+        "structural_impact_score"
+    )
+    assert all(row["structural_score"] == row["risk_score"] for row in external["direct_risks"])
     assert external["test_impact"]["recommendations_total"] == 16
     assert external["test_impact"]["recommendations_emitted"] == len(
         external["test_impact"]["recommendations"]
@@ -94,6 +103,9 @@ async def test_openapi_exposes_typed_test_impact_contract(client):
 
     blast = schema["BlastRadiusResponse"]
     assert blast["properties"]["test_impact"]["$ref"].endswith("/TestImpactResponse")
+    assert blast["properties"]["structural_impact_scale"]["$ref"].endswith("/RiskScalarSemantics")
+    assert "structural_impact_score" in blast["required"]
+    assert "overall_risk_score_compatibility" in blast["required"]
     recommendation = schema["TestRecommendation"]
     assert recommendation["required"] == [
         "test_id",

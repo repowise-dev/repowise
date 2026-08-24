@@ -444,15 +444,23 @@ async def test_get_risk_names_an_unknown_include_rather_than_applying_it(setup_m
 
 @pytest.mark.asyncio
 async def test_get_risk_directive_does_not_copy_the_analyzer_score(setup_mcp):
-    """overall_risk_score lives in pr_blast_radius, with a note on its scale."""
+    """The structural heuristic lives in blast detail, not the directive."""
     from repowise.server.mcp_server import get_risk
 
     result = await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
 
     assert "overall_risk_score" not in result["directive"]
     blast = result["pr_blast_radius"]
-    assert "overall_risk_score" in blast
-    assert "get_change_risk.score" in blast["overall_risk_score_measures"]
+    assert blast["overall_risk_score"] == blast["structural_impact_score"]
+    assert blast["overall_risk_score_compatibility"] == {
+        "deprecated": True,
+        "replacement": "structural_impact_score",
+        "equivalent_value": True,
+        "historical_meaning": "uncalibrated 0-10 structural blast-radius heuristic",
+    }
+    assert blast["structural_impact_scale"]["calibration"]["status"] == "uncalibrated"
+    assert blast["structural_impact_scale"]["runtime_breakage_probability"] is False
+    assert result["risk_scales"][0]["field"] == "targets.*.hotspot_score"
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,7 @@ Given a set of changed files, computes:
   - Co-change warnings (historical co-change partners NOT in the PR)
   - Recommended reviewers (top owners of affected files)
   - Test gaps (affected files without a corresponding test file)
-  - Overall risk score (0-10)
+  - Structural impact heuristic (0-10; uncalibrated, not a probability)
 
 Reuses existing data: graph_nodes/graph_edges (SQL), git_metadata, and the
 co_change_partners_json field stored in git_metadata rows.
@@ -24,6 +24,7 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.risk_semantics import structural_impact_contract
 from repowise.core.exclusion import build_exclude_spec, is_excluded
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.models import GitMetadata, GraphNode, Repository
@@ -153,8 +154,9 @@ class PRBlastRadiusAnalyzer:
 
         guarding_tests = legacy_guarding_tests(test_impact)
 
-        # 7. Overall risk score (0-10)
-        overall_risk_score = self._compute_overall_risk(direct_risks, transitive_affected)
+        # 7. Structural impact heuristic (0-10). The compatibility field is an
+        #    exact alias supplied by the shared public semantics contract.
+        structural_impact_score = self._compute_overall_risk(direct_risks, transitive_affected)
 
         return {
             "direct_risks": direct_risks,
@@ -164,7 +166,7 @@ class PRBlastRadiusAnalyzer:
             "test_gaps": test_gaps,
             "test_impact": test_impact,
             "guarding_tests": guarding_tests,
-            "overall_risk_score": overall_risk_score,
+            **structural_impact_contract(structural_impact_score),
         }
 
     # ------------------------------------------------------------------
@@ -200,17 +202,19 @@ class PRBlastRadiusAnalyzer:
             node = node_by_path.get(path)
             temporal = float(getattr(meta, "temporal_hotspot_score", 0.0) or 0.0)
             centrality = float(getattr(node, "pagerank", 0.0) or 0.0)
-            risk_score = self._score_file(temporal, centrality)
+            structural_score = self._score_file(temporal, centrality)
             results.append(
                 {
                     "path": path,
-                    "risk_score": round(risk_score, 4),
+                    "structural_score": round(structural_score, 4),
+                    # Compatibility alias for pre-semantics clients.
+                    "risk_score": round(structural_score, 4),
                     "temporal_hotspot": round(temporal, 4),
                     "centrality": round(centrality, 6),
                 }
             )
 
-        results.sort(key=lambda x: -float(x["risk_score"]))
+        results.sort(key=lambda x: -float(x["structural_score"]))
         return results
 
     @staticmethod
@@ -499,7 +503,7 @@ class PRBlastRadiusAnalyzer:
         direct_risks: list[dict],
         transitive_affected: list[dict],
     ) -> float:
-        """Compute overall risk score on 0-10 scale.
+        """Compute the uncalibrated structural-impact heuristic on 0-10.
 
         Per-file risk is ``pagerank * (1 + temporal_hotspot)`` — unbounded
         and pagerank-scaled (typically 0-0.3). The old ``min(raw * 100, 10)``
@@ -516,8 +520,10 @@ class PRBlastRadiusAnalyzer:
         if not direct_risks:
             return 0.0
 
-        avg_direct = sum(r["risk_score"] for r in direct_risks) / len(direct_risks)
-        max_direct = max(r["risk_score"] for r in direct_risks)
+        avg_direct = sum(
+            r.get("structural_score", r.get("risk_score", 0.0)) for r in direct_risks
+        ) / len(direct_risks)
+        max_direct = max(r.get("structural_score", r.get("risk_score", 0.0)) for r in direct_risks)
         breadth_bonus = min(len(transitive_affected) / 20.0, 1.0)  # 0-1
 
         combined = 0.5 * avg_direct + 0.5 * max_direct

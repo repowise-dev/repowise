@@ -66,7 +66,17 @@ async def test_get_change_risk_honors_riskignore_and_request_filters(tmp_path, m
     assert result["risk_percentile"] is None
     assert result["review_priority"] is None
     assert result["classification"] is None
+    assert result["fallback_band"] in {"low", "moderate", "high"}
     assert result["baseline_sample_size"] == 0
+    assert result["risk_authority"]["primary_fields"] == [
+        "risk_percentile",
+        "classification",
+    ]
+    scales = {scale["field"]: scale for scale in result["risk_scales"]}
+    assert scales["score"]["authoritative"] is False
+    assert scales["risk_percentile"]["authoritative"] is True
+    assert scales["features.la|features.ld"]["unit"] == "lines"
+    assert scales["drivers[].contribution"]["unit"] == "logit_points"
     # Live-git responses carry a _meta envelope flagged as index-independent.
     assert result["_meta"]["source"] == "live_git"
     assert "warning" not in result
@@ -280,9 +290,7 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
     factory = await _factory_with_repo(None)
     async with factory() as s:
         for path, is_test in (("tests/test_round_trips.py", True), ("src/app.py", False)):
-            s.add(
-                GraphNode(repository_id="repo1", node_id=path, node_type="file", is_test=is_test)
-            )
+            s.add(GraphNode(repository_id="repo1", node_id=path, node_type="file", is_test=is_test))
         s.add(
             GraphEdge(
                 repository_id="repo1",
@@ -345,7 +353,9 @@ async def test_impacted_tests_overflow_cap_is_honest(tmp_path, monkeypatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_impacted_tests_no_session_factory_degrades_to_no_index(tmp_path, monkeypatch) -> None:
+async def test_impacted_tests_no_session_factory_degrades_to_no_index(
+    tmp_path, monkeypatch
+) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(["init", "-q"], repo)
@@ -385,9 +395,10 @@ async def test_the_two_risk_tools_do_not_share_a_key_for_different_questions() -
     }
 
 
-def test_score_measures_names_the_other_zero_to_ten() -> None:
-    """Whichever risk tool an agent calls first, it learns the other is not it."""
+def test_score_measures_names_only_the_supporting_diff_shape_signal() -> None:
+    """The compatibility string stays precise while typed metadata carries authority."""
     from repowise.core.analysis.change_risk import SCORE_MEASURES
 
     assert "diff size and spread" in SCORE_MEASURES
-    assert "overall_risk_score" in SCORE_MEASURES
+    assert "where the change lands" in SCORE_MEASURES
+    assert "probability" not in SCORE_MEASURES

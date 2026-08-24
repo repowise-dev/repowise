@@ -1,6 +1,6 @@
 """MCP Tool: get_blast_radius — cross-repo downstream impact (workspace only).
 
-Answers "if I change this service, what breaks across the other repos?" by
+Answers "what structural or historical reach follows from this service?" by
 traversing the workspace system graph. Structural dependencies (contracts,
 package deps) are ranked above behavioral co-change. Mirrors the single-repo
 change-risk vocabulary (``get_risk`` PR-mode, ``blast-radius.ts``): impacted
@@ -35,10 +35,12 @@ async def get_blast_radius(
     max_depth: int = 3,
     include_behavioral: bool = True,
 ) -> dict[str, Any]:
-    """Cross-repo blast radius — what downstream services break if you change this.
+    """Cross-repo blast radius — which downstream services are structurally reachable.
 
     Workspace-only. Traverses the system graph from the given service(s) and
-    returns the impacted services across every repo, ranked by impact score.
+    returns the reachable services across every repo, ranked by an uncalibrated
+    0-1 path-weight heuristic. It is not runtime-breakage evidence or a
+    probability.
     Structural edges (http / grpc / event / package) outweigh behavioral
     co-change. Call before changing a high-fan-out provider to see who consumes
     it across repo boundaries.
@@ -71,6 +73,7 @@ async def get_blast_radius(
             "_meta": _build_meta(),
         }
 
+    from repowise.core.analysis.risk_semantics import workspace_impact_score_semantics
     from repowise.core.workspace.blast_radius import cross_repo_blast_radius, resolve_targets
     from repowise.core.workspace.system_graph import SystemGraph
 
@@ -119,6 +122,7 @@ async def get_blast_radius(
         "max_distance": result.max_distance,
         "total_impacted": result.total_impacted,
         "unresolved_targets": result.unresolved_targets,
+        "impact_score_semantics": workspace_impact_score_semantics(),
         "summary": summary,
         "_meta": _build_meta(
             extra=_analysis_meta(

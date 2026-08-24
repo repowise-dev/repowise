@@ -302,9 +302,7 @@ def test_fit_to_budget_sheds_a_nested_block(repo_root: Path, monkeypatch):
     assert response["nested"]["light"] == 1
 
 
-def test_fit_to_budget_trims_a_ranked_tail_but_never_empties_it(
-    repo_root: Path, monkeypatch
-):
+def test_fit_to_budget_trims_a_ranked_tail_but_never_empties_it(repo_root: Path, monkeypatch):
     _narrow_budget(monkeypatch, 700)
     response = {"results": [{"row": i, "body": "r" * 900} for i in range(6)]}
     collector = OmissionCollector("search_codebase", repo_root=repo_root)
@@ -498,6 +496,8 @@ def test_risk_trim_blast_lists_collects_drops(repo_root: Path):
     trimmed = _trim_blast_lists(blast, None, collector)
     assert len(trimmed["transitive_affected"]) == 15
     assert trimmed["transitive_affected_truncated_total"] == 20
+    assert trimmed["structural_impact_score"] == trimmed["overall_risk_score"] == 4.2
+    assert trimmed["overall_risk_score_compatibility"]["equivalent_value"] is True
 
     response: dict = {"_meta": {}}
     collector.attach(response)

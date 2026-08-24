@@ -4,6 +4,10 @@
  */
 
 import { apiGet } from "./client";
+import type {
+  RiskAuthority,
+  RiskScalarSemantics,
+} from "@repowise-dev/types/risk-semantics";
 import type { RiskDriverResponse } from "./types/git";
 
 export interface RiskRangeParams {
@@ -43,8 +47,12 @@ export interface FixHistory {
 export interface RiskRangeResponse {
   base: string;
   head: string;
-  /** Where the change lands. Read before `score`. */
+  /** Separate historical evidence about where the change lands. */
   fix_history: FixHistory;
+  /** Percentile/classification authority plus explicit absolute fallback. */
+  risk_authority: RiskAuthority;
+  /** Units, ranges, evidence basis, and calibration for every risk scalar. */
+  risk_scales: RiskScalarSemantics[];
   score: number;
   /** What `score` measures: diff size and spread, not where the change lands. */
   score_measures: string;
@@ -60,7 +68,7 @@ export interface RiskRangeResponse {
   drivers: RiskDriverResponse[];
 }
 
-/** Scores the aggregate diff between two revisions (0-10, with drivers). */
+/** Assesses a live diff; lead with its repo-relative percentile/classification. */
 export async function getRiskRange(
   repoId: string,
   params: RiskRangeParams,

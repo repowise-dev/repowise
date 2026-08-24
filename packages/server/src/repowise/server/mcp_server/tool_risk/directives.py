@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from repowise.core.analysis.risk_semantics import structural_impact_contract
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.decision_graph import get_governing_decisions, list_conflict_edges
 from repowise.server.mcp_server import _state
@@ -52,13 +53,6 @@ _MAY_BREAK_TESTS_LIMIT = 3
 #: than the may-break lists (it is what you actually run), but stays glanceable;
 #: the overflow and full typed rows live in pr_blast_radius.test_impact.
 _TESTS_TO_RUN_LIMIT = 10
-
-#: get_risk and get_change_risk both render 0-10 and measure unrelated things.
-#: Whichever an agent reads first, this says the other is not the same scale.
-_OVERALL_SCORE_MEASURES = (
-    "where the change lands: centrality of the changed files and how far it "
-    "reaches; not comparable to get_change_risk.score, which measures diff shape"
-)
 
 
 def _breaking_change_directive(repo_alias: str) -> tuple[list[dict[str, Any]], int]:
@@ -275,6 +269,13 @@ def _trim_blast_lists(
     are filtered by policy, not budget).
     """
     trimmed_blast: dict[str, Any] = dict(pr_blast_radius)
+    # Normalize older or mocked analyzer payloads into the additive typed
+    # contract. The legacy field remains an exact alias, never a repurposed unit.
+    structural_score = trimmed_blast.get(
+        "structural_impact_score", trimmed_blast.get("overall_risk_score")
+    )
+    if structural_score is not None:
+        trimmed_blast.update(structural_impact_contract(float(structural_score)))
     for key, cap in (
         ("transitive_affected", 15),
         ("cochange_warnings", 10),
@@ -299,8 +300,6 @@ def _trim_blast_lists(
         trimmed_blast[f"{key}_total"] = total
         trimmed_blast[f"{key}_emitted"] = len(trimmed_blast.get(key, []))
         trimmed_blast[f"{key}_truncated"] = total > len(trimmed_blast.get(key, []))
-    if trimmed_blast.get("overall_risk_score") is not None:
-        trimmed_blast["overall_risk_score_measures"] = _OVERALL_SCORE_MEASURES
     return trimmed_blast
 
 
