@@ -31,6 +31,41 @@
   body: (compound_statement)
 ) @symbol.cpp_export_type
 
+; Export-macro forward declarations have the same split-name shape, but the
+; real type name is the declaration's bare declarator and there is no body.
+(declaration
+  type: (class_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (identifier) @symbol.name
+) @symbol.cpp_export_type
+
+(declaration
+  type: (struct_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (identifier) @symbol.name
+) @symbol.cpp_export_type
+
+; The same forward-declaration shape uses field nodes inside a class body.
+(field_declaration
+  type: (class_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (field_identifier) @symbol.name
+) @symbol.cpp_export_type
+
+(field_declaration
+  type: (struct_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (field_identifier) @symbol.name
+) @symbol.cpp_export_type
+
 ; Function definition: ReturnType funcName(params) { body }
 ; The name is nested inside function_declarator
 (function_definition
@@ -141,6 +176,14 @@
   name: (identifier) @symbol.name
   parameters: (preproc_params) @symbol.params
 ) @symbol.def
+
+; Generic preprocessor calls cover #undef and pragma-based macro restoration.
+(preproc_call) @symbol.cpp_preproc_call
+
+; Included files can redefine or undef any locally known macro. The one-file
+; parser cannot inspect that state transition, so includes form a conservative
+; recovery barrier until a later local definition establishes a new state.
+(preproc_include) @symbol.cpp_macro_state_barrier
 
 ; Forward declarations: void func(int x);
 (declaration
