@@ -93,6 +93,42 @@ def test_coverage_add_exit_status_follows_whether_anything_was_stored(
     assert result.exit_code == expected_exit
 
 
+def _coverage_add_source() -> str:
+    """Source of the `coverage add` callback (Click wraps it in a Command)."""
+    import inspect
+
+    return inspect.getsource(coverage_cmd.coverage_add.callback)
+
+
+def test_strict_counts_unmapped_before_the_resolved_files_branch() -> None:
+    """Total mapping loss on the aggregate leg must still be able to trip --strict.
+
+    The count used to be read inside `if resolved.files:`, so the one run where
+    every report file failed to map was also the run that saw zero unmapped
+    files. With a per-test map present, `map_records` is non-empty, the
+    "nothing mapped" branch is skipped, and a --strict run exited 0 having
+    stored no per-file coverage at all.
+
+    This is a structural guard, not a behavioural one: the branch lives in the
+    async closure that needs a DB session, so this pins the ordering that makes
+    the branch reachable rather than the branch itself.
+    """
+    source = _coverage_add_source()
+
+    assert source.index("unmapped = len(skipped)") < source.index("if resolved.files:"), (
+        "the unmapped count must be computed before the resolved.files branch"
+    )
+
+
+def test_strict_failure_is_reported_before_the_success_guidance() -> None:
+    """A failing --strict run must not first advise running `repowise health`."""
+    source = _coverage_add_source()
+
+    assert source.index("if strict and unmapped:") < source.index(
+        "to fold coverage into the defect "
+    )
+
+
 def test_coverage_add_help_documents_strict() -> None:
     result = CliRunner().invoke(cli, ["coverage", "add", "--help"])
 

@@ -192,6 +192,12 @@ def coverage_add(
                 )
                 for path, err in errors:
                     console.print(f"[yellow]  {path.name}: {err}[/yellow]")
+                # Counted from `resolved`, not from inside the `resolved.files`
+                # branch below: total mapping loss leaves `files` empty, so
+                # reading the count in there reported 0 report files unmapped
+                # for the one run where every single one of them was.
+                skipped = resolved.unmatched + resolved.ambiguous
+                unmapped = len(skipped)
                 if resolved.files:
                     await save_coverage_files(
                         session,
@@ -205,8 +211,6 @@ def coverage_add(
                         f"[green]Ingested coverage for {resolved.matched} file(s)[/green] "
                         f"({resolved.matched_exact} exact, {resolved.matched_suffix} resolved)."
                     )
-                    skipped = resolved.unmatched + resolved.ambiguous
-                    unmapped = len(skipped)
                     if skipped:
                         sample = ", ".join(skipped[:5])
                         console.print(
@@ -264,15 +268,15 @@ def coverage_add(
                     "[cyan]coverage.strip_prefix[/cyan] in .repowise/config.yaml."
                 )
                 return False
-            console.print(
-                "Run [cyan]repowise health[/cyan] to fold coverage into the defect "
-                "scores, or [cyan]repowise coverage status[/cyan] to review it."
-            )
             if strict and unmapped:
                 console.print(
                     f"[red]--strict: {unmapped} report file(s) did not map to the repo tree.[/red]"
                 )
                 return False
+            console.print(
+                "Run [cyan]repowise health[/cyan] to fold coverage into the defect "
+                "scores, or [cyan]repowise coverage status[/cyan] to review it."
+            )
             return True
 
     # A refresh is commonly scripted as `coverage add ... || exit 1`, so a run
