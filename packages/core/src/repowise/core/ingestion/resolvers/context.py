@@ -86,7 +86,9 @@ class ResolverContext:
         """Register an external dependency node and return its key."""
         key = f"external:{module_path}"
         if key not in self.graph.nodes:
-            self.graph.add_node(key, language="external", symbol_count=0, has_error=False)
+            self.graph.add_node(
+                key, node_type="external", language="external", symbol_count=0, has_error=False
+            )
         return key
 
     # ------------------------------------------------------------------
