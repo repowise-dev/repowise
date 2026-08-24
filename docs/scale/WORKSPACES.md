@@ -238,6 +238,17 @@ whose base URL is an unresolved placeholder (`fetch(\`${API_BASE}/users\`)`) mat
 on the host-relative path; the link is **exact** when exactly one workspace service
 provides that path and a lower-confidence **candidate** when the target is ambiguous.
 
+**Over REST.** `GET /api/workspace/contracts` lists contracts and links,
+filterable by `contract_type`, `repo` and `role`. Each contract carries its
+line, its ingestion symbol id and the extractor's `meta`; each link carries both
+symbol ids and both service boundaries. The request/response `schema` is not on
+the list, because it runs to full inline type declarations and only one is ever
+needed at a time: fetch it with
+`GET /api/workspace/contracts/detail?repo=<alias>&file=<path>&id=<contract-id>`,
+which returns that one contract with its schema, its links, and its unmatched
+reason. All three parameters are required, since a contract id alone is not
+unique across repos.
+
 **Tuning extraction** via the `contracts:` block in `.repowise-workspace.yaml`:
 
 ```yaml

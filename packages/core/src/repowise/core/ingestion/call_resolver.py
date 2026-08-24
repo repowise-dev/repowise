@@ -31,7 +31,11 @@ from typing import Any
 
 import structlog
 
-from .language_data import get_builtin_methods, get_external_receiver_types
+from .language_data import (
+    get_builtin_methods,
+    get_external_receiver_types,
+    get_external_return_types,
+)
 from .languages.receiver_types import (
     FRAMEWORK_DECORATOR_LANGUAGES,
     IMPLICIT_FIELD_LANGUAGES,
@@ -45,6 +49,7 @@ from .languages.receiver_types import (
     types_in_span,
 )
 from .models import (
+    CallReceiver,
     CallSite,
     CallSiteEdgeType,
     NamedBinding,
@@ -905,7 +910,12 @@ class CallResolver:
 
         language = self._language_of(file_path) or ""
         receiver_call = call.receiver_call
-        if receiver_call is not None and language in self._return_type_chain_languages:
+        # A language with an `external_return_types` table reaches the tier for
+        # that table alone; only the constant above admits the full lane.
+        if receiver_call is not None and (
+            language in self._return_type_chain_languages
+            or get_external_return_types(language)
+        ):
             handled, resolved = self._resolve_return_typed_chain(
                 file_path, call, caller_id, language
             )
@@ -936,45 +946,36 @@ class CallResolver:
 
         inner = call.receiver_call
         assert inner is not None
-        inner_call = CallSite(
-            target_name=inner.target_name,
-            receiver_name=inner.receiver_name,
-            caller_symbol_id=caller_id,
-            line=call.line,
-            argument_count=inner.argument_count,
-        )
-        resolved_inner = self._resolve_one(file_path, inner_call)
-        if resolved_inner is None:
-            return False, None
 
-        symbol = self._symbols_by_id.get(resolved_inner.callee_id)
-        if symbol is None:
+        tabled = self._external_chain_return_type(file_path, inner, language)
+        from_table = tabled is not None
+        if tabled is not None:
+            type_name = tabled
+        elif language not in self._return_type_chain_languages:
+            # Admitted by its table alone. Inferring the head's type from the
+            # declared return type of a repository symbol is a separate and much
+            # larger population, and it is unmeasured here.
             return False, None
-        if symbol.kind in _TYPE_KINDS:
-            type_name = symbol.name
         else:
-            raw_return = declared_return_type(symbol.signature or "")
-            type_name = normalize_return_type(raw_return, language) if raw_return else None
-            symbol_path = self._symbol_paths_by_id.get(resolved_inner.callee_id)
-            if symbol_path is None:
-                return False, None
-            overload_key = (
-                symbol_path,
-                symbol.parent_name,
-                symbol.name,
-                inner.argument_count,
+            inferred = self._inferred_chain_return_type(
+                file_path, call, inner, caller_id, language
             )
-            if len(self._overload_return_types.get(overload_key, ())) > 1:
+            if inferred is None:
                 return False, None
-        if type_name is None:
-            return False, None
+            type_name = inferred
 
         found = self._typed_receiver_target(file_path, call, caller_id, type_name)
         if language == "java":
             # A simple type name is not repository-unique.  Java package and
             # import binding settle its identity; the global tier does not.
+            #
+            # When the name came from the table it is external *in this file*,
+            # and java has no extension methods, so the repository cannot
+            # declare that type's method either.  That makes the bare-name
+            # answer disproved rather than merely unevidenced, which is the
+            # difference between refusing the site and falling through to it.
             if found is None or found[1] == "global":
-                return False, None
+                return from_table, None
         elif language == "cpp":
             # P17 admits only the measured Seastar debt family.  Broader C++
             # return-name matching remains probe evidence, not production
@@ -994,6 +995,87 @@ class CallResolver:
         assert found is not None
         sym_id, tier = found
         return True, self._return_typed_call(caller_id, sym_id, tier, call.line)
+
+    def _external_chain_return_type(
+        self,
+        file_path: str,
+        inner: CallReceiver,
+        language: str,
+    ) -> str | None:
+        """The table's return type for ``Type.method(..)`` at the head of a chain.
+
+        None when the head is not a table entry, and — the part the rust half of
+        this phase bought — when this file rebinds the name to something the
+        repository owns. Java imports resolve to repository files, so
+        ``_import_names`` answers that directly, where rust needs its raw import
+        text read against the workspace index.
+
+        The bound value has to be read, not merely tested: an unresolved import
+        is recorded as an ``external:`` marker, so a truthiness check exempts
+        ``import com.google.common.collect.Maps`` and silently drops 36 of
+        caffeine's 96 measured sites.
+
+        The import list alone is not enough, because java's same-package types
+        need no import. A repository declaring its own ``Duration`` anywhere is
+        exempted outright rather than same-package-checked: the table records
+        the *JDK's* return type, which is the wrong answer for a repository
+        type whose factory returns something else, and refusing on it would
+        drop a correct edge. Costs nothing measured - 0 of the 106 sites has a
+        repo-declared receiver name, by construction of the population.
+        """
+        receiver = inner.receiver_name
+        if not receiver:
+            return None
+        methods = get_external_return_types(language).get(receiver)
+        if methods is None:
+            return None
+        if receiver in self._known_type_names:
+            return None
+        bound = self._import_names.get(file_path, {}).get(receiver)
+        if bound and not bound.startswith("external:"):
+            return None
+        return methods.get(inner.target_name)
+
+    def _inferred_chain_return_type(
+        self,
+        file_path: str,
+        call: CallSite,
+        inner: CallReceiver,
+        caller_id: str,
+        language: str,
+    ) -> str | None:
+        """The head's type read off the repository symbol the inner call resolves to."""
+        inner_call = CallSite(
+            target_name=inner.target_name,
+            receiver_name=inner.receiver_name,
+            caller_symbol_id=caller_id,
+            line=call.line,
+            argument_count=inner.argument_count,
+        )
+        resolved_inner = self._resolve_one(file_path, inner_call)
+        if resolved_inner is None:
+            return None
+
+        symbol = self._symbols_by_id.get(resolved_inner.callee_id)
+        if symbol is None:
+            return None
+        if symbol.kind in _TYPE_KINDS:
+            return symbol.name
+
+        raw_return = declared_return_type(symbol.signature or "")
+        type_name = normalize_return_type(raw_return, language) if raw_return else None
+        symbol_path = self._symbol_paths_by_id.get(resolved_inner.callee_id)
+        if symbol_path is None:
+            return None
+        overload_key = (
+            symbol_path,
+            symbol.parent_name,
+            symbol.name,
+            inner.argument_count,
+        )
+        if len(self._overload_return_types.get(overload_key, ())) > 1:
+            return None
+        return type_name
 
     def _return_typed_call(self, caller_id: str, sym_id: str, tier: str, line: int) -> ResolvedCall:
         """Stamp an edge whose receiver is the inner callee's return type."""
