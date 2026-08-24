@@ -40,6 +40,20 @@ export interface WorkspaceContractLinkEntry {
   consumer_repo: string;
   consumer_file: string;
   consumer_symbol: string;
+  /**
+   * Service boundary the provider sits behind, when the workspace declares one.
+   * Matching skips a pair only when the repo *and* the service are the same, so
+   * this is what explains a link between two services inside one repo.
+   */
+  provider_service: string | null;
+  /** The same, for the calling side. */
+  consumer_service: string | null;
+  /**
+   * The linked contracts' symbol ids, so a caller can name the code rather than
+   * a display label. Null when that side never bound to one.
+   */
+  provider_symbol_id: string | null;
+  consumer_symbol_id: string | null;
 }
 
 export interface WorkspaceCoChangeEntry {
