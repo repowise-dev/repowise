@@ -210,6 +210,17 @@ def _is_bodiless_cpp_type(language: str, node_type: str, def_node: Node) -> bool
     return parent is None or parent.type != "type_definition"
 
 
+def _cpp_export_macro_parent(node: Node, parent_names: dict[int, str]) -> str | None:
+    """Return the real type name for a member inside a macro-decorated C++ type."""
+    ancestor = node.parent
+    while ancestor is not None:
+        parent_name = parent_names.get(ancestor.id)
+        if parent_name is not None:
+            return parent_name
+        ancestor = ancestor.parent
+    return None
+
+
 @cache
 def _load_compiled_query(lang: str, grammar_tag: str | None = None) -> object | None:
     """Process-wide cache of compiled tree-sitter Query objects.
@@ -617,6 +628,32 @@ class ASTParser:
         if file_info.language in _TS_JS_LANGUAGES:
             ts_deferred_exports = ts_deferred_export_names(src)
 
+        # tree-sitter-cpp parses ``struct EXPORT Name { ... }`` as a
+        # function_definition whose return type is ``struct EXPORT`` and whose
+        # bare declarator is the real type name. cpp.scm marks those matches so
+        # the specifier can keep its class/struct kind while the outer recovery
+        # node acts as the type body for nested members.
+        cpp_export_type_defs: dict[int, tuple[Node, str]] = {}
+        cpp_export_type_parents: dict[int, str] = {}
+        cpp_export_macro_names: set[str] = set()
+        if file_info.language == "cpp":
+            for capture_dict in matches:
+                type_nodes = capture_dict.get("symbol.cpp_export_type", [])
+                def_nodes = capture_dict.get("symbol.def", [])
+                name_nodes = capture_dict.get("symbol.name", [])
+                macro_nodes = capture_dict.get("symbol.cpp_export_macro", [])
+                if not type_nodes or not def_nodes or not name_nodes:
+                    continue
+                type_name = _node_text(name_nodes[0], src)
+                if not type_name:
+                    continue
+                outer_node = type_nodes[0]
+                cpp_export_type_defs[def_nodes[0].id] = (outer_node, type_name)
+                cpp_export_type_parents[outer_node.id] = type_name
+                cpp_export_macro_names.update(_node_text(node, src) for node in macro_nodes)
+
+        cpp_export_type_parent_ids = frozenset(cpp_export_type_parents)
+
         for capture_dict in matches:
             def_nodes = capture_dict.get("symbol.def", [])
             name_nodes = capture_dict.get("symbol.name", [])
@@ -630,6 +667,18 @@ class ASTParser:
             def_node = def_nodes[0]
             name = _node_text(name_nodes[0], src)
             if not name:
+                continue
+
+            export_type = cpp_export_type_defs.get(def_node.id)
+            if export_type is not None and name != export_type[1]:
+                # The ordinary struct/class query sees the same specifier, but
+                # tree-sitter calls the export macro its name. Keep only the
+                # dedicated match whose name is the outer declarator.
+                continue
+
+            if def_node.type == "preproc_def" and name in cpp_export_macro_names:
+                # A locally stubbed empty export macro is declaration
+                # scaffolding, not a runtime variable in the symbol graph.
                 continue
 
             start_line = def_node.start_point[0] + 1
@@ -656,7 +705,7 @@ class ASTParser:
             # variable_declarator's parent (lexical_declaration → "function")
             # would otherwise read as a callable ancestor.
             if node_type not in _MODULE_ANCHORED_NODE_TYPES and _has_callable_ancestor(
-                def_node, config.symbol_node_types
+                def_node, config.symbol_node_types, cpp_export_type_parent_ids
             ):
                 continue
 
@@ -681,6 +730,8 @@ class ASTParser:
             # the trailing body sibling or call-site attribution stops at the
             # signature line.
             end_line = def_node.end_point[0] + 1
+            if export_type is not None:
+                end_line = export_type[0].end_point[0] + 1
             if file_info.language == "dart" and node_type in (
                 "function_signature",
                 "getter_signature",
@@ -736,10 +787,6 @@ class ASTParser:
 
             # Visibility
             modifier_texts = [_node_text(m, src) for m in modifier_nodes]
-            if def_node.parent and def_node.parent.type == "decorated_definition":
-                for sibling in def_node.parent.children:
-                    if sibling.type == "decorator":
-                        modifier_texts.append(_node_text(sibling, src))
 
             # Rust: outer attributes (#[...]) are preceding siblings of the item
             rust_attrs: list[str] = []
@@ -809,6 +856,9 @@ class ASTParser:
 
             # Parent class detection
             parent_name = self._find_parent(def_node, config, receiver_nodes, src)
+
+            if parent_name is None and file_info.language == "cpp" and export_type is None:
+                parent_name = _cpp_export_macro_parent(def_node, cpp_export_type_parents)
 
             # Dart mixin_declaration exposes no ``name`` field, so
             # ``_find_parent``'s field lookup misses mixin members.
@@ -884,7 +934,10 @@ class ASTParser:
                     is_exported_symbol=is_exported_symbol,
                     is_declaration=(
                         node_type in config.declaration_node_types
-                        or _is_bodiless_cpp_type(file_info.language, node_type, def_node)
+                        or (
+                            export_type is None
+                            and _is_bodiless_cpp_type(file_info.language, node_type, def_node)
+                        )
                     ),
                 )
             )

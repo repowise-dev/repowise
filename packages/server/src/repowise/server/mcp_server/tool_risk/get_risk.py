@@ -203,6 +203,7 @@ async def get_risk(
             entry = {
                 "file_path": h.file_path,
                 "hotspot_score": h.churn_percentile,
+                "is_hotspot": True,
                 "primary_owner": h.primary_owner_name,
             }
             # Silent on files with no counted fixes, so a repo without fix

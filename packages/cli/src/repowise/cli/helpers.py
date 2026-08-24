@@ -983,8 +983,10 @@ def resolve_provider(
         "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / "
         "OLLAMA_BASE_URL / GEMINI_API_KEY / GOOGLE_API_KEY / DEEPSEEK_API_KEY / "
         "KIMI_API_KEY / EDENAI_API_KEY / LITELLM_API_KEY. Use "
-        "REPOWISE_PROVIDER=codex_cli to use an authenticated Codex CLI "
-        "subscription, or REPOWISE_PROVIDER=opencode to use opencode."
+        "REPOWISE_PROVIDER=claude_cli to use an "
+        "authenticated Claude Code subscription, REPOWISE_PROVIDER=codex_cli to use "
+        "an authenticated Codex CLI subscription, or REPOWISE_PROVIDER=opencode "
+        "to use opencode."
     )
 
 
@@ -1088,6 +1090,17 @@ def validate_provider_config(provider_name: str | None = None) -> list[str]:
                 warnings.append(
                     "Provider 'codex_cli' requires the Codex CLI. "
                     "Install it with: npm install -g @openai/codex"
+                )
+            return warnings
+
+        if provider_name == "claude_cli":
+            import shutil
+
+            if not shutil.which("claude"):
+                warnings.append(
+                    "Provider 'claude_cli' requires the Claude Code CLI.\n"
+                    "  Install:  https://claude.com/claude-code\n"
+                    "  Setup:    run 'claude login' once to authenticate"
                 )
             return warnings
 

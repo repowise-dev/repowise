@@ -10,6 +10,7 @@ copy of the old scan over a corpus of tricky paths.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 from repowise.core.analysis.health.engine import (
     _has_paired_test_file,
@@ -102,3 +103,41 @@ class TestPairedTestBasenames:
     def test_empty_paths(self) -> None:
         assert _path_basenames(set()) == set()
         assert not _has_paired_test_file("anything.py", set())
+
+
+class TestPascalPairing:
+    """Delphi/FPC's ``u``-prefixed unit pairs with a standalone console test
+    program named ``Test<Stem>.dpr`` (the ``u`` dropped) -- confirmed against
+    a real ~150-file Delphi codebase's ``src/tools/Test*.dpr`` convention."""
+
+    CORPUS: ClassVar[set[str]] = {
+        "src/Core/uKeymap.pas",
+        "src/tools/TestKeymap.dpr",
+        "src/Core/uANSIParser.pas",
+        "src/tools/TestANSIParser.dpr",
+        # no leading "u" -- stem passes through unchanged
+        "src/Core/Utils.pas",
+        "src/tools/TestUtils.dpr",
+        # a unit with no paired test at all
+        "src/Core/uOrphan.pas",
+        # near-miss: same stem, wrong extension -- must NOT match
+        "src/Core/uOther.pas",
+        "src/tools/TestOther.pp",
+    }
+
+    def test_pascal_pairs_match(self) -> None:
+        basenames = _path_basenames(self.CORPUS)
+        assert _has_paired_test_file("src/Core/uKeymap.pas", basenames)
+        assert _has_paired_test_file("src/Core/uANSIParser.pas", basenames)
+        assert _has_paired_test_file("src/Core/Utils.pas", basenames)
+
+    def test_pascal_orphan_and_near_miss_do_not_match(self) -> None:
+        basenames = _path_basenames(self.CORPUS)
+        assert not _has_paired_test_file("src/Core/uOrphan.pas", basenames)
+        assert not _has_paired_test_file("src/Core/uOther.pas", basenames)
+
+    def test_non_pascal_file_is_unaffected_by_pascal_candidate(self) -> None:
+        # A non-Pascal file named e.g. "uKeymap.ts" must not spuriously pick
+        # up the Pascal Test<Stem>.dpr candidate.
+        basenames = _path_basenames({"uKeymap.ts", "TestKeymap.dpr"})
+        assert not _has_paired_test_file("uKeymap.ts", basenames)
