@@ -1207,7 +1207,9 @@ Email + files-owned + percent ownership. `ownership_pct` is 0–1.
 
 ### `blast-radius/test-gaps-list` — `TestGapsList`
 
-Bullet list of files lacking adjacent test coverage.
+Compatibility list of file-level test gaps. It is not a measured-coverage
+claim; consumers use `result.test_impact` for typed recommendations, evidence
+basis, and coverage availability.
 
 | Prop | Type | Required |
 |------|------|----------|
@@ -1224,7 +1226,10 @@ Transitive Files / Co-change Warnings / Test Gaps).
 
 ### `blast-radius/blast-radius-results` — `BlastRadiusResults`
 
-Composes the full results stack: gauge + summary + the five tables.
+Composes the full results stack: gauge, summary, impact map, typed test
+recommendations with measured/inferred basis, explicit unavailable-analysis
+copy, and the compatibility tables. `test_impact` is optional in the shared
+TypeScript contract so the component remains compatible with older servers.
 
 | Prop | Type | Required |
 |------|------|----------|

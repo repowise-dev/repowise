@@ -24,9 +24,9 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.exclusion import is_excluded
+from repowise.core.exclusion import build_exclude_spec, is_excluded
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
-from repowise.core.persistence.models import GitMetadata, GraphNode
+from repowise.core.persistence.models import GitMetadata, GraphNode, Repository
 
 
 def rank_tests_by_reach(by_file: Mapping[str, Iterable[str]]) -> list[str]:
@@ -83,9 +83,15 @@ def _names_a_test_for(stem: str, ext: str, test_path: str, exact: bool) -> bool:
 class PRBlastRadiusAnalyzer:
     """Compute blast radius for a proposed PR given its changed files."""
 
-    def __init__(self, session: AsyncSession, repo_id: str) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        repo_id: str,
+        repository_alias: str | None = None,
+    ) -> None:
         self._session = session
         self._repo_id = repo_id
+        self._repository_alias = repository_alias
 
     async def analyze_files(
         self,
@@ -102,6 +108,17 @@ class PRBlastRadiusAnalyzer:
         max_depth:
             Maximum BFS depth for transitive ancestor lookup.
         """
+        if exclude_spec is None:
+            repo_path = (
+                await self._session.execute(
+                    select(Repository.local_path).where(Repository.id == self._repo_id)
+                )
+            ).scalar_one_or_none()
+            if repo_path:
+                exclude_spec = build_exclude_spec(repo_path)
+        changed_files = [
+            path for path in changed_files if not (exclude_spec and is_excluded(path, exclude_spec))
+        ]
         changed_set = set(changed_files)
 
         # 1. Per-file direct risk
@@ -129,9 +146,12 @@ class PRBlastRadiusAnalyzer:
         # 5. Test gaps
         test_gaps = await self._find_test_gaps(all_affected_paths)
 
-        # 6. Guarding tests — the tests the per-test coverage map proves execute
-        #    the changed files (the "run these to validate" answer).
-        guarding_tests = await self._guarding_tests(changed_files)
+        # 6. Canonical test impact. MCP and REST consume this same typed
+        #    population; ``guarding_tests`` is its compatibility projection.
+        test_impact = await self._test_impact(changed_files, exclude_spec=exclude_spec)
+        from repowise.core.analysis.test_impact import legacy_guarding_tests
+
+        guarding_tests = legacy_guarding_tests(test_impact)
 
         # 7. Overall risk score (0-10)
         overall_risk_score = self._compute_overall_risk(direct_risks, transitive_affected)
@@ -142,6 +162,7 @@ class PRBlastRadiusAnalyzer:
             "cochange_warnings": cochange_warnings,
             "recommended_reviewers": recommended_reviewers,
             "test_gaps": test_gaps,
+            "test_impact": test_impact,
             "guarding_tests": guarding_tests,
             "overall_risk_score": overall_risk_score,
         }
@@ -427,96 +448,50 @@ class PRBlastRadiusAnalyzer:
 
         return gaps
 
+    async def _test_impact(self, changed_files: list[str], exclude_spec: Any = None) -> dict:
+        """Canonical measured + inferred test-impact population."""
+        from repowise.core.analysis.test_impact import analyze_test_impact
+
+        return await analyze_test_impact(
+            self._session,
+            self._repo_id,
+            changed_files,
+            repository_alias=self._repository_alias,
+            exclude_spec=exclude_spec,
+        )
+
     async def _guarding_tests(self, changed_files: list[str]) -> dict:
-        """Tests the per-test coverage map proves execute the *changed* files.
+        """Compatibility projection of :meth:`_test_impact`.
 
-        The inverse of ``test_gaps``: instead of "which changed file lacks a
-        test", this answers "which recorded tests actually exercise this
-        change" - the coverage-backed "run these to validate" list, keyed by
-        test id (a pytest-runnable node id when the report carried node-id
-        contexts). Reuses the Phase 1 reverse index ``tests_covering``.
-
-        Scoped to the changed files, NOT the transitively-affected set: the
-        Phase 3 gate showed that affected (importing) files are covered
-        overwhelmingly by the same mega parametrized suites, so an
-        affected-file run-list is near-useless noise. The actionable set is the
-        tests that execute the code you actually edited. Line precision is not
-        available here (get_risk takes file paths, not a diff), so this is
-        file-level; ``repowise impacted-tests`` gives the line-level answer from
-        a real diff.
-
-        Falls back to the graph when no coverage report has been ingested, which
-        is most repositories: a test file that reaches a changed file is a
-        candidate worth running. ``basis`` says which of the two answered, and
-        the two are never merged. A run-list the coverage map proved and one the
-        graph suggests are different claims, and averaging them would leave the
-        reader unable to tell a measured test from a guessed one. The
-        inferred list names test *files* rather than test ids, because reaching
-        is a file-level fact; both forms are runnable arguments to pytest.
-
-        Returns ``{map_present, basis, tests_to_run, by_file}``.
-        ``map_present`` stays the measured-map flag it always was.
-        ``basis`` is ``"measured"``, ``"inferred"``, or ``"none"`` - and
-        ``"none"`` is the honest "unknown", distinct from "this change has no
-        guarding tests".
+        ``basis`` retains its historical measured/inferred/none domain and
+        measured-first fallback. The canonical ``test_impact`` block contains
+        the additive union and per-recommendation truth.
         """
-        empty = {"map_present": False, "basis": "none", "tests_to_run": [], "by_file": {}}
-        if not changed_files:
-            return empty
+        from repowise.core.analysis.test_impact import legacy_guarding_tests
 
-        from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering
-
-        summary = await get_test_coverage_summary(self._session, self._repo_id)
-        if summary.get("pair_count", 0) == 0:
-            return await self._inferred_guarding_tests(changed_files, empty)
-
-        by_file: dict[str, list[str]] = {}
-        all_ids: set[str] = set()
-        for path in changed_files:
-            rows = await tests_covering(self._session, self._repo_id, path, lines=None)
-            if not rows:
-                continue
-            ids = sorted({r["test_id"] for r in rows})
-            by_file[path] = ids
-            all_ids.update(ids)
-
-        if not all_ids:
-            # The map exists but says nothing about these files. The graph may
-            # still know something, and saying so beats an empty list that
-            # reads as "nothing guards this change".
-            blank = {"map_present": True, "basis": "none", "tests_to_run": [], "by_file": {}}
-            return await self._inferred_guarding_tests(changed_files, blank)
-
-        return {
-            "map_present": True,
-            "basis": "measured",
-            "tests_to_run": rank_tests_by_reach(by_file),
-            "by_file": by_file,
-        }
+        return legacy_guarding_tests(await self._test_impact(changed_files))
 
     async def _inferred_guarding_tests(self, changed_files: list[str], empty: dict) -> dict:
-        """Graph-inferred run-list: test files that reach the changed files.
-
-        Never execution-proven. Isolated behind its own method and its own
-        ``basis`` value so no caller can pick it up while believing it read the
-        measured map. Degrades to *empty* rather than raising: a run-list is an
-        aid, and failing the whole risk assessment to withhold one is the wrong
-        trade.
-        """
-        from repowise.core.analysis.test_reachability import tests_reaching
-
-        try:
-            reaching = await tests_reaching(self._session, self._repo_id, changed_files)
-        except Exception:
-            return empty
-        if not reaching:
-            return empty
-        by_file = {path: sorted(tests) for path, tests in reaching.items() if tests}
+        """Compatibility wrapper returning only structurally inferred rows."""
+        impact = await self._test_impact(changed_files)
+        inferred = [row for row in impact["recommendations"] if row["basis"] == "inferred"]
+        by_file = {
+            item["source_file"]: item["inferred_tests"]
+            for item in impact["files"]
+            if item["inferred_tests"]
+        }
         return {
-            "map_present": empty["map_present"],
-            "basis": "inferred",
-            "tests_to_run": rank_tests_by_reach(by_file),
+            "map_present": empty.get("map_present", impact["coverage"]["map_present"]),
+            "basis": "inferred" if inferred else "none",
+            "tests_to_run": [row["test_id"] for row in inferred],
+            "tests_to_run_with_basis": inferred,
+            "tests_to_run_total": len(inferred),
+            "tests_to_run_emitted": len(inferred),
+            "tests_to_run_truncated": False,
             "by_file": by_file,
+            "analysis": impact["analysis"],
+            "coverage": impact["coverage"],
+            "inference": impact["inference"],
         }
 
     @staticmethod

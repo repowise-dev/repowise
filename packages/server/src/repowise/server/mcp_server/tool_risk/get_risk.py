@@ -33,7 +33,8 @@ from .directives import _build_pr_directive, _governance_directive
 from .enrichment import _enrich_cross_repo, _enrich_health
 
 # Cheapest loss first; the target cards and the directive are never shed.
-# ``guarding_tests`` leads the dossier: _trim_blast_lists leaves it uncapped.
+# The directive retains its capped typed run list even if the larger blast
+# dossier is shed to fit the transport budget.
 _SHED_ORDER: tuple[str, ...] = (
     "global_hotspots",
     "pr_blast_radius.guarding_tests",
@@ -102,9 +103,9 @@ async def get_risk(
     findings. Consult before editing a bug-fixed or busy file. Pass
     changed_files for PR mode: the response leads with a directive block
     (may_break, missing_cochanges, missing_tests, tests_to_run) — read it
-    first. tests_to_run_basis backs the run-list: measured (a coverage map
-    proves those tests run the changed files) or inferred (test files the import
-    graph shows reaching them; candidates, no ingest needed). To score a commit
+    first. Each test_recommendations row carries a measured or inferred basis;
+    tests_to_run keeps its measured-first compatibility projection. Coverage
+    availability and freshness are explicit. To score a commit
     or ``base..head`` range instead, use ``get_change_risk``.
 
     defect_profile appears only with counted fixes; top_symbols is approximate
@@ -251,7 +252,7 @@ async def get_risk(
         if changed_files:
             from repowise.core.analysis.pr_blast import PRBlastRadiusAnalyzer
 
-            analyzer = PRBlastRadiusAnalyzer(session, repo_id)
+            analyzer = PRBlastRadiusAnalyzer(session, repo_id, repository_alias=ctx.alias)
             pr_blast_radius = await analyzer.analyze_files(changed_files, exclude_spec=exclude_spec)
 
     # Cross-repo blast radius enrichment (Phase 3 + 4)
@@ -287,6 +288,10 @@ async def get_risk(
             test_paths,
             ctx.alias,
         )
+        # Dict insertion order is the serialized external order. PR mode is
+        # action-first by contract, so the directive must precede dossiers,
+        # targets, metadata, and omission details in the exact payload.
+        response = {"directive": response.pop("directive"), **response}
     elif len(targets) > 1:
         # Standard per-file risk request (no diff) — ambient orientation across
         # a set of targets. On one file the caller already named, it is noise.

@@ -29,16 +29,16 @@ your uncommitted work against its base branch and opens a panel with the whole
 story of the change:
 
 - A summary strip up top: how many files are affected downstream, how many
-  usual companion files you have not touched, and how many changed files have
-  no associated test. Each chip jumps to its section.
+  usual companion files you have not touched, and the test recommendations or
+  unavailable/partial/stale analysis state. Each chip jumps to its section.
 - **Riskiest files in this change**: your changed files ranked by how risky
   history and structure say they are, so you review in the right order. Files
   that change unusually often are marked as hotspots.
 - **Downstream of your changes**: the files that depend on what you edited.
 - **Usually changes together**: companion files your history says belong to
   this change but are untouched. Advisory, not a rule.
-- **Changed without a test**, and **suggested reviewers** with one-click copy
-  for the PR description.
+- **Test impact** with measured coverage evidence kept separate from inferred
+  candidates, and **suggested reviewers** with one-click copy for the PR description.
 
 While you edit, a quiet co-change hint can appear in the status bar when the
 files you are touching have a strong history of changing together with a file

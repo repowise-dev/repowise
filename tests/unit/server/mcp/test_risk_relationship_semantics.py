@@ -14,6 +14,7 @@ from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._enrichment import CrossRepoEnricher
 
 _FIXTURE = Path(__file__).parents[3] / "fixtures" / "mcp" / "risk_relationships.json"
+_TEST_IMPACT_FIXTURE = Path(__file__).parents[3] / "fixtures" / "mcp" / "pr_test_impact.json"
 
 
 class _SealedRegistry:
@@ -186,6 +187,9 @@ async def test_co_change_is_historical_only_and_mixed_evidence_stays_separate(
 @pytest.mark.asyncio
 async def test_typed_consumers_do_not_absorb_dependents_or_co_changes(relationship_payload):
     card = _card(relationship_payload)
+    test_impact_contract = json.loads(_TEST_IMPACT_FIXTURE.read_text(encoding="utf-8"))[
+        "relationship_semantics"
+    ]["contract"]
 
     assert card["consumers_total"] == 2
     assert card["consumers_emitted"] == len(card["consumers"]) == 2
@@ -195,6 +199,9 @@ async def test_typed_consumers_do_not_absorb_dependents_or_co_changes(relationsh
     assert consumer["consumer_repository"] == "beta"
     assert consumer["direction"] == "provider_to_consumer"
     assert consumer["contract_type"] == "http"
+    assert consumer["provider_repository"] == test_impact_contract["provider_repo"]
+    assert consumer["consumer_repository"] == test_impact_contract["consumer_repo"]
+    assert consumer["contract_type"] == test_impact_contract["type"]
     assert consumer["evidence_kind"] == "contract"
     assert {row["consumer_file"] for row in card["consumers"]} == {
         "src/auth/service.py",

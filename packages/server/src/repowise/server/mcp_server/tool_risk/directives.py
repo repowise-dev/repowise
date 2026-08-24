@@ -50,7 +50,7 @@ _MAY_BREAK_LIMIT = 5
 _MAY_BREAK_TESTS_LIMIT = 3
 #: Cap on the coverage-backed run-list. A validate-this-change set can be longer
 #: than the may-break lists (it is what you actually run), but stays glanceable;
-#: the overflow and the full per-file map live in pr_blast_radius.guarding_tests.
+#: the overflow and full typed rows live in pr_blast_radius.test_impact.
 _TESTS_TO_RUN_LIMIT = 10
 
 #: get_risk and get_change_risk both render 0-10 and measure unrelated things.
@@ -410,69 +410,84 @@ def _build_pr_directive(
         [p for p in (_as_path(e) for e in trimmed_blast.get("cochange_warnings", [])) if p],
         exclude_spec,
     )[:3]
-    # Scope to the PR: the directive answers "what should I do about
-    # THIS diff", so only changed files belong here. Repo-wide test
-    # gaps stay available in pr_blast_radius.test_gaps for deeper
-    # review — surfacing them in the directive made unrelated files
-    # ("alembic/env.py has no tests") read as failings of the PR.
-    # Read from the untrimmed analyzer payload: the trimmed list is
-    # capped at 10 repo-wide entries and may have already dropped the
-    # changed files we're looking for.
-    changed_set = set(changed_files)
-    missing_tests = filter_path_list(
-        [
-            p
-            for p in (_as_path(e) for e in pr_blast_radius.get("test_gaps", []))
-            if p and p in changed_set
-        ],
-        exclude_spec,
-    )[:3]
+    # Run-list: consume the analyzer's canonical typed population instead of
+    # independently deriving test ids. Every row retains its basis through
+    # de-duplication, sorting, exclusions, and the directive cap.
+    test_impact = pr_blast_radius.get("test_impact") or {}
+    all_recommendations = list(test_impact.get("recommendations") or [])
+    test_recommendations = all_recommendations[:_TESTS_TO_RUN_LIMIT]
+    test_recommendations_total = len(all_recommendations)
+    recommendations_capped = test_recommendations_total > _TESTS_TO_RUN_LIMIT
+    if recommendations_capped:
+        collector.add(
+            f"directive.test_recommendations beyond cap={_TESTS_TO_RUN_LIMIT} "
+            f"({test_recommendations_total - _TESTS_TO_RUN_LIMIT} dropped)",
+            all_recommendations[_TESTS_TO_RUN_LIMIT:],
+        )
 
-    # Run-list: the tests that exercise the changed files (the positive
-    # complement of missing_tests). Read from the untrimmed analyzer payload;
-    # _trim_blast_lists passes guarding_tests through, but reading it here keeps
-    # the source explicit.
+    # Preserve the measured-first legacy projection and its existing scalar
+    # domain. The additive typed rows above are the union of evidence kinds.
     guarding = pr_blast_radius.get("guarding_tests") or {}
-    all_tests_to_run = list(guarding.get("tests_to_run", []))
-    # One word saying where the list came from, because the two sources carry
-    # different weight and an agent cannot tell them apart from the ids alone.
-    # "measured" is coverage-proven execution; "inferred" is a test file the
-    # import graph shows reaching the change, which over-claims and is a
-    # candidate list, not a proof. Kept as a sibling field rather than mixed
-    # into the ids so no caller can read one as the other.
+    all_tests_to_run = list(guarding.get("tests_to_run") or [])
     tests_to_run_basis = guarding.get("basis") or "none"
-    # Only the inferred list is exclude-filtered. Its entries are repo file
-    # paths, so a user who excluded a tree must not be handed paths out of it;
-    # measured entries are test node ids ("path::name"), which are not paths and
-    # would not survive a path filter intact.
-    if tests_to_run_basis == "inferred":
-        all_tests_to_run = filter_path_list(all_tests_to_run, exclude_spec)
     tests_to_run = all_tests_to_run[:_TESTS_TO_RUN_LIMIT]
-    capped = len(all_tests_to_run) > _TESTS_TO_RUN_LIMIT
-    if capped:
+    tests_to_run_total = len(all_tests_to_run)
+    tests_capped = tests_to_run_total > _TESTS_TO_RUN_LIMIT
+    if tests_capped:
         collector.add(
             f"directive.tests_to_run beyond cap={_TESTS_TO_RUN_LIMIT} "
-            f"({len(all_tests_to_run) - _TESTS_TO_RUN_LIMIT} dropped)",
+            f"({tests_to_run_total - _TESTS_TO_RUN_LIMIT} dropped)",
             all_tests_to_run[_TESTS_TO_RUN_LIMIT:],
         )
-    if not all_tests_to_run:
+    if not all_recommendations:
         tests_to_run_suffix = ""
-    elif tests_to_run_basis == "measured":
+    else:
+        basis_totals = test_impact.get("recommendations_by_primary_basis") or {}
+        measured_total = int(basis_totals.get("measured", 0))
+        inferred_total = int(basis_totals.get("inferred", 0))
         tests_to_run_suffix = (
-            f" {len(all_tests_to_run)} coverage-backed test(s) guard the change - run these."
+            f" {test_recommendations_total} test recommendation(s): {measured_total} measured "
+            f"and {inferred_total} inferred, not coverage-proven candidate(s); "
+            f"each row carries its basis."
+        )
+    if recommendations_capped:
+        tests_to_run_suffix += (
+            f" Showing {_TESTS_TO_RUN_LIMIT} of {test_recommendations_total}; omitted "
+            "typed rows are captured by the response omission marker."
+        )
+
+    # Keep legacy ``missing_tests`` as changed-file test gaps when analysis is
+    # usable. The additive ``files_without_measured_tests`` field carries the
+    # narrower coverage claim without making older clients misread inferred rows.
+    coverage = test_impact.get("coverage") or {}
+    coverage_freshness = coverage.get("freshness") or {}
+    coverage_usable = coverage.get("status") in {"available", "partial"} and (
+        coverage_freshness.get("status") != "stale"
+    )
+    if coverage_usable:
+        full_gap_paths = {
+            path
+            for path in (_as_path(entry) for entry in pr_blast_radius.get("test_gaps") or [])
+            if path and not (exclude_spec and is_excluded(path, exclude_spec))
+        }
+        all_missing_tests = [path for path in changed_files if path in full_gap_paths]
+        missing_tests = all_missing_tests[:3]
+        missing_tests_total = len(all_missing_tests)
+        if missing_tests_total > len(missing_tests):
+            collector.add(
+                f"directive.missing_tests beyond cap=3 "
+                f"({missing_tests_total - len(missing_tests)} dropped)",
+                all_missing_tests[3:],
+            )
+        missing_tests_summary = (
+            f"Showing {len(missing_tests)} of {missing_tests_total} changed-file test gap(s)."
         )
     else:
-        tests_to_run_suffix = (
-            f" {len(all_tests_to_run)} test file(s) reach the change per the import graph "
-            f"(inferred, not coverage-proven) - run these first."
-        )
-    if capped:
-        # The cap is fine; nothing told the reader the full list is in the same
-        # response. guarding_tests is uncapped and carries the per-file map.
-        tests_to_run_suffix += (
-            f" Showing {_TESTS_TO_RUN_LIMIT} of {len(all_tests_to_run)}; "
-            f"all of them, and which file each guards, are in "
-            f"pr_blast_radius.guarding_tests."
+        missing_tests = []
+        missing_tests_total = 0
+        missing_tests_summary = (
+            f"Coverage analysis is {coverage.get('status', 'unavailable')}; "
+            "missing_tests is withheld rather than treated as empty evidence."
         )
 
     gov_count = len(governance_risk)
@@ -529,8 +544,29 @@ def _build_pr_directive(
         "may_break_tests": may_break_tests,
         "missing_cochanges": missing_cochanges,
         "missing_tests": missing_tests,
+        "missing_tests_semantics": "changed_file_test_gap_compatibility_projection",
+        "missing_tests_total": missing_tests_total,
+        "missing_tests_emitted": len(missing_tests),
+        "missing_tests_truncated": len(missing_tests) < missing_tests_total,
+        "missing_tests_omitted": missing_tests_total - len(missing_tests),
+        "files_without_measured_tests": list(test_impact.get("files_without_measured_tests") or []),
         "tests_to_run": tests_to_run,
         "tests_to_run_basis": tests_to_run_basis,
+        "tests_to_run_total": tests_to_run_total,
+        "tests_to_run_emitted": len(tests_to_run),
+        "tests_to_run_truncated": tests_capped,
+        "tests_to_run_omitted": tests_to_run_total - len(tests_to_run),
+        "test_recommendations": test_recommendations,
+        "test_recommendations_total": test_recommendations_total,
+        "test_recommendations_emitted": len(test_recommendations),
+        "test_recommendations_truncated": recommendations_capped,
+        "test_recommendations_omitted": max(
+            0, test_recommendations_total - len(test_recommendations)
+        ),
+        "test_analysis": test_impact.get("analysis") or {"status": "unavailable"},
+        "coverage_analysis": coverage,
+        "test_inference_analysis": test_impact.get("inference") or {"status": "unavailable"},
+        "test_unknown_files": list(test_impact.get("unknown_files") or []),
         "will_break_consumers": will_break_consumers,
         "will_break_consumers_semantics": "structural_reach_only",
         "will_break_consumers_deprecated": True,
@@ -554,7 +590,7 @@ def _build_pr_directive(
             f"~{len(may_break)} downstream file(s) may be affected, "
             f"{len(may_break_tests)} test(s) may break, "
             f"{len(missing_cochanges)} historical co-changer(s) missing, "
-            f"{len(missing_tests)} file(s) without tests."
+            f"{missing_tests_summary}"
             f"{tests_to_run_suffix}{gov_suffix}{xr_suffix}{bc_suffix}{cf_suffix}"
         ),
     }

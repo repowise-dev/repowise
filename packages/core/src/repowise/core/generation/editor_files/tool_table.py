@@ -87,9 +87,9 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
     ),
     "get_risk": (
         "get_risk(targets, changed_files?, include?)",
-        "Call before editing: what history says about touching these files. "
-        "PR mode (`changed_files`) leads with a `directive`: read `may_break` "
-        "/ `missing_cochanges` / `missing_tests` / `tests_to_run`.",
+        "Call before editing for file history and blast radius. PR mode "
+        "(`changed_files`) leads with `directive`; read typed "
+        "`test_recommendations` and coverage state first.",
     ),
     "get_change_risk": (
         "get_change_risk(revspec?, extensions?, exclude_patterns?)",
@@ -109,8 +109,7 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
     ),
     "get_overview": (
         "get_overview()",
-        "Architecture map. Call once, first, in an unfamiliar repo; skip it after "
-        "that.",
+        "Architecture map. Call once, first, in an unfamiliar repo; skip it after that.",
     ),
 }
 

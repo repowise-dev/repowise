@@ -82,12 +82,13 @@ def project_risk(payload: dict) -> dict:
     (15/10/10/5) before it gets here — so the block a caller would most want is
     the one an allowlist would silently discard, at almost no size.
     """
-    out: dict = {
-        "targets": {
-            name: _project_target(card) for name, card in (payload.get("targets") or {}).items()
-        }
+    out: dict = {}
+    if payload.get("directive"):
+        out["directive"] = payload["directive"]
+    out["targets"] = {
+        name: _project_target(card) for name, card in (payload.get("targets") or {}).items()
     }
-    for key in ("directive", "pr_blast_radius", "global_hotspots", "omission_marker"):
+    for key in ("pr_blast_radius", "global_hotspots", "omission_marker"):
         if payload.get(key):
             out[key] = payload[key]
     note = _ta.index_note(payload)
@@ -511,8 +512,7 @@ def risk_command(
         )
     elif result.hot_files:
         where = (
-            f" · {_ordinal(round(result.fix_percentile))} percentile of this repo's "
-            "recent commits"
+            f" · {_ordinal(round(result.fix_percentile))} percentile of this repo's recent commits"
             if result.fix_percentile is not None
             else ""
         )
