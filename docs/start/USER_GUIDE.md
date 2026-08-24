@@ -164,7 +164,7 @@ Grouped by what you are trying to do. Every flag for every command lives in the
 | `repowise symbol "<file>::<Name>"` | One symbol's body with live-verified line bounds. |
 | `repowise why "<q>"` | Decisions and rationale behind the shape of the code. A path gets its origin story; no argument gets the decision health dashboard. |
 | `repowise health` | Lowest-scoring files and why. `--trend` for direction, `--refactoring-targets` for concrete plans. |
-| `repowise risk main..HEAD` | Defect risk for a commit or range, scored 0-10. |
+| `repowise risk main..HEAD` | Repo-relative review percentile/classification plus a supporting 0-10 diff-shape score. |
 | `repowise dead-code` | What nothing references any more, by confidence tier. |
 | `repowise decision list` | Architectural decisions, their evidence and status. |
 | `repowise impacted-tests` | Only the tests a diff actually exercises. |
@@ -371,14 +371,14 @@ git pull && repowise update   # C: manual, when you prefer control
 ### Before you open a pull request
 
 ```bash
-repowise risk main..HEAD       # how risky does this change look, and why
+repowise risk main..HEAD       # repo-relative review priority and supporting evidence
 repowise impacted-tests        # the tests this diff actually exercises
 repowise health --trend        # did anything you touched get worse
 ```
 
-`repowise risk` in PR mode also tells you what a change is likely to break, which
-companion files usually move with the ones you touched, and where tests are
-missing.
+`get_risk` in PR mode also shows structural dependency reach (review candidates,
+not proven runtime breakage), companion files that historically move with the
+ones you touched, and where test evidence is missing.
 
 ### Reviewing someone else's pull request
 
@@ -407,7 +407,7 @@ instead of them interrupting someone.
 
 ```bash
 repowise init --no-prose -y             # free, no keys in CI, no questions
-repowise risk "$BASE_SHA..$HEAD_SHA"    # gate or annotate on risk
+repowise risk "$BASE_SHA..$HEAD_SHA"    # gate or annotate on review priority
 repowise export --format markdown --output ./docs/wiki/   # static hosting
 ```
 

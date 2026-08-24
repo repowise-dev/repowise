@@ -451,7 +451,17 @@ Modification risk assessment for files or a set of changed files.
 
 > **Opt-in blocks.** `impact_surface` and `direct_risks` are pagerank floats an agent cannot rank; `change_magnitude`, `risk_type` and `change_pattern` restate numbers printed beside them. All five are computed regardless and feed `risk_summary`; `include` only decides whether they ship. `global_hotspots` accompanies a multi-target call only, being ambient orientation that a single named file does not need; it ranks by fix history the same way `defect_profile` does.
 
-> **Scales.** `overall_risk_score` (in `pr_blast_radius`, with an `overall_risk_score_measures` note beside it) reads where the change lands. It is not comparable to `get_change_risk.score`, which is also 0-10 and reads the shape of the diff. Ratios derived from ownership or percentile columns are 0-1 (`hotspot_score`, `owner_pct`, `recent_owner_pct`); coverage and gap fields are 0-100 (`coverage_pct`, `branch_coverage_pct`, `share_of_repo_gap_pct`, `change_entropy_pct`, `churn_percentile`). The `_pct` suffix alone does not tell you which — check this table. Every emitted float is rounded to 4 significant digits.
+> **Scales.** `risk_scales` describes indexed file values: `hotspot_score`,
+> `owner_pct`, and `recent_owner_pct` are 0-1 ratios, while `risk_type` is an
+> uncalibrated category. In PR mode, `structural_impact_score` is a deterministic,
+> uncalibrated 0-10 structural-exposure heuristic; `localized` is below 4,
+> `moderate` is 4 to below 7, and `broad` is 7 or above. It is not a runtime-
+> breakage probability and is not authoritative for live change review.
+> Deprecated `overall_risk_score` remains an exact alias, with migration metadata.
+> Direct rows expose raw, unbounded `structural_score` values in
+> pagerank-weighted-hotspot units. These are not comparable to
+> `get_change_risk.score`. Coverage and gap fields are percentages from 0-100.
+> Every emitted float is rounded to 4 significant digits.
 
 When `changed_files` is passed, the exact serialized response starts with a `directive` block. Its core lists are the local blast radius: `may_break` (production files in structural reverse-import reach of the diff, candidates for review rather than proven breakage), `may_break_tests` (test files reached the same way, kept separate so a burst of tests doesn't crowd production impact out of the capped list), `missing_cochanges` (historical co-changers absent from the diff), compatibility `missing_tests`, and additive typed `test_recommendations`. Every recommendation retains `basis`, all retained `bases`, repository identity, source files, and evidence: `measured` means the per-test coverage map found the test; `inferred` means structural reachability found a candidate and is not coverage proof. `tests_to_run` preserves the older measured-first/fallback id projection and `tests_to_run_basis` remains `measured`, `inferred`, or `none`; `files_without_measured_tests` carries the narrower typed coverage claim. Matching total/emitted/truncated/omitted fields describe each exact pre-cap population. `coverage_analysis`, `test_inference_analysis`, and `test_analysis` distinguish available-empty evidence from unavailable, stale, partial, or degraded analysis; unavailable coverage with `tests_to_run: []` never means that no tests are needed. The full typed population is shared with the REST blast-radius response, while any budget-omitted directive rows are recoverable through the response omission marker. In workspace mode the directive also carries the cross-repo fallout of the changed repo:
 
@@ -498,14 +508,17 @@ shape of the live diff and needs no index refresh.
 | `exclude_patterns` | list[string] | No | Gitignore-style paths to omit; combined with root `.riskignore` rules |
 | `baseline` | int | No | Recent commits to sample for percentile ranking (default `200`; `0` disables every percentile, `risk_percentile` and `fix_history.percentile` alike) |
 
-**Returns:** `fix_history` first — the recency-weighted bug-fix record of the
+**Returns:** `risk_authority` identifies `risk_percentile` and `classification`
+as the benchmarked, population-relative authority for live change review.
+`fix_history` reports the recency-weighted bug-fix record of the
 files the change touches, with `files` naming where the pressure sits and
 `percentile` ranking it against the same measure over the repo's own recent
 commits. Triage on
 this: it is the part that separates a small edit to a fragile file from a large
 edit to a safe one. `available` is false when the history walk could not run.
 
-`score` measures diff size and spread, not where the change lands — see
+`score` is a supporting, offline-calibrated 0-10 model output that measures diff
+size and spread, not a probability and not where the change lands — see
 `score_measures` — and `score_unit` names the unit it is calibrated on (a single
 commit, so a PR-sized range reads high by construction). `risk_percentile`,
 `review_priority` and `classification` rank that same diff shape against recent
@@ -513,7 +526,10 @@ commits. `fallback_band` carries the absolute band and appears only when no
 baseline was available. `working_tree` says whether uncommitted work was the
 subject. `baseline_sample_size` reports how many filtered commits informed the
 percentile; `features`, `drivers`, and combined `exclude_patterns` make the
-result auditable.
+result auditable. `risk_scales` gives each field's kind, unit, range,
+calibration, authority, and shared thresholds. When a baseline is unavailable,
+`fallback_band` is the absolute per-commit classification; it is distinct from
+population-relative percentile behavior.
 
 It also returns `impacted_tests`, whose `tests_to_run` names the tests the
 per-test coverage map proves execute the change's changed *lines* (line-precise,
@@ -872,7 +888,7 @@ list_repos()
 
 #### `get_blast_radius`
 
-Cross-repo downstream impact: if you change this service, what breaks across the other repos?
+Cross-repo structural and historical reach from a changed service.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -880,9 +896,16 @@ Cross-repo downstream impact: if you change this service, what breaks across the
 | `max_depth` | int | No | Reachability depth (1-8, default 3) |
 | `include_behavioral` | bool | No | Include co-change (behavioral) edges (default `true`) |
 
-**Returns:** The impacted services ranked by impact `score`, each with `distance` (hops), `structural` (a real dependency vs co-change only), and the edge kinds that carried the impact; plus `impacted_repos`, `structural_count` / `behavioral_count`, `total_impacted`, and any `unresolved_targets`.
+**Returns:** The impacted services ranked by uncalibrated `score` (0-1 relative
+path weight, not a breakage probability), each with `distance` (hops),
+`structural` (a real dependency vs co-change only), and the edge kinds that
+carried the impact; plus `impact_score_semantics`, `impacted_repos`,
+`structural_count` / `behavioral_count`, `total_impacted`, and unresolved targets.
 
-**When to use:** Before changing a high-fan-out provider, see who consumes it across repo boundaries. Structural impact ("will break") outweighs behavioral co-change ("may drift"). Reads the same system graph the [Live System Map](../scale/WORKSPACES.md#live-system-map) renders.
+**When to use:** Before changing a high-fan-out provider, see who structurally
+consumes it across repo boundaries. Structural reach outweighs historical
+co-change in ranking, but neither is a runtime-breakage claim. Reads the same
+system graph the [Live System Map](../scale/WORKSPACES.md#live-system-map) renders.
 
 ```
 get_blast_radius(targets=["backend"])

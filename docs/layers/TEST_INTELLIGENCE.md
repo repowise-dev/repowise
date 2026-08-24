@@ -435,6 +435,6 @@ Full reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-covera
 ## See also
 
 - [CODE_HEALTH.md](CODE_HEALTH.md): the coverage markers and how they deduct from the score.
-- [CHANGE_RISK.md](CHANGE_RISK.md): the risk score that `impacted_tests` rides alongside.
+- [CHANGE_RISK.md](CHANGE_RISK.md): the authoritative review percentile and supporting diff-shape score that `impacted_tests` rides alongside.
 - [MCP_TOOLS.md](../agent/MCP_TOOLS.md#get_change_risk): full parameter and response reference.
 - [CONFIG.md](../reference/CONFIG.md): the `coverage:` block.
