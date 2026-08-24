@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import {
   ResponsiveTable,
   type ResponsiveColumn,
@@ -9,6 +10,7 @@ import {
   RoleBadge,
 } from "@repowise-dev/ui/workspace/contract-type-badge";
 import type { WorkspaceContractEntry } from "@/lib/api/types";
+import { contractDetailHref } from "./contract-href";
 
 type ContractRow = WorkspaceContractEntry & { _key: string };
 
@@ -68,9 +70,16 @@ const CONTRACT_COLUMNS: ResponsiveColumn<ContractRow>[] = [
 ];
 
 export function ContractsTable({ contracts }: { contracts: WorkspaceContractEntry[] }) {
+  const router = useRouter();
+
   return (
     <ResponsiveTable
       columns={CONTRACT_COLUMNS}
+      // The row is the verb. No "View" column and no icon cluster: there is
+      // exactly one thing a contract row does, and `ResponsiveTable` already
+      // carries the focus ring and the Enter/Space handling for both the table
+      // and the stacked-card rendering.
+      onRowClick={(c) => router.push(contractDetailHref(c))}
       rows={contracts.map((c) => ({
         // The contract identity, not the array index: an index renumbers every
         // row whenever a filter changes. `line` is part of the key because one
