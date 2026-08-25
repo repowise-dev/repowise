@@ -108,6 +108,37 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
         ),
         protected=("title", "architecture", "entry_points"),
     ),
+    "get_health": ResponseBudgetContract(
+        "blocks",
+        (
+            "suggestion_legend",
+            "coverage.files[]",
+            "trend.recent[]",
+            "trend.alerts[]",
+            "churn_complexity[]",
+            "test_findings[]",
+            "top_findings[]",
+            "findings[]",
+            "worst_files[]",
+            "modules[]",
+            "trends[]",
+            "metrics[]",
+            "refactoring_plans[]",
+            "performance_opportunities[]",
+            "high_leverage_files[]",
+            "secondary_rankings",
+        ),
+        protected=(
+            "mode",
+            "directive",
+            "targets",
+            "unresolved",
+            "known_modules",
+            "kpis",
+            "distribution",
+            "gap_analysis",
+        ),
+    ),
 }
 
 
@@ -305,6 +336,27 @@ def enforce_response_budget(
             headroom=0,
             record_counts=True,
         )
+        if tool == "get_health":
+            plans = result.get("refactoring_plans")
+            profiles = result.get("validation_profiles")
+            if isinstance(plans, list) and isinstance(profiles, list):
+                referenced = {
+                    plan.get("validation_profile_id")
+                    for plan in plans
+                    if isinstance(plan, dict) and plan.get("validation_profile_id")
+                }
+                kept_profiles = [
+                    profile
+                    for profile in profiles
+                    if isinstance(profile, dict) and profile.get("id") in referenced
+                ]
+                dropped_profiles = [profile for profile in profiles if profile not in kept_profiles]
+                if dropped_profiles:
+                    collector.add("validation_profiles no longer referenced after response budgeting", dropped_profiles)
+                    result["validation_profiles"] = kept_profiles
+                    result["validation_profiles_emitted"] = len(kept_profiles)
+                    result["validation_profiles_reduced_reason"] = "response_budget"
+                    result["truncated"] = True
         collector.attach(result)
 
     if response_chars(result) > limit:
