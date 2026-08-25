@@ -93,6 +93,22 @@ def test_collector_combined_doc_round_trip(repo_root: Path):
     assert _store_record(repo_root, ref)["source"] == "mcp:test_tool"
 
 
+def test_collector_merges_existing_omission_refs(repo_root: Path):
+    first = OmissionCollector("test_tool", repo_root=repo_root)
+    first.add("first", "alpha")
+    response: dict = {"_meta": {}}
+    first.attach(response)
+
+    second = OmissionCollector("test_tool", repo_root=repo_root)
+    second.add("second", "beta")
+    second.attach(response)
+
+    refs = response["_meta"]["omitted"]["refs"]
+    assert len(refs) == 2
+    assert "alpha" in (_store_get(repo_root, refs[0]) or "")
+    assert "beta" in (_store_get(repo_root, refs[1]) or "")
+
+
 def test_collector_inline_marker_is_byte_identical(repo_root: Path):
     collector = OmissionCollector("test_tool", repo_root=repo_root)
     original = "def f():\n    return 1\n\n# tail"
@@ -315,6 +331,43 @@ def test_fit_to_budget_trims_a_ranked_tail_but_never_empties_it(repo_root: Path,
     refs = response["_meta"]["omitted"]["refs"]
     stored = _joined(repo_root, refs)
     assert '"row": 5' in stored
+
+
+def test_fit_to_budget_reports_total_emitted_and_reason(repo_root: Path):
+    response = {"results": [{"row": i, "body": "r" * 1000} for i in range(6)]}
+    collector = OmissionCollector("get_answer", repo_root=repo_root)
+
+    fit_to_budget(
+        response,
+        ("results[]",),
+        collector,
+        char_budget=2200,
+        headroom=0,
+        record_counts=True,
+    )
+    collector.attach(response)
+
+    assert response["results_total"] == 6
+    assert response["results_emitted"] == len(response["results"])
+    assert response["results_reduced_reason"] == "response_budget"
+
+
+def test_fit_to_budget_can_reduce_a_ranked_mapping(repo_root: Path):
+    response = {"targets": {f"src/{i}.py": {"body": "x" * 1000} for i in range(6)}}
+    collector = OmissionCollector("get_risk", repo_root=repo_root)
+
+    fit_to_budget(
+        response,
+        ("targets[]",),
+        collector,
+        char_budget=2200,
+        headroom=0,
+        record_counts=True,
+    )
+
+    assert response["targets_total"] == 6
+    assert response["targets_emitted"] == len(response["targets"])
+    assert response["targets_reduced_reason"] == "response_budget"
 
 
 def _skeleton_response(text_chars: int = 12000) -> dict:

@@ -142,9 +142,16 @@ class OmissionCollector:
                     response["omission_marker"] = render_marker(ref, doc.count("\n") + 1, tokens)
             if self._refs:
                 meta = response.setdefault("_meta", {})
+                existing = meta.get("omitted")
+                existing_refs = (
+                    list(existing.get("refs") or []) if isinstance(existing, dict) else []
+                )
+                existing_tokens = (
+                    int(existing.get("tokens") or 0) if isinstance(existing, dict) else 0
+                )
                 meta["omitted"] = {
-                    "refs": list(self._refs),
-                    "tokens": self._omitted_tokens,
+                    "refs": [*existing_refs, *self._refs],
+                    "tokens": existing_tokens + self._omitted_tokens,
                     "restore": _RESTORE_HINT,
                 }
         except Exception:  # pragma: no cover - defensive
