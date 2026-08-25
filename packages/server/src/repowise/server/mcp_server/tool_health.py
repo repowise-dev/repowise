@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -49,7 +50,7 @@ from repowise.core.persistence.models import (
     RefactoringSuggestion,
 )
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.mcp_server._budget import effective_char_budget
+from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -251,106 +252,71 @@ _ONLY_ALIASES = {
 _DIRECTIVE_CANDIDATES = 3
 
 
-# Deliberately not ``CHAR_BUDGET`` (8000 tokens). That ceiling is for tools that
-# *summarize*; the dashboard is a ranked report and already measures ~44k chars
-# at the documented default ``limit=20``, so budgeting it there would silently
-# halve every list on a call that has never failed. The ceiling that matters here
-# is the one whose breach is an isError: pass an effectively-unbounded
-# ``configured`` so ``effective_char_budget`` returns the host-derived cap alone
-# (25000 tokens x 0.6 x 4 chars = 60,000), and follows a narrowed
-# ``MAX_MCP_OUTPUT_TOKENS`` down.
-_HOST_CEILING = 1 << 30
-
-# Room for what the guard adds *after* it measures: ``truncated_to_fit``, the
-# recovery sentence and ``timing_ms``. Without it the report of the trim pushed
-# the response back over the ceiling the trim existed to respect — the marker
-# has to be inside the budget, not on top of it. Same shape as ``tool_why``'s
-# ``_COLLECTOR_HEADROOM_CHARS``, and generous: over-reserving costs a row.
-_TRUNCATION_MARKER_HEADROOM = 400
-
-# Every list this response can carry that grows with the repo, trimmed
-# longest-first when the whole payload would overflow the host's tool-result cap.
-# Named rather than derived from "every value that is a list" so trimming can
-# never eat a small structural list (``kpis.performance_unsupported_languages``,
-# ``unresolved``) to save bytes a growable list is responsible for.
-#
-# **This list must stay exhaustive, and the first version of it was not.** It
-# held only the eight dashboard blocks that carry a ``limit`` cap, which are the
-# lists least able to overflow — while the three genuinely unbounded ones were
-# invisible to the guard. ``metrics`` and ``trends`` are built per *target* with
-# no cap at all (a ``module:`` target expands to every file in the module), and
-# targeted ``coverage.files`` serializes the per-line ``covered_lines`` arrays
-# that dashboard mode declines to read precisely because they measured 466,874 B.
-# A guard that misses those does something worse than nothing: it trims a small
-# capped list to zero, still overflows, and stamps ``truncated_to_fit`` claiming
-# it handled the problem. **When adding a list to this response, add it here.**
-#
-# Dotted entries address one level of nesting; the flat ``result.get(k)`` scan
-# would never have found them.
-_TRIMMABLE_LISTS = (
-    "performance_opportunities",
-    "refactoring_plans",
-    "high_leverage_files",
-    "worst_files",
-    "test_findings",
-    "top_findings",
-    "findings",
-    "churn_complexity",
-    "modules",
-    "metrics",
-    "trends",
-    "coverage.files",
-    "trend.recent",
-)
+def _stamp_collection(
+    result: dict[str, Any],
+    key: str,
+    *,
+    total: int | None = None,
+    reason: str = "limit",
+) -> None:
+    """Attach complete-population accounting to one emitted collection."""
+    rows = result.get(key)
+    if not isinstance(rows, list):
+        return
+    eligible = len(rows) if total is None else total
+    emitted = len(rows)
+    result[f"{key}_total"] = eligible
+    result[f"{key}_emitted"] = emitted
+    if emitted < eligible:
+        result[f"{key}_reduced_reason"] = reason
 
 
-def _resolve_list(result: dict[str, Any], path: str) -> list[Any] | None:
-    """The list at a ``_TRIMMABLE_LISTS`` path, or ``None`` when absent."""
-    node: Any = result
-    for part in path.split("."):
-        if not isinstance(node, dict):
-            return None
-        node = node.get(part)
-    return node if isinstance(node, list) and node else None
+def _validation_profile(validation: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Deduplicate a plan's repeated tests, targets, and command material."""
+    encoded = json.dumps(validation, sort_keys=True, separators=(",", ":"), default=str)
+    profile_id = "validation_" + hashlib.sha256(encoded.encode()).hexdigest()[:16]
+    tests = list(validation.get("tests") or [])
+    targets = list(validation.get("targets") or [])
+    profile = {
+        key: value
+        for key, value in validation.items()
+        if key not in {"tests", "targets", "commands", "truncated"}
+    }
+    profile.update(
+        {
+            "id": profile_id,
+            "tests": tests,
+            "tests_total": int(validation.get("total") or len(tests)),
+            "tests_emitted": len(tests),
+            "targets": targets,
+            "commands": list(validation.get("commands") or []),
+            "commands_total": len(validation.get("commands") or []),
+            "commands_emitted": len(validation.get("commands") or []),
+        }
+    )
+    if profile["tests_emitted"] < profile["tests_total"]:
+        profile["tests_reduced_reason"] = "analysis_source_cap"
+    return profile_id, profile
 
 
-def _fit_to_budget(result: dict[str, Any], budget: int) -> dict[str, int]:
-    """Trim ranked lists until *result* fits *budget* chars. Returns what it cut.
-
-    ``include`` only ever adds a block, and the dashboard's ranked lists compose:
-    measured on this repo, bare ``include=['refactoring']`` returns ~59k chars
-    with no single list at fault (refactoring_plans 34%, high_leverage_files 16%,
-    worst_files 16%, test_findings 13%, top_findings 13%). Past the host's
-    ``MAX_MCP_OUTPUT_TOKENS`` the result is *rejected* with an isError — the
-    agent loses the whole answer — so a per-list cap that is individually
-    reasonable is not enough; something has to bound the sum.
-
-    Trims the currently-longest list, so the cut lands on whichever block is
-    actually responsible rather than on a fixed victim. Every trimmed list keeps
-    its ``*_total`` sibling, and the cut is reported in
-    ``_meta.truncated_to_fit`` — the recovery path is ``only=[...]``, which gates
-    the work as well as the payload.
-    """
-    dropped: dict[str, int] = {}
-    size = len(json.dumps(result, default=str))
-    while size > budget:
-        candidates = {k: rs for k in _TRIMMABLE_LISTS if (rs := _resolve_list(result, k))}
-        longest = max(candidates, key=lambda k: len(candidates[k]), default=None)
-        if longest is None:
-            # Nothing left to give. Better an oversized response the host may
-            # reject than a silently empty one — and _meta says what happened.
-            break
-        rows = candidates[longest]
-        # Estimate how many rows the overflow is worth from this list's own mean
-        # row size, so a 200-row overflow is not 200 whole-response
-        # re-serializations. Never more than half the list per pass: the estimate
-        # is a mean over uneven rows, and over-trimming cannot be undone.
-        per_row = max(1, len(json.dumps(rows, default=str)) // len(rows))
-        take = max(1, min(len(rows), (size - budget) // per_row, max(1, len(rows) // 2)))
-        del rows[len(rows) - take :]
-        dropped[longest] = dropped.get(longest, 0) + take
-        size = len(json.dumps(result, default=str))
-    return dropped
+def _stamp_nested_collections(value: Any) -> None:
+    """Give every nested list an emitted count and an honest eligible total."""
+    if isinstance(value, list):
+        for item in value:
+            _stamp_nested_collections(item)
+        return
+    if not isinstance(value, dict):
+        return
+    for key, child in list(value.items()):
+        if isinstance(child, list):
+            total_key = f"{key}_total"
+            emitted_key = f"{key}_emitted"
+            total = int(value.get(total_key, len(child)) or 0)
+            value.setdefault(total_key, total)
+            value.setdefault(emitted_key, len(child))
+            if len(child) < total:
+                value.setdefault(f"{key}_reduced_reason", "limit")
+        _stamp_nested_collections(child)
 
 
 def _in_dimensions(row: Any, dimensions: set[str]) -> bool:
@@ -897,17 +863,12 @@ async def get_health(
     limit: int = 20,
     only: list[str] | None = None,
     refactoring_view: str = "canonical",
+    cursor: int = 0,
 ) -> dict:
     """Code-health scores and findings — self-check a file before/after editing.
 
-    No ``targets`` → dashboard led by a ``directive`` naming the first file to
-    fix. With ``targets`` → per-file scores and findings. Rank by
-    ``weighted_deficit`` (score-points x NLOC), not ``score``;
-    ``share_of_repo_gap_pct`` expresses the same quantity as a percentage.
-
-    Per file: ``score`` is defect risk *and* the headline — there is no
-    ``defect_score`` — beside ``maintainability_score`` / ``performance_score``
-    (never blended in).
+    No ``targets`` returns a directive-led dashboard; targets return ranked
+    per-file scores and findings using ``weighted_deficit``.
 
     Args:
         targets: file paths or ``module:<name>``. Empty → dashboard. Unmatched
@@ -917,25 +878,44 @@ async def get_health(
             ``performance``/``defect``/``maintainability`` (dimension).
             ``performance`` adds causal ``performance_opportunities``; with
             ``refactoring``, a compact ``recommendation_lede``. Only adds
-            blocks; pair with ``only``. Over cap sets ``_meta.truncated_to_fit``.
-        only: top-level keys to keep; ``["directive"]`` is cheapest and
-            ``*_total`` siblings survive. Only ``biomarkers``, ``accuracy``
-            and ``refactoring`` alias; ``performance``, ``defect``,
-            ``maintainability`` and ``signals`` do not and land in
-            ``unknown_only_keys``.
+            blocks; pair with ``only``. Final response budgeting and omission
+            recovery use the shared MCP delivery contract.
+        only: top-level keys to keep; identity, counts, unresolved targets,
+            and recovery metadata survive. ``biomarkers``, ``accuracy``, and
+            ``refactoring`` alias; ``performance``, ``defect``, and
+            ``maintainability`` do not.
         repo: usually omitted.
-        limit: max rows per ranked list (max 50, ``0`` for none).
+        limit: max rows per ranked list (``0`` for none). Performance
+            opportunities and refactoring plans have independent caps of 6;
+            performance evidence is capped at 3 rows per opportunity.
         refactoring_view: ``canonical`` (default) or diversified
             ``file_spread``.
+        cursor: zero-based offset for top-level ranked collections. Reduced
+            pages carry an exact next-page call; nested evidence uses omission
+            references instead.
     """
     started = perf_counter()
     # ``0`` means none, matching the ``module_limit`` convention on the REST
     # coverage route. It used to clamp up to 1, so the documented way to ask for
     # "the totals, none of the rows" silently returned a row.
-    limit = min(max(limit, 0), 50)
+    limit = max(limit, 0)
+    cursor = max(cursor, 0)
     if refactoring_view not in {"canonical", "file_spread"}:
         refactoring_view = "canonical"
     include_set = set(include or [])
+    known_includes = {
+        "biomarkers",
+        "refactoring",
+        "trend",
+        "coverage",
+        "accuracy",
+        "signals",
+        "churn_complexity",
+        "performance",
+        "defect",
+        "maintainability",
+    }
+    unknown_include_keys = sorted(include_set - known_includes)
     only_list = [_ONLY_ALIASES.get(k, k) for k in (only or [])]
     only_set = set(only_list)
 
@@ -993,6 +973,46 @@ async def get_health(
     file_targets = [t.replace("\\", "/") for t in raw_targets if not t.startswith("module:")]
 
     ctx = await _resolve_repo_context(repo)
+    omission_collector = OmissionCollector("get_health", repo_root=ctx.path)
+    semantic_omissions: dict[str, list[Any]] = {}
+    page_recoveries: dict[str, tuple[int, int, int]] = {}
+    paged_collections = {
+        "metrics",
+        "findings",
+        "trends",
+        "worst_files",
+        "high_leverage_files",
+        "top_findings",
+        "test_findings",
+        "modules",
+        "churn_complexity",
+        "coverage.files",
+        "refactoring_plans",
+        "performance_opportunities",
+    }
+
+    def bounded(rows: list[Any], label: str, *, cap: int | None = None) -> list[Any]:
+        """Bound one collection and retain its exact tail in shared omission storage."""
+        row_cap = limit if cap is None else cap
+        start = cursor if label in paged_collections else 0
+        kept = rows[start : start + row_cap]
+        if len(kept) < len(rows):
+            tail_start = start + len(kept)
+            if label in paged_collections:
+                if tail_start < len(rows):
+                    next_limit = (
+                        min(row_cap or 6, 6)
+                        if label in {"refactoring_plans", "performance_opportunities"}
+                        else min(len(rows) - tail_start, 50)
+                    )
+                    page_recoveries[label] = (
+                        tail_start,
+                        next_limit,
+                        len(rows) - tail_start,
+                    )
+            else:
+                semantic_omissions[label] = rows[row_cap:]
+        return kept
     # Performance headline inputs (dashboard mode): filled inside the session.
     perf_coverage: PerfCoverage | None = None
     perf_findings_count = 0
@@ -1091,7 +1111,7 @@ async def get_health(
             emitted = _rank_emitted(
                 [f for f in finding_rows if _in_dimensions(f, dimension_filter)]
             )
-            finding_rows = emitted[:limit]
+            finding_rows = emitted
             legend_rows: list[Any] = finding_rows
         else:
             # Narrow read over every open finding: the four attributes
@@ -1354,15 +1374,13 @@ async def get_health(
         churn_points: list[dict[str, Any]] = []
         if "churn_complexity" in include_set and not scoped:
             git_meta_by_path = await get_all_git_metadata(session, repository.id)
-            churn_points = [
-                asdict(p) for p in churn_complexity_points(all_metrics, git_meta_by_path)[:limit]
-            ]
+            churn_points = [asdict(p) for p in churn_complexity_points(all_metrics, git_meta_by_path)]
 
         # Load the snapshot window for the repo-level trend block and/or the
         # per-file trajectory we attach in targeted mode ("should I touch this
         # file" context for agents).
         snapshots: list[Any] = []
-        if "trend" in include_set or scoped:
+        if "trend" in include_set or (scoped and wants("trends")):
             snapshots = await list_health_snapshots(session, repository.id, limit=20)
 
         # Dominant-cause lead per file. Targeted mode wants one per target, so
@@ -1463,6 +1481,9 @@ async def get_health(
             if m.file_path in signals_by_path:
                 row["signals"] = signals_by_path[m.file_path]
             metric_payload.append(row)
+        module_rollup = _module_rollups(
+            [m for m in all_metrics if m.module in set(module_targets)]
+        )
         result: dict[str, Any] = {
             "mode": "targets",
             "targets": raw_targets,
@@ -1473,11 +1494,14 @@ async def get_health(
             # visible — a ``module:`` target expands to every file in the module,
             # so this is the one growable list whose length the caller cannot
             # infer from what they passed.
-            "metrics": metric_payload,
+            **({"modules": module_rollup} if module_targets else {}),
+            "metrics": bounded(metric_payload, "metrics"),
             "metrics_total": len(metric_payload),
             # Capped like every other ranked list, with the total alongside so
             # the truncation is visible rather than inferred from the length.
-            "findings": [_serialize_finding(f) for f in finding_rows[:limit]],
+            "findings": bounded(
+                [_serialize_finding(f) for f in finding_rows], "findings"
+            ),
             "findings_total": findings_total,
         }
         unresolved = _unresolved_targets(
@@ -1520,10 +1544,27 @@ async def get_health(
                 entry["unclamped_delta"] = t.unclamped_delta
             trends.append(entry)
         if trends:
-            result["trends"] = trends
-        if module_targets:
-            in_modules = [m for m in all_metrics if m.module in set(module_targets)]
-            result["modules"] = _module_rollups(in_modules)
+            result["trends"] = bounded(trends, "trends")
+        if module_targets and not only and not include_set:
+            result["secondary_rankings"] = {
+                "findings": {
+                    "total": findings_total,
+                    "call": (
+                        f"get_health(targets={raw_targets!r}, only=['findings'], "
+                        f"repo={repo!r}, limit=50, refactoring_view='{refactoring_view}')"
+                    ),
+                },
+                "trends": {
+                    "total": len(trends),
+                    "call": (
+                        f"get_health(targets={raw_targets!r}, only=['trends'], "
+                        f"repo={repo!r}, limit=50, refactoring_view='{refactoring_view}')"
+                    ),
+                },
+            }
+            for block in ("findings", "trends"):
+                result.pop(block, None)
+                result.pop(f"{block}_total", None)
     else:
         # Dashboard mode — top-N worst files + headline findings + the
         # per-module rollup so the overview page doesn't need a second
@@ -1533,7 +1574,6 @@ async def get_health(
         all_modules = _module_rollups(all_metrics)
         gap = _gap_analysis(all_metrics)
         result = {
-            "mode": "dashboard",
             # Lead with the call, not the data. Every block below ranks and
             # describes; this one recommends.
             "directive": _directive(
@@ -1543,15 +1583,16 @@ async def get_health(
                 plan_biomarkers_by_path,
                 plan_count_by_path,
             ),
+            "mode": "dashboard",
             "kpis": kpis,
             "distribution": health_distribution(all_metrics),
             # Where the gap to Healthy concentrates — the "few files, not the
             # long tail" reframe that turns a repo-wide number into a short list.
             "gap_analysis": gap,
-            "worst_files": [
+            "worst_files": bounded([
                 _serialize_metric(m, leads.get(m.file_path), is_test=m.file_path in test_paths)
-                for m in metric_rows[:limit]
-            ],
+                for m in metric_rows
+            ], "worst_files"),
             # Both ranked file lists deliberately keep test files in place, and
             # both now say which rows are tests. Measured on this repo, 0 of the
             # top 25 by the worst-first comparator are test material, so there
@@ -1568,7 +1609,7 @@ async def get_health(
             # share is bounded by 100% and the rows sum to 100% by construction
             # — the net gap would let healthy files cushion the total and push a
             # single large file over 100% (issue #1437).
-            "high_leverage_files": [
+            "high_leverage_files": bounded([
                 {
                     **_serialize_metric(
                         m, leads.get(m.file_path), is_test=m.file_path in test_paths
@@ -1585,23 +1626,49 @@ async def get_health(
                         else None
                     ),
                 }
-                for m in by_leverage[:limit]
-            ],
+                for m in by_leverage
+            ], "high_leverage_files"),
             "high_leverage_files_total": len(by_leverage),
-            "top_findings": [_serialize_finding(f) for f in finding_rows[:limit]],
+            "top_findings": bounded(
+                [_serialize_finding(f) for f in finding_rows], "top_findings"
+            ),
             "top_findings_total": findings_total,
             # The test half of the same ranked set, in its own bucket so a
             # thrashing test suite stays visible without competing with
             # production defect risk for the most-read list.
-            "test_findings": [_serialize_finding(f) for f in test_finding_rows[:limit]],
+            "test_findings": bounded(
+                [_serialize_finding(f) for f in test_finding_rows], "test_findings"
+            ),
             "test_findings_total": test_findings_total,
             # Worst-first, so the cap keeps the modules worth looking at. On a
             # monorepo the tail is dozens of single-file buckets.
-            "modules": all_modules[:limit],
+            "modules": bounded(all_modules, "modules"),
             "modules_total": len(all_modules),
         }
+        if not only:
+            result["secondary_rankings"] = {
+                "worst_files": {
+                    "total": len(metric_rows),
+                    "call": f"get_health(repo={repo!r}, only=['worst_files'], limit=50)",
+                },
+                "top_findings": {
+                    "total": findings_total,
+                    "call": f"get_health(repo={repo!r}, only=['top_findings'], limit=50)",
+                },
+                "test_findings": {
+                    "total": test_findings_total,
+                    "call": f"get_health(repo={repo!r}, only=['test_findings'], limit=50)",
+                },
+                "modules": {
+                    "total": len(all_modules),
+                    "call": f"get_health(repo={repo!r}, only=['modules'], limit=50)",
+                },
+            }
+            for block in ("worst_files", "top_findings", "test_findings", "modules"):
+                result.pop(block, None)
+                result.pop(f"{block}_total", None)
         if "churn_complexity" in include_set:
-            result["churn_complexity"] = churn_points
+            result["churn_complexity"] = bounded(churn_points, "churn_complexity")
         if "accuracy" in include_set:
             # Self-validation: does the score rank the buggy files first?
             # Scored over the full open set (``accuracy_rows``), not the capped
@@ -1619,20 +1686,45 @@ async def get_health(
         # rows / 4.7MB, which overflows an agent's context and returns nothing
         # usable. Findings arrive impact-ordered, so the cap keeps the ones
         # worth reading.
-        result["findings"] = [_serialize_finding(f) for f in finding_rows[:limit]]
+        result["findings"] = bounded(
+            [_serialize_finding(f) for f in finding_rows], "findings"
+        )
         result["findings_total"] = findings_total
         # Same production/test split as ``top_findings``: this block only ever
         # fires in dashboard mode (targeted mode set ``findings`` above), so it
         # is describing the repo, not a file the caller named.
-        result["test_findings"] = [_serialize_finding(f) for f in test_finding_rows[:limit]]
+        result["test_findings"] = bounded(
+            [_serialize_finding(f) for f in test_finding_rows], "test_findings"
+        )
         result["test_findings_total"] = test_findings_total
 
     if "refactoring" in include_set:
         # Canonical is the shared REST/MCP/CLI order.  File diversity remains
         # available only through the explicitly named ``file_spread`` view.
-        result["refactoring_plans"] = [
-            recommendation.as_dict() for recommendation in refactoring_recommendations[:limit]
-        ]
+        validation_profiles: dict[str, dict[str, Any]] = {}
+        plan_payload = []
+        selected_recommendations = bounded(
+            refactoring_recommendations,
+            "refactoring_plans",
+            cap=min(limit, 6),
+        )
+        for recommendation in selected_recommendations:
+            payload = recommendation.as_dict()
+            validation = payload.pop("validation", None)
+            if validation:
+                profile_id, profile = _validation_profile(validation)
+                validation_profiles.setdefault(profile_id, profile)
+                payload["validation_profile_id"] = profile_id
+            plan_payload.append(payload)
+        result["refactoring_plans"] = plan_payload
+        if validation_profiles:
+            result["validation_profiles"] = list(validation_profiles.values())
+            _stamp_collection(
+                result,
+                "validation_profiles",
+                total=len(validation_profiles),
+                reason="profile_cap",
+            )
         result["refactoring_plans_total"] = len(refactoring_rows)
         # The deterministic prose suggestion is the fallback for biomarkers
         # that have no structured detector yet. It is emitted once per
@@ -1647,6 +1739,18 @@ async def get_health(
 
     if "trend" in include_set:
         summary = diff_snapshots(snapshots)
+        recent = recent_kpis(snapshots, limit=10)
+        alerts = [
+            {
+                "kind": a.kind,
+                "metric": a.metric,
+                "current": a.current,
+                "baseline": a.baseline,
+                "delta": a.delta,
+                "message": a.message,
+            }
+            for a in summary.alerts
+        ]
         result["trend"] = {
             "current_hotspot_health": summary.current_hotspot_health,
             "current_average_health": summary.current_average_health,
@@ -1654,29 +1758,45 @@ async def get_health(
             "previous_average_health": summary.previous_average_health,
             "hotspot_delta": summary.hotspot_delta,
             "average_delta": summary.average_delta,
-            "alerts": [
-                {
-                    "kind": a.kind,
-                    "metric": a.metric,
-                    "current": a.current,
-                    "baseline": a.baseline,
-                    "delta": a.delta,
-                    "message": a.message,
-                }
-                for a in summary.alerts
-            ],
-            "recent": recent_kpis(snapshots, limit=10),
+            "alerts": bounded(alerts, "trend.alerts"),
+            "alerts_total": len(alerts),
+            "alerts_emitted": min(len(alerts), limit),
+            "recent": bounded(recent, "trend.recent"),
+            "recent_total": len(recent),
+            "recent_emitted": min(len(recent), limit),
         }
+        if len(alerts) > limit:
+            result["trend"]["alerts_reduced_reason"] = "limit"
+        if len(recent) > limit:
+            result["trend"]["recent_reduced_reason"] = "limit"
 
     opportunities = []
     if "performance" in include_set and wants_performance_opportunities:
+        performance_rows = [row for row in lead_rows if _in_dimensions(row, {"performance"})]
         opportunities = build_performance_opportunities(
-            [row for row in lead_rows if _in_dimensions(row, {"performance"})],
-            evidence_limit=8,
+            performance_rows,
+            evidence_limit=max(len(performance_rows), 3),
         )
-        result["performance_opportunities"] = [
-            opportunity.as_dict() for opportunity in opportunities[:limit]
-        ]
+        opportunity_payload = []
+        selected_opportunities = bounded(
+            opportunities,
+            "performance_opportunities",
+            cap=min(limit, 6),
+        )
+        for opportunity in selected_opportunities:
+            payload = opportunity.as_dict()
+            evidence = list(payload.get("evidence", []))
+            payload["evidence"] = bounded(
+                evidence,
+                f"performance_opportunities.{opportunity.opportunity_id}.evidence",
+                cap=3,
+            )
+            payload["evidence_total"] = payload.get("observations_total", len(evidence))
+            payload["evidence_emitted"] = len(payload["evidence"])
+            if payload["evidence_emitted"] < payload["evidence_total"]:
+                payload["evidence_reduced_reason"] = "evidence_cap"
+            opportunity_payload.append(payload)
+        result["performance_opportunities"] = opportunity_payload
         result["performance_opportunities_total"] = len(opportunities)
 
     if {"performance", "refactoring"} <= include_set and wants("recommendation_lede"):
@@ -1724,7 +1844,6 @@ async def get_health(
                         "cost",
                         "risk",
                         "rank_score",
-                        "validation",
                     )
                 }
                 if lead_payload
@@ -1732,8 +1851,10 @@ async def get_health(
             ),
             "performance_plan_id": matching.id if matching else None,
             "next_call": (
-                "get_health(include=['performance','refactoring'], limit=3, "
-                "only=['performance_opportunities','refactoring_plans'])"
+                f"get_health(targets={raw_targets!r}, repo={repo!r}, "
+                "include=['performance','refactoring'], limit=3, "
+                "only=['performance_opportunities','refactoring_plans'], "
+                f"refactoring_view='{refactoring_view}')"
             ),
         }
 
@@ -1741,14 +1862,16 @@ async def get_health(
         # Drop the bulky covered-lines arrays from dashboard mode; full
         # detail is available in targeted mode.
         if scoped:
-            coverage_payload = [_serialize_coverage_row(r) for r in coverage_rows]
-            _attach_coverage_decay(coverage_payload, coverage_rows, str(ctx.path))
+            selected_coverage = bounded(coverage_rows, "coverage.files")
+            coverage_payload = [_serialize_coverage_row(r) for r in selected_coverage]
+            _attach_coverage_decay(coverage_payload, selected_coverage, str(ctx.path))
         else:
             # Built narrow, not built wide and subtracted from. These rows came
             # back without the column at all (see the read above).
-            coverage_payload = [
-                _serialize_coverage_row(r, covered_lines=False) for r in coverage_rows[:limit]
+            full_coverage_payload = [
+                _serialize_coverage_row(r, covered_lines=False) for r in coverage_rows
             ]
+            coverage_payload = bounded(full_coverage_payload, "coverage.files")
         # ``ingested_at`` is a datetime on the summary too — coerce.
         if coverage_summary.get("ingested_at") is not None:
             coverage_summary = {
@@ -1758,7 +1881,11 @@ async def get_health(
         result["coverage"] = {
             "summary": coverage_summary,
             "files": coverage_payload,
+            "files_total": len(coverage_rows),
+            "files_emitted": len(coverage_payload),
         }
+        if len(coverage_payload) < len(coverage_rows):
+            result["coverage"]["files_reduced_reason"] = "limit"
 
     # (The dimension filter — ``include=["performance"]`` and friends, so an
     # agent can ask "show me only the performance risk in this change" — is
@@ -1790,6 +1917,35 @@ async def get_health(
             bt: suggestion_for(bt) for bt in sorted(t for t in present_types if t)
         }
 
+    collection_totals = {
+        "targets": len(raw_targets),
+        "metrics": len(metric_payload) if scoped else None,
+        "findings": findings_total,
+        "trends": len(trends) if scoped else None,
+        "modules": len(module_rollup) if scoped else len(all_modules),
+        "worst_files": len(metric_rows),
+        "high_leverage_files": len(by_leverage),
+        "top_findings": findings_total,
+        "test_findings": test_findings_total,
+        "churn_complexity": len(churn_points),
+        "refactoring_plans": len(refactoring_recommendations),
+        "performance_opportunities": len(opportunities),
+    }
+    for key, total in collection_totals.items():
+        if total is None:
+            continue
+        cap_reason = (
+            "collection_cap"
+            if key in {"refactoring_plans", "performance_opportunities"}
+            and limit > 6
+            and len(result.get(key, [])) == 6
+            else "limit"
+        )
+        _stamp_collection(result, key, total=total, reason=cap_reason)
+    if unknown_include_keys:
+        result["unknown_include_keys"] = unknown_include_keys
+    _stamp_nested_collections(result)
+
     # Projection. ``include`` could only ever add blocks, so asking for one
     # extra block re-shipped the whole dashboard with it; ``only`` is the
     # subtract half. Applied last so it can drop anything above, and ``mode`` /
@@ -1811,9 +1967,39 @@ async def get_health(
         # error report.
         keep = (
             set(only_list)
-            | {"mode", "unresolved", "known_modules"}
-            | {f"{k}_total" for k in only_list}
+            | {
+                "mode",
+                "targets",
+                "targets_total",
+                "targets_emitted",
+                "unresolved",
+                "unresolved_total",
+                "unresolved_emitted",
+                "known_modules",
+                "known_modules_total",
+                "known_modules_emitted",
+                "unknown_include_keys",
+                "unknown_include_keys_total",
+                "unknown_include_keys_emitted",
+                "recovery",
+            }
+            | {
+                suffix
+                for k in only_list
+                for suffix in (
+                    f"{k}_total",
+                    f"{k}_emitted",
+                    f"{k}_reduced_reason",
+                )
+            }
         )
+        if "refactoring_plans" in only_set:
+            keep |= {
+                "validation_profiles",
+                "validation_profiles_total",
+                "validation_profiles_emitted",
+                "validation_profiles_reduced_reason",
+            }
         # A key that does not exist in this response is named rather than
         # quietly yielding an empty one — same rule as ``unresolved`` above.
         # A misspelled projection is otherwise indistinguishable from a block
@@ -1825,6 +2011,26 @@ async def get_health(
         result = {k: v for k, v in result.items() if k in keep}
         if unknown:
             result["unknown_only_keys"] = unknown
+            _stamp_collection(result, "unknown_only_keys", total=len(unknown))
+
+    visible_recoveries = {
+        label: values
+        for label, values in page_recoveries.items()
+        if label.split(".", 1)[0] in result
+    }
+    if visible_recoveries:
+        recovery: dict[str, dict[str, Any]] = {}
+        for label, (next_cursor, next_limit, remaining) in visible_recoveries.items():
+            root = label.split(".", 1)[0]
+            recovery[label] = {
+                "remaining": remaining,
+                "call": (
+                    f"get_health(targets={raw_targets!r}, include={list(include or [])!r}, "
+                    f"repo={repo!r}, limit={next_limit}, only={[root]!r}, "
+                    f"refactoring_view='{refactoring_view}', cursor={next_cursor})"
+                ),
+            }
+        result["recovery"] = recovery
 
     # Targeted mode scopes the stale signal to the asked-about files; the
     # dashboard (no targets) keeps the repo-level warning.
@@ -1832,7 +2038,8 @@ async def get_health(
     # When the health pass last ran, which is a separate pass from indexing and
     # can lag it. ``_build_meta``'s fields all describe the *index*, so a stale
     # health row was previously invisible.
-    analyzed = [m for m in all_metrics if getattr(m, "updated_at", None)]
+    analyzed_source = metric_rows if scoped else all_metrics
+    analyzed = [m for m in analyzed_source if getattr(m, "updated_at", None)]
     if analyzed:
         latest = max(analyzed, key=lambda m: m.updated_at)
         result["_meta"]["health_analyzed_at"] = latest.updated_at.isoformat()
@@ -1847,18 +2054,15 @@ async def get_health(
             result["_meta"]["health_analyzed_commit"] = latest_commit[:12]
         if len(commits) > 1:
             result["_meta"]["health_analyzed_commits_distinct"] = len(commits)
-    # Keep the whole response under the host's tool-result cap. Applied after the
-    # projection (so ``only`` is credited for what it saved) and after ``_meta``
-    # (which the host tokenizes too), but before ``timing_ms`` so the reported
-    # time covers the trim.
-    if dropped := _fit_to_budget(
-        result, effective_char_budget(_HOST_CEILING) - _TRUNCATION_MARKER_HEADROOM
-    ):
-        result["_meta"]["truncated_to_fit"] = dropped
-        result["_meta"]["truncated_recovery"] = (
-            "Over MCP result cap. Re-request only=[...] — each list's *_total says what was there."
-        )
     # Server-side wall clock, as ``get_context`` already reports. Without it a
     # regression in here is invisible until someone profiles it by hand.
+    for label, dropped in semantic_omissions.items():
+        root = label.split(".", 1)[0]
+        if root in result:
+            omission_collector.add(
+                f"{label} beyond emitted cap ({len(dropped)} dropped)",
+                [row.as_dict() if hasattr(row, "as_dict") else row for row in dropped],
+            )
+    omission_collector.attach(result)
     result["_meta"]["timing_ms"] = round((perf_counter() - started) * 1000, 2)
     return result
