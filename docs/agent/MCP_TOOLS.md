@@ -451,8 +451,12 @@ Modification risk assessment for files or a set of changed files.
 
 > **Opt-in blocks.** `impact_surface` and `direct_risks` are pagerank floats an agent cannot rank; `change_magnitude`, `risk_type` and `change_pattern` restate numbers printed beside them. All five are computed regardless and feed `risk_summary`; `include` only decides whether they ship. `global_hotspots` accompanies a multi-target call only, being ambient orientation that a single named file does not need; it ranks by fix history the same way `defect_profile` does.
 
-> **Scales.** `risk_scales` describes indexed file values: `hotspot_score`,
-> `owner_pct`, and `recent_owner_pct` are 0-1 ratios, while `risk_type` is an
+> **Scales.** Every response carries the facts that stop a misreading: unit,
+> range, calibration status, and whether the value is authoritative. The
+> per-field dictionary behind them never varies between calls, so it ships only
+> with `include=["scales"]` - ask for it once per session, not per call. That
+> dictionary describes indexed file values: `hotspot_score`, `owner_pct`, and
+> `recent_owner_pct` are 0-1 ratios, while `risk_type` is an
 > uncalibrated category. In PR mode, `structural_impact_score` is a deterministic,
 > uncalibrated 0-10 structural-exposure heuristic; `localized` is below 4,
 > `moderate` is 4 to below 7, and `broad` is 7 or above. It is not a runtime-
@@ -526,8 +530,9 @@ commits. `fallback_band` carries the absolute band and appears only when no
 baseline was available. `working_tree` says whether uncommitted work was the
 subject. `baseline_sample_size` reports how many filtered commits informed the
 percentile; `features`, `drivers`, and combined `exclude_patterns` make the
-result auditable. `risk_scales` gives each field's kind, unit, range,
-calibration, authority, and shared thresholds. When a baseline is unavailable,
+result auditable. `risk_authority` always names the field to act on;
+`include=["scales"]` adds each field's kind, unit, range, calibration,
+authority, and shared thresholds. When a baseline is unavailable,
 `fallback_band` is the absolute per-commit classification; it is distinct from
 population-relative percentile behavior.
 

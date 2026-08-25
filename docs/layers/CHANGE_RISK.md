@@ -165,7 +165,8 @@ lands at 0.46–0.57 AUC — which is a fact about the labels, not about the
 feature. So the model constants are unchanged and the score is reported as what
 it demonstrably is.
 
-`risk_authority`, `risk_scales`, and `score_measures` state this in the payload.
+`risk_authority` and `score_measures` state this in every payload;
+`include=["scales"]` adds the per-field dictionary.
 Read the result in this order:
 
 - **Review priority** / **classification** / **percentile**: where this change's
@@ -291,22 +292,26 @@ and all three bands are occupied. The corpus lives in
 
 | Public value | Producer and evidence | Unit / range | Calibration and authority |
 | --- | --- | --- | --- |
-| `get_change_risk.score` / REST `score` / stored `change_risk_score` | Offline-fitted logistic model over live diff size, spread, entropy, and author experience; deterministic at runtime | normalized points, 0â€“10; calibrated at single-commit granularity | Benchmarked on 4,102 commits across 7 repositories; supporting signal, not a probability or review authority |
-| `risk_percentile` | Mid-rank of the same score among filtered recent commits | percentile rank, 0â€“100 | Population-relative benchmark; authoritative with `classification` for live change review |
+| `get_change_risk.score` / REST `score` / stored `change_risk_score` | Offline-fitted logistic model over live diff size, spread, entropy, and author experience; deterministic at runtime | normalized points, 0-10; calibrated at single-commit granularity | Benchmarked on 4,102 commits across 7 repositories; supporting signal, not a probability or review authority |
+| `risk_percentile` | Mid-rank of the same score among filtered recent commits | percentile rank, 0-100 | Population-relative benchmark; authoritative with `classification` for live change review |
 | `review_priority` / `classification` | Shared percentile terciles at 33.33 and 66.67 | category | Authoritative population-relative label |
 | `fallback_band` | Shared score thresholds at 4 and 7, emitted only without a usable baseline | category | Heuristic thresholds on the benchmarked model score; absolute fallback, not population-relative |
 | `fix_history.density` | Churn-weighted, recency-decayed prior bug fixes on touched files | recency-weighted prior fixes, unbounded | Uncalibrated historical heuristic; separate evidence, never folded into a probability |
-| `get_risk` `hotspot_score` | Repository-relative churn percentile from the index | ratio, 0â€“1 | Uncalibrated normalized component |
-| `get_risk` `health_score` | Indexed code-health model | health points, 0â€“10; higher is healthier | Benchmarked file-health signal, not interchangeable with change-risk points |
-| `structural_impact_score` | PR structural formula above | normalized points, 0â€“10 | Deterministic and uncalibrated; not authoritative. `overall_risk_score` is an exact deprecated alias |
+| `get_risk` `hotspot_score` | Repository-relative churn percentile from the index | ratio, 0-1 | Uncalibrated normalized component |
+| `get_risk` `health_score` | Indexed code-health model | health points, 0-10; higher is healthier | Benchmarked file-health signal, not interchangeable with change-risk points |
+| `structural_impact_score` | PR structural formula above | normalized points, 0-10 | Deterministic and uncalibrated; not authoritative. `overall_risk_score` is an exact deprecated alias |
 | `direct_risks[].structural_score` | `pagerank * (1 + temporal_hotspot)` | raw pagerank-weighted-hotspot value, unbounded | Uncalibrated within-change structural weight. `risk_score` is an exact deprecated alias |
 | `cochange_warnings[].score` | Number of historical commits in which the pair co-changed | raw commit count, 0+ | Historical evidence only; cannot become structural or runtime-breakage evidence |
-| workspace `impacted[].score` | Strongest path product of edge confidence, edge-kind weight, and `0.6` per hop | relative path weight, 0â€“1 | Deterministic, uncalibrated ranking heuristic; not a probability or change-review authority |
-| dashboard hotspot triage index | `40% * churn percentile + 35% * bus-factor tier + 25% * bounded temporal activity` | heuristic points, 0â€“100 | Client-side, uncalibrated orientation only; labelled adjacent to the chart |
+| workspace `impacted[].score` | Strongest path product of edge confidence, edge-kind weight, and `0.6` per hop | relative path weight, 0-1 | Deterministic, uncalibrated ranking heuristic; not a probability or change-review authority |
+| dashboard hotspot triage index | `40% * churn percentile + 35% * bus-factor tier + 25% * bounded temporal activity` | heuristic points, 0-100 | Client-side, uncalibrated orientation only; labelled adjacent to the chart |
 
-Machine-readable `risk_authority`, `risk_scales`,
-`structural_impact_scale`, `overall_risk_score_compatibility`, and
-`impact_score_semantics` carry the same definitions on MCP and REST payloads.
+Machine-readable `risk_authority`, `structural_impact_scale`,
+`overall_risk_score_compatibility`, and `impact_score_semantics` carry these
+definitions on every payload. They ship the guard tier - unit, range,
+calibration status, authority - by default. The reference tier (fitting corpus,
+formula, component breakdown, and the full `risk_scales` dictionary) is
+identical on every call, so MCP returns it only for `include=["scales"]`; the
+CLI `--json` output and this table carry it unconditionally.
 
 ## Cross-repo change risk (workspace mode)
 

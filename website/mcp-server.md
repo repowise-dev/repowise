@@ -379,10 +379,11 @@ spread output, not a probability (see `score_measures`), with
 the `score_unit` it is calibrated on, repo-relative `risk_percentile` /
 `review_priority` / `classification` for that diff shape, a `fallback_band` when
 there was no baseline to rank against, plus `impacted_tests` when a per-test
-coverage map is ingested (`repowise coverage add`). `risk_scales` supplies the
-kind, units, range, calibration, authority, and shared thresholds for each
-value; `fallback_band` is an absolute per-commit classification, not the
-population-relative percentile classification.
+coverage map is ingested (`repowise coverage add`). `risk_authority` names the
+field to act on; `include=["scales"]` supplies the kind, units, range,
+calibration, authority, and shared thresholds for each value. `fallback_band`
+is an absolute per-commit classification, not the population-relative
+percentile classification.
 
 **When to use:** Before merging a commit or PR range, or on work you have not
 committed yet.
