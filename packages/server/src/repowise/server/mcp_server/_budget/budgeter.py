@@ -303,6 +303,7 @@ def truncate_to_budget(
     char_budget: int | None = None,
     *,
     collector: OmissionCollector | None = None,
+    record_counts: bool = False,
 ) -> dict[str, Any]:
     """Cap a targets-shaped response at roughly ``TOKEN_BUDGET`` tokens.
 
@@ -332,8 +333,10 @@ def truncate_to_budget(
 
     With a *collector*, every dropped piece of content is also captured and
     persisted, and the response gains ``omission_marker`` + ``_meta.omitted``
-    (see :class:`OmissionCollector`). Without one, behaviour is byte-identical
-    to the original silent-drop implementation.
+    (see :class:`OmissionCollector`). ``record_counts`` adds the shared
+    ``*_total`` / emitted / reason fields for final-delivery accounting. With
+    neither option, behaviour is byte-identical to the original silent-drop
+    implementation.
 
     Edge cases:
       * Empty ``targets`` → returns unchanged with ``truncated=False``.
@@ -346,7 +349,7 @@ def truncate_to_budget(
     if char_budget is None:
         char_budget = effective_char_budget()
     try:
-        result = _run_stages(result, char_budget, collector)
+        result = _run_stages(result, char_budget, collector, record_counts)
     finally:
         if collector is not None:
             collector.attach(result)
@@ -378,6 +381,7 @@ def _run_stages(
     result: dict[str, Any],
     char_budget: int,
     collector: OmissionCollector | None,
+    record_counts: bool,
 ) -> dict[str, Any]:
     result.setdefault("truncated", False)
     result.setdefault("dropped_targets", [])
@@ -496,11 +500,12 @@ def _run_stages(
             dropped_syms = list(ordered)
         docs["symbols"] = kept
         if dropped or symbol_content_reduced:
-            docs["symbols_total"] = max(
-                len(ordered), int(docs.get("symbols_total") or 0)
-            )
-            docs["symbols_emitted"] = len(kept)
-            docs["symbols_reduced_reason"] = "response_budget"
+            if record_counts:
+                docs["symbols_total"] = max(
+                    len(ordered), int(docs.get("symbols_total") or 0)
+                )
+                docs["symbols_emitted"] = len(kept)
+                docs["symbols_reduced_reason"] = "response_budget"
             if dropped:
                 result["dropped_symbols"][tgt_name] = dropped
             result["truncated"] = True
@@ -535,11 +540,12 @@ def _run_stages(
             collector.add(f"dropped target {name}", evicted)
         result["dropped_targets"].append(name)
         result["truncated"] = True
-        result["targets_total"] = max(
-            targets_total, int(result.get("targets_total") or 0)
-        )
-        result["targets_emitted"] = len(targets)
-        result["targets_reduced_reason"] = "response_budget"
+        if record_counts:
+            result["targets_total"] = max(
+                targets_total, int(result.get("targets_total") or 0)
+            )
+            result["targets_emitted"] = len(targets)
+            result["targets_reduced_reason"] = "response_budget"
         if _size() <= char_budget:
             break
 

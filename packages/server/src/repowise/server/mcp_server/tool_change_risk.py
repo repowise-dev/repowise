@@ -22,6 +22,7 @@ from repowise.core.analysis.change_risk import (
 from repowise.core.analysis.pr_blast import rank_tests_by_reach
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._budget.contracts import response_budget_shed_order
 from repowise.server.mcp_server._helpers import (
     _get_repo,
     _is_workspace_mode,
@@ -46,6 +47,10 @@ _PRIOR_FIXES_LIMIT = 10
 #: full traversal, so both lists stay short and report their own overflow.
 _CROSS_REPO_BREAKING_LIMIT = 5
 _CROSS_REPO_CONSUMER_LIMIT = 10
+
+# Compatibility projection for direct callers and older tests. The shared
+# response contract remains the single source of truth for this order.
+_SHED_ORDER = response_budget_shed_order("get_change_risk")
 
 #: Per-field units and calibration. Identical on every call, so it is opt-in.
 _INCLUDE_BLOCKS = frozenset({"scales"})

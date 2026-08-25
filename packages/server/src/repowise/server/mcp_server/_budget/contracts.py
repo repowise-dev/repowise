@@ -113,6 +113,12 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
 }
 
 
+def response_budget_shed_order(tool: str) -> tuple[str, ...]:
+    """Return a tool's shared shed order for compatibility projections."""
+    contract = _CONTRACTS.get(tool)
+    return contract.shed_order if contract is not None else ()
+
+
 def _call_uses_expansion(
     contract: ResponseBudgetContract,
     signature: inspect.Signature,
@@ -286,7 +292,12 @@ def enforce_response_budget(
     headroom = min(_FINAL_HEADROOM_CHARS, max(100, limit // 4))
     working_limit = max(1, limit - headroom)
     if contract.strategy == "targets":
-        truncate_to_budget(result, char_budget=working_limit, collector=collector)
+        truncate_to_budget(
+            result,
+            char_budget=working_limit,
+            collector=collector,
+            record_counts=True,
+        )
     else:
         fit_to_budget(
             result,
