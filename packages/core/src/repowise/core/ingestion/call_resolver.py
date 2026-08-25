@@ -47,6 +47,7 @@ from .languages.receiver_types import (
     scan_declarations,
     types_by_class,
     types_in_span,
+    unwrapped_names_in_span,
 )
 from .models import (
     CallReceiver,
@@ -58,6 +59,7 @@ from .models import (
     symbol_id_language,
 )
 from .return_types import declared_return_type, normalize_return_type, signature_parameter_count
+from .type_names import POINTER_LIKE_MEMBERS
 
 log = structlog.get_logger(__name__)
 
@@ -138,8 +140,14 @@ _JVM_STRATEGIES = _LanguageCallStrategies(
     member=("_resolve_jvm_receiver_same_package",),
 )
 
+# C++ reaches the typed fallback and registers no `member` strategy, so an
+# `obj->m()` is looked for in the caller's own file, in what it includes, and
+# then in the global pair index. `c` shares this object and is excluded a layer
+# up instead: it is absent from `_LANGUAGE_PATTERNS`, and a struct declares no
+# method for the pair index to hold.
 _CPP_STRATEGIES = _LanguageCallStrategies(
     free=("_resolve_cpp_scoped_call", "_resolve_cpp_same_target"),
+    member_fallback=_TYPED_RECEIVER,
 )
 
 # Rust's crate-root strategy is deliberately absent: it runs for every language
@@ -1660,6 +1668,8 @@ class CallResolver:
                 return None
         if type_name is None:
             return None
+        if self._means_the_wrapper(file_path, caller_id, language, call, receiver_name):
+            return None
 
         found = self._typed_receiver_target(file_path, call, caller_id, type_name)
         if found is None:
@@ -1670,6 +1680,32 @@ class CallResolver:
         if from_field:
             return self._field_typed_call(caller_id, sym_id, tier, call.line)
         return self._body_typed_call(caller_id, sym_id, tier, call.line)
+
+    def _means_the_wrapper(
+        self,
+        file_path: str,
+        caller_id: str,
+        language: str,
+        call: CallSite,
+        receiver_name: str,
+    ) -> bool:
+        """Is this call on the smart pointer itself rather than on what it holds?
+
+        ``shared_ptr<Foo> p`` gives ``p->m()`` a ``Foo`` and ``p.m()`` a
+        ``shared_ptr``, and the grammar query captures no operator to tell them
+        apart. The names a dot call can reach are closed by the language, so
+        refusing exactly those is what keeps ``p.get()`` off a repo's own
+        ``Foo::get`` -- at the cost of an arrow call that really did mean one.
+        Asked only of C++, and only of a type that was unwrapped.
+        """
+        if language != "cpp" or call.target_name not in POINTER_LIKE_MEMBERS:
+            return False
+        span = self._spans_for(file_path).get(caller_id)
+        if span is None:
+            return False
+        return receiver_name in unwrapped_names_in_span(
+            self._declarations_for(file_path, language), *span
+        )
 
     def _body_typed_call(self, caller_id: str, sym_id: str, tier: str, line: int) -> ResolvedCall:
         """Stamp an edge whose receiver was typed from the calling body."""
