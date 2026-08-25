@@ -14,6 +14,7 @@ from sqlalchemy import select
 from repowise.core.analysis.decision_semantic_match import DECISION_VECTOR_PREFIX
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
+    DecisionEvidence,
     DecisionRecord,
     GitMetadata,
 )
@@ -43,6 +44,10 @@ from repowise.server.mcp_server._helpers import (
     is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._why_evidence import (
+    annotate_response_evidence_async,
+    decision_collapse_key,
+)
 from repowise.server.mcp_server._why_relevance import (
     clears_floor,
     question_terms,
@@ -73,7 +78,9 @@ async def get_why(
     ("why is auth using JWT?"), a file path (governing decisions + origin
     story + alignment score), a question anchored to targets, or no query
     (decision health dashboard). Falls back to git archaeology when no
-    decisions exist for a path — never empty.
+    decisions exist for a path — never empty. Evidence-bearing rows carry an
+    explicit ``provenance`` and self-contained ``evidence_refs``; matching ids
+    mean shared evidence, not independent corroboration.
 
     Args:
         query: question, file/module path, or omit for the dashboard.
@@ -134,7 +141,7 @@ async def _why_workspace_search(query: str) -> dict:
     not to pool the statistics underneath the floor that exists.
     """
     contexts = await _resolve_all_contexts()
-    scored: list[tuple[tuple[float, float, int], str, str, Any, list[str]]] = []
+    scored: list[tuple[tuple[float, float, int], str, Any, str, Any, list[str]]] = []
     for ctx in contexts:
         async with get_session(ctx.session_factory) as session:
             repository = await _get_repo(session)
@@ -145,7 +152,7 @@ async def _why_workspace_search(query: str) -> dict:
         # sha would fold into one and a repo would lose its record.
         key_by_id = {d.id: key for key, d in ranked}
         for d, folded in _collapse_restatements([d for _, d in ranked]):
-            scored.append((key_by_id[d.id], ctx.alias, d.id, d, folded))
+            scored.append((key_by_id[d.id], ctx.alias, ctx, d.id, d, folded))
 
     if not scored:
         return {
@@ -160,9 +167,14 @@ async def _why_workspace_search(query: str) -> dict:
     # The store's own key first, so relevance, occurrence count and status decide
     # as they do within one repo; alias and id only settle what those three leave
     # equal, and are here so the answer is the same on two runs.
-    scored.sort(key=lambda t: (t[0], t[1], t[2]))
+    scored.sort(key=lambda t: (t[0], t[1], t[3]))
+    selected = scored[:_MAX_WORKSPACE_DECISIONS]
+    for selected_ctx in {entry[2].alias: entry[2] for entry in selected}.values():
+        selected_records = [entry[4] for entry in selected if entry[2] is selected_ctx]
+        async with get_session(selected_ctx.session_factory) as session:
+            await _attach_decision_evidence(session, selected_records)
     decisions: list[dict] = []
-    for _, alias, _id, d, folded in scored[:_MAX_WORKSPACE_DECISIONS]:
+    for _, alias, selected_ctx, _id, d, folded in selected:
         entry = {
             "repo": alias,
             "id": d.id,
@@ -175,6 +187,9 @@ async def _why_workspace_search(query: str) -> dict:
         }
         if folded:
             entry["restates"] = folded
+        await annotate_response_evidence_async(
+            {"decisions": [entry]}, alias, [d], repo_root=selected_ctx.path
+        )
         decisions.append(entry)
     return {
         "mode": "search",
@@ -198,7 +213,7 @@ async def _why_health_dashboard(repo: str | None) -> dict:
         proposed = health["proposed_awaiting_review"]
         ungoverned = health["ungoverned_hotspots"]
 
-        return {
+        result_data = {
             "mode": "health",
             "summary": (
                 f"{health['summary'].get('active', 0)} active · "
@@ -231,6 +246,13 @@ async def _why_health_dashboard(repo: str | None) -> dict:
             "conflicts": health.get("conflicts", [])[:10],
             "_meta": _build_meta(repository=repository),
         }
+        await _attach_decision_evidence(session, [*stale, *proposed])
+        return await annotate_response_evidence_async(
+            result_data,
+            ctx.alias,
+            [*stale, *proposed],
+            repo_root=ctx.path,
+        )
 
 
 # --- Path-mode cap and projection -------------------------------------------
@@ -570,6 +592,10 @@ async def _why_path(query: str, repo: str | None) -> dict:
         collector = bank_overflow(pending, tool="get_why", repo_root=ctx.path)
 
         result_data["_meta"] = _build_meta(repository=repository)
+        await _attach_response_decision_evidence(session, result_data, all_decisions)
+        await annotate_response_evidence_async(
+            result_data, ctx.alias, all_decisions, repo_root=ctx.path
+        )
         return _fit_path_response(result_data, ctx.path, collector=collector)
 
 
@@ -736,7 +762,7 @@ async def _lineage_for_matches(ctx: Any, keyword_matches: list) -> dict[str, lis
     return lineage_by_id
 
 
-def _evidence_key(d: Any) -> tuple[str, str] | None:
+def _evidence_key(d: Any) -> tuple[object, ...] | None:
     """The evidence a record cites, as a merge key, or ``None`` when it cites none.
 
     Re-extraction paraphrases a record's prose but not its provenance. The
@@ -747,19 +773,17 @@ def _evidence_key(d: Any) -> tuple[str, str] | None:
     like that, which is why one query could return five phrasings of one
     decision.
 
-    So the key is the cited evidence plus the extractor that read it, never the
-    text. Normalising titles would need a tuned similarity threshold, and a
-    wrong merge there hides a human-confirmed record. Keeping ``source`` in the
-    key also means two extractors that independently found the same commit stay
-    separate, which is the provenance-accretion case ``decision_evidence``
-    already models.
+    So the key is every cited full commit, or one exact source range, plus the
+    extractor that read it, never the text. Normalising titles would need a
+    tuned similarity threshold, and a wrong merge there hides a human-confirmed
+    record. Incomplete commit hashes and file-only coordinates return ``None``:
+    preserving an apparent duplicate is safer than erasing a real decision.
+
+    This local decision-restatement key is intentionally narrower than the
+    public evidence ids. A commit can support several real decisions, so shared
+    public evidence never merges decision rows by itself.
     """
-    commits = json.loads(getattr(d, "evidence_commits_json", None) or "[]")
-    if commits:
-        return (d.source or "", f"commit:{commits[0]}")
-    if d.evidence_file:
-        return (d.source or "", f"file:{d.evidence_file}")
-    return None
+    return decision_collapse_key(d)
 
 
 def _collapse_restatements(records: list) -> list[tuple[Any, list[str]]]:
@@ -769,7 +793,7 @@ def _collapse_restatements(records: list) -> list[tuple[Any, list[str]]]:
     *before* the lineage walk, which costs a query per surviving record. Records
     citing no evidence at all cannot be compared this way and are always kept.
     """
-    by_evidence: dict[tuple[str, str], int] = {}
+    by_evidence: dict[tuple[object, ...], int] = {}
     out: list[tuple[Any, list[str]]] = []
     for d in records:
         key = _evidence_key(d)
@@ -858,12 +882,22 @@ async def _build_target_context(
 
         target_context: dict[str, Any] = {}
         for t in targets:
-            t_governing = []
+            governing_records = []
             for d in all_decisions:
                 affected = json.loads(d.affected_files_json)
                 affected_mods = json.loads(d.affected_modules_json)
                 if t in affected or any(t.startswith(m + "/") for m in affected_mods):
-                    t_governing.append({"title": d.title, "status": d.status})
+                    governing_records.append(d)
+            governing_records.sort(key=_path_decision_sort_key)
+            t_governing = [
+                {
+                    "id": d.id,
+                    "title": d.title,
+                    "status": d.status,
+                    "source": d.source,
+                }
+                for d in governing_records[:_MAX_PATH_DECISIONS]
+            ]
             git_m = target_git.get(t)
             ctx_entry: dict[str, Any] = {
                 "governing_decisions": t_governing,
@@ -874,6 +908,8 @@ async def _build_target_context(
                     "summary": f"No git history for {t}.",
                 },
             }
+            if len(governing_records) > _MAX_PATH_DECISIONS:
+                ctx_entry["governing_decisions_total"] = len(governing_records)
             # Git archaeology fallback when no decisions found
             if not t_governing:
                 ctx_entry["git_archaeology"] = await _git_archaeology_fallback(
@@ -926,6 +962,10 @@ async def _why_no_match(
         rationale = _mine_rationale(ctx.path, targets, query)
         if rationale:
             result["code_rationale"] = rationale
+    await _hydrate_response_decision_evidence(ctx, result, all_decisions)
+    await annotate_response_evidence_async(
+        result, ctx.alias, all_decisions, repo_root=ctx.path
+    )
     result["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
     return result
 
@@ -946,6 +986,68 @@ async def _decision_corpus(session: Any, repository_id: str, exclude_spec: Any) 
         session, repository_id, include_proposed=True, limit=_DECISION_CORPUS_LIMIT
     )
     return [d for d in records if not decision_is_excluded(d, exclude_spec)]
+
+
+async def _attach_decision_evidence(session: Any, records: list) -> None:
+    """Attach all persisted provenance rows with one bounded query.
+
+    ``DecisionRecord`` is the compatibility headline.  The child rows are the
+    canonical accreted evidence and must travel with it when trust metadata is
+    projected, without introducing an N+1 query in workspace or search modes.
+    """
+    if not records:
+        return
+    ids = [record.id for record in records]
+    rows = list(
+        (
+            await session.execute(
+                select(DecisionEvidence)
+                .where(DecisionEvidence.decision_id.in_(ids))
+                .order_by(
+                    DecisionEvidence.source_rank.desc(),
+                    DecisionEvidence.created_at.asc(),
+                    DecisionEvidence.id.asc(),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_decision: dict[str, list[DecisionEvidence]] = {}
+    for row in rows:
+        by_decision.setdefault(row.decision_id, []).append(row)
+    for record in records:
+        record._why_evidence_rows = by_decision.get(record.id, [])
+
+
+async def _attach_response_decision_evidence(
+    session: Any, result: dict[str, Any], records: list
+) -> None:
+    """Hydrate only decision rows that the bounded response will expose."""
+    ids: set[str] = set()
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            candidate = value.get("id") or value.get("decision_id")
+            if isinstance(candidate, str):
+                ids.add(candidate)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(result)
+    await _attach_decision_evidence(
+        session, [record for record in records if record.id in ids]
+    )
+
+
+async def _hydrate_response_decision_evidence(
+    ctx: Any, result: dict[str, Any], records: list
+) -> None:
+    async with get_session(ctx.session_factory) as session:
+        await _attach_response_decision_evidence(session, result, records)
 
 
 async def _load_corpus(repo: str | None, targets: list[str] | None) -> tuple:
@@ -979,7 +1081,7 @@ async def _why_targets(targets: list[str], repo: str | None) -> dict:
         return await _why_path(targets[0], repo)
 
     ctx, repository, all_decisions, target_git = await _load_corpus(repo, targets)
-    return {
+    result_data = {
         "mode": "path",
         "paths": targets,
         "target_context": await _build_target_context(
@@ -987,6 +1089,10 @@ async def _why_targets(targets: list[str], repo: str | None) -> dict:
         ),
         "_meta": _build_meta(repository=repository, targets=targets),
     }
+    await _hydrate_response_decision_evidence(ctx, result_data, all_decisions)
+    return await annotate_response_evidence_async(
+        result_data, ctx.alias, all_decisions, repo_root=ctx.path
+    )
 
 
 async def _why_search(query: str, targets: list[str] | None, repo: str | None) -> dict:
@@ -1044,18 +1150,15 @@ async def _why_search(query: str, targets: list[str] | None, repo: str | None) -
     if episodes:
         result_data["episodes"] = episodes
 
+    await _hydrate_response_decision_evidence(ctx, result_data, all_decisions)
+    await annotate_response_evidence_async(
+        result_data, ctx.alias, all_decisions, repo_root=ctx.path
+    )
     result_data["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
-    # Deliberately *not* routed through `_fit_path_response`. This mode has no
-    # budget pass and predates this block, but that function is written for the
-    # path response's shape: search mode keeps `origin_story` and
-    # `git_archaeology` inside `target_context`, so the two blocks it would
-    # drop whole are no-ops here and the only thing it can actually shed is
-    # this mode's primary payload. Measured on a realistic six-target
-    # response, it emptied `decisions` entirely and was still over budget —
-    # strictly worse than leaving it alone. What this block adds is bounded by
-    # construction (three episodes, each body capped), which is the obligation
-    # it owes; giving the whole mode a budget pass is a separate change with
-    # its own drop order to design.
+    # Episode overflow is banked here because it is produced before the shared
+    # final budget pass. The middleware owns the complete search-mode shed
+    # order after trust metadata is attached; routing this shape through the
+    # path-only fitter would discard its primary decision lane prematurely.
     collector = bank_overflow(pending, tool="get_why", repo_root=ctx.path)
     if collector is not None:
         collector.attach(result_data)
@@ -1251,6 +1354,7 @@ async def _run_git_log(
                         results.append(
                             {
                                 "sha": parts[0][:12],
+                                "commit": parts[0],
                                 "author": parts[1],
                                 "date": parts[2][:10],
                                 "message": parts[3],
@@ -1287,6 +1391,7 @@ async def _run_git_log(
                             results.append(
                                 {
                                     "sha": parts[0][:12],
+                                    "commit": parts[0],
                                     "author": parts[1],
                                     "date": parts[2][:10],
                                     "message": parts[3],

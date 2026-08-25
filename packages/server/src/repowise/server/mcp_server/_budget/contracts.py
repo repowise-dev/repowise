@@ -85,6 +85,20 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
         expansion_argument="include",
         protected=("answer", "confidence", "citations", "next_action_hint"),
     ),
+    "get_why": ResponseBudgetContract(
+        "blocks",
+        (
+            "related_documentation",
+            "episodes",
+            "origin_story.linked_decisions",
+            "decisions[]",
+            "code_rationale",
+            "git_archaeology",
+            "origin_story",
+        ),
+        expansion_argument=None,
+        protected=("mode", "query", "path", "paths", "target_context", "alignment"),
+    ),
     "get_overview": ResponseBudgetContract(
         "blocks",
         (
