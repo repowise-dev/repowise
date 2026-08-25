@@ -93,24 +93,29 @@ def tool_middleware(fn: Any) -> Any:
     1. ``shield`` — no exception may escape to FastMCP as a protocol-level
        isError (an early isError teaches the agent to abandon the server for
        the whole session), so it must see the raw tool.
-    2. ``quantize`` — rounds every float in the response. Outside the shield so
+    2. ``trust`` — adds the final transport trust envelope.
+    3. ``quantize`` — rounds every float in the response. Outside the shield so
        shaped error responses are covered too, and inside the savings layer so
        the ledger measures the payload as actually delivered.
-    3. ``instrument`` — savings/telemetry, outermost, so shaped error responses
-       are still dead-end-debited in the ledger.
+    4. ``instrument`` — savings/telemetry, so shaped error responses are still
+       dead-end-debited in the ledger.
+    5. ``budget`` — outermost, so accounting includes every middleware field.
 
     Named rather than inlined at the ``apply`` call so tests can wrap a tool in
     the real composition; ``tests/unit/server/mcp/test_number_precision.py``
     relies on that to prove no raw double reaches an agent.
     """
+    import inspect
     from functools import wraps
 
+    from repowise.server.mcp_server._budget import enforce_response_budget
     from repowise.server.mcp_server._failure_shield import shield
     from repowise.server.mcp_server._meta import finalize_trust_envelope
     from repowise.server.mcp_server._rounding import quantize
     from repowise.server.mcp_server._savings import instrument
 
     evidence_kind = getattr(fn, "__repowise_trust_kind__", None)
+    signature = inspect.signature(fn)
 
     def trust(inner: Any) -> Any:
         @wraps(inner)
@@ -121,7 +126,20 @@ def tool_middleware(fn: Any) -> Any:
 
         return wrapped
 
-    return instrument(quantize(trust(shield(fn))))
+    def budget(inner: Any) -> Any:
+        @wraps(inner)
+        async def wrapped(*args: Any, **kwargs: Any) -> Any:
+            return enforce_response_budget(
+                fn.__name__,
+                await inner(*args, **kwargs),
+                signature=signature,
+                args=args,
+                kwargs=kwargs,
+            )
+
+        return wrapped
+
+    return budget(instrument(quantize(trust(shield(fn)))))
 
 
 def ensure_full_surface() -> Any:

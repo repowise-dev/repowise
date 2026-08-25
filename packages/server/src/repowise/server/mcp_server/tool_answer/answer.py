@@ -385,6 +385,9 @@ async def get_answer(
     that bears on the question — evidence beside the answer, not a correction
     of it. Weigh it against the answer; ``still_true`` says how current it is.
 
+    Responses fit 24,000 serialized chars. Reduced evidence carries counts and
+    one-call recovery refs in ``_meta.omitted``.
+
     Args:
         question: developer question.
         scope: optional path-prefix filter (e.g. "src/pkg/").

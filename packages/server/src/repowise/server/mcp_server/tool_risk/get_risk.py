@@ -112,11 +112,9 @@ async def get_risk(
     heuristic, never a runtime-breakage probability; ``overall_risk_score`` is
     its deprecated exact alias.
 
-    ``defect_profile`` appears only with counted fixes; ``top_symbols`` is
-    approximate attribution. ``episodes`` counts dated records bound to a
-    target, evidenced by a commit or a filesystem fact; ``get_why`` serves the
-    bodies. Directory targets aggregate everything beneath them, so compare
-    within a kind of target.
+    Default responses fit 24,000 serialized chars; nonempty ``include`` uses
+    32,000. Reductions carry counts and ``_meta.omitted`` recovery refs.
+    Include-gated blocks are projections, not omissions.
 
     Args:
         targets: file paths to assess.

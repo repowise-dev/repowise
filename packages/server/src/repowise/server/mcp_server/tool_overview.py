@@ -953,6 +953,10 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     section, and the outline, onboarding, ownership and graph blocks ship only
     on request. The response's ``more`` field names them.
 
+    Defaults fit 24,000 serialized chars; nonempty ``include`` uses 32,000.
+    Reductions carry counts and ``_meta.omitted`` recovery refs.
+    Include-gated blocks are projections, not omissions.
+
     In workspace mode:
     - Omit ``repo`` for the default repo's overview plus a workspace footer.
     - ``repo="all"`` returns the cross-repo topology (co-changes, package deps,

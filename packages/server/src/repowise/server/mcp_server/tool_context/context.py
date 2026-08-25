@@ -97,6 +97,10 @@ async def get_context(
     include=["skeleton"] for the whole file body-elided and line-verified in
     ONE call, or Read it. Do not call get_symbol per signature.
 
+    Default responses fit 24,000 serialized chars; nonempty ``include`` uses
+    32,000. Reductions carry counts and ``_meta.omitted`` recovery refs.
+    Include-gated blocks are projections, not omissions.
+
     Args:
         targets: file paths, module paths, or "path::Symbol" ids.
         include: opt-in blocks: full_doc | ownership | last_change | callers

@@ -89,6 +89,10 @@ async def get_change_risk(
     ``cross_repo`` names typed consumers and contract breaks from the last
     workspace update.
 
+    Defaults fit 24,000 serialized chars; nonempty ``include`` uses 32,000.
+    Reductions carry counts and ``_meta.omitted`` refs.
+    Include-gated blocks are projections, not omissions.
+
     Args:
         revspec: Commit or ``base..head`` range to score. Omit it to score the
             uncommitted change, or ``HEAD`` when the working tree is clean.
