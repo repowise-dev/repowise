@@ -118,7 +118,7 @@ _TYPE_KINDS = frozenset({"class", "struct", "interface", "enum", "trait", "impl"
 _FUNCTION_KINDS = frozenset({"function", "method"})
 
 # Kinds that can never be the callee of a call, used to keep the bare-name
-# Tier 3 index from offering a data member as a function (bug 90).
+# Tier 3 index from offering a data member as a function.
 #
 # This is deliberately NOT the complement of ``_FUNCTION_KINDS``. Measured over
 # the corpus, plenty of non-function kinds are legitimately called: ``class``
@@ -134,6 +134,19 @@ _FUNCTION_KINDS = frozenset({"function", "method"})
 # ``variable``, which is why this fix cannot be extended to them — there a
 # field is indistinguishable from a callable value by kind alone.
 _NON_CALLABLE_KINDS = frozenset({"property"})
+
+# A getter and its setter are two declarations under one id, which reads as an
+# overload set and is not one: the name is an attribute, not a callable.
+_PROPERTY_DECORATORS = frozenset({"property", "cached_property"})
+_PROPERTY_ACCESSOR_SUFFIXES = (".setter", ".getter", ".deleter")
+
+
+def _is_property_accessor(sym: Any) -> bool:
+    for decorator in getattr(sym, "decorators", ()) or ():
+        tail = decorator.lstrip("@").strip()
+        if tail in _PROPERTY_DECORATORS or tail.endswith(_PROPERTY_ACCESSOR_SUFFIXES):
+            return True
+    return False
 
 _JVM_STRATEGIES = _LanguageCallStrategies(
     free=("_resolve_jvm_same_package",),
@@ -294,9 +307,10 @@ class CallResolver:
         )
 
         # Symbols in the index above that are data members, not callables
-        # (bug 90). Held as an id set rather than a full id→kind map because
-        # it is the only kind question asked of it and the set is small.
+        # Held as an id set rather than a full id->kind map: it is the only
+        # kind question asked of it and the set is small.
         self._non_callable_ids: set[str] = set()
+        self._property_accessor_ids: set[str] = set()
 
         # C/C++ forward declaration → the definition it declares. Populated by
         # ``_build_indices``; applied to every resolved call so the edge lands
@@ -837,6 +851,8 @@ class CallResolver:
                 # Global indices
                 if sym.kind in _NON_CALLABLE_KINDS:
                     self._non_callable_ids.add(sym.id)
+                if _is_property_accessor(sym):
+                    self._property_accessor_ids.add(sym.id)
                 # Same rule as the per-file index above, for the global-unique
                 # tier.
                 if not (sym.is_declaration and sym.parent_name is not None):
@@ -1295,7 +1311,7 @@ class CallResolver:
 
         # Tier 3: global unique match — only within the same language.
         # A data member is not callable, so it must not be the unique answer
-        # that mints an edge (bug 90). Filtered here rather than at index build
+        # that mints an edge. Filtered here rather than at index build
         # so the `declared` gate above and the member gate in
         # ``_resolve_member_call`` keep seeing the whole repo.
         # Uniqueness is judged on the unfiltered list on purpose. Filtering the
@@ -1310,28 +1326,9 @@ class CallResolver:
         # site named. `Ok(())` and a chained `.unwrap()` are the shape.
         candidates = self._global_symbols.get(target_name, [])
         if len(candidates) == 1 and candidates[0] != caller_id:
-            if target_name in get_builtin_methods(self._language_of(file_path) or ""):
-                return None
-            if candidates[0] in self._non_callable_ids:
-                # Refused here rather than by falling through, so "this tier
-                # can lose an edge but never gain one" is true of the control
-                # flow and not only of the corpus. Falling through would reach
-                # the implicit-receiver tier below, which the old code could
-                # not reach on this input.
-                #
-                # That tier is provably empty here anyway: it ends in
-                # ``_inherited_method``, which reads ``_file_methods`` — filled
-                # by the same loop that unconditionally fills
-                # ``_global_symbols``. So any method it could return would be a
-                # second entry under this name, and ``len(candidates)`` would
-                # not be 1. Returning is what stops that argument having to be
-                # re-derived if either index changes.
-                return None
-            caller_lang = symbol_id_language(self._parsed_files, caller_id)
-            callee_lang = symbol_id_language(self._parsed_files, candidates[0])
-            if caller_lang and callee_lang and caller_lang != callee_lang:
-                return None  # reject cross-language Tier 3 match
-            return ResolvedCall(caller_id, candidates[0], 0.50, call.line, "global_unique")
+            return self._global_unique_match(
+                file_path, call, caller_id, target_name, candidates[0]
+            )
 
         # Last, so it can only add an edge. The member-shaped refusal is the
         # one ``_enclosing_class_method`` already applies: several grammars
@@ -1347,7 +1344,42 @@ class CallResolver:
             if sym_id is not None:
                 return ResolvedCall(caller_id, sym_id, 0.90, call.line, "enclosing_inherited")
 
+        # An overload set is several declarations under one id, which the row
+        # count reads as an ambiguity that is not there. Not the filtering
+        # refused above: a field and a method sharing a name stay two ids.
+        # Last on purpose - ahead of the tier above it restated 1,027 edges
+        # the caller's own hierarchy already answered, at half the confidence.
+        collapsed = self._collapse_declarations(candidates)
+        if len(candidates) > 1 and len(collapsed) == 1:
+            only = next(iter(collapsed))
+            if only != caller_id and only not in self._property_accessor_ids:
+                return self._global_unique_match(
+                    file_path, call, caller_id, target_name, only
+                )
+
         return None
+
+    def _global_unique_match(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+        target_name: str,
+        candidate: str,
+    ) -> ResolvedCall | None:
+        """Tier 3's gates, applied to the one symbol the name resolves to."""
+        if target_name in get_builtin_methods(self._language_of(file_path) or ""):
+            return None
+        if candidate in self._non_callable_ids:
+            # Refused here rather than by falling through, so "this tier can
+            # lose an edge but never gain one" is true of the control flow and
+            # not only of the corpus.
+            return None
+        caller_lang = symbol_id_language(self._parsed_files, caller_id)
+        callee_lang = symbol_id_language(self._parsed_files, candidate)
+        if caller_lang and callee_lang and caller_lang != callee_lang:
+            return None  # reject cross-language Tier 3 match
+        return ResolvedCall(caller_id, candidate, 0.50, call.line, "global_unique")
 
     def _resolve_member_call(
         self,
