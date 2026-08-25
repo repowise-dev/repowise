@@ -573,30 +573,6 @@ struct API Fwd;
         },
     ),
     (
-        b"""#include "pragma_helpers.hpp"
-#define API
-RESTORE_API()
-struct API Fwd;
-""",
-        {("API", "variable", 2, False)},
-    ),
-    (
-        b"""#include "pragma_helpers.hpp"
-#define API
-RESTORE_API;
-struct API Fwd;
-""",
-        {("API", "variable", 2, False)},
-    ),
-    (
-        b"""#include "pragma_helpers.hpp"
-#define API
-int restored[RESTORE_API];
-struct API Fwd;
-""",
-        {("API", "variable", 2, False)},
-    ),
-    (
         b"""#define API
 #pragma push_macro("API")
 #include "possibly_mutates_macro_stack.hpp"
@@ -856,6 +832,59 @@ class TestCppParser:
             for symbol in result.symbols
         } == expected_symbols
 
+    def test_ignores_unrelated_identifiers_after_include_for_forward_recovery(
+        self, parser: ASTParser
+    ) -> None:
+        source = b"""#include <vector>
+#define API
+int helper(int x) { return x; }
+struct API Fwd;
+"""
+        fi = _make_file_info("cpp_pkg/forward_after_helper.hpp", "cpp")
+        result = parser.parse_file(fi, source)
+
+        assert {
+            (symbol.name, symbol.kind, symbol.start_line, symbol.is_declaration)
+            for symbol in result.symbols
+        } == {
+            ("helper", "function", 3, False),
+            ("Fwd", "struct", 4, True),
+        }
+
+    def test_ignores_unrelated_calls_after_include_for_forward_recovery(
+        self, parser: ASTParser
+    ) -> None:
+        source = b"""#include <vector>
+#define API
+int value = transform(1);
+struct API Fwd;
+"""
+        fi = _make_file_info("cpp_pkg/forward_after_call.hpp", "cpp")
+        result = parser.parse_file(fi, source)
+
+        assert {
+            (symbol.name, symbol.kind, symbol.start_line, symbol.is_declaration)
+            for symbol in result.symbols
+        } == {("Fwd", "struct", 4, True)}
+
+    def test_preserves_local_macro_stack_hazard_after_include(self, parser: ASTParser) -> None:
+        source = b"""#include <vector>
+#define API
+#define RESTORE_API() _Pragma("pop_macro(\\"API\\")")
+RESTORE_API()
+struct API Fwd;
+"""
+        fi = _make_file_info("cpp_pkg/forward_after_wrapper.hpp", "cpp")
+        result = parser.parse_file(fi, source)
+
+        assert {
+            (symbol.name, symbol.kind, symbol.start_line, symbol.is_declaration)
+            for symbol in result.symbols
+        } == {
+            ("API", "variable", 2, False),
+            ("RESTORE_API", "function", 3, False),
+        }
+
     def test_does_not_reinterpret_tag_variable_declaration_as_export_macro(
         self, parser: ASTParser
     ) -> None:
@@ -1033,9 +1062,6 @@ struct API Fwd;
             "aliased-pragma-wrapper-invalidates-state",
             "parenthesized-alias-wrapper-invalidates-state",
             "parameter-relayed-wrapper-invalidates-state",
-            "included-function-wrapper-invalidates-state",
-            "included-object-wrapper-invalidates-state",
-            "included-object-wrapper-in-array-bound-invalidates-state",
             "include-invalidates-existing-macro-stack",
             "push-after-include-snapshots-unknown-state",
             "local-definition-and-push-after-include-restore-empty",

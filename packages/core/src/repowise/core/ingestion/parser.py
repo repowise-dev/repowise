@@ -399,10 +399,6 @@ def _build_cpp_macro_facts(matches: list[dict], src: str) -> _CppMacroFacts:
 
     known_names = {name for _, name in macro_definitions.values()}
     known_names_by_length = tuple(sorted(known_names, key=len, reverse=True))
-    has_include_like = bool(include_nodes) or any(
-        _cpp_preproc_call_parts(_node_text(node, src))[0] in _CPP_INCLUDE_LIKE_DIRECTIVES
-        for node in preproc_calls.values()
-    )
 
     # A macro whose replacement contains a pragma stack operation is itself a
     # state hazard when invoked. Resolve simple wrapper aliases transitively;
@@ -455,11 +451,12 @@ def _build_cpp_macro_facts(matches: list[dict], src: str) -> _CppMacroFacts:
     }
 
     # Object-like macros expand wherever their identifier token appears, not
-    # only as a standalone expression. Walk the existing tree only when such
-    # a local wrapper exists; a global identifier query would add matches and
-    # extraction work to every C/C++ file, including files with no candidate.
+    # only as a standalone expression. Walk the existing tree only when a
+    # local definition proves that the name wraps a stack operation. An include
+    # is a barrier at its own position, but without preprocessing context it is
+    # not evidence that every later identifier is an imported wrapper.
     possible_invocations: dict[int, Node] = {}
-    if (object_hazard_names or has_include_like) and macro_definitions:
+    if object_hazard_names:
         root = next(iter(macro_definitions.values()))[0]
         while root.parent is not None:
             root = root.parent
@@ -470,7 +467,7 @@ def _build_cpp_macro_facts(matches: list[dict], src: str) -> _CppMacroFacts:
                 continue
             if node.type == "identifier":
                 name = _cpp_normalize_identifier(_node_text(node, src))
-                if name in object_hazard_names or has_include_like:
+                if name in object_hazard_names:
                     possible_invocations[node.id] = node
             pending_nodes.extend(node.children)
 
@@ -545,11 +542,6 @@ def _build_cpp_macro_facts(matches: list[dict], src: str) -> _CppMacroFacts:
             direct_pragma_call_ids.add(node.id)
             add_stack_operation(node, _node_text(node, src), direct=True)
 
-    include_positions = sorted(barriers)
-
-    def has_prior_include(position: int) -> bool:
-        return bisect_left(include_positions, position) > 0
-
     def add_indirect_hazards(node: Node, text: str, target_text: str = "") -> None:
         if add_stack_operation(node, text, direct=False):
             return
@@ -568,11 +560,6 @@ def _build_cpp_macro_facts(matches: list[dict], src: str) -> _CppMacroFacts:
             # The wrapper may push or pop even when its final macro value is
             # conservatively represented as UNKNOWN. Taint the stack too, so
             # a later direct pop cannot restore a stale local snapshot.
-            barriers.add(node.start_byte)
-        # Included headers may define pragma wrappers that are invisible to
-        # this one-file parser. Once one is invoked, a later local definition
-        # alone no longer proves the macro state.
-        if has_prior_include(node.start_byte):
             barriers.add(node.start_byte)
 
     for node, target_text in call_sites.values():
