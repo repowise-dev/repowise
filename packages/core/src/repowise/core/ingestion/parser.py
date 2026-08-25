@@ -891,6 +891,12 @@ class ASTParser:
             if parent_name is None and file_info.language == "pascal" and name_nodes:
                 parent_name = _qualified_pascal_parent(name_nodes[0], src)
 
+            # A ``field_declaration`` cannot occur outside a class body, so a
+            # missing parent means the class did not parse. Grammar recovery,
+            # not a member function.
+            if node_type == "function_declarator" and parent_name is None:
+                continue
+
             # Upgrade function → method when a parent class is detected
             if parent_name and kind == "function":
                 kind = "method"

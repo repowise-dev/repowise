@@ -150,6 +150,60 @@
   )
 ) @symbol.def
 
+; In-class member-function declaration: ``void Seek(const Slice&);``
+; An abstract class has no out-of-line definition, so without these it reaches
+; the method index empty. ``@symbol.def`` is the declarator, not the
+; ``field_declaration``: that node can hold a whole ``struct Inner { ... } m_;``
+; and would become a callable ancestor of the inner type's methods.
+; ``declarator: (field_identifier)`` directly is what keeps out a
+; function-pointer data member (``void (*cb_)(int);``).
+(field_declaration
+  declarator: (function_declarator
+    declarator: (field_identifier) @symbol.name
+    parameters: (parameter_list) @symbol.params
+  ) @symbol.def
+)
+
+; ... returning a pointer: ``virtual Iterator* NewIterator(...) = 0;``
+(field_declaration
+  declarator: (pointer_declarator
+    declarator: (function_declarator
+      declarator: (field_identifier) @symbol.name
+      parameters: (parameter_list) @symbol.params
+    ) @symbol.def
+  )
+)
+
+; ... returning a reference: ``const Slice& value() const;``
+; ``reference_declarator`` does not name its declarator field, so the inner
+; ``function_declarator`` is matched as a bare named child rather than by field.
+(field_declaration
+  declarator: (reference_declarator
+    (function_declarator
+      declarator: (field_identifier) @symbol.name
+      parameters: (parameter_list) @symbol.params
+    ) @symbol.def
+  )
+)
+
+; Pure-virtual member of an EXPORT-MACRO class: ``virtual void Seek(...) = 0;``
+; ``class EXPORT Foo { ... }`` is recovery-parsed into a ``compound_statement``
+; of ``declaration`` nodes, which the patterns above cannot reach, and ``= 0``
+; wraps the declarator in an ``init_declarator`` the one below cannot either.
+; ``value: (number_literal)`` is what excludes the recovered inline definition
+; and member-init constructor, which share the shape. ``@symbol.def`` must be
+; the ``declaration``: it is a callable kind, so anchoring inside it makes it a
+; callable ancestor and the match is dropped.
+(declaration
+  declarator: (init_declarator
+    declarator: (function_declarator
+      declarator: (identifier) @symbol.name
+      parameters: (parameter_list) @symbol.params
+    )
+    value: (number_literal)
+  )
+) @symbol.def
+
 ; Destructor declaration inside a class body: ~Foo();
 (declaration
   declarator: (function_declarator

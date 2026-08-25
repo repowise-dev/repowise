@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import structlog
@@ -202,6 +202,20 @@ class ResolvedCall:
     line: int  # call site line number (for diagnostics)
     origin: ResolutionOrigin  # which strategy below produced it
     edge_type: CallSiteEdgeType = "calls"  # carried through from the CallSite
+
+
+def _same_translation_unit(decl_file: str, def_file: str) -> bool:
+    """Are these two paths the same C++ translation unit?
+
+    Compared on the base name, because a public header rarely sits beside its
+    implementation (``include/pkg/thing.h`` against ``src/thing.cc``). The
+    include relation would be the better test, but a C++ include binds to the
+    path as written and usually is not a file key.
+    """
+    return (
+        decl_file == def_file
+        or PurePosixPath(decl_file).stem == PurePosixPath(def_file).stem
+    )
 
 
 class CallResolver:
@@ -802,7 +816,13 @@ class CallResolver:
                     # A declaration must never displace a definition already
                     # indexed under this name — a .cpp that forward-declares a
                     # helper above its own body holds both.
-                    file_syms.setdefault(sym.name, sym.id)
+                    #
+                    # A method declaration stays out: this index answers
+                    # unqualified lookups from importing files, and no bare name
+                    # can legally reach a method. The (class, method) index
+                    # below still takes it.
+                    if sym.parent_name is None:
+                        file_syms.setdefault(sym.name, sym.id)
                 else:
                     definitions[decl_key].append((path, sym.id))
                     # File-level symbol index (top-level symbols and methods)
@@ -817,7 +837,10 @@ class CallResolver:
                 # Global indices
                 if sym.kind in _NON_CALLABLE_KINDS:
                     self._non_callable_ids.add(sym.id)
-                self._global_symbols[sym.name].append(sym.id)
+                # Same rule as the per-file index above, for the global-unique
+                # tier.
+                if not (sym.is_declaration and sym.parent_name is not None):
+                    self._global_symbols[sym.name].append(sym.id)
 
             self._file_symbols[path] = file_syms
             self._file_methods[path] = file_methods
@@ -845,21 +868,33 @@ class CallResolver:
         that, a repo-wide unique definition is unambiguous enough to use. An
         overload set spanning several files matches neither test, and stays
         unlinked rather than guessed at.
+
+        For a METHOD that fallback additionally requires the same translation
+        unit: the key is ``(class, method)``, so a repo-wide unique definition
+        proves the method name unique and says nothing about the class, and two
+        unrelated classes of one name would pair across. A free function has no
+        class identity to get wrong and is unchanged.
         """
         redirects: dict[str, str] = {}
         for decl_file, decl_id, key in declarations:
             candidates = definitions.get(key, ())
             if not candidates:
                 continue
-            including = [
+            # Deduped by symbol id, not by row: an overload set defined in one
+            # file is several definitions sharing one id, and counting rows
+            # reads that as an ambiguity that does not exist.
+            including = {
                 sym_id
                 for def_file, sym_id in candidates
                 if decl_file in self._import_targets.get(def_file, ())
-            ]
+            }
+            distinct = {sym_id for _def_file, sym_id in candidates}
             if len(including) == 1:
-                redirects[decl_id] = including[0]
-            elif len(candidates) == 1:
-                redirects[decl_id] = candidates[0][1]
+                redirects[decl_id] = next(iter(including))
+            elif len(distinct) == 1:
+                def_file = candidates[0][0]
+                if key[0] is None or _same_translation_unit(decl_file, def_file):
+                    redirects[decl_id] = next(iter(distinct))
         return redirects
 
     @property
