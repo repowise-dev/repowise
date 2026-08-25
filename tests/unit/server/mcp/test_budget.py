@@ -368,6 +368,33 @@ def test_fit_to_budget_reports_total_emitted_and_reason(repo_root: Path):
     assert response["results_omitted"] == 6 - len(response["results"])
 
 
+def test_fit_to_budget_preserves_projection_reason_and_persisted_omission_count(
+    repo_root: Path,
+):
+    response = {
+        "results": [{"row": i, "body": "r" * 1000} for i in range(3)],
+        "results_total": 8,
+        "results_emitted": 3,
+        "results_reduced_reason": "confidence_projection_and_deduplication",
+    }
+    collector = OmissionCollector("get_answer", repo_root=repo_root)
+
+    fit_to_budget(
+        response,
+        ("results[]",),
+        collector,
+        char_budget=2200,
+        headroom=0,
+        record_counts=True,
+    )
+    collector.attach(response)
+
+    assert response["results_total"] == 8
+    assert response["results_emitted"] == len(response["results"])
+    assert response["results_reduced_reason"].endswith("_and_response_budget")
+    assert response["results_omitted"] == 3 - len(response["results"])
+
+
 def test_fit_to_budget_can_reduce_a_ranked_mapping(repo_root: Path):
     response = {"targets": {f"src/{i}.py": {"body": "x" * 1000} for i in range(6)}}
     collector = OmissionCollector("get_risk", repo_root=repo_root)
@@ -542,20 +569,20 @@ async def test_get_overview_stays_under_a_narrowed_host_cap(
     budgeted = tool_middleware(get_overview)
     full = await budgeted()
     assert "truncated" not in full  # normal cap: nothing sheds
-    assert full["tool_guide"]
+    assert full["tool_surface"]["recipes"]
 
     monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", "700")
     trimmed = await budgeted()
 
     assert trimmed["truncated"] is True
-    assert "tool_guide" not in trimmed  # first in the declared shed order
+    assert not trimmed.get("tool_surface", {}).get("recipes")
     assert trimmed["title"] == full["title"]
     accounting = trimmed["_meta"]["response_budget"]
     assert len(json.dumps(trimmed, separators=(",", ":"), default=str)) <= accounting[
         "limit_chars"
     ]
     stored = _joined(repo_root, trimmed["_meta"]["omitted"]["refs"])
-    assert "first_call" in stored
+    assert "answer_question" in stored
 
 
 def test_risk_trim_blast_lists_collects_drops(repo_root: Path):

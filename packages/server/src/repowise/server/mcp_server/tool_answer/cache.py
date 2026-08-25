@@ -25,10 +25,6 @@ from repowise.server.mcp_server.tool_answer.config import (
     _ANSWER_SCHEMA_VERSION,
 )
 from repowise.server.mcp_server.tool_answer.episodes import attach_episode as _attach_episode
-from repowise.server.mcp_server.tool_answer.payload import (
-    _apply_lean_high,
-    _trim_served_payload,
-)
 
 _log = logging.getLogger("repowise.mcp.answer")
 
@@ -168,8 +164,6 @@ async def _serve_cached_answer(
             targets=[p for p in cached_paths if isinstance(p, str) and p],
             extra=({"retrieval_degraded": retrieval_degraded} if retrieval_degraded else None),
         )
-        _apply_lean_high(payload, question)
-        _trim_served_payload(payload)
         # Serve-time, on this path as well as the fresh one: the episode is read
         # on every call and never cached into an answer, so a disagreement
         # cannot be frozen into a row and served after it has been superseded.

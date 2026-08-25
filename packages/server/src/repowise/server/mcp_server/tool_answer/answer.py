@@ -55,6 +55,7 @@ import time
 from typing import NamedTuple
 
 from repowise.core.persistence.database import get_session
+from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._answer_context import (
     _MAX_CHARS_PER_HIT_EXCERPT,
@@ -123,9 +124,9 @@ from repowise.server.mcp_server.tool_answer.confidence import (
     _retrieval_quality,
     dominance_reason,
 )
-from repowise.server.mcp_server.tool_answer.config import (
+from repowise.server.mcp_server.tool_answer.config import (  # noqa: F401
     _GATED_EXCERPT_CHARS,
-    _LEAN_HIGH_DROP_KEYS,  # noqa: F401  — re-exported for tests that assert the key set
+    _LEAN_HIGH_DROP_KEYS,  # re-exported for tests that assert the key set
     _PAGE_EXCERPT_HITS,
     _SYSTEM_PROMPT,
     _USER_TEMPLATE,
@@ -149,17 +150,18 @@ from repowise.server.mcp_server.tool_answer.evidence import (
     _repo_root,
 )
 from repowise.server.mcp_server.tool_answer.payload import (
-    _apply_lean_high,
+    _apply_lean_high,  # noqa: F401  — backward-compatible helper re-export
     _build_best_guesses,  # noqa: F401  — re-exported: imported from here by tests
     _drop_duplicated_guess_excerpts,  # noqa: F401  — re-exported for the same reason
     _no_answer_payload,
-    _trim_served_payload,
+    _trim_served_payload,  # noqa: F401  — backward-compatible helper re-export
     _union_answer_payload,
     _with_candidates,
     build_abstain_payload,
     build_synthesized_payload,
     build_value_payload,
 )
+from repowise.server.mcp_server.tool_answer.projection import projected_answer
 from repowise.server.mcp_server.tool_answer.retrieval import (
     _apply_domain_penalty,
     _attach_page_excerpts,
@@ -360,11 +362,11 @@ async def _run_retrieval_pipeline(
     return _Retrieved(hits, resolved_pool, question_ids, homonyms, flow_paths)
 
 
-@mcp.tool(surface_order=10)
 async def get_answer(
     question: str,
     scope: str | None = None,
     repo: str | None = None,
+    include: list[str] | None = None,
 ) -> dict:
     """Synthesised answer with citations and a calibrated trust signal.
 
@@ -385,13 +387,15 @@ async def get_answer(
     that bears on the question — evidence beside the answer, not a correction
     of it. Weigh it against the answer; ``still_true`` says how current it is.
 
-    Responses fit 24,000 serialized chars. Reduced evidence carries counts and
-    recovery refs in ``_meta.omitted``; storage failures are explicit.
+    Responses fit 24,000 serialized chars. Pass ``include=["evidence"]`` for
+    the deduplicated expanded evidence projection (32,000 chars). Reductions
+    carry counts and an exact recovery call.
 
     Args:
         question: developer question.
         scope: optional path-prefix filter (e.g. "src/pkg/").
         repo: usually omitted.
+        include: optional ``["evidence"]`` expanded projection.
     """
     if repo == "all":
         return _unsupported_repo_all("get_answer")
@@ -614,7 +618,7 @@ async def get_answer(
     # evidence, so they name only what differs between them: why, and what to
     # tell the caller.
     async def _degrade(reason: str, note: str) -> dict:
-        return await _degraded_payload(
+        payload = await _degraded_payload(
             reason=reason,
             note=note,
             question=question,
@@ -628,6 +632,10 @@ async def get_answer(
             agreement_dominant=agreement_dominant,
             resolved_pool=resolved_pool,
         )
+        degraded_legs = _degraded_legs(_retrieval_legs())
+        if degraded_legs:
+            payload.setdefault("_meta", {})["retrieval_degraded"] = degraded_legs
+        return _with_candidates(payload, resolved_pool)
 
     provider = _resolve_provider_for_answer(getattr(ctx, "path", None))
     if provider is None:
@@ -641,8 +649,7 @@ async def get_answer(
         )
         return await _degrade(
             "no-llm-provider",
-            "DEGRADED: no LLM provider configured (set REPOWISE_PROVIDER "
-            "+ API key). Synthesis is what is missing here, not retrieval.",
+            "Synthesis is unavailable; local retrieval and source evidence remain usable.",
         )
 
     # Decision fusion (why-shaped questions only) + structured prelude. Both
@@ -778,11 +785,6 @@ async def get_answer(
     # actually fell over, so a healthy response pays nothing for it.
     if degraded:
         payload["_meta"]["retrieval_degraded"] = degraded
-    _apply_lean_high(payload, question)
-    # After the cache write above and after lean-high (which can remove
-    # ``best_guesses`` outright), so the cut sees the finished payload and the
-    # cached row keeps the shape its schema version promises.
-    _trim_served_payload(payload)
     # After the cache write above, deliberately. That write copies the payload
     # as it stood then, so the episode reaches the caller and never the cache
     # row, which is why adding it needs no _ANSWER_SCHEMA_VERSION bump: a row
@@ -795,3 +797,54 @@ async def get_answer(
         repo_name=getattr(repository, "name", None),
     )
     return payload
+
+
+# Keep the orchestrator as a literal ``get_answer`` definition for the source-
+# shape invariants that audit its early returns. The exported function below is
+# also literal (rather than a decorator-generated coroutine), because CLI tool
+# adapters inspect ``cr_code.co_qualname`` to confirm they invoked the requested
+# tool. Both paths still share the one projector here.
+_get_answer_raw = get_answer
+_projected_get_answer = projected_answer(_get_answer_raw)
+
+
+@mcp.tool(
+    surface_order=10,
+    recipes=(
+        ToolRecipe(
+            "answer_question",
+            'get_answer(question="how does X work?")',
+            ("get_answer",),
+        ),
+    ),
+)
+async def get_answer(
+    question: str,
+    scope: str | None = None,
+    repo: str | None = None,
+    include: list[str] | None = None,
+) -> dict:
+    """Answer a how, where, or why question in one evidence-grounded call.
+
+    High confidence is content-grounded and may be used directly. Medium
+    confidence keeps the smallest verification evidence; low confidence leads
+    with an actionable local conclusion and ranked evidence. Provider keys and
+    network access are optional: local source, symbols, FTS, rationale, and
+    data-shape evidence remain usable when embeddings or synthesis fail.
+
+    Responses fit 24,000 serialized characters. Pass ``include=["evidence"]``
+    for the deduplicated expanded projection, capped at 32,000. Reductions carry
+    totals, emitted counts, reasons, and an exact one-call recovery.
+
+    Args:
+        question: Developer question.
+        scope: Optional repository-relative path prefix.
+        repo: Usually omitted; a workspace alias when needed.
+        include: Optional ``["evidence"]`` expanded projection.
+    """
+    return await _projected_get_answer(
+        question=question,
+        scope=scope,
+        repo=repo,
+        include=include,
+    )

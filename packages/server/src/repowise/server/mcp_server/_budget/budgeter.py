@@ -195,14 +195,18 @@ def _shed_tail(
     if dropped:
         collector.add(label, list(reversed(dropped)))
         if record_counts:
+            prior_reason = container.get(f"{leaf}_reduced_reason")
             collection_total = max(
                 total, int(container.get(f"{leaf}_total") or 0)
             )
             container[f"{leaf}_total"] = collection_total
             container[f"{leaf}_emitted"] = len(rows)
-            container[f"{leaf}_reduced_reason"] = "response_budget"
+            container[f"{leaf}_reduced_reason"] = _with_budget_reason(prior_reason)
             container[f"{leaf}_truncated"] = True
-            container[f"{leaf}_omitted"] = collection_total - len(rows)
+            # The omission reference persists only rows dropped by this pass.
+            # Earlier projection reductions remain visible in total/emitted and
+            # their combined reason, but are not falsely advertised as stored.
+            container[f"{leaf}_omitted"] = len(dropped)
         response["truncated"] = True
 
 
@@ -217,12 +221,13 @@ def _record_reduction(
 ) -> None:
     """Keep honest counts for a collection removed as one budget block."""
     if isinstance(value, list):
+        prior_reason = container.get(f"{field}_reduced_reason")
         total = max(len(value), int(container.get(f"{field}_total") or 0))
         container[f"{field}_total"] = total
         container[f"{field}_emitted"] = emitted
-        container[f"{field}_reduced_reason"] = "response_budget"
+        container[f"{field}_reduced_reason"] = _with_budget_reason(prior_reason)
         container[f"{field}_truncated"] = True
-        container[f"{field}_omitted"] = total - emitted
+        container[f"{field}_omitted"] = len(value)
         return
     if not isinstance(value, dict):
         return
@@ -244,6 +249,16 @@ def _record_reduction(
                 visit(child, f"{node_path}.{name}")
 
     visit(value, path)
+
+
+def _with_budget_reason(prior_reason: Any) -> str:
+    """Append final-delivery budgeting to reduction provenance at most once."""
+    if not prior_reason:
+        return "response_budget"
+    reason = str(prior_reason)
+    if reason == "response_budget" or reason.endswith("_and_response_budget"):
+        return reason
+    return f"{reason}_and_response_budget"
 
 
 # Heavy optional fields we can strip from a target's docs block without losing
