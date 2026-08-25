@@ -9,6 +9,12 @@ The codebase exposes two deliberately different 0-10 values:
 
 Keeping their labels, thresholds, and machine-readable descriptions here makes
 it impossible for MCP, REST, CLI, and UI adapters to invent competing meanings.
+
+It ships in two tiers. The guard tier (unit, range, calibration status,
+authority) travels with the value and is never omitted. The reference tier
+(fitting corpus, formula, component breakdown) is identical on every call and
+is returned only for ``include=["scales"]``. :func:`compact_scale` is the one
+projection between them, so the tiers cannot disagree.
 """
 
 from __future__ import annotations
@@ -39,6 +45,26 @@ WORKSPACE_IMPACT_SCORE_FORMULA = (
     "maximum path product of edge confidence * edge-kind weight * 0.6 per hop; "
     "structural edge weight = 1.0 and historical co-change edge weight = 0.5"
 )
+
+
+#: Reference-tier keys: they document a scalar rather than guard a reading.
+_REFERENCE_KEYS = frozenset({"deterministic", "formula", "component_fields"})
+_CALIBRATION_REFERENCE_KEYS = frozenset(
+    {"source", "population", "calibrated_at", "granularity"}
+)
+
+
+def compact_scale(row: dict[str, Any]) -> dict[str, Any]:
+    """Project one scale row onto the facts that prevent a misreading."""
+    compact = {key: value for key, value in row.items() if key not in _REFERENCE_KEYS}
+    calibration = compact.get("calibration")
+    if isinstance(calibration, dict):
+        compact["calibration"] = {
+            key: value
+            for key, value in calibration.items()
+            if key not in _CALIBRATION_REFERENCE_KEYS
+        }
+    return compact
 
 
 def structural_impact_band(score: float) -> str:
@@ -215,9 +241,9 @@ def change_risk_scales() -> list[dict[str, Any]]:
     ]
 
 
-def structural_impact_contract(score: float) -> dict[str, Any]:
+def structural_impact_contract(score: float, *, full_scale: bool = False) -> dict[str, Any]:
     """Typed additive contract plus exact legacy alias for PR blast responses."""
-    return {
+    contract: dict[str, Any] = {
         "structural_impact_score": score,
         "structural_impact_band": structural_impact_band(score),
         "structural_impact_scale": {
@@ -287,6 +313,9 @@ def structural_impact_contract(score: float) -> dict[str, Any]:
             "historical_meaning": "uncalibrated 0-10 structural blast-radius heuristic",
         },
     }
+    if not full_scale:
+        contract["structural_impact_scale"] = compact_scale(contract["structural_impact_scale"])
+    return contract
 
 
 def file_risk_scales() -> list[dict[str, Any]]:
@@ -335,9 +364,9 @@ def file_risk_scales() -> list[dict[str, Any]]:
     ]
 
 
-def workspace_impact_score_semantics() -> dict[str, Any]:
+def workspace_impact_score_semantics(*, full: bool = False) -> dict[str, Any]:
     """Metadata for the workspace blast-radius path-ranking score."""
-    return {
+    scale: dict[str, Any] = {
         "field": "impacted[].score",
         "kind": "heuristic_path_rank",
         "unit": "relative_weight",
@@ -349,3 +378,4 @@ def workspace_impact_score_semantics() -> dict[str, Any]:
         "authoritative_for_change_review": False,
         "runtime_breakage_probability": False,
     }
+    return scale if full else compact_scale(scale)

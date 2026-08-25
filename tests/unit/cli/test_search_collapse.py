@@ -792,7 +792,8 @@ def test_risk_full_on_a_revspec_is_json_not_a_table(monkeypatch, repo):
     from repowise.core.analysis.change_risk import ChangeRiskResult
 
     monkeypatch.setattr(
-        "repowise.cli.commands.risk_cmd.change_risk_payload", lambda r: {"risk": 4.2}
+        "repowise.cli.commands.risk_cmd.change_risk_payload",
+        lambda r, **kw: {"risk": 4.2},
     )
     monkeypatch.setattr(
         "repowise.cli.commands.risk_cmd.score_live_change",

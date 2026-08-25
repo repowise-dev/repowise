@@ -14,7 +14,7 @@ class RiskScaleRange(BaseModel):
 
 class RiskCalibration(BaseModel):
     status: str
-    source: str | None
+    source: str | None = None
     calibrated_at: str | None = None
     population: str | None = None
     granularity: str | None = None
@@ -26,7 +26,7 @@ class RiskScalarSemantics(BaseModel):
     unit: str
     range: RiskScaleRange | None
     measures: str
-    deterministic: bool
+    deterministic: bool = True
     calibration: RiskCalibration | None = None
     authoritative: bool | None = None
     authoritative_for_change_review: bool | None = None

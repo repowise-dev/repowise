@@ -27,6 +27,8 @@ from repowise.server.mcp_server._helpers import (
     _is_workspace_mode,
     _resolve_repo_context,
     _unsupported_repo_all,
+    attach_ignored_arguments,
+    resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
@@ -44,6 +46,9 @@ _PRIOR_FIXES_LIMIT = 10
 #: full traversal, so both lists stay short and report their own overflow.
 _CROSS_REPO_BREAKING_LIMIT = 5
 _CROSS_REPO_CONSUMER_LIMIT = 10
+
+#: Per-field units and calibration. Identical on every call, so it is opt-in.
+_INCLUDE_BLOCKS = frozenset({"scales"})
 
 # Cheapest loss first; the score, its drivers and fix_history's numbers are the
 # answer and never shed. cross_repo outlives the run-list: a test list is
@@ -64,19 +69,18 @@ async def get_change_risk(
     extensions: list[str] | None = None,
     exclude_patterns: list[str] | None = None,
     baseline: int = 200,
+    include: list[str] | None = None,
 ) -> dict:
     """Score a live commit, ``base..head`` range, or uncommitted work.
 
     For a pre-merge read on a commit or PR range; ``get_risk`` scores indexed
     files instead. The filters also apply to the percentile baseline.
 
-    ``risk_authority`` states that ``risk_percentile`` + ``classification`` are
-    the benchmarked change-review authority and ``fallback_band`` is the
-    explicit absolute fallback when no baseline is available. ``score`` is a
-    supporting 0-10 calibrated model score for diff size and spread, not a
-    probability or a measure of where the change lands. ``risk_scales`` gives
-    every scalar's units, range, calibration, and role. ``fix_history`` then
-    names the recency-weighted bug-fix record of the touched files.
+    Act on ``risk_percentile`` + ``classification``: they rank this diff
+    against recent commits, and ``risk_authority`` names them. ``score`` is a
+    supporting 0-10 model score for diff size and spread, never a probability;
+    ``fallback_band`` stands in only when no baseline exists. ``fix_history``
+    carries the bug-fix record of the touched files.
 
     ``impacted_tests`` keeps measured coverage and inferred graph candidates
     distinct, labels unavailable analysis, and exposes truncation metadata.
@@ -92,6 +96,8 @@ async def get_change_risk(
         extensions: File suffixes to count, e.g. ``[".py", ".ts"]``.
         exclude_patterns: Gitignore-style paths to omit, e.g. ``["tests/"]``.
         baseline: Recent commits to sample for percentile ranking; 0 disables it.
+        include: opt-in blocks - "scales" for every scalar's unit, range and
+            calibration. Identical on every call, so ask once.
     """
     if repo == "all":
         return _unsupported_repo_all("get_change_risk")
@@ -113,7 +119,13 @@ async def get_change_risk(
         return {"error": f"Could not read change {revspec or 'HEAD'!r}: {detail}"}
     except subprocess.TimeoutExpired:
         return {"error": f"git timed out reading change {revspec or 'HEAD'!r}."}
-    payload = change_risk_payload(result)
+    ignored: list[dict] = []
+    include_set = {
+        block
+        for block in (include or [])
+        if resolve_enum_argument(block, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
+    }
+    payload = change_risk_payload(result, scales="scales" in include_set)
     if result.features.nf == 0:
         payload["warning"] = (
             f"No counted file changes in {payload['ref']!r} "
@@ -155,6 +167,7 @@ async def get_change_risk(
         targets=sorted(changed) or None,
         extra={"source": "live_git"},
     )
+    attach_ignored_arguments(payload, ignored)
     fit_to_budget(payload, _SHED_ORDER, collector)
     collector.attach(payload)
     return payload

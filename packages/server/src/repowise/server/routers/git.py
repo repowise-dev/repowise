@@ -32,7 +32,7 @@ from repowise.core.analysis.change_risk import (
     score_change,
     scores_excluding,
 )
-from repowise.core.analysis.risk_semantics import change_risk_authority, change_risk_scales
+from repowise.core.analysis.risk_semantics import change_risk_authority
 from repowise.core.ingestion.git_indexer._constants import (
     EVOLUTION_CATEGORIES,
     classify_commit_category,
@@ -736,7 +736,6 @@ def get_risk_range(
             ],
         ),
         risk_authority=change_risk_authority(),
-        risk_scales=change_risk_scales(),
         score=risk.score,
         score_measures=SCORE_MEASURES,
         score_unit=SCORE_UNIT,

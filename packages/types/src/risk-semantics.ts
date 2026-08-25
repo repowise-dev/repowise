@@ -7,7 +7,8 @@ export interface RiskScaleRange {
 
 export interface RiskCalibration {
   status: "benchmarked" | "heuristic_thresholds" | "uncalibrated" | "not_applicable";
-  source: string | null;
+  /** Reference tier: present only under include=["scales"]. */
+  source?: string | null;
   calibrated_at?: string | null;
   population?: string | null;
   granularity?: string | null;
@@ -19,7 +20,8 @@ export interface RiskScalarSemantics {
   unit: string;
   range: RiskScaleRange | null;
   measures: string;
-  deterministic: boolean;
+  /** Reference tier: present only under include=["scales"]. */
+  deterministic?: boolean;
   calibration?: RiskCalibration | null;
   authoritative?: boolean | null;
   authoritative_for_change_review?: boolean | null;

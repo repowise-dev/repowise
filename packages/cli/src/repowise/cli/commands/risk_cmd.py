@@ -501,7 +501,7 @@ def risk_command(
         )
 
     if fmt == "json":
-        click.echo(json.dumps(change_risk_payload(result), indent=2))
+        click.echo(json.dumps(change_risk_payload(result, scales=True), indent=2))
         return
 
     # Lead with the benchmarked population-relative authority. Without a usable

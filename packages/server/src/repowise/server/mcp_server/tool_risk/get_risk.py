@@ -71,7 +71,8 @@ _TARGET_CARD_INCLUDES: dict[str, tuple[str, ...]] = {
     "churn": ("change_magnitude", "risk_type", "change_pattern"),
 }
 _BLAST_INCLUDES: dict[str, tuple[str, ...]] = {"graph": ("direct_risks",)}
-_INCLUDE_BLOCKS = frozenset(_TARGET_CARD_INCLUDES) | frozenset(_BLAST_INCLUDES)
+#: Per-field units and calibration. Identical on every call, so it is opt-in.
+_INCLUDE_BLOCKS = frozenset(_TARGET_CARD_INCLUDES) | frozenset(_BLAST_INCLUDES) | {"scales"}
 
 
 def _drop_opt_in_blocks(response: dict, include: set[str]) -> None:
@@ -101,28 +102,28 @@ async def get_risk(
     reach (source depends on target), ``consumers`` require typed contract links,
     and ``co_change_partners`` are historical correlation only. Structural reach
     is not proof of runtime breakage. The response also includes security
-    findings. Consult before editing a bug-fixed or busy file. Pass
-    changed_files for PR mode: the response leads with a directive block
-    (may_break, missing_cochanges, missing_tests, tests_to_run) — read it
-    first. Each test_recommendations row carries a measured or inferred basis;
-    tests_to_run keeps its measured-first compatibility projection. Coverage
-    availability and freshness are explicit. To score a commit
-    or ``base..head`` range instead, use ``get_change_risk``.
+    findings. Pass changed_files for PR mode: the response leads with a
+    directive block (may_break, missing_cochanges, missing_tests,
+    tests_to_run) — read it first. Each test_recommendations row carries a
+    measured or inferred basis, and coverage availability is explicit. To
+    score a commit or ``base..head`` range instead, use ``get_change_risk``.
 
-    ``risk_scales`` gives the units and evidence basis for every indexed-file
-    scalar. In PR mode, ``structural_impact_score`` is a deterministic,
-    uncalibrated 0-10 structural heuristic, never a runtime-breakage
-    probability. ``overall_risk_score`` is its deprecated exact alias.
+    In PR mode ``structural_impact_score`` is an uncalibrated 0-10 structural
+    heuristic, never a runtime-breakage probability; ``overall_risk_score`` is
+    its deprecated exact alias.
 
     ``defect_profile`` appears only with counted fixes; ``top_symbols`` is
-    approximate attribution. Directory targets aggregate everything beneath
-    them, so compare within a kind of target.
+    approximate attribution. ``episodes`` counts dated records bound to a
+    target, evidenced by a commit or a filesystem fact; ``get_why`` serves the
+    bodies. Directory targets aggregate everything beneath them, so compare
+    within a kind of target.
 
     Args:
         targets: file paths to assess.
         repo: usually omitted.
         changed_files: PR-changed files for blast-radius mode.
-        include: opt-in blocks - "graph", "churn".
+        include: opt-in blocks - "graph", "churn", "scales" (units and
+            calibration for every scalar; identical per call, so ask once).
     """
     if repo == "all":
         return _unsupported_repo_all("get_risk")
@@ -273,7 +274,7 @@ async def get_risk(
 
     response: dict = {
         "targets": {r["target"]: r for r in results},
-        "risk_scales": file_risk_scales(),
+        **({"risk_scales": file_risk_scales()} if "scales" in include_set else {}),
     }
 
     collector = OmissionCollector("get_risk", repo_root=ctx.path)
@@ -290,6 +291,7 @@ async def get_risk(
             governance_risk,
             test_paths,
             ctx.alias,
+            full_scale="scales" in include_set,
         )
         # Dict insertion order is the serialized external order. PR mode is
         # action-first by contract, so the directive must precede dossiers,

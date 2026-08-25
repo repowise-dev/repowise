@@ -34,7 +34,6 @@ const REPORT: RiskRangeReport = {
       fallback_basis: "absolute_model_score_band",
       score_role: "supporting_diff_shape_signal",
     },
-    risk_scales: [],
     score: 7.4,
     score_measures: "diff size and spread; not where the change lands",
     score_unit: "per-commit",

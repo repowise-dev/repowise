@@ -72,7 +72,12 @@ async def test_get_change_risk_honors_riskignore_and_request_filters(tmp_path, m
         "risk_percentile",
         "classification",
     ]
-    scales = {scale["field"]: scale for scale in result["risk_scales"]}
+    # The per-field dictionary is identical on every call, so it is opt-in.
+    assert "risk_scales" not in result
+    expanded = await module.get_change_risk(
+        "HEAD", extensions=["py", "md"], exclude_patterns=["docs/"], baseline=0, include=["scales"]
+    )
+    scales = {scale["field"]: scale for scale in expanded["risk_scales"]}
     assert scales["score"]["authoritative"] is False
     assert scales["risk_percentile"]["authoritative"] is True
     assert scales["features.la|features.ld"]["unit"] == "lines"

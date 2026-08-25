@@ -258,6 +258,8 @@ def _trim_blast_lists(
     pr_blast_radius: dict[str, Any],
     exclude_spec: Any,
     collector: OmissionCollector | None = None,
+    *,
+    full_scale: bool = False,
 ) -> dict[str, Any]:
     """Cap the noisy ``pr_blast_radius`` lists, capturing what gets dropped.
 
@@ -269,13 +271,13 @@ def _trim_blast_lists(
     are filtered by policy, not budget).
     """
     trimmed_blast: dict[str, Any] = dict(pr_blast_radius)
-    # Normalize older or mocked analyzer payloads into the additive typed
-    # contract. The legacy field remains an exact alias, never a repurposed unit.
-    structural_score = trimmed_blast.get(
-        "structural_impact_score", trimmed_blast.get("overall_risk_score")
-    )
+    # Re-derive so the scale tier follows the caller's include, not the
+    # analyzer's default. The legacy field stays an exact alias.
+    structural_score = trimmed_blast.get("structural_impact_score")
     if structural_score is not None:
-        trimmed_blast.update(structural_impact_contract(float(structural_score)))
+        trimmed_blast.update(
+            structural_impact_contract(float(structural_score), full_scale=full_scale)
+        )
     for key, cap in (
         ("transitive_affected", 15),
         ("cochange_warnings", 10),
@@ -365,6 +367,8 @@ def _build_pr_directive(
     governance_risk: list[dict[str, Any]],
     test_paths: set[str],
     alias: str,
+    *,
+    full_scale: bool = False,
 ) -> None:
     """Assemble PR-mode output: trim co-change lists + blast radius, then build
     the directive block. Mutates *response* in place. Behavior preserved.
@@ -387,7 +391,9 @@ def _build_pr_directive(
         r["co_change_partners_emitted"] = emitted
         r["co_change_partners_truncated"] = emitted < total
 
-    trimmed_blast = _trim_blast_lists(pr_blast_radius, exclude_spec, collector)
+    trimmed_blast = _trim_blast_lists(
+        pr_blast_radius, exclude_spec, collector, full_scale=full_scale
+    )
     response["pr_blast_radius"] = trimmed_blast
 
     # Directive: 3 short lists the agent can read in one glance. Each

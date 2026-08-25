@@ -7,7 +7,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
-from repowise.server.schemas.risk_semantics import RiskAuthority, RiskScalarSemantics
+from repowise.server.schemas.risk_semantics import RiskAuthority
 
 
 class GitMetadataResponse(BaseModel):
@@ -333,7 +333,6 @@ class RiskRangeResponse(BaseModel):
     #: folded into the authoritative percentile/classification.
     fix_history: FixHistoryResponse
     risk_authority: RiskAuthority
-    risk_scales: list[RiskScalarSemantics]
     score: float
     #: What ``score`` measures. It tracks diff size and spread, not danger.
     score_measures: str

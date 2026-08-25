@@ -252,7 +252,6 @@ export function registerLmTools(ctx: RepowiseContext): vscode.Disposable {
         // and a model handed only the score will read it as a verdict.
         fix_history: result.fix_history,
         risk_authority: result.risk_authority,
-        risk_scales: result.risk_scales,
         score: result.score,
         score_measures: result.score_measures,
         score_unit: result.score_unit,

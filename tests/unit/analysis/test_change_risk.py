@@ -111,7 +111,21 @@ def test_payload_includes_friendly_repo_relative_classification() -> None:
         "fallback_basis": "absolute_model_score_band",
         "score_role": "supporting_diff_shape_signal",
     }
-    scales = {scale["field"]: scale for scale in payload["risk_scales"]}
+    # The per-field dictionary never varies between calls, so it is opt-in.
+    assert "risk_scales" not in payload
+    expanded = change_risk_payload(
+        ChangeRiskResult(
+            features=features,
+            risk=score_change(features),
+            percentile=66.6,
+            priority="moderate",
+            baseline_sample_size=200,
+            riskignore_excludes=(),
+            request_excludes=(),
+        ),
+        scales=True,
+    )
+    scales = {scale["field"]: scale for scale in expanded["risk_scales"]}
     assert scales["score"]["unit"] == "normalized_points"
     assert scales["score"]["authoritative"] is False
     assert scales["risk_percentile"]["unit"] == "percentile_rank"
@@ -120,7 +134,10 @@ def test_payload_includes_friendly_repo_relative_classification() -> None:
         "moderate_score": 4.0,
         "high_score": 7.0,
     }
-    assert "probability" not in str(payload["risk_scales"]).lower()
+    # No uncalibrated scalar may be described as a probability, anywhere.
+    assert "probability" not in str(expanded["risk_scales"]).lower()
+    assert all(s["kind"] != "probability" for s in expanded["risk_scales"])
+    assert all(s["unit"] != "probability" for s in expanded["risk_scales"])
 
 
 # ---------------------------------------------------------------------------

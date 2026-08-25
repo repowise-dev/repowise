@@ -520,10 +520,8 @@ class PRBlastRadiusAnalyzer:
         if not direct_risks:
             return 0.0
 
-        avg_direct = sum(
-            r.get("structural_score", r.get("risk_score", 0.0)) for r in direct_risks
-        ) / len(direct_risks)
-        max_direct = max(r.get("structural_score", r.get("risk_score", 0.0)) for r in direct_risks)
+        avg_direct = sum(r["structural_score"] for r in direct_risks) / len(direct_risks)
+        max_direct = max(r["structural_score"] for r in direct_risks)
         breadth_bonus = min(len(transitive_affected) / 20.0, 1.0)  # 0-1
 
         combined = 0.5 * avg_direct + 0.5 * max_direct

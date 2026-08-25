@@ -490,7 +490,7 @@ def test_risk_trim_blast_lists_collects_drops(repo_root: Path):
 
     blast = {
         "transitive_affected": [f"pkg/f{i}.py" for i in range(20)],
-        "overall_risk_score": 4.2,
+        "structural_impact_score": 4.2,
     }
     collector = OmissionCollector("get_risk", repo_root=repo_root)
     trimmed = _trim_blast_lists(blast, None, collector)

@@ -438,7 +438,7 @@ async def test_get_risk_names_an_unknown_include_rather_than_applying_it(setup_m
     result = await get_risk(["src/auth/service.py"], include=["graph", "nonsense"])
     assert "impact_surface" in result["targets"]["src/auth/service.py"]
     assert result["ignored_arguments"] == [
-        {"argument": "include", "values": ["nonsense"], "valid": ["churn", "graph"]}
+        {"argument": "include", "values": ["nonsense"], "valid": ["churn", "graph", "scales"]}
     ]
 
 
@@ -458,9 +458,18 @@ async def test_get_risk_directive_does_not_copy_the_analyzer_score(setup_mcp):
         "equivalent_value": True,
         "historical_meaning": "uncalibrated 0-10 structural blast-radius heuristic",
     }
-    assert blast["structural_impact_scale"]["calibration"]["status"] == "uncalibrated"
-    assert blast["structural_impact_scale"]["runtime_breakage_probability"] is False
-    assert result["risk_scales"][0]["field"] == "targets.*.hotspot_score"
+    scale = blast["structural_impact_scale"]
+    assert scale["calibration"]["status"] == "uncalibrated"
+    assert scale["runtime_breakage_probability"] is False
+    # Guard tier by default; the reference tier follows the caller's include.
+    assert "component_fields" not in scale
+    assert "risk_scales" not in result
+
+    expanded = await get_risk(
+        ["src/auth/service.py"], changed_files=["src/auth/service.py"], include=["scales"]
+    )
+    assert expanded["risk_scales"][0]["field"] == "targets.*.hotspot_score"
+    assert expanded["pr_blast_radius"]["structural_impact_scale"]["component_fields"]
 
 
 @pytest.mark.asyncio
