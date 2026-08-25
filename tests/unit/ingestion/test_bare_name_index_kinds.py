@@ -1,4 +1,4 @@
-"""Tier 3 must not offer a data member as a function (bug 90).
+"""Tier 3 must not offer a data member as a function.
 
 ``_resolve_free_call``'s global-unique tier answers a bare name with any
 repo symbol carrying that name. The index it consults holds every symbol,

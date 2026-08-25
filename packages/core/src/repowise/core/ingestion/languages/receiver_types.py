@@ -336,11 +336,12 @@ RECEIVER_TYPE_LANGUAGES = frozenset(_LANGUAGE_PATTERNS)
 # answer, and consulting it could only bind a bare local name to a field.
 #
 # Kotlin is here on a count rather than on its semantics, which is the lesson
-# bug 63 cost: Python has implicit field access too, and registering it would
-# have promised nothing, because only 1.8% of its field receivers are typed
-# where this scan looks. Kotlin declares a property at class scope in its own
-# idiom, and the scan does find them — 56 of ktor's 1,349 gained edges and 100
-# of exposed's 320, hand-read 10/10 correct. Small, and measured.
+# the Python attempt cost: Python has implicit field access too, and
+# registering it would have promised nothing, because only 1.8% of its field
+# receivers are typed where this scan looks. Kotlin declares a property at
+# class scope in its own idiom, and the scan does find them — 56 of ktor's
+# 1,349 gained edges and 100 of exposed's 320, hand-read 10/10 correct. Small,
+# and measured.
 #
 # Only a `val`/`var` reaches class scope. A primary-constructor parameter with
 # a default closes on `=` there too and is not a property at all, which is why
