@@ -99,7 +99,7 @@ async def test_search_collapses_restatements_of_one_decision(session, setup_mcp)
             setup_mcp,
             id_=f"restate{n}",
             title=f"Zebrafish caching, phrasing {n}",
-            commits=["deadbeef"],
+            commits=["deadbeef" * 5],
             confidence=0.9 - n / 100,
         )
 
@@ -116,8 +116,20 @@ async def test_search_keeps_records_citing_different_commits_apart(session, setu
     """The key is the cited evidence, so two real decisions must not merge."""
     from repowise.server.mcp_server import get_why
 
-    await _seed(session, setup_mcp, id_="ev1", title="Zebrafish caching one", commits=["aaa"])
-    await _seed(session, setup_mcp, id_="ev2", title="Zebrafish caching two", commits=["bbb"])
+    await _seed(
+        session,
+        setup_mcp,
+        id_="ev1",
+        title="Zebrafish caching one",
+        commits=["a" * 40],
+    )
+    await _seed(
+        session,
+        setup_mcp,
+        id_="ev2",
+        title="Zebrafish caching two",
+        commits=["b" * 40],
+    )
 
     result = await get_why("why zebrafish caching")
     served = {d["id"] for d in result["decisions"]}

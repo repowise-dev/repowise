@@ -22,6 +22,8 @@ from repowise.server.mcp_server._budget import (
 def _payload(tool: str, pad: int) -> dict[str, Any]:
     if tool == "get_health":
         pad = min(pad, 10_000)
+    if tool == "get_why":
+        pad = min(pad, 9_000)
     rows = [{"id": i, "evidence": f"EVIDENCE_{tool}_{i}_" + "x" * pad} for i in range(3)]
     meta = {"contract_version": 1, "indexed_commit": "a" * 12}
     if tool == "get_context":
@@ -56,6 +58,30 @@ def _payload(tool: str, pad: int) -> dict[str, Any]:
             "confidence": "high",
             "citations": ["src/large.py"],
             "retrieval": rows,
+            "_meta": meta,
+        }
+    if tool == "get_why":
+        decisions = [
+            {
+                "id": row["id"],
+                "title": f"Decision {row['id']}",
+                "rationale": row["evidence"],
+                "provenance": "historical",
+                "evidence_refs": [
+                    {
+                        "id": f"ev_{row['id']}",
+                        "repository": "test-repo",
+                        "kind": "commit",
+                        "commit": f"{row['id']:040x}",
+                    }
+                ],
+            }
+            for row in rows
+        ]
+        return {
+            "mode": "search",
+            "query": "why is the response bounded",
+            "decisions": decisions,
             "_meta": meta,
         }
     if tool == "get_health":
@@ -102,6 +128,7 @@ def _enforce(tool: str, payload: dict[str, Any], include: list[str] | None = Non
         ("get_risk", "directive"),
         ("get_change_risk", "classification"),
         ("get_answer", "answer"),
+        ("get_why", "query"),
         ("get_overview", "title"),
         ("get_health", "directive"),
     ],
@@ -140,6 +167,7 @@ def test_default_payload_goldens_keep_action_fields_and_exact_accounting(
         ("get_risk", "directive"),
         ("get_change_risk", "classification"),
         ("get_answer", "answer"),
+        ("get_why", "query"),
         ("get_overview", "title"),
         ("get_health", "directive"),
     ],
@@ -190,6 +218,15 @@ def test_adversarial_payload_goldens_fit_and_recover_in_one_lookup(
     finally:
         store.close()
     assert any(value is not None and f"EVIDENCE_{tool}" in value for value in recovered)
+    if tool == "get_why":
+        assert len(refs) == 1
+        recovered_payload = recovered[0] or ""
+        emitted_ids = {row["id"] for row in result["decisions"]}
+        for row_id in set(range(3)) - emitted_ids:
+            assert f'"id": {row_id}' in recovered_payload
+            assert f'"id": "ev_{row_id}"' in recovered_payload
+        for row_id in emitted_ids:
+            assert f'"id": {row_id}' not in recovered_payload
     if tool == "get_health":
         joined = recovered[0] or ""
         emitted_ids = {row["id"] for row in result["high_leverage_files"]}
@@ -293,6 +330,29 @@ async def test_middleware_budgets_after_trust_metadata(
         json.dumps(result, separators=(",", ":"), default=str)
     )
     assert accounting["serialized_chars"] <= DEFAULT_RESPONSE_CHARS
+
+
+@pytest.mark.asyncio
+async def test_get_why_middleware_accounts_after_trust_and_keeps_refs_recoverable(
+    setup_mcp: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import repowise.server.mcp_server as mcp_mod
+
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+
+    async def get_why() -> dict:
+        return _payload("get_why", 15_000)
+
+    result = await tool_middleware(get_why)()
+    accounting = result["_meta"]["response_budget"]
+    assert result["_meta"]["contract_version"] == 1
+    assert accounting["serialized_chars"] == len(
+        json.dumps(result, separators=(",", ":"), default=str)
+    )
+    assert accounting["serialized_chars"] <= DEFAULT_RESPONSE_CHARS
+    assert all(row["evidence_refs"] for row in result["decisions"])
+    assert len(result["_meta"]["omitted"]["refs"]) == 1
 
 
 @pytest.mark.asyncio
