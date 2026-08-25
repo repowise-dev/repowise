@@ -1304,7 +1304,13 @@ class CallResolver:
 
         # 2b: Check all imported files for the symbol (pre-merged lookup)
         merged_syms = self._merged_symbols_for(file_path)
-        if target_name in merged_syms:
+        # A data member is not callable. Tier 3 already refuses one, but this
+        # rung answered first and at 0.85, above the tier that declines it, so
+        # the refusal only reached whichever sites tier 3 happened to see.
+        if (
+            target_name in merged_syms
+            and merged_syms[target_name] not in self._non_callable_ids
+        ):
             return ResolvedCall(
                 caller_id, merged_syms[target_name], 0.85, call.line, "import_merged"
             )
