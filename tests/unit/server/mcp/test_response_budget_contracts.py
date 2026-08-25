@@ -15,6 +15,7 @@ from repowise.server.mcp_server._budget import (
     DEFAULT_RESPONSE_CHARS,
     EXPANDED_RESPONSE_CHARS,
     enforce_response_budget,
+    resolve_response_budget_repo_root,
 )
 
 
@@ -152,13 +153,23 @@ def test_adversarial_payload_goldens_fit_and_recover_in_one_lookup(
     assert result["truncated"] is True
     refs = result["_meta"]["omitted"]["refs"]
     assert refs
+    if tool == "get_risk":
+        reductions = result["_meta"].get("reductions", [])
+        assert reductions and all(
+            row["total"] >= row["emitted"] and row["reason"] == "response_budget"
+            for row in reductions
+        )
+    elif tool == "get_change_risk":
+        assert result["prior_fixes_total"] == 3
+        assert result["prior_fixes_emitted"] == 0
+        assert result["prior_fixes_reduced_reason"] == "response_budget"
 
     store = OmissionStore(default_store_path(repo))
     try:
-        recovered = store.get(refs[-1])
+        recovered = [store.get(ref) for ref in refs]
     finally:
         store.close()
-    assert recovered is not None and f"EVIDENCE_{tool}" in recovered
+    assert any(value is not None and f"EVIDENCE_{tool}" in value for value in recovered)
 
 
 def test_explicit_include_uses_the_expansion_tier(
@@ -189,6 +200,7 @@ def test_oversized_protected_answer_is_reduced_and_recoverable(
     accounting = result["_meta"]["response_budget"]
     assert result["answer"].startswith("PROTECTED_ANSWER_")
     assert accounting["serialized_chars"] <= DEFAULT_RESPONSE_CHARS
+    assert result["_meta"]["state"]["truncated"] is True
     assert "enforcement_error" not in accounting
     refs = result["_meta"]["omitted"]["refs"]
     store = OmissionStore(default_store_path(tmp_path))
@@ -217,3 +229,26 @@ async def test_middleware_budgets_after_trust_metadata(
         json.dumps(result, separators=(",", ":"), default=str)
     )
     assert accounting["serialized_chars"] <= DEFAULT_RESPONSE_CHARS
+
+
+@pytest.mark.asyncio
+async def test_budget_repo_root_follows_workspace_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    import repowise.server.mcp_server._helpers as helpers
+
+    selected = tmp_path / "selected"
+
+    async def resolve(repo: str | None = None) -> Any:
+        assert repo == "other"
+        return SimpleNamespace(path=selected)
+
+    monkeypatch.setattr(helpers, "_resolve_repo_context", resolve)
+
+    def call(repo: str | None = None) -> None:
+        pass
+
+    signature = inspect.signature(call)
+    assert await resolve_response_budget_repo_root(signature, (), {"repo": "other"}) == selected

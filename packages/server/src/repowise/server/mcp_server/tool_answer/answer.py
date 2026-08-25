@@ -386,7 +386,7 @@ async def get_answer(
     of it. Weigh it against the answer; ``still_true`` says how current it is.
 
     Responses fit 24,000 serialized chars. Reduced evidence carries counts and
-    one-call recovery refs in ``_meta.omitted``.
+    recovery refs in ``_meta.omitted``; storage failures are explicit.
 
     Args:
         question: developer question.

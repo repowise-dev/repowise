@@ -39,6 +39,7 @@ from repowise.server.mcp_server._budget.contracts import (
     EXPANDED_RESPONSE_CHARS,
     budgeted_tool_names,
     enforce_response_budget,
+    resolve_response_budget_repo_root,
 )
 
 __all__ = [
@@ -58,5 +59,6 @@ __all__ = [
     "fit_to_budget",
     "host_token_cap",
     "over_budget",
+    "resolve_response_budget_repo_root",
     "truncate_to_budget",
 ]

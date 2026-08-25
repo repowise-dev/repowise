@@ -138,6 +138,19 @@ def test_collector_store_failure_degrades_silently(tmp_path: Path):
     collector.attach(response)
     assert "omission_marker" not in response
     assert "omitted" not in response["_meta"]
+    assert "recovery_unavailable" in response["_meta"]
+
+
+def test_collector_chunks_large_recovery_documents(repo_root: Path):
+    collector = OmissionCollector("test_tool", repo_root=repo_root)
+    collector.add("large", "x" * 70_000)
+    response: dict = {"_meta": {}}
+    collector.attach(response)
+
+    refs = response["_meta"]["omitted"]["refs"]
+    assert len(refs) == 3
+    assert len(response["omission_markers"]) == 3
+    assert all(len(_store_get(repo_root, ref) or "") <= 28_000 for ref in refs)
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +257,7 @@ def test_budgeter_decisions_unchanged_by_collector(repo_root: Path):
 
     # Strip the additive reversibility fields; the rest must be identical.
     collected.pop("omission_marker", None)
+    collected.pop("omission_markers", None)
     collected["_meta"].pop("omitted", None)
     assert json.dumps(collected, sort_keys=True, default=str) == json.dumps(
         plain, sort_keys=True, default=str
@@ -350,6 +364,8 @@ def test_fit_to_budget_reports_total_emitted_and_reason(repo_root: Path):
     assert response["results_total"] == 6
     assert response["results_emitted"] == len(response["results"])
     assert response["results_reduced_reason"] == "response_budget"
+    assert response["results_truncated"] is True
+    assert response["results_omitted"] == 6 - len(response["results"])
 
 
 def test_fit_to_budget_can_reduce_a_ranked_mapping(repo_root: Path):
@@ -520,20 +536,24 @@ async def test_get_overview_stays_under_a_narrowed_host_cap(
 ):
     """The ceiling is real end to end: no block of a live tool escapes it."""
     import repowise.server.mcp_server as mcp_mod
-    from repowise.server.mcp_server import get_overview
+    from repowise.server.mcp_server import get_overview, tool_middleware
 
     mcp_mod._repo_path = str(repo_root)
-    full = await get_overview()
+    budgeted = tool_middleware(get_overview)
+    full = await budgeted()
     assert "truncated" not in full  # normal cap: nothing sheds
     assert full["tool_guide"]
 
     monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", "700")
-    trimmed = await get_overview()
+    trimmed = await budgeted()
 
     assert trimmed["truncated"] is True
     assert "tool_guide" not in trimmed  # first in the declared shed order
     assert trimmed["title"] == full["title"]
-    assert not over_budget(trimmed)
+    accounting = trimmed["_meta"]["response_budget"]
+    assert len(json.dumps(trimmed, separators=(",", ":"), default=str)) <= accounting[
+        "limit_chars"
+    ]
     stored = _joined(repo_root, trimmed["_meta"]["omitted"]["refs"])
     assert "first_call" in stored
 

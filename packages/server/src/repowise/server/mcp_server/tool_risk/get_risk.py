@@ -15,7 +15,7 @@ from repowise.core.persistence.models import (
     GraphNode,
 )
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.mcp_server._budget import OmissionCollector, fit_to_budget
+from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -32,16 +32,6 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 from .assessment import _assess_one_target, _get_active_contributor_count, fix_annotation
 from .directives import _build_pr_directive, _governance_directive
 from .enrichment import _enrich_cross_repo, _enrich_health
-
-# Cheapest loss first; the target cards and the directive are never shed.
-# The directive retains its capped typed run list even if the larger blast
-# dossier is shed to fit the transport budget.
-_SHED_ORDER: tuple[str, ...] = (
-    "global_hotspots",
-    "pr_blast_radius.guarding_tests",
-    "pr_blast_radius",
-)
-
 
 #: Fields an agent cannot rank or act on: uncalibrated pagerank floats, and
 #: labels derived from numbers already printed beside them. Computed either way
@@ -113,7 +103,8 @@ async def get_risk(
     its deprecated exact alias.
 
     Default responses fit 24,000 serialized chars; nonempty ``include`` uses
-    32,000. Reductions carry counts and ``_meta.omitted`` recovery refs.
+    32,000. Reductions carry counts and ``_meta.omitted`` recovery refs;
+    ``_meta.recovery_unavailable`` names a storage failure.
     Include-gated blocks are projections, not omissions.
 
     Args:
@@ -306,6 +297,5 @@ async def get_risk(
     )
     _drop_opt_in_blocks(response, include_set)
     attach_ignored_arguments(response, ignored)
-    fit_to_budget(response, _SHED_ORDER, collector)
     collector.attach(response)
     return response

@@ -163,7 +163,7 @@ def fit_to_budget(
             value = target.pop(leaf)
             collector.add(key, value)
             if record_counts:
-                _record_reduction(target, leaf, value, emitted=0)
+                _record_reduction(response, target, key, leaf, value, emitted=0)
             response["truncated"] = True
     return response
 
@@ -195,25 +195,55 @@ def _shed_tail(
     if dropped:
         collector.add(label, list(reversed(dropped)))
         if record_counts:
-            container[f"{leaf}_total"] = max(
+            collection_total = max(
                 total, int(container.get(f"{leaf}_total") or 0)
             )
+            container[f"{leaf}_total"] = collection_total
             container[f"{leaf}_emitted"] = len(rows)
             container[f"{leaf}_reduced_reason"] = "response_budget"
+            container[f"{leaf}_truncated"] = True
+            container[f"{leaf}_omitted"] = collection_total - len(rows)
         response["truncated"] = True
 
 
 def _record_reduction(
-    container: dict[str, Any], field: str, value: Any, *, emitted: int
+    response: dict[str, Any],
+    container: dict[str, Any],
+    path: str,
+    field: str,
+    value: Any,
+    *,
+    emitted: int,
 ) -> None:
     """Keep honest counts for a collection removed as one budget block."""
-    if not isinstance(value, list):
+    if isinstance(value, list):
+        total = max(len(value), int(container.get(f"{field}_total") or 0))
+        container[f"{field}_total"] = total
+        container[f"{field}_emitted"] = emitted
+        container[f"{field}_reduced_reason"] = "response_budget"
+        container[f"{field}_truncated"] = True
+        container[f"{field}_omitted"] = total - emitted
         return
-    container[f"{field}_total"] = max(
-        len(value), int(container.get(f"{field}_total") or 0)
-    )
-    container[f"{field}_emitted"] = emitted
-    container[f"{field}_reduced_reason"] = "response_budget"
+    if not isinstance(value, dict):
+        return
+
+    reductions = response.setdefault("_meta", {}).setdefault("reductions", [])
+
+    def visit(node: Any, node_path: str) -> None:
+        if isinstance(node, list):
+            reductions.append(
+                {
+                    "field": node_path,
+                    "total": len(node),
+                    "emitted": 0,
+                    "reason": "response_budget",
+                }
+            )
+        elif isinstance(node, dict):
+            for name, child in node.items():
+                visit(child, f"{node_path}.{name}")
+
+    visit(value, path)
 
 
 # Heavy optional fields we can strip from a target's docs block without losing
@@ -450,12 +480,14 @@ def _run_stages(
             else:
                 dropped.append(sym.get("name") or "<anonymous>")
                 dropped_syms.append(sym)
+        symbol_content_reduced = False
         if not kept and ordered:
             # Edge case: a single symbol is larger than the budget. Keep one
             # (truncating its docstring) rather than returning zero symbols —
             # the caller at least learns the target resolved.
             head = dict(ordered[0])
             if isinstance(head.get("docstring"), str):
+                symbol_content_reduced = len(head["docstring"]) > 200
                 head["docstring"] = head["docstring"][:200]
             kept = [head]
             dropped = [s.get("name") or "<anonymous>" for s in ordered[1:]]
@@ -463,13 +495,14 @@ def _run_stages(
             # original alongside the genuinely dropped tail.
             dropped_syms = list(ordered)
         docs["symbols"] = kept
-        if dropped:
+        if dropped or symbol_content_reduced:
             docs["symbols_total"] = max(
                 len(ordered), int(docs.get("symbols_total") or 0)
             )
             docs["symbols_emitted"] = len(kept)
             docs["symbols_reduced_reason"] = "response_budget"
-            result["dropped_symbols"][tgt_name] = dropped
+            if dropped:
+                result["dropped_symbols"][tgt_name] = dropped
             result["truncated"] = True
             if collector is not None and dropped_syms:
                 collector.add(
@@ -502,7 +535,9 @@ def _run_stages(
             collector.add(f"dropped target {name}", evicted)
         result["dropped_targets"].append(name)
         result["truncated"] = True
-        result["targets_total"] = targets_total
+        result["targets_total"] = max(
+            targets_total, int(result.get("targets_total") or 0)
+        )
         result["targets_emitted"] = len(targets)
         result["targets_reduced_reason"] = "response_budget"
         if _size() <= char_budget:

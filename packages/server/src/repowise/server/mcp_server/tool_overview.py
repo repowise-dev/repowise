@@ -49,7 +49,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._budget import OmissionCollector, fit_to_budget
+from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -206,7 +206,6 @@ async def _workspace_overview() -> dict:
     collector = OmissionCollector(
         "get_overview", repo_root=registry.workspace_root if registry else None
     )
-    fit_to_budget(result, _WORKSPACE_SHED_ORDER, collector, headroom=800)
     collector.attach(result)
     return result
 
@@ -907,38 +906,6 @@ def _build_guided_tour(
         result.setdefault("architecture", {})["layer_order"] = layer_order
 
 
-# Cheapest loss first. Everything not listed answers a question that changes an
-# agent's next action, so it is never shed.
-_WORKSPACE_SHED_ORDER: tuple[str, ...] = (
-    "cross_repo_topology",
-    "tool_surface.canonical",
-    "tool_surface.default",
-    "tool_surface.utilities",
-    "tool_surface.opt_in",
-    "repos[]",
-)
-
-_SHED_ORDER: tuple[str, ...] = (
-    "tool_guide",
-    "tool_surface.canonical",
-    "tool_surface.default",
-    "tool_surface.utilities",
-    "tool_surface.opt_in",
-    "guided_tour_hint",
-    "guided_tour",
-    "reading_order_hint",
-    "reading_order",
-    "community_summary",
-    "knowledge_map",
-    "key_decisions",
-    "outline_hint",
-    "outline",
-    "tool_surface",
-    "key_modules[]",
-    "content_md",
-)
-
-
 @mcp.tool(surface_order=80)
 async def get_overview(repo: str | None = None, include: list[str] | None = None) -> dict:
     """Architecture map for an unfamiliar repo — first call when you don't know your way around.
@@ -953,8 +920,8 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     section, and the outline, onboarding, ownership and graph blocks ship only
     on request. The response's ``more`` field names them.
 
-    Defaults fit 24,000 serialized chars; nonempty ``include`` uses 32,000.
-    Reductions carry counts and ``_meta.omitted`` recovery refs.
+    Defaults fit 24,000 chars; nonempty ``include`` uses 32,000. Reductions
+    carry counts and recovery status in ``_meta``.
     Include-gated blocks are projections, not omissions.
 
     In workspace mode:
@@ -1124,7 +1091,6 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
         result["tool_surface"] = _tool_surface_guide(is_workspace=_state._registry is not None)
 
         result["_meta"] = _build_meta(repository=repository)
-        fit_to_budget(result, _SHED_ORDER, collector, headroom=800)
         collector.attach(result)
         return result
 

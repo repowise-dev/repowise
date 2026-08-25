@@ -9,6 +9,7 @@ quantisation have produced the object the MCP client will receive.
 from __future__ import annotations
 
 import inspect
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -87,6 +88,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
     "get_overview": ResponseBudgetContract(
         "blocks",
         (
+            "cross_repo_topology",
             "tool_guide",
             "tool_surface.canonical",
             "tool_surface.default",
@@ -102,6 +104,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "outline_hint",
             "outline",
             "tool_surface",
+            "repos[]",
             "key_modules[]",
             "content_md",
         ),
@@ -136,10 +139,28 @@ def _stamp_accounting(result: dict[str, Any], *, limit: int, tier: str) -> None:
         budget["serialized_chars"] = measured
 
 
-def _repo_root() -> str | Path | None:
-    from repowise.server.mcp_server import _state
+async def resolve_response_budget_repo_root(
+    signature: inspect.Signature,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> str | Path | None:
+    """Resolve the selected repository so omission refs round-trip by alias."""
+    try:
+        bound = signature.bind_partial(*args, **kwargs)
+        repo = bound.arguments.get("repo")
+        if repo == "all":
+            from repowise.server.mcp_server import _state
 
-    return getattr(_state, "_repo_path", None)
+            return getattr(_state, "_workspace_root", None) or getattr(
+                _state, "_repo_path", None
+            )
+        from repowise.server.mcp_server._helpers import _resolve_repo_context
+
+        return (await _resolve_repo_context(repo)).path
+    except Exception:
+        from repowise.server.mcp_server import _state
+
+        return getattr(_state, "_repo_path", None)
 
 
 def _emergency_fit(
@@ -169,6 +190,7 @@ def _emergency_fit(
         result["truncated"] = True
 
     while response_chars(result) > limit:
+        before = response_chars(result)
         candidates: list[tuple[int, dict[str, Any], str, str, Any]] = []
 
         def visit(
@@ -189,13 +211,30 @@ def _emergency_fit(
                 elif isinstance(child, list) and child:
                     found.append((response_chars(child), value, key, child_path, child))
                 elif isinstance(child, dict):
-                    if len(child) > 1:
-                        found.append((response_chars(child), value, key, child_path, child))
                     visit(child, child_path, found)
 
         visit(result, "", candidates)
         if not candidates:
-            return
+            dictionaries = [
+                (response_chars(result[key]), key, result[key])
+                for key in contract.protected
+                if isinstance(result.get(key), dict) and result[key]
+            ]
+            if not dictionaries:
+                return
+            _, key, value = max(dictionaries, key=lambda item: item[0])
+            marker = collector.add_inline(
+                f"{key} replaced by final budget guard",
+                json.dumps(value, separators=(",", ":"), default=str),
+            )
+            result[key] = {
+                "omission_ref": marker,
+                "reduced_reason": "response_budget",
+            }
+            result["truncated"] = True
+            if response_chars(result) >= before:
+                return
+            continue
         _, container, key, path, value = max(candidates, key=lambda item: item[0])
         if isinstance(value, list):
             dropped = value[len(value) // 2 :] if len(value) > 1 else value[:]
@@ -207,21 +246,13 @@ def _emergency_fit(
             )
             container[f"{key}_emitted"] = len(kept)
             container[f"{key}_reduced_reason"] = "response_budget"
-        elif isinstance(value, dict):
-            names = list(value)
-            keep_count = max(1, len(names) // 2)
-            dropped = {name: value[name] for name in names[keep_count:]}
-            collector.add(f"{path} reduced by final budget guard", dropped)
-            container[key] = {name: value[name] for name in names[:keep_count]}
-            container[f"{key}_total"] = max(
-                len(value), int(container.get(f"{key}_total") or 0)
-            )
-            container[f"{key}_emitted"] = keep_count
-            container[f"{key}_reduced_reason"] = "response_budget"
         else:
             marker = collector.add_inline(path, value)
-            container[key] = value[:800] + (f"\n{marker}" if marker else "\n[reduced to fit]")
+            suffix = f"\n{marker}" if marker else "\n[reduced to fit]"
+            container[key] = value[: max(0, 800 - len(suffix))] + suffix
         result["truncated"] = True
+        if response_chars(result) >= before:
+            return
 
 
 def enforce_response_budget(
@@ -231,19 +262,27 @@ def enforce_response_budget(
     signature: inspect.Signature,
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
+    repo_root: str | Path | None = None,
 ) -> Any:
     """Apply *tool*'s contract to its final, metadata-complete result."""
     contract = _CONTRACTS.get(tool)
     if contract is None or not isinstance(result, dict):
         return result
 
+    if repo_root is None:
+        from repowise.server.mcp_server import _state
+
+        repo_root = getattr(_state, "_repo_path", None)
+
     expanded = _call_uses_expansion(contract, signature, args, kwargs)
     declared = EXPANDED_RESPONSE_CHARS if expanded else DEFAULT_RESPONSE_CHARS
     limit = effective_char_budget(declared)
     tier = "expanded" if expanded else "default"
+    if result.get("truncated"):
+        result.setdefault("_meta", {}).setdefault("state", {})["truncated"] = True
     _stamp_accounting(result, limit=limit, tier=tier)
 
-    collector = OmissionCollector(tool, repo_root=_repo_root())
+    collector = OmissionCollector(tool, repo_root=repo_root)
     headroom = min(_FINAL_HEADROOM_CHARS, max(100, limit // 4))
     working_limit = max(1, limit - headroom)
     if contract.strategy == "targets":
@@ -260,10 +299,12 @@ def enforce_response_budget(
         collector.attach(result)
 
     if response_chars(result) > limit:
-        emergency = OmissionCollector(tool, repo_root=_repo_root())
+        emergency = OmissionCollector(tool, repo_root=repo_root)
         _emergency_fit(result, contract, emergency, working_limit)
         emergency.attach(result)
 
+    if result.get("truncated"):
+        result.setdefault("_meta", {}).setdefault("state", {})["truncated"] = True
     _stamp_accounting(result, limit=limit, tier=tier)
     if response_chars(result) > limit:
         result.setdefault("_meta", {}).setdefault("response_budget", {})[

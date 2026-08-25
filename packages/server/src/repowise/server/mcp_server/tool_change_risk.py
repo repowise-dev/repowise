@@ -21,7 +21,7 @@ from repowise.core.analysis.change_risk import (
 )
 from repowise.core.analysis.pr_blast import rank_tests_by_reach
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.mcp_server._budget import OmissionCollector, fit_to_budget
+from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import (
     _get_repo,
     _is_workspace_mode,
@@ -50,18 +50,6 @@ _CROSS_REPO_CONSUMER_LIMIT = 10
 #: Per-field units and calibration. Identical on every call, so it is opt-in.
 _INCLUDE_BLOCKS = frozenset({"scales"})
 
-# Cheapest loss first; the score, its drivers and fix_history's numbers are the
-# answer and never shed. cross_repo outlives the run-list: a test list is
-# recoverable by running the suite, a broken consumer in another repo is not.
-_SHED_ORDER: tuple[str, ...] = (
-    "exclude_patterns",
-    "prior_fixes",
-    "impacted_tests",
-    "cross_repo",
-    "fix_history.files",
-)
-
-
 @mcp.tool(surface_order=60)
 async def get_change_risk(
     revspec: str | None = None,
@@ -86,11 +74,8 @@ async def get_change_risk(
     distinct, labels unavailable analysis, and exposes truncation metadata.
     ``prior_fixes`` counts past fixes whose lines overlap this diff.
 
-    ``cross_repo`` names typed consumers and contract breaks from the last
-    workspace update.
-
-    Defaults fit 24,000 serialized chars; nonempty ``include`` uses 32,000.
-    Reductions carry counts and ``_meta.omitted`` refs.
+    Defaults fit 24,000 chars; nonempty ``include`` uses 32,000. Reductions
+    carry counts and recovery status in ``_meta``.
     Include-gated blocks are projections, not omissions.
 
     Args:
@@ -172,7 +157,6 @@ async def get_change_risk(
         extra={"source": "live_git"},
     )
     attach_ignored_arguments(payload, ignored)
-    fit_to_budget(payload, _SHED_ORDER, collector)
     collector.attach(payload)
     return payload
 

@@ -97,9 +97,9 @@ def tool_middleware(fn: Any) -> Any:
     3. ``quantize`` — rounds every float in the response. Outside the shield so
        shaped error responses are covered too, and inside the savings layer so
        the ledger measures the payload as actually delivered.
-    4. ``instrument`` — savings/telemetry, so shaped error responses are still
-       dead-end-debited in the ledger.
-    5. ``budget`` — outermost, so accounting includes every middleware field.
+    4. ``budget`` — caps the delivered shape before savings are measured.
+    5. ``instrument`` — records the bounded result and adds savings metadata.
+    6. ``budget`` — accounts for those final middleware fields and rechecks.
 
     Named rather than inlined at the ``apply`` call so tests can wrap a tool in
     the real composition; ``tests/unit/server/mcp/test_number_precision.py``
@@ -108,7 +108,10 @@ def tool_middleware(fn: Any) -> Any:
     import inspect
     from functools import wraps
 
-    from repowise.server.mcp_server._budget import enforce_response_budget
+    from repowise.server.mcp_server._budget import (
+        enforce_response_budget,
+        resolve_response_budget_repo_root,
+    )
     from repowise.server.mcp_server._failure_shield import shield
     from repowise.server.mcp_server._meta import finalize_trust_envelope
     from repowise.server.mcp_server._rounding import quantize
@@ -129,17 +132,28 @@ def tool_middleware(fn: Any) -> Any:
     def budget(inner: Any) -> Any:
         @wraps(inner)
         async def wrapped(*args: Any, **kwargs: Any) -> Any:
-            return enforce_response_budget(
+            repo_root = await resolve_response_budget_repo_root(signature, args, kwargs)
+            result = enforce_response_budget(
                 fn.__name__,
                 await inner(*args, **kwargs),
                 signature=signature,
                 args=args,
                 kwargs=kwargs,
+                repo_root=repo_root,
+            )
+            result = finalize_trust_envelope(result, evidence_kind=evidence_kind)
+            return enforce_response_budget(
+                fn.__name__,
+                result,
+                signature=signature,
+                args=args,
+                kwargs=kwargs,
+                repo_root=repo_root,
             )
 
         return wrapped
 
-    return budget(instrument(quantize(trust(shield(fn)))))
+    return budget(instrument(budget(quantize(trust(shield(fn))))))
 
 
 def ensure_full_surface() -> Any:
