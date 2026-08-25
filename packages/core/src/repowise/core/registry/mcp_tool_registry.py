@@ -39,6 +39,15 @@ TOOL_TIERS = frozenset({"canonical", "utility", "specialist"})
 
 
 @dataclass(frozen=True)
+class ToolRecipe:
+    """Compact agent workflow contributed by a tool to the live registry."""
+
+    name: str
+    call: str
+    requires: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ToolEntry:
     """A registered tool plus the metadata that drives surface selection.
 
@@ -56,6 +65,7 @@ class ToolEntry:
     tier: str = "canonical"
     surface_order: int = 1000
     trust_kind: str | None = None
+    recipes: tuple[ToolRecipe, ...] = ()
 
 
 class MCPToolRegistry:
@@ -73,6 +83,7 @@ class MCPToolRegistry:
         tier: str | None = None,
         surface_order: int = 1000,
         trust_kind: str | None = None,
+        recipes: tuple[ToolRecipe, ...] = (),
         **kwargs: Any,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]] | Callable[..., Any]:
         """Decorator that schedules a function for FastMCP registration.
@@ -111,6 +122,7 @@ class MCPToolRegistry:
                     tier=resolved_tier,
                     surface_order=surface_order,
                     trust_kind=trust_kind,
+                    recipes=recipes,
                 )
             )
             fn.__dict__["__repowise_trust_kind__"] = trust_kind
@@ -172,4 +184,4 @@ mcp_tool_registry = MCPToolRegistry()
 """Process-wide default registry used by the OSS MCP server."""
 
 
-__all__ = ["TOOL_TIERS", "MCPToolRegistry", "ToolEntry", "mcp_tool_registry"]
+__all__ = ["TOOL_TIERS", "MCPToolRegistry", "ToolEntry", "ToolRecipe", "mcp_tool_registry"]
