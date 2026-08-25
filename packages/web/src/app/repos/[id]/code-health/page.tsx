@@ -31,6 +31,7 @@ import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { Button } from "@repowise-dev/ui/ui/button";
+import { formatDateTime } from "@repowise-dev/ui/lib/format";
 import type { CodeHealthOverlay } from "@repowise-dev/ui/health";
 import type { DeadCodeSummary } from "@repowise-dev/types/dead-code";
 import { TriageTab } from "@/components/code-health/triage-tab";
@@ -283,7 +284,7 @@ export default function CodeHealthPage() {
       {meta ? (
         <p className="-mt-3 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           {meta.last_indexed_at
-            ? `Indexed ${new Date(meta.last_indexed_at).toLocaleString()}`
+            ? `Indexed ${formatDateTime(meta.last_indexed_at)}`
             : "Not indexed yet"}
           {meta.head_commit ? ` · ${meta.head_commit.slice(0, 8)}` : ""}
           {` · ${meta.snapshot_count} snapshot${meta.snapshot_count === 1 ? "" : "s"}`}

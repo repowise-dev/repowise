@@ -66,7 +66,22 @@ async def test_get_change_risk_honors_riskignore_and_request_filters(tmp_path, m
     assert result["risk_percentile"] is None
     assert result["review_priority"] is None
     assert result["classification"] is None
+    assert result["fallback_band"] in {"low", "moderate", "high"}
     assert result["baseline_sample_size"] == 0
+    assert result["risk_authority"]["primary_fields"] == [
+        "risk_percentile",
+        "classification",
+    ]
+    # The per-field dictionary is identical on every call, so it is opt-in.
+    assert "risk_scales" not in result
+    expanded = await module.get_change_risk(
+        "HEAD", extensions=["py", "md"], exclude_patterns=["docs/"], baseline=0, include=["scales"]
+    )
+    scales = {scale["field"]: scale for scale in expanded["risk_scales"]}
+    assert scales["score"]["authoritative"] is False
+    assert scales["risk_percentile"]["authoritative"] is True
+    assert scales["features.la|features.ld"]["unit"] == "lines"
+    assert scales["drivers[].contribution"]["unit"] == "logit_points"
     # Live-git responses carry a _meta envelope flagged as index-independent.
     assert result["_meta"]["source"] == "live_git"
     assert "warning" not in result
@@ -217,11 +232,11 @@ async def test_impacted_tests_line_precise_hit_and_miss(tmp_path, monkeypatch) -
     assert it["basis"] == "measured"
     assert it["map_present"] is True
     # app.py line 3 is covered -> its test is named; other/new are not covering.
-    assert it["tests"] == ["tests/test_app.py::test_app"]
+    assert it["tests_to_run"] == ["tests/test_app.py::test_app"]
     assert it["total"] == 1
     assert it["truncated"] is False
 
-    mt = it["missing_tests"]
+    mt = it["line_coverage"]
     # other.py is in the map but its changed lines (1,2,3) are uncovered.
     assert mt["untested_changes"] == [
         {"source_file": "src/other.py", "uncovered_lines": [1, 2, 3], "changed_line_count": 3}
@@ -254,9 +269,9 @@ async def test_impacted_tests_no_map_is_unknown_not_untested(tmp_path, monkeypat
     # Nothing is seeded in the graph either, so neither tier can speak.
     assert it["status"] == "no_map"
     assert it["map_present"] is False
-    assert it["tests"] == []
+    assert it["tests_to_run"] == []
     # Honest degradation: no untested claim, a "run the suite" summary instead.
-    assert it["missing_tests"]["untested_changes"] == []
+    assert it["line_coverage"]["untested_changes"] == []
     assert "run the full suite" in it["summary"]
 
 
@@ -266,7 +281,7 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
 
     Replaces a bare "run the full suite" with a candidate list on every repo
     that never ingested a report. Labelled ``inferred`` and file-level: reaching
-    carries no line attribution, so ``missing_tests`` stays empty rather than
+    carries no line attribution, so ``line_coverage`` stays empty rather than
     being filled from a signal that cannot speak to lines.
     """
     from repowise.core.persistence.models import GraphEdge, GraphNode
@@ -280,9 +295,7 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
     factory = await _factory_with_repo(None)
     async with factory() as s:
         for path, is_test in (("tests/test_round_trips.py", True), ("src/app.py", False)):
-            s.add(
-                GraphNode(repository_id="repo1", node_id=path, node_type="file", is_test=is_test)
-            )
+            s.add(GraphNode(repository_id="repo1", node_id=path, node_type="file", is_test=is_test))
         s.add(
             GraphEdge(
                 repository_id="repo1",
@@ -304,8 +317,8 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
     assert it["status"] == "inferred"
     assert it["basis"] == "inferred"
     assert it["map_present"] is False
-    assert it["tests"] == ["tests/test_round_trips.py"]
-    assert it["missing_tests"]["untested_changes"] == []
+    assert it["tests_to_run"] == ["tests/test_round_trips.py"]
+    assert it["line_coverage"]["untested_changes"] == []
     # Answered by the import tier: there is no call edge here, which is exactly
     # when the weaker tier is allowed to speak.
     assert "reach the changed files in the graph" in it["summary"]
@@ -337,12 +350,17 @@ async def test_impacted_tests_overflow_cap_is_honest(tmp_path, monkeypatch) -> N
 
     it = result["impacted_tests"]
     assert it["total"] == 12
-    assert len(it["tests"]) == 10
+    assert len(it["tests_to_run"]) == 10
     assert it["truncated"] is True
+    # The 2 over the cap are recoverable, not dropped.
+    assert "omission_marker" in result
+    assert result["_meta"]["omitted"]["refs"]
 
 
 @pytest.mark.asyncio
-async def test_impacted_tests_no_session_factory_degrades_to_no_index(tmp_path, monkeypatch) -> None:
+async def test_impacted_tests_no_session_factory_degrades_to_no_index(
+    tmp_path, monkeypatch
+) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(["init", "-q"], repo)
@@ -359,3 +377,33 @@ async def test_impacted_tests_no_session_factory_degrades_to_no_index(tmp_path, 
 
     assert result["impacted_tests"]["status"] == "no_index"
     assert result["impacted_tests"]["map_present"] is False
+
+
+@pytest.mark.asyncio
+async def test_the_two_risk_tools_do_not_share_a_key_for_different_questions() -> None:
+    """``missing_tests`` asked two different questions under one name.
+
+    get_risk's is a list of file paths with no test; this one bucketed changed
+    files by line coverage. An agent that learned one misread the other.
+    """
+    import importlib
+
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+    empty = module._empty_impacted("no_map", "run the suite")
+
+    assert "missing_tests" not in empty
+    assert set(empty["line_coverage"]) == {
+        "untested_changes",
+        "stale_test_candidates",
+        "covered",
+        "no_coverage_data",
+    }
+
+
+def test_score_measures_names_only_the_supporting_diff_shape_signal() -> None:
+    """The compatibility string stays precise while typed metadata carries authority."""
+    from repowise.core.analysis.change_risk import SCORE_MEASURES
+
+    assert "diff size and spread" in SCORE_MEASURES
+    assert "where the change lands" in SCORE_MEASURES
+    assert "probability" not in SCORE_MEASURES

@@ -68,6 +68,22 @@ export interface WorkspaceContractEntry {
   symbol_name: string;
   confidence: number;
   service: string | null;
+  /**
+   * 1-indexed line of the declaration or call. Null when the contract never
+   * bound to a line.
+   */
+  line: number | null;
+  /**
+   * Ingestion symbol id (`"<rel_path>::<name>"`). Null when the repo has no
+   * index or nothing is declared at `line` — the contract still matches, it
+   * just cannot be traversed into the call graph.
+   */
+  symbol_id: string | null;
+  /**
+   * Extractor-supplied detail (`extraction_layer`, `framework`, `method`,
+   * `path`, `table`, `package`...). Keys vary by contract type.
+   */
+  meta: Record<string, unknown>;
 }
 
 export interface WorkspaceContractLinkEntry {
@@ -81,6 +97,20 @@ export interface WorkspaceContractLinkEntry {
   consumer_repo: string;
   consumer_file: string;
   consumer_symbol: string;
+  /**
+   * Service boundary the provider sits behind, when the workspace declares one.
+   * Matching skips a pair only when the repo *and* the service are the same, so
+   * this is what explains a link between two services inside one repo.
+   */
+  provider_service: string | null;
+  /** The same, for the calling side. */
+  consumer_service: string | null;
+  /**
+   * The linked contracts' symbol ids, so a caller can name the code rather than
+   * a display label. Null when that side never bound to one.
+   */
+  provider_symbol_id: string | null;
+  consumer_symbol_id: string | null;
 }
 
 export interface WorkspaceContractsResponse {
@@ -89,6 +119,31 @@ export interface WorkspaceContractsResponse {
   total_contracts: number;
   total_links: number;
   by_type: Record<string, number>;
+}
+
+/**
+ * One contract, keyed by `(repo, file_path, contract_id)`.
+ *
+ * Carries the request/response shape the list endpoint deliberately withholds:
+ * `schema` is present on roughly a third of contracts and single rows run to
+ * full inline type declarations, so it is affordable one at a time and not 200
+ * at a time.
+ */
+export interface WorkspaceContractDetail {
+  contract: WorkspaceContractEntry;
+  /**
+   * The artifact's `schema` block, named around Pydantic — a field literally
+   * called `schema` shadows an attribute of `BaseModel`.
+   */
+  contract_schema: Record<string, unknown> | null;
+  /** Links this contract participates in, on whichever side it plays. */
+  links: WorkspaceContractLinkEntry[];
+  /**
+   * Why this consumer matched no provider (`external_host`, `internal_only`,
+   * `no_provider`). Null for providers, for linked consumers, and when no
+   * system graph is built.
+   */
+  unmatched_reason: string | null;
 }
 
 export interface WorkspaceCoChangeEntry {

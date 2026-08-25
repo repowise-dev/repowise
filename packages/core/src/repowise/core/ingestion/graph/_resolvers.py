@@ -558,6 +558,7 @@ class ResolveMixin:
                 self._graph.nodes[decl_id]["defined_by"] = def_id
 
         total_resolved = 0
+        total_referenced = 0
 
         files_with_calls = [
             (p, pf) for p, pf in self._parsed_files.items() if pf.calls
@@ -567,29 +568,46 @@ class ResolveMixin:
         for path, parsed in files_with_calls:
             resolved = resolver.resolve_file(path, parsed.calls)
             for rc in resolved:
-                if rc.caller_id in self._graph and rc.callee_id in self._graph:
-                    if not self._graph.has_edge(rc.caller_id, rc.callee_id):
-                        self._graph.add_edge(
-                            rc.caller_id,
-                            rc.callee_id,
-                            edge_type="calls",
-                            confidence=rc.confidence,
-                            resolution_origin=rc.origin,
-                            call_lines=[rc.line],
-                        )
+                if rc.caller_id not in self._graph or rc.callee_id not in self._graph:
+                    continue
+                if not self._graph.has_edge(rc.caller_id, rc.callee_id):
+                    attrs = (
+                        {"edge_type": "calls", "call_lines": [rc.line]}
+                        if rc.edge_type == "calls"
+                        else {"edge_type": "references"}
+                    )
+                    self._graph.add_edge(
+                        rc.caller_id,
+                        rc.callee_id,
+                        confidence=rc.confidence,
+                        resolution_origin=rc.origin,
+                        **attrs,
+                    )
+                    if rc.edge_type == "calls":
                         total_resolved += 1
                     else:
-                        # Several call sites collapse onto one edge; the
-                        # strongest wins, and the origin has to follow the
-                        # confidence it explains.
-                        existing = self._graph[rc.caller_id][rc.callee_id]
-                        lines = existing.setdefault("call_lines", [])
-                        if rc.line not in lines:
-                            lines.append(rc.line)
-                            lines.sort()
-                        if rc.confidence > existing.get("confidence", 0):
-                            existing["confidence"] = rc.confidence
-                            existing["resolution_origin"] = rc.origin
+                        total_referenced += 1
+                    continue
+                existing = self._graph[rc.caller_id][rc.callee_id]
+                if rc.edge_type != "calls":
+                    # A pair reached by both an invocation and a non-invoking
+                    # site keeps the call: it is the stronger claim, and the
+                    # same rule ``_add_reference_edges`` applies.
+                    continue
+                if existing.get("edge_type") == "references":
+                    existing["edge_type"] = "calls"
+                    total_referenced -= 1
+                    total_resolved += 1
+                # Several call sites collapse onto one edge; the strongest
+                # wins, and the origin has to follow the confidence it
+                # explains.
+                lines = existing.setdefault("call_lines", [])
+                if rc.line not in lines:
+                    lines.append(rc.line)
+                    lines.sort()
+                if rc.confidence > existing.get("confidence", 0):
+                    existing["confidence"] = rc.confidence
+                    existing["resolution_origin"] = rc.origin
             if progress:
                 progress.on_item_done("graph.calls")
 
@@ -597,7 +615,11 @@ class ResolveMixin:
             _phase_done = getattr(progress, "on_phase_done", None)
             if _phase_done is not None:
                 _phase_done("graph.calls")
-        log.info("Call edges resolved", total=total_resolved)
+        log.info(
+            "Call edges resolved",
+            total=total_resolved,
+            non_invoking=total_referenced,
+        )
 
         self._add_reference_edges(resolver)
 

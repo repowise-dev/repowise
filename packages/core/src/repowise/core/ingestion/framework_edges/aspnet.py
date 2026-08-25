@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..framework_routes import aspnet_routes
 from ..resolvers import ResolverContext
 from .base import (
     DetectionContext,
@@ -25,10 +26,6 @@ if TYPE_CHECKING:
 # class name ends in "Controller" (the MVC discovery convention). The first
 # is preferred — it produces zero false positives.
 _ASPNET_CONTROLLER_ATTR_RE = re.compile(r"\[\s*ApiController\b")
-_ASPNET_ROUTE_RE = re.compile(r"\[\s*(?:Http(?:Get|Post|Put|Delete|Patch|Options|Head)|Route)\b")
-_ASPNET_MAP_CALL_RE = re.compile(
-    r"\.\s*Map(?:Get|Post|Put|Delete|Patch|Controllers|Hub|GrpcService|Razor|Fallback)\s*[<(]"
-)
 _ASPNET_USE_MIDDLEWARE_RE = re.compile(r"\.\s*UseMiddleware\s*<\s*(\w+)")
 _DBCONTEXT_DECL_RE = re.compile(r"class\s+\w+\s*:\s*[\w.<>,\s]*\bDbContext\b")
 _DBSET_RE = re.compile(r"\bDbSet\s*<\s*([A-Z]\w*)\s*>")
@@ -113,16 +110,16 @@ def _add_aspnet_edges(
                 count += 1
 
     # ---- 3. Entry point → file containing handler class referenced in MapXxx ----
-    handler_arg_re = re.compile(
-        r"\.\s*Map(?:Get|Post|Put|Delete|Patch)\s*\(\s*[\"'][^\"']+[\"']\s*,\s*([A-Za-z_]\w*)"
-    )
     for entry in entry_points:
         text = read_text(parsed_files[entry], encoding="utf-8-sig")
         if not text:
             continue
-        for match in handler_arg_re.finditer(text):
-            ident = match.group(1)
-            target = type_decl_to_file.get(ident)
+        for route in aspnet_routes(text):
+            if not route.handler:
+                continue  # an inline lambda names no type to link to
+            # The leading segment of `OrderHandlers.GetOrder` is the declaring
+            # type; the contract consumer reads the trailing one instead.
+            target = type_decl_to_file.get(route.handler.split(".")[0])
             if target and target in path_set and _add_edge_if_new(graph, entry, target):
                 count += 1
 

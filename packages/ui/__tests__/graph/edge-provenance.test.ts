@@ -35,6 +35,7 @@ const ALL_ORIGINS: ResolutionOrigin[] = [
   "crate_root",
   "receiver_import",
   "import_merged",
+  "scoped_name",
   "same_target",
   "receiver_global",
   "global_unique",
@@ -50,6 +51,10 @@ const ALL_ORIGINS: ResolutionOrigin[] = [
   "receiver_framework_same_package",
   "receiver_framework_import",
   "receiver_framework_global",
+  "return_type_same_file",
+  "return_type_same_package",
+  "return_type_import",
+  "return_type_global",
   "self_inherited",
   "enclosing_inherited",
 ];
@@ -107,6 +112,7 @@ describe("isNameMatch", () => {
         "receiver_framework_global",
         "receiver_global",
         "receiver_typed_global",
+        "return_type_global",
       ].sort(),
     );
   });

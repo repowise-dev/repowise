@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from repowise.core.persistence.database import (
@@ -573,6 +574,75 @@ def create_mcp_server(
 #: two deep in practice; the cap only stops a pathological cycle from hanging.
 _MAX_GROUP_DEPTH = 10
 
+#: Host values FastMCP's own default construction already treats as local.
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+#: ``allowed_hosts``/``allowed_origins`` patterns for the loopback callers a
+#: non-loopback bind should still accept (e.g. an SSH tunnel or a client
+#: running on the same box as the server).
+_LOOPBACK_ALLOWLIST_PATTERNS = ("127.0.0.1:*", "localhost:*", "[::1]:*")
+
+
+def _bracket_if_ipv6(host: str) -> str:
+    """Bracket a bare IPv6 literal to match the ``Host``/``Origin`` header shape a client sends.
+
+    ``TransportSecurityMiddleware`` matches by ``host.startswith(base + ":")``
+    (see ``mcp/server/transport_security.py``), so an allowlist entry has to
+    be shaped exactly like the wire value. A client connecting to an IPv6
+    literal sends a bracketed Host header (``[2001:db8::1]:7338``), which
+    never starts with a bare ``2001:db8::1:`` — hostnames and IPv4 addresses
+    never contain a colon, so any colon in ``host`` here means IPv6.
+    """
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
+
+
+def _configure_transport_security(host: str) -> None:
+    """Widen the DNS-rebinding ``Host`` allowlist to match ``--host``.
+
+    ``FastMCP`` builds ``mcp.settings.transport_security`` at import time,
+    before any CLI ``--host`` is known, so it bakes in an allowlist scoped to
+    loopback only. ``run_mcp`` rebinds the socket via ``mcp.settings.host``
+    later, but nothing updated the allowlist to match — so every request to a
+    non-loopback ``--host`` failed ``Host`` header validation with
+    ``421 Misdirected Request`` no matter what host was actually given.
+
+    A loopback host needs no change (FastMCP's default already covers it).
+    Anything else — including a concrete IPv6 literal, bracketed to match the
+    header shape — gets an allowlist scoped to that host plus loopback.
+
+    A wildcard bind (``0.0.0.0``/``::``) can't be matched by any single
+    ``Host`` value, so the check is disabled rather than left permanently
+    failing. That trades DNS-rebinding protection for reachability on a
+    wildcard bind; the startup security warning logged elsewhere in
+    ``run_mcp`` for an unauthenticated wide bind is, until #1400 lands, the
+    only remaining gate on that surface — this fix is what makes it live
+    traffic instead of traffic that already 421'd.
+    """
+    if host in _LOOPBACK_HOSTS:
+        return
+    if host in ("0.0.0.0", "::"):
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
+        )
+        return
+    base = _bracket_if_ipv6(host)
+    # allowed_origins inherits the SDK's same startswith(base + ":") prefix
+    # match as allowed_hosts (see _validate_origin), so e.g.
+    # "http://172.21.12.48:*" also technically accepts an Origin like
+    # "http://172.21.12.48:8080.evil.com". Pre-existing SDK behavior — the
+    # loopback defaults FastMCP bakes in have the identical looseness — not
+    # something introduced or worsened here.
+    mcp.settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[f"{base}:*", *_LOOPBACK_ALLOWLIST_PATTERNS],
+        allowed_origins=[
+            f"http://{base}:*",
+            *(f"http://{p}" for p in _LOOPBACK_ALLOWLIST_PATTERNS),
+        ],
+    )
+
 
 def _run_transport(transport: str) -> None:
     """Run the server, raising the cause of a task-group failure rather than the group.
@@ -623,6 +693,7 @@ def run_mcp(
     if transport == "sse":
         mcp.settings.host = host
         mcp.settings.port = port
+        _configure_transport_security(host)
         if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
             _log.warning(
                 "SECURITY WARNING: MCP server (sse) is binding to %s without "
@@ -634,6 +705,7 @@ def run_mcp(
     elif transport == "streamable-http":
         mcp.settings.host = host
         mcp.settings.port = port
+        _configure_transport_security(host)
         if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
             _log.warning(
                 "SECURITY WARNING: MCP server (streamable-http) is binding to %s without "

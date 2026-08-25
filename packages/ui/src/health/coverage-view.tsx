@@ -377,7 +377,7 @@ function CoverageBody({
 
       <OverviewSection
         title="Health against coverage"
-        description="Every instrumented file placed by its defect-risk score and its line coverage, sized by lines of code. The bottom-left quadrant is the one that costs money: code we score as weak, with no test watching it. Click a file to open its line-level heatmap."
+        description="Every instrumented file placed by its 0–10 defect-health score (higher is healthier) and its line coverage, sized by lines of code. The bottom-left quadrant is the one that costs money: code we score as weak, with no test watching it. Click a file to open its line-level heatmap."
       >
         <RiskCoverageScatter
           points={scatterPoints}

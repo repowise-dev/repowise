@@ -26,6 +26,10 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         return ""
 
     if node_type == "function_definition":
+        # C/C++ share this node name with Python but expose the declared type
+        # through ``type`` rather than ``return_type``.
+        if def_node.child_by_field_name("type") is not None:
+            return f"{name}{params_text}{_ret(('type',))}"
         # Detect async via child "async" keyword (tree-sitter-python >= 0.23)
         prefix = "async " if any(c.type == "async" for c in def_node.children) else ""
         return f"{prefix}def {name}{params_text}{_ret(('return_type',))}"

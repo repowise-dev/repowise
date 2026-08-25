@@ -4,13 +4,13 @@ Public API
 ----------
 ``build_zoom_map(session, repo, *, max_depth=None, focus=None)`` returns the
 nested containment tree (system -> layer -> group -> folder -> file) with
-execution-aware importance, rolled-up metrics, parent-relative relations, and a
-deterministic treemap layout.
+execution-aware importance, rolled-up metrics and parent-relative relations.
+Placement is the canvas's job, not this service's.
 
 Like :mod:`c4_builder`, the map is derived ON DEMAND from the persisted graph
 (it reuses ``c4_builder.build_architecture_view`` for the heavy load), so it
 works on hosted backends with no checkout and never goes stale. Everything below
-the load is pure functions (tree / scoring / metrics / relations / layout) that
+the load is pure functions (tree / scoring / metrics / relations) that
 unit-test without a session.
 """
 
@@ -21,14 +21,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.server.services.c4_builder.architecture import build_architecture_view
 from repowise.server.services.c4_builder.models import ArchitectureView
 
-from .layout import lay_out
+from .calls import load_projected_calls
 from .metrics import rollup_health, rollup_metrics
 from .models import ZoomMap, ZoomNode, ZoomRelation
 from .relations import aggregate_relations
 from .scoring import FileStat, compute_file_signals, score_tree
-from .tree import GroupSpec, LayerSpec, LeafInfo, build_tree
+from .tree import GroupSpec, LayerSpec, LeafInfo, ModuleInfo, build_tree
 
 __all__ = [
+    # ``ModuleInfo`` is part of the public surface because the hosted builder
+    # calls ``assemble_zoom_map`` directly rather than porting it.
+    "ModuleInfo",
     "ZoomMap",
     "ZoomNode",
     "ZoomRelation",
@@ -52,6 +55,8 @@ def assemble_zoom_map(
     max_depth: int | None = None,
     focus: str | None = None,
     health: dict[str, tuple[float, int]] | None = None,
+    modules: dict[str, ModuleInfo] | None = None,
+    call_edges: list[tuple[str, str, str]] | None = None,
 ) -> ZoomMap:
     """Pure assembly: ``ArchitectureView`` -> ``ZoomMap``. No DB.
 
@@ -59,6 +64,16 @@ def assemble_zoom_map(
     code-health score (higher = healthier) and ``loc`` is the rollup weight. It is
     optional so the pure assembly still unit-tests without health data; files not
     present in the map read as unscored (neutral), exactly like the treemap.
+
+    ``modules`` maps a directory path to the module page documenting it, so a
+    folder card reads as the subsystem the docs name rather than as a path
+    segment. Also optional: a repository indexed without a wiki has none, and
+    the hosted builder does not have them in its artifacts yet.
+
+    ``call_edges`` are symbol-level execution edges already projected onto file
+    pairs by :mod:`.calls`. The view cannot carry them -- it is loaded file-only,
+    so both endpoints of a symbol edge are filtered out before it arrives -- so
+    they come in beside it. Optional for the same reasons as the two above.
     """
     health = health or {}
     # The view is loaded file-only, but the curated node_type can be
@@ -91,6 +106,7 @@ def assemble_zoom_map(
         for n in file_nodes
     ]
     edges = [(e.source, e.target, e.edge_type) for e in view.edges]
+    edges.extend(call_edges or ())
 
     signals = compute_file_signals(
         file_stats,
@@ -129,17 +145,18 @@ def assemble_zoom_map(
         for layer in view.layers
     ]
 
-    root_id, nodes = build_tree(view.project_name, layers, leaf_info)
+    root_id, nodes = build_tree(view.project_name, layers, leaf_info, modules)
     nodes = rollup_metrics(root_id, nodes)
     nodes = rollup_health(root_id, nodes)
     nodes = score_tree(root_id, nodes, signals)
-    nodes = lay_out(root_id, nodes)
     relations = aggregate_relations(nodes, edges)
 
     # Honest count of files actually placed in the tree (a file the view knows
     # about but that curation assigned to no layer is not in the tree, so
     # counting file_stats would over-report). Taken before depth/focus pruning.
     total_files = sum(1 for n in nodes.values() if n.kind == "file")
+    # ...and the rest of that denominator, so the map can say how much it omits.
+    unclaimed_files = max(len(file_stats) - total_files, 0)
 
     root_id, nodes, relations, truncated = _prune(
         root_id, nodes, relations, max_depth=max_depth, focus=focus
@@ -154,6 +171,7 @@ def assemble_zoom_map(
         total_files=total_files,
         max_depth=present_depth,
         truncated=truncated,
+        unclaimed_files=unclaimed_files,
     )
 
 
@@ -232,6 +250,16 @@ async def build_zoom_map(
     from repowise.core.persistence import crud
 
     view = await build_architecture_view(session, repo_id, include_symbols=False)
+    modules = await _load_module_names(session, repo_id)
+    # The view is file-only, so the whole symbol-level execution graph was
+    # filtered out of it. Read it back and project it onto file pairs.
+    call_edges = await load_projected_calls(
+        session,
+        repo_id,
+        # Same file-node test the assembly uses, so a projected edge can only
+        # land on a file the tree will actually contain.
+        {n.id for n in view.nodes if n.line_range is None and n.id == n.file_path},
+    )
     # One extra read: per-file health, keyed by path -> (effective score, loc).
     # Effective score prefers the split ``defect_score`` and falls back to the
     # overall ``score``, exactly like GET /api/repos/{id}/files, so the zoom card
@@ -245,4 +273,43 @@ async def build_zoom_map(
         )
         for m in metrics
     }
-    return assemble_zoom_map(view, max_depth=max_depth, focus=focus, health=health)
+    return assemble_zoom_map(
+        view,
+        max_depth=max_depth,
+        focus=focus,
+        health=health,
+        modules=modules,
+        call_edges=call_edges,
+    )
+
+
+async def _load_module_names(session: AsyncSession, repo_id: str) -> dict[str, ModuleInfo]:
+    """Directory path -> the module page documenting it.
+
+    A module page's ``target_path`` is the directory it covers, which is the
+    same key the folder trie is built on, so this is a join and not a second
+    clustering. Tombstoned pages are excluded for the same reason the docs
+    reader excludes them: the page is gone, so its name is not the repository's
+    name for that directory any more.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Page
+
+    rows = await session.execute(
+        select(Page.target_path, Page.title, Page.summary, Page.id).where(
+            Page.repository_id == repo_id,
+            Page.page_type == "module_page",
+            Page.freshness_status != "tombstone",
+            Page.target_path.isnot(None),
+        )
+    )
+    modules: dict[str, ModuleInfo] = {}
+    for target_path, title, summary, page_id in rows:
+        # A module whose target is a clustering ordinal rather than a real
+        # directory has nothing to join to; it simply never matches a folder.
+        if target_path and title:
+            modules[target_path] = ModuleInfo(
+                title=title, summary=summary or "", page_id=page_id
+            )
+    return modules

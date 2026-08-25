@@ -240,7 +240,10 @@ def _count_parameters(fn_node: Node) -> int:
         # A bare ``*`` (keyword-only marker) and a bare ``/`` (positional-only
         # marker) parse as named ``keyword_separator`` / ``positional_separator``
         # nodes but carry no arity, so they must be skipped alongside the
-        # ``*``/``**`` splat tokens and the punctuation.
+        # ``*``/``**`` splat tokens and the punctuation. A ``comment`` node is
+        # also named but carries no arity — an explanatory comment block inside
+        # the parameter list (idiomatic for a validation pattern) must not
+        # count as a parameter (#1775).
         if child.type in (
             "(",
             ")",
@@ -252,6 +255,7 @@ def _count_parameters(fn_node: Node) -> int:
             "**",
             "keyword_separator",
             "positional_separator",
+            "comment",
         ):
             continue
         if child.type == "declArg":

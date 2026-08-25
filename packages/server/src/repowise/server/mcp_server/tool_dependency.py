@@ -1,4 +1,4 @@
-﻿"""MCP Tool 6: get_dependency_path — dependency graph path finding."""
+"""MCP Tool 6: get_dependency_path — dependency graph path finding."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from repowise.server.mcp_server._helpers import (
 )
 
 
-@mcp.tool(default=False)
+@mcp.tool(default=False, surface_order=220, trust_kind="structural")
 async def get_dependency_path(source: str, target: str, repo: str | None = None) -> dict:
     """Find how two files/modules are connected in the dependency graph.
 

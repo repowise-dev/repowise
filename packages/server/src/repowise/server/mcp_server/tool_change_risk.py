@@ -19,52 +19,69 @@ from repowise.core.analysis.change_risk import (
     normalize_extensions,
     score_live_change,
 )
+from repowise.core.analysis.pr_blast import rank_tests_by_reach
 from repowise.core.registry import mcp_tool_registry as mcp
+from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._budget.contracts import response_budget_shed_order
 from repowise.server.mcp_server._helpers import (
     _get_repo,
+    _is_workspace_mode,
     _resolve_repo_context,
     _unsupported_repo_all,
+    attach_ignored_arguments,
+    resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
 #: Cap on the line-precise impacted-test list, matching the get_risk directive's
-#: ``tests_to_run`` cap so both surfaces stay glanceable. ``total`` and
-#: ``truncated`` report the overflow rather than silently dropping it.
+#: ``tests_to_run`` cap so both surfaces stay glanceable. The tail goes to the
+#: omission store, so ``truncated: true`` is recoverable rather than a dead end.
 _IMPACTED_TESTS_LIMIT = 10
 
 #: Cap on the per-file prior-fix list, matching ``_IMPACTED_TESTS_LIMIT`` so both
 #: per-file blocks in this response stay the same size.
 _PRIOR_FIXES_LIMIT = 10
 
+#: Caps on the cross-repo block. It answers "does this commit cross a repo
+#: boundary", not "list every consumer" — get_blast_radius is the tool for the
+#: full traversal, so both lists stay short and report their own overflow.
+_CROSS_REPO_BREAKING_LIMIT = 5
+_CROSS_REPO_CONSUMER_LIMIT = 10
 
-@mcp.tool()
+# Compatibility projection for direct callers and older tests. The shared
+# response contract remains the single source of truth for this order.
+_SHED_ORDER = response_budget_shed_order("get_change_risk")
+
+#: Per-field units and calibration. Identical on every call, so it is opt-in.
+_INCLUDE_BLOCKS = frozenset({"scales"})
+
+@mcp.tool(surface_order=60)
 async def get_change_risk(
     revspec: str | None = None,
     repo: str | None = None,
     extensions: list[str] | None = None,
     exclude_patterns: list[str] | None = None,
     baseline: int = 200,
+    include: list[str] | None = None,
 ) -> dict:
     """Score a live commit, ``base..head`` range, or uncommitted work.
 
-    Use this for a pre-merge read on a commit or PR range. Distinct from
-    ``get_risk``, which assesses indexed files and PR blast radius. The filters
-    below also apply to the baseline behind the repository percentile.
+    For a pre-merge read on a commit or PR range; ``get_risk`` scores indexed
+    files instead. The filters also apply to the percentile baseline.
 
-    Lead with ``fix_history``: the recency-weighted bug-fix record of the files
-    touched, ``files`` naming where the pressure sits. It separates a surgical
-    edit to a file that keeps breaking from a bulk rename of files that never
-    have. ``score`` measures diff size and spread, not where the change lands
-    (see ``score_measures``); calibrated per commit, so a PR-sized change reads
-    high by construction. ``risk_percentile`` ranks that shape against recent
-    commits.
+    Act on ``risk_percentile`` + ``classification``: they rank this diff
+    against recent commits, and ``risk_authority`` names them. ``score`` is a
+    supporting 0-10 model score for diff size and spread, never a probability;
+    ``fallback_band`` stands in only when no baseline exists. ``fix_history``
+    carries the bug-fix record of the touched files.
 
-    ``impacted_tests`` names the tests for this change; ``missing_tests`` the
-    uncovered lines. ``basis``: ``measured`` = a coverage map proves those tests
-    run the changed *lines*; ``inferred`` = test files the graph shows
-    reaching it (candidates, file-level, no ingest needed). No map is never
-    "untested": ``status`` ``no_map`` means run the suite. ``prior_fixes``
-    counts past fixes whose lines overlap this diff.
+    ``impacted_tests`` keeps measured coverage and inferred graph candidates
+    distinct, labels unavailable analysis, and exposes truncation metadata.
+    ``prior_fixes`` counts past fixes whose lines overlap this diff.
+
+    Defaults fit 24,000 chars; nonempty ``include`` uses 32,000. Reductions
+    carry counts and recovery status in ``_meta``.
+    Include-gated blocks are projections, not omissions.
 
     Args:
         revspec: Commit or ``base..head`` range to score. Omit it to score the
@@ -73,6 +90,8 @@ async def get_change_risk(
         extensions: File suffixes to count, e.g. ``[".py", ".ts"]``.
         exclude_patterns: Gitignore-style paths to omit, e.g. ``["tests/"]``.
         baseline: Recent commits to sample for percentile ranking; 0 disables it.
+        include: opt-in blocks - "scales" for every scalar's unit, range and
+            calibration. Identical on every call, so ask once.
     """
     if repo == "all":
         return _unsupported_repo_all("get_change_risk")
@@ -94,7 +113,13 @@ async def get_change_risk(
         return {"error": f"Could not read change {revspec or 'HEAD'!r}: {detail}"}
     except subprocess.TimeoutExpired:
         return {"error": f"git timed out reading change {revspec or 'HEAD'!r}."}
-    payload = change_risk_payload(result)
+    ignored: list[dict] = []
+    include_set = {
+        block
+        for block in (include or [])
+        if resolve_enum_argument(block, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
+    }
+    payload = change_risk_payload(result, scales="scales" in include_set)
     if result.features.nf == 0:
         payload["warning"] = (
             f"No counted file changes in {payload['ref']!r} "
@@ -104,11 +129,12 @@ async def get_change_risk(
     # extensions + riskignore + request excludes), so nothing downstream
     # disagrees with the score about which files the change touches. Read once
     # and shared: both blocks below need it and git is the expensive part.
-    # Skipped entirely without an index, because neither block can say anything
-    # then and the git call is the expensive half of this response.
+    # The test and fix blocks need the index; the cross-repo block needs only
+    # workspace contracts, so an unindexed member still gets one rather than
+    # going silently blind. Nothing else pays the git call.
     changed: dict[str, set[int]] = {}
     changed_error: tuple[str, str] | None = None
-    if getattr(ctx, "session_factory", None) is not None:
+    if getattr(ctx, "session_factory", None) is not None or _has_contract_data():
         changed, changed_error = await _changed_in_scope(
             str(ctx.path),
             revspec,
@@ -116,10 +142,14 @@ async def get_change_risk(
             result.riskignore_excludes + result.request_excludes,
             working_tree=result.working_tree,
         )
-    payload["impacted_tests"] = await _impacted_tests_block(ctx, changed, changed_error)
+    collector = OmissionCollector("get_change_risk", repo_root=ctx.path)
+    payload["impacted_tests"] = await _impacted_tests_block(ctx, changed, changed_error, collector)
     prior_fixes = await _prior_fixes_block(ctx, changed)
     if prior_fixes is not None:
         payload["prior_fixes"] = prior_fixes
+    cross_repo = _cross_repo_block(getattr(ctx, "alias", ""), sorted(changed))
+    if cross_repo is not None:
+        payload["cross_repo"] = cross_repo
     # source: live_git marks that the *score* is computed from the working
     # checkout's git. The two blocks above are index-backed, so the freshness
     # fields do apply to them, scoped to the change's files. None (not []) when
@@ -131,6 +161,8 @@ async def get_change_risk(
         targets=sorted(changed) or None,
         extra={"source": "live_git"},
     )
+    attach_ignored_arguments(payload, ignored)
+    collector.attach(payload)
     return payload
 
 
@@ -191,15 +223,145 @@ def _filter_changed(
     return out
 
 
+def _has_contract_data() -> bool:
+    """Whether workspace contracts are loaded, so the cross-repo block can speak."""
+    from repowise.server.mcp_server import _state
+
+    if not _is_workspace_mode():
+        return False
+    enricher = _state._cross_repo_enricher
+    return bool(enricher is not None and getattr(enricher, "has_contract_data", False))
+
+
+def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | None:
+    """What this commit does to consumers in other repos, or ``None``.
+
+    A commit that changes a published signature is the same class of fact as
+    its fix history, so it belongs beside it. Two sources, both from the last
+    ``repowise update --workspace``: the contract links whose provider file this
+    commit touched (who calls it), and the breaking-change report entries
+    attributed to those same files (what broke). ``None`` outside workspace
+    mode, without artifacts, or when the commit touches no published file, so
+    the block never appears just to say nothing. Never raises.
+    """
+    try:
+        from repowise.server.mcp_server import _state
+
+        if not changed_files or not _is_workspace_mode():
+            return None
+        enricher = _state._cross_repo_enricher
+        if enricher is None or not getattr(enricher, "has_contract_data", False):
+            return None
+
+        touched = set(changed_files)
+        consumers: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for path in changed_files:
+            for link in enricher.get_contract_links_as_provider(alias, path):
+                if link.get("consumer_repo") == alias:
+                    continue
+                # Keyed by contract too: collapsing loses a contract_id.
+                key = (
+                    link.get("consumer_repo") or "",
+                    link.get("consumer_file") or "",
+                    link.get("contract_id") or "",
+                    path,
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                consumers.append(
+                    {
+                        "provider_file": path,
+                        "repo": link.get("consumer_repo"),
+                        "file": link.get("consumer_file"),
+                        "contract_id": link.get("contract_id"),
+                        "contract_type": link.get("contract_type"),
+                        "match_type": link.get("match_type"),
+                        **(
+                            {"provider_symbol_id": psid}
+                            if (psid := link.get("provider_symbol_id"))
+                            else {}
+                        ),
+                        **({"symbol_id": sid} if (sid := link.get("consumer_symbol_id")) else {}),
+                    }
+                )
+
+        breaking: list[dict[str, Any]] = []
+        breaking_total = 0
+        has_breaking_report = bool(getattr(enricher, "has_breaking_changes", False))
+        if has_breaking_report:
+            for change in enricher.get_breaking_changes_for_repo(alias):
+                if change.get("provider_file") not in touched:
+                    continue
+                cross = [c for c in change.get("impacted_consumers", []) if c.get("repo") != alias]
+                if not cross:
+                    continue
+                breaking_total += 1
+                if len(breaking) >= _CROSS_REPO_BREAKING_LIMIT:
+                    continue
+                breaking.append(
+                    {
+                        "contract_id": change.get("contract_id"),
+                        "type": change.get("contract_type"),
+                        "kind": change.get("kind"),
+                        "severity": change.get("severity"),
+                        "detail": change.get("detail"),
+                        "provider_file": change.get("provider_file"),
+                        "impacted_repos": sorted({c.get("repo") or "" for c in cross}),
+                        **(
+                            {"provider_symbol_id": psid}
+                            if (psid := change.get("provider_symbol_id"))
+                            else {}
+                        ),
+                    }
+                )
+
+        if not consumers and not breaking:
+            return None
+        report = enricher.get_breaking_changes() or {}
+        # A removed endpoint has no current link, so its repos survive only on
+        # the breaking side.
+        repos = sorted(
+            {c["repo"] for c in consumers if c.get("repo")}
+            | {r for b in breaking for r in b["impacted_repos"] if r}
+        )
+        summary = (
+            f"{len(consumers)} consumer link(s) in {len(repos)} other repo(s) touch the "
+            f"files this change edits"
+        )
+        if breaking_total:
+            summary += f"; {breaking_total} of the changed contracts broke them."
+        elif has_breaking_report:
+            summary += "; the last workspace update found no break in them."
+        else:
+            summary += "; no breaking-change report has been built for them."
+        return {
+            "consumers": consumers[:_CROSS_REPO_CONSUMER_LIMIT],
+            "consumers_truncated": max(0, len(consumers) - _CROSS_REPO_CONSUMER_LIMIT),
+            "consumer_repos": repos,
+            "breaking_changes": breaking,
+            "breaking_changes_truncated": breaking_total - len(breaking),
+            # False = no detection pass ran, so the empty list is silence.
+            "breaking_changes_available": has_breaking_report,
+            # Stamps the breaking half only; the consumer list comes from the
+            # contract artifact, which carries no exposed stamp.
+            "breaking_changes_as_of": report.get("generated_at") or None,
+            "summary": summary,
+        }
+    except Exception:
+        return None
+
+
 def _empty_impacted(status: str, summary: str) -> dict[str, Any]:
     """Uniform impacted-tests block for the degraded (no tests to name) paths."""
     return {
         "status": status,
         "map_present": False,
-        "tests": [],
+        "tests_to_run": [],
         "total": 0,
         "truncated": False,
-        "missing_tests": {
+        "line_coverage": {
             "untested_changes": [],
             "stale_test_candidates": [],
             "covered": [],
@@ -419,8 +581,19 @@ def _overlap_count(changed_lines_now: set[int], old_ranges_json: str) -> int:
     return hits
 
 
+def _cap_tests(tests: list[str], collector: OmissionCollector, label: str) -> list[str]:
+    """First _IMPACTED_TESTS_LIMIT ids; the tail goes to the omission store."""
+    if len(tests) > _IMPACTED_TESTS_LIMIT:
+        collector.add(
+            f"impacted_tests.tests_to_run ({label}) beyond cap={_IMPACTED_TESTS_LIMIT} "
+            f"({len(tests) - _IMPACTED_TESTS_LIMIT} dropped)",
+            tests[_IMPACTED_TESTS_LIMIT:],
+        )
+    return tests[:_IMPACTED_TESTS_LIMIT]
+
+
 async def _inferred_impacted(
-    session: Any, repo_id: str, changed_files: list[str]
+    session: Any, repo_id: str, changed_files: list[str], collector: OmissionCollector
 ) -> dict[str, Any]:
     """Graph-inferred candidates for a repo with no coverage map.
 
@@ -432,7 +605,7 @@ async def _inferred_impacted(
     measured answer.
 
     Deliberately file-level and line-blind. Reaching carries no line
-    attribution, so ``missing_tests`` stays empty rather than being filled from
+    attribution, so ``line_coverage`` stays empty rather than being filled from
     a signal that cannot speak to lines - the distinction this whole block
     exists to keep.
     """
@@ -447,7 +620,7 @@ async def _inferred_impacted(
         reaching = await tests_reaching(session, repo_id, changed_files)
     except Exception:
         reaching = {}
-    tests = sorted({t for group in reaching.values() for t in group})
+    tests = rank_tests_by_reach(reaching)
     if not tests:
         return _empty_impacted(
             "no_map",
@@ -459,7 +632,7 @@ async def _inferred_impacted(
     block.update(
         {
             "basis": "inferred",
-            "tests": tests[:_IMPACTED_TESTS_LIMIT],
+            "tests_to_run": _cap_tests(tests, collector, "inferred"),
             "total": total,
             "truncated": total > _IMPACTED_TESTS_LIMIT,
             "summary": (
@@ -481,6 +654,7 @@ async def _impacted_tests_block(
     ctx: Any,
     changed: dict[str, set[int]],
     changed_error: tuple[str, str] | None,
+    collector: OmissionCollector,
 ) -> dict[str, Any]:
     """Line-precise impacted tests + honest missing-test buckets for the change.
 
@@ -509,24 +683,26 @@ async def _impacted_tests_block(
             repo_id = (await _get_repo(session)).id
             report = await detect_missing_tests(session, repo_id, changed)
             if report.map_empty:
-                return await _inferred_impacted(session, repo_id, sorted(changed))
-            all_ids: set[str] = set()
+                return await _inferred_impacted(session, repo_id, sorted(changed), collector)
+            by_file: dict[str, list[str]] = {}
             for source_file, lines in changed.items():
-                for row in await tests_covering(session, repo_id, source_file, lines=lines):
-                    all_ids.add(row["test_id"])
+                rows = await tests_covering(session, repo_id, source_file, lines=lines)
+                ids = sorted({row["test_id"] for row in rows})
+                if ids:
+                    by_file[source_file] = ids
     except LookupError:
         return _empty_impacted("no_index", "No indexed repository; run `repowise init`.")
 
-    tests = sorted(all_ids)
+    tests = rank_tests_by_reach(by_file)
     total = len(tests)
     return {
         "status": "map_present",
         "basis": "measured",
         "map_present": True,
-        "tests": tests[:_IMPACTED_TESTS_LIMIT],
+        "tests_to_run": _cap_tests(tests, collector, "measured"),
         "total": total,
         "truncated": total > _IMPACTED_TESTS_LIMIT,
-        "missing_tests": _serialize_missing(report),
+        "line_coverage": _serialize_missing(report),
         "summary": (
             f"{total} test(s) cover the changed lines"
             + (f"; showing first {_IMPACTED_TESTS_LIMIT}" if total > _IMPACTED_TESTS_LIMIT else "")

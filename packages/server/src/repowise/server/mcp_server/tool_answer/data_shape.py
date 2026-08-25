@@ -629,7 +629,7 @@ def build_data_shape_payload(grounded: dict, t0: float, repository) -> dict:
         "note": note,
         "_meta": _build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
-            hint=_answer_hint(grounded["confidence"], len(citations)),
+            hint=_answer_hint(grounded["confidence"]),
             repository=repository,
             targets=citations,
         ),

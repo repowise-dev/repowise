@@ -14,7 +14,7 @@ import { EmptyState } from "../shared/empty-state";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { toFriendlyMessage } from "../lib/errors";
 import { AiPromptButton } from "../health/ai-prompt-button";
-import { formatRelativeTimeOrNull } from "../lib/format";
+import { formatDateTime, formatRelativeTimeOrNull } from "../lib/format";
 import {
   FindingIdentity,
   FindingConfidence,
@@ -339,7 +339,7 @@ export function FindingsTable({
         render: (f) => (
           <span
             className="block text-xs tabular-nums text-[var(--color-text-tertiary)]"
-            title={f.last_commit_at ? new Date(f.last_commit_at).toLocaleString() : undefined}
+            title={f.last_commit_at ? formatDateTime(f.last_commit_at) : undefined}
           >
             {formatRelativeTimeOrNull(f.last_commit_at)}
             {/* Recent churn is why a finding scores low; saying so makes the

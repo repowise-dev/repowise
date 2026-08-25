@@ -18,7 +18,26 @@ function report(direct_risks: DirectRiskEntry[] = [], blast = true): ChangeImpac
           cochange_warnings: [],
           recommended_reviewers: [],
           test_gaps: [],
+          structural_impact_score: 0,
+          structural_impact_band: "localized",
+          structural_impact_scale: {
+            field: "structural_impact_score",
+            kind: "heuristic_structural_score",
+            unit: "normalized_points",
+            range: { minimum: 0, maximum: 10 },
+            measures: "indexed structural exposure",
+            deterministic: true,
+            calibration: { status: "uncalibrated", source: null },
+            authoritative_for_change_review: false,
+            runtime_breakage_probability: false,
+          },
           overall_risk_score: 0,
+          overall_risk_score_compatibility: {
+            deprecated: true,
+            replacement: "structural_impact_score",
+            equivalent_value: true,
+            historical_meaning: "uncalibrated structural heuristic",
+          },
         }
       : null,
   };
@@ -28,8 +47,8 @@ describe("selectDirectRisks", () => {
   it("ranks riskiest first with shares relative to the set maximum", () => {
     const out = selectDirectRisks(
       report([
-        { path: "a.ts", risk_score: 0.005, temporal_hotspot: 0, centrality: 0.005 },
-        { path: "b.ts", risk_score: 0.02, temporal_hotspot: 0, centrality: 0.02 },
+        { path: "a.ts", structural_score: 0.005, risk_score: 0.005, temporal_hotspot: 0, centrality: 0.005 },
+        { path: "b.ts", structural_score: 0.02, risk_score: 0.02, temporal_hotspot: 0, centrality: 0.02 },
       ]),
     );
     expect(out.map((r) => r.path)).toEqual(["b.ts", "a.ts"]);
@@ -40,8 +59,8 @@ describe("selectDirectRisks", () => {
   it("flags hotspots only above the floor", () => {
     const out = selectDirectRisks(
       report([
-        { path: "hot.ts", risk_score: 0.01, temporal_hotspot: 0.9, centrality: 0.005 },
-        { path: "quiet.ts", risk_score: 0.01, temporal_hotspot: 0.2, centrality: 0.005 },
+        { path: "hot.ts", structural_score: 0.01, risk_score: 0.01, temporal_hotspot: 0.9, centrality: 0.005 },
+        { path: "quiet.ts", structural_score: 0.01, risk_score: 0.01, temporal_hotspot: 0.2, centrality: 0.005 },
       ]),
     );
     expect(out.find((r) => r.path === "hot.ts")?.hotspot).toBe(true);
@@ -50,7 +69,7 @@ describe("selectDirectRisks", () => {
 
   it("serves zero shares when every risk score is zero", () => {
     const out = selectDirectRisks(
-      report([{ path: "a.ts", risk_score: 0, temporal_hotspot: 0, centrality: 0 }]),
+      report([{ path: "a.ts", structural_score: 0, risk_score: 0, temporal_hotspot: 0, centrality: 0 }]),
     );
     expect(out[0]?.share).toBe(0);
   });

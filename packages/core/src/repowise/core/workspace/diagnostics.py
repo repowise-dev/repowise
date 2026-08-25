@@ -21,12 +21,14 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from repowise.core.workspace.code_api import CODE_CONTRACT_TYPE
 from repowise.core.workspace.contracts import (
     Contract,
     ContractLink,
     normalize_contract_id,
 )
 from repowise.core.workspace.extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
+from repowise.core.workspace.signature_schema import SCHEMA_SOURCE
 
 # ---------------------------------------------------------------------------
 # Constants (single source of truth)
@@ -110,6 +112,108 @@ class OrphanProvider:
 
 
 @dataclass
+class SymbolIdentity:
+    """How many of one role's contracts bound to a symbol id, and out of what.
+
+    Two denominators because they answer different questions. *total* is the
+    honest workspace-wide share. *bound_ratio_indexed* excludes the files with
+    no parsed symbols at all — ``.sql``, ``.proto``, anything in a repo without
+    an index — which is what says whether the binding rule itself is working:
+    no rule can reach a file the parser never saw.
+    """
+
+    total: int = 0
+    bound: int = 0
+    unindexed_file: int = 0
+
+    def _ratio(self, denominator: int) -> float | None:
+        return self.bound / denominator if denominator > 0 else None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total": self.total,
+            "bound": self.bound,
+            "unindexed_file": self.unindexed_file,
+            "bound_ratio": self._ratio(self.total),
+            "bound_ratio_indexed": self._ratio(self.total - self.unindexed_file),
+        }
+
+
+@dataclass
+class SchemaCoverage:
+    """How many providers recovered a request schema, and out of what.
+
+    Two denominators, for the same reason :class:`SymbolIdentity` carries two.
+    *total* is the workspace-wide share. *recovered_ratio_eligible* excludes the
+    providers no mapper could reach whatever it did — one bound to nothing, to a
+    route-registration site, to a symbol with no parameter list, or to a language
+    with no parameter grammar — and is what says whether the mapper is working.
+    """
+
+    total: int = 0
+    bound: int = 0
+    recovered: int = 0
+    shared_symbol: int = 0
+    unsupported_language: int = 0
+    non_callable: int = 0
+
+    @property
+    def eligible(self) -> int:
+        return (
+            self.bound - self.shared_symbol - self.unsupported_language - self.non_callable
+        )
+
+    def _ratio(self, denominator: int) -> float | None:
+        return self.recovered / denominator if denominator > 0 else None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total": self.total,
+            "bound": self.bound,
+            "recovered": self.recovered,
+            "shared_symbol": self.shared_symbol,
+            "unsupported_language": self.unsupported_language,
+            "non_callable": self.non_callable,
+            "eligible": self.eligible,
+            "recovered_ratio": self._ratio(self.total),
+            "recovered_ratio_eligible": self._ratio(self.eligible),
+        }
+
+
+@dataclass
+class CodeApiCoverage:
+    """How much of the workspace's package surface became a ``code`` contract.
+
+    Two denominators, as :class:`SchemaCoverage` carries two. *manifests* counts
+    every manifest seen, so *published* against it says how much of the
+    workspace declares a package at all; *linked_ratio* is over the providers
+    actually emitted and says whether the consumer join is working.
+    """
+
+    manifests: int = 0
+    published: int = 0
+    unsupported_ecosystem: int = 0
+    providers: int = 0
+    consumers: int = 0
+    linked_providers: int = 0
+
+    def _ratio(self, numerator: int, denominator: int) -> float | None:
+        return numerator / denominator if denominator > 0 else None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "manifests": self.manifests,
+            "published": self.published,
+            "unsupported_ecosystem": self.unsupported_ecosystem,
+            "providers": self.providers,
+            "consumers": self.consumers,
+            "linked_providers": self.linked_providers,
+            "published_ratio": self._ratio(self.published, self.manifests),
+            "linked_ratio": self._ratio(self.linked_providers, self.providers),
+        }
+
+
+@dataclass
 class ExtractionDiagnostics:
     """Aggregate explanation of contract extraction + matching coverage."""
 
@@ -127,6 +231,14 @@ class ExtractionDiagnostics:
     #: HTTP client calls located but not resolvable to an endpoint, workspace
     #: wide. This is the only miss count extraction can actually observe.
     http_consumers_unresolved: int = 0
+    #: Symbol-id binding coverage, keyed by role. Reported, never asserted: a
+    #: contract with no symbol id still matches, it just cannot be traversed.
+    symbol_identity: dict[str, SymbolIdentity] = field(default_factory=dict)
+    #: Request-schema recovery over providers. Reported, never asserted: a
+    #: provider without a schema keeps matching, it just cannot be field-diffed.
+    schema_coverage: SchemaCoverage = field(default_factory=SchemaCoverage)
+    #: Published-package surface coverage. Reported, never asserted.
+    code_api: CodeApiCoverage = field(default_factory=CodeApiCoverage)
 
     @property
     def http_consumer_coverage(self) -> float | None:
@@ -158,10 +270,15 @@ class ExtractionDiagnostics:
             "consumers_by_layer": self.consumers_by_layer,
             "http_consumers_unresolved": self.http_consumers_unresolved,
             "http_consumer_coverage": self.http_consumer_coverage,
+            "symbol_identity": {r: v.to_dict() for r, v in sorted(self.symbol_identity.items())},
+            "schema_coverage": self.schema_coverage.to_dict(),
+            "code_api": self.code_api.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ExtractionDiagnostics:
+        schema = data.get("schema_coverage") or {}
+        code = data.get("code_api") or {}
         return cls(
             total_providers=data.get("total_providers", 0),
             total_consumers=data.get("total_consumers", 0),
@@ -203,6 +320,30 @@ class ExtractionDiagnostics:
             providers_by_layer=data.get("providers_by_layer", {}),
             consumers_by_layer=data.get("consumers_by_layer", {}),
             http_consumers_unresolved=data.get("http_consumers_unresolved", 0),
+            symbol_identity={
+                role: SymbolIdentity(
+                    total=v.get("total", 0),
+                    bound=v.get("bound", 0),
+                    unindexed_file=v.get("unindexed_file", 0),
+                )
+                for role, v in (data.get("symbol_identity") or {}).items()
+            },
+            schema_coverage=SchemaCoverage(
+                total=schema.get("total", 0),
+                bound=schema.get("bound", 0),
+                recovered=schema.get("recovered", 0),
+                shared_symbol=schema.get("shared_symbol", 0),
+                unsupported_language=schema.get("unsupported_language", 0),
+                non_callable=schema.get("non_callable", 0),
+            ),
+            code_api=CodeApiCoverage(
+                manifests=code.get("manifests", 0),
+                published=code.get("published", 0),
+                unsupported_ecosystem=code.get("unsupported_ecosystem", 0),
+                providers=code.get("providers", 0),
+                consumers=code.get("consumers", 0),
+                linked_providers=code.get("linked_providers", 0),
+            ),
         )
 
 
@@ -338,6 +479,52 @@ def build_diagnostics(
             )
         )
 
+    identity = {
+        role: SymbolIdentity(
+            total=len(rows),
+            bound=sum(1 for c in rows if c.symbol_id is not None),
+            unindexed_file=sum(
+                s.get(f"identity_unindexed_{role}", 0) for s in stats_by_repo.values()
+            ),
+        )
+        for role, rows in (("provider", providers), ("consumer", consumers))
+    }
+
+    schema = SchemaCoverage(
+        total=len(providers),
+        bound=sum(1 for c in providers if c.symbol_id is not None),
+        recovered=sum(
+            1 for c in providers if c.schema is not None and c.schema.source == SCHEMA_SOURCE
+        ),
+        shared_symbol=sum(
+            s.get("schema_shared_symbol_provider", 0) for s in stats_by_repo.values()
+        ),
+        unsupported_language=sum(
+            s.get("schema_unsupported_lang_provider", 0) for s in stats_by_repo.values()
+        ),
+        non_callable=sum(
+            s.get("schema_non_callable_provider", 0) for s in stats_by_repo.values()
+        ),
+    )
+
+    code_providers = [c for c in providers if c.contract_type == CODE_CONTRACT_TYPE]
+    published = sum(s.get("code_published_packages", 0) for s in stats_by_repo.values())
+    unsupported = sum(s.get("code_unsupported_ecosystem", 0) for s in stats_by_repo.values())
+    code_api = CodeApiCoverage(
+        manifests=published
+        + unsupported
+        + sum(s.get("code_unpublished_manifest", 0) for s in stats_by_repo.values()),
+        published=published,
+        unsupported_ecosystem=unsupported,
+        providers=len(code_providers),
+        consumers=sum(1 for c in consumers if c.contract_type == CODE_CONTRACT_TYPE),
+        linked_providers=sum(
+            1
+            for p in code_providers
+            if _contract_key(p.repo, p.file_path, p.contract_id) in matched_providers
+        ),
+    )
+
     return ExtractionDiagnostics(
         total_providers=len(providers),
         total_consumers=len(consumers),
@@ -355,4 +542,7 @@ def build_diagnostics(
         http_consumers_unresolved=sum(
             s.get("http_consumer_unresolved", 0) for s in stats_by_repo.values()
         ),
+        symbol_identity=identity,
+        schema_coverage=schema,
+        code_api=code_api,
     )

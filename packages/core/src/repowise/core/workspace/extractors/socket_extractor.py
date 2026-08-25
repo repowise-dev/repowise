@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .base import select_files
+from .base import line_at, select_files
 from .http.paths import (
     extract_path_from_url,
     is_unusable_consumer_path,
@@ -189,6 +189,7 @@ class SocketExtractor:
                             symbol_name=f"{pdef.label}('{identity}')",
                             confidence=pdef.confidence,
                             service=None,
+                            line=line_at(content, match.start()),
                             meta={
                                 "path": identity,
                                 "transport": pdef.transport,

@@ -36,9 +36,9 @@ import logging
 from typing import Any
 
 from repowise.core.persistence.database import get_session
+from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._budget import OmissionCollector, truncate_to_budget
 from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -77,7 +77,16 @@ _INCLUDE_BLOCKS = frozenset(
 )
 
 
-@mcp.tool()
+@mcp.tool(
+    surface_order=20,
+    recipes=(
+        ToolRecipe(
+            "read_file_shape",
+            'get_context(targets=["path"], include=["skeleton"])',
+            ("get_context",),
+        ),
+    ),
+)
 async def get_context(
     targets: list[str],
     include: list[str] | None = None,
@@ -96,6 +105,11 @@ async def get_context(
     Batch targets in one call. No source bytes by default: pass
     include=["skeleton"] for the whole file body-elided and line-verified in
     ONE call, or Read it. Do not call get_symbol per signature.
+
+    Default responses fit 24,000 serialized chars; nonempty ``include`` uses
+    32,000. Reductions carry counts and ``_meta.omitted`` recovery refs;
+    ``_meta.recovery_unavailable`` names a storage failure.
+    Include-gated blocks are projections, not omissions.
 
     Args:
         targets: file paths, module paths, or "path::Symbol" ids.
@@ -234,12 +248,5 @@ async def get_context(
             if cross_repo:
                 target_data["cross_repo"] = cross_repo
 
-    # Enforce the global token cap. Anything dropped is persisted via the
-    # collector so a truncated response always carries expandable
-    # ``[repowise#<ref>]`` markers instead of silently losing content.
-    collector = OmissionCollector("get_context", repo_root=ctx.path)
-    truncated = truncate_to_budget(response, collector=collector)
-    # After the cap, never before: a note about a dropped argument that the
-    # budget can itself drop is no note at all.
-    attach_ignored_arguments(truncated, ignored)
-    return truncated
+    attach_ignored_arguments(response, ignored)
+    return response

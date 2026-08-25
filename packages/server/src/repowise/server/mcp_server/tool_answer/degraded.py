@@ -28,7 +28,6 @@ from repowise.server.mcp_server.tool_answer.evidence import (
 )
 from repowise.server.mcp_server.tool_answer.payload import (
     _build_best_guesses,
-    _trim_served_payload,
     _with_candidates,
 )
 from repowise.server.mcp_server.tool_answer.retrieval import (
@@ -123,6 +122,11 @@ async def _degraded_payload(
     code_rationale = _drop_already_surfaced(
         await _gather_code_rationale(ctx, hits, fallback_targets, question), symbol_bodies
     )
+    citations.extend(
+        path
+        for row in code_rationale
+        if (path := row.get("path")) and path not in citations
+    )
 
     payload: dict = {
         "answer": summary,
@@ -167,7 +171,6 @@ async def _degraded_payload(
             timing_ms=(time.perf_counter() - t0) * 1000,
             hint=_answer_hint(
                 "low",
-                len(hits),
                 degraded=reason,
                 retrieval_quality=retrieval_quality,
                 has_bodies=bool(symbol_bodies),
@@ -177,12 +180,7 @@ async def _degraded_payload(
         ),
         "degraded": reason,
     }
-    # The serve-time cuts, which this return had never been routed through. It
-    # is now the only path carrying `best_guesses` beside a populated
-    # `retrieval`, so without the drop every excerpt ships twice.
-    return _trim_served_payload(
-        _with_candidates(payload, resolved_pool if resolved_pool is not None else hits)
-    )
+    return _with_candidates(payload, resolved_pool if resolved_pool is not None else hits)
 
 
 async def _degraded_next_action(symbol_bodies: list[dict], ctx, repository, exclude_spec) -> str:

@@ -43,6 +43,7 @@ _RESTORE_HINT = (
 )
 
 _DOC_SECTION_RULE = "==== {label} ===="
+_OMISSION_DOC_CHARS = 28_000
 
 
 def render_chunk(label: str, value: Any) -> str:
@@ -135,16 +136,34 @@ class OmissionCollector:
         try:
             if self._chunks:
                 doc = self._render_doc()
-                ref = self._put(doc)
-                if ref is not None:
-                    tokens = sum(estimate_tokens(text) for _, text in self._chunks)
-                    self._omitted_tokens += tokens
-                    response["omission_marker"] = render_marker(ref, doc.count("\n") + 1, tokens)
+                markers: list[str] = []
+                for start in range(0, len(doc), _OMISSION_DOC_CHARS):
+                    part = doc[start : start + _OMISSION_DOC_CHARS]
+                    ref = self._put(part)
+                    if ref is not None:
+                        tokens = estimate_tokens(part)
+                        self._omitted_tokens += tokens
+                        markers.append(render_marker(ref, part.count("\n") + 1, tokens))
+                if markers:
+                    response["omission_marker"] = markers[0]
+                    if len(markers) > 1:
+                        response["omission_markers"] = markers
+                elif self._chunks:
+                    response.setdefault("_meta", {})["recovery_unavailable"] = (
+                        "Omission storage failed; dropped evidence could not be persisted."
+                    )
             if self._refs:
                 meta = response.setdefault("_meta", {})
+                existing = meta.get("omitted")
+                existing_refs = (
+                    list(existing.get("refs") or []) if isinstance(existing, dict) else []
+                )
+                existing_tokens = (
+                    int(existing.get("tokens") or 0) if isinstance(existing, dict) else 0
+                )
                 meta["omitted"] = {
-                    "refs": list(self._refs),
-                    "tokens": self._omitted_tokens,
+                    "refs": [*existing_refs, *self._refs],
+                    "tokens": existing_tokens + self._omitted_tokens,
                     "restore": _RESTORE_HINT,
                 }
         except Exception:  # pragma: no cover - defensive

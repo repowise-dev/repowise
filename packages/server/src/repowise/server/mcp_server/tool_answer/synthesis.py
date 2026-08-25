@@ -13,8 +13,11 @@ import json as _json
 import logging
 import math
 import os
+import posixpath
 from pathlib import Path
 
+from repowise.core.reasoning import ReasoningMode, resolve_reasoning
+from repowise.core.repo_config import load_repo_config
 from repowise.server.mcp_server.tool_answer.config import (
     _SYNTHESIS_MAX_TOKENS,
     _SYNTHESIS_TEMPERATURE,
@@ -44,6 +47,34 @@ def _hash_question(question: str) -> str:
     """Stable SHA-256 of the normalized question. Lowercase + strip + collapse ws."""
     norm = " ".join(question.lower().strip().split())
     return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+
+
+def _normalize_scope(scope: str | None) -> str | None:
+    """Canonical repo-relative scope used by retrieval and cache identity."""
+    if scope is None or not scope.strip():
+        return None
+    normalized = posixpath.normpath(scope.strip().replace("\\", "/"))
+    normalized = normalized.removeprefix("./").strip("/")
+    return normalized if normalized and normalized != "." else None
+
+
+def _hash_answer_identity(question: str, normalized_scope: str | None) -> str:
+    """Versioned answer-cache identity for one normalized question and scope."""
+    normalized_question = " ".join(question.lower().strip().split())
+    # JSON preserves the distinction between null and every possible scope
+    # string (including a literal "<unscoped>") without a sentinel collision.
+    identity = _json.dumps(
+        ["v2", normalized_question, normalized_scope],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _resolve_reasoning_for_answer(repo_path: Path | None) -> ReasoningMode:
+    """Resolve the synthesis reasoning mode from env and repo config."""
+    config = load_repo_config(repo_path) if repo_path is not None else None
+    return resolve_reasoning(config=config)
 
 
 def _load_repo_provider_config(
@@ -392,6 +423,7 @@ async def synthesize(
     system_prompt: str,
     user_prompt: str,
     *,
+    reasoning: ReasoningMode = "auto",
     session_factory=None,
     repo_id: str | None = None,
 ) -> tuple[str, str | None]:
@@ -424,6 +456,7 @@ async def synthesize(
                     user_prompt=user_prompt,
                     max_tokens=_SYNTHESIS_MAX_TOKENS,
                     temperature=_SYNTHESIS_TEMPERATURE,
+                    reasoning=reasoning,
                 ),
                 None,
             )

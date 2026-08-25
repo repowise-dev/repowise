@@ -56,6 +56,11 @@ class MSBuildProject:
     project_references: list[Path] = field(default_factory=list)  # absolute paths to referenced .csproj
     package_references: set[str] = field(default_factory=set)  # NuGet package ids
     project_usings: set[str] = field(default_factory=set)  # <Using Include="X"/> namespaces
+    package_id: str | None = None  # <PackageId>, the id this project publishes under
+    #: Tri-state on purpose: None = the project says nothing, which is not the
+    #: same as an explicit <IsPackable>false</IsPackable>.
+    is_packable: bool | None = None
+    generate_package_on_build: bool = False
 
     @property
     def name(self) -> str:
@@ -72,6 +77,19 @@ def _local(tag: str) -> str:
 
 def _bool(value: str | None) -> bool:
     return (value or "").strip().lower() in ("true", "enable", "1")
+
+
+def _tristate(value: str | None) -> bool | None:
+    """None for anything that is not a literal boolean.
+
+    ``<IsPackable>$(PublishLibraries)</IsPackable>`` is the normal way to
+    centralise the flag; reading an unevaluated property as ``false`` would
+    record an unknown as an explicit no.
+    """
+    text = (value or "").strip().lower()
+    if text in ("true", "enable", "1"):
+        return True
+    return False if text in ("false", "disable", "0") else None
 
 
 def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
@@ -94,6 +112,15 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
             project.assembly_name = elem.text.strip()
         elif tag == "ImplicitUsings" and elem.text:
             project.implicit_usings = _bool(elem.text)
+        elif tag == "PackageId" and elem.text:
+            project.package_id = elem.text.strip()
+        elif tag == "IsPackable" and elem.text:
+            # Last literal wins; a conditional PropertyGroup is not evaluated.
+            packable = _tristate(elem.text)
+            if packable is not None:
+                project.is_packable = packable
+        elif tag == "GeneratePackageOnBuild" and elem.text:
+            project.generate_package_on_build = _bool(elem.text)
         elif tag == "ProjectReference":
             include = elem.get("Include")
             if include:

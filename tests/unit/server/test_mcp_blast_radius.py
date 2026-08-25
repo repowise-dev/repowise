@@ -25,6 +25,7 @@ def _enricher_with_graph(tmp_path: Path) -> CrossRepoEnricher:
             file_path="routes.py",
             symbol_name="get_users",
             confidence=0.9,
+            symbol_id="routes.py::get_users",
         ),
         Contract(
             repo="frontend",
@@ -34,6 +35,7 @@ def _enricher_with_graph(tmp_path: Path) -> CrossRepoEnricher:
             file_path="client.ts",
             symbol_name="fetchUsers",
             confidence=0.8,
+            symbol_id="client.ts::fetchUsers",
         ),
     ]
     links = [
@@ -50,6 +52,8 @@ def _enricher_with_graph(tmp_path: Path) -> CrossRepoEnricher:
             consumer_file="client.ts",
             consumer_symbol="fetchUsers",
             consumer_service=None,
+            provider_symbol_id="routes.py::get_users",
+            consumer_symbol_id="client.ts::fetchUsers",
         ),
     ]
     overlay = CrossRepoOverlay(
@@ -64,8 +68,18 @@ def _enricher_with_graph(tmp_path: Path) -> CrossRepoEnricher:
     )
     graph = build_system_graph(contracts, links, overlay, {}, generated_at="t")
     (tmp_path / "system_graph.json").write_text(json.dumps(graph.to_dict()), encoding="utf-8")
+    (tmp_path / "contracts.json").write_text(
+        json.dumps(
+            {
+                "contracts": [c.to_dict() for c in contracts],
+                "contract_links": [lk.to_dict() for lk in links],
+            }
+        ),
+        encoding="utf-8",
+    )
     return CrossRepoEnricher(
         tmp_path / "cross_repo_edges.json",
+        contracts_path=tmp_path / "contracts.json",
         system_graph_path=tmp_path / "system_graph.json",
     )
 
@@ -105,6 +119,11 @@ async def test_changing_provider_impacts_consumer(workspace_state):
     assert "frontend" in result["impacted_repos"]
     assert "backend" in result["targets"]
     assert "downstream service" in result["summary"]
+    semantics = result["impact_score_semantics"]
+    assert semantics["field"] == "impacted[].score"
+    assert semantics["unit"] == "relative_weight"
+    assert semantics["calibration"]["status"] == "uncalibrated"
+    assert semantics["runtime_breakage_probability"] is False
 
 
 @pytest.mark.asyncio
@@ -131,8 +150,23 @@ def test_cross_repo_directive_splits_structural_and_behavioral(workspace_state):
     # frontend consumes backend (http) and package-depends on it → structural.
     assert any(e["repo"] == "frontend" for e in will_break)
     assert all("service" in e and "score" in e for e in will_break)
+    assert all(e["relationship_type"] == "structural_dependency" for e in will_break)
+    assert all(e["direction"] == "consumer_to_dependency" for e in will_break)
+    assert all(e["claim"] == "structural_reach" for e in will_break)
+    assert all(e["runtime_breakage_claim"] is False for e in will_break)
+    assert all(e["consumer_repository"] != e["dependency_repository"] for e in will_break)
     # No cross-repo co-change edges in this fixture.
     assert missing_cochanges == []
+
+    from repowise.server.mcp_server.tool_risk.directives import _cross_repo_relationships
+
+    relationships = _cross_repo_relationships("backend")
+    assert relationships["structural_total"] == len(will_break)
+    assert len(relationships["structural"]) <= relationships["structural_total"]
+    assert relationships["analysis"]["status"] == "partial"
+    assert relationships["analysis"]["evidence_resolution"] == "aggregated_path_edge_kinds"
+    assert relationships["analysis"]["generated_at"] == "t"
+    assert relationships["analysis"]["freshness"]["status"] == "unavailable"
 
 
 def test_cross_repo_directive_empty_outside_workspace():
@@ -196,11 +230,12 @@ def test_breaking_change_directive_reports_impacted_consumers(tmp_path: Path):
     _state._registry = object()
     _state._cross_repo_enricher = _enricher_with_breaking(tmp_path)
     try:
-        directive = _breaking_change_directive("backend")
+        directive, dropped = _breaking_change_directive("backend")
     finally:
         _state._registry = prev_registry
         _state._cross_repo_enricher = prev_enricher
     assert len(directive) == 1
+    assert dropped == 0
     assert directive[0]["kind"] == "removed_endpoint"
     assert directive[0]["severity"] == "breaking"
     assert directive[0]["impacted_consumers"][0]["repo"] == "frontend"
@@ -215,7 +250,7 @@ def test_breaking_change_directive_empty_for_other_repo(tmp_path: Path):
     _state._cross_repo_enricher = _enricher_with_breaking(tmp_path)
     try:
         # 'frontend' is a consumer, not the provider of the change → no directive.
-        assert _breaking_change_directive("frontend") == []
+        assert _breaking_change_directive("frontend") == ([], 0)
     finally:
         _state._registry = prev_registry
         _state._cross_repo_enricher = prev_enricher
@@ -227,7 +262,7 @@ def test_breaking_change_directive_empty_outside_workspace():
     prev = _state._registry
     _state._registry = None
     try:
-        assert _breaking_change_directive("backend") == []
+        assert _breaking_change_directive("backend") == ([], 0)
     finally:
         _state._registry = prev
 
@@ -245,3 +280,145 @@ async def test_no_system_graph_returns_error(tmp_path: Path):
         _state._cross_repo_enricher = prev_enricher
     assert "error" in result
     assert "system graph" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_symbol_target_resolves_to_publishing_service(workspace_state):
+    """A symbol id names the service that publishes it, not a node id."""
+    result = await get_blast_radius(["routes.py::get_users"])
+    assert result["targets"] == ["backend"]
+    assert result["unresolved_targets"] == []
+    assert {n["id"] for n in result["impacted"]} == {"frontend"}
+
+
+@pytest.mark.asyncio
+async def test_symbol_target_names_the_consuming_symbol(workspace_state):
+    """The hop the service graph cannot express: which symbol calls it."""
+    result = await get_blast_radius(["routes.py::get_users"])
+    blocks = result["symbol_targets"]
+    assert len(blocks) == 1
+    assert blocks[0]["symbol_id"] == "routes.py::get_users"
+    assert blocks[0]["nodes"] == ["backend"]
+    assert blocks[0]["contract_ids"] == ["http::GET::/users"]
+    assert blocks[0]["consumers"] == [
+        {
+            "provider_repo": "backend",
+            "repo": "frontend",
+            "file": "client.ts",
+            "contract_id": "http::GET::/users",
+            "contract_type": "http",
+            "match_type": "exact",
+            "confidence": 0.8,
+            "symbol_id": "client.ts::fetchUsers",
+        }
+    ]
+    assert blocks[0]["consumers_truncated"] == 0
+    assert blocks[0]["consumer_count"] == 1
+    assert "ambiguous_in_repos" not in blocks[0]
+    assert result["summary"].endswith(
+        " 1 symbol target(s) have 1 consumer(s) across the contract links."
+    )
+
+
+@pytest.mark.asyncio
+async def test_unknown_symbol_id_stays_unresolved(workspace_state):
+    """A symbol-shaped string bound to no contract is not silently absorbed."""
+    result = await get_blast_radius(["routes.py::no_such_handler"])
+    assert result["unresolved_targets"] == ["routes.py::no_such_handler"]
+    assert result["targets"] == []
+    assert "symbol_targets" not in result
+
+
+@pytest.mark.asyncio
+async def test_node_target_carries_no_symbol_block(workspace_state):
+    """Existing node/alias targets keep their exact previous response shape."""
+    result = await get_blast_radius(["backend"])
+    assert "symbol_targets" not in result
+
+
+def _breaking_enricher(tmp_path: Path, contracts, links) -> CrossRepoEnricher:
+    """An enricher whose report is 'every one of these providers was removed'."""
+    from repowise.core.workspace.breaking_change import detect_breaking_changes
+    from repowise.core.workspace.contracts import ContractStore
+
+    report = detect_breaking_changes(
+        ContractStore(contracts=contracts, contract_links=links),
+        ContractStore(),
+        generated_at="t",
+    )
+    (tmp_path / "breaking_changes.json").write_text(json.dumps(report.to_dict()), encoding="utf-8")
+    return CrossRepoEnricher(
+        tmp_path / "cross_repo_edges.json",
+        breaking_changes_path=tmp_path / "breaking_changes.json",
+    )
+
+
+def _code_provider(name: str) -> Contract:
+    return Contract(
+        repo="backend",
+        contract_id=f"code::@acme/types::{name}",
+        contract_type="code",
+        role="provider",
+        file_path="src/types.ts",
+        symbol_name=name,
+        confidence=0.9,
+        service="packages/types",
+        symbol_id=f"src/types.ts::{name}",
+    )
+
+
+def _code_link(name: str) -> ContractLink:
+    return ContractLink(
+        contract_id=f"code::@acme/types::{name}",
+        contract_type="code",
+        match_type="exact",
+        confidence=0.9,
+        provider_repo="backend",
+        provider_file="src/types.ts",
+        provider_symbol=name,
+        provider_service="packages/types",
+        consumer_repo="frontend",
+        consumer_file="src/api.ts",
+        consumer_symbol=f"@acme/types:{name}",
+        consumer_service=None,
+        provider_symbol_id=f"src/types.ts::{name}",
+    )
+
+
+def _run_directive(tmp_path: Path, contracts, links, alias: str = "backend"):
+    from repowise.server.mcp_server.tool_risk import _breaking_change_directive
+
+    prev_registry = _state._registry
+    prev_enricher = _state._cross_repo_enricher
+    _state._registry = object()
+    _state._cross_repo_enricher = _breaking_enricher(tmp_path, contracts, links)
+    try:
+        return _breaking_change_directive(alias)
+    finally:
+        _state._registry = prev_registry
+        _state._cross_repo_enricher = prev_enricher
+
+
+def test_directive_carries_code_contracts_with_a_traversable_provider(tmp_path: Path):
+    """A removed published symbol is a cross-repo break like a removed route."""
+    directive, dropped = _run_directive(tmp_path, [_code_provider("Order")], [_code_link("Order")])
+    assert dropped == 0
+    assert len(directive) == 1
+    entry = directive[0]
+    assert entry["type"] == "code"
+    assert entry["kind"] == "removed_endpoint"
+    assert entry["provider_file"] == "src/types.ts"
+    assert entry["provider_symbol_id"] == "src/types.ts::Order"
+    assert entry["impacted_consumers"] == [
+        {"repo": "frontend", "service": None, "file": "src/api.ts"}
+    ]
+
+
+def test_directive_reports_what_the_provider_cap_left_out(tmp_path: Path):
+    """A shared-package bump exceeds the cap; the count must not go silent."""
+    names = [f"Type{i}" for i in range(7)]
+    directive, dropped = _run_directive(
+        tmp_path, [_code_provider(n) for n in names], [_code_link(n) for n in names]
+    )
+    assert len(directive) == 5
+    assert dropped == 2

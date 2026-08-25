@@ -1,6 +1,10 @@
 """Axum / Actix / Rocket (Rust) router convention edges.
 
-Split out of ``framework_edges.py`` (PR 3.5) — behaviour-preserving move.
+Split out of ``framework_edges.py`` (PR 3.5) — behaviour-preserving move. The
+axum ``.route(...)`` recogniser lives in ``ingestion.framework_routes``, shared
+with the contract extractor that reads the same call for its path. Actix's
+builder (``web::get().to(h)``) is a different construct from the attribute macro
+the contract side reads, so only axum overlaps.
 """
 
 from __future__ import annotations
@@ -8,6 +12,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from ..framework_routes import axum_routes
 from ..resolvers import ResolverContext
 from .base import (
     DetectionContext,
@@ -21,10 +26,6 @@ if TYPE_CHECKING:
     import networkx as nx
 
 
-_RUST_AXUM_ROUTE_RE = re.compile(
-    r"\.\s*route\s*\(\s*[\"'][^\"']*[\"']\s*,\s*"
-    r"(?:get|post|put|delete|patch|head|options|on)\s*\(\s*([\w:]+)\s*\)"
-)
 _RUST_ACTIX_TO_RE = re.compile(
     r"web::\s*(?:get|post|put|delete|patch|head)\(\)\s*\.\s*to\s*\(\s*([\w:]+)\s*\)"
 )
@@ -70,8 +71,14 @@ def _add_rust_router_edges(
         text = read_text(parsed)
         if not text:
             continue
+        for route in axum_routes(text):
+            if not route.handler:
+                continue  # a closure or an `on(MethodFilter::GET, ...)` filter
+            for target in _resolve(route.handler):
+                if target != path and target in path_set and _add_edge_if_new(graph, path, target):
+                    count += 1
+
         for regex in (
-            _RUST_AXUM_ROUTE_RE,
             _RUST_ACTIX_TO_RE,
             _RUST_ACTIX_SERVICE_RE,
             _RUST_SCOPE_CONFIGURE_RE,

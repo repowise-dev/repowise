@@ -16,11 +16,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.change_risk import (
     SCORE_MEASURES,
     SCORE_UNIT,
+    BaselineSample,
     FixHistoryUnavailableError,
     RiskNormalizer,
     baseline_samples,
     change_features_from_stored,
     change_fix_density,
+    densities_excluding,
     extract_range_features,
     fix_density_percentile,
     fix_pressure,
@@ -30,6 +32,7 @@ from repowise.core.analysis.change_risk import (
     score_change,
     scores_excluding,
 )
+from repowise.core.analysis.risk_semantics import change_risk_authority
 from repowise.core.ingestion.git_indexer._constants import (
     EVOLUTION_CATEGORIES,
     classify_commit_category,
@@ -233,7 +236,7 @@ async def get_commits(
 ) -> Paginated[CommitResponse]:
     """Per-commit change-risk feed — the review-priority queue.
 
-    ``sort=risk`` (default) orders by raw change-risk score descending (the
+    ``sort=risk`` (default) orders by supporting diff-shape score descending (the
     review-priority order); ``sort=date`` orders by recency. ``authorship``
     narrows the feed to agent-attributed or human commits. Each commit also
     carries a **repo-relative** ``risk_percentile`` + ``review_priority`` so the
@@ -355,11 +358,11 @@ async def get_commit_stats(
     )
 
 
-_HISTOGRAM_BINS = 20  # 0.5-wide bins across the 0-10 raw change-risk score
+_HISTOGRAM_BINS = 20  # 0.5-wide bins across the 0-10 supporting diff-shape score
 
 
 def _risk_histogram(sorted_scores: list[float]) -> list[RiskHistogramBucket]:
-    """Bin the repo's raw change-risk scores for the distribution chart.
+    """Bin the repo's supporting diff-shape scores for the distribution chart.
 
     Reuses the score list already fetched for the normalizer, so this costs no
     extra query. The top bin is closed on the right so a perfect 10.0 lands
@@ -674,7 +677,7 @@ def get_risk_range(
     ),
     repo: Repository = Depends(_resolve_local_repo),
 ) -> RiskRangeResponse:
-    """Score a ``base..head`` git range's defect risk from its live diff shape.
+    """Assess a ``base..head`` range from its live diff shape and history.
 
     Mirrors ``repowise risk <base>..<head> --format json``: same Kamei
     change-risk model, scored on demand against the working tree instead of
@@ -697,6 +700,7 @@ def get_risk_range(
 
     percentile: float | None = None
     priority: str | None = None
+    samples: list[BaselineSample] = []
     if baseline:
         # Same anchor rule as the CLI/MCP scorer, so both surfaces rank a range
         # against the history it forked from rather than against its own commits.
@@ -725,12 +729,13 @@ def get_risk_range(
         fix_history=FixHistoryResponse(
             available=fix_available,
             density=round(density, 3),
-            percentile=fix_density_percentile(pressure, density),
+            percentile=fix_density_percentile(densities_excluding(samples, "", pressure), density),
             files=[
                 FixHistoryFileResponse(path=path, churn=churn, fix_pressure=p)
                 for path, churn, p in hot_files(pressure, features.file_churn)
             ],
         ),
+        risk_authority=change_risk_authority(),
         score=risk.score,
         score_measures=SCORE_MEASURES,
         score_unit=SCORE_UNIT,

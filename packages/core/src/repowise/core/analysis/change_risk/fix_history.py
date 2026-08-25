@@ -20,10 +20,11 @@ number is the broadest of the three by design.
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 from ...ingestion.git_indexer._constants import is_fix_commit
 from .features import GIT_TIMEOUT_SECONDS, _git
+from .normalize import RiskNormalizer
 
 #: How far back to walk for fix history. Matches the git indexer's
 #: ``_DEEP_WALK_COMMIT_LIMIT``: deep enough that a long-lived file's fix record
@@ -207,6 +208,11 @@ def change_fix_density(
 #: short enough to stay readable on a wide PR.
 MAX_HOT_FILES = 5
 
+#: Smallest commit sample worth ranking a density against. Matches the score
+#: percentile's own floor, which is a separate constant on a separate call
+#: path - nothing enforces that they stay equal.
+MIN_DENSITY_POPULATION = 8
+
 
 def hot_files(
     pressure: dict[str, float], changes: Iterable[tuple[str, int]], *, limit: int = MAX_HOT_FILES
@@ -225,19 +231,27 @@ def hot_files(
     return tuple((path, churn, round(p, 2)) for path, churn, p in rows[:limit])
 
 
-def fix_density_percentile(pressure: dict[str, float], density: float) -> float | None:
-    """Where *density* sits among the repository's own fix-bearing files.
+def fix_density_percentile(population: Sequence[float], density: float) -> float | None:
+    """Where *density* sits among the fix densities of the repo's own commits.
 
-    Both sides are in the same unit — decayed fixes — since the density is a
-    churn-weighted mean of exactly these per-file values. On its own that number
-    means nothing to a reader; against the files that actually carry fix history
-    it becomes a statement worth acting on. ``None`` when the repository has too
-    little fix history to rank against, or when the change touches none of it.
+    *population* is one density per sampled commit, computed the same way as
+    *density* — see :func:`~.baseline.densities_excluding`. Ranking against
+    whole commits rather than against individual per-file pressures is what
+    makes the number readable: a change touching several files averages below
+    any single hot file, so the per-file population pinned every multi-file
+    commit to 0.
+
+    Zero-density commits stay in the population. A commit touching no
+    fix-bearing file is a legitimate answer to "how much fix pressure does a
+    change here usually stand on", and dropping them would narrow the field to
+    a question it is not labelled as. Mid-rank percentiles mean the run of
+    zeros shares one averaged rank rather than pinning anything.
+
+    ``None`` when the change touches no fix history, or when the sample is too
+    small to rank against.
     """
     if density <= 0:
         return None
-    values = [v for v in pressure.values() if v > 0]
-    if len(values) < 8:
+    if len(population) < MIN_DENSITY_POPULATION:
         return None
-    below = sum(1 for v in values if v < density)
-    return round(100.0 * below / len(values), 1)
+    return round(RiskNormalizer.from_scores(list(population)).percentile(density), 1)

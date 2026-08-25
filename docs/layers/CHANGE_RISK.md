@@ -5,10 +5,11 @@ bug-fix history of the files it touches, and the shape of its diff. It is a
 just-in-time / pre-merge signal, complementary to `repowise health`, which
 scores files rather than changes.
 
-**Read `fix_history` first, not `score`.** The 0–10 score measures how big and
-spread out a change is. It does not measure where the change lands, and the two
-are not the same question — see [What the score does and does not
-buy](#what-the-score-does-and-does-not-buy).
+**Lead with `risk_percentile` and `classification`.** They are the benchmarked,
+population-relative authority for live change review. `fix_history` is
+complementary evidence about where the change lands. The supporting 0–10 score
+measures how big and spread out a change is; it is not a probability. See
+[What the score does and does not buy](#what-the-score-does-and-does-not-buy).
 
 ```bash
 repowise risk                 # score uncommitted work, else HEAD
@@ -49,7 +50,7 @@ The first block in the result is `fix_history`, and it is the one to act on. It
 answers a question the diff shape cannot: **have these files broken before?**
 
 ```
-These files have broken before · 82nd percentile of this repo's fix-bearing files
+These files have broken before · 82nd percentile of this repo's recent commits
 ┌──────────────────────────────────────────┬───────┬─────────────┐
 │ File                                     │ Lines │ Prior fixes │
 ├──────────────────────────────────────────┼───────┼─────────────┤
@@ -69,11 +70,16 @@ These files have broken before · 82nd percentile of this repo's fix-bearing fil
   a one-line drive-by next door. It is a *ratio*, so unlike the score it does
   not grow with the size of the diff: one line in a file fixed twenty times
   outranks a thousand lines in files never fixed at all.
-- **`percentile`** ranks that density against the repository's own fix-bearing
-  files, since a bare "3.4 decayed fixes" means nothing on its own. Both sides
-  are the same unit, so the comparison is like for like. It is `null` when the
-  repo has fewer than eight files with any fix history, or when the change
-  touches none of it.
+- **`percentile`** ranks that density against the same measure over the
+  repository's own recent commits, since a bare "3.4 decayed fixes" means
+  nothing on its own. Ranking against whole commits rather than against
+  individual per-file numbers is what keeps it readable: a change spread over
+  several files averages below any single hot file, so a per-file population
+  pinned every multi-file change to the bottom. Commits that touch no
+  fix-bearing file stay in the population; they are a legitimate answer to how
+  much fix pressure a change here usually stands on. It is `null` when the
+  change touches no fix history, or when fewer than eight sampled commits are
+  available to rank against.
 
 This comes from one `git log` walk (up to 20 000 commits, memoized per
 repository state) using the same bug-fix classifier the indexer uses. It needs
@@ -159,14 +165,19 @@ lands at 0.46–0.57 AUC — which is a fact about the labels, not about the
 feature. So the model constants are unchanged and the score is reported as what
 it demonstrably is.
 
-`score_measures` states this in the payload. Read the result in this order:
+`risk_authority` and `score_measures` state this in every payload;
+`include=["scales"]` adds the per-field dictionary.
+Read the result in this order:
 
-- **`fix_history`**: where the change lands. The signal to triage on.
 - **Review priority** / **classification** / **percentile**: where this change's
-  *diff shape* sits in the repo's own distribution. Useful for "is this a big
-  one for us", not for "is this a dangerous one".
-- **`score`** (0–10): diff size and spread, corpus-anchored to a single commit.
-- **`fallback_band`**: the absolute `low` / `moderate` / `high` band. Present
+  *diff shape* sits in the repo's own distribution. This is the authoritative
+  population-relative review signal.
+- **`fix_history`**: uncalibrated historical evidence about where the change
+  lands, reported separately rather than folded into a probability.
+- **`score`** (0–10 normalized points): supporting diff size and spread,
+  offline-calibrated and corpus-anchored to a single commit.
+- **`fallback_band`**: the heuristic-thresholded absolute `low` / `moderate` /
+  `high` model-score band. Present
   *only* when there was no baseline to rank against (a shallow repo, or
   `--baseline 0`), which is why it is not a peer of the review priority.
 
@@ -243,6 +254,65 @@ free of new dependencies. Recalibrate via
 `repowise-bench/health-defect/jit_calibration.py`; the constants live in
 `packages/core/src/repowise/core/analysis/change_risk/model.py`.
 
+## PR structural-impact scale (`get_risk`)
+
+PR-mode `get_risk` answers a different question. Its
+`structural_impact_score` is a deterministic, uncalibrated structural-exposure
+heuristic in normalized points from 0 to 10. It combines the mean and maximum
+of `pagerank * (1 + temporal_hotspot)` across changed files, maps that component
+to at most 8 points with `8 * (1 - exp(-10 * combined))`, then adds at most 2
+points for `min(transitive_dependents / 20, 1)`. Bands are `localized` below 4,
+`moderate` from 4 to below 7, and `broad` from 7. It is not a probability and is
+not authoritative for live change review. Historical co-change evidence is
+reported separately and never enters this structural score.
+
+`overall_risk_score` remains an exact deprecated alias so older clients keep
+the same value and unit. `overall_risk_score_compatibility` names the migration
+to `structural_impact_score`; the two fields cannot contradict.
+
+The deterministic fixture corpus records the retained scale's distribution:
+
+| Control | Score | Band |
+| --- | ---: | --- |
+| documentation / low signal | 0.01 | localized |
+| small ordinary source | 0.34 | localized |
+| historical fixes, limited reach | 0.34 | localized |
+| co-change only | 0.08 | localized |
+| moderate multi-file | 4.27 | moderate |
+| structurally broad, little history | 7.34 | broad |
+| genuinely broad high control | 9.91 | broad |
+
+The numeric formula was retained, so the before-and-after numeric distributions
+are identical; the correction changes names, units, authority, and labels. No
+fixture saturates at 10, ordinary controls remain below the moderate threshold,
+and all three bands are occupied. The corpus lives in
+`tests/fixtures/risk_scale_corpus.json`.
+
+## Public scale inventory
+
+| Public value | Producer and evidence | Unit / range | Calibration and authority |
+| --- | --- | --- | --- |
+| `get_change_risk.score` / REST `score` / stored `change_risk_score` | Offline-fitted logistic model over live diff size, spread, entropy, and author experience; deterministic at runtime | normalized points, 0-10; calibrated at single-commit granularity | Benchmarked on 4,102 commits across 7 repositories; supporting signal, not a probability or review authority |
+| `risk_percentile` | Mid-rank of the same score among filtered recent commits | percentile rank, 0-100 | Population-relative benchmark; authoritative with `classification` for live change review |
+| `review_priority` / `classification` | Shared percentile terciles at 33.33 and 66.67 | category | Authoritative population-relative label |
+| `fallback_band` | Shared score thresholds at 4 and 7, emitted only without a usable baseline | category | Heuristic thresholds on the benchmarked model score; absolute fallback, not population-relative |
+| `fix_history.density` | Churn-weighted, recency-decayed prior bug fixes on touched files | recency-weighted prior fixes, unbounded | Uncalibrated historical heuristic; separate evidence, never folded into a probability |
+| `get_risk` `hotspot_score` | Repository-relative churn percentile from the index | ratio, 0-1 | Uncalibrated normalized component |
+| `get_risk` `health_score` | Indexed code-health model | health points, 0-10; higher is healthier | Benchmarked file-health signal, not interchangeable with change-risk points |
+| `structural_impact_score` | PR structural formula above | normalized points, 0-10 | Deterministic and uncalibrated; not authoritative. `overall_risk_score` is an exact deprecated alias |
+| `direct_risks[].structural_score` | `pagerank * (1 + temporal_hotspot)` | raw pagerank-weighted-hotspot value, unbounded | Uncalibrated within-change structural weight. `risk_score` is an exact deprecated alias |
+| `cochange_warnings[].score` | Number of historical commits in which the pair co-changed | raw commit count, 0+ | Historical evidence only; cannot become structural or runtime-breakage evidence |
+| workspace `impacted[].score` | Strongest path product of edge confidence, edge-kind weight, and `0.6` per hop | relative path weight, 0-1 | Deterministic, uncalibrated ranking heuristic; not a probability or change-review authority |
+| dashboard hotspot triage index | `40% * churn percentile + 35% * bus-factor tier + 25% * bounded temporal activity` | heuristic points, 0-100 | Client-side, uncalibrated orientation only; labelled adjacent to the chart |
+
+Machine-readable `risk_authority`, `structural_impact_scale`,
+`overall_risk_score_compatibility`, and `impact_score_semantics` carry these
+definitions on every payload. They ship the guard tier - unit, range,
+calibration status, authority - by default. The reference tier (fitting corpus,
+formula, component breakdown, and the full `risk_scales` dictionary) is
+identical on every call, so MCP returns it only for `include=["scales"]`; the
+CLI `--json` output and this table carry it unconditionally.
+
 ## Cross-repo change risk (workspace mode)
 
 > **Note:** This section describes `get_risk` in PR mode (`changed_files`). `get_change_risk` is
@@ -252,9 +322,9 @@ In a workspace, a change rarely stops at the repo boundary. When `get_risk` is
 called in PR mode (`changed_files`), its `directive` block gains two cross-repo
 fields derived from the [system graph](../scale/WORKSPACES.md#system-graph):
 
-- `will_break_consumers`: services in *other* repos that structurally depend on
-  the changed repo (a contract or package import). These are the consumers most
-  likely to break.
+- `will_break_consumers`: deprecated compatibility name for services in *other*
+  repos that structurally depend on the changed repo (a contract or package
+  import). This is structural reach for review, not a runtime-breakage claim.
 - `missing_cross_repo_cochanges`: services in other repos that historically
   co-change with the changed repo but aren't in the diff. Correlation, not a
   call, so they read as "may drift," not "will break."

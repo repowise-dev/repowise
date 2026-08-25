@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ..base import line_at
 from ..langs import CSHARP
 from .dialect import build_consumer_contract
 
@@ -66,22 +67,22 @@ class CSharpHttpDialect:
         content = ctx.content
         out: list[Contract] = []
 
-        def emit(method: str, prefix: str, text: str, client: str) -> None:
+        def emit(method: str, prefix: str, text: str, client: str, line: int) -> None:
             url = _to_template(prefix, text)
             if "/" not in url:
                 return  # Not a URL path — skip non-route strings.
             c = build_consumer_contract(
-                ctx, method=method.upper(), url=url, client=client, confidence=0.70
+                ctx, method=method.upper(), url=url, client=client, line=line, confidence=0.70
             )
             if c is not None:
                 out.append(c)
 
         for m in _WRAPPER_RE.finditer(content):
-            emit(m.group(1), m.group(2), m.group(3), "httpclient")
+            emit(m.group(1), m.group(2), m.group(3), "httpclient", line_at(content, m.start()))
         for m in _UNITY_RE.finditer(content):
-            emit(m.group(1), m.group(2), m.group(3), "unitywebrequest")
+            emit(m.group(1), m.group(2), m.group(3), "unitywebrequest", line_at(content, m.start()))
         for m in _BESTHTTP_RE.finditer(content):
             # Group order: prefix, text, method (method trails the URL here).
-            emit(m.group(3), m.group(1), m.group(2), "besthttp")
+            emit(m.group(3), m.group(1), m.group(2), "besthttp", line_at(content, m.start()))
 
         return out

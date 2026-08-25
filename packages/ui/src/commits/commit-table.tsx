@@ -106,7 +106,7 @@ const COLUMNS: ResponsiveColumn<CommitRow>[] = [
   },
   {
     key: "risk",
-    header: "Risk",
+    header: "Review priority",
     headerClassName: "w-28",
     // No ChurnBar. The cell was carrying the same fact three times over (a
     // filled bar, the percentile, and the pill), and because the queue sorts
@@ -116,14 +116,14 @@ const COLUMNS: ResponsiveColumn<CommitRow>[] = [
     render: (c) => (
       <div className="flex items-center gap-2">
         <span className="w-8 text-xs tabular-nums text-[var(--color-text-tertiary)]">
-          {Math.round(c.risk_percentile)}%
+          {Math.round(c.risk_percentile)}th
         </span>
         <PriorityBadge priority={c.review_priority as ReviewPriority} />
       </div>
     ),
     mobileRender: (c) => (
       <span className="inline-flex items-center gap-2">
-        <span className="tabular-nums">{Math.round(c.risk_percentile)}%</span>
+        <span className="tabular-nums">{Math.round(c.risk_percentile)}th</span>
         <PriorityBadge priority={c.review_priority as ReviewPriority} />
       </span>
     ),
@@ -148,7 +148,7 @@ const COLUMNS: ResponsiveColumn<CommitRow>[] = [
 /**
  * The review-priority queue: per-commit change-risk, ranked. Ordering is
  * server-driven (risk vs date); search + priority filters are client-side over
- * the loaded page. Risk is shown as a **repo-relative** percentile + priority,
+ * the loaded page. Review priority is shown as a **repo-relative** percentile + category,
  * so the column is portable across repos.
  */
 export function CommitTable({

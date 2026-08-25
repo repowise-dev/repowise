@@ -452,7 +452,7 @@ graph, which is why the graph is reproducible and why indexing needs no API key.
 - [architecture/language-support.md](../architecture/language-support.md) · call resolution internals and the contributor recipe
 - [architecture/graph-algorithms.md](../architecture/graph-algorithms.md) · PageRank, Leiden, betweenness and SCC in detail
 - [DEAD_CODE.md](DEAD_CODE.md) · how reachability becomes a confidence-tiered report
-- [CHANGE_RISK.md](CHANGE_RISK.md) · how the graph feeds a per-change risk score
+- [CHANGE_RISK.md](CHANGE_RISK.md) · how live diff-shape review and structural PR impact remain distinct
 - [reference/COMPUTED_GLOSSARY.md](../reference/COMPUTED_GLOSSARY.md) · every derived metric, defined
 - [BENCHMARKS.md §7](../BENCHMARKS.md#7-edge-precision) and [§8](../BENCHMARKS.md#8-the-same-question-against-an-answer-key-we-do-not-control) · the precision numbers on this page, with their sample sizes and intervals
 - [repowise-bench/graph](https://github.com/repowise-dev/repowise-bench/tree/master/graph) · the harnesses, the five arms, the graded rows and the pre-registrations behind all of it

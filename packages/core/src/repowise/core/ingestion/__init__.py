@@ -14,6 +14,7 @@ from .change_detector import AffectedPages, ChangeDetector, FileDiff, SymbolDiff
 from .graph import GraphBuilder
 from .models import (
     EXTENSION_TO_LANGUAGE,
+    CallReceiver,
     CallSite,
     EdgeType,
     FileInfo,
@@ -39,6 +40,7 @@ __all__ = [
     # Change detection
     "AffectedPages",
     # Models
+    "CallReceiver",
     "CallSite",
     "ChangeDetector",
     "EdgeType",

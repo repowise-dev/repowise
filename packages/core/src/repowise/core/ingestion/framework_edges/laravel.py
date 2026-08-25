@@ -1,6 +1,8 @@
 """Laravel routes / service-provider / Eloquent convention edges.
 
-Split out of ``framework_edges.py`` (PR 3.5) — behaviour-preserving move.
+Split out of ``framework_edges.py`` (PR 3.5) — behaviour-preserving move. The
+``Route::`` recogniser lives in ``ingestion.framework_routes``, shared with the
+contract extractor that reads the same call for its path.
 """
 
 from __future__ import annotations
@@ -8,6 +10,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from ..framework_routes import laravel_routes
 from ..resolvers import ResolverContext
 from .base import (
     DetectionContext,
@@ -21,15 +24,6 @@ if TYPE_CHECKING:
     import networkx as nx
 
 
-_LARAVEL_ROUTE_ARRAY_RE = re.compile(
-    r"Route::(?:get|post|put|patch|delete|any|match|resource|apiResource)\s*\([^,]*,\s*\[\s*([\w\\]+)::class"
-)
-_LARAVEL_ROUTE_LEGACY_RE = re.compile(
-    r"Route::(?:get|post|put|patch|delete|any|match)\s*\([^,]*,\s*['\"]([\w\\]+)@\w+['\"]"
-)
-_LARAVEL_ROUTE_RESOURCE_RE = re.compile(
-    r"Route::(?:resource|apiResource)\s*\(\s*['\"][^'\"]+['\"]\s*,\s*([\w\\]+)::class"
-)
 _LARAVEL_BIND_RE = re.compile(
     r"->\s*(?:bind|singleton|instance)\s*\(\s*([\w\\]+)::class\s*,\s*([\w\\]+)::class"
 )
@@ -69,17 +63,14 @@ def _add_laravel_edges(
         if not text:
             continue
         seen_targets: set[str] = set()
-        for regex in (
-            _LARAVEL_ROUTE_ARRAY_RE,
-            _LARAVEL_ROUTE_LEGACY_RE,
-            _LARAVEL_ROUTE_RESOURCE_RE,
-        ):
-            for m in regex.finditer(text):
-                target = _resolve_laravel_class(ctx, m.group(1), class_to_file, path_set)
-                if target and target in path_set and target not in seen_targets:
-                    seen_targets.add(target)
-                    if _add_edge_if_new(graph, routes_path, target):
-                        count += 1
+        for route in laravel_routes(text):
+            if not route.handler:
+                continue  # a closure route names no controller to link to
+            target = _resolve_laravel_class(ctx, route.handler, class_to_file, path_set)
+            if target and target in path_set and target not in seen_targets:
+                seen_targets.add(target)
+                if _add_edge_if_new(graph, routes_path, target):
+                    count += 1
 
     # ---- Service providers → bound classes ----
     for path, parsed in parsed_files.items():

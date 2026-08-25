@@ -76,17 +76,27 @@ def _is_async_node(node: Node, src: str) -> bool:
 _CALLABLE_KINDS: frozenset[str] = frozenset({"function", "method"})
 
 
-def _has_callable_ancestor(node: Node, symbol_kinds: dict[str, str]) -> bool:
+def _has_callable_ancestor(
+    node: Node,
+    symbol_kinds: dict[str, str],
+    ignored_node_ids: frozenset[int] = frozenset(),
+) -> bool:
     """True if ``node`` has any function/method ancestor in the AST.
 
     Used to filter out helpers defined inside another function's body
     (React event handlers, async-method-local coroutines, JS closures)
     from the top-level symbol list. Class bodies don't count — methods
     inside classes have only a ``class`` ancestor before the module root.
+
+    ``ignored_node_ids`` covers grammar-recovery nodes that a language query
+    has positively identified as type containers rather than callables.
     """
     ancestor = node.parent
     while ancestor is not None:
-        if symbol_kinds.get(ancestor.type) in _CALLABLE_KINDS:
+        if (
+            ancestor.id not in ignored_node_ids
+            and symbol_kinds.get(ancestor.type) in _CALLABLE_KINDS
+        ):
             return True
         ancestor = ancestor.parent
     return False
@@ -113,7 +123,7 @@ def _qualified_cpp_parent(name_node: Node, src: str) -> str | None:
     scope = parent.child_by_field_name("scope")
     if scope is None:
         return None
-    text = src[scope.start_byte : scope.end_byte].strip()
+    text = node_text(scope, src).strip()
     # ``scope`` may itself be a qualified path (``NS::Foo``); take the
     # last component — that's the immediate enclosing type.
     return text.rsplit("::", 1)[-1] or None

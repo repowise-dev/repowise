@@ -8,6 +8,29 @@
 ; Symbols
 ; ---------------------------------------------------------------------------
 
+; Export-macro class/struct definitions are parsed as function definitions:
+; ``struct MYLIB_EXPORT WriteOptions { ... }``. The grammar treats the macro
+; as the specifier's name and the real type name as a bare declarator. Keep
+; the specifier as ``@symbol.def`` so kind/signature handling stays class- or
+; struct-shaped, while the outer capture identifies the aggregate body.
+(function_definition
+  type: (class_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (identifier) @symbol.name
+  body: (compound_statement)
+) @symbol.cpp_export_type
+
+(function_definition
+  type: (struct_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (identifier) @symbol.name
+  body: (compound_statement)
+) @symbol.cpp_export_type
+
 ; Function definition: ReturnType funcName(params) { body }
 ; The name is nested inside function_declarator
 (function_definition
@@ -127,6 +150,60 @@
   )
 ) @symbol.def
 
+; In-class member-function declaration: ``void Seek(const Slice&);``
+; An abstract class has no out-of-line definition, so without these it reaches
+; the method index empty. ``@symbol.def`` is the declarator, not the
+; ``field_declaration``: that node can hold a whole ``struct Inner { ... } m_;``
+; and would become a callable ancestor of the inner type's methods.
+; ``declarator: (field_identifier)`` directly is what keeps out a
+; function-pointer data member (``void (*cb_)(int);``).
+(field_declaration
+  declarator: (function_declarator
+    declarator: (field_identifier) @symbol.name
+    parameters: (parameter_list) @symbol.params
+  ) @symbol.def
+)
+
+; ... returning a pointer: ``virtual Iterator* NewIterator(...) = 0;``
+(field_declaration
+  declarator: (pointer_declarator
+    declarator: (function_declarator
+      declarator: (field_identifier) @symbol.name
+      parameters: (parameter_list) @symbol.params
+    ) @symbol.def
+  )
+)
+
+; ... returning a reference: ``const Slice& value() const;``
+; ``reference_declarator`` does not name its declarator field, so the inner
+; ``function_declarator`` is matched as a bare named child rather than by field.
+(field_declaration
+  declarator: (reference_declarator
+    (function_declarator
+      declarator: (field_identifier) @symbol.name
+      parameters: (parameter_list) @symbol.params
+    ) @symbol.def
+  )
+)
+
+; Pure-virtual member of an EXPORT-MACRO class: ``virtual void Seek(...) = 0;``
+; ``class EXPORT Foo { ... }`` is recovery-parsed into a ``compound_statement``
+; of ``declaration`` nodes, which the patterns above cannot reach, and ``= 0``
+; wraps the declarator in an ``init_declarator`` the one below cannot either.
+; ``value: (number_literal)`` is what excludes the recovered inline definition
+; and member-init constructor, which share the shape. ``@symbol.def`` must be
+; the ``declaration``: it is a callable kind, so anchoring inside it makes it a
+; callable ancestor and the match is dropped.
+(declaration
+  declarator: (init_declarator
+    declarator: (function_declarator
+      declarator: (identifier) @symbol.name
+      parameters: (parameter_list) @symbol.params
+    )
+    value: (number_literal)
+  )
+) @symbol.def
+
 ; Destructor declaration inside a class body: ~Foo();
 (declaration
   declarator: (function_declarator
@@ -201,10 +278,23 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
+; The same call again, keeping the qualifier. A tree-sitter field is required
+; once named, so `::free()` (no scope) would stop matching if the capture were
+; added above; both patterns therefore run and the parser's dedup keeps the one
+; that carried a scope. `DB::Open()` was resolving to a test class's `Open`
+; because only the leaf name survived extraction.
+(call_expression
+  function: (qualified_identifier
+    scope: (_) @call.scope
+    name: (identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
 ; Chained call: obj.method1().method2(args)
 (call_expression
   function: (field_expression
-    argument: (call_expression)
+    argument: (call_expression) @call.receiver_call
     field: (field_identifier) @call.target
   )
   arguments: (argument_list) @call.arguments
@@ -228,6 +318,16 @@
 ; Struct / class field types
 (field_declaration
   type: (_) @param.type)
+
+; Local / global variable declarations: Row scratch{ ... }; or Widget *w;
+; A type used as the declared type of a variable in the same TU is a genuine
+; reference, but the captures above only see parameters, fields, return
+; types and template arguments — a ``Row scratch`` local reads as dead
+; without this. ``type_identifier`` matches only the bare-name form, so a
+; ``struct Row { ... }`` definition (wrapped in ``struct_specifier``) is not
+; caught here; it has no cross-file edge anyway.
+(declaration
+  type: (type_identifier) @param.type)
 
 ; Function return type: Widget * make(...)
 (function_definition

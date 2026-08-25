@@ -104,7 +104,7 @@ def test_a_provider_budget_above_the_ceiling_is_clamped(excessive):
 # --- the regression itself -------------------------------------------------
 
 
-@pytest.mark.parametrize("name", ["codex_cli", "opencode"])
+@pytest.mark.parametrize("name", ["codex_cli", "claude_cli", "opencode"])
 def test_agent_cli_providers_get_more_than_the_old_thirty_seconds(name):
     """#1119: 30s cancelled a codex/opencode turn before it could ever return."""
     cls = _load_provider_class(name)
@@ -136,6 +136,7 @@ def test_every_builtin_provider_has_a_deliberate_budget():
         "ollama": 120.0,
         "litellm": 120.0,
         "codex_cli": 180.0,
+        "claude_cli": 180.0,
         "opencode": 180.0,
     }
     assert set(expected) == set(_BUILTIN_PROVIDERS), (
@@ -147,9 +148,10 @@ def test_every_builtin_provider_has_a_deliberate_budget():
 
 def test_agent_cli_budget_stays_under_its_own_subprocess_ceiling():
     """The caller must give up before the subprocess does, or the error is wrong."""
-    from repowise.core.providers.llm import codex_cli, opencode
+    from repowise.core.providers.llm import claude_cli, codex_cli, opencode
 
     assert codex_cli.CodexCliProvider.interactive_timeout_s < codex_cli._EXEC_TIMEOUT_SECONDS
+    assert claude_cli.ClaudeCliProvider.interactive_timeout_s < claude_cli._EXEC_TIMEOUT_SECONDS
     assert opencode.OpenCodeProvider.interactive_timeout_s < opencode._EXEC_TIMEOUT_SECONDS
 
 
@@ -306,7 +308,16 @@ async def test_prompts_and_sampling_are_passed_through_unchanged():
         "user_prompt": "the user prompt",
         "max_tokens": _SYNTHESIS_MAX_TOKENS,
         "temperature": _SYNTHESIS_TEMPERATURE,
+        "reasoning": "auto",
     }
+
+
+async def test_reasoning_mode_is_passed_to_the_provider():
+    provider = _SlowProvider(duration=0, budget=30.0)
+
+    await synthesize(provider, "system", "user", reasoning="off")
+
+    assert provider.calls[0]["reasoning"] == "off"
 
 
 async def test_a_non_timeout_failure_is_not_reported_as_a_budget_overrun():

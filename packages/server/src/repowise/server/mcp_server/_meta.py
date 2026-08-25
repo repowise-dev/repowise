@@ -22,6 +22,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+MCP_CONTRACT_VERSION = 1
+
 # Only warn about age when we have no other signal AND the index is genuinely
 # old. A short threshold here would nag on every call and train the agent to
 # ignore the field — defeating the point. 90 days is a deliberate floor: by
@@ -223,7 +225,7 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
       * ``indexed_commit``  — short SHA the index was built against
 
     Conditionally emitted:
-      * ``live_head``       — only when it differs from the indexed commit
+      * ``live_head``       — current checkout commit whenever readable
       * ``stale_warning``   — only on a real signal (a served target changed,
         HEAD mismatch with real file changes on a repo-level response, OR very
         old with no git)
@@ -241,7 +243,7 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
     """
     if repository is None:
         return {}
-    out: dict[str, Any] = {}
+    out: dict[str, Any] = {"contract_version": MCP_CONTRACT_VERSION}
 
     updated_at = getattr(repository, "updated_at", None)
     age_days: int | None = None
@@ -260,10 +262,11 @@ def freshness_from_repo(repository: Any | None, targets: list[str] | None = None
         out["indexed_commit"] = indexed_full[:12] if isinstance(indexed_full, str) else indexed_full
 
     live_full = read_live_head(local_path)
+    if live_full:
+        out["live_head"] = live_full[:12]
 
     if live_full and indexed_full:
         if live_full != indexed_full:
-            out["live_head"] = live_full[:12]
             # HEAD moved, so the index *is* behind, true regardless of which
             # sub-branch below fires. Emitted unconditionally here (rather than
             # only on the quiet branches) so consumers can compute a rate:
@@ -335,7 +338,7 @@ def build_meta(
         ...extras
       }
     """
-    out: dict[str, Any] = {}
+    out: dict[str, Any] = {"contract_version": MCP_CONTRACT_VERSION}
     if timing_ms is not None:
         out["timing_ms"] = round(float(timing_ms), 2)
     if hint:
@@ -348,6 +351,58 @@ def build_meta(
     if extra:
         out.update(extra)
     return out
+
+
+def persisted_analysis_meta(
+    timestamp: str | None,
+    commits: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Trust metadata for a persisted analysis artifact, omitting unknowns."""
+    out: dict[str, Any] = {}
+    if timestamp:
+        out["analysis_timestamp"] = timestamp
+    if commits:
+        out["analysis_commits"] = commits
+    return out
+
+
+def finalize_trust_envelope(result: Any, *, evidence_kind: str | None = None) -> Any:
+    """Apply the transport-level trust contract to a tool result."""
+    if not isinstance(result, dict):
+        return result
+    raw_meta = result.get("_meta")
+    meta = raw_meta if isinstance(raw_meta, dict) else {}
+    result["_meta"] = meta
+    meta.setdefault("contract_version", MCP_CONTRACT_VERSION)
+    if evidence_kind:
+        meta.setdefault("evidence_kind", evidence_kind)
+    if evidence_kind == "structural":
+        meta.setdefault("runtime_breakage_proven", False)
+    elif evidence_kind == "generated":
+        meta.setdefault("existing_verified_code", False)
+
+    state: dict[str, bool] = {}
+    combined = {**result, **meta}
+    if any(
+        value and (key == "degraded" or key.endswith("_degraded"))
+        for key, value in combined.items()
+    ):
+        state["degraded"] = True
+    if any(
+        value and (key == "partial" or key.endswith("_partial")) for key, value in combined.items()
+    ):
+        state["partial"] = True
+    if any(
+        value and (key == "truncated" or "truncated" in key or key == "omitted")
+        for key, value in combined.items()
+    ):
+        state["truncated"] = True
+    if state:
+        existing = meta.get("state")
+        if isinstance(existing, dict):
+            state = {**existing, **state}
+        meta["state"] = state
+    return result
 
 
 def _embedder_meta() -> dict[str, Any]:
@@ -413,9 +468,26 @@ def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:
     return None
 
 
+# One wording for each of the two ways a response can be a dead end, so a
+# spelling cannot drift in on its own.
+#
+# The rule they encode: a dead end redirects into another call of OUR surface,
+# naming the tool and the argument to use. An external tool is named only for a
+# job we do not do, which is EXHAUSTIVE_SWEEP_HINT and nothing else.
+NO_HITS_RECOVERY_HINT = (
+    'Retry search_codebase with mode="symbol" for an identifier or mode="path" '
+    "for a file name; if the question names a file, call get_context on it "
+    "directly."
+)
+
+EXHAUSTIVE_SWEEP_HINT = (
+    "For an exhaustive sweep of every literal usage — before a rename, say — "
+    "Grep the name; that is the one job this surface does not do."
+)
+
+
 def answer_hint(
     confidence: str,
-    retrieval_count: int,
     *,
     degraded: str | None = None,
     retrieval_quality: str | None = None,
@@ -425,6 +497,13 @@ def answer_hint(
 
     Encourages verification when confidence is low; never tells the agent to
     "trust the answer" — that's the over-trust failure mode.
+
+    Deliberately takes no retrieval count. An empty ``retrieval`` block is a
+    confidence-conditional VIEW, not a measure of what retrieval found — a
+    high-confidence answer sets it to ``[]`` on purpose — so keying "no hits"
+    off its length would tell the most trustworthy answers on the surface that
+    there were none. The one site that genuinely knows retrieval came back empty
+    writes its own note there.
 
     A degraded payload is keyed separately, because "low" means something
     different there. Everywhere else it rates an answer that exists and might be
@@ -457,9 +536,4 @@ def answer_hint(
         )
     if confidence == "low":
         return "Low confidence — Read the listed fallback_targets to verify before answering."
-    if retrieval_count == 0:
-        return (
-            "No wiki hits — try search_codebase (mode=symbol/path) or "
-            "get_context on the named file; Grep only if those miss too."
-        )
     return None

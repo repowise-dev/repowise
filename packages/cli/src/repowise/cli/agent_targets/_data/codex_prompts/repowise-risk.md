@@ -1,16 +1,16 @@
 ---
-description: Score the defect risk of a change — a commit or a base..head range — as a single 0–10 with drivers.
+description: Rank a live change for review using a repo-relative percentile and an auditable supporting diff-shape score.
 ---
 
 # Repowise Risk
 
-Score a *change* (not a file) for defect risk. The response leads with
+Assess a *change* (not a file) for review priority. The authoritative fields are
+the repo-relative `risk_percentile` and `classification`. The response includes
 `fix_history`: the recency-weighted bug-fix record of the files the change
 touches, which of them carry it, and where that sits among the repo's own
-fix-bearing files. The 0–10 score sits beside it and measures diff size and
-spread (named in `score_measures`) rather than danger, so read the fix history
-first. Pure git + learned constants: no LLM, no network. A natural pre-merge /
-PR gate.
+recent commits. The supporting 0–10 score measures diff size and spread (named
+in `score_measures`) rather than danger and is not a probability. Pure git +
+learned constants: no LLM, no network. A natural pre-merge / PR gate.
 
 ## Steps
 
@@ -35,7 +35,7 @@ Useful flags:
 
 ## How this differs from the other risk views
 
-- This command = the **whole change** as one number (defect-risk gate).
-- For **per-file** blast radius (what breaks, missing co-changes, missing tests),
+- This command = the **whole change** ranked against recent repository history.
+- For **per-file** structural reach, missing co-changes, and missing tests,
   use the `get_risk` MCP tool / the `change-review` skill.
 - For **per-file health** scores, use `/prompts:repowise-health`.

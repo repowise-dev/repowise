@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ..base import line_at
 from ..langs import RUST
 from .dialect import build_consumer_contract
 
@@ -49,22 +50,22 @@ class RustClientsDialect:
         content = ctx.content
         out: list[Contract] = []
 
-        def emit(method: str, url: str) -> None:
+        def emit(method: str, url: str, line: int) -> None:
             if "/" not in url:
                 return  # Not a URL path — skip map/collection .get("key") calls.
             c = build_consumer_contract(
-                ctx, method=method.upper(), url=url, client="reqwest", confidence=0.65
+                ctx, method=method.upper(), url=url, client="reqwest", line=line, confidence=0.65
             )
             if c is not None:
                 out.append(c)
 
         for rx in (_METHOD_LIT_RE, _FREE_LIT_RE):
             for m in rx.finditer(content):
-                emit(m.group(1), m.group(2))
+                emit(m.group(1), m.group(2), line_at(content, m.start()))
 
         for rx in (_METHOD_FMT_RE, _FREE_FMT_RE):
             for m in rx.finditer(content):
                 url = _FMT_PLACEHOLDER_RE.sub("${x}", m.group(2))
-                emit(m.group(1), url)
+                emit(m.group(1), url, line_at(content, m.start()))
 
         return out

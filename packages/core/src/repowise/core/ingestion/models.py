@@ -229,6 +229,45 @@ class Import:
     bindings: list[NamedBinding] = field(default_factory=list)
     is_reexport: bool = False  # True for `pub use` (Rust) or re-export patterns
 
+    @property
+    def local_names(self) -> list[str]:
+        """The names this statement writes into the importing file's namespace.
+
+        ``imported_names`` carries names as they exist in the *source* module,
+        because that is what reachability matches against — under an alias
+        (``import { A as B }``, ``from m import a as b``) the two differ. A
+        caller that wants to recognise an identifier *as it appears in this
+        file* — a router DSL naming a handler, an exclusion list for call
+        resolution — must read the bindings instead, and this is that read.
+
+        Falls back to ``imported_names`` for the languages whose extractors
+        emit no bindings, where the two are the same list by construction. For
+        a re-export nothing is truly bound locally; the alias is returned,
+        being the token that appears in this file.
+        """
+        return [b.local_name for b in self.bindings] or list(self.imported_names)
+
+
+@dataclass
+class CallReceiver:
+    """A call expression used as the receiver of another call.
+
+    Keeping this AST-derived fact separate from ``receiver_name`` prevents a
+    chained call from being mistaken for an unqualified/free call.
+    """
+
+    target_name: str
+    receiver_name: str | None
+    argument_count: int | None
+
+
+#: What a resolved call site becomes in the graph. A syntactic form that names
+#: a symbol without invoking it still runs the call tiers -- deciding which
+#: symbol a name means is the same problem -- but must not reach the graph as
+#: ``calls``. Both members are ``EdgeType`` members; this is the subset a call
+#: site may produce.
+CallSiteEdgeType = Literal["calls", "references"]
+
 
 @dataclass
 class CallSite:
@@ -242,6 +281,12 @@ class CallSite:
     caller_symbol_id: str | None  # enclosing symbol ID (e.g. "src/app.py::main")
     line: int  # 1-indexed line number of the call
     argument_count: int | None  # number of arguments (None if unknown)
+    receiver_call: CallReceiver | None = None  # set only for a captured chained call
+    # C++ `Ns::f()` / `Class::m()`: the qualifier as written. Kept apart from
+    # ``receiver_name`` because that field routes to the member strategies,
+    # and cpp has none -- a scoped call must stay on the free-call path.
+    scope_name: str | None = None
+    edge_type: CallSiteEdgeType = "calls"  # see ``CallSiteEdgeType``
 
 
 HeritageKind = Literal["extends", "implements", "trait_impl", "mixin"]
@@ -360,6 +405,11 @@ ResolutionOrigin = Literal[
     "crate_root",  # 0.88 — Rust crate-scoped reference
     "receiver_import",  # 0.88 — receiver class found in an imported file
     "import_merged",  # 0.85 — in *some* imported file; which one is unattributed
+    # 0.93 — C/C++ `Qualifier::name()`. The class is written at the call
+    # site and declares the method, so nothing is inferred; it ranks with
+    # `receiver_same_file` because both rest on a class NAME matching, and
+    # two namespaces may spell one class name.
+    "scoped_name",
     "same_target",  # 0.85 — C/C++ sibling TU of the same build target
     # 0.75 — the (class, method) pair exists somewhere in the repo. The member
     # analogue of `global_unique`, and no more than that: the strategy is
@@ -391,6 +441,11 @@ ResolutionOrigin = Literal[
     "receiver_framework_same_package",  # 0.90
     "receiver_framework_import",  # 0.88
     "receiver_framework_global",  # 0.75
+    # Chained receiver typed from the inner callee's declared return type.
+    "return_type_same_file",  # 0.93
+    "return_type_same_package",  # 0.90 (JVM)
+    "return_type_import",  # 0.88
+    "return_type_global",  # 0.75
     # 0.90 — the caller's own class does not declare the method but exactly one
     # of its ancestors does. Below the two same-class origins because the walk
     # compares no signature and reads no visibility, so it can reach a method

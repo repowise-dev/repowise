@@ -276,6 +276,9 @@ def _path_basenames(all_paths: set[str]) -> set[str]:
     return {p.rsplit("/", 1)[-1] for p in all_paths}
 
 
+_PASCAL_UNIT_SUFFIXES = frozenset({".pas", ".pp", ".dpr", ".dpk", ".lpr"})
+
+
 def _has_paired_test_file(rel_path: str, path_basenames: set[str]) -> bool:
     """Heuristic: does any other file look like a test for *rel_path*?
 
@@ -299,6 +302,20 @@ def _has_paired_test_file(rel_path: str, path_basenames: set[str]) -> bool:
         f"{stem}.spec.mts",
         f"{stem}.spec.cts",
     }
+    if p.suffix.lower() in _PASCAL_UNIT_SUFFIXES:
+        # Delphi/FPC's lowercase "u" unit-name prefix (uFoo.pas) has no
+        # test-file convention of its own; real-world projects pair it with
+        # a standalone console test program named Test<Foo>.dpr (the "u" is
+        # dropped, the extension is .dpr since a runnable test program is a
+        # project file, not a unit). Only a lowercase "u" is stripped -- a
+        # stem that merely starts with capital "U" (Utils.pas) is a
+        # different word, not this naming convention. Confirmed against a
+        # real ~150-file Delphi codebase: uKeymap.pas <-> TestKeymap.dpr,
+        # uANSIParser.pas <-> TestANSIParser.dpr, uConsoleBuffer.pas <->
+        # TestConsoleBuffer.dpr, etc. -- src/tools/Test*.dpr, not next to
+        # the unit.
+        pascal_stem = stem[1:] if stem[:1] == "u" else stem
+        candidates.add(f"Test{pascal_stem}.dpr")
     return not candidates.isdisjoint(path_basenames)
 
 

@@ -67,10 +67,18 @@ class EditorFileDataFetcher:
 
         kg_layers, kg_tour = await self._get_kg_data()
 
+        # The stamp must report the commit the index was built against, not
+        # the live HEAD: a rebase fires the regeneration hook per replayed
+        # commit while the index underneath is unchanged, so a live-HEAD
+        # stamp walks forward on its own and silently misdates everything
+        # below it. Fall back to the shell-out only when the column is empty
+        # (pre-backfill indexes).
+        stored_commit = ((repo.head_commit or "")[:7]) if repo else ""
+
         return EditorFileData(
             repo_name=repo_name,
             indexed_at=datetime.now(UTC).strftime("%Y-%m-%d"),
-            indexed_commit=_get_head_short_sha(self._repo_path),
+            indexed_commit=stored_commit or _get_head_short_sha(self._repo_path),
             architecture_summary=await self._get_architecture_summary(),
             key_modules=await self._get_key_modules(),
             entry_points=await self._get_entry_points(),

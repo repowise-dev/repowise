@@ -27,9 +27,11 @@ from repowise.core.workspace.config import (
     ensure_workspace_data_dir,
 )
 from repowise.core.workspace.contract_schema import ContractSchema
+from repowise.core.workspace.signature_schema import attach_signature_schemas
 
 if TYPE_CHECKING:
     from repowise.core.workspace.extractors.service_boundary import ServiceBoundary
+    from repowise.core.workspace.repo_index import RepoIndex, WorkspaceIndex
 
 _log = logging.getLogger("repowise.workspace.contracts")
 
@@ -38,6 +40,16 @@ _log = logging.getLogger("repowise.workspace.contracts")
 # ---------------------------------------------------------------------------
 
 CONTRACTS_FILENAME = "contracts.json"
+
+#: Artifact schema version. Bumped to 2 when contracts gained ``symbol_id``,
+#: to 3 when providers gained a signature-derived ``schema``, to 4 when a
+#: package surface became a ``code`` contract, and to 5 when ASP.NET minimal
+#: APIs gained ``MapGroup`` prefixes and a handler-bound ``symbol_id``, and to 6
+#: when a multi-line axum route became readable and go/axum providers gained a
+#: handler-bound ``symbol_id``.
+#: A store written under an older version is readable but not reusable: its
+#: rows carry no identity, and nothing short of re-extraction can give them one.
+CONTRACTS_VERSION = 6
 
 
 # ---------------------------------------------------------------------------
@@ -51,12 +63,21 @@ class Contract:
 
     repo: str  # repo alias
     contract_id: str  # e.g. "http::GET::/api/users/{param}", "data::orders"
-    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data"
+    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data" | "code"
     role: str  # "provider" | "consumer"
     file_path: str  # relative to repo root
-    symbol_name: str  # handler name, service.method, etc.
+    symbol_name: str  # handler name, service.method, etc. — display only
     confidence: float  # 0.7–0.9 based on extraction strategy
     service: str | None = None  # service boundary path (monorepo)
+    #: 1-indexed line of the declaration or call this contract was read from.
+    #: The key :func:`bind_symbol_ids` binds against, and what says *where* a
+    #: contract that failed to bind actually is.
+    line: int | None = None
+    #: The ingestion symbol id (``"<rel_path>::<name>"``) this contract belongs
+    #: to. None when the repo has no index, the file has no parsed symbols, or
+    #: nothing is declared at ``line`` — such a contract still matches, it just
+    #: cannot be traversed into the call graph.
+    symbol_id: str | None = None
     meta: dict = field(default_factory=dict)
     # Optional request/response shape — populated by dialects that can recover
     # it (proto message fields today). Drives schema-level breaking-change diffs.
@@ -66,6 +87,9 @@ class Contract:
         d = asdict(self)
         if d["service"] is None:
             del d["service"]
+        for optional in ("line", "symbol_id"):
+            if d[optional] is None:
+                del d[optional]
         if not d["meta"]:
             del d["meta"]
         if self.schema is None or self.schema.is_empty:
@@ -86,6 +110,9 @@ class Contract:
             symbol_name=data["symbol_name"],
             confidence=data["confidence"],
             service=data.get("service"),
+            # Absent on a v1 artifact: the row predates contract identity.
+            line=data.get("line"),
+            symbol_id=data.get("symbol_id"),
             meta=data.get("meta", {}),
             schema=ContractSchema.from_dict(raw_schema) if raw_schema else None,
         )
@@ -96,7 +123,7 @@ class ContractLink:
     """A matched provider↔consumer pair across repos."""
 
     contract_id: str
-    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data"
+    contract_type: str  # "http" | "grpc" | "socket" | "topic" | "data" | "code"
     match_type: str  # "exact" | "candidate" | "manual"
     confidence: float
     provider_repo: str
@@ -107,6 +134,11 @@ class ContractLink:
     consumer_file: str
     consumer_symbol: str
     consumer_service: str | None
+    #: The linked contracts' symbol ids, carried through so a consumer of this
+    #: link (``ImpactedConsumer``, ``get_risk``) can name the code rather than
+    #: a display label. None when the contract never bound to one.
+    provider_symbol_id: str | None = None
+    consumer_symbol_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -114,6 +146,9 @@ class ContractLink:
             del d["provider_service"]
         if d["consumer_service"] is None:
             del d["consumer_service"]
+        for optional in ("provider_symbol_id", "consumer_symbol_id"):
+            if d[optional] is None:
+                del d[optional]
         return d
 
     @classmethod
@@ -131,6 +166,8 @@ class ContractLink:
             consumer_file=data["consumer_file"],
             consumer_symbol=data.get("consumer_symbol", ""),
             consumer_service=data.get("consumer_service"),
+            provider_symbol_id=data.get("provider_symbol_id"),
+            consumer_symbol_id=data.get("consumer_symbol_id"),
         )
 
 
@@ -138,7 +175,7 @@ class ContractLink:
 class ContractStore:
     """Top-level container for contract data, serialized to JSON."""
 
-    version: int = 1
+    version: int = CONTRACTS_VERSION
     generated_at: str = ""
     contracts: list[Contract] = field(default_factory=list)
     contract_links: list[ContractLink] = field(default_factory=list)
@@ -189,6 +226,63 @@ class ContractStore:
 
 
 # ---------------------------------------------------------------------------
+# Symbol identity
+# ---------------------------------------------------------------------------
+
+
+# Contract types whose *provider* declaration sits above the symbol it names: a
+# route decorator, an annotation. A data provider is the other shape — a table
+# name is a member inside its owning class — and every consumer is a call inside
+# a body, so for those the symbol containing the line is already the answer and
+# looking below it would take the first method instead.
+_DECLARED_ABOVE = frozenset({"http", "grpc", "socket", "topic"})
+
+
+def bind_symbol_ids(contracts: list[Contract], index: RepoIndex | None) -> dict[str, int]:
+    """Give each contract in *contracts* the id of the symbol it belongs to.
+
+    One pass over every contract type, so identity does not depend on how the
+    dialect found the route — only on the line it reported. Dialects that
+    already know their symbol (the index-backed ones) bind at extraction and
+    are left alone here. Which of the two lookups applies is the one thing a
+    contract's own shape decides: see :data:`_DECLARED_ABOVE`.
+
+    A provider whose ``meta`` names a ``handler`` binds to that symbol first: an
+    ASP.NET minimal API declares the route in ``Program.cs`` and defines the
+    handler elsewhere, so the line lookup would bind it to the registration site.
+
+    Mutates *contracts* in place and returns the one counter the artifact
+    cannot recover on its own: ``identity_unindexed_<role>``, contracts whose
+    file has no parsed symbols at all — a ``.sql`` file, or a repo with no
+    index. That is the part of the denominator no binding rule can reach, and
+    reporting a ratio without it would blame the rule for it. How many *did*
+    bind is countable from the contracts themselves.
+    """
+    counts: dict[str, int] = {}
+    for contract in contracts:
+        meta = contract.meta or {}
+        handler = meta.get("handler") if contract.role == "provider" else None
+        if contract.symbol_id is None and index is not None and handler:
+            # The whole expression, qualifier included: the graph consumer reads
+            # `OrderHandlers` out of it to find a file, this one needs the member.
+            symbol = index.symbol_named(handler)
+            if symbol is not None:
+                contract.symbol_id = symbol.symbol_id
+        if contract.symbol_id is None and index is not None and contract.line is not None:
+            declares = contract.role == "provider" and contract.contract_type in _DECLARED_ABOVE
+            lookup = index.declared_symbol_at if declares else index.symbol_at
+            symbol = lookup(contract.file_path, contract.line)
+            if symbol is not None:
+                contract.symbol_id = symbol.symbol_id
+        if contract.symbol_id is None and (
+            index is None or not index.symbols_for_file(contract.file_path)
+        ):
+            key = f"identity_unindexed_{contract.role}"
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+# ---------------------------------------------------------------------------
 # Contract ID normalization
 # ---------------------------------------------------------------------------
 
@@ -235,6 +329,11 @@ def normalize_contract_id(contract_id: str) -> str:
 
     if ctype == "topic" and len(parts) == 2:
         return f"topic::{parts[1].lower()}"
+
+    # Package name is case-insensitive, the symbol is not: the lowercase
+    # fallback would conflate `Order` with `order`.
+    if ctype == "code" and len(parts) == 3:
+        return f"code::{parts[1].lower()}::{parts[2]}"
 
     return contract_id.lower()
 
@@ -398,6 +497,8 @@ def _make_link(
         consumer_repo=consumer.repo,
         consumer_file=consumer.file_path,
         consumer_symbol=consumer.symbol_name,
+        provider_symbol_id=provider.symbol_id,
+        consumer_symbol_id=consumer.symbol_id,
         consumer_service=consumer.service,
     )
 
@@ -719,6 +820,7 @@ async def run_contract_extraction(
     changed_repos: list[str],
     boundaries_by_repo: dict[str, list[ServiceBoundary]] | None = None,
     previous_store: ContractStore | None = None,
+    workspace_index: WorkspaceIndex | None = None,
 ) -> ContractStore:
     """Full contract extraction pipeline.
 
@@ -735,6 +837,10 @@ async def run_contract_extraction(
     :func:`run_cross_repo_hooks` and shared with the system-graph build, which
     needs the same answer. When None (a direct call, or a test), boundaries are
     detected here instead.
+
+    *workspace_index* is the open read side of each repo's ``wiki.db``, held by
+    :func:`run_cross_repo_hooks` across every phase. When None, or when a repo
+    has no entry in it, that repo is extracted from text alone.
 
     *previous_store* is the artifact as it stands on disk, the source of any
     carried-forward rows. When None nothing is reused and every repo is
@@ -779,6 +885,7 @@ async def run_contract_extraction(
     mislabel both. Matching is dict-indexed and costs milliseconds against
     seconds of extraction, so scoping it would buy nothing and risk everything.
     """
+    from .code_api import CodeSurface, build_code_surface
     from .extractors import (
         DataExtractor,
         GrpcExtractor,
@@ -789,12 +896,7 @@ async def run_contract_extraction(
         detect_service_boundaries,
     )
     from .extractors.base import iter_source_files, make_exclude_predicate
-    from .extractors.from_index import (
-        ALL_INDEX_SUFFIXES,
-        EXTRACTION_LAYER_KEY,
-        LAYER_REGEX,
-        load_repo_index,
-    )
+    from .extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
 
     contract_config = ws_config.contracts
     exclude = make_exclude_predicate(tuple(contract_config.exclude_globs))
@@ -811,6 +913,15 @@ async def run_contract_extraction(
     if len(repo_paths) < 2:
         return ContractStore()
 
+    # Built once, workspace-wide: a code consumer only exists when some *other*
+    # repo publishes the package it imports, so neither half of it can be
+    # decided inside one repo's extraction.
+    code_surface = (
+        await asyncio.to_thread(build_code_surface, repo_paths, workspace_index, exclude)
+        if contract_config.detect_code_api
+        else CodeSurface()
+    )
+
     # Which repos can be carried forward, and which must be re-extracted.
     # Probing a repo's state costs a `git rev-parse` and a dirty check; the
     # alternative is trusting changed_repos, which is exactly the trust a stale
@@ -825,11 +936,19 @@ async def run_contract_extraction(
     # repo extracted under `detect_data: false`, or before a `service_bases`
     # entry existed, holds rows that answer a question no longer being asked —
     # and its HEAD is unchanged, so nothing else here would notice.
+    # The published-package set joins it because a code consumer depends on
+    # *another* repo's manifests: adding the repo that publishes what this one
+    # imports moves no HEAD here, so nothing else would notice.
     config_fp = hashlib.sha256(
-        json.dumps(contract_config.to_dict(), sort_keys=True).encode()
+        json.dumps(
+            [contract_config.to_dict(), sorted(code_surface.members)], sort_keys=True
+        ).encode()
     ).hexdigest()[:16]
 
-    if previous_store is not None:
+    # A store written before contracts carried identity holds rows that cannot
+    # be given one without re-reading the source, so its whole reuse question
+    # is moot: extract every repo once, and the next run reuses normally.
+    if previous_store is not None and prior.version >= CONTRACTS_VERSION:
         from ..ingestion.change_detector import has_working_tree_changes
 
         aliases = list(repo_paths)
@@ -892,8 +1011,9 @@ async def run_contract_extraction(
             extractors.append(TopicExtractor())
         if contract_config.detect_data:
             extractors.append(DataExtractor())
-        if not extractors:
-            return contracts, {}
+        code_rows = code_surface.for_repo(alias)
+        if not extractors and not code_rows:
+            return contracts, dict(code_surface.stats.get(alias, {}))
 
         # One walk per repo, shared by every extractor. Each used to walk and
         # re-read the tree itself, so a file claimed by N extractors was read N
@@ -901,21 +1021,15 @@ async def run_contract_extraction(
         wanted: frozenset[str] = frozenset()
         for extractor in extractors:
             wanted |= extractor.source_extensions()
-        # The walk records each file's content hash as it reads it, which is
-        # what lets the index path tell a matching parse from a stale one
-        # without a second read.
-        content_hashes: dict[str, str] = {}
         files = await asyncio.to_thread(
-            lambda: list(iter_source_files(repo_path, wanted, exclude, content_hashes))
+            lambda: list(iter_source_files(repo_path, wanted, exclude))
         )
 
-        # Symbols ingestion already parsed for this repo, when its parse cache
-        # is usable. None means the regex dialects are the only path, which is
-        # also the answer for languages with no AST tier. Only the HTTP
-        # extractor consults it, so nothing is loaded when it is disabled.
-        index = None
-        if contract_config.detect_http:
-            index = await asyncio.to_thread(load_repo_index, repo_path, ALL_INDEX_SUFFIXES)
+        # The symbols ingestion persisted for this repo. None means the regex
+        # dialects are the only path, which is also the answer for a repo that
+        # has never been indexed. The HTTP extractor reads it during
+        # extraction; every contract type reads it again in bind_symbol_ids.
+        repo_index = workspace_index.get(alias) if workspace_index is not None else None
 
         # Counters the HTTP extractor fills in as it goes. The unresolved-path
         # count is the honest half of any recall figure: it says how many real
@@ -929,7 +1043,7 @@ async def run_contract_extraction(
 
         for extractor in extractors:
             kwargs = (
-                {"index": index, "content_hashes": content_hashes, "stats": stats}
+                {"repo_index": repo_index, "stats": stats}
                 if isinstance(extractor, HttpExtractor)
                 else {}
             )
@@ -943,11 +1057,21 @@ async def run_contract_extraction(
                 c.meta.setdefault(EXTRACTION_LAYER_KEY, LAYER_REGEX)
             contracts.extend(found)
 
+        # Before binding, so a code provider's pre-set symbol id flows into
+        # attach_signature_schemas and its parameter list becomes the schema.
+        for c in code_rows:
+            c.service = assign_service(c.file_path, boundaries)
+        contracts.extend(code_rows)
+        stats.update(code_surface.stats.get(alias, {}))
+
+        stats.update(bind_symbol_ids(contracts, repo_index))
+        stats.update(attach_signature_schemas(contracts, repo_index))
+
         unresolved = stats.get("http_consumer_unresolved", 0)
         if unresolved:
             _log.info(
-                "%s: %d HTTP client call(s) reach a confirmed wrapper but their "
-                "path could not be resolved statically; counted, not extracted",
+                "%s: %d HTTP client call(s) located but their path could not be "
+                "resolved statically; counted, not extracted",
                 alias,
                 unresolved,
             )
@@ -996,7 +1120,7 @@ async def run_contract_extraction(
         links.extend(_build_manual_links(contract_config.manual_links))
 
     store = ContractStore(
-        version=1,
+        version=CONTRACTS_VERSION,
         generated_at=now_iso,
         contracts=all_contracts,
         contract_links=links,

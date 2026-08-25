@@ -232,8 +232,8 @@ workspace overlays, MCP responses, and CLI output.
 
 | Term | Definition | Computed by | Example |
 | --- | --- | --- | --- |
-| File risk score | Pagerank centrality multiplied by `1 + temporal_hotspot_score`. | `PRBlastRadiusAnalyzer._score_file()` | `0.018 * (1 + 2.4) = 0.0612` |
-| Overall PR risk score | 0 to 10 composite using average direct risk, max direct risk, and transitive breadth. | `_compute_overall_risk()` | `7.25` |
+| Direct structural weight | Raw, unbounded PageRank centrality multiplied by `1 + temporal_hotspot_score`; used only within the PR structural heuristic. Deprecated `risk_score` is an exact alias. | `PRBlastRadiusAnalyzer._score_file()` | `0.018 * (1 + 0.4) = 0.0252` |
+| PR structural-impact score | Deterministic, uncalibrated 0-10 normalized-point heuristic from mean/max direct structural weight (up to 8 points) plus transitive-dependent breadth (up to 2). Not a probability or live-change authority. Deprecated `overall_risk_score` is an exact alias. | `_compute_overall_risk()` | `{structural_impact_score: 7.25, structural_impact_band: "broad"}` |
 | Transitive affected file | Importer reached by reverse BFS from changed files. | `_transitive_affected()` | `{path: "src/api.py", depth: 2}` |
 | Co-change warning | Historical co-change partner missing from a PR/change set. | `_cochange_warnings()` | `{changed: "src/a.py", missing_partner: "src/b.py", score: 4.2}` |
 | Recommended reviewer | Owner aggregate over changed and affected files. | `_recommend_reviewers()` | `{email: "asha@example.com", files: 7, ownership_pct: 0.63}` |
@@ -241,8 +241,8 @@ workspace overlays, MCP responses, and CLI output.
 | Risk trend | Velocity from 30-day vs prior 60-day commit rates. | `tool_risk._compute_trend()` | `increasing`, `stable`, `decreasing` |
 | Risk type | Human bucket for the kind of risk. | `tool_risk._classify_risk_type()` | `bug-prone`, `churn-heavy`, `bus-factor-risk`, `high-coupling`, `stable` |
 | Change pattern | Human label from dominant commit category. | `tool_risk._derive_change_pattern()` | `feature-active`, `fix-heavy`, `dependency-churn`, `mixed-activity` |
-| Impact surface | Top critical reverse dependencies within two hops. | `tool_risk._compute_impact_surface()` | `[{file_path: "src/api.py", pagerank: 0.05}]` |
-| Risk summary | One-line synthesized risk sentence for MCP. | `tool_risk._assess_one_target()` | `src/auth.py - hotspot score 88% (increasing), 6 dependents...` |
+| Impact surface | PageRank-ranked structural reverse-dependency reach within two hops. It preserves distance and does not claim runtime breakage. | `tool_risk._compute_impact_surface()` | `[{file_path: "src/api.py", distance: 2, claim: "structural_reach"}]` |
+| Risk summary | One-line synthesized risk sentence for MCP; its dependency count is direct-only. | `tool_risk._assess_one_target()` | `src/auth.py - hotspot score 88% (increasing), 6 direct dependents...` |
 | Top hotspots | Highest churn/hotspot files returned for context. | `get_risk()` | `[{file_path: "src/db.py", hotspot_score: 0.94}]` |
 
 ## Code Health And Defect-Score Benchmark Metrics
@@ -376,7 +376,7 @@ workspace overlays, MCP responses, and CLI output.
 | `get_dependency_path` | Dependency-path or bridge context between files/symbols. | `{path: ["src/a.py", "src/b.py"]}` |
 | `get_symbol` | Exact symbol metadata and source slice. | `{name: "create_app", signature: "def create_app(...)"}` |
 | `get_execution_flows` | Entry-point traces through call edges. | `{flows: [{entry_point, trace, crosses_community}]}` |
-| Blast radius API | Direct risks, transitive affected files, co-change warnings, reviewers, test gaps, overall score. | `{overall_risk_score: 7.25}` |
+| Blast radius API | Direct structural weights, transitive affected files, historical co-change warnings, reviewers, test gaps, and an uncalibrated 0-10 structural-impact heuristic. Deprecated `overall_risk_score` is an exact alias. | `{structural_impact_score: 7.25, structural_impact_band: "broad", overall_risk_score: 7.25}` |
 | Knowledge map API | Top owners, knowledge silos, onboarding targets. | `{top_owners: [...], knowledge_silos: [...]}` |
 | Cost summary API | Grouped costs and totals. | `{groups: [...], total_cost_usd: 3.21}` |
 | Provider API | Available provider/model configuration. | `{providers: [...], active_provider: "gemini"}` |

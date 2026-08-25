@@ -6,13 +6,15 @@ import asyncio
 
 from sqlalchemy import select
 
-from repowise.core.ingestion.models import NON_DEPENDENCY_EDGE_TYPES
+from repowise.core.analysis.risk_semantics import file_risk_scales
+from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     GitMetadata,
     GraphEdge,
     GraphNode,
 )
+from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
@@ -21,53 +23,120 @@ from repowise.server.mcp_server._helpers import (
     _get_repo,
     _resolve_repo_context,
     _unsupported_repo_all,
+    attach_ignored_arguments,
     filter_path_list,
     filter_rows_by_attr,
+    resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
 from .assessment import _assess_one_target, _get_active_contributor_count, fix_annotation
 from .directives import _build_pr_directive, _governance_directive
-from .enrichment import _enrich_cross_repo, _enrich_health, _finalize_dep_summaries
+from .enrichment import _enrich_cross_repo, _enrich_health
+
+#: Fields an agent cannot rank or act on: uncalibrated pagerank floats, and
+#: labels derived from numbers already printed beside them. Computed either way
+#: (``risk_summary`` reads them); ``include`` only decides whether they ship.
+_TARGET_CARD_INCLUDES: dict[str, tuple[str, ...]] = {
+    "graph": (
+        "impact_surface",
+        "impact_surface_total",
+        "impact_surface_emitted",
+        "impact_surface_truncated",
+        "dependents",
+        "dependents_total",
+        "dependents_emitted",
+        "dependents_truncated",
+        "direct_dependents_total",
+        "transitive_dependents_total",
+        "consumers",
+        "consumers_total",
+        "consumers_emitted",
+        "consumers_truncated",
+        "cross_repo_links",
+        "cross_repo_links_total",
+        "cross_repo_links_emitted",
+        "cross_repo_links_truncated",
+        "relationship_analysis",
+    ),
+    "churn": ("change_magnitude", "risk_type", "change_pattern"),
+}
+_BLAST_INCLUDES: dict[str, tuple[str, ...]] = {"graph": ("direct_risks",)}
+#: Per-field units and calibration. Identical on every call, so it is opt-in.
+_INCLUDE_BLOCKS = frozenset(_TARGET_CARD_INCLUDES) | frozenset(_BLAST_INCLUDES) | {"scales"}
 
 
-@mcp.tool()
+def _drop_opt_in_blocks(response: dict, include: set[str]) -> None:
+    """Strip the opt-in fields no ``include`` key asked for."""
+    cards = list(response.get("targets", {}).values())
+    blast = response.get("pr_blast_radius") or {}
+    for source, keys_by_block in ((cards, _TARGET_CARD_INCLUDES), ([blast], _BLAST_INCLUDES)):
+        for block, keys in keys_by_block.items():
+            if block in include:
+                continue
+            for holder in source:
+                for key in keys:
+                    holder.pop(key, None)
+
+
+@mcp.tool(
+    surface_order=50,
+    recipes=(
+        ToolRecipe(
+            "assess_hotspot",
+            'get_risk(targets=["path"])',
+            ("get_risk",),
+        ),
+        ToolRecipe(
+            "review_change",
+            'get_risk(targets=["path"], changed_files=["path"])',
+            ("get_risk",),
+        ),
+    ),
+)
 async def get_risk(
     targets: list[str],
     repo: str | None = None,
     changed_files: list[str] | None = None,
+    include: list[str] | None = None,
 ) -> dict:
     """What history says about touching these files — bug fixes, churn, owners.
 
     Fuses git temporal signals (``hotspot_score``/``owner_pct`` are 0-1; trend;
-    bus factor) with graph topology (dependents, co-changes, impact surface)
-    and security findings. Consult before editing a bug-fixed or busy file. Pass
-    changed_files for PR mode: the response leads with a directive block
-    (will_break, missing_cochanges, missing_tests, tests_to_run) — read it
-    first. tests_to_run_basis backs the run-list: measured (a coverage map
-    proves those tests run the changed files) or inferred (test files the import
-    graph shows reaching them; candidates, no ingest needed). To score a commit
-    or ``base..head`` range instead, use ``get_change_risk``.
+    bus factor) with graph topology. ``dependents`` are directed structural
+    reach (source depends on target), ``consumers`` require typed contract links,
+    and ``co_change_partners`` are historical correlation only. Structural reach
+    is not proof of runtime breakage. The response also includes security
+    findings. Pass changed_files for PR mode: the response leads with a
+    directive block (may_break, missing_cochanges, missing_tests,
+    tests_to_run) — read it first. Each test_recommendations row carries a
+    measured or inferred basis, and coverage availability is explicit. To
+    score a commit or ``base..head`` range instead, use ``get_change_risk``.
 
-    defect_profile appears only on files with counted bug fixes: how many landed
-    in the trailing 6 months, how long ago the last one was, a bug_magnet flag
-    for sustained recent fix pressure, and top_symbols. Read top_symbols as
-    "mostly here" rather than exact — symbol spans are current-tree while each
-    fix's line ranges are numbered on its own parent commit. Nothing names the
-    commit that introduced a bug. global_hotspots ranks the same way.
+    In PR mode ``structural_impact_score`` is an uncalibrated 0-10 structural
+    heuristic, never a runtime-breakage probability; ``overall_risk_score`` is
+    its deprecated exact alias.
 
-    episodes counts the dated records bound to a target — what happened here and
-    why, evidenced by a commit or a filesystem fact. It appears only when there
-    is at least one, and get_why serves the bodies. A directory target
-    aggregates everything beneath it, so compare within a kind of target.
+    Default responses fit 24,000 serialized chars; nonempty ``include`` uses
+    32,000. Reductions carry counts and ``_meta.omitted`` recovery refs;
+    ``_meta.recovery_unavailable`` names a storage failure.
+    Include-gated blocks are projections, not omissions.
 
     Args:
         targets: file paths to assess.
         repo: usually omitted.
         changed_files: PR-changed files for blast-radius mode.
+        include: opt-in blocks - "graph", "churn", "scales" (units and
+            calibration for every scalar; identical per call, so ask once).
     """
     if repo == "all":
         return _unsupported_repo_all("get_risk")
+    ignored: list[dict] = []
+    include_set = {
+        block
+        for block in (include or [])
+        if resolve_enum_argument(block, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
+    }
     ctx = await _resolve_repo_context(repo)
     exclude_spec = _get_exclude_spec(ctx.path)
     targets = filter_path_list(targets, exclude_spec)
@@ -76,6 +145,14 @@ async def get_risk(
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         repo_id = repository.id
+
+        # File-node endpoints and the positive dependency vocabulary are both
+        # required: an untyped or symbol edge must not become a file dependent.
+        node_res = await session.execute(
+            select(GraphNode).where(GraphNode.repository_id == repo_id)
+        )
+        node_meta = {n.node_id: n for n in node_res.scalars().all()}
+        file_node_ids = {node_id for node_id, node in node_meta.items() if node.node_type == "file"}
 
         # Pre-load edges. Dependency edges only: everything below reads these as
         # "X depends on Y", and the graph also carries containment and co-change
@@ -86,24 +163,29 @@ async def get_risk(
         res = await session.execute(
             select(GraphEdge).where(
                 GraphEdge.repository_id == repo_id,
-                GraphEdge.edge_type.notin_(NON_DEPENDENCY_EDGE_TYPES),
+                GraphEdge.edge_type.in_(FILE_DEPENDENCY_EDGE_TYPES),
+                GraphEdge.source_node_id.in_(file_node_ids),
+                GraphEdge.target_node_id.in_(file_node_ids),
             )
         )
         all_edges = res.scalars().all()
-        dep_counts: dict[str, int] = {}
-        import_links: dict[str, set[str]] = {}
-        reverse_deps: dict[str, set[str]] = {}  # target -> set of importers
+        import_links: dict[str, dict[str, set[str]]] = {}
+        reverse_deps: dict[str, dict[str, set[str]]] = {}
         for e in all_edges:
-            dep_counts[e.target_node_id] = dep_counts.get(e.target_node_id, 0) + 1
-            import_links.setdefault(e.source_node_id, set()).add(e.target_node_id)
-            import_links.setdefault(e.target_node_id, set()).add(e.source_node_id)
-            reverse_deps.setdefault(e.target_node_id, set()).add(e.source_node_id)
+            edge_type = str(e.edge_type)
+            import_links.setdefault(e.source_node_id, {}).setdefault(e.target_node_id, set()).add(
+                edge_type
+            )
+            import_links.setdefault(e.target_node_id, {}).setdefault(e.source_node_id, set()).add(
+                edge_type
+            )
+            reverse_deps.setdefault(e.target_node_id, {}).setdefault(e.source_node_id, set()).add(
+                edge_type
+            )
+        # Count unique incoming dependent nodes, not parallel edge rows. A file
+        # with both an import and a type-use edge is still one direct dependent.
+        dep_counts = {target: len(sources) for target, sources in reverse_deps.items()}
 
-        # Pre-load graph nodes for pagerank / impact surface
-        node_res = await session.execute(
-            select(GraphNode).where(GraphNode.repository_id == repo_id)
-        )
-        node_meta = {n.node_id: n for n in node_res.scalars().all()}
         test_paths = {nid for nid, n in node_meta.items() if n.is_test}
 
         # Team size is repo-wide — compute once, share across targets
@@ -161,6 +243,7 @@ async def get_risk(
             entry = {
                 "file_path": h.file_path,
                 "hotspot_score": h.churn_percentile,
+                "is_hotspot": True,
                 "primary_owner": h.primary_owner_name,
             }
             # Silent on files with no counted fixes, so a repo without fix
@@ -176,15 +259,11 @@ async def get_risk(
         if changed_files:
             from repowise.core.analysis.pr_blast import PRBlastRadiusAnalyzer
 
-            analyzer = PRBlastRadiusAnalyzer(session, repo_id)
-            pr_blast_radius = await analyzer.analyze_files(changed_files)
+            analyzer = PRBlastRadiusAnalyzer(session, repo_id, repository_alias=ctx.alias)
+            pr_blast_radius = await analyzer.analyze_files(changed_files, exclude_spec=exclude_spec)
 
     # Cross-repo blast radius enrichment (Phase 3 + 4)
     await _enrich_cross_repo(results, ctx.alias)
-
-    # Final risk_summary rebuild for any remaining dependents_count updates
-    # (e.g. contract provider links) and cleanup of internal keys.
-    _finalize_dep_summaries(results)
 
     # ---- Code-health enrichment --------------------------------------------
     # Attach per-file health_score + top_biomarkers (up to 3) drawn from the
@@ -199,10 +278,12 @@ async def get_risk(
 
     response: dict = {
         "targets": {r["target"]: r for r in results},
+        **({"risk_scales": file_risk_scales()} if "scales" in include_set else {}),
     }
 
     collector = OmissionCollector("get_risk", repo_root=ctx.path)
     if pr_blast_radius is not None:
+        assert changed_files is not None
         # Governance risk — bounded query over changed_files (small set).
         governance_risk = await _governance_directive(ctx, changed_files)
         _build_pr_directive(
@@ -214,15 +295,22 @@ async def get_risk(
             governance_risk,
             test_paths,
             ctx.alias,
+            full_scale="scales" in include_set,
         )
-    else:
-        # Standard per-file risk request (no diff) — keep global hotspots as
-        # ambient awareness. Cheap (≤5 entries) and useful for orientation.
+        # Dict insertion order is the serialized external order. PR mode is
+        # action-first by contract, so the directive must precede dossiers,
+        # targets, metadata, and omission details in the exact payload.
+        response = {"directive": response.pop("directive"), **response}
+    elif len(targets) > 1:
+        # Standard per-file risk request (no diff) — ambient orientation across
+        # a set of targets. On one file the caller already named, it is noise.
         response["global_hotspots"] = global_hotspots
 
     response["_meta"] = _build_meta(
         repository=repository,
         targets=[*targets, *(changed_files or [])] if targets or changed_files else None,
     )
+    _drop_opt_in_blocks(response, include_set)
+    attach_ignored_arguments(response, ignored)
     collector.attach(response)
     return response

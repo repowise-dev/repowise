@@ -51,6 +51,23 @@ private:
 """
 
 
+CPP_EXPORT_MACRO_TYPES = b"""#define MYLIB_EXPORT
+
+struct MYLIB_EXPORT WriteOptions {
+    WriteOptions() = default;
+    bool sync = false;
+};
+
+class MYLIB_EXPORT ClientOptions {
+    bool enabled = true;
+};
+
+struct PlainOptions {
+    PlainOptions() = default;
+};
+"""
+
+
 class TestCppParser:
     def test_finds_class_in_header(self, parser: ASTParser) -> None:
         fi = _make_file_info("cpp_pkg/calculator.hpp", "cpp")
@@ -73,3 +90,17 @@ class TestCppParser:
         assert len(result.imports) >= 2
         module_paths = [i.module_path for i in result.imports]
         assert any("calculator.hpp" in p or "stdexcept" in p for p in module_paths)
+
+    def test_finds_types_declared_through_export_macros(self, parser: ASTParser) -> None:
+        fi = _make_file_info("cpp_pkg/options.hpp", "cpp")
+        result = parser.parse_file(fi, CPP_EXPORT_MACRO_TYPES)
+        symbols = {(symbol.parent_name, symbol.name): symbol for symbol in result.symbols}
+
+        assert symbols[(None, "WriteOptions")].kind == "struct"
+        assert symbols[(None, "WriteOptions")].is_declaration is False
+        assert symbols[("WriteOptions", "WriteOptions")].kind == "method"
+        assert symbols[(None, "ClientOptions")].kind == "class"
+        assert symbols[(None, "ClientOptions")].is_declaration is False
+        assert symbols[(None, "PlainOptions")].kind == "struct"
+        assert symbols[("PlainOptions", "PlainOptions")].kind == "method"
+        assert not any(symbol.name == "MYLIB_EXPORT" for symbol in result.symbols)
