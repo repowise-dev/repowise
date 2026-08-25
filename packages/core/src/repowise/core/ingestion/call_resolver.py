@@ -138,7 +138,9 @@ _JVM_STRATEGIES = _LanguageCallStrategies(
     member=("_resolve_jvm_receiver_same_package",),
 )
 
-_CPP_STRATEGIES = _LanguageCallStrategies(free=("_resolve_cpp_same_target",))
+_CPP_STRATEGIES = _LanguageCallStrategies(
+    free=("_resolve_cpp_scoped_call", "_resolve_cpp_same_target"),
+)
 
 # Rust's crate-root strategy is deliberately absent: it runs for every language
 # today, and gating it here would drop crate-name receivers in mixed repos.
@@ -535,6 +537,56 @@ class CallResolver:
 
         self._cpp_index = build_cpp_workspace_index(_Ctx(self._repo_path, self._parsed_files))
         return self._cpp_index
+
+    def _collapse_declarations(self, sym_ids: list[str]) -> set[str]:
+        """Fold each declaration onto the definition it was paired with.
+
+        Two ids naming one symbol must not read as an ambiguity.
+        """
+        return {self._decl_to_def.get(sym_id, sym_id) for sym_id in sym_ids}
+
+    def _resolve_cpp_scoped_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Resolve ``Qualifier::name()`` against the class the qualifier names.
+
+        The qualifier is written at the call site, so this infers nothing: the
+        repository either declares ``Qualifier::name`` or it does not. Before
+        it existed only the leaf name survived extraction, and `DB::Open()`
+        bound to a test class's `Open`.
+
+        It declines rather than refusing when the pair is unknown, because a
+        qualifier may equally name a NAMESPACE and C++ namespaces are recorded
+        on no symbol -- so absence here is not evidence of anything.
+        """
+        scope = call.scope_name
+        if not scope:
+            return None
+        candidates = self._global_methods.get((scope, call.target_name))
+        if not candidates:
+            return None
+        # A class name is not repository-unique. Prefer a declaration this file
+        # actually includes; failing that accept a repo-wide unique one, and
+        # otherwise leave it, because the qualifier has not settled which.
+        imported = self._import_targets.get(file_path, ())
+        preferred = [
+            sym_id for f, sym_id in candidates if f == file_path or f in imported
+        ]
+        # A header's declaration and the .cc's definition are ONE symbol, and a
+        # translation unit routinely sees both, so count them after the pairing
+        # redirect or every paired method reads as ambiguous.
+        if len(self._collapse_declarations(preferred)) == 1:
+            sym_id = preferred[0]
+        elif len(self._collapse_declarations([c[1] for c in candidates])) == 1:
+            sym_id = candidates[0][1]
+        else:
+            return None
+        if sym_id == caller_id:
+            return None
+        return ResolvedCall(caller_id, sym_id, 0.93, call.line, "scoped_name")
 
     def _resolve_cpp_same_target(
         self,

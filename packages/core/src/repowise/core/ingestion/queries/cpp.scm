@@ -224,6 +224,19 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
+; The same call again, keeping the qualifier. A tree-sitter field is required
+; once named, so `::free()` (no scope) would stop matching if the capture were
+; added above; both patterns therefore run and the parser's dedup keeps the one
+; that carried a scope. `DB::Open()` was resolving to a test class's `Open`
+; because only the leaf name survived extraction.
+(call_expression
+  function: (qualified_identifier
+    scope: (_) @call.scope
+    name: (identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
 ; Chained call: obj.method1().method2(args)
 (call_expression
   function: (field_expression
