@@ -14,6 +14,7 @@ from repowise.core.persistence.models import (
     GraphEdge,
     GraphNode,
 )
+from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
@@ -78,7 +79,21 @@ def _drop_opt_in_blocks(response: dict, include: set[str]) -> None:
                     holder.pop(key, None)
 
 
-@mcp.tool(surface_order=50)
+@mcp.tool(
+    surface_order=50,
+    recipes=(
+        ToolRecipe(
+            "assess_hotspot",
+            'get_risk(targets=["path"])',
+            ("get_risk",),
+        ),
+        ToolRecipe(
+            "review_change",
+            'get_risk(targets=["path"], changed_files=["path"])',
+            ("get_risk",),
+        ),
+    ),
+)
 async def get_risk(
     targets: list[str],
     repo: str | None = None,

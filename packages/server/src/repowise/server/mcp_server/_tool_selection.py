@@ -23,6 +23,7 @@ untouched.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -257,10 +258,12 @@ def selected_tool_names(*, is_workspace: bool) -> set[str]:
     return resolve_enabled_tools(mcp_tool_registry.entries(), is_workspace=is_workspace)
 
 
-def _tool_description(name: str) -> str:
+def _tool_description(name: str, fn: Any | None = None) -> str:
     """One-line description for a tool, from its registered FastMCP schema."""
     tool = (_full_surface or {}).get(name)
     desc = getattr(tool, "description", "") or ""
+    if not desc and fn is not None:
+        desc = inspect.getdoc(fn) or ""
     return desc.strip().split("\n", 1)[0].strip()
 
 
@@ -273,13 +276,21 @@ def registry_tool_rows(entries: Iterable[ToolEntry] | None = None) -> list[dict[
     return [
         {
             "name": entry.name,
-            "description": _tool_description(entry.name),
+            "description": _tool_description(entry.name, entry.fn),
             "tier": entry.tier,
             "default_single_repo": entry.name in single_default,
             "default_workspace": entry.name in workspace_default,
             "eligible_single_repo": not entry.requires_workspace,
             "eligible_workspace": True,
             "requires_workspace": entry.requires_workspace,
+            "recipes": [
+                {
+                    "name": recipe.name,
+                    "call": recipe.call,
+                    "requires": list(recipe.requires),
+                }
+                for recipe in entry.recipes
+            ],
         }
         for entry in sorted(catalog, key=lambda item: (item.surface_order, item.name))
     ]

@@ -16,6 +16,7 @@ from repowise.core.persistence.models import (
     Page,
 )
 from repowise.core.providers.embedding import store_has_semantic_vectors
+from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.core.test_paths import is_test_path, is_test_related_path
 from repowise.server.mcp_server._answer_pipeline import _RRF_K, _RRF_SCORE_SCALE
@@ -995,7 +996,16 @@ async def _structured_search(
     return _fit_search_response(response, contexts[0].path if contexts else None)
 
 
-@mcp.tool(surface_order=40)
+@mcp.tool(
+    surface_order=40,
+    recipes=(
+        ToolRecipe(
+            "find_raw_hits",
+            'search_codebase(query="identifier or path", mode="auto")',
+            ("search_codebase",),
+        ),
+    ),
+)
 async def search_codebase(
     query: str,
     limit: int = 5,

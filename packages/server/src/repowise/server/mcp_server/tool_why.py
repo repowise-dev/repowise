@@ -19,6 +19,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.precedent.currency import describe_decision_currency
 from repowise.core.providers.embedding import store_has_semantic_vectors
+from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._budget import (
     OmissionCollector,
@@ -51,7 +52,16 @@ from repowise.server.mcp_server._why_relevance import (
 )
 
 
-@mcp.tool(surface_order=70)
+@mcp.tool(
+    surface_order=70,
+    recipes=(
+        ToolRecipe(
+            "read_rationale",
+            'get_why(targets=["path"])',
+            ("get_why",),
+        ),
+    ),
+)
 async def get_why(
     query: str | None = None,
     targets: list[str] | None = None,

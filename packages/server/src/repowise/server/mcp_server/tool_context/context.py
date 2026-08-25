@@ -36,6 +36,7 @@ import logging
 from typing import Any
 
 from repowise.core.persistence.database import get_session
+from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
@@ -76,7 +77,16 @@ _INCLUDE_BLOCKS = frozenset(
 )
 
 
-@mcp.tool(surface_order=20)
+@mcp.tool(
+    surface_order=20,
+    recipes=(
+        ToolRecipe(
+            "read_file_shape",
+            'get_context(targets=["path"], include=["skeleton"])',
+            ("get_context",),
+        ),
+    ),
+)
 async def get_context(
     targets: list[str],
     include: list[str] | None = None,
