@@ -323,6 +323,7 @@ Also resolves **omission refs** (`repowise#<12-hex>`) from truncated responses.
 | `context_lines` | int | No | Extra source lines before/after the symbol (0-50, default 0) |
 | `depth` | int | No | Follow the call graph outward from this symbol and include what it calls, with bodies (1-3, default 1 = this symbol only). Out-of-range values clamp. |
 | `repo` | string | No | *(workspace only)* Usually omitted; `"all"` is not supported |
+| `reference` | object | No | A structured `continuation_reference` or `fetch_reference` emitted by this tool; pass it unchanged to retain both id and repository scope. |
 
 **Returns:** For a symbol id or range: the source (bounded at ~600 lines,
 each line prefixed with its file line number in the same format as a `Read`
@@ -611,12 +612,15 @@ Architectural decision intelligence. Falls back to git archaeology when no decis
 | `query` | string | No | Natural language question about decisions, OR a file/module path |
 | `targets` | list[string] | No | File paths to anchor an NL `query` search to |
 | `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` (only when `query` is given) |
+| `id` | string | No | A decision id or `ev_...` evidence id previously emitted by `get_why`; resolves it directly without relevance search |
+| `reference` | object | No | An emitted evidence reference object; pass it unchanged to retain both id and repository scope. |
 
 **Modes:**
 
 1. **NL search**: pass a question, optionally anchored to `targets`: `get_why(query="why JWT over sessions?")` -> searches decision records.
 2. **Path-based**: pass a file path as `query`: `get_why(query="src/auth/service.ts")` -> returns decisions governing that file plus its origin story.
 3. **Health dashboard**: no `query`: `get_why()` -> stale decisions, conflicts, ungoverned hotspots.
+4. **Reference lookup**: pass `id`: `get_why(id="ev_...")` -> the exact evidence and supporting decision in one call.
 
 **Returns:** Matching decision records with title, rationale, alternatives considered, affected files, staleness score. Health mode returns stale decisions, conflicts, and ungoverned hotspots.
 
@@ -654,6 +658,7 @@ Unreachable code, unused exports, unused internals, and zombie packages, sorted 
 | `include_zombie_packages` | boolean | No | Include zombie-package findings (default `true`) |
 | `no_unreachable` | boolean | No | Exclude `unreachable_file` findings (default `false`) |
 | `no_unused_exports` | boolean | No | Exclude `unused_export` findings (default `false`) |
+| `finding_id` | string | No | Resolve an emitted stable finding `id` directly in one call |
 
 **Returns:** Dead code findings grouped by confidence tier (high >= 0.8, medium, low). Each finding includes: file path, kind, confidence score, line count, and cleanup impact estimate. In workspace mode, confidence is lowered on findings other repos still import.
 
@@ -686,6 +691,8 @@ code-health merge-gate judges it on.
 | `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode`, `_meta`, `unresolved`, `known_modules` and each kept list's `*_total` sibling always survive. The three `include` **block** names work as aliases: `biomarkers`→`findings`, `accuracy`→`defect_accuracy`, `refactoring`→`refactoring_plans`. The `include` **dimension** names (`performance`, `defect`, `maintainability`) do not — they filter rows inside several blocks and have no single key to resolve to, so they land in `unknown_only_keys`. Nor does `signals`, which merges into `metrics[].signals` — in targeted mode, where `signals` applies, name `metrics` instead. |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 | `limit` | int | No | Max rows in **every** ranked list (default 20, capped at 50). `0` means no rows; the `*_total` siblings still report the true counts. |
+| `finding_id` | string | No | Resolve an emitted stable health-finding `id` directly in one call. |
+| `plan_id` | string | No | Resolve an emitted stable refactoring-plan `id` directly in one call. |
 
 **Returns:** Dashboard mode (no `targets`) returns a `directive`, repo-level KPIs
 (hotspot health, average health, worst performer, maintainability / performance
@@ -879,7 +886,7 @@ of the ten-tool headline set.
 
 Lists the repos this server is serving. No parameters.
 
-**Returns:** In workspace mode, `workspace: true`, the workspace root, the default repo alias, and every configured repo alias (`repos`). In single-repo mode, `workspace: false` and a single `"default"` alias.
+**Returns:** In workspace mode, `workspace: true`, the workspace root, the default repo alias, and every configured repo's `alias`, config-relative `path`, and `absolute_path`. Any of those emitted identities can be passed unchanged as `repo` to workspace-aware tools. In single-repo mode, `workspace: false` and a single `"default"` alias.
 
 **When to use:** Discovering the `repo` aliases to pass to other tools, especially in workspace mode.
 
@@ -994,7 +1001,7 @@ get_execution_flows(entry_point="src/cli/main.py::main", max_depth=4)
 
 Turns one structured refactoring plan from `get_health(include=["refactoring"])` into actual generated code and a unified diff, grounded on the plan plus the real source spans it references. For Extract Class, the result includes an LCOM4 before/after self-check.
 
-**Off by default twice over:** it must be opted into the tool surface (`mcp.tools: ["+generate_refactoring_code"]`), and even then returns `{"error": "disabled", ...}` unless `refactoring.llm.enabled: true` is set in the repo's `.repowise/config.yaml`. When enabled, it uses the repo's configured LLM provider/model (bring your own key) and caches results by a content hash, so an unchanged plan never regenerates.
+**Off by default twice over:** it must be opted into the tool surface (`mcp.tools: ["+generate_refactoring_code"]`), and generation remains unavailable unless `refactoring.llm.enabled: true` is set in the repo's `.repowise/config.yaml`. A valid plan id still resolves while generation is disabled, returning the canonical plan plus `generation.available: false`. When enabled, it uses the repo's configured LLM provider/model (bring your own key) and caches results by a content hash, so an unchanged plan never regenerates.
 
 **Parameters:**
 
@@ -1016,7 +1023,7 @@ generate_refactoring_code(suggestion_id="a1b2c3d4")
 In workspace mode (initialized with `repowise init .`), all tools accept an optional `repo` parameter:
 
 - **Omit `repo`**: queries the default (primary) repo
-- **`repo="backend"`**: targets a specific repo by alias
+- **`repo="backend"`**: targets a specific repo by any `alias`, `path`, or `absolute_path` emitted by `list_repos`
 - **`repo="all"`**: queries across all workspace repos (fully supported by `search_codebase`; `get_context` and `get_overview` also accept it; not supported by `get_symbol`, `get_dependency_path`, or `get_execution_flows`)
 
 The MCP server automatically enriches responses with cross-repo intelligence:

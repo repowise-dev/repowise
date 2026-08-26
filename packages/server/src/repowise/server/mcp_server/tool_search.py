@@ -37,6 +37,7 @@ from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._page_paths import file_candidates, hit_file_path
 from repowise.server.mcp_server._prose_symbols import symbol_backed_pages
+from repowise.server.mcp_server._references import path_identity, symbol_identity
 from repowise.server.mcp_server.tool_search_symbols import (
     _qual_norm,
     search_paths_single,
@@ -485,12 +486,11 @@ def _filter_by_kind(output: list[dict], kind: str | None) -> list[dict]:
 
 
 def _attach_paths(output: list[dict], page_info: dict) -> None:
-    """Stamp ``target_path``, and ``file`` wherever the page id is not one.
+    """Stamp canonical file paths and split symbol ids into their own field.
 
     A ``symbol_spotlight``'s target_path is ``file.py::Symbol``: a page id, and
-    not something a consumer can open. ``target_path`` is left exactly as it is
-    because callers pipe it into get_symbol, and ``file`` is added beside it so
-    nothing downstream has to know to split on ``::``.
+    not a file path. Preserve it as ``symbol_id`` for ``get_symbol`` and expose
+    only the file portion through ``target_path`` / ``file``.
 
     This lives in one function because it did not used to. The concept branch
     of ``search_codebase`` set ``file``; ``_search_single_repo``, which is what
@@ -503,7 +503,9 @@ def _attach_paths(output: list[dict], page_info: dict) -> None:
     for item in output:
         item["target_path"] = page_info.get(item["page_id"], "")
         if "::" in item["target_path"]:
-            item["file"] = item["target_path"].split("::", 1)[0]
+            item["symbol_id"] = symbol_identity(item["target_path"])
+            item["target_path"] = path_identity(item["target_path"].split("::", 1)[0])
+            item["file"] = item["target_path"]
 
 
 def _drop_derivable_page_ids(results: list[dict]) -> list[dict]:

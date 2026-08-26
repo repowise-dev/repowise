@@ -40,6 +40,7 @@ from repowise.server.mcp_server._helpers import (
     is_excluded,
     read_repo_file_text,
 )
+from repowise.server.mcp_server._references import path_identity, symbol_identity
 from repowise.server.mcp_server._symbol_lookup import resolve_symbol_rows
 from repowise.server.mcp_server.tool_context.enrichment import (
     _resolve_call_graph,
@@ -262,6 +263,8 @@ async def _resolve_one_target(
     page = await session.get(Page, page_id)
     target_type = None
     file_path_for_git: str | None = None
+    live_file_meta: GitMetadata | None = None
+    live_unindexed_file = False
     # Set only when a symbol target resolved through the call graph rather than
     # the symbol index (index-only mode); carries the fields the node has.
     graph_symbol: GraphNode | None = None
@@ -423,21 +426,26 @@ async def _resolve_one_target(
                 # page. Computed from the same function that made the decision,
                 # so the two cannot drift (#1237).
                 size_note = _size_exclusion_note(repo_root, target)
-                return {
-                    "target": target,
-                    "error": size_note
-                    or (
-                        f"'{target}' exists in the repository but has no wiki page. "
-                        "This usually means the file has too few symbols or is below "
-                        "the PageRank threshold. Run `repowise update` to regenerate docs."
-                    ),
-                    "exists_in_git": True,
-                    "last_commit_at": meta.last_commit_at.isoformat()
-                    if meta.last_commit_at
-                    else None,
-                    "primary_owner": meta.primary_owner_name,
-                    "is_hotspot": meta.is_hotspot,
-                }
+                if size_note:
+                    return {
+                        "target": target,
+                        "error": size_note,
+                        "exists_in_git": True,
+                    }
+                target_type = "file"
+                file_path_for_git = target
+                live_file_meta = meta
+                page = None
+
+        # A producer can legitimately surface a live repository file that was
+        # never indexed into git_metadata (for example, an analysis finding
+        # imported from an older index). Its repository-relative path remains
+        # a valid public identifier, so resolve it from the live checkout.
+        if target_type is None and _file_preview(repo_root, target) is not None:
+            target_type = "file"
+            file_path_for_git = target
+            page = None
+            live_unindexed_file = True
 
         # Fallback 2b: legacy module ids. Wiki modules used to be keyed by
         # community ordinal ("community-12"); they are now keyed by directory
@@ -531,6 +539,22 @@ async def _resolve_one_target(
 
     result_data["target"] = target
     result_data["type"] = target_type
+    if target_type == "file" and file_path_for_git:
+        result_data["path"] = path_identity(file_path_for_git)
+    if live_file_meta is not None:
+        result_data["index_status"] = "live_file_without_wiki_page"
+        result_data["verification_basis"] = "indexed_plus_live"
+        result_data["exists_in_git"] = True
+        result_data["last_commit_at"] = (
+            live_file_meta.last_commit_at.isoformat()
+            if live_file_meta.last_commit_at
+            else None
+        )
+        result_data["primary_owner"] = live_file_meta.primary_owner_name
+        result_data["is_hotspot"] = live_file_meta.is_hotspot
+    elif live_unindexed_file:
+        result_data["index_status"] = "live_file_without_index_record"
+        result_data["verification_basis"] = "live"
 
     # Tombstone redirect: the page documents a file deleted or renamed since
     # indexing. A "fresh" card here is an active trap — return the redirect
@@ -623,7 +647,7 @@ async def _resolve_one_target(
                         "kind": s.kind,
                         "signature": _clean_signature(s.signature),
                         "line": s.start_line,
-                        "symbol_id": s.symbol_id,
+                        "symbol_id": symbol_identity(s.symbol_id),
                     }
                     for s in visible
                 ]
@@ -643,6 +667,7 @@ async def _resolve_one_target(
                         "signature": _clean_signature(s.signature),
                         "start_line": s.start_line,
                         "end_line": s.end_line,
+                        "symbol_id": symbol_identity(s.symbol_id),
                         "docstring": (s.docstring or "")[:400],
                     }
                     for s in symbols
@@ -840,7 +865,12 @@ async def _resolve_one_target(
             if len(sym_matches) > 1:  # type: ignore[possibly-undefined]
                 docs["candidates"] = filter_dicts_by_key(
                     [
-                        {"name": m.name, "kind": m.kind, "file_path": m.file_path}
+                        {
+                            "name": m.name,
+                            "kind": m.kind,
+                            "file_path": m.file_path,
+                            "symbol_id": symbol_identity(m.symbol_id),
+                        }
                         for m in sym_matches[1:5]  # type: ignore[possibly-undefined]
                     ],
                     "file_path",

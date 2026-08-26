@@ -58,6 +58,7 @@ from repowise.server.mcp_server._helpers import (
     filter_rows_by_attr,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._references import path_identity, stable_entity_id
 
 # How much a single execution of each I/O boundary costs, as an order of
 # magnitude rather than a measurement: a process spawn is milliseconds, a wire
@@ -197,7 +198,28 @@ def _rank_emitted(rows: list[Any]) -> list[Any]:
     return sorted(rows, key=key)
 
 
-def _serialize_finding(f: HealthFinding) -> dict[str, Any]:
+def _health_finding_id(f: HealthFinding, repository: str) -> str:
+    try:
+        details = json.loads(f.details_json) if f.details_json else {}
+    except (TypeError, json.JSONDecodeError):
+        details = str(f.details_json or "")
+    return stable_entity_id(
+        "finding",
+        repository,
+        {
+            "family": "health",
+            "path": path_identity(f.file_path),
+            "kind": f.biomarker_type,
+            "symbol": f.function_name or "",
+            "line_start": f.line_start,
+            "line_end": f.line_end,
+            "reason": f.reason or "",
+            "details": details,
+        },
+    )
+
+
+def _serialize_finding(f: HealthFinding, repository: str = "default") -> dict[str, Any]:
     try:
         details = json.loads(f.details_json) if f.details_json else {}
     except Exception:
@@ -207,6 +229,8 @@ def _serialize_finding(f: HealthFinding) -> dict[str, Any]:
         {"perf_rank": _perf_rank(f.biomarker_type, details)} if dimension == "performance" else {}
     )
     return {
+        "id": _health_finding_id(f, repository),
+        "repository": repository,
         "biomarker_type": f.biomarker_type,
         "severity": f.severity,
         "file_path": f.file_path,
@@ -227,11 +251,39 @@ def _serialize_finding(f: HealthFinding) -> dict[str, Any]:
     }
 
 
-def _serialize_refactoring(r: Any) -> dict[str, Any]:
+def _refactoring_plan_id(r: Any, repository: str) -> str:
+    suggestion = r.suggestion if isinstance(r, Recommendation) else r
+    raw_plan = getattr(suggestion, "plan", None)
+    if raw_plan is None:
+        raw_plan = getattr(suggestion, "plan_json", None) or "{}"
+        try:
+            raw_plan = json.loads(raw_plan)
+        except (TypeError, json.JSONDecodeError):
+            raw_plan = str(raw_plan)
+    return stable_entity_id(
+        "plan",
+        repository,
+        {
+            "path": path_identity(suggestion.file_path),
+            "kind": suggestion.refactoring_type,
+            "symbol": suggestion.target_symbol or "",
+            "line_start": suggestion.line_start,
+            "line_end": suggestion.line_end,
+            "source_biomarker": suggestion.source_biomarker or "",
+            "plan": raw_plan,
+        },
+    )
+
+
+def _serialize_refactoring(r: Any, repository: str = "default") -> dict[str, Any]:
     """Compatibility adapter; request paths hydrate through the async service."""
     if isinstance(r, Recommendation):
-        return r.as_dict()
-    return build_recommendations([r])[0].as_dict()
+        payload = r.as_dict()
+    else:
+        payload = build_recommendations([r])[0].as_dict()
+    payload["id"] = _refactoring_plan_id(r, repository)
+    payload["repository"] = repository
+    return payload
 
 
 # ``include`` and ``only`` were different vocabularies: the block a caller
@@ -864,6 +916,8 @@ async def get_health(
     only: list[str] | None = None,
     refactoring_view: str = "canonical",
     cursor: int = 0,
+    finding_id: str | None = None,
+    plan_id: str | None = None,
 ) -> dict:
     """Code-health scores and findings — self-check a file before/after editing.
 
@@ -893,6 +947,8 @@ async def get_health(
         cursor: zero-based offset for top-level ranked collections. Reduced
             pages carry an exact next-page call; nested evidence uses omission
             references instead.
+        finding_id: stable ``id`` emitted by a health finding.
+        plan_id: stable ``id`` emitted by a refactoring plan.
     """
     started = perf_counter()
     # ``0`` means none, matching the ``module_limit`` convention on the REST
@@ -1021,6 +1077,70 @@ async def get_health(
     lang_by_path: dict[str, str] | None = None
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
+        reference_repository = ctx.alias or repository.name
+
+        if finding_id:
+            rows = list(
+                (
+                    await session.execute(
+                        select(HealthFinding).where(
+                            HealthFinding.repository_id == repository.id,
+                            HealthFinding.status == "open",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            match = next(
+                (
+                    row
+                    for row in rows
+                    if finding_id in {row.id, _health_finding_id(row, reference_repository)}
+                ),
+                None,
+            )
+            return {
+                "mode": "finding",
+                "finding_id": finding_id,
+                "finding": (
+                    _serialize_finding(match, reference_repository) if match else None
+                ),
+                "resolved": match is not None,
+                "_meta": _build_meta(
+                    repository=repository,
+                    targets=[match.file_path] if match else None,
+                ),
+            }
+
+        if plan_id:
+            plan_rows = await get_refactoring_suggestions(session, repository.id)
+            recommendations = await hydrate_recommendations(
+                session, repository.id, plan_rows
+            )
+            match = next(
+                (
+                    row
+                    for row in recommendations
+                    if plan_id
+                    in {row.id, _refactoring_plan_id(row, reference_repository)}
+                ),
+                None,
+            )
+            return {
+                "mode": "refactoring_plan",
+                "plan_id": plan_id,
+                "plan": (
+                    _serialize_refactoring(match, reference_repository)
+                    if match
+                    else None
+                ),
+                "resolved": match is not None,
+                "_meta": _build_meta(
+                    repository=repository,
+                    targets=[match.suggestion.file_path] if match else None,
+                ),
+            }
 
         all_metrics_q = select(HealthFileMetric).where(
             HealthFileMetric.repository_id == repository.id
@@ -1500,7 +1620,8 @@ async def get_health(
             # Capped like every other ranked list, with the total alongside so
             # the truncation is visible rather than inferred from the length.
             "findings": bounded(
-                [_serialize_finding(f) for f in finding_rows], "findings"
+                [_serialize_finding(f, reference_repository) for f in finding_rows],
+                "findings",
             ),
             "findings_total": findings_total,
         }
@@ -1630,14 +1751,16 @@ async def get_health(
             ], "high_leverage_files"),
             "high_leverage_files_total": len(by_leverage),
             "top_findings": bounded(
-                [_serialize_finding(f) for f in finding_rows], "top_findings"
+                [_serialize_finding(f, reference_repository) for f in finding_rows],
+                "top_findings",
             ),
             "top_findings_total": findings_total,
             # The test half of the same ranked set, in its own bucket so a
             # thrashing test suite stays visible without competing with
             # production defect risk for the most-read list.
             "test_findings": bounded(
-                [_serialize_finding(f) for f in test_finding_rows], "test_findings"
+                [_serialize_finding(f, reference_repository) for f in test_finding_rows],
+                "test_findings",
             ),
             "test_findings_total": test_findings_total,
             # Worst-first, so the cap keeps the modules worth looking at. On a
@@ -1676,7 +1799,7 @@ async def get_health(
             # ``None`` when there isn't enough signal for an honest number.
             result["defect_accuracy"] = compute_defect_accuracy(
                 all_metrics,
-                [_serialize_finding(f) for f in accuracy_rows],
+                [_serialize_finding(f, reference_repository) for f in accuracy_rows],
             )
 
     if "biomarkers" in include_set and "findings" not in result:
@@ -1687,14 +1810,16 @@ async def get_health(
         # usable. Findings arrive impact-ordered, so the cap keeps the ones
         # worth reading.
         result["findings"] = bounded(
-            [_serialize_finding(f) for f in finding_rows], "findings"
+            [_serialize_finding(f, reference_repository) for f in finding_rows],
+            "findings",
         )
         result["findings_total"] = findings_total
         # Same production/test split as ``top_findings``: this block only ever
         # fires in dashboard mode (targeted mode set ``findings`` above), so it
         # is describing the repo, not a file the caller named.
         result["test_findings"] = bounded(
-            [_serialize_finding(f) for f in test_finding_rows], "test_findings"
+            [_serialize_finding(f, reference_repository) for f in test_finding_rows],
+            "test_findings",
         )
         result["test_findings_total"] = test_findings_total
 
@@ -1709,7 +1834,7 @@ async def get_health(
             cap=min(limit, 6),
         )
         for recommendation in selected_recommendations:
-            payload = recommendation.as_dict()
+            payload = _serialize_refactoring(recommendation, reference_repository)
             validation = payload.pop("validation", None)
             if validation:
                 profile_id, profile = _validation_profile(validation)
@@ -1815,7 +1940,11 @@ async def get_health(
             ),
             None,
         )
-        lead_payload = recommendation_lead.as_dict() if recommendation_lead else None
+        lead_payload = (
+            _serialize_refactoring(recommendation_lead, reference_repository)
+            if recommendation_lead
+            else None
+        )
         result["recommendation_lede"] = {
             "performance_opportunities_total": len(opportunities),
             "refactoring_plans_total": len(refactoring_recommendations),
@@ -1849,7 +1978,9 @@ async def get_health(
                 if lead_payload
                 else None
             ),
-            "performance_plan_id": matching.id if matching else None,
+            "performance_plan_id": (
+                _refactoring_plan_id(matching, reference_repository) if matching else None
+            ),
             "next_call": (
                 f"get_health(targets={raw_targets!r}, repo={repo!r}, "
                 "include=['performance','refactoring'], limit=3, "
@@ -2061,7 +2192,14 @@ async def get_health(
         if root in result:
             omission_collector.add(
                 f"{label} beyond emitted cap ({len(dropped)} dropped)",
-                [row.as_dict() if hasattr(row, "as_dict") else row for row in dropped],
+                [
+                    _serialize_refactoring(row, reference_repository)
+                    if isinstance(row, Recommendation)
+                    else row.as_dict()
+                    if hasattr(row, "as_dict")
+                    else row
+                    for row in dropped
+                ],
             )
     omission_collector.attach(result)
     result["_meta"]["timing_ms"] = round((perf_counter() - started) * 1000, 2)

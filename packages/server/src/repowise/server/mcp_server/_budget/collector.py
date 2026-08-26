@@ -20,6 +20,7 @@ from typing import Any
 from repowise.core.distill.budget import estimate_tokens
 from repowise.core.distill.markers import render_marker
 from repowise.core.distill.store import OmissionStore, default_store_path
+from repowise.server.mcp_server._references import omission_reference
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +194,11 @@ class OmissionCollector:
                     int(existing.get("tokens") or 0) if isinstance(existing, dict) else 0
                 )
                 meta["omitted"] = {
-                    "refs": [*existing_refs, *self._refs],
+                    "refs": [
+                        normalized
+                        for value in [*existing_refs, *self._refs]
+                        if (normalized := omission_reference(value)) is not None
+                    ],
                     "tokens": existing_tokens + self._omitted_tokens,
                     "restore": _RESTORE_HINT,
                 }

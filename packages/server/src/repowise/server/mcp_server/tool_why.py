@@ -38,6 +38,7 @@ from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
     _is_path,
+    _is_workspace_mode,
     _resolve_all_contexts,
     _resolve_repo_context,
     _unsupported_repo_all,
@@ -73,6 +74,8 @@ async def get_why(
     query: str | None = None,
     targets: list[str] | None = None,
     repo: str | None = None,
+    id: str | None = None,
+    reference: dict[str, Any] | None = None,
 ) -> dict:
     """Why this code is shaped this way — decision records + evidence commits.
 
@@ -89,7 +92,24 @@ async def get_why(
         targets: optional file paths to anchor the search, or to ask about on
             their own when there is no query.
         repo: usually omitted.
+        id: decision or ``ev_...`` evidence id emitted by this or another tool.
+        reference: structured evidence reference. Its id and repository are
+            accepted together without caller translation.
     """
+    if reference:
+        if id is None and isinstance(reference.get("id"), str):
+            id = reference["id"]
+        if (
+            repo is None
+            and _is_workspace_mode()
+            and isinstance(reference.get("repository"), str)
+        ):
+            repo = reference["repository"]
+    if id:
+        if repo == "all":
+            return _unsupported_repo_all("get_why (reference lookup)")
+        return await _why_reference(id, repo, reference=reference)
+
     # --- repo="all": search decisions across ALL repos ---
     if repo == "all":
         if not query:
@@ -112,6 +132,116 @@ async def get_why(
 
     # --- Mode 3: Natural language → target-aware search ---
     return await _why_search(query, targets, repo)
+
+
+async def _why_reference(
+    reference_id: str,
+    repo: str | None,
+    *,
+    reference: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve one emitted decision/evidence id without relevance search."""
+
+    ctx, repository, records, _target_git = await _load_corpus(repo, None)
+    async with get_session(ctx.session_factory) as session:
+        await _attach_decision_evidence(session, records)
+
+    payload = {
+        "decisions": [
+            _governing_decision_entry(
+                record,
+                filter_path_list(
+                    json.loads(record.affected_files_json or "[]"),
+                    _get_exclude_spec(ctx.path),
+                ),
+                [],
+            )
+            for record in records
+        ]
+    }
+    await annotate_response_evidence_async(
+        payload,
+        ctx.alias,
+        records,
+        repo_root=ctx.path,
+    )
+    matches = [
+        row
+        for row in payload["decisions"]
+        if row["id"] == reference_id
+        or any(ref["id"] == reference_id for ref in row.get("evidence_refs", []))
+    ]
+    matching_refs = {
+        ref["id"]: ref
+        for row in matches
+        for ref in row.get("evidence_refs", [])
+        if ref["id"] == reference_id
+    }
+    if not matches and reference_id.startswith("ev_"):
+        live_ref = _resolve_unattached_evidence_reference(
+            reference_id, ctx.alias, ctx.path
+        )
+        if live_ref is not None:
+            matching_refs[live_ref["id"]] = live_ref
+    if (
+        reference is not None
+        and matching_refs
+        and _evidence_reference_matches_id(reference)
+    ):
+        matching_refs[reference_id] = dict(reference)
+    meta = _build_meta(repository=repository)
+    persistence = (payload.get("_meta") or {}).get("reference_persistence")
+    if persistence is not None:
+        meta["reference_persistence"] = persistence
+    return {
+        "mode": "reference",
+        "reference_id": reference_id,
+        "resolved": bool(matches or matching_refs),
+        "decisions": matches,
+        "evidence_refs": list(matching_refs.values()),
+        "_meta": meta,
+    }
+
+
+def _evidence_reference_matches_id(value: dict[str, Any]) -> bool:
+    """Validate the identity-bearing coordinates of a structured evidence ref."""
+
+    from repowise.server.mcp_server._references import reference as build_reference
+
+    identifier = value.get("id")
+    repository = value.get("repository")
+    kind = value.get("kind")
+    if not all(isinstance(item, str) for item in (identifier, repository, kind)):
+        return False
+    coordinate_keys = {
+        "commit": ("commit",),
+        "file_range": ("path", "range"),
+        "file_content": ("path", "line", "content_id"),
+        "legacy": ("path", "content_id", "commit_prefix"),
+    }.get(kind)
+    if coordinate_keys is None:
+        return False
+    coordinates = {key: value[key] for key in coordinate_keys if key in value}
+    return build_reference(kind, repository, **coordinates)["id"] == identifier
+
+
+def _resolve_unattached_evidence_reference(
+    reference_id: str,
+    repository: str,
+    repo_root: str | Path,
+) -> dict[str, Any] | None:
+    """Resolve evidence not attached to a persisted decision without a repo scan."""
+
+    from repowise.server.mcp_server._references import repository_identity
+    from repowise.server.mcp_server._why_evidence import (
+        resolve_cached_evidence_reference,
+        resolve_persisted_evidence_reference,
+    )
+
+    repository = repository_identity(repository)
+    return resolve_cached_evidence_reference(
+        repository, reference_id
+    ) or resolve_persisted_evidence_reference(repository, reference_id, repo_root)
 
 
 async def _why_workspace_search(query: str) -> dict:
