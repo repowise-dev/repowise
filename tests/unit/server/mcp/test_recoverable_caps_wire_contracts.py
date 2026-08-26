@@ -53,7 +53,7 @@ def _assert_wire(result: dict[str, Any], first: str, limit: int) -> None:
 async def _recover(result: dict[str, Any]) -> str:
     recovered: list[str] = []
     for ref in result.get("_meta", {}).get("omitted", {}).get("refs", []):
-        row = await get_symbol(f"repowise#{ref}")
+        row = await get_symbol(ref)
         assert "error" not in row, row
         recovered.append(row["content"])
     return "\n".join(recovered)
@@ -65,7 +65,7 @@ async def _recover_one(result: dict[str, Any], *sentinels: str) -> str:
     assert refs
     contents: list[str] = []
     for ref in refs:
-        row = await get_symbol(f"repowise#{ref}")
+        row = await get_symbol(ref)
         assert "error" not in row, row
         contents.append(row["content"])
     for sentinel in sentinels:
@@ -687,7 +687,7 @@ async def test_why_real_adversarial_wire_recovers_decisions_docs_and_episodes(
         ref
         for ref in result["_meta"]["omitted"]["refs"]
         if "_END_7" in (
-            await get_symbol(f"repowise#{ref}")
+            await get_symbol(ref)
         ).get("content", "")
     ]
     assert len(hidden_body_refs) == 1

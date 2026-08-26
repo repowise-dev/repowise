@@ -10,6 +10,8 @@ import json
 
 import pytest
 
+from repowise.core.persistence.models import HealthFinding
+
 
 @pytest.mark.asyncio
 async def test_get_health_dashboard(setup_mcp, health_data):
@@ -25,6 +27,44 @@ async def test_get_health_dashboard(setup_mcp, health_data):
     assert result["secondary_rankings"]["worst_files"]["total"] == 2
     assert result["secondary_rankings"]["top_findings"]["total"] == 4
     assert "omitted" not in result["_meta"]
+
+
+@pytest.mark.asyncio
+async def test_finding_ids_distinguish_same_coordinate_evidence(
+    setup_mcp, health_data, session
+):
+    from repowise.server.mcp_server import get_health
+
+    rows = [
+        HealthFinding(
+            id=f"storage-{partner}",
+            repository_id=health_data,
+            file_path="src/auth/service.py",
+            biomarker_type="hidden_coupling",
+            severity="medium",
+            function_name=None,
+            line_start=None,
+            line_end=None,
+            details_json=json.dumps({"partner": partner}),
+            health_impact=0.4,
+            reason=f"Changes with {partner}",
+            status="open",
+        )
+        for partner in ("src/a.py", "src/b.py")
+    ]
+    session.add_all(rows)
+    await session.commit()
+
+    emitted = await get_health(only=["top_findings"], limit=10)
+    findings = [
+        row
+        for row in emitted["top_findings"]
+        if row["biomarker_type"] == "hidden_coupling"
+    ]
+    assert len({row["id"] for row in findings}) == 2
+    for finding in findings:
+        resolved = await get_health(finding_id=finding["id"])
+        assert resolved["finding"] == finding
 
 
 @pytest.mark.asyncio

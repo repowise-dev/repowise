@@ -419,7 +419,9 @@ async def test_file_on_git_preferred_over_partial_module(setup_mcp_multi):
     assert t.get("type") != "module"
     assert t.get("exists_in_git") is True
     assert t["primary_owner"] == "Carol"
-    assert "error" in t  # "exists but has no wiki page" shape
+    assert "error" not in t
+    assert t["type"] == "file"
+    assert t["index_status"] == "live_file_without_wiki_page"
 
 
 @pytest.mark.asyncio
@@ -520,7 +522,7 @@ async def test_file_target_callers_bank_the_full_ranked_tail(
     assert card["callers_emitted"] == 20
     assert card["callers_reduced_reason"] == "construction_cap"
     [ref] = result["_meta"]["omitted"]["refs"]
-    recovered = await get_symbol(f"repowise#{ref}")
+    recovered = await get_symbol(ref)
     assert "src/generated/importer_24.py" in recovered.get("content", ""), recovered
 
 

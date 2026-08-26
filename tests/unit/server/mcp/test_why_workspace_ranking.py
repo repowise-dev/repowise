@@ -143,6 +143,8 @@ async def test_a_partial_match_in_an_earlier_store_is_left_under_the_floor(two_r
             "content_id": "338f3ae3ca60c54e7741",
             "provenance": "human_decision",
             "source": "cli",
+            "source_kind": "cli",
+            "verification_basis": "indexed",
         }
     ]
 
@@ -246,7 +248,7 @@ async def test_workspace_search_serves_five_of_nine_answers(tmp_path, monkeypatc
         assert result["decisions_emitted"] == 5
         assert result["decisions_reduced_reason"] == "construction_cap"
         [ref] = result["_meta"]["omitted"]["refs"]
-        recovered = await get_symbol(f"repowise#{ref}")
+        recovered = await get_symbol(ref)
         assert "Redis session cache decision 8" in recovered["content"]
         assert '"evidence_refs"' in recovered["content"]
     finally:

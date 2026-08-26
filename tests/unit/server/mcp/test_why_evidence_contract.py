@@ -458,6 +458,8 @@ async def test_every_single_repository_query_mode_keeps_the_exact_public_referen
         "content_id": "8962562181b9a6600ce9",
         "provenance": "historical",
         "source": "readme_mining",
+        "source_kind": "readme_mining",
+        "verification_basis": "indexed",
     }
     calls = [
         await get_why("why is JWT used for authentication"),
