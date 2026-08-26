@@ -275,14 +275,17 @@ def _refactoring_plan_id(r: Any, repository: str) -> str:
     )
 
 
-def _serialize_refactoring(r: Any, repository: str = "default") -> dict[str, Any]:
+def _serialize_refactoring(
+    r: Any, repository: str | None = None
+) -> dict[str, Any]:
     """Compatibility adapter; request paths hydrate through the async service."""
     if isinstance(r, Recommendation):
         payload = r.as_dict()
     else:
         payload = build_recommendations([r])[0].as_dict()
-    payload["id"] = _refactoring_plan_id(r, repository)
-    payload["repository"] = repository
+    if repository is not None:
+        payload["id"] = _refactoring_plan_id(r, repository)
+        payload["repository"] = repository
     return payload
 
 

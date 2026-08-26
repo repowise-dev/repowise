@@ -1105,7 +1105,9 @@ class TestSearchCandidates:
         result = await search_codebase("how are requests issued", limit=10)
 
         hit = result["results"][0]
-        assert hit["target_path"] == "api/client.go::HTTP"
+        assert hit["target_path"] == "api/client.go"
+        assert hit["file"] == "api/client.go"
+        assert hit["symbol_id"] == "api/client.go::HTTP"
         assert hit["file"] == "api/client.go"
         assert result["candidates"] == [{"path": "api/client.go"}]
 
