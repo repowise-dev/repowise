@@ -788,6 +788,44 @@ class TestHybridInterleave:
         assert out == symbols
 
 
+class TestProtectedExactMatches:
+    def test_canonical_symbol_id_routes_to_symbol_search(self):
+        from repowise.server.mcp_server.tool_search import _resolve_mode
+
+        query = "packages/server/src/repowise/server/mcp_server/tool_search.py::search_codebase"
+        assert _resolve_mode(query, "auto") == "symbol"
+
+    def test_canonical_symbol_id_is_stably_protected(self):
+        from repowise.server.mcp_server.tool_search import _protect_exact_symbols
+
+        exact_id = "src/auth/service.py::AuthService.run"
+        symbols = [
+            {"symbol_id": "src/jobs/runner.py::run", "name": "run", "score": 999.0},
+            {"symbol_id": exact_id, "name": "run", "score": 1.0},
+            {"symbol_id": "src/cli/main.py::main", "name": "main", "score": 500.0},
+        ]
+
+        out = _protect_exact_symbols(exact_id, symbols)
+
+        assert out[0]["symbol_id"] == exact_id
+        assert out[1:] == [symbols[0], symbols[2]]
+
+    def test_exact_path_is_stably_protected(self):
+        from repowise.server.mcp_server.tool_search import _protect_exact_paths
+
+        exact_path = "src/auth/middleware.py"
+        files = [
+            {"file": "tests/auth/middleware.py", "score": 999.0},
+            {"file": exact_path, "score": 1.0},
+            {"file": "src/legacy/middleware.py", "score": 500.0},
+        ]
+
+        out = _protect_exact_paths(exact_path, files)
+
+        assert out[0]["file"] == exact_path
+        assert out[1:] == [files[0], files[2]]
+
+
 class TestConceptModeUnchanged:
     """Forcing mode="concept" preserves the original semantic behavior."""
 

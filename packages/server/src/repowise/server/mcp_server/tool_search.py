@@ -67,6 +67,17 @@ _FRESHNESS_TIEBREAK = 0.03
 _IDENT_QUERY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{1,29}$")
 
 
+def _canonical_symbol_query(query: str) -> tuple[str, str] | None:
+    """Return ``(path, symbol)`` for an exact canonical ``path::Symbol`` query."""
+    stripped = query.strip().replace("\\", "/")
+    if "::" not in stripped:
+        return None
+    path, symbol = stripped.rsplit("::", 1)
+    if not path or not symbol or "/" not in path:
+        return None
+    return path, symbol
+
+
 def _looks_like_exact_token(query: str) -> bool:
     """True when the query is a single identifier-shaped token best served by Grep."""
     stripped = query.strip()
@@ -97,7 +108,8 @@ def _identifier_candidates(query: str, mode: str) -> list[str]:
     """
     if mode == "symbol":
         q = query.strip()
-        return [q] if q else []
+        canonical = _canonical_symbol_query(q)
+        return [q, canonical[1]] if canonical else ([q] if q else [])
     if mode == "hybrid":
         return _embedded_identifiers(query)
     return []
@@ -116,11 +128,39 @@ def _has_exact_symbol(candidates: list[str], symbols: list[dict]) -> bool:
     wanted = {c.strip().lower() for c in candidates if c.strip()}
     wanted |= {_qual_norm(c) for c in candidates if c.strip()}
     for s in symbols:
+        symbol_id = (s.get("symbol_id") or "").strip().lower().replace("\\", "/")
         name = (s.get("name") or "").strip().lower()
         qn = _qual_norm(s.get("qualified_name"))
-        if (name and name in wanted) or (qn and qn in wanted):
+        if (symbol_id and symbol_id in wanted) or (name and name in wanted) or (qn and qn in wanted):
             return True
     return False
+
+
+def _protect_exact_symbols(query: str, symbols: list[dict]) -> list[dict]:
+    """Stable-partition an exact identifier or ``path::Symbol`` hit to the head."""
+    if not symbols:
+        return symbols
+    canonical = _canonical_symbol_query(query)
+    qnorm = query.strip().lower().replace("\\", "/")
+
+    def exact(item: dict) -> bool:
+        symbol_id = (item.get("symbol_id") or "").lower().replace("\\", "/")
+        if canonical:
+            return symbol_id == qnorm
+        return qnorm in {
+            (item.get("name") or "").lower(),
+            _qual_norm(item.get("qualified_name")),
+        }
+
+    protected = [item for item in symbols if exact(item)]
+    return protected + [item for item in symbols if not exact(item)]
+
+
+def _protect_exact_paths(query: str, files: list[dict]) -> list[dict]:
+    """Stable-partition an exact path hit ahead of basename/fuzzy neighbours."""
+    qnorm = query.strip().lower().replace("\\", "/")
+    protected = [item for item in files if (item.get("file") or "").lower() == qnorm]
+    return protected + [item for item in files if (item.get("file") or "").lower() != qnorm]
 
 
 def _prose_dominates(query: str, identifiers: list[str]) -> bool:
@@ -855,6 +895,8 @@ def _resolve_mode(query: str, mode: str | None) -> str:
         m = "auto"
     if m != "auto":
         return m
+    if _canonical_symbol_query(query):
+        return "symbol"
     if _is_path(query):
         return "path"
     if _looks_like_exact_token(query):
@@ -908,6 +950,9 @@ async def _structured_search(
     # which then never reaches _has_exact_symbol and the response claims the
     # symbol is unindexed. Score symbols on the extracted identifiers instead.
     symbol_query = query
+    canonical_symbol = _canonical_symbol_query(query)
+    if canonical_symbol:
+        symbol_query = canonical_symbol[1]
     if mode == "hybrid":
         _idents = _embedded_identifiers(query)
         if _idents:
@@ -933,6 +978,10 @@ async def _structured_search(
 
     symbols.sort(key=lambda x: -(x.get("score") or 0.0))
     files.sort(key=lambda x: -(x.get("score") or 0.0))
+    if mode == "symbol":
+        symbols = _protect_exact_symbols(query, symbols)
+    if mode == "path":
+        files = _protect_exact_paths(query, files)
 
     # Whether any returned symbol matches the query's identifier(s) exactly.
     # Computed once here so the hybrid interleave and the exact-match note below
