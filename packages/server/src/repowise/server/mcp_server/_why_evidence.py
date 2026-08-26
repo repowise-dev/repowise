@@ -14,14 +14,19 @@ leave dangling.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
-import posixpath
 import re
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
+
+from repowise.server.mcp_server._references import (
+    _content_id,
+    _path_identity,
+    _reference,
+    _repository_identity,
+)
 
 ProvenanceKind = Literal[
     "human_decision",
@@ -55,32 +60,6 @@ def provenance_for_source(source: str | None) -> ProvenanceKind:
     if normalized in _INFERRED_SOURCES:
         return "inferred"
     return "unknown"
-
-
-def _repository_identity(repository: str) -> str:
-    return repository.strip().replace("\\", "/").strip("/").casefold()
-
-
-def _path_identity(path: str) -> str:
-    normalized = posixpath.normpath(path.strip().replace("\\", "/"))
-    return normalized.removeprefix("./")
-
-
-def _content_id(value: object) -> str:
-    raw = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
-
-
-def _reference(kind: str, repository: str, **coordinates: object) -> dict[str, Any]:
-    identity = {
-        "repository": _repository_identity(repository),
-        "kind": kind,
-        **coordinates,
-    }
-    return {
-        "id": f"ev_{_content_id(identity)}",
-        **identity,
-    }
 
 
 def _commit_value(value: object) -> str:
