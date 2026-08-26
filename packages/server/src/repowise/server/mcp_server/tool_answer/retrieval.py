@@ -28,6 +28,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _GATED_EXCERPT_CHARS,
     _PAGE_EXCERPT_HITS,
     _RELATIONAL_CONNECTIVES,
+    _STOPWORDS,
     _UI_PATH_PREFIXES,
     _UI_QUESTION_TOKENS,
 )
@@ -130,7 +131,8 @@ def serialize_hits(
 ) -> list[dict]:
     """Agent-facing view of retrieval hits — content only, no plumbing.
 
-    Internal scoring fields (``_coverage``, ``_raw_score``, ``_sources``,
+    Internal scoring fields (``_coverage``, ``_coverage_multiplier``,
+    ``_confidence_score_factor``, ``_raw_score``, ``_sources``,
     ``_pagerank``, …) and ``page_id`` are ranking debug an agent can do
     nothing with; they were ~70% of a get_answer response by volume. Zero
     information loss for the consumer: path, title, summary, snippet,
@@ -386,4 +388,5 @@ def _rerank_by_coverage(hits: list[dict], question: str) -> list[dict]:
         question,
         score_key="score",
         floor=_COVERAGE_FLOOR,
+        absolute_stopwords=_STOPWORDS,
     )

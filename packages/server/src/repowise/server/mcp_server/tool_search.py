@@ -603,6 +603,8 @@ def _drop_internal_ranking_fields(results: list[dict]) -> None:
     """Keep calibration diagnostics internal to the ranking pipeline."""
     for item in results:
         item.pop("_coverage", None)
+        item.pop("_coverage_multiplier", None)
+        item.pop("_confidence_score_factor", None)
         item.pop("_raw_score", None)
 
 
