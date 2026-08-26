@@ -783,7 +783,13 @@ def _fit_path_response(
             result_data["decisions_truncated"] = True
             result_data["decisions_omitted"] = result_data["decisions_total"] - len(decisions)
 
-    _shed("code_rationale", "git_archaeology", "origin_story")
+    _shed(
+        "code_rationale",
+        "git_archaeology.file_commits",
+        "git_archaeology.cross_references",
+        "git_archaeology.git_log",
+        "origin_story",
+    )
 
     collector.attach(result_data)
     return result_data

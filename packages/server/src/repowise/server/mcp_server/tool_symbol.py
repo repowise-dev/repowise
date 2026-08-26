@@ -673,17 +673,10 @@ async def get_symbol(
     one call instead of many. Reach here for a body that was elided, or for a
     ``continuation`` / omission ref. Never walk a file symbol by symbol.
 
-    Raw source of one indexed symbol, bounded (~600 lines). ``source`` uses
-    Read's exact line-numbered format; treat it as an already-performed Read.
-    ``verified: true`` = bounds checked (or corrected) against the live file:
-    no follow-up Read needed. ``bounds: "approximate"`` = the symbol moved and
-    re-location failed. An ambiguous id (overloads, re-exports) returns ALL
-    matching bodies in ``candidates``; none is silently chosen. Also serves
-    live range reads ("path.py:140-180", ≤200 lines, always verified) and
-    omission refs ("repowise#<12-hex>"). An index miss returns fallback_lines
-    from a live grep rather than a dead end. When ``truncated`` is true the
-    response carries a ``continuation`` token: the exact range read that
-    fetches the remainder; pass it straight back to get_symbol.
+    Returns verified, line-numbered source for one indexed symbol, live range,
+    or omission ref. Ambiguity returns every candidate; an index miss returns
+    live fallback lines. A truncated result carries the exact continuation to
+    pass straight back.
 
     Args:
         symbol_id: "path/to/file.py::Name", "path/to/file.py:140-180" for a

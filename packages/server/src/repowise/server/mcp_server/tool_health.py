@@ -930,10 +930,8 @@ async def get_health(
         include: ``biomarkers`` | ``refactoring`` | ``trend`` | ``coverage`` |
             ``accuracy`` | ``signals`` | ``churn_complexity`` |
             ``performance``/``defect``/``maintainability`` (dimension).
-            ``performance`` adds causal ``performance_opportunities``; with
-            ``refactoring``, a compact ``recommendation_lede``. Only adds
-            blocks; pair with ``only``. Final response budgeting and omission
-            recovery use the shared MCP delivery contract.
+            ``performance`` adds causal opportunities; with ``refactoring``,
+            a compact recommendation lede. Pair with ``only`` to project.
         only: top-level keys to keep; identity, counts, unresolved targets,
             and recovery metadata survive. ``biomarkers``, ``accuracy``, and
             ``refactoring`` alias; ``performance``, ``defect``, and
@@ -944,9 +942,7 @@ async def get_health(
             performance evidence is capped at 3 rows per opportunity.
         refactoring_view: ``canonical`` (default) or diversified
             ``file_spread``.
-        cursor: zero-based offset for top-level ranked collections. Reduced
-            pages carry an exact next-page call; nested evidence uses omission
-            references instead.
+        cursor: zero-based offset for top-level ranked collections.
         finding_id: stable ``id`` emitted by a health finding.
         plan_id: stable ``id`` emitted by a refactoring plan.
     """

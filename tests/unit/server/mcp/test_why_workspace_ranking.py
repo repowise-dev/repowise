@@ -44,7 +44,9 @@ def _decision(rec_id: str, repo_id: str, title: str, body: str, **kw) -> Decisio
 def _install(contexts: dict, default: str, root) -> _MockRegistry:
     import repowise.server.mcp_server as mcp_mod
 
-    registry = _MockRegistry(contexts=contexts, default_alias=default)
+    registry = _MockRegistry(
+        contexts=contexts, default_alias=default, workspace_root=root
+    )
     primary = contexts[default]
     mcp_mod._registry = registry
     mcp_mod._workspace_root = str(root)

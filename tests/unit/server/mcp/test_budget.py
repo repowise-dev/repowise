@@ -481,7 +481,7 @@ async def test_get_symbol_resolves_omission_ref(setup_mcp, repo_root: Path):
     assert result["kind"] == "omission"
     assert result["content"] == content
     assert result["source"] == "mcp:test"
-    assert result["ref"] == ref
+    assert result["ref"] == f"repowise#{ref}"
     assert "created_at" in result
 
     filtered = await get_symbol(f"repowise#{ref}", query="^ERROR")
