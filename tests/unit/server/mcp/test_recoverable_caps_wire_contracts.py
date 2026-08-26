@@ -1,4 +1,4 @@
-"""Sealed final-wire fixtures for Session 3c's three canonical tools."""
+"""Sealed final-wire fixtures for recoverable MCP response caps."""
 
 from __future__ import annotations
 
