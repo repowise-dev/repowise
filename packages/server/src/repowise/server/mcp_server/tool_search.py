@@ -576,6 +576,13 @@ def _drop_derivable_page_ids(results: list[dict]) -> list[dict]:
     return results
 
 
+def _drop_internal_ranking_fields(results: list[dict]) -> None:
+    """Keep calibration diagnostics internal to the ranking pipeline."""
+    for item in results:
+        item.pop("_coverage", None)
+        item.pop("_raw_score", None)
+
+
 async def _load_page_info(
     session, output: list[dict], *, with_git: bool = False
 ) -> tuple[dict, set, dict]:
@@ -1179,6 +1186,7 @@ async def search_codebase(
     # weakest tail slots. No-op when the symbol leg names nothing new.
     with contextlib.suppress(Exception):
         output = await _append_symbol_backed(ctx, query, output, limit, kind)
+    _drop_internal_ranking_fields(output)
     # The full ranked pool, kept before the caller's cut so ``candidates``
     # below can reach past it. See its comment for why that matters.
     ranked = list(output)

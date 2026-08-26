@@ -847,6 +847,7 @@ class TestConceptModeUnchanged:
         # Concept mode does not set the structural "mode" routing key.
         assert "results" in result
         assert all(r.get("type") != "symbol" for r in result["results"])
+        assert all("_coverage" not in r and "_raw_score" not in r for r in result["results"])
 
 
 class TestIdentifierGrepHint:
