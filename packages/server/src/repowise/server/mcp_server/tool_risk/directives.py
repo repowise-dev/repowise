@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import select
+
 from repowise.core.analysis.risk_semantics import structural_impact_contract
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.decision_graph import get_governing_decisions, list_conflict_edges
+from repowise.core.persistence.decision_graph import list_conflict_edges
+from repowise.core.persistence.models import DecisionNodeLink, DecisionRecord
 from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._helpers import (
     _get_repo,
     _is_workspace_mode,
@@ -55,7 +58,9 @@ _MAY_BREAK_TESTS_LIMIT = 3
 _TESTS_TO_RUN_LIMIT = 10
 
 
-def _breaking_change_directive(repo_alias: str) -> tuple[list[dict[str, Any]], int]:
+def _breaking_change_directive(
+    repo_alias: str, collector: OmissionCollector | None = None
+) -> tuple[list[dict[str, Any]], int]:
     """Breaking-change half of the PR directive: incompatible provider changes.
 
     Reads the persisted breaking-change report (current HEAD vs the previously
@@ -83,11 +88,7 @@ def _breaking_change_directive(repo_alias: str) -> tuple[list[dict[str, Any]], i
             cross = [c for c in consumers if c.get("repo") != repo_alias]
             if not cross:
                 continue
-            if len(out) >= _BC_PROVIDER_LIMIT:
-                dropped += 1
-                continue
-            out.append(
-                {
+            entry = {
                     "contract_id": change.get("contract_id"),
                     "type": change.get("contract_type"),
                     "kind": change.get("kind"),
@@ -112,16 +113,39 @@ def _breaking_change_directive(repo_alias: str) -> tuple[list[dict[str, Any]], i
                             "file": c.get("file"),
                             **({"symbol_id": sid} if (sid := c.get("symbol_id")) else {}),
                         }
-                        for c in cross[:_BC_CONSUMER_LIMIT]
+                        for c in cross
                     ],
                 }
+            cap_collection(
+                entry,
+                "impacted_consumers",
+                entry["impacted_consumers"],
+                _BC_CONSUMER_LIMIT,
+                collector,
+                label=(
+                    f"breaking_changes.{entry.get('contract_id')}.impacted_consumers "
+                    f"beyond cap={_BC_CONSUMER_LIMIT}"
+                ),
             )
+            out.append(entry)
     except Exception:
         return [], 0
-    return out, dropped
+    total = len(out)
+    visible = out[:_BC_PROVIDER_LIMIT]
+    dropped = total - len(visible)
+    if dropped and collector is not None:
+        collector.add(
+            f"directive.breaking_changes beyond cap={_BC_PROVIDER_LIMIT}",
+            out[_BC_PROVIDER_LIMIT:],
+        )
+    return visible, dropped
 
 
-def _conformance_directive(repo_alias: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _conformance_directive(
+    repo_alias: str,
+    collector: OmissionCollector | None = None,
+    totals: dict[str, int] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Conformance half of the PR directive: architecture findings touching this repo.
 
     Reads the persisted conformance report (rule violations + dependency cycles
@@ -139,7 +163,7 @@ def _conformance_directive(repo_alias: str) -> tuple[list[dict[str, Any]], list[
         if enricher is None or not getattr(enricher, "has_conformance", False):
             return violations, cycles
         scoped = enricher.get_conformance_for_repo(repo_alias)
-        for v in scoped.get("violations", [])[:_CF_VIOLATION_LIMIT]:
+        for v in scoped.get("violations", []):
             violations.append(
                 {
                     "source": v.get("source"),
@@ -149,14 +173,30 @@ def _conformance_directive(repo_alias: str) -> tuple[list[dict[str, Any]], list[
                     "description": v.get("rule_description") or None,
                 }
             )
-        for c in scoped.get("cycles", [])[:_CF_CYCLE_LIMIT]:
+        for c in scoped.get("cycles", []):
             cycles.append({"nodes": c.get("nodes", []), "length": c.get("length", 0)})
     except Exception:
         return [], []
-    return violations, cycles
+    if totals is not None:
+        totals["conformance_violations"] = len(violations)
+        totals["dependency_cycles"] = len(cycles)
+    if collector is not None:
+        if len(violations) > _CF_VIOLATION_LIMIT:
+            collector.add(
+                f"directive.conformance_violations beyond cap={_CF_VIOLATION_LIMIT}",
+                violations[_CF_VIOLATION_LIMIT:],
+            )
+        if len(cycles) > _CF_CYCLE_LIMIT:
+            collector.add(
+                f"directive.dependency_cycles beyond cap={_CF_CYCLE_LIMIT}",
+                cycles[_CF_CYCLE_LIMIT:],
+            )
+    return violations[:_CF_VIOLATION_LIMIT], cycles[:_CF_CYCLE_LIMIT]
 
 
-def _cross_repo_relationships(repo_alias: str) -> dict[str, Any]:
+def _cross_repo_relationships(
+    repo_alias: str, collector: OmissionCollector | None = None
+) -> dict[str, Any]:
     """Cross-repo half of the PR directive: downstream services in other repos.
 
     Resolves the changed repo to its system-graph nodes and ranks reachable
@@ -221,6 +261,17 @@ def _cross_repo_relationships(repo_alias: str) -> dict[str, Any]:
                         "evidence_kind": "historical",
                         "provenance": "workspace_system_graph",
                     }
+                )
+        if collector is not None:
+            if len(structural) > _XR_WILL_BREAK_LIMIT:
+                collector.add(
+                    f"directive.will_break_consumers beyond cap={_XR_WILL_BREAK_LIMIT}",
+                    structural[_XR_WILL_BREAK_LIMIT:],
+                )
+            if len(historical) > _XR_COCHANGE_LIMIT:
+                collector.add(
+                    f"directive.missing_cross_repo_cochanges beyond cap={_XR_COCHANGE_LIMIT}",
+                    historical[_XR_COCHANGE_LIMIT:],
                 )
         return {
             "structural": structural[:_XR_WILL_BREAK_LIMIT],
@@ -319,9 +370,27 @@ async def _governance_directive(ctx: Any, changed_files: list[str]) -> list[dict
             for ce in conflict_edges:
                 conflict_decision_ids.add(ce.src_decision_id)
                 conflict_decision_ids.add(ce.dst_decision_id)
+            linked_rows = list(
+                (
+                    await _gr_session.execute(
+                        select(DecisionRecord, DecisionNodeLink.node_id)
+                        .join(
+                            DecisionNodeLink,
+                            DecisionNodeLink.decision_id == DecisionRecord.id,
+                        )
+                        .where(
+                            DecisionNodeLink.repository_id == _gr_repo_id,
+                            DecisionNodeLink.node_id.in_(changed_files),
+                        )
+                    )
+                ).all()
+            )
+            by_file: dict[str, list[Any]] = {}
+            for record, node_id in linked_rows:
+                by_file.setdefault(node_id, []).append(record)
             seen_dr_ids: set[str] = set()
             for cf in changed_files:
-                for dr in await get_governing_decisions(_gr_session, _gr_repo_id, cf):
+                for dr in by_file.get(cf, []):
                     if dr.id in seen_dr_ids:
                         continue
                     seen_dr_ids.add(dr.id)
@@ -337,10 +406,6 @@ async def _governance_directive(ctx: Any, changed_files: list[str]) -> list[dict
                             "reason": reason,
                         }
                     )
-                    if len(governance_risk) >= 5:
-                        break
-                if len(governance_risk) >= 5:
-                    break
     except Exception:
         pass
     return governance_risk
@@ -401,20 +466,23 @@ def _build_pr_directive(
     # "what should I do about this PR" in three lines.
 
     affected = filter_path_list(
-        [p for p in (_as_path(e) for e in trimmed_blast.get("transitive_affected", [])) if p],
+        [p for p in (_as_path(e) for e in pr_blast_radius.get("transitive_affected", [])) if p],
         exclude_spec,
     )
     # "may", not "will": this is a reverse-import reachability walk over a file
     # list, and get_risk is never given a diff, so nothing here knows whether the
     # symbol an importer uses actually changed. The diff-backed fields below keep
     # "will".
-    may_break = [p for p in affected if p not in test_paths][:_MAY_BREAK_LIMIT]
-    may_break_tests = [p for p in affected if p in test_paths][:_MAY_BREAK_TESTS_LIMIT]
+    all_may_break = [p for p in affected if p not in test_paths]
+    all_may_break_tests = [p for p in affected if p in test_paths]
+    may_break = all_may_break[:_MAY_BREAK_LIMIT]
+    may_break_tests = all_may_break_tests[:_MAY_BREAK_TESTS_LIMIT]
 
-    missing_cochanges = filter_path_list(
-        [p for p in (_as_path(e) for e in trimmed_blast.get("cochange_warnings", [])) if p],
+    all_missing_cochanges = filter_path_list(
+        [p for p in (_as_path(e) for e in pr_blast_radius.get("cochange_warnings", [])) if p],
         exclude_spec,
-    )[:3]
+    )
+    missing_cochanges = all_missing_cochanges[:3]
     # Run-list: consume the analyzer's canonical typed population instead of
     # independently deriving test ids. Every row retains its basis through
     # de-duplication, sorting, exclusions, and the directive cap.
@@ -423,12 +491,6 @@ def _build_pr_directive(
     test_recommendations = all_recommendations[:_TESTS_TO_RUN_LIMIT]
     test_recommendations_total = len(all_recommendations)
     recommendations_capped = test_recommendations_total > _TESTS_TO_RUN_LIMIT
-    if recommendations_capped:
-        collector.add(
-            f"directive.test_recommendations beyond cap={_TESTS_TO_RUN_LIMIT} "
-            f"({test_recommendations_total - _TESTS_TO_RUN_LIMIT} dropped)",
-            all_recommendations[_TESTS_TO_RUN_LIMIT:],
-        )
 
     # Preserve the measured-first legacy projection and its existing scalar
     # domain. The additive typed rows above are the union of evidence kinds.
@@ -438,12 +500,6 @@ def _build_pr_directive(
     tests_to_run = all_tests_to_run[:_TESTS_TO_RUN_LIMIT]
     tests_to_run_total = len(all_tests_to_run)
     tests_capped = tests_to_run_total > _TESTS_TO_RUN_LIMIT
-    if tests_capped:
-        collector.add(
-            f"directive.tests_to_run beyond cap={_TESTS_TO_RUN_LIMIT} "
-            f"({tests_to_run_total - _TESTS_TO_RUN_LIMIT} dropped)",
-            all_tests_to_run[_TESTS_TO_RUN_LIMIT:],
-        )
     if not all_recommendations:
         tests_to_run_suffix = ""
     else:
@@ -478,12 +534,6 @@ def _build_pr_directive(
         all_missing_tests = [path for path in changed_files if path in full_gap_paths]
         missing_tests = all_missing_tests[:3]
         missing_tests_total = len(all_missing_tests)
-        if missing_tests_total > len(missing_tests):
-            collector.add(
-                f"directive.missing_tests beyond cap=3 "
-                f"({missing_tests_total - len(missing_tests)} dropped)",
-                all_missing_tests[3:],
-            )
         missing_tests_summary = (
             f"Showing {len(missing_tests)} of {missing_tests_total} changed-file test gap(s)."
         )
@@ -504,7 +554,7 @@ def _build_pr_directive(
     # (co-change only). Repo-scoped: it answers "can this PR's repo break
     # something across a repo boundary?" using the same reachability the map
     # and get_blast_radius use.
-    cross_repo_relationships = _cross_repo_relationships(alias)
+    cross_repo_relationships = _cross_repo_relationships(alias, collector)
     will_break_consumers = cross_repo_relationships["structural"]
     missing_cross_repo_cochanges = cross_repo_relationships["historical"]
     will_break_total = cross_repo_relationships["structural_total"]
@@ -521,7 +571,7 @@ def _build_pr_directive(
     # Breaking-change guard — incompatible provider changes (removed route /
     # field, type change, ...) in this repo and the consumers they endanger.
     # Schema-level truth, distinct from the topology-level will_break_consumers.
-    breaking_changes, breaking_changes_dropped = _breaking_change_directive(alias)
+    breaking_changes, breaking_changes_dropped = _breaking_change_directive(alias, collector)
     bc_suffix = ""
     if breaking_changes:
         bc_consumers = sum(len(b["impacted_consumers"]) for b in breaking_changes)
@@ -535,7 +585,10 @@ def _build_pr_directive(
     # Architecture conformance — declared dependency-rule violations and
     # dependency cycles this repo participates in. Governance-level truth,
     # distinct from the topology / schema directives above.
-    conformance_violations, dependency_cycles = _conformance_directive(alias)
+    conformance_totals: dict[str, int] = {}
+    conformance_violations, dependency_cycles = _conformance_directive(
+        alias, collector, conformance_totals
+    )
     cf_suffix = ""
     if conformance_violations or dependency_cycles:
         cf_suffix = (
@@ -544,7 +597,7 @@ def _build_pr_directive(
             f"this repo."
         )
 
-    response["directive"] = {
+    directive = {
         "may_break": may_break,
         "may_break_tests": may_break_tests,
         "missing_cochanges": missing_cochanges,
@@ -554,7 +607,7 @@ def _build_pr_directive(
         "missing_tests_emitted": len(missing_tests),
         "missing_tests_truncated": len(missing_tests) < missing_tests_total,
         "missing_tests_omitted": missing_tests_total - len(missing_tests),
-        "files_without_measured_tests": list(test_impact.get("files_without_measured_tests") or []),
+        "files_without_measured_tests": [],
         "tests_to_run": tests_to_run,
         "tests_to_run_basis": tests_to_run_basis,
         "tests_to_run_total": tests_to_run_total,
@@ -571,7 +624,7 @@ def _build_pr_directive(
         "test_analysis": test_impact.get("analysis") or {"status": "unavailable"},
         "coverage_analysis": coverage,
         "test_inference_analysis": test_impact.get("inference") or {"status": "unavailable"},
-        "test_unknown_files": list(test_impact.get("unknown_files") or []),
+        "test_unknown_files": [],
         "will_break_consumers": will_break_consumers,
         "will_break_consumers_semantics": "structural_reach_only",
         "will_break_consumers_deprecated": True,
@@ -599,3 +652,50 @@ def _build_pr_directive(
             f"{tests_to_run_suffix}{gov_suffix}{xr_suffix}{bc_suffix}{cf_suffix}"
         ),
     }
+    for key, population, cap in (
+        ("may_break", all_may_break, _MAY_BREAK_LIMIT),
+        ("may_break_tests", all_may_break_tests, _MAY_BREAK_TESTS_LIMIT),
+        ("missing_cochanges", all_missing_cochanges, 3),
+        ("missing_tests", all_missing_tests if coverage_usable else [], 3),
+        ("tests_to_run", all_tests_to_run, _TESTS_TO_RUN_LIMIT),
+        ("test_recommendations", all_recommendations, _TESTS_TO_RUN_LIMIT),
+        (
+            "files_without_measured_tests",
+            list(test_impact.get("files_without_measured_tests") or []),
+            10,
+        ),
+        ("test_unknown_files", list(test_impact.get("unknown_files") or []), 10),
+        ("governance_risk", governance_risk, 5),
+    ):
+        cap_collection(
+            directive,
+            key,
+            population,
+            cap,
+            collector,
+            label=f"directive.{key} beyond cap={cap}",
+            preserve_counts=(key in {"missing_tests", "tests_to_run", "test_recommendations"}),
+        )
+
+    for key, total in (
+        ("will_break_consumers", will_break_total),
+        ("missing_cross_repo_cochanges", missing_cross_repo_total),
+        ("breaking_changes", len(breaking_changes) + breaking_changes_dropped),
+        ("conformance_violations", conformance_totals.get("conformance_violations", 0)),
+        ("dependency_cycles", conformance_totals.get("dependency_cycles", 0)),
+    ):
+        emitted_count = len(directive.get(key) or [])
+        is_legacy_count_family = key in {
+            "will_break_consumers",
+            "missing_cross_repo_cochanges",
+        }
+        if is_legacy_count_family or emitted_count < total:
+            directive[f"{key}_total"] = total
+            directive[f"{key}_emitted"] = emitted_count
+        if emitted_count < total:
+            directive[f"{key}_reduced_reason"] = "construction_cap"
+            if key != "breaking_changes":
+                directive[f"{key}_truncated"] = True
+            directive[f"{key}_omitted"] = total - emitted_count
+
+    response["directive"] = directive

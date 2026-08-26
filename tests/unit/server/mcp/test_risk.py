@@ -505,8 +505,10 @@ async def test_get_risk_directive_points_at_the_full_run_list_when_capped(setup_
     assert f"Showing {_TESTS_TO_RUN_LIMIT} of {over_cap + 1}" in directive["summary"]
     assert directive["tests_to_run_total"] == over_cap
     assert directive["tests_to_run_emitted"] == _TESTS_TO_RUN_LIMIT
+    assert directive["tests_to_run_reduced_reason"] == "construction_cap"
     assert directive["tests_to_run_truncated"] is True
     assert directive["test_recommendations_total"] == over_cap + 1
+    assert directive["test_recommendations_reduced_reason"] == "construction_cap"
     assert "response omission marker" in directive["summary"]
     assert len(result["pr_blast_radius"]["guarding_tests"]["tests_to_run"]) == over_cap
 
@@ -551,5 +553,6 @@ async def test_missing_tests_totals_use_full_precap_changed_file_population(setu
     assert directive["missing_tests"] == changed[:3]
     assert directive["missing_tests_total"] == 5
     assert directive["missing_tests_emitted"] == 3
+    assert directive["missing_tests_reduced_reason"] == "construction_cap"
     assert directive["missing_tests_truncated"] is True
     assert directive["missing_tests_omitted"] == 2

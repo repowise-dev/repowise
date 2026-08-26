@@ -108,10 +108,14 @@ async def _card(session, repository, target: str) -> dict:
 
 
 async def test_the_most_central_user_survives_the_cut(session, repository, many_users) -> None:
-    used_by = (await _card(session, repository, "AuthService"))["docs"]["used_by"]
+    docs = (await _card(session, repository, "AuthService"))["docs"]
+    used_by = docs["used_by"]
 
     assert len(used_by) == _MAX_USED_BY
     assert used_by[0] == "src/zz_hub.py"
+    assert docs["used_by_total"] == _NOISE + 3
+    assert docs["used_by_emitted"] == _MAX_USED_BY
+    assert docs["used_by_reduced_reason"] == "construction_cap"
 
 
 async def test_used_by_is_ordered_by_centrality(session, repository, many_users) -> None:

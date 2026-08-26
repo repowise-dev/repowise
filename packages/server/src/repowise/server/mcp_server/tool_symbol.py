@@ -43,6 +43,7 @@ Returns a flat dict (not wrapped in `targets`) so the agent can pipe the
 from __future__ import annotations
 
 import re
+import sqlite3
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -295,13 +296,18 @@ def _resolve_omission_ref(
 
     record: dict | None = None
     for db_path in candidates:
-        if not db_path.exists():
-            continue
-        store = OmissionStore(db_path)
         try:
-            record = store.get_record(ref, query=query)
-        finally:
-            store.close()
+            if not db_path.exists():
+                continue
+            store = OmissionStore(db_path)
+            try:
+                record = store.get_record(ref, query=query)
+            finally:
+                store.close()
+        except (OSError, sqlite3.Error):
+            # An inaccessible fallback store is equivalent to a missing ref.
+            # Recovery must never make get_symbol itself fail.
+            continue
         if record is not None:
             break
 

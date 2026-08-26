@@ -16,6 +16,7 @@ from repowise.core.persistence.models import (
     GraphNode,
     Repository,
 )
+from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._helpers import (
     filter_dicts_by_key,
     is_excluded,
@@ -349,7 +350,7 @@ def _build_co_changes(
             row["support"] = support
         rows.append(row)
     population = filter_dicts_by_key(rows, "file_path", exclude_spec)
-    return population[:_RELATIONSHIP_LIMIT], len(population)
+    return population, len(population)
 
 
 def fix_annotation(meta: Any) -> dict | None:
@@ -461,6 +462,8 @@ async def _assess_one_target(
     node_meta: dict[str, Any],
     exclude_spec: Any = None,
     team_size: int | None = None,
+    collector: OmissionCollector | None = None,
+    include_graph: bool = False,
 ) -> dict:
     """Assess risk for a single target file.
 
@@ -540,6 +543,26 @@ async def _assess_one_target(
             },
         }
     )
+    cap_collection(
+        result_data,
+        "dependents",
+        dependency_population,
+        _RELATIONSHIP_LIMIT,
+        collector if include_graph else None,
+        emitted=dependents,
+        label=f"{target} :: dependents beyond cap={_RELATIONSHIP_LIMIT}",
+        preserve_counts=True,
+    )
+    cap_collection(
+        result_data,
+        "impact_surface",
+        sorted(dependency_population, key=lambda row: (-row["pagerank"], row["file_path"])),
+        3,
+        collector if include_graph else None,
+        emitted=impact_surface,
+        label=f"{target} :: impact_surface beyond cap=3",
+        preserve_counts=True,
+    )
 
     # Git metadata
     res = await session.execute(
@@ -573,9 +596,10 @@ async def _assess_one_target(
 
     hotspot_score = meta.churn_percentile or 0.0
 
-    co_changes, co_changes_total = _build_co_changes(
+    co_change_population, co_changes_total = _build_co_changes(
         meta, import_links.get(target, {}), exclude_spec
     )
+    co_changes = co_change_population[:_RELATIONSHIP_LIMIT]
 
     owner = meta.primary_owner_name or "unknown"
     pct = meta.primary_owner_commit_pct or 0.0
@@ -603,6 +627,15 @@ async def _assess_one_target(
     result_data["co_change_partners_total"] = co_changes_total
     result_data["co_change_partners_emitted"] = len(co_changes)
     result_data["co_change_partners_truncated"] = len(co_changes) < co_changes_total
+    cap_collection(
+        result_data,
+        "co_change_partners",
+        co_change_population,
+        _RELATIONSHIP_LIMIT,
+        collector,
+        label=f"{target} :: co_change_partners beyond cap={_RELATIONSHIP_LIMIT}",
+        preserve_counts=True,
+    )
     result_data["relationship_analysis"]["co_change"] = {
         "status": "available",
         "scope": "git_history",

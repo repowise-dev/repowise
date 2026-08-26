@@ -39,6 +39,7 @@ from repowise.core.persistence.database import get_session
 from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -122,6 +123,7 @@ async def get_context(
     if repo == "all":
         return _unsupported_repo_all("get_context")
     ctx = await _resolve_repo_context(repo)
+    collector = OmissionCollector("get_context", repo_root=ctx.path)
 
     # docs + freshness are ALWAYS returned (the tool contract says
     # "defaults are always returned"); ``include`` only adds blocks on top.
@@ -165,6 +167,7 @@ async def get_context(
                     compact,
                     exclude_spec=exclude_spec,
                     repo_root=ctx.path,
+                    collector=collector,
                 )
                 for t in targets
             ],
@@ -249,4 +252,5 @@ async def get_context(
                 target_data["cross_repo"] = cross_repo
 
     attach_ignored_arguments(response, ignored)
+    collector.attach(response)
     return response

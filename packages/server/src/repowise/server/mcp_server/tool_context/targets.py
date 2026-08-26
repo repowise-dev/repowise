@@ -30,6 +30,7 @@ from repowise.core.persistence.models import (
     Repository,
     WikiSymbol,
 )
+from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._helpers import (
     LIKE_ESCAPE,
     _decision_body,
@@ -240,6 +241,7 @@ async def _resolve_one_target(
     *,
     exclude_spec: Any = None,
     repo_root: Any = None,
+    collector: OmissionCollector | None = None,
 ) -> dict:
     """Resolve a single target and return its full context."""
     repo_id = repository.id
@@ -480,6 +482,7 @@ async def _resolve_one_target(
                     compact,
                     exclude_spec=exclude_spec,
                     repo_root=repo_root,
+                    collector=collector,
                 )
                 if "error" not in card:
                     card["target"] = target
@@ -822,9 +825,17 @@ async def _resolve_one_target(
                 rank = float(pagerank or 0.0)
                 if rank > best_rank.get(source_node_id, -1.0):
                     best_rank[source_node_id] = rank
-            docs["used_by"] = filter_path_list(
+            used_by = filter_path_list(
                 sorted(best_rank, key=lambda p: (-best_rank[p], p)), exclude_spec
-            )[:_MAX_USED_BY]
+            )
+            cap_collection(
+                docs,
+                "used_by",
+                used_by,
+                _MAX_USED_BY,
+                collector,
+                label=f"{target} :: docs.used_by beyond cap={_MAX_USED_BY}",
+            )
             # Candidates
             if len(sym_matches) > 1:  # type: ignore[possibly-undefined]
                 docs["candidates"] = filter_dicts_by_key(
@@ -1107,6 +1118,7 @@ async def _resolve_one_target(
             want_callers=want_callers,
             want_callees=want_callees,
             exclude_spec=exclude_spec,
+            collector=collector,
         )
 
     # --- Metrics (replaces get_graph_metrics) ---

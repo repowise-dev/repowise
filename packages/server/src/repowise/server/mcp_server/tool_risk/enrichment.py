@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from repowise.core.persistence.database import get_session
 from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._helpers import (
     _is_workspace_mode,
 )
@@ -116,7 +117,13 @@ def _combined_analysis(cross_state: dict, contract_state: dict, rows: list[dict]
     }
 
 
-async def _enrich_cross_repo(results: list[dict], alias: str) -> None:
+async def _enrich_cross_repo(
+    results: list[dict],
+    alias: str,
+    collector: OmissionCollector | None = None,
+    *,
+    include_graph: bool = False,
+) -> None:
     """Add typed workspace relationships without changing dependency counts.
 
     Co-change is historical and undirected. Consumers exist only when a typed
@@ -140,6 +147,15 @@ async def _enrich_cross_repo(results: list[dict], alias: str) -> None:
         r["consumers_total"] = len(consumers)
         r["consumers_emitted"] = len(r["consumers"])
         r["consumers_truncated"] = len(r["consumers"]) < len(consumers)
+        cap_collection(
+            r,
+            "consumers",
+            consumers,
+            _RELATIONSHIP_LIMIT,
+            collector if include_graph else None,
+            label=f"{target} :: consumers beyond cap={_RELATIONSHIP_LIMIT}",
+            preserve_counts=True,
+        )
         r["relationship_analysis"]["consumers"] = {
             **contract_state,
             "scope": "workspace_contract_links",
@@ -174,6 +190,15 @@ async def _enrich_cross_repo(results: list[dict], alias: str) -> None:
         r["cross_repo_links_total"] = len(cross_repo_links)
         r["cross_repo_links_emitted"] = len(r["cross_repo_links"])
         r["cross_repo_links_truncated"] = len(r["cross_repo_links"]) < len(cross_repo_links)
+        cap_collection(
+            r,
+            "cross_repo_links",
+            cross_repo_links,
+            _RELATIONSHIP_LIMIT,
+            collector if include_graph else None,
+            label=f"{target} :: cross_repo_links beyond cap={_RELATIONSHIP_LIMIT}",
+            preserve_counts=True,
+        )
         r["relationship_analysis"]["cross_repo"] = _combined_analysis(
             cross_state, contract_state, cross_repo_links
         )
@@ -217,6 +242,15 @@ async def _enrich_cross_repo(results: list[dict], alias: str) -> None:
         impact["cross_repo_consumers_truncated"] = len(impact["cross_repo_consumers"]) < len(
             legacy_co_changes
         )
+        cap_collection(
+            impact,
+            "cross_repo_consumers",
+            legacy_co_changes,
+            _RELATIONSHIP_LIMIT,
+            collector,
+            label=f"{target} :: cross_repo_consumers beyond cap={_RELATIONSHIP_LIMIT}",
+            preserve_counts=True,
+        )
         impact["cross_repo_consumers_analysis"] = cross_state
         impact["affected_repos"] = affected_repos
         impact["affected_repos_total"] = len(affected_repos)
@@ -229,7 +263,7 @@ async def _enrich_cross_repo(results: list[dict], alias: str) -> None:
             link for link in consumer_links if link.get("provider_repo") != alias
         ]
         if cross_provider_links:
-            impact["contract_consumers"] = [
+            contract_consumers = [
                 {
                     "consumer_repo": lk["consumer_repo"],
                     "consumer_file": lk["consumer_file"],
@@ -239,15 +273,25 @@ async def _enrich_cross_repo(results: list[dict], alias: str) -> None:
                     "direction": "provider_to_consumer",
                     "evidence_kind": "contract",
                 }
-                for lk in cross_provider_links[:_RELATIONSHIP_LIMIT]
+                for lk in cross_provider_links
             ]
+            impact["contract_consumers"] = contract_consumers[:_RELATIONSHIP_LIMIT]
             impact["contract_consumers_total"] = len(cross_provider_links)
             impact["contract_consumers_emitted"] = len(impact["contract_consumers"])
             impact["contract_consumers_truncated"] = len(impact["contract_consumers"]) < len(
                 cross_provider_links
             )
+            cap_collection(
+                impact,
+                "contract_consumers",
+                contract_consumers,
+                _RELATIONSHIP_LIMIT,
+                collector,
+                label=f"{target} :: contract_consumers beyond cap={_RELATIONSHIP_LIMIT}",
+                preserve_counts=True,
+            )
         if cross_consumer_links:
-            impact["contract_providers"] = [
+            contract_providers = [
                 {
                     "provider_repo": lk["provider_repo"],
                     "provider_file": lk["provider_file"],
@@ -257,12 +301,22 @@ async def _enrich_cross_repo(results: list[dict], alias: str) -> None:
                     "direction": "provider_to_consumer",
                     "evidence_kind": "contract",
                 }
-                for lk in cross_consumer_links[:_RELATIONSHIP_LIMIT]
+                for lk in cross_consumer_links
             ]
+            impact["contract_providers"] = contract_providers[:_RELATIONSHIP_LIMIT]
             impact["contract_providers_total"] = len(cross_consumer_links)
             impact["contract_providers_emitted"] = len(impact["contract_providers"])
             impact["contract_providers_truncated"] = len(impact["contract_providers"]) < len(
                 cross_consumer_links
+            )
+            cap_collection(
+                impact,
+                "contract_providers",
+                contract_providers,
+                _RELATIONSHIP_LIMIT,
+                collector,
+                label=f"{target} :: contract_providers beyond cap={_RELATIONSHIP_LIMIT}",
+                preserve_counts=True,
             )
 
 

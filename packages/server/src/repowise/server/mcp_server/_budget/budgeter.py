@@ -203,10 +203,10 @@ def _shed_tail(
             container[f"{leaf}_emitted"] = len(rows)
             container[f"{leaf}_reduced_reason"] = _with_budget_reason(prior_reason)
             container[f"{leaf}_truncated"] = True
-            # The omission reference persists only rows dropped by this pass.
-            # Earlier projection reductions remain visible in total/emitted and
-            # their combined reason, but are not falsely advertised as stored.
-            container[f"{leaf}_omitted"] = len(dropped)
+            # Construction and delivery collectors both advertise their refs
+            # on the final response, so omitted is the complete recoverable
+            # population difference across both passes.
+            container[f"{leaf}_omitted"] = collection_total - len(rows)
         response["truncated"] = True
 
 
@@ -227,7 +227,7 @@ def _record_reduction(
         container[f"{field}_emitted"] = emitted
         container[f"{field}_reduced_reason"] = _with_budget_reason(prior_reason)
         container[f"{field}_truncated"] = True
-        container[f"{field}_omitted"] = len(value)
+        container[f"{field}_omitted"] = total - emitted
         return
     if not isinstance(value, dict):
         return
