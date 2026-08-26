@@ -91,7 +91,9 @@ def _looks_like_exact_token(query: str) -> bool:
 # (≥1 underscore, incl. _UPPER_SNAKE constants) or CamelCase (≥2 humps).
 # Plain English words never match.
 _IDENT_TOKEN_RE = re.compile(
-    r"\b(?:_*[A-Za-z0-9]+_[A-Za-z0-9_]+|[A-Z][a-z][a-z0-9]*(?:[A-Z][a-z0-9]+)+)\b"
+    r"\b(?:_*[A-Za-z0-9]+_[A-Za-z0-9_]+|[A-Z][A-Za-z0-9_]+)"
+    r"(?:\.[A-Za-z_][A-Za-z0-9_]*)+\b"
+    r"|\b(?:_*[A-Za-z0-9]+_[A-Za-z0-9_]+|[A-Z][a-z][a-z0-9]*(?:[A-Z][a-z0-9]+)+)\b"
 )
 
 
@@ -116,6 +118,24 @@ def _identifier_candidates(query: str, mode: str) -> list[str]:
     return []
 
 
+def _qualified_name_matches(qn: str, wanted: set[str]) -> bool:
+    if not qn:
+        return False
+    if qn in wanted:
+        return True
+    return any("." in candidate and qn.endswith(f".{candidate}") for candidate in wanted)
+
+
+def _symbol_matches_name(item: dict, wanted: set[str]) -> bool:
+    symbol_id = (item.get("symbol_id") or "").strip().lower().replace("\\", "/")
+    if symbol_id and symbol_id in wanted:
+        return True
+    name = (item.get("name") or "").strip().lower()
+    if name and name in wanted:
+        return True
+    return _qualified_name_matches(_qual_norm(item.get("qualified_name")), wanted)
+
+
 def _has_exact_symbol(candidates: list[str], symbols: list[dict]) -> bool:
     """True when some returned symbol's name/qualified-name equals a candidate.
 
@@ -128,13 +148,7 @@ def _has_exact_symbol(candidates: list[str], symbols: list[dict]) -> bool:
         return False
     wanted = {c.strip().lower() for c in candidates if c.strip()}
     wanted |= {_qual_norm(c) for c in candidates if c.strip()}
-    for s in symbols:
-        symbol_id = (s.get("symbol_id") or "").strip().lower().replace("\\", "/")
-        name = (s.get("name") or "").strip().lower()
-        qn = _qual_norm(s.get("qualified_name"))
-        if (symbol_id and symbol_id in wanted) or (name and name in wanted) or (qn and qn in wanted):
-            return True
-    return False
+    return any(_symbol_matches_name(symbol, wanted) for symbol in symbols)
 
 
 def _protect_exact_symbols(query: str, symbols: list[dict]) -> list[dict]:
@@ -155,6 +169,15 @@ def _protect_exact_symbols(query: str, symbols: list[dict]) -> list[dict]:
 
     protected = [item for item in symbols if exact(item)]
     return protected + [item for item in symbols if not exact(item)]
+
+
+def _protect_named_symbols(candidates: list[str], symbols: list[dict]) -> list[dict]:
+    """Stable-partition symbols exactly named by identifiers embedded in prose."""
+    wanted = {candidate.strip().lower() for candidate in candidates if candidate.strip()}
+    wanted |= {_qual_norm(candidate) for candidate in candidates if candidate.strip()}
+
+    protected = [item for item in symbols if _symbol_matches_name(item, wanted)]
+    return protected + [item for item in symbols if not _symbol_matches_name(item, wanted)]
 
 
 def _protect_exact_paths(query: str, files: list[dict]) -> list[dict]:
@@ -986,15 +1009,17 @@ async def _structured_search(
 
     symbols.sort(key=lambda x: -(x.get("score") or 0.0))
     files.sort(key=lambda x: -(x.get("score") or 0.0))
+    candidates = _identifier_candidates(query, mode)
     if mode == "symbol":
         symbols = _protect_exact_symbols(query, symbols)
+    elif mode == "hybrid" and candidates:
+        symbols = _protect_named_symbols(candidates, symbols)
     if mode == "path":
         files = _protect_exact_paths(query, files)
 
     # Whether any returned symbol matches the query's identifier(s) exactly.
     # Computed once here so the hybrid interleave and the exact-match note below
     # agree on the same signal.
-    candidates = _identifier_candidates(query, mode)
     exact = _has_exact_symbol(candidates, symbols) if candidates else False
 
     if mode == "symbol":

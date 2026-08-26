@@ -900,7 +900,30 @@ class TestExactMatchSignal:
 
         assert _identifier_candidates("AuthService", "symbol") == ["AuthService"]
         assert _identifier_candidates("where is AuthService defined", "hybrid") == ["AuthService"]
+        assert _identifier_candidates(
+            "where does OmissionStore.get expand a reference", "hybrid"
+        ) == ["OmissionStore.get"]
+        assert _identifier_candidates("for example, e.g. retrieval flow", "hybrid") == []
         assert _identifier_candidates("rate limiting", "concept") == []
+
+    def test_qualified_member_embedded_in_prose_is_protected(self):
+        from repowise.server.mcp_server.tool_search import _protect_named_symbols
+
+        exact = {
+            "name": "get",
+            "qualified_name": "repowise.core.distill.store.OmissionStore.get",
+            "score": 1.0,
+        }
+        symbols = [
+            {"name": "get_record", "qualified_name": "OmissionStore::get_record", "score": 99.0},
+            exact,
+            {"name": "get", "qualified_name": "LanguageRegistry::get", "score": 50.0},
+        ]
+
+        out = _protect_named_symbols(["OmissionStore.get"], symbols)
+
+        assert out[0] is exact
+        assert out[1:] == [symbols[0], symbols[2]]
 
     @pytest.mark.asyncio
     async def test_hybrid_scores_symbols_on_the_identifier_not_the_prose(
