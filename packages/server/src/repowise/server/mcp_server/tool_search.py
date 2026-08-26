@@ -38,6 +38,7 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._page_paths import file_candidates, hit_file_path
 from repowise.server.mcp_server._prose_symbols import symbol_backed_pages
 from repowise.server.mcp_server._references import path_identity, symbol_identity
+from repowise.server.mcp_server._retrieval_rank import rerank_by_context_coverage
 from repowise.server.mcp_server.tool_search_symbols import (
     _qual_norm,
     search_paths_single,
@@ -1162,6 +1163,12 @@ async def search_codebase(
         # Re-sort by adjusted relevance with retrieval noise (decisions on
         # non-why queries, test pages on non-test queries) hard-demoted, then
         # collapse near-duplicate decisions to one.
+        output = rerank_by_context_coverage(
+            output,
+            query,
+            score_key="relevance_score",
+            floor=0.5,
+        )
         _downweight_test_pages(output, query)
         _sort_demoting_noise(output, query)
         output = _dedup_decisions(output)

@@ -17,6 +17,8 @@ from sqlalchemy import select
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import Page
 from repowise.server.mcp_server._page_paths import hit_file_path
+from repowise.server.mcp_server._query_terms import content_terms
+from repowise.server.mcp_server._retrieval_rank import rerank_by_context_coverage
 from repowise.server.mcp_server.tool_answer.config import (
     _BACKEND_PATH_PREFIXES,
     _BACKEND_QUESTION_TOKENS,
@@ -26,7 +28,6 @@ from repowise.server.mcp_server.tool_answer.config import (
     _GATED_EXCERPT_CHARS,
     _PAGE_EXCERPT_HITS,
     _RELATIONAL_CONNECTIVES,
-    _STOPWORDS,
     _UI_PATH_PREFIXES,
     _UI_QUESTION_TOKENS,
 )
@@ -190,12 +191,8 @@ def serialize_hits(
 
 
 def _question_terms(question: str) -> list[str]:
-    """Extract content terms from a question. Lowercase, alnum-tokenized,
-    stopwords + length<3 dropped. Used by the term-coverage re-ranker."""
-    import re
-
-    raw = re.findall(r"[a-zA-Z0-9_]+", question.lower())
-    return [t for t in raw if len(t) >= 3 and t not in _STOPWORDS]
+    """Extract shared snake/camel-aware content terms for retrieval ranking."""
+    return content_terms(question)
 
 
 def _split_relational(question: str) -> list[str] | None:
@@ -370,38 +367,23 @@ def _candidate_justification(h: dict) -> str:
 
 
 def _rerank_by_coverage(hits: list[dict], question: str) -> list[dict]:
-    """Re-rank FTS hits by term-coverage boost on top of BM25.
+    """Re-rank hybrid hits by intent-bearing term coverage.
 
-    For each hit, compute the fraction of distinct query terms present in
-    (title + snippet + summary), then multiply the raw BM25 score by
-    (FLOOR + (1-FLOOR)*coverage). Single-concept questions (coverage≈1.0
-    across all hits) are unaffected; multi-constraint questions push hits
-    that cover all the terms above hits that repeat just one term.
+    Coverage includes the path/module identity as well as title and prose.
+    Terms every candidate repeats carry less weight than discriminating terms,
+    so a generic lexical overlap such as ``coverage`` cannot beat a page that
+    also agrees on ``PR``, ``test impact``, and ``changed files``. Raw fused
+    retrieval remains the base signal; this is a bounded multiplier, not a
+    replacement score.
 
     This addresses a common BM25 failure mode where a hit that matches one
     constraint very strongly can outrank a hit that matches all constraints
     moderately — the latter is usually the better answer for multi-constraint
     questions.
     """
-    terms = set(_question_terms(question))
-    if not terms or not hits:
-        return hits
-    n_terms = len(terms)
-    for h in hits:
-        haystack = " ".join(
-            [
-                h.get("title", "") or "",
-                h.get("snippet", "") or "",
-                h.get("summary", "") or "",
-            ]
-        ).lower()
-        # Count distinct terms present (substring match — FTS5 already handles
-        # stemming upstream, so we keep this simple).
-        present = sum(1 for t in terms if t in haystack)
-        coverage = present / n_terms
-        raw = h.get("score", 0.0)
-        h["_coverage"] = coverage
-        h["_raw_score"] = raw
-        h["score"] = raw * (_COVERAGE_FLOOR + (1.0 - _COVERAGE_FLOOR) * coverage)
-    hits.sort(key=lambda h: h["score"], reverse=True)
-    return hits
+    return rerank_by_context_coverage(
+        hits,
+        question,
+        score_key="score",
+        floor=_COVERAGE_FLOOR,
+    )
