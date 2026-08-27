@@ -519,6 +519,12 @@ async def test_get_health_dashboard_leads_with_a_directive(setup_mcp, health_dat
     assert d["fix_first"] == "src/auth/service.py"
     assert d["reason"] == "authenticate has cyclomatic complexity 15"
     assert d["recovers_points"] == 700  # (8.0 - 4.5) * 200
+    assert d["recovers_weighted_deficit_points"] == d["recovers_points"]
+    assert d["recovers_points_compatibility"] == {
+        "deprecated": True,
+        "replacement": "recovers_weighted_deficit_points",
+        "equivalent_value": True,
+    }
     # The only below-target file holds the whole gross deficit (700/700), so
     # the share is 100% by construction — the net gap (675) is not the
     # denominator, since healthy files would cushion it (issue #1437).
@@ -1095,6 +1101,7 @@ async def test_include_names_work_as_only_aliases(setup_mcp, health_data, alias,
     }
     if resolved == "refactoring_plans":
         allowed |= {
+            "refactoring_plans_status",
             "validation_profiles",
             "validation_profiles_total",
             "validation_profiles_emitted",
@@ -1930,6 +1937,94 @@ async def test_meta_omits_the_commit_when_no_row_records_one(setup_mcp, health_d
     meta = (await get_health())["_meta"]
     assert "health_analyzed_commit" not in meta
     assert isinstance(meta["health_analyzed_at"], str)
+    assert meta["health_analysis"]["source"] == "stored_health_analysis"
+    assert meta["health_analysis"]["recomputed_this_call"] is False
+    assert meta["health_analysis"]["live_verification"] == {
+        "basis": "index_commit_and_live_git_head",
+        "source_bytes_verified": False,
+    }
+    assert meta["health_analysis"]["refresh"]["command"] == "repowise update"
+
+
+@pytest.mark.asyncio
+async def test_health_semantics_survive_narrow_projection(setup_mcp, health_data):
+    from repowise.server.mcp_server import get_health
+
+    broad = await get_health()
+    narrow = await get_health(only=["directive"])
+    assert narrow["directive"] == broad["directive"]
+    assert narrow["_meta"]["health_semantics"] == broad["_meta"]["health_semantics"]
+    contract = narrow["_meta"]["health_semantics"]["weighted_deficit_points"]
+    assert contract["unit"] == "health_score_points_x_nloc"
+    assert contract["denominator"] == "gap_analysis.weighted_gross_gap_points"
+    assert contract["scale"] == {"minimum": 0, "maximum": None, "normalized": False}
+    assert "not a probability" in contract["interpretation"]
+
+
+@pytest.mark.asyncio
+async def test_requested_empty_plans_explain_real_pipeline_state(setup_mcp, health_data):
+    from repowise.server.mcp_server import get_health
+
+    healthy = await get_health(
+        targets=["src/db/models.py"],
+        include=["refactoring"],
+        only=["metrics", "findings", "refactoring_plans"],
+    )
+    assert healthy["findings_total"] == 0
+    assert healthy["refactoring_plans"] == []
+    assert healthy["refactoring_plans_status"]["reason"] == "no_applicable_findings"
+
+    unsupported = await get_health(
+        targets=["src/auth/service.py"],
+        include=["refactoring"],
+        only=["findings", "refactoring_plans"],
+    )
+    assert unsupported["findings_total"] > 0
+    assert unsupported["refactoring_plans"] == []
+    status = unsupported["refactoring_plans_status"]
+    assert status["reason"] == "no_structured_plan_available"
+    assert status["next_action"] == {
+        "tool": "get_symbol",
+        "arguments": {"symbol_id": "src/auth/service.py:10-80"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_plan_status_is_omitted_when_projection_did_not_request_plans(
+    setup_mcp, health_data
+):
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(include=["refactoring"], only=["suggestion_legend"])
+    assert "refactoring_plans" not in result
+    assert "refactoring_plans_status" not in result
+
+
+@pytest.mark.asyncio
+async def test_unresolved_and_missing_analysis_never_read_as_healthy(
+    setup_mcp, populated_db
+):
+    from repowise.server.mcp_server import get_health
+
+    unresolved = await get_health(
+        targets=["does/not/exist.py"],
+        include=["refactoring"],
+        only=["metrics", "refactoring_plans"],
+    )
+    assert unresolved["unresolved"] == [
+        {"target": "does/not/exist.py", "reason": "no_such_path"}
+    ]
+    assert unresolved["refactoring_plans_status"]["reason"] == "no_eligible_targets"
+
+    missing = await get_health(
+        include=["refactoring"],
+        only=["directive", "kpis", "refactoring_plans"],
+    )
+    assert missing["directive"] is None
+    assert missing["kpis"]["average_health"] is None
+    assert missing["kpis"]["analysis_status"] == "unavailable"
+    assert missing["refactoring_plans_status"]["reason"] == "analysis_unavailable"
+    assert missing["_meta"]["health_analysis"]["status"] == "unavailable"
 
 
 def test_only_docstring_does_not_overclaim_the_aliases():

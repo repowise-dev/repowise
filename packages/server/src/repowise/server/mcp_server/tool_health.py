@@ -26,6 +26,7 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     hydrate_recommendations,
 )
 from repowise.core.analysis.health.scoring import hotspot_health
+from repowise.core.analysis.health.semantics import health_semantics_contract
 from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.suggestions import suggestion_for
 from repowise.core.analysis.health.trends import diff_snapshots, file_trend, recent_kpis
@@ -49,6 +50,7 @@ from repowise.core.persistence.models import (
     HealthFinding,
     RefactoringSuggestion,
 )
+from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import (
@@ -664,7 +666,13 @@ def _directive(
         # is the *gross* deficit of all below-target files (not the net gap,
         # which healthy files cushion): per-file shares are then bounded by
         # 100% and sum to 100% by construction (issue #1437).
+        "recovers_weighted_deficit_points": recovers,
         "recovers_points": recovers,
+        "recovers_points_compatibility": {
+            "deprecated": True,
+            "replacement": "recovers_weighted_deficit_points",
+            "equivalent_value": True,
+        },
         "share_of_repo_gap_pct": (round(100.0 * recovers / gap_points, 1) if gap_points else None),
         "then": [m.file_path for m in by_leverage[1:3]],
         # Projected, not bare. ``include`` adds a block without subtracting the
@@ -711,6 +719,113 @@ def _directive(
     elif addresses:
         out["next_action"] = "inspect matching plan via plan_via"
     return out
+
+
+def _finding_next_action(finding: Any, repo: str | None) -> dict[str, Any]:
+    """Return one concrete source call for a finding without a stored plan."""
+    path = str(getattr(finding, "file_path", ""))
+    line_start = getattr(finding, "line_start", None)
+    line_end = getattr(finding, "line_end", None)
+    if path and line_start and line_end:
+        arguments: dict[str, Any] = {"symbol_id": f"{path}:{line_start}-{line_end}"}
+        if repo:
+            arguments["repo"] = repo
+        return {"tool": "get_symbol", "arguments": arguments}
+    arguments = {"targets": [path], "include": ["skeleton"]}
+    if repo:
+        arguments["repo"] = repo
+    return {"tool": "get_context", "arguments": arguments}
+
+
+def _refactoring_plans_status(
+    *,
+    available_plans_total: int,
+    plans_emitted: int,
+    scoped: bool,
+    has_eligible_metrics: bool,
+    finding: Any | None,
+    repo: str | None,
+) -> dict[str, Any]:
+    """Explain an explicitly requested plan projection deterministically."""
+    if plans_emitted:
+        return {"state": "available", "reason": None}
+    if available_plans_total:
+        return {
+            "state": "available_not_emitted",
+            "reason": "request_window_empty",
+            "message": "Plans exist but the requested limit/cursor window emitted none.",
+        }
+    if scoped and not has_eligible_metrics:
+        return {
+            "state": "unavailable",
+            "reason": "no_eligible_targets",
+            "message": "No requested target resolved to an eligible stored health row.",
+        }
+    if not has_eligible_metrics:
+        return {
+            "state": "unavailable",
+            "reason": "analysis_unavailable",
+            "message": "No stored health analysis is available for this population.",
+            "next_action": {
+                "command": "repowise update",
+                "reason": "run health analysis before interpreting scores or plans",
+            },
+        }
+    if finding is None:
+        return {
+            "state": "empty",
+            "reason": "no_applicable_findings",
+            "message": "The eligible population has no applicable open findings.",
+        }
+    return {
+        "state": "empty",
+        "reason": "no_structured_plan_available",
+        "message": (
+            "Findings exist, but stored evidence cannot distinguish an unsupported "
+            "transformation from unavailable or degraded refactoring analysis."
+        ),
+        "next_action": _finding_next_action(finding, repo),
+    }
+
+
+def _attach_health_analysis_meta(
+    meta: dict[str, Any], metrics: list[HealthFileMetric]
+) -> None:
+    """Keep stored analysis distinct from index/live Git verification."""
+    meta["health_semantics"] = health_semantics_contract()
+    analyzed = [m for m in metrics if getattr(m, "updated_at", None)]
+    analysis: dict[str, Any] = {
+        "status": "available" if metrics else "unavailable",
+        "source": "stored_health_analysis",
+        "recomputed_this_call": False,
+        "live_verification": {
+            "basis": "index_commit_and_live_git_head",
+            "source_bytes_verified": False,
+        },
+        "refresh": {
+            "command": "repowise update",
+            "required_before_comparison": True,
+        },
+    }
+    if not metrics:
+        analysis["reason"] = "no_stored_health_metrics"
+    if analyzed:
+        latest = max(analyzed, key=lambda m: m.updated_at)
+        analyzed_at = latest.updated_at.isoformat()
+        analysis["analyzed_at"] = analyzed_at
+        meta["health_analyzed_at"] = analyzed_at
+        commits = {c for m in analyzed if (c := getattr(m, "analyzed_commit", None))}
+        if latest_commit := getattr(latest, "analyzed_commit", None):
+            analyzed_commit = latest_commit[:12]
+            analysis["analyzed_commit"] = analyzed_commit
+            meta["health_analyzed_commit"] = analyzed_commit
+        if len(commits) > 1:
+            analysis["analyzed_commits_distinct"] = len(commits)
+            meta["health_analyzed_commits_distinct"] = len(commits)
+    else:
+        analysis["recorded_at"] = None
+        analysis["recorded_commit"] = None
+    meta["health_analysis"] = analysis
 
 
 def _dimension_average(metrics: list[HealthFileMetric], attr: str) -> float | None:
@@ -851,7 +966,9 @@ def _compute_kpis(
     if not metrics:
         return {
             "file_count": 0,
-            "average_health": 10.0,
+            "average_health": None,
+            "band": None,
+            "analysis_status": "unavailable",
             "hotspot_health": None,
             "worst_performer_path": None,
             "worst_performer_score": None,
@@ -910,7 +1027,47 @@ def _compute_kpis(
     }
 
 
-@mcp.tool(surface_order=90)
+@mcp.tool(
+    surface_order=90,
+    recipes=(
+        ToolRecipe(
+            "health_directive",
+            'get_health(only=["directive"])',
+            ("get_health",),
+        ),
+        ToolRecipe(
+            "health_file_self_check",
+            'get_health(targets=["path"], include=["refactoring"])',
+            ("get_health",),
+        ),
+        ToolRecipe(
+            "health_module_triage",
+            'get_health(targets=["module:path"], only=["modules","metrics"])',
+            ("get_health",),
+        ),
+        ToolRecipe(
+            "health_trend",
+            'get_health(include=["trend"], only=["trend"])',
+            ("get_health",),
+        ),
+        ToolRecipe(
+            "health_accuracy",
+            'get_health(include=["accuracy"], only=["accuracy"])',
+            ("get_health",),
+        ),
+        ToolRecipe(
+            "health_coverage",
+            'get_health(include=["coverage"], only=["coverage"])',
+            ("get_health",),
+        ),
+        ToolRecipe(
+            "health_performance_refactoring",
+            'get_health(include=["performance","refactoring"], '
+            'only=["performance_opportunities","refactoring_plans"])',
+            ("get_health",),
+        ),
+    ),
+)
 async def get_health(
     targets: list[str] | None = None,
     include: list[str] | None = None,
@@ -922,10 +1079,12 @@ async def get_health(
     finding_id: str | None = None,
     plan_id: str | None = None,
 ) -> dict:
-    """Code-health scores and findings — self-check a file before/after editing.
+    """Code-health scores and findings from stored analysis.
 
     No ``targets`` returns a directive-led dashboard; targets return ranked
-    per-file scores and findings using ``weighted_deficit``.
+    per-file scores and findings using ``weighted_deficit``. Calling this tool
+    verifies index/live Git facts but does not recompute health metrics. Run
+    ``repowise update`` before a meaningful before/after comparison.
 
     Args:
         targets: file paths or ``module:<name>``. Empty → dashboard. Unmatched
@@ -1850,6 +2009,18 @@ async def get_health(
                 reason="profile_cap",
             )
         result["refactoring_plans_total"] = len(refactoring_rows)
+        if wants("refactoring_plans"):
+            finding_for_action = next(iter(finding_rows), None) or next(
+                iter(lead_rows), None
+            )
+            result["refactoring_plans_status"] = _refactoring_plans_status(
+                available_plans_total=len(refactoring_recommendations),
+                plans_emitted=len(plan_payload),
+                scoped=scoped,
+                has_eligible_metrics=bool(metric_rows if scoped else all_metrics),
+                finding=finding_for_action,
+                repo=repo,
+            )
         # The deterministic prose suggestion is the fallback for biomarkers
         # that have no structured detector yet. It is emitted once per
         # biomarker type as ``suggestion_legend`` (built below, after the
@@ -2125,6 +2296,7 @@ async def get_health(
         )
         if "refactoring_plans" in only_set:
             keep |= {
+                "refactoring_plans_status",
                 "validation_profiles",
                 "validation_profiles_total",
                 "validation_profiles_emitted",
@@ -2165,25 +2337,8 @@ async def get_health(
     # Targeted mode scopes the stale signal to the asked-about files; the
     # dashboard (no targets) keeps the repo-level warning.
     result["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
-    # When the health pass last ran, which is a separate pass from indexing and
-    # can lag it. ``_build_meta``'s fields all describe the *index*, so a stale
-    # health row was previously invisible.
     analyzed_source = metric_rows if scoped else all_metrics
-    analyzed = [m for m in analyzed_source if getattr(m, "updated_at", None)]
-    if analyzed:
-        latest = max(analyzed, key=lambda m: m.updated_at)
-        result["_meta"]["health_analyzed_at"] = latest.updated_at.isoformat()
-        # The commit the health rows were scored against. Distinct from
-        # ``indexed_commit``: the incremental path upserts only the files that
-        # changed (``upsert_health_metrics``), so the table can legitimately hold
-        # rows from several passes, and reporting one SHA for all of them would
-        # be a claim this read cannot support. Report the newest pass's commit,
-        # and say how many others are still represented.
-        commits = {c for m in analyzed if (c := getattr(m, "analyzed_commit", None))}
-        if latest_commit := getattr(latest, "analyzed_commit", None):
-            result["_meta"]["health_analyzed_commit"] = latest_commit[:12]
-        if len(commits) > 1:
-            result["_meta"]["health_analyzed_commits_distinct"] = len(commits)
+    _attach_health_analysis_meta(result["_meta"], analyzed_source)
     # Server-side wall clock, as ``get_context`` already reports. Without it a
     # regression in here is invisible until someone profiles it by hand.
     for label, dropped in semantic_omissions.items():
