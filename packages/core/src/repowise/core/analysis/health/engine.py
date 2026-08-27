@@ -99,7 +99,15 @@ log = structlog.get_logger(__name__)
 # 5: raw performance findings gain stable causal linkage and structured
 # performance-fix plans; incremental execution slices widen to preserve those
 # interprocedural interpretations.
-HEALTH_ANALYZER_VERSION = 5
+# 6: five complexity and test-detection inputs changed at once, so the stored
+# metrics disagree with what the current analyzer would compute. Python ``match``
+# arms now count toward cyclomatic complexity and Pascal else-if chains flatten
+# instead of nesting, moving ``max_ccn`` and ``max_nesting``; a comment inside a
+# parameter list is no longer counted as a parameter; and two test-detection
+# fixes (a pairing heuristic the name match could not see, and Delphi's
+# ``Test<Stem>.dpr`` convention) move ``has_test_file`` in the direction that
+# stops accusing a tested file.
+HEALTH_ANALYZER_VERSION = 6
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.

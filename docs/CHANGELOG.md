@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.46.0] — 2026-08-27
+
+The headline this cycle is cross-repo contracts becoming a surface you can use rather than a graph the indexer knew about. A workspace now recognises routes once and serves them to both producers and consumers, binds each contract to a real symbol id, reads request schemas off handler signatures, and gives the whole thing a front door in the UI and over REST. Alongside it the MCP tool surface got a shared response ceiling with recoverable pagination, so no tool can silently truncate an answer with no way back, and the C++, Rust, Java and TypeScript call graphs each lost a class of wrong edge.
+
+### Added
+
+- **Cross-repo contracts have a front door.** A workspace's contracts are browsable, open from the table into what they link to, and carry the line, symbol and schema over REST (#1890, #1899). One route recogniser now serves Go, Laravel and Axum, with Django, JAX-RS, Next.js and the Hono router DSL alongside them (#1867, #1860), and a library's public API counts as a contract in its own right.
+- **Python HTTP consumers resolve through their client bindings**, so a call made through a session or a generated client still names the path and verb it actually reaches.
+- **A shared response ceiling across the MCP tools.** The five uncapped tools now answer within a canonical budget enforced at delivery, and every cap is recoverable: relationship, history and truncated test lists all carry a way back to the rows they dropped (#1924, #1930).
+- **Canonical references that round-trip.** A reference emitted by one tool can be passed to another, and `get_why` returns evidence references pointing at what it read (#1927, #1932).
+- **`claude_cli` provider**, for indexing against a Claude Code subscription instead of an API key (#1514).
+- **The knowledge graph says what it is not showing** (#1847), its arrows mean execution rather than mere reference (#1832), and a folder card is named after the module page documenting it (#1828).
+
+### Changed
+
+- **BREAKING (MCP): `get_risk`'s `will_break` field is now `may_break`** (#1892). The old name asserted a certainty the structural heuristic behind it does not have. Any client reading `will_break` must be updated.
+- **`get_overview`'s onboarding blocks are opt-in**, and `get_answer` and `get_overview` return leaner payloads for the same content.
+- **Retrieval precision improved** for `get_answer`, which can now see the call graph when expanding a question (#1933).
+- **`HEALTH_ANALYZER_VERSION` is 6 and `PARSER_SCHEMA_VERSION` is 2.** Both are picked up automatically: an existing index re-scores health on its next update rather than waiting out the decay timer, and the parse cache re-parses once so the call-graph fixes below actually apply. Neither forces a re-index.
+
+### Fixed
+
+- **C++ call resolution**: scoped `Ns::f()` calls resolve against their qualifier rather than falling to a bare name (#1915), chained calls are constrained by the inner callee's return type (#1782), in-class method declarations and receivers typed from declarations are extracted, types used only inside their own translation unit are rescued, types behind export macros parse, and an overload set resolves instead of being refused.
+- **A Rust macro invocation is no longer counted as a function call** (#1885), a Java chain rooted at an external type is no longer read as a bare-name call, and the repo-wide receiver tier no longer answers for foreign types.
+- **Health scoring inputs**: Python `match` arms count toward cyclomatic complexity (#1795), Pascal else-if chains flatten instead of nesting each arm (#1679), a comment inside a parameter list is no longer counted as a parameter (#1796), and two test-detection gaps closed, one a pairing the name heuristic could not see (#1707) and one Delphi's `Test<Stem>.dpr` convention (#1706).
+- **`is_hotspot` is emitted by the backend** rather than re-derived in the client (#1797), fix density ranks against commits rather than individual files, and `tests_to_run` ranks by files reached rather than alphabetically.
+- **`coverage add` exits non-zero when it stores nothing** (#1751), and config errors that cannot self-heal no longer promise a retry.
+- **The file page renders again**: a pure `?tab=` helper had been exported from a client module and called from the server (#1936).
+- **API timestamps render as UTC** (#1835), `CLAUDE.md` is stamped with the indexed commit rather than live `HEAD`, and a `SELECT INTO` target is no longer flagged as a cartesian join.
+
+### Documentation
+
+- The benchmarks pages lead each section with its result, pair precision with recall so neither reads alone, and state both cost denominators (#1928).
+- The MCP tool table's drifted rows and the README's tool-count claims are corrected and asserted by a test.
+
+---
+
 ## [0.45.0] — 2026-08-21
 
 The headline this cycle is test intelligence that needs no coverage report. 0.44.0 made the call graph good enough to lead with; this release walks it to answer which tests reach a file, serves that through the API, and turns the Coverage tab into a Tests tab that says something useful on a repository that has never ingested a report. Around it, Code Health's performance findings become bounded opportunities that open the matching refactoring plan, Eden AI joins as an EU-hosted provider and embedder, and pinning BLAS threads before numpy loads halves peak memory on a cold index.
