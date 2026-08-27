@@ -95,7 +95,7 @@ const TAB_FOR_VIEW: Record<CanonicalView, string> = {
 const TABS: { id: string; label: string }[] = [
   { id: "map", label: "Map" },
   { id: "coupling", label: "Coupling" },
-  { id: "packages", label: "Packages" },
+  { id: "packages", label: "Third-party" },
   { id: "symbols", label: "Symbols" },
 ];
 
