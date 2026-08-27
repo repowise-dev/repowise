@@ -17,7 +17,7 @@ export const CONFIG_SECTION = "repowise";
  * sends. `RiskRangeResponse.fix_history` is a required field and the panel
  * dereferences it, so an older server would throw rather than degrade.
  */
-export const MIN_SERVER_VERSION = "0.43.0";
+export const MIN_SERVER_VERSION = "0.45.0";
 
 /** Command ids contributed by the extension, mirrored from package.json. */
 export const Commands = {
