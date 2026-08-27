@@ -6,9 +6,12 @@ calls and expectations without changing the oracle when a behavior fails.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal
+
+import pytest
 
 PlanReason = Literal[
     "no_applicable_findings",
@@ -317,3 +320,93 @@ def test_sealed_health_semantics_matrix_records_required_measurements() -> None:
             assert case.expected_plan_count is None
             assert case.expected_empty_reason is None
 
+
+def _assert_counted(result: dict[str, Any], key: str) -> None:
+    rows = result[key]
+    assert result[f"{key}_total"] >= result[f"{key}_emitted"] == len(rows)
+
+
+@pytest.mark.asyncio
+async def test_sealed_projection_invariance_uses_independent_calls(setup_mcp, health_data):
+    from repowise.server.mcp_server import get_health
+
+    dashboard = await get_health()
+    directive = await get_health(only=["directive"], limit=0)
+    assert directive["directive"] == dashboard["directive"]
+    assert directive["_meta"]["health_semantics"] == dashboard["_meta"]["health_semantics"]
+    assert directive["_meta"]["health_analysis"] == dashboard["_meta"]["health_analysis"]
+
+    broad = await get_health(
+        targets=["src/auth/service.py"], include=["refactoring"], limit=2
+    )
+    narrow = await get_health(
+        targets=["src/auth/service.py"],
+        include=["refactoring"],
+        only=["metrics", "findings", "refactoring_plans"],
+        limit=2,
+    )
+    for key in ("metrics", "findings", "refactoring_plans"):
+        assert narrow[key] == broad[key]
+        assert narrow[f"{key}_total"] == broad[f"{key}_total"]
+        assert narrow[f"{key}_emitted"] == broad[f"{key}_emitted"]
+        _assert_counted(narrow, key)
+    assert narrow["refactoring_plans_status"] == broad["refactoring_plans_status"]
+    assert narrow.get("unresolved", []) == []
+    assert narrow["_meta"]["health_analysis"] == broad["_meta"]["health_analysis"]
+
+
+@pytest.mark.asyncio
+async def test_module_limit_changes_page_not_rollup_or_row_meaning(setup_mcp, health_data):
+    from repowise.server.mcp_server import get_health
+
+    short = await get_health(
+        targets=["module:auth", "module:db"],
+        only=["modules", "metrics"],
+        limit=1,
+    )
+    long = await get_health(
+        targets=["module:auth", "module:db"],
+        only=["modules", "metrics"],
+        limit=3,
+    )
+    assert short["modules"] == long["modules"]
+    assert short["modules_total"] == long["modules_total"] == 2
+    assert short["metrics_total"] == long["metrics_total"] == 2
+    assert short["metrics"] == long["metrics"][:1]
+    assert [row["file_path"] for row in short["metrics"]] == ["src/auth/service.py"]
+    assert short["_meta"]["health_analysis"] == long["_meta"]["health_analysis"]
+
+
+@pytest.mark.asyncio
+async def test_seven_registry_health_recipes_are_bounded_and_self_describing(
+    setup_mcp, health_data
+):
+    from repowise.server.mcp_server import get_health, tool_middleware
+
+    call = tool_middleware(get_health)
+    recipes = (
+        ({"only": ["directive"]}, "directive"),
+        ({"targets": ["src/auth/service.py"], "include": ["refactoring"]}, "metrics"),
+        (
+            {"targets": ["module:auth"], "only": ["modules", "metrics"]},
+            "modules",
+        ),
+        ({"include": ["trend"], "only": ["trend"]}, "trend"),
+        ({"include": ["accuracy"], "only": ["accuracy"]}, "defect_accuracy"),
+        ({"include": ["coverage"], "only": ["coverage"]}, "coverage"),
+        (
+            {
+                "include": ["performance", "refactoring"],
+                "only": ["performance_opportunities", "refactoring_plans"],
+            },
+            "performance_opportunities",
+        ),
+    )
+    for kwargs, answer_key in recipes:
+        result = await call(**kwargs)
+        assert answer_key in result
+        assert result["_meta"]["health_semantics"]
+        assert result["_meta"]["health_analysis"]
+        size = len(json.dumps(result, separators=(",", ":"), default=str))
+        budget = 32_000 if kwargs.get("include") else 24_000
+        assert size <= budget
