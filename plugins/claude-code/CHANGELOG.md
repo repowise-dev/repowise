@@ -2,6 +2,20 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.46.0
+
+### Changed
+- The `change-review` skill reads `directive.may_break` and
+  `directive.may_break_tests`. `get_risk` renamed both fields: the old names
+  asserted a certainty the structural heuristic behind them does not have
+  (#1892).
+- `/repowise:risk`, `/repowise:impacted-tests`, `/repowise:security` and the
+  plugin README state the public risk scale the way the tool now reports it,
+  and describe fix density as ranked against commits rather than against
+  individual files (#1891, #1914).
+- No hook change this cycle: `hooks.json` still mirrors `claude_config.py`, and
+  every tool named in a command or skill is one the server lists.
+
 ## 0.45.0
 
 ### Changed
