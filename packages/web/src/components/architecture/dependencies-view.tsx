@@ -15,21 +15,20 @@ import {
 import {
   ExternalDependenciesTable,
   type ExternalDependencyTableState,
-  type PackageGraphEvidence,
 } from "@repowise-dev/ui/dependencies";
 import { ApiError } from "@repowise-dev/ui/shared/api-error";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { Skeleton } from "@repowise-dev/ui/ui/skeleton";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import type {
+  ExternalSystemImportingFiles,
+  ExternalSystemRelationshipGraph,
   ExternalSystemSummaryEntry,
   ExternalSystemsSummary,
 } from "@repowise-dev/types/external-systems";
 import { apiGet } from "@repowise-dev/api-client";
-import type { EgoGraphResponse, NodeSearchResult } from "@/lib/api/types";
 import "@/lib/api/client";
 import {
-  chooseExternalPackageNode,
   packageSummaryRequest,
   PACKAGE_SUMMARY_LIMIT,
 } from "./package-graph";
@@ -40,49 +39,21 @@ const USAGE_STATES = ["all", "observed", "linked-unobserved", "unlinked"] as con
 const SORTS = ["importers", "edges", "name", "declarations", "manifests", "versions"] as const;
 const ORDERS = ["asc", "desc"] as const;
 const SCOPES = ["primary", "all"] as const;
-
-async function getFocusedPackageEvidence(
-  repoId: string,
-  entry: ExternalSystemSummaryEntry,
-  signal: AbortSignal,
-): Promise<PackageGraphEvidence> {
-  const candidates = await apiGet<NodeSearchResult[]>(
-    `/api/graph/${repoId}/nodes/search`,
-    { q: entry.name, limit: 20 },
-    { signal },
-  );
-  const centerNodeId = chooseExternalPackageNode(candidates, entry.name);
-  if (!centerNodeId) throw new Error("No matching external graph node was returned for this package.");
-
-  const ego = await apiGet<EgoGraphResponse>(
-    `/api/graph/${repoId}/ego`,
-    { node_id: centerNodeId, hops: 1 },
-    { signal },
-  );
-  const importingFiles = [
-    ...new Set(
-      ego.links
-        .filter((link) => link.target === centerNodeId && link.source !== centerNodeId)
-        .map((link) => link.source),
-    ),
-  ].sort();
-
-  return {
-    centerNodeId,
-    importingFiles,
-    importEdgeCount: ego.links.filter((link) => link.target === centerNodeId).length,
-    totalNodes: ego.nodes.length,
-  };
-}
+const FOCUSES = ["relationships"] as const;
+const FILE_PAGE_LIMIT = 25;
 
 export function DependenciesView({ repoId }: { repoId: string }) {
   const summaryAbortRef = useRef<AbortController | null>(null);
-  const evidenceAbortRef = useRef<AbortController | null>(null);
+  const relationshipsAbortRef = useRef<AbortController | null>(null);
+  const filesAbortRef = useRef<AbortController | null>(null);
   const [scope, setScope] = useQueryState(
     "scope",
     parseAsStringLiteral(SCOPES).withDefault("primary"),
   );
   const [selectedKey, setSelectedKey] = useQueryState("package", parseAsString);
+  const [focus, setFocus] = useQueryState("focus", parseAsStringLiteral(FOCUSES));
+  const [aggregateKey, setAggregateKey] = useQueryState("area", parseAsString);
+  const [fileOffset, setFileOffset] = useQueryState("fileOffset", parseAsInteger.withDefault(0));
   const [queryState, setQueryState] = useQueryStates({
     q: parseAsString.withDefault(""),
     ecosystem: parseAsString.withDefault("all"),
@@ -145,33 +116,83 @@ export function DependenciesView({ repoId }: { repoId: string }) {
     [data?.items, selectedKey],
   );
 
-  // Focused graph evidence is deliberately dormant on the initial page.
-  // Selecting a linked row activates node search plus a one-hop ego request.
-  const fetchEvidence = useCallback(() => {
-    evidenceAbortRef.current?.abort();
+  // A shared URL can point at a package beyond the first bounded summary page.
+  // Walk only the existing summary pages until it is found; relationship data
+  // remains dormant until both package and focus have been restored.
+  useEffect(() => {
+    if (selectedKey && data && !selected && data.truncated && !summaryValidating) {
+      void setSize(size + 1);
+    }
+  }, [data, selected, selectedKey, setSize, size, summaryValidating]);
+
+  // Relationship reads stay dormant until the inspector's explicit action.
+  const fetchRelationships = useCallback(() => {
+    relationshipsAbortRef.current?.abort();
     const controller = new AbortController();
-    evidenceAbortRef.current = controller;
-    return getFocusedPackageEvidence(repoId, selected!, controller.signal);
-  }, [repoId, selected]);
+    relationshipsAbortRef.current = controller;
+    return apiGet<ExternalSystemRelationshipGraph>(
+      `/api/repos/${repoId}/external-systems/${encodeURIComponent(selected!.package_key)}/graph`,
+      { scope, node_limit: 50, edge_limit: 200 },
+      { signal: controller.signal },
+    );
+  }, [repoId, scope, selected]);
   const {
-    data: evidence,
-    error: evidenceError,
-    isLoading: evidenceLoading,
+    data: relationships,
+    error: relationshipsError,
+    isLoading: relationshipsLoading,
+    mutate: retryRelationships,
   } = useSWR(
-    selected?.link_state === "linked"
-      ? `external-system-evidence:${repoId}:${selected.package_key}`
+    selected && focus === "relationships"
+      ? `external-system-relationships:${repoId}:${scope}:${selected.package_key}`
       : null,
-    fetchEvidence,
+    fetchRelationships,
     { revalidateOnFocus: false, revalidateOnReconnect: false },
   );
 
-  useEffect(() => {
-    if (!selected || selected.link_state !== "linked") evidenceAbortRef.current?.abort();
-  }, [selected]);
+  const fetchImportingFiles = useCallback(() => {
+    filesAbortRef.current?.abort();
+    const controller = new AbortController();
+    filesAbortRef.current = controller;
+    return apiGet<ExternalSystemImportingFiles>(
+      `/api/repos/${repoId}/external-systems/${encodeURIComponent(selected!.package_key)}/graph/files`,
+      {
+        scope,
+        aggregate_key: aggregateKey!,
+        limit: FILE_PAGE_LIMIT,
+        offset: fileOffset,
+      },
+      { signal: controller.signal },
+    );
+  }, [aggregateKey, fileOffset, repoId, scope, selected]);
+  const {
+    data: importingFiles,
+    error: importingFilesError,
+    isLoading: importingFilesLoading,
+    mutate: retryImportingFiles,
+  } = useSWR(
+    selected && focus === "relationships" && aggregateKey
+      ? `external-system-files:${repoId}:${scope}:${selected.package_key}:${aggregateKey}:${fileOffset}`
+      : null,
+    fetchImportingFiles,
+    { revalidateOnFocus: false, revalidateOnReconnect: false },
+  );
+
+  const relationshipRequestIdentity =
+    selected && focus === "relationships" ? `${repoId}:${scope}:${selected.package_key}` : null;
+  const fileRequestIdentity =
+    relationshipRequestIdentity && aggregateKey
+      ? `${relationshipRequestIdentity}:${aggregateKey}:${fileOffset}`
+      : null;
+  useEffect(
+    () => () => relationshipsAbortRef.current?.abort(),
+    [relationshipRequestIdentity],
+  );
+  useEffect(() => () => filesAbortRef.current?.abort(), [fileRequestIdentity]);
   useEffect(
     () => () => {
       summaryAbortRef.current?.abort();
-      evidenceAbortRef.current?.abort();
+      relationshipsAbortRef.current?.abort();
+      filesAbortRef.current?.abort();
     },
     [],
   );
@@ -202,6 +223,8 @@ export function DependenciesView({ repoId }: { repoId: string }) {
               onChange={(event) => {
                 void setScope(event.target.checked ? "all" : "primary");
                 void setSelectedKey(null);
+                void setFocus(null);
+                void setAggregateKey(null);
                 handleTableStateChange({ ...tableState, page: 1 });
               }}
               className="h-4 w-4 rounded border-[var(--color-border-default)] accent-[var(--color-accent-primary)]"
@@ -236,19 +259,41 @@ export function DependenciesView({ repoId }: { repoId: string }) {
           state={tableState}
           onStateChange={handleTableStateChange}
           selected={selected}
-          onSelectedChange={(entry) => void setSelectedKey(entry?.package_key ?? null)}
-          evidence={evidence}
-          evidenceLoading={evidenceLoading}
-          evidenceError={
-            evidenceError
-              ? `Focused graph evidence couldn't be loaded: ${toFriendlyMessage(evidenceError)}`
+          onSelectedChange={(entry) => {
+            void setSelectedKey(entry?.package_key ?? null);
+            void setFocus(null);
+            void setAggregateKey(null);
+            void setFileOffset(0);
+          }}
+          relationshipsOpen={focus === "relationships"}
+          relationships={relationships}
+          relationshipsLoading={relationshipsLoading}
+          relationshipsError={
+            relationshipsError
+              ? `Package relationships couldn't be loaded: ${toFriendlyMessage(relationshipsError)}`
               : null
           }
-          graphHref={
-            evidence
-              ? `/repos/${repoId}/architecture?view=files&node=${encodeURIComponent(evidence.centerNodeId)}`
-              : undefined
+          expandedAggregateKey={aggregateKey}
+          importingFiles={importingFiles}
+          importingFilesLoading={importingFilesLoading}
+          importingFilesError={
+            importingFilesError
+              ? `Importing files couldn't be loaded: ${toFriendlyMessage(importingFilesError)}`
+              : null
           }
+          onShowRelationships={() => void setFocus("relationships")}
+          onHideRelationships={() => {
+            void setFocus(null);
+            void setAggregateKey(null);
+            void setFileOffset(0);
+          }}
+          onRetryRelationships={() => void retryRelationships()}
+          onToggleAggregate={(key) => {
+            void setAggregateKey(key);
+            void setFileOffset(0);
+          }}
+          onFilesPageChange={(offset) => void setFileOffset(offset)}
+          onRetryImportingFiles={() => void retryImportingFiles()}
           renderFileLink={(path, children) => (
             <Link
               href={fileEntityPath(`/repos/${repoId}`, path)}

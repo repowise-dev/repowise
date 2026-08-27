@@ -133,6 +133,48 @@ async def _seed_summary(session_factory, repo_id: str) -> None:
             [
                 GraphNode(
                     repository_id=repo_id,
+                    node_id="src/a.ts",
+                    language="typescript",
+                    community_id=1,
+                    community_meta_json='{"label":"Web runtime"}',
+                ),
+                GraphNode(
+                    repository_id=repo_id,
+                    node_id="src/b.ts",
+                    language="typescript",
+                    community_id=2,
+                    community_meta_json='{"label":"Shared UI"}',
+                ),
+                GraphNode(
+                    repository_id=repo_id,
+                    node_id="src/dialog.ts",
+                    language="typescript",
+                    community_id=1,
+                    community_meta_json='{"label":"Web runtime"}',
+                ),
+                GraphNode(
+                    repository_id=repo_id,
+                    node_id="src/lib.rs",
+                    language="rust",
+                    community_id=3,
+                    community_meta_json='{"label":"Core"}',
+                ),
+                GraphNode(
+                    repository_id=repo_id,
+                    node_id="src/page.ts",
+                    language="typescript",
+                    community_id=1,
+                    community_meta_json='{"label":"Web runtime"}',
+                ),
+                GraphNode(
+                    repository_id=repo_id,
+                    node_id=".claude/worktrees/demo/src/a.ts",
+                    language="typescript",
+                    community_id=4,
+                    community_meta_json='{"label":"Auxiliary"}',
+                ),
+                GraphNode(
+                    repository_id=repo_id,
                     node_id="external:react",
                     language="external",
                 ),
@@ -516,3 +558,219 @@ async def test_summary_empty(client: AsyncClient) -> None:
         "ecosystems": [],
         "manifest_count": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_relationship_graph_is_aggregate_first_bounded_and_honest(
+    client: AsyncClient, app
+) -> None:
+    repo = await create_test_repo(client)
+    await _seed_summary(app.state.session_factory, repo["id"])
+
+    response = await client.get(
+        f"/api/repos/{repo['id']}/external-systems/npm:react/graph?node_limit=1&edge_limit=1"
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["package_key"] == "npm:react"
+    assert data["package_node_id"] == "package:npm:react"
+    assert data["match_basis"] == "mixed"
+    assert data["matched_external_nodes_total"] == 2
+    assert data["evidence_target_limit"] == 200
+    assert data["evidence_truncated"] is False
+    assert {target["match_basis"] for target in data["matched_external_nodes"]} == {
+        "exact",
+        "subpath",
+    }
+    assert data["aggregate_total"] == 2
+    assert data["aggregate_returned"] == 1
+    assert data["edge_total"] == 2
+    assert data["edge_returned"] == 1
+    assert data["importing_file_total"] == 2
+    assert data["import_edge_total"] == 3
+    assert data["truncated"] is True
+    assert data["nodes"][0] == {
+        "aggregate_key": "community:1",
+        "label": "Web runtime",
+        "community_id": 1,
+        "importing_file_count": 1,
+        "import_edge_count": 2,
+        "top_file": "src/a.ts",
+    }
+    assert data["edges"] == [
+        {
+            "source": "community:1",
+            "target": "package:npm:react",
+            "import_edge_count": 2,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_relationship_graph_handles_unresolved_missing_and_scoped_packages(
+    client: AsyncClient, app
+) -> None:
+    repo = await create_test_repo(client)
+    await _seed_summary(app.state.session_factory, repo["id"])
+
+    unresolved = (
+        await client.get(f"/api/repos/{repo['id']}/external-systems/npm:vitest/graph")
+    ).json()
+    assert unresolved["match_basis"] == "unresolved"
+    assert unresolved["matched_external_nodes"] == []
+    assert unresolved["nodes"] == []
+    assert unresolved["importing_file_total"] == 0
+    assert unresolved["truncated"] is False
+
+    scoped = await client.get(
+        f"/api/repos/{repo['id']}/external-systems/npm:%40radix-ui%2Freact-dialog/graph"
+    )
+    assert scoped.status_code == 200
+    assert scoped.json()["package_key"] == "npm:@radix-ui/react-dialog"
+    assert scoped.json()["match_basis"] == "subpath"
+
+    missing = await client.get(f"/api/repos/{repo['id']}/external-systems/npm:not-declared/graph")
+    assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_relationship_file_expansion_is_independently_bounded_and_paginated(
+    client: AsyncClient, app
+) -> None:
+    repo = await create_test_repo(client)
+    await _seed_summary(app.state.session_factory, repo["id"])
+
+    first = (
+        await client.get(
+            f"/api/repos/{repo['id']}/external-systems/npm:react/graph/files",
+            params={"aggregate_key": "community:1", "limit": 1},
+        )
+    ).json()
+    assert first["total"] == 1
+    assert first["returned"] == 1
+    assert first["items"][0] == {
+        "path": "src/a.ts",
+        "language": "typescript",
+        "import_edge_count": 2,
+        "matched_external_node_count": 2,
+    }
+    assert first["truncated"] is False
+
+    second = (
+        await client.get(
+            f"/api/repos/{repo['id']}/external-systems/npm:react/graph/files",
+            params={"aggregate_key": "community:2", "limit": 1, "offset": 1},
+        )
+    ).json()
+    assert second["total"] == 1
+    assert second["items"] == []
+    assert second["truncated"] is False
+
+    invalid = await client.get(
+        f"/api/repos/{repo['id']}/external-systems/npm:react/graph/files",
+        params={"aggregate_key": "directory:src"},
+    )
+    assert invalid.status_code == 422
+    too_large = await client.get(
+        f"/api/repos/{repo['id']}/external-systems/npm:react/graph/files",
+        params={"aggregate_key": "community:1", "limit": 101},
+    )
+    assert too_large.status_code == 422
+
+    missing = await client.get(
+        f"/api/repos/{repo['id']}/external-systems/npm:not-declared/graph/files",
+        params={"aggregate_key": "community:1"},
+    )
+    assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_relationship_graph_and_expansion_share_the_same_capped_target_evidence(
+    client: AsyncClient, app
+) -> None:
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        package = ExternalSystem(
+            repository_id=repo["id"],
+            name="many-targets",
+            display_name="Many targets",
+            ecosystem="npm",
+            category="library",
+            declared_in="package.json",
+            is_dev_dep=False,
+        )
+        session.add(package)
+        await session.flush()
+        session.add_all(
+            [
+                GraphNode(
+                    repository_id=repo["id"],
+                    node_id=f"external:many-targets/{index:03}",
+                    node_type="external",
+                    language="external",
+                    external_system_id=package.id,
+                )
+                for index in range(201)
+            ]
+            + [
+                GraphNode(
+                    repository_id=repo["id"],
+                    node_id=f"src/file-{index:03}.ts",
+                    language="typescript",
+                    community_id=9,
+                    community_meta_json='{"label":"Many consumers"}',
+                )
+                for index in range(201)
+            ]
+        )
+        session.add_all(
+            GraphEdge(
+                repository_id=repo["id"],
+                source_node_id=f"src/file-{index:03}.ts",
+                target_node_id=f"external:many-targets/{index:03}",
+                edge_type="imports",
+            )
+            for index in range(201)
+        )
+        await session.flush()
+
+    graph = (
+        await client.get(f"/api/repos/{repo['id']}/external-systems/npm:many-targets/graph")
+    ).json()
+    assert graph["matched_external_nodes_total"] == 201
+    assert graph["evidence_target_limit"] == 200
+    assert graph["evidence_truncated"] is True
+    assert graph["importing_file_total"] == 200
+
+    files = (
+        await client.get(
+            f"/api/repos/{repo['id']}/external-systems/npm:many-targets/graph/files",
+            params={"aggregate_key": "community:9", "limit": 100},
+        )
+    ).json()
+    assert files["total"] == 200
+    assert files["returned"] == 100
+    assert files["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_relationship_graph_query_count_is_constant(
+    client: AsyncClient, app, test_engine
+) -> None:
+    repo = await create_test_repo(client)
+    await _seed_summary(app.state.session_factory, repo["id"])
+    statements: list[str] = []
+
+    def record(_conn, _cursor, statement, _parameters, _context, _executemany) -> None:
+        statements.append(statement)
+
+    event.listen(test_engine.sync_engine, "before_cursor_execute", record)
+    try:
+        response = await client.get(f"/api/repos/{repo['id']}/external-systems/npm:react/graph")
+    finally:
+        event.remove(test_engine.sync_engine, "before_cursor_execute", record)
+
+    assert response.status_code == 200
+    selects = [statement for statement in statements if statement.lstrip().startswith("SELECT")]
+    assert len(selects) == 2

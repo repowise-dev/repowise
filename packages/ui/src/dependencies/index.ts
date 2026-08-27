@@ -10,5 +10,8 @@ export {
   type ExternalDependencySort,
   type ExternalDependencyTableState,
   type ExternalDependencyUsage,
-  type PackageGraphEvidence,
 } from "./external-dependencies-table";
+export {
+  PackageRelationshipGraph,
+  type PackageRelationshipGraphProps,
+} from "./package-relationship-graph";

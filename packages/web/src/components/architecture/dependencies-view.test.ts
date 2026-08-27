@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { NodeSearchResult } from "../../lib/api/types";
 import {
-  chooseExternalPackageNode,
   packageSummaryRequest,
   PACKAGE_SUMMARY_LIMIT,
 } from "./package-graph";
@@ -10,38 +8,6 @@ import {
   queryFromTableState,
   tableStateFromQuery,
 } from "./package-query-state";
-
-function candidate(node_id: string): NodeSearchResult {
-  return { node_id, language: "", symbol_count: 0 };
-}
-
-describe("chooseExternalPackageNode", () => {
-  it("prefers the exact package node over subpaths and fuzzy matches", () => {
-    expect(
-      chooseExternalPackageNode(
-        [candidate("external:react-dom"), candidate("external:react/jsx-runtime"), candidate("external:react")],
-        "react",
-      ),
-    ).toBe("external:react");
-  });
-
-  it("falls back to a package subpath and ignores repository files", () => {
-    expect(
-      chooseExternalPackageNode(
-        [candidate("packages/react/index.ts"), candidate("external:@scope/pkg/subpath")],
-        "@scope/pkg",
-      ),
-    ).toBe("external:@scope/pkg/subpath");
-  });
-
-  it("returns null when node search has no external match", () => {
-    expect(chooseExternalPackageNode([candidate("src/pkg.py")], "pkg")).toBeNull();
-  });
-
-  it("does not fuzzy-focus a sibling package", () => {
-    expect(chooseExternalPackageNode([candidate("external:react-dom")], "react")).toBeNull();
-  });
-});
 
 describe("package query state", () => {
   it("round-trips shareable filter, sort, and page state", () => {

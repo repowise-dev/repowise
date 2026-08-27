@@ -6,11 +6,12 @@ import {
   Box,
   ChevronLeft,
   ChevronRight,
-  ExternalLink,
-  FileCode2,
+  Network,
   Search,
 } from "lucide-react";
 import type {
+  ExternalSystemImportingFiles,
+  ExternalSystemRelationshipGraph,
   ExternalSystemSummaryEntry,
   ExternalSystemsSummary,
 } from "@repowise-dev/types/external-systems";
@@ -28,6 +29,7 @@ import {
   SelectValue,
 } from "../ui/select";
 import { Sheet, SheetContent, SheetTitle } from "../ui/sheet";
+import { PackageRelationshipGraph } from "./package-relationship-graph";
 
 export type ExternalDependencyRole = "all" | "runtime" | "dev-only" | "mixed";
 export type ExternalDependencyUsage =
@@ -65,23 +67,26 @@ export const DEFAULT_EXTERNAL_DEPENDENCY_STATE: ExternalDependencyTableState = {
   page: 1,
 };
 
-export interface PackageGraphEvidence {
-  centerNodeId: string;
-  importingFiles: string[];
-  importEdgeCount: number;
-  totalNodes: number;
-}
-
 export interface ExternalDependenciesTableProps {
   data: ExternalSystemsSummary;
   state: ExternalDependencyTableState;
   onStateChange: (state: ExternalDependencyTableState) => void;
   selected: ExternalSystemSummaryEntry | null;
   onSelectedChange: (entry: ExternalSystemSummaryEntry | null) => void;
-  evidence?: PackageGraphEvidence | undefined;
-  evidenceLoading?: boolean | undefined;
-  evidenceError?: string | null | undefined;
-  graphHref?: string | undefined;
+  relationshipsOpen?: boolean | undefined;
+  relationships?: ExternalSystemRelationshipGraph | undefined;
+  relationshipsLoading?: boolean | undefined;
+  relationshipsError?: string | null | undefined;
+  expandedAggregateKey?: string | null | undefined;
+  importingFiles?: ExternalSystemImportingFiles | undefined;
+  importingFilesLoading?: boolean | undefined;
+  importingFilesError?: string | null | undefined;
+  onShowRelationships?: (() => void) | undefined;
+  onHideRelationships?: (() => void) | undefined;
+  onRetryRelationships?: (() => void) | undefined;
+  onToggleAggregate?: ((aggregateKey: string | null) => void) | undefined;
+  onFilesPageChange?: ((offset: number) => void) | undefined;
+  onRetryImportingFiles?: (() => void) | undefined;
   renderFileLink?: ((path: string, children: React.ReactNode) => React.ReactNode) | undefined;
   pageSize?: number | undefined;
   onLoadMore?: (() => void) | undefined;
@@ -174,18 +179,38 @@ function Versions({ entry }: { entry: ExternalSystemSummaryEntry }) {
 
 function PackageInspector({
   entry,
-  evidence,
-  evidenceLoading,
-  evidenceError,
-  graphHref,
+  relationshipsOpen,
+  relationships,
+  relationshipsLoading,
+  relationshipsError,
+  expandedAggregateKey,
+  importingFiles,
+  importingFilesLoading,
+  importingFilesError,
+  onShowRelationships,
+  onHideRelationships,
+  onRetryRelationships,
+  onToggleAggregate,
+  onFilesPageChange,
+  onRetryImportingFiles,
   renderFileLink,
   onClose,
 }: {
   entry: ExternalSystemSummaryEntry | null;
-  evidence?: PackageGraphEvidence | undefined;
-  evidenceLoading?: boolean | undefined;
-  evidenceError?: string | null | undefined;
-  graphHref?: string | undefined;
+  relationshipsOpen?: boolean | undefined;
+  relationships?: ExternalSystemRelationshipGraph | undefined;
+  relationshipsLoading?: boolean | undefined;
+  relationshipsError?: string | null | undefined;
+  expandedAggregateKey?: string | null | undefined;
+  importingFiles?: ExternalSystemImportingFiles | undefined;
+  importingFilesLoading?: boolean | undefined;
+  importingFilesError?: string | null | undefined;
+  onShowRelationships?: (() => void) | undefined;
+  onHideRelationships?: (() => void) | undefined;
+  onRetryRelationships?: (() => void) | undefined;
+  onToggleAggregate?: ((aggregateKey: string | null) => void) | undefined;
+  onFilesPageChange?: ((offset: number) => void) | undefined;
+  onRetryImportingFiles?: (() => void) | undefined;
   renderFileLink?: ExternalDependenciesTableProps["renderFileLink"];
   onClose: () => void;
 }) {
@@ -210,6 +235,35 @@ function PackageInspector({
             </header>
 
             <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-5 py-5">
+              {relationshipsOpen ? (
+                relationshipsLoading && !relationships ? (
+                  <div className="space-y-3" role="status">
+                    <Button variant="ghost" size="sm" onClick={onHideRelationships}>Back to package details</Button>
+                    <p className="text-xs text-[var(--color-text-tertiary)]">Loading package relationships…</p>
+                  </div>
+                ) : relationshipsError ? (
+                  <div className="space-y-3" role="alert">
+                    <Button variant="ghost" size="sm" onClick={onHideRelationships}>Back to package details</Button>
+                    <p className="text-xs text-[var(--color-text-secondary)]">{relationshipsError}</p>
+                    {onRetryRelationships ? <Button variant="outline" size="sm" onClick={onRetryRelationships}>Retry</Button> : null}
+                  </div>
+                ) : relationships ? (
+                  <PackageRelationshipGraph
+                    packageLabel={entry.display_name}
+                    graph={relationships}
+                    expandedAggregateKey={expandedAggregateKey}
+                    files={importingFiles}
+                    filesLoading={importingFilesLoading}
+                    filesError={importingFilesError}
+                    renderFileLink={renderFileLink}
+                    onBack={() => onHideRelationships?.()}
+                    onToggleAggregate={(key) => onToggleAggregate?.(key)}
+                    onFilesPageChange={(offset) => onFilesPageChange?.(offset)}
+                    onRetryFiles={onRetryImportingFiles}
+                  />
+                ) : null
+              ) : (
+                <>
               <section>
                 <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">Declarations</h3>
                 <p className="mt-2 text-xs text-[var(--color-text-secondary)]">
@@ -225,53 +279,24 @@ function PackageInspector({
 
               <section>
                 <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">Import graph evidence</h3>
-                {evidenceLoading && !evidence ? (
-                  <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">Loading focused graph evidence…</p>
-                ) : evidenceError ? (
-                  <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">{evidenceError}</p>
-                ) : evidence ? (
-                  <>
-                    <p className="mt-2 text-xs text-[var(--color-text-secondary)]">
-                      {entry.importing_file_count} importing file{entry.importing_file_count === 1 ? "" : "s"} and {entry.import_edge_count} import edge{entry.import_edge_count === 1 ? "" : "s"} in the persisted graph.
-                    </p>
-                    <ul className="mt-3 space-y-1.5">
-                      {evidence.importingFiles.slice(0, 20).map((path) => (
-                        <li key={path} className="flex items-start gap-2 text-xs">
-                          <FileCode2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
-                          <span className="min-w-0 break-all font-mono text-[var(--color-text-secondary)]">
-                            {renderFileLink ? renderFileLink(path, path) : path}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                    {entry.importing_file_count > evidence.importingFiles.length ? (
-                      <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
-                        Focused evidence returned {evidence.importingFiles.length} of {entry.importing_file_count} importing files.
-                      </p>
-                    ) : null}
-                    {entry.external_node_count > 1 ? (
-                      <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
-                        This focus shows one of {entry.external_node_count} linked graph targets. Package totals above include all targets.
-                      </p>
-                    ) : null}
-                  </>
-                ) : (
-                  <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
-                    {entry.link_state === "unlinked"
-                      ? "This declaration is not linked to a persisted graph node."
-                      : "No import edges were observed for the linked graph node."}
-                  </p>
-                )}
+                <p className="mt-2 text-xs text-[var(--color-text-secondary)]">
+                  {entry.importing_file_count} importing file{entry.importing_file_count === 1 ? "" : "s"} and {entry.import_edge_count} import edge{entry.import_edge_count === 1 ? "" : "s"} in the persisted graph.
+                </p>
+                {entry.external_node_count > 1 ? (
+                  <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">Evidence spans {entry.external_node_count} linked graph targets.</p>
+                ) : entry.link_state === "unlinked" ? (
+                  <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">This declaration has no linked external graph target.</p>
+                ) : null}
               </section>
+                </>
+              )}
             </div>
 
-            {graphHref ? (
+            {!relationshipsOpen && onShowRelationships ? (
               <footer className="border-t border-[var(--color-border-default)] p-4">
-                <Button asChild className="w-full">
-                  <a href={graphHref}>
-                    Open focused package in graph
-                    <ExternalLink className="h-4 w-4" />
-                  </a>
+                <Button className="w-full" onClick={onShowRelationships}>
+                  <Network className="h-4 w-4" />
+                  Show relationships
                 </Button>
               </footer>
             ) : null}
@@ -288,10 +313,20 @@ export function ExternalDependenciesTable({
   onStateChange,
   selected,
   onSelectedChange,
-  evidence,
-  evidenceLoading,
-  evidenceError,
-  graphHref,
+  relationshipsOpen,
+  relationships,
+  relationshipsLoading,
+  relationshipsError,
+  expandedAggregateKey,
+  importingFiles,
+  importingFilesLoading,
+  importingFilesError,
+  onShowRelationships,
+  onHideRelationships,
+  onRetryRelationships,
+  onToggleAggregate,
+  onFilesPageChange,
+  onRetryImportingFiles,
   renderFileLink,
   pageSize = 25,
   onLoadMore,
@@ -574,10 +609,20 @@ export function ExternalDependenciesTable({
 
       <PackageInspector
         entry={selected}
-        evidence={evidence}
-        evidenceLoading={evidenceLoading}
-        evidenceError={evidenceError}
-        graphHref={graphHref}
+        relationshipsOpen={relationshipsOpen}
+        relationships={relationships}
+        relationshipsLoading={relationshipsLoading}
+        relationshipsError={relationshipsError}
+        expandedAggregateKey={expandedAggregateKey}
+        importingFiles={importingFiles}
+        importingFilesLoading={importingFilesLoading}
+        importingFilesError={importingFilesError}
+        onShowRelationships={onShowRelationships}
+        onHideRelationships={onHideRelationships}
+        onRetryRelationships={onRetryRelationships}
+        onToggleAggregate={onToggleAggregate}
+        onFilesPageChange={onFilesPageChange}
+        onRetryImportingFiles={onRetryImportingFiles}
         renderFileLink={renderFileLink}
         onClose={() => onSelectedChange(null)}
       />

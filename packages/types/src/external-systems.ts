@@ -93,3 +93,68 @@ export interface ExternalSystemsSummary {
   ecosystems: string[];
   manifest_count: number;
 }
+
+export type ExternalSystemMatchBasis = "exact" | "subpath" | "mapped" | "mixed" | "unresolved";
+
+export interface ExternalSystemGraphTarget {
+  node_id: string;
+  match_basis: Exclude<ExternalSystemMatchBasis, "mixed" | "unresolved">;
+}
+
+export interface ExternalSystemRelationshipNode {
+  aggregate_key: string;
+  label: string;
+  community_id: number;
+  importing_file_count: number;
+  import_edge_count: number;
+  top_file: string | null;
+}
+
+export interface ExternalSystemRelationshipEdge {
+  source: string;
+  target: string;
+  import_edge_count: number;
+}
+
+export interface ExternalSystemRelationshipGraph {
+  package_key: string;
+  package_name: string;
+  package_node_id: string;
+  match_basis: ExternalSystemMatchBasis;
+  matched_external_nodes: ExternalSystemGraphTarget[];
+  matched_external_nodes_total: number;
+  matched_external_nodes_truncated: boolean;
+  evidence_target_limit: number;
+  evidence_truncated: boolean;
+  nodes: ExternalSystemRelationshipNode[];
+  edges: ExternalSystemRelationshipEdge[];
+  aggregate_total: number;
+  aggregate_returned: number;
+  edge_total: number;
+  edge_returned: number;
+  importing_file_total: number;
+  import_edge_total: number;
+  node_limit: number;
+  edge_limit: number;
+  truncated: boolean;
+  scope: ExternalSystemsSummaryScope;
+}
+
+export interface ExternalSystemImportingFile {
+  path: string;
+  language: string;
+  import_edge_count: number;
+  matched_external_node_count: number;
+}
+
+export interface ExternalSystemImportingFiles {
+  package_key: string;
+  aggregate_key: string;
+  items: ExternalSystemImportingFile[];
+  total: number;
+  returned: number;
+  limit: number;
+  offset: number;
+  truncated: boolean;
+  scope: ExternalSystemsSummaryScope;
+}
