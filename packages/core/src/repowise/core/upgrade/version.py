@@ -42,7 +42,13 @@ STORE_FORMAT_VERSION: int = 2
 
 #: Current parser/extractor schema. Folded into the parse-cache fingerprint in
 #: place of the package version. See :mod:`repowise.core.ingestion.parse_cache`.
-PARSER_SCHEMA_VERSION: int = 1
+#:
+#: v2: ``RawCall`` gained ``scope_name`` (the C++ ``Ns::f()`` qualifier as
+#: written) and ``receiver_call`` (the inner call of a chained expression), and
+#: a Rust macro invocation stopped being extracted as a call. A cache written
+#: before that carries neither field, so the scoped-call, chained-call and
+#: macro fixes would resolve against stale rows instead of firing.
+PARSER_SCHEMA_VERSION: int = 2
 
 #: state.json key holding the store format version that wrote the store.
 STORE_FORMAT_VERSION_KEY = "store_format_version"
