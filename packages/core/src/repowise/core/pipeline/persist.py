@@ -1380,11 +1380,9 @@ async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
     external_systems = getattr(result, "external_systems", None) or []
     if external_systems:
         id_map = await bulk_upsert_external_systems(session, repo_id, external_systems)
-        # Collapse multi-manifest duplicates: any id for a given name is fine
-        # (renderer only needs name/category/ecosystem which are stable).
-        name_to_id: dict[str, int] = {}
-        for (name, _declared_in), sys_id in id_map.items():
-            name_to_id.setdefault(name, sys_id)
+        from repowise.core.persistence.crud import build_external_system_link_map
+
+        name_to_id = build_external_system_link_map(external_systems, id_map)
         await link_graph_nodes_to_external_systems(session, repo_id, name_to_id)
 
     # ---- Symbols -------------------------------------------------------------

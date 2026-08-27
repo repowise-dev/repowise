@@ -47,3 +47,49 @@ export interface ExternalSystemsRegistry {
   ecosystems: string[];
   manifests: string[];
 }
+
+export type ExternalSystemLinkState = "linked" | "unlinked";
+export type ExternalSystemsSummaryScope = "primary" | "all";
+
+/** One canonical package with declaration and persisted graph-usage aggregates. */
+export interface ExternalSystemSummaryEntry {
+  package_key: string;
+  name: string;
+  display_name: string;
+  ecosystem: string;
+  category: string;
+  io_kind: C4IoKind | null;
+  runtime_declared: boolean;
+  dev_declared: boolean;
+  declaration_count: number;
+  manifest_count: number;
+  versions: string[];
+  versions_total: number;
+  versions_truncated: boolean;
+  multiple_versions: boolean;
+  external_node_count: number;
+  import_edge_count: number;
+  importing_file_count: number;
+  link_state: ExternalSystemLinkState;
+}
+
+/** Bounded package summaries for the external-dependency scan surface. */
+export interface ExternalSystemsSummary {
+  items: ExternalSystemSummaryEntry[];
+  returned: number;
+  total_packages: number;
+  limit: number;
+  offset: number;
+  truncated: boolean;
+  scope: ExternalSystemsSummaryScope;
+  excluded_declarations: number;
+  total_declarations: number;
+  runtime_packages: number;
+  dev_only_packages: number;
+  observed_packages: number;
+  linked_packages: number;
+  unlinked_packages: number;
+  linked_without_imports: number;
+  ecosystems: string[];
+  manifest_count: number;
+}

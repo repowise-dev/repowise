@@ -8,7 +8,9 @@ each dependency was declared in — for the Architecture Dependencies view.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from typing import Literal
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +19,11 @@ from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas.external_systems import (
     ExternalSystemEntry,
     ExternalSystemsResponse,
+    ExternalSystemsSummaryResponse,
+)
+from repowise.server.services.external_systems import (
+    MAX_SUMMARY_LIMIT,
+    build_external_systems_summary,
 )
 
 router = APIRouter(
@@ -24,6 +31,23 @@ router = APIRouter(
     tags=["external-systems"],
     dependencies=[Depends(verify_api_key)],
 )
+
+
+@router.get(
+    "/{repo_id}/external-systems/summary",
+    response_model=ExternalSystemsSummaryResponse,
+)
+async def summarize_external_systems(
+    repo_id: str,
+    scope: Literal["primary", "all"] = "primary",
+    limit: int = Query(default=200, ge=1, le=MAX_SUMMARY_LIMIT),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(get_db_session),
+) -> ExternalSystemsSummaryResponse:
+    """Canonical packages joined to already-persisted import evidence."""
+    return await build_external_systems_summary(
+        session, repo_id, scope=scope, limit=limit, offset=offset
+    )
 
 
 @router.get("/{repo_id}/external-systems", response_model=ExternalSystemsResponse)
