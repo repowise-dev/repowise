@@ -679,8 +679,20 @@ get_dead_code(kind="unused_export", group_by="owner")
 Code-health marker scores: the same deterministic markers the
 `repowise health` CLI computes, across three signals (defect risk,
 maintainability, performance), exposed for agentic workflows. Zero LLM calls.
-Use it to **self-check a change before opening a PR**: the same signals a
-code-health merge-gate judges it on.
+Use it to inspect stored health analysis before a change and after an explicit
+`repowise update`: re-calling `get_health` alone does not recompute metrics.
+
+**Safe recipes:**
+
+```text
+get_health(only=["directive"])
+get_health(targets=["path"], include=["refactoring"])
+get_health(targets=["module:path"], only=["modules","metrics"])
+get_health(include=["trend"], only=["trend"])
+get_health(include=["accuracy"], only=["accuracy"])
+get_health(include=["coverage"], only=["coverage"])
+get_health(include=["performance","refactoring"], only=["performance_opportunities","refactoring_plans"])
+```
 
 **Parameters:**
 
@@ -702,7 +714,8 @@ per-dimension scores, and the score breakdown. Each finding carries a `dimension
 (`defect` / `maintainability` / `performance`).
 
 **Lead with `directive`.** Dashboard mode opens with the single file to fix
-first, its dominant finding, `recovers_points` / `share_of_repo_gap_pct` (what
+first, its dominant finding, `recovers_weighted_deficit_points` /
+`share_of_repo_gap_pct` (what
 fixing it buys the headline; the share is bounded by 100% and sums to 100%
 across `high_leverage_files` — the gross deficit of below-target files is the
 denominator, not the net gap, so a single file cannot read as closing more than
@@ -710,10 +723,14 @@ the whole remaining gap), and `then`, the next two by leverage. Every other
 block ranks and describes; this one recommends. Same role as `get_risk`'s
 `directive`. Rank by `weighted_deficit`, not `score` — the score floors at 1.0.
 
+`recovers_points` remains an exact deprecated alias during the compatibility
+window; `recovers_points_compatibility` names its replacement.
+
 **Nothing is dropped silently.** Any `targets` entry that matched nothing is
 named in `unresolved` with a reason (`not_indexed` → run `repowise update`,
 `no_such_path`, `excluded`, `no_such_module`; a missed module name also returns
-`known_modules`), so an empty `findings` list means healthy and nothing else. A
+`known_modules`). Missing stored analysis is explicitly unavailable rather than
+fabricated as a healthy score. A
 target set that resolves to nothing still answers in targeted mode rather than
 falling back to the repo dashboard. Every capped list carries a `*_total`
 sibling — including under `only`, which retains it automatically. `unresolved`
@@ -721,7 +738,10 @@ and `known_modules` survive any `only` projection too, for the same reason
 `mode` does: a caller who has to ask for the error report in order to see it
 does not have an error report.
 
-`_meta.health_analyzed_at` dates the health pass, which is separate from
+`_meta.health_analysis` explicitly labels the result as stored analysis,
+states that the call did not recompute it, distinguishes index/live-Git facts
+from source-byte verification, and gives the exact `repowise update` refresh
+step. `_meta.health_analyzed_at` dates the health pass, which is separate from
 indexing and can lag it, and `_meta.health_analyzed_commit` says which commit
 those scores were computed against. The incremental update path rescores only
 the files that changed, so the metrics table can hold rows from several passes
@@ -767,7 +787,7 @@ make that actionable rather than a mystery:
   (dashboard mode) is the top-N ranked by it, distinct from `worst_files`, which
   sorts by raw score and ranks a 30-line file at 1.0 equal to a 1,200-line file at
   1.0 that moves the average ~40x more.
-- `weighted_deficit`, `directive.recovers_points` and
+- `weighted_deficit`, `directive.recovers_weighted_deficit_points` and
   `gap_analysis.weighted_gap_points` share one unit — *score-points x NLOC* —
   which compares against itself and nothing else. Every `high_leverage_files`
   row and the `directive` also carry `share_of_repo_gap_pct`, the same quantity
@@ -775,6 +795,10 @@ make that actionable rather than a mystery:
   (`gap_analysis.weighted_gross_gap_points`), so the shares are bounded by 100%
   and sum to 100% by construction; that plus
   `gap_analysis.files_to_reach_target` is what answers "is this worth doing".
+- `_meta.health_semantics` gives the numerator, gross-deficit denominator,
+  nonnegative unbounded scale and direction. These are deterministic heuristic
+  triage points, not probabilities, normalized score points, percentages or
+  guaranteed improvement.
 - `kpis.non_code_files` and `kpis.average_health_code_only` say how much of the
   headline is markdown/JSON/YAML. No biomarker walks those files, so they score
   a mechanical 10.0 meaning "nothing looked at this" — on this repo, 233 of
@@ -819,6 +843,12 @@ The opt-in enrichments:
   plans on the files that move the headline surface first; `refactoring_plans_total`
   reports the full count behind the cap. Each plan echoes its
   `file_weighted_deficit`. Full shapes in [`docs/layers/REFACTORING.md`](../layers/REFACTORING.md).
+- A requested empty plan list includes `refactoring_plans_status.reason`:
+  `no_applicable_findings`, `no_structured_plan_available`,
+  `no_eligible_targets`, or `analysis_unavailable`. The structured-analysis
+  fallback includes a concrete `get_symbol` or `get_context` source call.
+  Projection exclusion emits no plan warning; a zero-row cursor window is
+  reported separately as `request_window_empty`.
 - **dimension filter** narrows the returned findings to one pillar, e.g.
   `include=["biomarkers", "performance"]`.
 
