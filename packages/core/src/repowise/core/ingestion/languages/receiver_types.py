@@ -34,7 +34,12 @@ from collections.abc import Iterable, Mapping
 from typing import NamedTuple
 
 from ..language_data import get_builtin_types
-from ..type_names import bare_type_name, is_resolvable_type_name, strip_type_arguments
+from ..type_names import (
+    bare_type_name,
+    is_resolvable_type_name,
+    strip_type_arguments,
+    unwrap_pointer_like,
+)
 
 # A type as written before a declared name: optionally qualified, optionally
 # generic to two levels of nesting, optionally an array. A third level yields
@@ -264,6 +269,46 @@ _SWIFT_CONSTRUCTED = re.compile(
     r"(?<![\w.])(?:let|var)\s+(?P<name>[a-z_]\w*)\s*=\s*(?P<type>[A-Z]\w*)\s*\((?![^()]*\)\s*\.)"
 )
 
+# C++ writes the C family's ``T name``, with three differences ``_TYPE`` cannot
+# read: ``::`` qualifies rather than ``.``, a pointer or reference star binds
+# between the type and the name, and a lowercase head is ordinary rather than a
+# Go-style unexported one, because every STL type is written that way.
+#
+# A keyword head is refused outright. Without it ``struct foo {`` and
+# ``namespace foo {`` present as ``struct``/``namespace`` naming a ``foo``, and
+# ``auto`` would be read as a type rather than as the absence of one.
+_CPP_KEYWORDS = (
+    r"(?:const|constexpr|consteval|constinit|static|mutable|volatile|extern|"
+    r"inline|virtual|explicit|friend|typedef|using|namespace|template|typename|"
+    r"class|struct|union|enum|public|private|protected|return|delete|new|throw|"
+    r"case|else|do|if|for|while|switch|goto|break|continue|auto|register|"
+    r"operator|sizeof|decltype|noexcept|co_await|co_return|co_yield)"
+)
+
+# Two levels of nesting, the same ceiling ``_TYPE`` states and for the same
+# reason: a third needs a real bracket matcher, and failing to type a name
+# costs an edge rather than inventing one.
+_CPP_TYPE = r"(?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*(?:\s*<(?:[^<>]|<[^<>]*>)*>)?"
+
+# ``T name``, ``T* name``, ``T& name``, ``ns::T name``, ``W<T> name``, closed by
+# the same punctuation the C family requires plus ``{`` for brace init.
+#
+# ``(`` is deliberately NOT a closer, and it is load-bearing twice. ``Status
+# doIt(int x);`` is a method declaration and not a variable of type ``Status``,
+# and it is the commonest line in a C++ header. Excluding it also drops ``Foo
+# bar(args);``, a real construction -- that costs an edge, which is the safe
+# direction, and it additionally keeps a constructed local from being read at a
+# scope where a same-named field would answer instead.
+#
+# ``>`` and ``:`` sit in the lookbehind so the scan cannot restart inside a
+# type it has already read: without them ``std::shared_ptr<Foo>& p`` matches a
+# second time at ``shared_ptr``.
+_CPP_DECLARATION = re.compile(
+    rf"(?<![\w.>:])(?!{_CPP_KEYWORDS}\b)(?P<type>{_CPP_TYPE})"
+    rf"(?:\s*[*&]{{1,2}}\s*|\s+)(?P<name>[a-z_]\w*)\s*(?=(?P<closer>[=;,){{]))"
+)
+
+
 _C_FAMILY = (_TYPED_DECLARATION, _INFERRED_FROM_NEW)
 # No Go shape captures a closer, so every Go declaration carries ``""`` and
 # class scope would drop all of them. That is the intended reading: Go is not
@@ -273,6 +318,7 @@ _KT_FAMILY = (_KT_ANNOTATED, _KT_CONSTRUCTED)
 _SWIFT_FAMILY = (_SWIFT_ANNOTATED, _SWIFT_CONSTRUCTED)
 
 _LANGUAGE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
+    "cpp": (_CPP_DECLARATION,),
     "csharp": _C_FAMILY,
     "go": _GO_FAMILY,
     "java": _C_FAMILY,
@@ -290,11 +336,12 @@ RECEIVER_TYPE_LANGUAGES = frozenset(_LANGUAGE_PATTERNS)
 # answer, and consulting it could only bind a bare local name to a field.
 #
 # Kotlin is here on a count rather than on its semantics, which is the lesson
-# bug 63 cost: Python has implicit field access too, and registering it would
-# have promised nothing, because only 1.8% of its field receivers are typed
-# where this scan looks. Kotlin declares a property at class scope in its own
-# idiom, and the scan does find them — 56 of ktor's 1,349 gained edges and 100
-# of exposed's 320, hand-read 10/10 correct. Small, and measured.
+# the Python attempt cost: Python has implicit field access too, and
+# registering it would have promised nothing, because only 1.8% of its field
+# receivers are typed where this scan looks. Kotlin declares a property at
+# class scope in its own idiom, and the scan does find them — 56 of ktor's
+# 1,349 gained edges and 100 of exposed's 320, hand-read 10/10 correct. Small,
+# and measured.
 #
 # Only a `val`/`var` reaches class scope. A primary-constructor parameter with
 # a default closes on `=` there too and is not a property at all, which is why
@@ -400,10 +447,14 @@ def framework_decorated_type(decorators: Iterable[str], language: str) -> str | 
     return None
 
 _LANGUAGE_BLOCK_COMMENTS: dict[str, re.Pattern[str]] = {
+    # C++ needs the block strip for the reason Kotlin does: doxygen writes
+    # `@param Type name`, which is exactly the shape the scan reads.
+    "cpp": _BLOCK_COMMENT,
     "kotlin": _BLOCK_COMMENT,
 }
 
 _LANGUAGE_COMMENTS: dict[str, re.Pattern[str]] = {
+    "cpp": _LINE_COMMENT,
     "csharp": _LINE_COMMENT,
     "go": _LINE_COMMENT,
     "java": _LINE_COMMENT,
@@ -418,12 +469,18 @@ class Declaration(NamedTuple):
 
     ``closer`` is the punctuation that ended the declaration, or empty where
     the shape has none. Only class scope reads it.
+
+    ``unwrapped`` marks a type taken from inside a pointer-like wrapper rather
+    than written outright. The two spellings answer differently depending on
+    which operator the call used, and the caller that cannot see the operator
+    reads this to refuse the ambiguous names.
     """
 
     line: int
     name: str
     type_name: str
     closer: str = ""
+    unwrapped: bool = False
 
 
 # What can end a field. `var` has no place here at all: it is a local-only
@@ -445,12 +502,22 @@ def _nests_in_a_builtin(raw: str, language: str) -> bool:
     return bool(separator) and head in get_builtin_types(language)
 
 
-def _usable_type_name(raw: str, language: str) -> str | None:
-    """The bare name *raw* denotes, or None if it can name no repo symbol."""
+def _usable_type_name(raw: str, language: str) -> tuple[str | None, bool]:
+    """``(bare name, unwrapped)`` for *raw*, or ``(None, False)``.
+
+    C++ is the one language that looks inside the spelling: ``shared_ptr<Foo>``
+    denotes a ``Foo`` at every call the arrow can reach, and taking the head
+    would answer ``shared_ptr``, which names no repo symbol and resolves
+    nothing. Every other language keeps the head, where a generic really is
+    the type the value has.
+    """
     if _nests_in_a_builtin(raw, language):
-        return None
-    name = raw if raw.isidentifier() else bare_type_name(raw)
-    return name if is_resolvable_type_name(name, language) else None
+        return None, False
+    inner = unwrap_pointer_like(raw) if language == "cpp" else None
+    name = inner or (raw if raw.isidentifier() else bare_type_name(raw))
+    if not is_resolvable_type_name(name, language):
+        return None, False
+    return name, inner is not None
 
 
 def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
@@ -474,14 +541,14 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
 
     # One file writes the same type name hundreds of times, and normalising it
     # walks the string character by character. Resolve each spelling once.
-    resolved: dict[str, str | None] = {}
+    resolved: dict[str, tuple[str | None, bool]] = {}
     found: list[Declaration] = []
     for pattern in patterns:
         for match in pattern.finditer(cleaned):
             raw = match.group("type")
             if raw not in resolved:
                 resolved[raw] = _usable_type_name(raw, language)
-            type_name = resolved[raw]
+            type_name, unwrapped = resolved[raw]
             if type_name is None:
                 continue
             groups = match.groupdict()
@@ -497,6 +564,7 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
                     match.group("name"),
                     type_name,
                     closer,
+                    unwrapped,
                 )
             )
 
@@ -536,6 +604,24 @@ def types_in_span(
         _record(types, declaration)
 
     return types
+
+
+def unwrapped_names_in_span(
+    declarations: tuple[Declaration, ...],
+    start_line: int,
+    end_line: int,
+) -> frozenset[str]:
+    """The names in one body whose type was taken from inside a wrapper.
+
+    Separate from ``types_in_span`` rather than folded into its return: only
+    C++ can produce one of these, and only one caller asks.
+    """
+    first = bisect_left(declarations, start_line, key=lambda d: d.line)
+    return frozenset(
+        declaration.name
+        for declaration in declarations[first:]
+        if declaration.line <= end_line and declaration.unwrapped
+    )
 
 
 def _merged(spans: Iterable[tuple[int, int]]) -> tuple[tuple[int, int], ...]:

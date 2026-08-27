@@ -49,7 +49,7 @@ def test_head_match_is_silent(tmp_path, monkeypatch):
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=["a.py"])
     assert "stale_warning" not in out
     assert out["index_behind"] is False
-    assert "live_head" not in out
+    assert out["live_head"] == _INDEXED[:12]
 
 
 def test_no_git_signal_omits_index_behind_entirely(tmp_path, monkeypatch):
@@ -233,8 +233,10 @@ def test_no_answer_hint_names_an_external_tool() -> None:
     from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT, answer_hint
 
     hints = [answer_hint(c) for c in ("high", "medium", "low")]
-    hints += [answer_hint("low", degraded="no-llm-provider", retrieval_quality=q)
-              for q in ("high", "partial", "weak")]
+    hints += [
+        answer_hint("low", degraded="no-llm-provider", retrieval_quality=q)
+        for q in ("high", "partial", "weak")
+    ]
     assert not [h for h in hints if h and "Grep" in h]
     assert "Grep" not in NO_HITS_RECOVERY_HINT
     assert "search_codebase" in NO_HITS_RECOVERY_HINT

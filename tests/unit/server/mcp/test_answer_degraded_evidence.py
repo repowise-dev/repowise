@@ -24,6 +24,7 @@ from repowise.server.mcp_server.tool_answer.answer import (
     _degraded_payload,
     _drop_duplicated_guess_excerpts,
 )
+from repowise.server.mcp_server.tool_answer.projection import project_answer_payload
 
 
 def _tree(tmp_path, *, body_lines: int = 6) -> SimpleNamespace:
@@ -459,8 +460,9 @@ async def test_degraded_does_not_ship_the_excerpt_twice(tmp_path):
     hits[0]["excerpt"] = "x" * 1500
     payload = await _degraded(ctx, hits, {"Blueprint"})
 
-    assert payload["retrieval"][0]["excerpt"] == "x" * 1500
-    assert "excerpt" not in payload["best_guesses"][0]
+    external = project_answer_payload(payload, question="what is Blueprint")
+    assert external["best_guesses"][0]["excerpt"] == "x" * 1500
+    assert "retrieval" not in external
 
 
 async def test_degraded_keeps_the_guess_excerpt_when_nothing_duplicates_it(tmp_path):

@@ -57,7 +57,7 @@ defect-validated score from deterministic markers).
 | `/repowise:health` | Code-health KPIs, lowest-scoring files, refactoring targets, trends |
 | `/repowise:coverage` | Ingest or inspect coverage reports (lights up untested hotspots + per-test map) |
 | `/repowise:impacted-tests` | Tests whose coverage intersects a change (commit / range / staged) |
-| `/repowise:risk` | Defect-risk score for a change (commit or `base..head` range) |
+| `/repowise:risk` | Repo-relative review priority plus a supporting diff-shape score |
 | `/repowise:security` | Full-history secret scan (`repowise security scan --history`) |
 | `/repowise:dead-code` | Unreachable files, unused exports, zombie packages by confidence |
 | `/repowise:export` | Export wiki pages or a Structurizr architecture model |
@@ -90,7 +90,7 @@ surface is the ten flagship tools below plus `list_repos` (see
 | `get_symbol` | Raw source of one symbol with exact line bounds |
 | `search_codebase` | Hybrid code search — `mode="auto"` routes identifiers to indexed symbols, paths to files, prose to semantic wiki search |
 | `get_risk` | Per-file hotspot, dependents, co-changes, owners; PR `directive` block with `changed_files` |
-| `get_change_risk` | Whole-change defect-risk score for a commit or `base..head` range |
+| `get_change_risk` | Benchmarked live-change percentile/classification plus supporting diff-shape score |
 | `get_why` | Architectural decisions — search, path-anchored, or health dashboard |
 | `get_dead_code` | Unused/unreachable findings tiered by confidence |
 | `get_health` | 1–10 code-health score and marker findings per file |

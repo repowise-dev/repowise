@@ -28,6 +28,7 @@ def _create_test_app():
     from fastapi.responses import JSONResponse
 
     from repowise.server.routers import (
+        blast_radius,
         c4,
         code_health,
         costs,
@@ -82,6 +83,7 @@ def _create_test_app():
     app.include_router(jobs.router)
     app.include_router(symbols.router)
     app.include_router(graph.router)
+    app.include_router(blast_radius.router)
     app.include_router(c4.router)
     app.include_router(meta.router)
     app.include_router(webhooks.router)

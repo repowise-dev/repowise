@@ -26,7 +26,7 @@ export interface RiskCoverageScatterProps {
 }
 
 /**
- * Health × tests. Y is the defect-risk score (0 to 10, higher is better) and
+ * Health × tests. Y is the defect-health score (0 to 10, higher is healthier) and
  * dot radius encodes lines of code on both bases. What X means depends on which
  * signal answered, and that is the whole design.
  *

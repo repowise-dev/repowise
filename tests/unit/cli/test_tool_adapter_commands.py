@@ -496,6 +496,63 @@ def test_why_projection_keeps_the_handles_on_what_truncation_removed():
     assert out["dropped_decisions"] == ["id7"]
 
 
+def test_why_projection_keeps_evidence_identity_and_provenance():
+    ref = {
+        "id": "ev_shared",
+        "repository": "default",
+        "kind": "commit",
+        "commit": "a" * 40,
+        "provenance": "historical",
+        "source": "episode",
+    }
+    payload = {
+        "mode": "search",
+        "decisions": [
+            {
+                "id": "d1",
+                "title": "Decision",
+                "source": "session",
+                "provenance": "human_decision",
+                "evidence_refs": [ref],
+                "restates": ["d0"],
+            }
+        ],
+        "episodes": [
+            {
+                "kind": "code_fix",
+                "provenance": "historical",
+                "evidence_refs": [ref],
+            }
+        ],
+        "git_archaeology": {
+            "git_log": [
+                {
+                    "sha": "a" * 12,
+                    "provenance": "historical",
+                    "evidence_refs": [ref],
+                }
+            ]
+        },
+        "code_rationale": [
+            {
+                "path": "a.py",
+                "lines": [1, 2],
+                "comment": "because",
+                "provenance": "extracted_rationale",
+                "evidence_refs": [ref],
+            }
+        ],
+    }
+
+    out = project_why(payload)
+
+    assert out["decisions"][0]["evidence_refs"] == [ref]
+    assert out["decisions"][0]["restates"] == ["d0"]
+    assert out["episodes"][0]["evidence_refs"] == [ref]
+    assert out["git_archaeology"]["git_log"][0]["evidence_refs"] == [ref]
+    assert out["code_rationale"][0]["evidence_refs"] == [ref]
+
+
 def test_why_dashboard_projection_caps_each_list_with_its_total():
     out = project_why(WHY_DASHBOARD_PAYLOAD)
     assert out["counts"] == {"active": 37, "stale": 14}

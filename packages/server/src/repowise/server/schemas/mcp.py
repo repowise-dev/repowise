@@ -10,7 +10,13 @@ class McpToolInfo(BaseModel):
 
     name: str
     description: str
+    tier: str
     default: bool
+    default_single_repo: bool
+    default_workspace: bool
+    eligible: bool
+    eligible_single_repo: bool
+    eligible_workspace: bool
     requires_workspace: bool
     enabled: bool
 

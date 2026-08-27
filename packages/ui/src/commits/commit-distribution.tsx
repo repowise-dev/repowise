@@ -12,7 +12,7 @@ export interface CommitDistributionProps {
 }
 
 /**
- * The two views of how the change-risk score behaves in this repo.
+ * Two views of how the supporting diff-shape score behaves in this repo.
  *
  * They stay a pair. The histogram says where the tercile cuts fall, the
  * scatter says what commit shape lands you above them, and neither answers the

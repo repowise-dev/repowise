@@ -425,6 +425,15 @@ def implicated_withheld_symbols(
     return out
 
 
+def _confidence_score(hit: dict) -> float:
+    """Return a score on get_answer's absolute coverage confidence scale."""
+    score = hit.get("score", 0.0)
+    factor = hit.get("_confidence_score_factor", 1.0)
+    if isinstance(factor, (int, float)) and factor >= 0:
+        return score * factor
+    return score
+
+
 def _top_two_score_ratio(hits: list[dict]) -> float:
     """The top hit's retrieval score over the runner-up's.
 
@@ -435,7 +444,7 @@ def _top_two_score_ratio(hits: list[dict]) -> float:
     no hits at all is zero.
     """
     if len(hits) >= 2:
-        return hits[0].get("score", 0.0) / (hits[1].get("score", 0.0) or 1e-9)
+        return _confidence_score(hits[0]) / (_confidence_score(hits[1]) or 1e-9)
     return float("inf") if hits else 0.0
 
 
@@ -548,8 +557,8 @@ def dominance_reason(hits: list[dict], *, agreement_dominant: bool = False) -> s
         return None
     if len(hits) < 2:
         return "sole_hit"
-    top_score = hits[0].get("score", 0.0)
-    second_score = hits[1].get("score", 0.0) or 1e-9
+    top_score = _confidence_score(hits[0])
+    second_score = _confidence_score(hits[1]) or 1e-9
     if top_score >= _DOMINANCE_ABS_SCORE_FLOOR:
         if (top_score - second_score) >= _DOMINANCE_ABS_GAP:
             return "gap"
@@ -587,7 +596,7 @@ def _retrieval_quality(hits: list[dict], agreement_dominant: bool) -> str:
     ambiguity caveat are keyed on. Without that the payload could rate retrieval
     weak and treat it as dominant in the same breath.
     """
-    top_score = hits[0].get("score", 0.0) if hits else 0.0
+    top_score = _confidence_score(hits[0]) if hits else 0.0
     dominant_grade = is_dominant(hits, agreement_dominant=agreement_dominant)
     if dominant_grade and top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR:
         return "high"
@@ -685,8 +694,8 @@ def _grade_answer(
     """
     dominant = dominance is not None
     _ratio = _top_two_score_ratio(hits)
-    _top_score = hits[0].get("score", 0.0) if hits else 0.0
-    _second_score = hits[1].get("score", 0.0) if len(hits) >= 2 else 0.0
+    _top_score = _confidence_score(hits[0]) if hits else 0.0
+    _second_score = _confidence_score(hits[1]) if len(hits) >= 2 else 0.0
 
     # A response can EARN "high" on a NON-dominant retrieval, by two routes that
     # are NOT equally good and so are tracked apart. Both need the score floor,

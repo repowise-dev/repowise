@@ -1402,8 +1402,8 @@ class TestCoverageEntry(Base):
 class AnswerCache(Base):
     """Cached LLM-synthesized answers from get_answer.
 
-    Keyed by (repo_id, question_hash). The hash is computed from the
-    normalized question text only — answer cache invalidation on index
+    Keyed by (repo_id, question_hash). The hash is a versioned digest of the
+    normalized question and normalized scope. Answer cache invalidation on index
     change is handled by deleting rows for a repository when its alembic
     head advances (cheap to rebuild).
 
@@ -1417,7 +1417,7 @@ class AnswerCache(Base):
     repository_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
     )
-    # SHA-256 hex of the normalized (lowercased + stripped) question.
+    # SHA-256 hex of the versioned normalized question + scope identity.
     question_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     # Original (un-normalized) question, kept for human inspection.
     question: Mapped[str] = mapped_column(Text, nullable=False)

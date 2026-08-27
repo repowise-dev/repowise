@@ -150,18 +150,29 @@ def test_unbounded_update_still_flagged(dialect):
 
 
 # --------------------------------------------------------------------------
-# large_method: a flat match dispatch is layout, not a size smell
+# large_method: a large Python match dispatch is real branching (each case
+# is an if/elif-equivalent branch), so it is a size + complexity smell
 # --------------------------------------------------------------------------
 
 
-def test_large_method_skips_flat_match_dispatch():
+def test_large_method_fires_on_match_dispatch():
+    """A 31-case Python ``match`` dispatch is real branching, not layout.
+
+    Regression for #1774: Python match/case is pattern matching — each case
+    is a distinct branch, structurally an if/elif chain. The old flat-match
+    suppression reported this dispatch at CCN 2, which let a 65-line
+    dispatcher dodge the large-method detector. It now counts each arm and
+    must be flagged like any other tangled large method.
+    """
     fm = walk_file("m.py", "python", _flat_match_src().encode())
     assert fm.functions, "expected a function to be parsed"
     fn = fm.functions[0]
-    # The flat dispatch trips the NLOC threshold but sits at CCN 2 (layout).
+    # Trips the NLOC threshold and now also the CCN floor (31 arms + base).
     assert fn.nloc >= LargeMethodDetector._NLOC_THRESHOLD
-    assert fn.ccn == 2
-    assert LargeMethodDetector().detect(_fn_ctx([fn])) == []
+    assert fn.ccn >= LargeMethodDetector._CCN_FLOOR
+    out = LargeMethodDetector().detect(_fn_ctx([fn]))
+    assert len(out) == 1, "a large match dispatch must be flagged as large"
+    assert out[0].function_name == "dispatch"
 
 
 def test_large_method_still_fires_on_real_branching():

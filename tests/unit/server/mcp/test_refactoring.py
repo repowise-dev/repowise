@@ -105,7 +105,10 @@ async def test_generate_code_disabled(factory, _mcp_globals) -> None:
     _mcp_globals._repo_path = str(repo_dir)
 
     result = await generate_refactoring_code(sid)
-    assert result["error"] == "disabled"
+    assert result["resolved"] is True
+    assert result["suggestion_id"].startswith("plan_")
+    assert result["generation"]["available"] is False
+    assert result["generation"]["reason"] == "disabled"
 
 
 @pytest.mark.asyncio

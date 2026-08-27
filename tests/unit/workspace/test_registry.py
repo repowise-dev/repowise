@@ -114,6 +114,61 @@ class TestResolveRepoParam:
         registry = RepoRegistry(tmp_path, config)
         assert registry.resolve_repo_param("frontend") == "frontend"
 
+    def test_list_repos_path_identities_round_trip(self, tmp_path: Path) -> None:
+        config = _make_workspace(tmp_path, ["backend", "frontend"])
+        registry = RepoRegistry(tmp_path, config)
+
+        assert registry.resolve_repo_param("frontend") == "frontend"
+        assert registry.resolve_repo_param("frontend/") == "frontend"
+        assert registry.resolve_repo_param(str((tmp_path / "frontend").resolve())) == "frontend"
+
+    def test_mixed_case_alias_keeps_emitted_identity(self, tmp_path: Path) -> None:
+        config = _make_workspace(tmp_path, ["backend"])
+        config.repos[0].alias = "BackendAPI"
+        config.default_repo = "BackendAPI"
+        registry = RepoRegistry(tmp_path, config)
+
+        assert registry.resolve_repo_param("BackendAPI") == "BackendAPI"
+        assert registry.resolve_repo_param("backendapi") == "BackendAPI"
+
+    def test_cross_repo_identity_collision_is_rejected(self, tmp_path: Path) -> None:
+        for name in ("services", "backend"):
+            (tmp_path / name).mkdir()
+        config = WorkspaceConfig(
+            repos=[
+                RepoEntry(path="services", alias="backend"),
+                RepoEntry(path="backend", alias="api"),
+            ]
+        )
+
+        with pytest.raises(ValueError, match="identities collide"):
+            RepoRegistry(tmp_path, config)
+
+    def test_alias_cannot_shadow_another_repo_path_by_case(
+        self, tmp_path: Path
+    ) -> None:
+        config = WorkspaceConfig(
+            repos=[
+                RepoEntry(path="services/api", alias="foo"),
+                RepoEntry(path="FOO", alias="service"),
+            ]
+        )
+
+        with pytest.raises(ValueError, match="shadows path"):
+            RepoRegistry(tmp_path, config)
+
+    @pytest.mark.parametrize(
+        ("path", "alias"),
+        [("service", "all"), ("all", "service")],
+    )
+    def test_workspace_all_identity_is_reserved(
+        self, tmp_path: Path, path: str, alias: str
+    ) -> None:
+        config = WorkspaceConfig(repos=[RepoEntry(path=path, alias=alias)])
+
+        with pytest.raises(ValueError, match="reserved"):
+            RepoRegistry(tmp_path, config)
+
     def test_invalid_alias_raises(self, tmp_path: Path) -> None:
         config = _make_workspace(tmp_path, ["backend", "frontend"])
         registry = RepoRegistry(tmp_path, config)

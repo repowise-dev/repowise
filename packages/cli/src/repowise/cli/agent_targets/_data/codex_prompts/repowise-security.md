@@ -48,4 +48,4 @@ repowise security scan --history --all-patterns --output json
   (`hardcoded_password` / `hardcoded_secret`) to avoid noise. Pass
   `--all-patterns` for code-smell patterns (`eval`, `os.system`, weak hashes, …).
 - Never invent findings. If the scan stores zero findings, say so plainly.
-- For change defect risk (not secret scanning), use `/prompts:repowise-risk`.
+- For live-change review priority (not secret scanning), use `/prompts:repowise-risk`.

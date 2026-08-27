@@ -19,6 +19,7 @@ export * from "./symbols.js";
 export * from "./chat.js";
 export * from "./workspace.js";
 export * from "./blast-radius.js";
+export * from "./risk-semantics.js";
 export * from "./jobs.js";
 export * from "./settings.js";
 export * from "./security.js";

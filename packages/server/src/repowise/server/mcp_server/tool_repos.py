@@ -7,6 +7,7 @@ from typing import Any
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._references import repository_identity
 
 
 def _workspace_repos(registry: Any) -> list[dict[str, Any]]:
@@ -46,7 +47,7 @@ def _workspace_repos(registry: Any) -> list[dict[str, Any]]:
         absolute_path = (registry.workspace_root / entry.path).resolve()
         repos.append(
             {
-                "alias": entry.alias,
+                "alias": repository_identity(entry.alias),
                 "path": entry.path,
                 "absolute_path": absolute_path.as_posix(),
                 "is_default": entry.alias == default_alias,
@@ -57,21 +58,25 @@ def _workspace_repos(registry: Any) -> list[dict[str, Any]]:
     return repos
 
 
-@mcp.tool()
+@mcp.tool(tier="utility", requires_workspace=True, surface_order=110)
 async def list_repos() -> dict[str, Any]:
     """List repos available through this MCP server.
 
-    In workspace mode this returns every configured workspace repo alias. Use
-    those aliases as the ``repo`` parameter on workspace-aware tools.
+    In workspace mode this returns every configured repository's canonical
+    alias, config-relative path, and absolute path. Any emitted identity can
+    be passed unchanged as ``repo`` to workspace-aware tools.
     """
     registry = _state._registry
     if registry is not None:
         return {
             "workspace": True,
             "workspace_root": registry.workspace_root.as_posix(),
-            "default_repo": registry.get_default_alias(),
+            "default_repo": repository_identity(registry.get_default_alias()),
             "repos": _workspace_repos(registry),
-            "hint": "Use repo='<alias>' on tools that accept a repo parameter.",
+            "hint": (
+                "Pass any emitted alias, path, or absolute_path unchanged as repo "
+                "on workspace-aware tools."
+            ),
             "_meta": _build_meta(),
         }
 

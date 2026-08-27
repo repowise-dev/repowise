@@ -12,7 +12,7 @@ import json
 from dataclasses import asdict
 from typing import Any
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.signals import file_signals
@@ -38,6 +38,7 @@ from repowise.core.persistence.models import (
     HealthFinding,
     Repository,
 )
+from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._graph_files import keep_projected_edge, node_to_file
 from repowise.server.mcp_server._helpers import filter_dicts_by_key, filter_path_list
 from repowise.server.schemas.intelligence import SYMBOL_RELATION_GROUP_OF
@@ -115,24 +116,15 @@ def _unique_by_symbol(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
 async def _count_neighbors_by_edge_type(
     session: AsyncSession, repo_id: str, node_id: str, *, inbound: bool
 ) -> dict[str, int]:
-    """Count distinct inbound (or outbound) symbols per edge type, above the
-    confidence floor — the TRUE totals, independent of the display limit.
+    """Count qualifying edge rows per type to size each directional fetch.
 
-    Without this the callers list capped silently at the limit and reported
-    ``truncated: false``, which misled an agent doing a find-all-callers sweep
-    on a high-fan-in symbol into thinking 20 was the whole set (S2 dogfood).
-
-    `crud.get_node_degree_by_edge_type` answers the same shape for the REST
-    symbol page and is deliberately **not** reused: it counts edges with no
-    confidence floor, while this surface counts distinct symbols above 0.7. Two
-    symbols can be joined by more than one edge, so borrowing it would make the
-    total exceed what the rows can ever show and re-arm the bug above. The
-    rows and the totals have to be cut by the same rule.
+    The emitted true total is computed after policy filtering and symbol
+    deduplication. These raw counts only ensure each ranked fetch is large
+    enough to contain that complete post-policy population.
     """
     matched = GraphEdge.target_node_id if inbound else GraphEdge.source_node_id
-    other = GraphEdge.source_node_id if inbound else GraphEdge.target_node_id
     stmt = (
-        select(GraphEdge.edge_type, func.count(distinct(other)))
+        select(GraphEdge.edge_type, func.count(GraphEdge.id))
         .where(
             GraphEdge.repository_id == repo_id,
             matched == node_id,
@@ -154,6 +146,7 @@ async def _resolve_call_graph(
     want_callers: bool = False,
     want_callees: bool = False,
     exclude_spec: Any = None,
+    collector: OmissionCollector | None = None,
 ) -> None:
     """Resolve callers/callees for a symbol and attach to result_data."""
     repo_id = repository.id
@@ -183,7 +176,9 @@ async def _resolve_call_graph(
         # an empty callers list forced a second round-trip per orientation
         # pass for no reason; the graph has the answer at file granularity.
         if node is not None and node.node_type == "file" and want_callers:
-            await _resolve_file_level_callers(session, repo_id, node, result_data, exclude_spec)
+            await _resolve_file_level_callers(
+                session, repo_id, node, result_data, exclude_spec, collector
+            )
             if want_callees:
                 result_data["callees"] = []
             return
@@ -201,12 +196,12 @@ async def _resolve_call_graph(
     # Totals per edge type, per direction, before any rows. They say which
     # relation kinds exist at all, so nothing is fetched speculatively, and
     # they are the numbers reported — the rows are cut from the same rule.
-    totals_in = (
+    row_counts_in = (
         await _count_neighbors_by_edge_type(session, repo_id, node.node_id, inbound=True)
         if want_callers
         else {}
     )
-    totals_out = (
+    row_counts_out = (
         await _count_neighbors_by_edge_type(session, repo_id, node.node_id, inbound=False)
         if want_callees
         else {}
@@ -246,11 +241,11 @@ async def _resolve_call_graph(
     # django, where `Model` served 39 subclasses and 1 of its 8 callers. It is
     # mild on this repo (6 rows lost, all where `extends` ties `calls` at 0.9)
     # but it is the same mechanism and it is repo-dependent.
-    present = sorted(set(totals_in) | set(totals_out))
+    present = sorted(set(row_counts_in) | set(row_counts_out))
     edges_by_type: dict[str, list[GraphEdge]] = {}
     for edge_type in present:
-        want_in = want_callers and edge_type in totals_in
-        want_out = want_callees and edge_type in totals_out
+        want_in = want_callers and edge_type in row_counts_in
+        want_out = want_callees and edge_type in row_counts_out
         if not (want_in or want_out):
             continue
         edges_by_type[edge_type] = await get_graph_edges_for_node(
@@ -259,7 +254,7 @@ async def _resolve_call_graph(
             node.node_id,
             direction=("both" if want_in and want_out else ("callers" if want_in else "callees")),
             edge_types=[edge_type],
-            limit=limit if edge_type == "calls" else _RELATION_ROW_CAP,
+            limit=max(row_counts_in.get(edge_type, 0), row_counts_out.get(edge_type, 0), 1),
         )
 
     # Hydrated once for every edge type at once: the neighbour lookup is the
@@ -295,18 +290,16 @@ async def _resolve_call_graph(
             if e.source_node_id == node.node_id:
                 outbound.append(_entry(e, e.target_node_id, with_edge_type=is_call))
 
-        for direction, rows, totals in (
-            ("in", inbound, totals_in),
-            ("out", outbound, totals_out),
+        for direction, rows in (
+            ("in", inbound),
+            ("out", outbound),
         ):
             rows = filter_dicts_by_key(rows, "file", exclude_spec)
             rows.sort(key=lambda x: -(x.get("confidence") or 0))
-            # One entry per neighbouring symbol, highest-confidence edge kept.
-            # The truncation check compares this length against a
-            # COUNT(DISTINCT), so counting edges here would report "not
-            # truncated" while real callers are missing (the S2 dogfood).
+            # One entry per neighbouring symbol, highest-confidence edge kept;
+            # this post-policy list is the source of the public true total.
             rows = _unique_by_symbol(rows)
-            total = totals.get(edge_type, 0)
+            total = len(rows)
 
             if edge_type == "calls":
                 key = "callers" if direction == "in" else "callees"
@@ -314,16 +307,21 @@ async def _resolve_call_graph(
                     direction == "out" and not want_callees
                 ):
                     continue
-                result_data[key] = rows
-                if total > len(rows):
-                    result_data[f"{key}_total"] = total
-                    result_data[f"{key}_truncated"] = True
-                    if direction == "in":
-                        result_data["_callers_note"] = (
-                            f"Showing top {len(rows)} of {total} callers by confidence. "
-                            f"The graph view caps here; for the complete set (e.g. a "
-                            f"signature change) grep '{node.name}('."
-                        )
+                visible = cap_collection(
+                    result_data,
+                    key,
+                    rows,
+                    limit,
+                    collector,
+                    label=f"{target} :: {key} beyond cap={limit}",
+                )
+                if total > len(visible) and direction == "in":
+                    result_data["_callers_note"] = (
+                        f"Showing top {len(visible)} of {total} callers by confidence. "
+                        "Recover the omitted rows with get_symbol on the response's "
+                        "repowise omission reference; grep remains useful when graph "
+                        "coverage itself may be incomplete."
+                    )
                 continue
 
             if not total:
@@ -332,15 +330,24 @@ async def _resolve_call_graph(
             # are different sentences and an agent needs to know which it is
             # in. `group` is the shared vocabulary #1660 pinned, imported
             # rather than re-listed so a new edge type cannot land unnamed.
-            relations.append(
-                {
-                    "edge_type": edge_type,
-                    "group": SYMBOL_RELATION_GROUP_OF[edge_type],
-                    "direction": direction,
-                    "total": total,
-                    "rows": rows,
-                }
+            relation = {
+                "edge_type": edge_type,
+                "group": SYMBOL_RELATION_GROUP_OF[edge_type],
+                "direction": direction,
+                "total": total,
+            }
+            cap_collection(
+                relation,
+                "rows",
+                rows,
+                _RELATION_ROW_CAP,
+                collector,
+                label=(
+                    f"{target} :: relations.{edge_type}.{direction} "
+                    f"beyond cap={_RELATION_ROW_CAP}"
+                ),
             )
+            relations.append(relation)
 
     # `calls` may be absent entirely, and an omitted key reads as "not asked
     # for" rather than "none" — the distinction an agent needs before deciding
@@ -363,7 +370,7 @@ async def _resolve_call_graph(
         # calls X" would contradict the `_callers_note` telling the agent to go
         # and grep for them.
         inbound_kinds = [r for r in relations if r["direction"] == "in"]
-        if want_callers and not totals_in.get("calls") and inbound_kinds:
+        if want_callers and not row_counts_in.get("calls") and inbound_kinds:
             reached = ", ".join(f"{r['total']} {r['edge_type']}" for r in inbound_kinds)
             result_data["_call_graph_note"] = (
                 f"Nothing calls '{node.name}'; it is reached by {reached}. See `relations`."
@@ -376,6 +383,7 @@ async def _resolve_file_level_callers(
     node: GraphNode,
     result_data: dict[str, Any],
     exclude_spec: Any = None,
+    collector: OmissionCollector | None = None,
 ) -> None:
     """File-target callers: importing files + inbound symbol-call rollup.
 
@@ -386,9 +394,14 @@ async def _resolve_file_level_callers(
     from repowise.core.persistence.models import GraphEdge
 
     # Who imports this file (file-node inbound import edges).
-    import_edges = await get_graph_edges_for_node(
-        session, repo_id, node.node_id, direction="callers", edge_types=["imports"], limit=50
+    import_res = await session.execute(
+        select(GraphEdge).where(
+            GraphEdge.repository_id == repo_id,
+            GraphEdge.target_node_id == node.node_id,
+            GraphEdge.edge_type == "imports",
+        )
     )
+    import_edges = list(import_res.scalars().all())
     importer_ids = [e.source_node_id for e in import_edges if e.target_node_id == node.node_id]
     importer_nodes = await get_graph_nodes_by_ids(session, repo_id, importer_ids)
     # For file nodes the node_id IS the path; file_path may be unset.
@@ -443,7 +456,14 @@ async def _resolve_file_level_callers(
     entries = filter_dicts_by_key(entries, "file", exclude_spec)
     entries.sort(key=lambda x: -(x.get("inbound_calls") or 0))
 
-    result_data["callers"] = entries[:20]
+    cap_collection(
+        result_data,
+        "callers",
+        entries,
+        20,
+        collector,
+        label=f"{node.node_id} :: file callers beyond cap=20",
+    )
     result_data["_call_graph_note"] = (
         "File-level rollup: importing files plus inbound cross-file call "
         "counts. For symbol-precise callers pass 'file.py::Symbol'."

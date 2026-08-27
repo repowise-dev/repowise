@@ -189,6 +189,9 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "preproc_def": "variable",  # #define MACRO value
             "preproc_function_def": "function",  # #define MACRO(x) ...
             "declaration": "function",  # forward declarations + dtor decls
+            # In-class member-function declaration; cpp.scm anchors these on
+            # the declarator, not the enclosing ``field_declaration``.
+            "function_declarator": "function",
             "alias_declaration": "type_alias",  # using X = Y;
         },
         import_node_types=["preproc_include"],
@@ -196,7 +199,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=public_by_default,
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_specifier", "struct_specifier"}),
-        declaration_node_types=frozenset({"declaration"}),
+        declaration_node_types=frozenset({"declaration", "function_declarator"}),
     ),
     "c": LanguageConfig(
         symbol_node_types={
