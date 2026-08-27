@@ -306,6 +306,23 @@ def _emergency_fit(
             return
 
 
+def _reconcile_health_plan_status(result: dict[str, Any]) -> None:
+    """Keep plan availability honest after the final budget mutates collections."""
+    status = result.get("refactoring_plans_status")
+    plans = result.get("refactoring_plans")
+    if (
+        isinstance(status, dict)
+        and status.get("state") == "available"
+        and (plans is None or (isinstance(plans, list) and not plans))
+        and result.get("refactoring_plans_total", 0)
+    ):
+        status.update(
+            state="available_not_emitted",
+            reason="response_budget",
+            message="Plans exist but were removed by the final response budget.",
+        )
+
+
 def enforce_response_budget(
     tool: str,
     result: Any,
@@ -379,6 +396,9 @@ def enforce_response_budget(
         emergency = OmissionCollector(tool, repo_root=repo_root)
         _emergency_fit(result, contract, emergency, working_limit)
         emergency.attach(result)
+
+    if tool == "get_health":
+        _reconcile_health_plan_status(result)
 
     if result.get("truncated"):
         result.setdefault("_meta", {}).setdefault("state", {})["truncated"] = True

@@ -679,8 +679,9 @@ get_dead_code(kind="unused_export", group_by="owner")
 Code-health marker scores: the same deterministic markers the
 `repowise health` CLI computes, across three signals (defect risk,
 maintainability, performance), exposed for agentic workflows. Zero LLM calls.
-Use it to inspect stored health analysis before a change and after an explicit
-`repowise update`: re-calling `get_health` alone does not recompute metrics.
+Use it to inspect stored health analysis before a change and after committing
+health-relevant changes and running `repowise update`: neither re-calling
+`get_health` nor updating an uncommitted working tree recomputes those metrics.
 
 **Safe recipes:**
 
@@ -740,8 +741,8 @@ does not have an error report.
 
 `_meta.health_analysis` explicitly labels the result as stored analysis,
 states that the call did not recompute it, distinguishes index/live-Git facts
-from source-byte verification, and gives the exact `repowise update` refresh
-step. `_meta.health_analyzed_at` dates the health pass, which is separate from
+from source-byte verification, and gives the exact commit-then-update refresh
+precondition. `_meta.health_analyzed_at` dates the health pass, which is separate from
 indexing and can lag it, and `_meta.health_analyzed_commit` says which commit
 those scores were computed against. The incremental update path rescores only
 the files that changed, so the metrics table can hold rows from several passes
@@ -844,9 +845,11 @@ The opt-in enrichments:
   reports the full count behind the cap. Each plan echoes its
   `file_weighted_deficit`. Full shapes in [`docs/layers/REFACTORING.md`](../layers/REFACTORING.md).
 - A requested empty plan list includes `refactoring_plans_status.reason`:
-  `no_applicable_findings`, `no_structured_plan_available`,
+  `no_applicable_findings`, `plan_analysis_indeterminate`,
   `no_eligible_targets`, or `analysis_unavailable`. The structured-analysis
-  fallback includes a concrete `get_symbol` or `get_context` source call.
+  fallback includes a concrete `get_symbol` or `get_context` source call and
+  explicitly names the two facts the stored data cannot distinguish: no
+  supported transformation vs a disabled or failed detector.
   Projection exclusion emits no plan warning; a zero-row cursor window is
   reported separately as `request_window_empty`.
 - **dimension filter** narrows the returned findings to one pillar, e.g.

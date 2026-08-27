@@ -121,6 +121,25 @@ def _enforce(tool: str, payload: dict[str, Any], include: list[str] | None = Non
     )
 
 
+def test_health_plan_status_tracks_final_budget_removal(setup_mcp: str) -> None:
+    payload = {
+        "mode": "dashboard",
+        "directive": None,
+        "kpis": {"average_health": 7.0},
+        "refactoring_plans": [{"id": "plan_1", "evidence": "x" * 30_000}],
+        "refactoring_plans_total": 1,
+        "refactoring_plans_status": {"state": "available", "reason": None},
+        "_meta": {"contract_version": 1},
+    }
+
+    result = _enforce("get_health", payload)
+
+    assert result.get("refactoring_plans", []) == []
+    assert result["refactoring_plans_total"] == 1
+    assert result["refactoring_plans_status"]["state"] == "available_not_emitted"
+    assert result["refactoring_plans_status"]["reason"] == "response_budget"
+
+
 @pytest.mark.parametrize(
     ("tool", "required"),
     [

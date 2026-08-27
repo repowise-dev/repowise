@@ -778,12 +778,13 @@ def _refactoring_plans_status(
             "message": "The eligible population has no applicable open findings.",
         }
     return {
-        "state": "empty",
-        "reason": "no_structured_plan_available",
-        "message": (
-            "Findings exist, but stored evidence cannot distinguish an unsupported "
-            "transformation from unavailable or degraded refactoring analysis."
-        ),
+        "state": "indeterminate",
+        "reason": "plan_analysis_indeterminate",
+        "message": "Findings exist, but stored plan evidence is absent.",
+        "possible_causes": [
+            "no_supported_structured_transformation",
+            "refactoring_detector_disabled_or_failed",
+        ],
         "next_action": _finding_next_action(finding, repo),
     }
 
@@ -794,37 +795,50 @@ def _attach_health_analysis_meta(
     """Keep stored analysis distinct from index/live Git verification."""
     meta["health_semantics"] = health_semantics_contract()
     analyzed = [m for m in metrics if getattr(m, "updated_at", None)]
+    commits = {c for m in analyzed if (c := getattr(m, "analyzed_commit", None))}
+    latest = max(analyzed, key=lambda m: m.updated_at) if analyzed else None
+    latest_commit = getattr(latest, "analyzed_commit", None) if latest else None
+    status = "available" if latest_commit else "degraded" if metrics else "unavailable"
     analysis: dict[str, Any] = {
-        "status": "available" if metrics else "unavailable",
+        "status": status,
         "source": "stored_health_analysis",
         "recomputed_this_call": False,
         "live_verification": {
-            "basis": "index_commit_and_live_git_head",
+            "basis": (
+                "index_commit_and_live_git_head"
+                if meta.get("indexed_commit") and meta.get("live_head")
+                else "unavailable"
+            ),
             "source_bytes_verified": False,
         },
         "refresh": {
             "command": "repowise update",
+            "precondition": "commit health-relevant working-tree changes first",
             "required_before_comparison": True,
         },
     }
     if not metrics:
         analysis["reason"] = "no_stored_health_metrics"
     if analyzed:
-        latest = max(analyzed, key=lambda m: m.updated_at)
+        assert latest is not None
         analyzed_at = latest.updated_at.isoformat()
         analysis["analyzed_at"] = analyzed_at
         meta["health_analyzed_at"] = analyzed_at
-        commits = {c for m in analyzed if (c := getattr(m, "analyzed_commit", None))}
-        if latest_commit := getattr(latest, "analyzed_commit", None):
+        if latest_commit:
             analyzed_commit = latest_commit[:12]
             analysis["analyzed_commit"] = analyzed_commit
             meta["health_analyzed_commit"] = analyzed_commit
         if len(commits) > 1:
             analysis["analyzed_commits_distinct"] = len(commits)
             meta["health_analyzed_commits_distinct"] = len(commits)
+        if not latest_commit:
+            analysis["reason"] = "analysis_commit_not_recorded"
+            analysis["analyzed_commit"] = None
     else:
         analysis["recorded_at"] = None
         analysis["recorded_commit"] = None
+        if metrics:
+            analysis["reason"] = "analysis_timestamp_not_recorded"
     meta["health_analysis"] = analysis
 
 
@@ -1081,10 +1095,9 @@ async def get_health(
 ) -> dict:
     """Code-health scores and findings from stored analysis.
 
-    No ``targets`` returns a directive-led dashboard; targets return ranked
-    per-file scores and findings using ``weighted_deficit``. Calling this tool
-    verifies index/live Git facts but does not recompute health metrics. Run
-    ``repowise update`` before a meaningful before/after comparison.
+    No ``targets`` returns a dashboard; targets return ranked files and findings.
+    This verifies Git/index facts but never recomputes health. For comparisons,
+    commit health changes then run ``repowise update``; it ignores uncommitted edits.
 
     Args:
         targets: file paths or ``module:<name>``. Empty → dashboard. Unmatched
@@ -1224,6 +1237,8 @@ async def get_health(
                         next_limit,
                         len(rows) - tail_start,
                     )
+                elif rows and start >= len(rows):
+                    page_recoveries[label] = (0, min(len(rows), max(row_cap, 1), 50), len(rows))
             else:
                 semantic_omissions[label] = rows[row_cap:]
         return kept
@@ -1258,7 +1273,7 @@ async def get_health(
                 ),
                 None,
             )
-            return {
+            result = {
                 "mode": "finding",
                 "finding_id": finding_id,
                 "finding": (
@@ -1270,6 +1285,22 @@ async def get_health(
                     targets=[match.file_path] if match else None,
                 ),
             }
+            metric_rows = (
+                list(
+                    (
+                        await session.execute(
+                            select(HealthFileMetric).where(
+                                HealthFileMetric.repository_id == repository.id,
+                                HealthFileMetric.file_path == match.file_path,
+                            )
+                        )
+                    ).scalars()
+                )
+                if match
+                else []
+            )
+            _attach_health_analysis_meta(result["_meta"], metric_rows)
+            return result
 
         if plan_id:
             plan_rows = await get_refactoring_suggestions(session, repository.id)
@@ -1285,7 +1316,7 @@ async def get_health(
                 ),
                 None,
             )
-            return {
+            result = {
                 "mode": "refactoring_plan",
                 "plan_id": plan_id,
                 "plan": (
@@ -1299,6 +1330,22 @@ async def get_health(
                     targets=[match.suggestion.file_path] if match else None,
                 ),
             }
+            metric_rows = (
+                list(
+                    (
+                        await session.execute(
+                            select(HealthFileMetric).where(
+                                HealthFileMetric.repository_id == repository.id,
+                                HealthFileMetric.file_path == match.suggestion.file_path,
+                            )
+                        )
+                    ).scalars()
+                )
+                if match
+                else []
+            )
+            _attach_health_analysis_meta(result["_meta"], metric_rows)
+            return result
 
         all_metrics_q = select(HealthFileMetric).where(
             HealthFileMetric.repository_id == repository.id
@@ -1487,6 +1534,7 @@ async def get_health(
                 test_finding_rows = [by_id[i] for i in test_head_ids if i in by_id]
             test_findings_total = len(test_emitted)
 
+        action_finding_rows = emitted
         # Counts the rows this response is about: the post-exclusion open set,
         # narrowed to the requested dimensions when one was asked for. Reporting
         # the unfiltered total beside a filtered list is what made an empty
@@ -2010,9 +2058,7 @@ async def get_health(
             )
         result["refactoring_plans_total"] = len(refactoring_rows)
         if wants("refactoring_plans"):
-            finding_for_action = next(iter(finding_rows), None) or next(
-                iter(lead_rows), None
-            )
+            finding_for_action = next(iter(action_finding_rows), None)
             result["refactoring_plans_status"] = _refactoring_plans_status(
                 available_plans_total=len(refactoring_recommendations),
                 plans_emitted=len(plan_payload),

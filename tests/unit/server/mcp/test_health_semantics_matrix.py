@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import Any, Literal
 
@@ -15,7 +16,7 @@ import pytest
 
 PlanReason = Literal[
     "no_applicable_findings",
-    "no_structured_plan_available",
+    "plan_analysis_indeterminate",
     "no_eligible_targets",
     "analysis_unavailable",
 ]
@@ -115,14 +116,19 @@ SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
     HealthSemanticsCase(
         name="module triage",
         call=(
-            'get_health(targets=["module:matrix"], only=["modules", "metrics"], limit=1)'
+            'get_health(targets=["module:auth", "module:db"], '
+            'only=["modules", "metrics"], limit=1)'
         ),
         kwargs=_frozen(
-            targets=("module:matrix",), only=("modules", "metrics"), limit=1
+            targets=("module:auth", "module:db"),
+            only=("modules", "metrics"),
+            limit=1,
         ),
         comparison="same module with limit=3",
         comparison_kwargs=_frozen(
-            targets=("module:matrix",), only=("modules", "metrics"), limit=3
+            targets=("module:auth", "module:db"),
+            only=("modules", "metrics"),
+            limit=3,
         ),
         plans_requested=False,
         expected_plan_count=None,
@@ -233,7 +239,7 @@ SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
         ),
         plans_requested=True,
         expected_plan_count=0,
-        expected_empty_reason="no_structured_plan_available",
+        expected_empty_reason="plan_analysis_indeterminate",
         next_action="get_symbol",
         recovery="none",
         invariant_paths=(
@@ -324,6 +330,158 @@ def test_sealed_health_semantics_matrix_records_required_measurements() -> None:
 def _assert_counted(result: dict[str, Any], key: str) -> None:
     rows = result[key]
     assert result[f"{key}_total"] >= result[f"{key}_emitted"] == len(rows)
+
+
+def _mutable_kwargs(values: MappingProxyType[str, Any]) -> dict[str, Any]:
+    return {key: list(value) if isinstance(value, tuple) else value for key, value in values.items()}
+
+
+def _path(result: dict[str, Any], dotted: str) -> Any:
+    value: Any = result
+    for part in dotted.split("."):
+        value = value[part]
+    return value
+
+
+async def _seed_case_evidence(case: HealthSemanticsCase, session, repository_id: str) -> None:
+    from repowise.core.persistence.crud import (
+        save_coverage_files,
+        save_health_findings,
+        save_health_snapshot,
+        save_refactoring_suggestions,
+    )
+
+    if case.name == "coverage":
+        await save_coverage_files(
+            session,
+            repository_id,
+            [
+                {
+                    "file_path": path,
+                    "line_coverage_pct": pct,
+                    "covered_lines": [1],
+                    "total_coverable_lines": 10,
+                    "branch_coverage_pct": pct,
+                }
+                for path, pct in (("src/auth/service.py", 20.0), ("src/db/models.py", 90.0))
+            ],
+            source_format="lcov",
+        )
+    if case.name == "trend":
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+        for day, scores in (
+            (0, {"src/auth/service.py": 4.0}),
+            (1, {"src/auth/service.py": 4.5}),
+        ):
+            await save_health_snapshot(
+                session,
+                repository_id,
+                hotspot_health=4.5,
+                average_health=5.3,
+                worst_performer_path="src/auth/service.py",
+                worst_performer_score=4.5,
+                per_file_scores=scores,
+                taken_at=base + timedelta(days=day),
+            )
+    if case.expected_plan_count:
+        plans = [
+            {
+                "refactoring_type": "extract_method",
+                "file_path": "src/auth/service.py",
+                "target_symbol": "authenticate",
+                "line_start": 10,
+                "line_end": 80,
+                "plan": {"groups": []},
+                "evidence": {},
+                "impact_delta": 1.2,
+                "effort_bucket": "S",
+                "blast_radius": {"dependents_count": 0},
+                "confidence": "high",
+                "source_biomarker": "complex_method",
+            }
+        ]
+        if case.name == "performance plus refactoring":
+            await save_health_findings(
+                session,
+                repository_id,
+                [
+                    {
+                        "file_path": "src/db/models.py",
+                        "biomarker_type": "io_in_loop",
+                        "severity": "medium",
+                        "function_name": "load_rows",
+                        "line_start": 10,
+                        "line_end": 10,
+                        "details": {"boundary_kind": "db"},
+                        "health_impact": 0.5,
+                        "reason": "database call inside a loop",
+                        "dimension": "performance",
+                    }
+                ],
+            )
+            plans.append({**plans[0], "file_path": "src/db/models.py", "target_symbol": "load_rows"})
+        await save_refactoring_suggestions(session, repository_id, plans)
+    await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    [case for case in SEALED_HEALTH_SEMANTICS if case.name != "degraded or missing analysis"],
+    ids=lambda case: case.name,
+)
+async def test_each_sealed_row_executes_its_call_and_comparison(
+    case, setup_mcp, health_data, session
+):
+    from repowise.server.mcp_server import get_health, tool_middleware
+
+    await _seed_case_evidence(case, session, health_data)
+    call = tool_middleware(get_health)
+    result = await call(**_mutable_kwargs(case.kwargs))
+    comparison = await call(**_mutable_kwargs(case.comparison_kwargs))
+
+    assert result["_meta"]["response_budget"]["serialized_chars"] == len(
+        json.dumps(result, separators=(",", ":"), default=str)
+    )
+    assert result["_meta"]["health_analysis"]["recomputed_this_call"] is False
+    assert result["_meta"]["health_analysis"]["live_verification"][
+        "source_bytes_verified"
+    ] is False
+    for dotted in case.invariant_paths:
+        if dotted == "metrics" and case.name == "module triage":
+            assert _path(result, dotted) == _path(comparison, dotted)[:1]
+        else:
+            assert _path(result, dotted) == _path(comparison, dotted)
+    if case.plans_requested:
+        assert len(result["refactoring_plans"]) == case.expected_plan_count
+        reason = result["refactoring_plans_status"]["reason"]
+        assert reason == case.expected_empty_reason
+    if case.recovery == "cursor":
+        assert result["recovery"]
+
+
+@pytest.mark.asyncio
+async def test_sealed_missing_analysis_row_executes_without_fabricating_health(
+    setup_mcp, populated_db
+):
+    from repowise.server.mcp_server import get_health, tool_middleware
+
+    case = SEALED_HEALTH_SEMANTICS[-1]
+    call = tool_middleware(get_health)
+    result = await call(**_mutable_kwargs(case.kwargs))
+    comparison = await call(**_mutable_kwargs(case.comparison_kwargs))
+
+    assert result["directive"] is None
+    assert result["kpis"]["average_health"] is None
+    assert result["kpis"]["analysis_status"] == "unavailable"
+    assert result["refactoring_plans"] == []
+    assert result["refactoring_plans_status"]["reason"] == case.expected_empty_reason
+    assert result["_meta"]["health_analysis"]["status"] == "unavailable"
+    assert comparison["_meta"]["health_analysis"] == result["_meta"]["health_analysis"]
+    assert result["_meta"]["response_budget"]["serialized_chars"] == len(
+        json.dumps(result, separators=(",", ":"), default=str)
+    )
+
 
 
 @pytest.mark.asyncio

@@ -187,6 +187,15 @@ export function formatPercent(ratio: number, decimals = 0): string {
   return `${pct.toFixed(decimals)}%`;
 }
 
+/** Render a surfaced 0-100 percentile as an honest upper-tail rank. */
+export function formatTopPercentile(percentile: number): string {
+  const bounded = Math.min(Math.max(percentile, 0), 100);
+  const upperTail = Math.round((100 - bounded) * 1e10) / 1e10;
+  if (upperTail < 0.1) return "top <0.1%";
+  if (upperTail < 10) return `top ${upperTail.toFixed(1).replace(/\.0$/, "")}%`;
+  return `top ${Math.round(upperTail)}%`;
+}
+
 /** Format byte counts: 1536 → "1.5 KB", 1048576 → "1.0 MB" */
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "—";
