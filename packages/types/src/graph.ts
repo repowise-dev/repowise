@@ -256,6 +256,7 @@ export type ResolutionOrigin =
   | "crate_root"
   | "receiver_import"
   | "import_merged"
+  | "scoped_name"
   | "same_target"
   | "receiver_global"
   | "global_unique"

@@ -1,6 +1,6 @@
 """MCP Tool: get_blast_radius — cross-repo downstream impact (workspace only).
 
-Answers "if I change this service, what breaks across the other repos?" by
+Answers "what structural or historical reach follows from this service?" by
 traversing the workspace system graph. Structural dependencies (contracts,
 package deps) are ranked above behavioral co-change. Mirrors the single-repo
 change-risk vocabulary (``get_risk`` PR-mode, ``blast-radius.ts``): impacted
@@ -16,6 +16,7 @@ from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import _is_workspace_mode
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._meta import persisted_analysis_meta as _analysis_meta
 
 #: How many impacted services the MCP response carries inline. The full set is
 #: available via the REST endpoint / the map; here we keep the agent payload
@@ -28,16 +29,18 @@ _MCP_IMPACTED_LIMIT = 25
 _SYMBOL_CONSUMER_LIMIT = 10
 
 
-@mcp.tool(requires_workspace=True)
+@mcp.tool(default=False, requires_workspace=True, surface_order=210, trust_kind="structural")
 async def get_blast_radius(
     targets: list[str],
     max_depth: int = 3,
     include_behavioral: bool = True,
 ) -> dict[str, Any]:
-    """Cross-repo blast radius — what downstream services break if you change this.
+    """Cross-repo blast radius — which downstream services are structurally reachable.
 
     Workspace-only. Traverses the system graph from the given service(s) and
-    returns the impacted services across every repo, ranked by impact score.
+    returns the reachable services across every repo, ranked by an uncalibrated
+    0-1 path-weight heuristic. It is not runtime-breakage evidence or a
+    probability.
     Structural edges (http / grpc / event / package) outweigh behavioral
     co-change. Call before changing a high-fan-out provider to see who consumes
     it across repo boundaries.
@@ -70,6 +73,7 @@ async def get_blast_radius(
             "_meta": _build_meta(),
         }
 
+    from repowise.core.analysis.risk_semantics import workspace_impact_score_semantics
     from repowise.core.workspace.blast_radius import cross_repo_blast_radius, resolve_targets
     from repowise.core.workspace.system_graph import SystemGraph
 
@@ -118,8 +122,18 @@ async def get_blast_radius(
         "max_distance": result.max_distance,
         "total_impacted": result.total_impacted,
         "unresolved_targets": result.unresolved_targets,
+        "impact_score_semantics": workspace_impact_score_semantics(),
         "summary": summary,
-        "_meta": _build_meta(),
+        "_meta": _build_meta(
+            extra=_analysis_meta(
+                raw.get("generated_at"),
+                {
+                    alias: provenance.get("head")
+                    for alias, provenance in raw.get("repo_provenance", {}).items()
+                    if provenance.get("head")
+                },
+            )
+        ),
     }
     if symbol_targets:
         payload["symbol_targets"] = symbol_targets
@@ -168,9 +182,7 @@ def _resolve_symbol_targets(
         # Providers only: a consumer contract's symbol calls a surface rather
         # than publishing one, so it has no downstream to traverse.
         contracts = [
-            c
-            for c in enricher.get_contracts_for_symbol(raw)
-            if c.get("role") == "provider"
+            c for c in enricher.get_contracts_for_symbol(raw) if c.get("role") == "provider"
         ]
         nodes = sorted({node for c in contracts if (node := _graph_node_for(nodes_by_repo, c))})
         if not nodes:
@@ -200,9 +212,7 @@ def _resolve_symbol_targets(
         block: dict[str, Any] = {
             "symbol_id": raw,
             "nodes": nodes,
-            "contract_ids": sorted(
-                {c["contract_id"] for c in contracts if c.get("contract_id")}
-            ),
+            "contract_ids": sorted({c["contract_id"] for c in contracts if c.get("contract_id")}),
             "consumers": consumers,
             "consumer_count": len(links),
             "consumers_truncated": max(0, len(links) - len(consumers)),

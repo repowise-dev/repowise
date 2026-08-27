@@ -256,14 +256,21 @@ async def test_perf_rank_is_absent_from_every_other_dimension(setup_mcp, perf_fi
 
 @pytest.mark.asyncio
 async def test_narrow_projection_leads_with_one_shared_causal_opportunity(
-    setup_mcp, perf_findings, session
+    setup_mcp, perf_findings, session, monkeypatch, tmp_path
 ):
     import json
 
+    from repowise.core.distill.store import OmissionStore
     from repowise.core.persistence.models import HealthFinding
     from repowise.server.mcp_server import get_health
+    from repowise.server.mcp_server._budget import collector as collector_module
 
-    for index, caller in enumerate(("src/a.py", "src/b.py"), start=10):
+    store_path = tmp_path / "omissions.db"
+    monkeypatch.setattr(collector_module, "default_store_path", lambda _root: store_path)
+
+    for index, caller in enumerate(
+        ("src/a.py", "src/b.py", "src/c.py", "src/d.py", "src/e.py"), start=10
+    ):
         session.add(
             HealthFinding(
                 id=str(uuid.uuid4()),
@@ -298,10 +305,23 @@ async def test_narrow_projection_leads_with_one_shared_causal_opportunity(
     ]
     assert len(shared) == 1
     assert shared[0]["intervention_symbol"] == "src/shared.py::load"
-    assert shared[0]["affected_call_sites_total"] == 2
-    assert shared[0]["observations_total"] == 2
-    assert {item["line_start"] for item in shared[0]["evidence"]} == {10, 11}
+    assert shared[0]["affected_call_sites_total"] == 5
+    assert shared[0]["observations_total"] == 5
+    assert {item["line_start"] for item in shared[0]["evidence"]} == {10, 11, 12}
     assert {item["function_name"] for item in shared[0]["evidence"]} == {"run"}
+    assert shared[0]["evidence_total"] == 5
+    assert shared[0]["evidence_emitted"] == 3
+    assert shared[0]["evidence_reduced_reason"] == "evidence_cap"
+    refs = result["_meta"]["omitted"]["refs"]
+    assert len(refs) == 1
+    store = OmissionStore(store_path)
+    try:
+        omitted = store.get(refs[0]) or ""
+    finally:
+        store.close()
+    assert '"line_start": 13' in omitted
+    assert '"line_start": 14' in omitted
+    assert '"line_start": 10' not in omitted
     assert result["performance_opportunities_total"] >= 1
     assert "top_findings" not in result
 

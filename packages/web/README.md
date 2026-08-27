@@ -100,7 +100,7 @@ Lists extracted architectural decision records with health metrics. Each decisio
 
 ### Blast Radius (`/repos/[id]/blast-radius`)
 
-Pre-PR impact estimator. Paste a list of changed file paths (one per line) — or click hotspot suggestion chips to prefill — and get an overall risk score (0–10), breakdown of direct risks (per-file risk score, temporal hotspot, centrality), transitive affected files with depth, co-change warnings (files that historically change together but aren't in the diff), recommended reviewers ranked by ownership, and test gaps for code paths without coverage.
+Pre-PR structural-impact estimator. Paste changed file paths (one per line) — or click hotspot suggestions — and get an uncalibrated structural-impact score (0–10 normalized points), raw direct structural weights, transitive affected files with depth, historical co-change warnings, recommended reviewers, and explicit test-analysis state. The structural score is not a runtime-breakage probability or the authoritative live change-risk signal.
 
 ### Cost Tracking (`/repos/[id]/costs`)
 

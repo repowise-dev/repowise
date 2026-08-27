@@ -45,9 +45,7 @@ async def test_get_risk_single_target(setup_mcp):
 async def test_get_risk_multiple_targets(setup_mcp):
     from repowise.server.mcp_server import get_risk
 
-    result = await get_risk(
-        ["src/auth/service.py", "src/db/models.py"], include=["churn"]
-    )
+    result = await get_risk(["src/auth/service.py", "src/db/models.py"], include=["churn"])
     targets = result["targets"]
     assert len(targets) == 2
     assert "global_hotspots" in result
@@ -160,7 +158,16 @@ async def test_get_risk_pr_directive_surfaces_coverage_backed_tests_to_run(setup
     ]
     # The graph also reaches this file, and must not dilute a measured answer.
     assert directive["tests_to_run_basis"] == "measured"
-    assert "coverage-backed test(s) guard the change" in directive["summary"]
+    assert "2 measured" in directive["summary"]
+    assert {row["basis"] for row in directive["test_recommendations"]} == {
+        "measured",
+        "inferred",
+    }
+    assert all(
+        "basis" in evidence
+        for row in directive["test_recommendations"]
+        for evidence in row["evidence"]
+    )
 
 
 @pytest.mark.asyncio
@@ -202,6 +209,9 @@ async def test_get_risk_tests_to_run_ranks_by_files_reached(setup_mcp, session):
         "tests/test_zeta.py::test_both",
         "tests/test_alpha.py::test_one",
     ]
+    assert "tests/test_service.py" in {
+        row["test_id"] for row in result["directive"]["test_recommendations"]
+    }
 
 
 class TestRankTestsByReach:
@@ -254,6 +264,42 @@ async def test_get_risk_pr_directive_names_no_tests_when_nothing_reaches(setup_m
 
     assert directive["tests_to_run"] == []
     assert directive["tests_to_run_basis"] == "none"
+    assert directive["missing_tests"] == []
+    assert directive["coverage_analysis"]["status"] == "unavailable"
+    assert "missing_tests is withheld" in directive["summary"]
+
+
+@pytest.mark.asyncio
+async def test_get_risk_pr_payload_serializes_directive_first(setup_mcp):
+    """The exact external JSON order is actionable before any dossier."""
+    import json
+
+    from repowise.server.mcp_server import get_risk
+
+    payload = await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
+    external = json.loads(json.dumps(payload))
+
+    assert next(iter(payload)) == "directive"
+    assert next(iter(external)) == "directive"
+    assert list(external).index("directive") < list(external).index("targets")
+
+
+@pytest.mark.asyncio
+async def test_get_risk_test_compatibility_projection_cannot_contradict_typed_rows(setup_mcp):
+    from repowise.server.mcp_server import get_risk
+
+    directive = (await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"]))[
+        "directive"
+    ]
+    recommendations = directive["test_recommendations"]
+
+    assert directive["tests_to_run"] == [row["test_id"] for row in recommendations]
+    assert directive["tests_to_run_total"] == directive["test_recommendations_total"]
+    assert directive["tests_to_run_emitted"] == len(recommendations)
+    assert directive["test_recommendations_emitted"] == len(recommendations)
+    assert all(row["basis"] in {"measured", "inferred"} for row in recommendations)
+    assert all(row["basis"] in row["bases"] for row in recommendations)
+    assert all(row["repository_id"] == "repo1" for row in recommendations)
 
 
 # ---- _classify_risk_type small-team calibration (issue #361) ---------------
@@ -392,21 +438,38 @@ async def test_get_risk_names_an_unknown_include_rather_than_applying_it(setup_m
     result = await get_risk(["src/auth/service.py"], include=["graph", "nonsense"])
     assert "impact_surface" in result["targets"]["src/auth/service.py"]
     assert result["ignored_arguments"] == [
-        {"argument": "include", "values": ["nonsense"], "valid": ["churn", "graph"]}
+        {"argument": "include", "values": ["nonsense"], "valid": ["churn", "graph", "scales"]}
     ]
 
 
 @pytest.mark.asyncio
 async def test_get_risk_directive_does_not_copy_the_analyzer_score(setup_mcp):
-    """overall_risk_score lives in pr_blast_radius, with a note on its scale."""
+    """The structural heuristic lives in blast detail, not the directive."""
     from repowise.server.mcp_server import get_risk
 
     result = await get_risk(["src/auth/service.py"], changed_files=["src/auth/service.py"])
 
     assert "overall_risk_score" not in result["directive"]
     blast = result["pr_blast_radius"]
-    assert "overall_risk_score" in blast
-    assert "get_change_risk.score" in blast["overall_risk_score_measures"]
+    assert blast["overall_risk_score"] == blast["structural_impact_score"]
+    assert blast["overall_risk_score_compatibility"] == {
+        "deprecated": True,
+        "replacement": "structural_impact_score",
+        "equivalent_value": True,
+        "historical_meaning": "uncalibrated 0-10 structural blast-radius heuristic",
+    }
+    scale = blast["structural_impact_scale"]
+    assert scale["calibration"]["status"] == "uncalibrated"
+    assert scale["runtime_breakage_probability"] is False
+    # Guard tier by default; the reference tier follows the caller's include.
+    assert "component_fields" not in scale
+    assert "risk_scales" not in result
+
+    expanded = await get_risk(
+        ["src/auth/service.py"], changed_files=["src/auth/service.py"], include=["scales"]
+    )
+    assert expanded["risk_scales"][0]["field"] == "targets.*.hotspot_score"
+    assert expanded["pr_blast_radius"]["structural_impact_scale"]["component_fields"]
 
 
 @pytest.mark.asyncio
@@ -439,6 +502,57 @@ async def test_get_risk_directive_points_at_the_full_run_list_when_capped(setup_
     directive = result["directive"]
 
     assert len(directive["tests_to_run"]) == _TESTS_TO_RUN_LIMIT
-    assert f"Showing {_TESTS_TO_RUN_LIMIT} of {over_cap}" in directive["summary"]
-    assert "pr_blast_radius.guarding_tests" in directive["summary"]
+    assert f"Showing {_TESTS_TO_RUN_LIMIT} of {over_cap + 1}" in directive["summary"]
+    assert directive["tests_to_run_total"] == over_cap
+    assert directive["tests_to_run_emitted"] == _TESTS_TO_RUN_LIMIT
+    assert directive["tests_to_run_reduced_reason"] == "construction_cap"
+    assert directive["tests_to_run_truncated"] is True
+    assert directive["test_recommendations_total"] == over_cap + 1
+    assert directive["test_recommendations_reduced_reason"] == "construction_cap"
+    assert "response omission marker" in directive["summary"]
     assert len(result["pr_blast_radius"]["guarding_tests"]["tests_to_run"]) == over_cap
+
+
+@pytest.mark.asyncio
+async def test_missing_tests_totals_use_full_precap_changed_file_population(setup_mcp, session):
+    from repowise.core.analysis.health.coverage import TestCoverage
+    from repowise.core.persistence.crud import save_test_coverage
+    from repowise.core.persistence.models import GraphNode
+    from repowise.server.mcp_server import get_risk
+
+    changed = [f"src/sealed_gap_{index}.py" for index in range(5)]
+    for index, path in enumerate(changed):
+        session.add(
+            GraphNode(
+                id=f"sealed-gap-{index}",
+                repository_id=setup_mcp,
+                node_id=path,
+                node_type="file",
+                is_test=False,
+            )
+        )
+    await save_test_coverage(
+        session,
+        setup_mcp,
+        [
+            TestCoverage(
+                test_id="tests/test_seed.py::test_seed",
+                file_path="src/coverage_seed.py",
+                covered_lines=[1],
+                source_format="coverage.py",
+                test_file="tests/test_seed.py",
+            )
+        ],
+        source_format="coverage.py",
+    )
+    await session.flush()
+
+    result = await get_risk(["src/auth/service.py"], changed_files=changed)
+    directive = result["directive"]
+
+    assert directive["missing_tests"] == changed[:3]
+    assert directive["missing_tests_total"] == 5
+    assert directive["missing_tests_emitted"] == 3
+    assert directive["missing_tests_reduced_reason"] == "construction_cap"
+    assert directive["missing_tests_truncated"] is True
+    assert directive["missing_tests_omitted"] == 2

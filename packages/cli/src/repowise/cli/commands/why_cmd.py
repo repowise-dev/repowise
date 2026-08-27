@@ -17,6 +17,14 @@ def _capped(values: list, cap: int = _LIST_CAP) -> list:
     return list(values or [])[:cap]
 
 
+def _with_trust(projected: dict, source: dict) -> dict:
+    """Keep the compact evidence contract visible in default agent output."""
+    for key in ("source", "provenance", "evidence_refs", "restates"):
+        if key in source:
+            projected[key] = source[key]
+    return projected
+
+
 def _project_decision(decision: dict) -> dict:
     """One decision record, trimmed to the decision and why it was taken."""
     out = {
@@ -34,17 +42,17 @@ def _project_decision(decision: dict) -> dict:
             out["affected_files_total"] = total
     if decision.get("still_true"):
         out["still_true"] = decision["still_true"]
-    return out
+    return _with_trust(out, decision)
 
 
 def _project_episode(episode: dict) -> dict:
-    return {
+    return _with_trust({
         "kind": episode.get("kind", ""),
         "subject": episode.get("subject", ""),
         "recorded": episode.get("recorded", ""),
         "evidence": episode.get("evidence", ""),
         "still_true": episode.get("still_true", ""),
-    }
+    }, episode)
 
 
 _ARCH_LAYERS = (
@@ -71,7 +79,10 @@ def _project_archaeology(arch: dict) -> dict:
         rows = arch.get(key) or []
         if not rows:
             continue
-        out[key] = [{f: c.get(f, "") for f in fields} for c in _capped(rows)]
+        out[key] = [
+            _with_trust({f: c.get(f, "") for f in fields}, c)
+            for c in _capped(rows)
+        ]
         if len(rows) > len(out[key]):
             out[f"{key}_total"] = len(rows)
     return out
@@ -173,12 +184,12 @@ def project(payload: dict) -> dict:
         commits = origin.get("key_commits") or []
         if commits:
             out["origin_story"]["key_commits"] = [
-                {
+                _with_trust({
                     "sha": c.get("sha", ""),
                     "date": c.get("date", ""),
                     "author": c.get("author", ""),
                     "message": c.get("message", ""),
-                }
+                }, c)
                 for c in _capped(commits)
             ]
 
@@ -205,7 +216,9 @@ def project(payload: dict) -> dict:
         out["git_archaeology"] = _project_archaeology(payload["git_archaeology"])
     if payload.get("code_rationale"):
         out["code_rationale"] = [
-            {k: entry.get(k) for k in ("path", "lines", "comment")}
+            _with_trust(
+                {k: entry.get(k) for k in ("path", "lines", "comment")}, entry
+            )
             for entry in _capped(payload["code_rationale"])
         ]
     if payload.get("target_context"):

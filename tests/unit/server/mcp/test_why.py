@@ -439,10 +439,52 @@ async def test_get_why_path_fits_a_narrowed_host_cap(session, setup_mcp, monkeyp
     assert len(_json.dumps(result, default=str)) <= effective_char_budget()
 
 
+def test_path_final_fit_composes_episode_construction_counts(tmp_path, monkeypatch):
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server.tool_why import _fit_path_response
+
+    monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", "2000")
+    response = {
+        "mode": "path",
+        "path": "src/large.py",
+        "decisions": [],
+        "episodes": [
+            {"subject": f"episode-{index}", "recorded": "x" * 5000}
+            for index in range(3)
+        ],
+        "episodes_total": 8,
+        "episodes_emitted": 3,
+        "episodes_reduced_reason": "construction_cap",
+        "episodes_truncated": True,
+        "episodes_omitted": 5,
+        "_meta": {},
+    }
+    collector = OmissionCollector(
+        "get_why", store_path=tmp_path / "omissions.sqlite3"
+    )
+
+    result = _fit_path_response(response, tmp_path, collector)
+
+    assert result["episodes_total"] == 8
+    assert result["episodes_emitted"] == 0
+    assert result["episodes_omitted"] == 8
+    assert result["episodes_reduced_reason"] == (
+        "construction_cap_and_response_budget"
+    )
+    assert result["_meta"]["omitted"]["refs"]
+
+
 @pytest.mark.asyncio
-async def test_get_why_path_caps_records_and_keeps_the_active_one_first(session, setup_mcp):
+async def test_get_why_path_caps_records_and_keeps_the_active_one_first(
+    session, setup_mcp, tmp_path, monkeypatch
+):
     from repowise.server.mcp_server import get_why
+    from repowise.server.mcp_server._budget import collector as collector_mod
     from repowise.server.mcp_server.tool_why import _MAX_PATH_DECISIONS
+
+    monkeypatch.setattr(
+        collector_mod, "default_store_path", lambda start=None: tmp_path / "omissions.db"
+    )
 
     await _seed_bulky_decisions(session, setup_mcp, "src/auth/service.py", 30)
 
@@ -453,6 +495,9 @@ async def test_get_why_path_caps_records_and_keeps_the_active_one_first(session,
     assert result["decisions"][0]["status"] == "active"
     # And the count that was capped is still reported honestly.
     assert result["decisions_total"] == 31
+    assert result["decisions_emitted"] == _MAX_PATH_DECISIONS
+    assert result["decisions_reduced_reason"] == "construction_cap_and_response_budget"
+    assert result["_meta"]["omitted"]["refs"]
     assert result["alignment"]["governing_count"] == 31
 
 

@@ -162,7 +162,8 @@ async def test_flag_off_restores_legacy_abstain(setup_mcp, monkeypatch):
     monkeypatch.setattr(answer_mod, "_resolve_provider_for_answer", _no_provider)
 
     result = await get_answer("how does the alpha module go function work")
-    assert result["answer"] == "", "flag off abstains — no synthesized prose"
+    assert result["answer"], "flag off still leads with an actionable abstention"
+    assert "synthesis skipped" in result["answer"]
     assert result["confidence"] == "low"
     assert result["best_guesses"], "abstain path still hands back candidates"
 

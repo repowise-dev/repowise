@@ -1081,13 +1081,13 @@ and supports two transports:
 - **stdio**: for Claude Code, Cursor, Cline (add to their MCP config)
 - **SSE**: for web-based MCP clients (served on port 7338)
 
-### Tools (11 default in single-repo mode)
+### Tools (10 default in single-repo mode)
 
 Canonical reference: [`docs/agent/MCP_TOOLS.md`](../agent/MCP_TOOLS.md).
-A single-repo server advertises **11** tools by default (ten flagship +
-`list_repos`). Workspace mode adds `get_architecture` and `get_blast_radius`.
-Four more are registered but opt-in (`get_dependency_path`,
-`get_execution_flows`, `generate_refactoring_code`, `get_conformance`).
+A single-repo server advertises **10** tools by default (the canonical set).
+Workspace mode adds `list_repos`. Six specialists are registered but opt-in:
+`get_architecture`, `get_blast_radius`, `get_dependency_path`,
+`get_execution_flows`, `generate_refactoring_code`, and `get_conformance`.
 
 | Tool | What it answers | When to call |
 |------|----------------|-------------|

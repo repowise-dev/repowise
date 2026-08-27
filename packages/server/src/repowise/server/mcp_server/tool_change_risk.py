@@ -21,12 +21,15 @@ from repowise.core.analysis.change_risk import (
 )
 from repowise.core.analysis.pr_blast import rank_tests_by_reach
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.mcp_server._budget import OmissionCollector, fit_to_budget
+from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._budget.contracts import response_budget_shed_order
 from repowise.server.mcp_server._helpers import (
     _get_repo,
     _is_workspace_mode,
     _resolve_repo_context,
     _unsupported_repo_all,
+    attach_ignored_arguments,
+    resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
@@ -45,48 +48,40 @@ _PRIOR_FIXES_LIMIT = 10
 _CROSS_REPO_BREAKING_LIMIT = 5
 _CROSS_REPO_CONSUMER_LIMIT = 10
 
-# Cheapest loss first; the score, its drivers and fix_history's numbers are the
-# answer and never shed. cross_repo outlives the run-list: a test list is
-# recoverable by running the suite, a broken consumer in another repo is not.
-_SHED_ORDER: tuple[str, ...] = (
-    "exclude_patterns",
-    "prior_fixes",
-    "impacted_tests",
-    "cross_repo",
-    "fix_history.files",
-)
+# Compatibility projection for direct callers and older tests. The shared
+# response contract remains the single source of truth for this order.
+_SHED_ORDER = response_budget_shed_order("get_change_risk")
 
+#: Per-field units and calibration. Identical on every call, so it is opt-in.
+_INCLUDE_BLOCKS = frozenset({"scales"})
 
-@mcp.tool()
+@mcp.tool(surface_order=60)
 async def get_change_risk(
     revspec: str | None = None,
     repo: str | None = None,
     extensions: list[str] | None = None,
     exclude_patterns: list[str] | None = None,
     baseline: int = 200,
+    include: list[str] | None = None,
 ) -> dict:
     """Score a live commit, ``base..head`` range, or uncommitted work.
 
     For a pre-merge read on a commit or PR range; ``get_risk`` scores indexed
     files instead. The filters also apply to the percentile baseline.
 
-    Lead with ``fix_history``: the recency-weighted bug-fix record of the
-    touched files, ``files`` naming where the pressure sits. It separates a
-    surgical edit to a bug magnet from a bulk rename. ``score`` measures diff
-    size and spread, not where the change lands (see ``score_measures``),
-    calibrated per commit; ``risk_percentile`` ranks that shape against recent
-    commits.
+    Act on ``risk_percentile`` + ``classification``: they rank this diff
+    against recent commits, and ``risk_authority`` names them. ``score`` is a
+    supporting 0-10 model score for diff size and spread, never a probability;
+    ``fallback_band`` stands in only when no baseline exists. ``fix_history``
+    carries the bug-fix record of the touched files.
 
-    ``impacted_tests.tests_to_run`` names the tests to run; ``line_coverage``
-    the uncovered lines. ``basis``: ``measured`` = a coverage map proves those
-    tests run the changed *lines*; ``inferred`` = test files the graph shows
-    reaching it (file-level candidates). No map is never "untested":
-    ``no_map`` means run the suite. On ``truncated``, expand
-    ``omission_marker`` for the tail. ``prior_fixes``
-    counts past fixes whose lines overlap this diff.
+    ``impacted_tests`` keeps measured coverage and inferred graph candidates
+    distinct, labels unavailable analysis, and exposes truncation metadata.
+    ``prior_fixes`` counts past fixes whose lines overlap this diff.
 
-    ``cross_repo`` (workspace mode) names other repos' consumers of the changed
-    files and what broke, as of the last workspace update.
+    Defaults fit 24,000 chars; nonempty ``include`` uses 32,000. Reductions
+    carry counts and recovery status in ``_meta``.
+    Include-gated blocks are projections, not omissions.
 
     Args:
         revspec: Commit or ``base..head`` range to score. Omit it to score the
@@ -95,6 +90,8 @@ async def get_change_risk(
         extensions: File suffixes to count, e.g. ``[".py", ".ts"]``.
         exclude_patterns: Gitignore-style paths to omit, e.g. ``["tests/"]``.
         baseline: Recent commits to sample for percentile ranking; 0 disables it.
+        include: opt-in blocks - "scales" for every scalar's unit, range and
+            calibration. Identical on every call, so ask once.
     """
     if repo == "all":
         return _unsupported_repo_all("get_change_risk")
@@ -116,7 +113,13 @@ async def get_change_risk(
         return {"error": f"Could not read change {revspec or 'HEAD'!r}: {detail}"}
     except subprocess.TimeoutExpired:
         return {"error": f"git timed out reading change {revspec or 'HEAD'!r}."}
-    payload = change_risk_payload(result)
+    ignored: list[dict] = []
+    include_set = {
+        block
+        for block in (include or [])
+        if resolve_enum_argument(block, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
+    }
+    payload = change_risk_payload(result, scales="scales" in include_set)
     if result.features.nf == 0:
         payload["warning"] = (
             f"No counted file changes in {payload['ref']!r} "
@@ -140,9 +143,7 @@ async def get_change_risk(
             working_tree=result.working_tree,
         )
     collector = OmissionCollector("get_change_risk", repo_root=ctx.path)
-    payload["impacted_tests"] = await _impacted_tests_block(
-        ctx, changed, changed_error, collector
-    )
+    payload["impacted_tests"] = await _impacted_tests_block(ctx, changed, changed_error, collector)
     prior_fixes = await _prior_fixes_block(ctx, changed)
     if prior_fixes is not None:
         payload["prior_fixes"] = prior_fixes
@@ -160,7 +161,7 @@ async def get_change_risk(
         targets=sorted(changed) or None,
         extra={"source": "live_git"},
     )
-    fit_to_budget(payload, _SHED_ORDER, collector)
+    attach_ignored_arguments(payload, ignored)
     collector.attach(payload)
     return payload
 
@@ -282,11 +283,7 @@ def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | 
                             if (psid := link.get("provider_symbol_id"))
                             else {}
                         ),
-                        **(
-                            {"symbol_id": sid}
-                            if (sid := link.get("consumer_symbol_id"))
-                            else {}
-                        ),
+                        **({"symbol_id": sid} if (sid := link.get("consumer_symbol_id")) else {}),
                     }
                 )
 
@@ -297,9 +294,7 @@ def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | 
             for change in enricher.get_breaking_changes_for_repo(alias):
                 if change.get("provider_file") not in touched:
                     continue
-                cross = [
-                    c for c in change.get("impacted_consumers", []) if c.get("repo") != alias
-                ]
+                cross = [c for c in change.get("impacted_consumers", []) if c.get("repo") != alias]
                 if not cross:
                     continue
                 breaking_total += 1

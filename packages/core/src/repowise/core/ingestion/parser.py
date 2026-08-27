@@ -891,6 +891,12 @@ class ASTParser:
             if parent_name is None and file_info.language == "pascal" and name_nodes:
                 parent_name = _qualified_pascal_parent(name_nodes[0], src)
 
+            # A ``field_declaration`` cannot occur outside a class body, so a
+            # missing parent means the class did not parse. Grammar recovery,
+            # not a member function.
+            if node_type == "function_declarator" and parent_name is None:
+                continue
+
             # Upgrade function → method when a parent class is detected
             if parent_name and kind == "function":
                 kind = "method"
@@ -1265,6 +1271,7 @@ class ASTParser:
             arg_nodes = capture_dict.get("call.arguments", [])
             receiver_nodes = capture_dict.get("call.receiver", [])
             receiver_call_nodes = capture_dict.get("call.receiver_call", [])
+            scope_nodes = capture_dict.get("call.scope", [])
 
             if not site_nodes or not target_nodes:
                 continue
@@ -1286,6 +1293,7 @@ class ASTParser:
                 if receiver_call_nodes
                 else None
             )
+            scope_name = _node_text(scope_nodes[0], src).strip() if scope_nodes else None
 
             arg_count: int | None = None
             if arg_nodes:
@@ -1302,6 +1310,7 @@ class ASTParser:
                     line=line,
                     argument_count=arg_count,
                     receiver_call=receiver_call,
+                    scope_name=scope_name,
                     edge_type=(
                         "references"
                         if site_node.type in config.reference_call_node_types
@@ -1314,9 +1323,13 @@ class ASTParser:
         for call in calls:
             key = (call.line, call.target_name, call.receiver_name)
             existing = deduplicated.get(key)
-            if existing is None or (
-                existing.receiver_call is None
-                and call.receiver_call is not None
+            # Two patterns match a scoped call (one keeps the qualifier, one does
+            # not) and both dedup to this key, so the richer record has to win
+            # whichever order they arrive in.
+            if (
+                existing is None
+                or (existing.receiver_call is None and call.receiver_call is not None)
+                or (existing.scope_name is None and call.scope_name is not None)
             ):
                 deduplicated[key] = call
         return list(deduplicated.values())

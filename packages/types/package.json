@@ -19,6 +19,7 @@
     "./chat": "./src/chat.ts",
     "./workspace": "./src/workspace.ts",
     "./blast-radius": "./src/blast-radius.ts",
+    "./risk-semantics": "./src/risk-semantics.ts",
     "./jobs": "./src/jobs.ts",
     "./settings": "./src/settings.ts",
     "./security": "./src/security.ts",

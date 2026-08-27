@@ -421,7 +421,7 @@ export function buildCoverageAiPrompt({
         : null,
       row.nloc ? `File size: ${row.nloc} NLOC` : null,
       row.health_score != null
-        ? `Current health score: ${row.health_score.toFixed(1)}/10 — risky changes here are likely to break things, so tests pay off.`
+        ? `Current health score: ${row.health_score.toFixed(1)}/10 — stronger defect indicators make focused tests especially valuable.`
         : null,
       row.module ? `Module: \`${row.module}\`` : null,
       row.source_format ? `Coverage source: ${row.source_format.toUpperCase()}` : null,
@@ -1245,7 +1245,7 @@ export function buildCommitAiPrompt({
   const short = c.sha.slice(0, 10);
 
   const constraintList = [
-    "Read the diff first. The risk score is a prior, not a verdict — a high score on a mechanical rename is fine; a low score hiding a logic change is not.",
+    "Read the diff first. The calibrated diff-size score is supporting evidence, not a verdict — a high score on a mechanical rename is fine; a low score hiding a logic change is not.",
     "Focus on what the change-risk drivers flag: scattered edits, missing tests, a hotspot touch, a new-to-the-area author. Confirm each against the actual diff.",
     "Check the blast radius: what depends on the changed files, and is anything that usually changes with them missing from this commit?",
     "Call out missing or weak test coverage for the behavior this commit changes.",
@@ -1274,8 +1274,8 @@ export function buildCommitAiPrompt({
       c.author_name ? `Author: ${c.author_name}` : null,
       c.is_fix ? "Tagged as a bug-fix commit." : null,
       c.review_priority ? `Review priority (repo-relative): **${c.review_priority}**` : null,
-      c.risk_percentile != null ? `Risk percentile in this repo: ${Math.round(c.risk_percentile)}th` : null,
-      c.change_risk_score != null ? `Raw change-risk score: ${c.change_risk_score.toFixed(1)}/10` : null,
+      c.risk_percentile != null ? `Diff-shape percentile in this repo: ${Math.round(c.risk_percentile)}th` : null,
+      c.change_risk_score != null ? `Supporting diff-size score: ${c.change_risk_score.toFixed(1)}/10 (calibrated per commit)` : null,
       c.files_changed != null ? `Files changed: ${c.files_changed}` : null,
       c.lines_added != null || c.lines_deleted != null
         ? `Lines: +${c.lines_added ?? 0} / −${c.lines_deleted ?? 0}`

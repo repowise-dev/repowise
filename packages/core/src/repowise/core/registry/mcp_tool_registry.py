@@ -35,6 +35,17 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+TOOL_TIERS = frozenset({"canonical", "utility", "specialist"})
+
+
+@dataclass(frozen=True)
+class ToolRecipe:
+    """Compact agent workflow contributed by a tool to the live registry."""
+
+    name: str
+    call: str
+    requires: tuple[str, ...]
+
 
 @dataclass(frozen=True)
 class ToolEntry:
@@ -51,6 +62,10 @@ class ToolEntry:
     name: str
     default: bool = True
     requires_workspace: bool = False
+    tier: str = "canonical"
+    surface_order: int = 1000
+    trust_kind: str | None = None
+    recipes: tuple[ToolRecipe, ...] = ()
 
 
 class MCPToolRegistry:
@@ -65,6 +80,10 @@ class MCPToolRegistry:
         *args: Any,
         default: bool = True,
         requires_workspace: bool = False,
+        tier: str | None = None,
+        surface_order: int = 1000,
+        trust_kind: str | None = None,
+        recipes: tuple[ToolRecipe, ...] = (),
         **kwargs: Any,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]] | Callable[..., Any]:
         """Decorator that schedules a function for FastMCP registration.
@@ -77,14 +96,36 @@ class MCPToolRegistry:
         """
 
         def _add(fn: Callable[..., Any]) -> Callable[..., Any]:
+            # Preserve the pre-tier extension API: a default workspace-only
+            # tool was valid before tiers existed and is a utility by nature.
+            resolved_tier = tier or (
+                "utility"
+                if default and requires_workspace
+                else "canonical"
+                if default
+                else "specialist"
+            )
+            if resolved_tier not in TOOL_TIERS:
+                raise ValueError(
+                    f"unknown MCP tool tier {resolved_tier!r}; expected one of {sorted(TOOL_TIERS)}"
+                )
+            if resolved_tier == "canonical" and (not default or requires_workspace):
+                raise ValueError("canonical MCP tools must be default and single-repo eligible")
+            if resolved_tier == "specialist" and default:
+                raise ValueError("specialist MCP tools must be opt-in (default=False)")
             self._entries.append(
                 ToolEntry(
                     fn=fn,
                     name=fn.__name__,
                     default=default,
                     requires_workspace=requires_workspace,
+                    tier=resolved_tier,
+                    surface_order=surface_order,
+                    trust_kind=trust_kind,
+                    recipes=recipes,
                 )
             )
+            fn.__dict__["__repowise_trust_kind__"] = trust_kind
             return fn
 
         # Bare-decorator form: @mcp_tool_registry.register
@@ -143,4 +184,4 @@ mcp_tool_registry = MCPToolRegistry()
 """Process-wide default registry used by the OSS MCP server."""
 
 
-__all__ = ["MCPToolRegistry", "ToolEntry", "mcp_tool_registry"]
+__all__ = ["TOOL_TIERS", "MCPToolRegistry", "ToolEntry", "ToolRecipe", "mcp_tool_registry"]

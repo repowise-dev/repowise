@@ -82,6 +82,9 @@ async def test_risk_range_happy_path(client: AsyncClient, git_repo: Path, tmp_pa
     assert data["review_priority"] is None
     assert data["classification"] is None
     assert data["fallback_band"] in {"low", "moderate", "high"}
+    assert data["risk_authority"]["primary_fields"] == ["risk_percentile", "classification"]
+    assert data["risk_authority"]["score_role"] == "supporting_diff_shape_signal"
+    assert "risk_scales" not in data
 
 
 @pytest.mark.asyncio

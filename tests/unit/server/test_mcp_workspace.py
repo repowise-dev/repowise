@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -18,9 +21,12 @@ from repowise.core.persistence.database import init_db
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DecisionRecord,
+    GitMetadata,
     GraphNode,
+    HealthFinding,
     Page,
     Repository,
+    WikiSymbol,
 )
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
@@ -93,10 +99,26 @@ async def _make_repo_context(
 class _MockRegistry:
     """Minimal mock RepoRegistry for testing without real workspace files."""
 
-    def __init__(self, contexts: dict[str, RepoContext], default_alias: str):
+    def __init__(
+        self,
+        contexts: dict[str, RepoContext],
+        default_alias: str,
+        workspace_root: Path,
+    ):
         self._contexts = contexts
         self._default_alias = default_alias
-        self.workspace_root = __import__("pathlib").Path("/tmp/workspace")
+        self.workspace_root = workspace_root
+        self.ws_config = SimpleNamespace(
+            repos=[
+                SimpleNamespace(
+                    alias=alias,
+                    path=ctx.path.relative_to(self.workspace_root).as_posix(),
+                    indexed_at=None,
+                    last_commit_at_index=None,
+                )
+                for alias, ctx in contexts.items()
+            ]
+        )
 
     def get_all_aliases(self) -> list[str]:
         return list(self._contexts.keys())
@@ -109,9 +131,15 @@ class _MockRegistry:
             return self._default_alias
         if repo == "all":
             return self.get_all_aliases()
-        if repo not in self._contexts:
-            raise ValueError(f"Unknown repo '{repo}'. Available: {self.get_all_aliases()}")
-        return repo
+        for entry in self.ws_config.repos:
+            identities = {
+                entry.alias,
+                entry.path,
+                (self.workspace_root / entry.path).resolve().as_posix(),
+            }
+            if repo in identities:
+                return entry.alias
+        raise ValueError(f"Unknown repo '{repo}'. Available: {self.get_all_aliases()}")
 
     async def get(self, alias: str) -> RepoContext:
         return self._contexts[alias]
@@ -126,14 +154,33 @@ class _MockRegistry:
 
 
 @pytest.fixture
-async def workspace_mcp():
+async def workspace_mcp(tmp_path):
     """Set up a two-repo workspace for MCP testing."""
     import repowise.server.mcp_server as mcp_mod
+
+    workspace_root = tmp_path / "workspace"
+    backend_root = workspace_root / "backend"
+    frontend_root = workspace_root / "web-client"
+    for root, name in (
+        (backend_root, "backend_probe"),
+        (frontend_root, "frontend_probe"),
+    ):
+        source = root / "src/probe.py"
+        source.parent.mkdir(parents=True)
+        source.write_text(f"def {name}():\n    return {name!r}\n", encoding="utf-8")
+        for args in (
+            ["git", "init", "-q"],
+            ["git", "config", "user.email", "workspace@example.test"],
+            ["git", "config", "user.name", "Workspace Fixture"],
+            ["git", "add", "."],
+            ["git", "commit", "-qm", f"seed {name}"],
+        ):
+            subprocess.run(args, cwd=root, check=True, capture_output=True)
 
     # Create two repo contexts with distinct data
     backend_ctx = await _make_repo_context(
         "backend",
-        "/tmp/workspace/backend",
+        str(backend_root),
         pages=[
             Page(
                 id="repo_overview:backend",
@@ -152,8 +199,71 @@ async def workspace_mcp():
                 created_at=_NOW,
                 updated_at=_NOW,
             ),
+            Page(
+                id="file_page:src/probe.py",
+                repository_id="repo-backend",
+                page_type="file_page",
+                title="Backend Probe",
+                content="# Backend probe",
+                target_path="src/probe.py",
+                source_hash="probe-be",
+                model_name="mock",
+                provider_name="mock",
+                generation_level=2,
+                confidence=1.0,
+                freshness_status="fresh",
+                metadata_json="{}",
+                created_at=_NOW,
+                updated_at=_NOW,
+            ),
         ],
         extra_models=[
+            WikiSymbol(
+                id="symbol-backend-probe",
+                repository_id="repo-backend",
+                file_path="src/probe.py",
+                symbol_id="src/probe.py::backend_probe",
+                name="backend_probe",
+                qualified_name="backend_probe",
+                kind="function",
+                signature="def backend_probe()",
+                start_line=1,
+                end_line=2,
+                language="python",
+                created_at=_NOW,
+                updated_at=_NOW,
+            ),
+            GraphNode(
+                id="gn-be-probe",
+                repository_id="repo-backend",
+                node_id="src/probe.py",
+                node_type="file",
+                language="python",
+                symbol_count=1,
+                is_entry_point=True,
+                pagerank=0.9,
+                betweenness=0.1,
+                community_id=1,
+                created_at=_NOW,
+            ),
+            HealthFinding(
+                id="hf-be-probe",
+                repository_id="repo-backend",
+                file_path="src/probe.py",
+                biomarker_type="backend_probe_health",
+                severity="low",
+                function_name="backend_probe",
+                reason="Backend fixture finding",
+                health_impact=-0.1,
+                status="open",
+            ),
+            GitMetadata(
+                id="gm-be-probe",
+                repository_id="repo-backend",
+                file_path="src/probe.py",
+                commit_count_total=2,
+                churn_percentile=0.12,
+            ),
             GraphNode(
                 id="gn-be-1",
                 repository_id="repo-backend",
@@ -195,7 +305,7 @@ async def workspace_mcp():
 
     frontend_ctx = await _make_repo_context(
         "frontend",
-        "/tmp/workspace/web-client",
+        str(frontend_root),
         pages=[
             Page(
                 id="repo_overview:frontend",
@@ -214,8 +324,71 @@ async def workspace_mcp():
                 created_at=_NOW,
                 updated_at=_NOW,
             ),
+            Page(
+                id="file_page:src/probe.py",
+                repository_id="repo-frontend",
+                page_type="file_page",
+                title="Frontend Probe",
+                content="# Frontend probe",
+                target_path="src/probe.py",
+                source_hash="probe-fe",
+                model_name="mock",
+                provider_name="mock",
+                generation_level=2,
+                confidence=1.0,
+                freshness_status="fresh",
+                metadata_json="{}",
+                created_at=_NOW,
+                updated_at=_NOW,
+            ),
         ],
         extra_models=[
+            WikiSymbol(
+                id="symbol-frontend-probe",
+                repository_id="repo-frontend",
+                file_path="src/probe.py",
+                symbol_id="src/probe.py::frontend_probe",
+                name="frontend_probe",
+                qualified_name="frontend_probe",
+                kind="function",
+                signature="def frontend_probe()",
+                start_line=1,
+                end_line=2,
+                language="python",
+                created_at=_NOW,
+                updated_at=_NOW,
+            ),
+            GraphNode(
+                id="gn-fe-probe",
+                repository_id="repo-frontend",
+                node_id="src/probe.py",
+                node_type="file",
+                language="python",
+                symbol_count=1,
+                is_entry_point=True,
+                pagerank=0.9,
+                betweenness=0.1,
+                community_id=1,
+                created_at=_NOW,
+            ),
+            HealthFinding(
+                id="hf-fe-probe",
+                repository_id="repo-frontend",
+                file_path="src/probe.py",
+                biomarker_type="frontend_probe_health",
+                severity="low",
+                function_name="frontend_probe",
+                reason="Frontend fixture finding",
+                health_impact=-0.1,
+                status="open",
+            ),
+            GitMetadata(
+                id="gm-fe-probe",
+                repository_id="repo-frontend",
+                file_path="src/probe.py",
+                commit_count_total=9,
+                churn_percentile=0.82,
+            ),
             GraphNode(
                 id="gn-fe-1",
                 repository_id="repo-frontend",
@@ -259,16 +432,17 @@ async def workspace_mcp():
     registry = _MockRegistry(
         contexts={"backend": backend_ctx, "frontend": frontend_ctx},
         default_alias="backend",
+        workspace_root=workspace_root,
     )
 
     # Set workspace state
     mcp_mod._registry = registry
-    mcp_mod._workspace_root = "/tmp/workspace"
+    mcp_mod._workspace_root = str(workspace_root)
     mcp_mod._session_factory = backend_ctx.session_factory
     mcp_mod._fts = backend_ctx.fts
     mcp_mod._vector_store = backend_ctx.vector_store
     mcp_mod._decision_store = backend_ctx.decision_store
-    mcp_mod._repo_path = "/tmp/workspace/backend"
+    mcp_mod._repo_path = str(backend_root)
     mcp_mod._vector_store_ready = backend_ctx.vector_store_ready
 
     yield registry
@@ -665,16 +839,117 @@ async def test_overview_all_includes_cross_repo_topology(workspace_mcp_with_enri
 
 @pytest.mark.asyncio
 async def test_list_repos_discovers_workspace_aliases(workspace_mcp):
-    from repowise.server.mcp_server import list_repos
+    from repowise.server.mcp_server import (
+        get_answer,
+        get_change_risk,
+        get_context,
+        get_dead_code,
+        get_health,
+        get_overview,
+        get_risk,
+        get_symbol,
+        get_why,
+        list_repos,
+        search_codebase,
+    )
 
     result = await list_repos()
 
     assert result["workspace"] is True
-    assert result["workspace_root"] == "/tmp/workspace"
+    assert result["workspace_root"] == workspace_mcp.workspace_root.as_posix()
     assert result["default_repo"] == "backend"
     assert [repo["alias"] for repo in result["repos"]] == ["backend", "frontend"]
     assert result["repos"][0]["is_default"] is True
-    assert "repo='<alias>'" in result["hint"]
+    repository_targets = {
+        "get_answer",
+        "get_change_risk",
+        "get_context",
+        "get_dead_code",
+        "get_health",
+        "get_overview",
+        "get_risk",
+        "get_symbol",
+        "get_why",
+        "search_codebase",
+    }
+    repository_matrix = {
+        ("list_repos", "repository", target): "PASS"
+        for target in repository_targets
+    }
+    repository_matrix.update(
+        {
+            ("list_repos", kind, "N/A"): "N/A"
+            for kind in {
+                "file",
+                "symbol",
+                "decision/evidence",
+                "omission/continuation",
+                "finding",
+                "refactoring plan",
+            }
+        }
+    )
+    assert len(repository_matrix) == 16
+    for emitted in result["repos"]:
+        for field in ("alias", "path", "absolute_path"):
+            identity = emitted[field]
+            probe = f"{emitted['alias']}_probe"
+            symbol_id = f"src/probe.py::{probe}"
+            answer = await get_answer(f"where is {probe} defined", repo=identity)
+            assert probe in json.dumps(answer)
+            change = await get_change_risk("HEAD", repo=identity, baseline=0)
+            assert change.get("warning") is None
+            assert change["score"] >= 0
+            expected_head = subprocess.run(
+                ["git", "rev-parse", "--short=12", "HEAD"],
+                cwd=workspace_mcp.workspace_root / emitted["path"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            assert change["_meta"]["live_head"] == expected_head
+            context = await get_context([symbol_id], repo=identity)
+            assert context["targets"][symbol_id]["type"] == "symbol"
+            assert context["targets"][symbol_id]["docs"]["name"] == probe
+
+            overview = await get_overview(repo=identity)
+            assert overview["title"] == f"{emitted['alias'].title()} Overview"
+            health = await get_health(targets=["src/probe.py"], repo=identity)
+            assert {
+                finding["biomarker_type"]
+                for finding in health["findings"]
+            } == {f"{emitted['alias']}_probe_health"}
+            risk = await get_risk(["src/probe.py"], repo=identity)
+            assert risk["targets"]["src/probe.py"]["hotspot_score"] == (
+                0.12 if emitted["alias"] == "backend" else 0.82
+            )
+            symbol = await get_symbol(symbol_id, repo=identity)
+            assert symbol["symbol_id"] == symbol_id
+            assert probe in symbol["source"]
+            why = await get_why(
+                id=f"dec-{'be' if emitted['alias'] == 'backend' else 'fe'}-1",
+                repo=identity,
+            )
+            assert why["resolved"] is True
+            assert why["decisions"][0]["id"].startswith(
+                f"dec-{'be' if emitted['alias'] == 'backend' else 'fe'}"
+            )
+            dead = await get_dead_code(repo=identity, min_confidence="low")
+            files = {
+                finding["file_path"]
+                for tier in dead["tiers"].values()
+                for finding in tier["findings"]
+            }
+            assert files == {
+                "src/old_handler.py"
+                if emitted["alias"] == "backend"
+                else "src/legacy/utils.ts"
+            }
+            search = await search_codebase(
+                probe, repo=identity, mode="symbol", limit=5
+            )
+            assert any(row.get("symbol_id") == symbol_id for row in search["results"])
+    assert "alias, path, or absolute_path" in result["hint"]
 
 
 @pytest.mark.asyncio
