@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   summaryKey: "",
   queryValues: {} as Record<string, unknown>,
   swrCalls: [] as Array<{ key: string | null; fetcher: () => Promise<unknown> }>,
+  autoFetchFiles: false,
   tableProps: {} as Record<string, unknown>,
   apiGet: vi.fn(),
 }));
@@ -57,6 +58,7 @@ vi.mock("swr/infinite", () => ({
 vi.mock("swr", () => ({
   default: (key: string | null, fetcher: () => Promise<unknown>) => {
     mocks.swrCalls.push({ key, fetcher });
+    if (mocks.autoFetchFiles && key?.startsWith("external-system-files:")) void fetcher();
     return mocks.focusedResult;
   },
 }));
@@ -161,6 +163,7 @@ describe("DependenciesView wiring", () => {
     vi.clearAllMocks();
     mocks.queryValues = {};
     mocks.swrCalls = [];
+    mocks.autoFetchFiles = false;
     mocks.tableProps = {};
     mocks.apiGet.mockResolvedValue({});
     mocks.infiniteResult = {
@@ -246,5 +249,23 @@ describe("DependenciesView wiring", () => {
       expect.objectContaining({ aggregate_key: "community:1", limit: 25, offset: 25 }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
+  });
+
+  it("does not cancel a newly started file request when an area is expanded", () => {
+    mocks.queryValues = { package: "npm:react", focus: "relationships" };
+    const { rerender } = render(<DependenciesView repoId="repo-id" />);
+
+    mocks.autoFetchFiles = true;
+    mocks.queryValues = {
+      package: "npm:react",
+      focus: "relationships",
+      area: "community:1",
+    };
+    rerender(<DependenciesView repoId="repo-id" />);
+
+    const fileCall = mocks.apiGet.mock.calls.find(([path]) => String(path).includes("/graph/files"));
+    expect(fileCall).toBeDefined();
+    const signal = (fileCall![2] as { signal: AbortSignal }).signal;
+    expect(signal.aborted).toBe(false);
   });
 });

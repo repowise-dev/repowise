@@ -42,10 +42,15 @@ const SCOPES = ["primary", "all"] as const;
 const FOCUSES = ["relationships"] as const;
 const FILE_PAGE_LIMIT = 25;
 
+interface ActiveRequest {
+  identity: string;
+  controller: AbortController;
+}
+
 export function DependenciesView({ repoId }: { repoId: string }) {
   const summaryAbortRef = useRef<AbortController | null>(null);
-  const relationshipsAbortRef = useRef<AbortController | null>(null);
-  const filesAbortRef = useRef<AbortController | null>(null);
+  const relationshipsAbortRef = useRef<ActiveRequest | null>(null);
+  const filesAbortRef = useRef<ActiveRequest | null>(null);
   const [scope, setScope] = useQueryState(
     "scope",
     parseAsStringLiteral(SCOPES).withDefault("primary"),
@@ -125,17 +130,20 @@ export function DependenciesView({ repoId }: { repoId: string }) {
     }
   }, [data, selected, selectedKey, setSize, size, summaryValidating]);
 
+  const relationshipRequestIdentity =
+    selected && focus === "relationships" ? `${repoId}:${scope}:${selected.package_key}` : null;
+
   // Relationship reads stay dormant until the inspector's explicit action.
   const fetchRelationships = useCallback(() => {
-    relationshipsAbortRef.current?.abort();
+    relationshipsAbortRef.current?.controller.abort();
     const controller = new AbortController();
-    relationshipsAbortRef.current = controller;
+    relationshipsAbortRef.current = { identity: relationshipRequestIdentity!, controller };
     return apiGet<ExternalSystemRelationshipGraph>(
       `/api/repos/${repoId}/external-systems/${encodeURIComponent(selected!.package_key)}/graph`,
       { scope, node_limit: 50, edge_limit: 200 },
       { signal: controller.signal },
     );
-  }, [repoId, scope, selected]);
+  }, [relationshipRequestIdentity, repoId, scope, selected]);
   const {
     data: relationships,
     error: relationshipsError,
@@ -149,10 +157,15 @@ export function DependenciesView({ repoId }: { repoId: string }) {
     { revalidateOnFocus: false, revalidateOnReconnect: false },
   );
 
+  const fileRequestIdentity =
+    relationshipRequestIdentity && aggregateKey
+      ? `${relationshipRequestIdentity}:${aggregateKey}:${fileOffset}`
+      : null;
+
   const fetchImportingFiles = useCallback(() => {
-    filesAbortRef.current?.abort();
+    filesAbortRef.current?.controller.abort();
     const controller = new AbortController();
-    filesAbortRef.current = controller;
+    filesAbortRef.current = { identity: fileRequestIdentity!, controller };
     return apiGet<ExternalSystemImportingFiles>(
       `/api/repos/${repoId}/external-systems/${encodeURIComponent(selected!.package_key)}/graph/files`,
       {
@@ -163,7 +176,7 @@ export function DependenciesView({ repoId }: { repoId: string }) {
       },
       { signal: controller.signal },
     );
-  }, [aggregateKey, fileOffset, repoId, scope, selected]);
+  }, [aggregateKey, fileOffset, fileRequestIdentity, repoId, scope, selected]);
   const {
     data: importingFiles,
     error: importingFilesError,
@@ -177,22 +190,25 @@ export function DependenciesView({ repoId }: { repoId: string }) {
     { revalidateOnFocus: false, revalidateOnReconnect: false },
   );
 
-  const relationshipRequestIdentity =
-    selected && focus === "relationships" ? `${repoId}:${scope}:${selected.package_key}` : null;
-  const fileRequestIdentity =
-    relationshipRequestIdentity && aggregateKey
-      ? `${relationshipRequestIdentity}:${aggregateKey}:${fileOffset}`
-      : null;
-  useEffect(
-    () => () => relationshipsAbortRef.current?.abort(),
-    [relationshipRequestIdentity],
-  );
-  useEffect(() => () => filesAbortRef.current?.abort(), [fileRequestIdentity]);
+  useEffect(() => () => {
+    const active = relationshipsAbortRef.current;
+    if (active?.identity === relationshipRequestIdentity) {
+      active.controller.abort();
+      relationshipsAbortRef.current = null;
+    }
+  }, [relationshipRequestIdentity]);
+  useEffect(() => () => {
+    const active = filesAbortRef.current;
+    if (active?.identity === fileRequestIdentity) {
+      active.controller.abort();
+      filesAbortRef.current = null;
+    }
+  }, [fileRequestIdentity]);
   useEffect(
     () => () => {
       summaryAbortRef.current?.abort();
-      relationshipsAbortRef.current?.abort();
-      filesAbortRef.current?.abort();
+      relationshipsAbortRef.current?.controller.abort();
+      filesAbortRef.current?.controller.abort();
     },
     [],
   );
