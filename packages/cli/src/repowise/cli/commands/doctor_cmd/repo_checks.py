@@ -76,7 +76,12 @@ def _run_repo_checks(
     try:
         import git as gitpython
 
-        gitpython.Repo(repo_path, search_parent_directories=True)
+        try:
+            gitpython.Repo(repo_path, search_parent_directories=True)
+        except Exception:
+            # Fallback to environment-honouring constructor (handles linked worktrees where .git is a file
+            # or when GIT_DIR / GIT_WORK_TREE environment variables are defined #1931)
+            gitpython.Repo()
         checks.append(_check("Git repository", True, str(repo_path)))
     except Exception:
         checks.append(_check("Git repository", False, "Not a git repo"))
