@@ -64,7 +64,7 @@ export function ArtifactPanel({ artifacts, open, onClose }: ArtifactPanelProps) 
               className={cn(
                 "px-3 py-2 text-xs whitespace-nowrap border-b-2 transition-colors",
                 idx === activeIdx
-                  ? "border-[var(--color-accent-primary)] text-[var(--color-accent-primary)]"
+                  ? "border-[var(--color-border-hover)] bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]"
                   : "border-transparent text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]",
               )}
             >

@@ -33,7 +33,7 @@ from repowise.server.mcp_server._budget.budgeter import (
     over_budget,
     truncate_to_budget,
 )
-from repowise.server.mcp_server._budget.collector import OmissionCollector
+from repowise.server.mcp_server._budget.collector import OmissionCollector, cap_collection
 from repowise.server.mcp_server._budget.contracts import (
     DEFAULT_RESPONSE_CHARS,
     EXPANDED_RESPONSE_CHARS,
@@ -53,6 +53,7 @@ __all__ = [
     "TOKEN_BUDGET",
     "OmissionCollector",
     "budgeted_tool_names",
+    "cap_collection",
     "effective_char_budget",
     "enforce_response_budget",
     "estimate_response_tokens",

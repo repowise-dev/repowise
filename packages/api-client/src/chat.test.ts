@@ -40,4 +40,26 @@ describe("postChatMessage", () => {
     const init = fetchMock.mock.calls[0]![1] as RequestInit;
     expect("signal" in init).toBe(false);
   });
+
+  it("serializes portable navigation context for the agent", async () => {
+    await postChatMessage("r1", {
+      message: "What does this do?",
+      context: {
+        kind: "symbol",
+        label: "Symbols",
+        target: "useChat",
+        targetKind: "symbol",
+      },
+    });
+
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      context: {
+        kind: "symbol",
+        label: "Symbols",
+        target: "useChat",
+        target_kind: "symbol",
+      },
+    });
+  });
 });

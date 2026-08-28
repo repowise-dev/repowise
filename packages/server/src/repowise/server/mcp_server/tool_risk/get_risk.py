@@ -16,7 +16,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -43,20 +43,28 @@ _TARGET_CARD_INCLUDES: dict[str, tuple[str, ...]] = {
         "impact_surface_total",
         "impact_surface_emitted",
         "impact_surface_truncated",
+        "impact_surface_reduced_reason",
+        "impact_surface_omitted",
         "dependents",
         "dependents_total",
         "dependents_emitted",
         "dependents_truncated",
+        "dependents_reduced_reason",
+        "dependents_omitted",
         "direct_dependents_total",
         "transitive_dependents_total",
         "consumers",
         "consumers_total",
         "consumers_emitted",
         "consumers_truncated",
+        "consumers_reduced_reason",
+        "consumers_omitted",
         "cross_repo_links",
         "cross_repo_links_total",
         "cross_repo_links_emitted",
         "cross_repo_links_truncated",
+        "cross_repo_links_reduced_reason",
+        "cross_repo_links_omitted",
         "relationship_analysis",
     ),
     "churn": ("change_magnitude", "risk_type", "change_pattern"),
@@ -138,6 +146,7 @@ async def get_risk(
         if resolve_enum_argument(block, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
     }
     ctx = await _resolve_repo_context(repo)
+    collector = OmissionCollector("get_risk", repo_root=ctx.path)
     exclude_spec = _get_exclude_spec(ctx.path)
     targets = filter_path_list(targets, exclude_spec)
     if changed_files:
@@ -205,6 +214,8 @@ async def get_risk(
                     node_meta,
                     exclude_spec,
                     team_size,
+                    collector,
+                    "graph" in include_set,
                 )
                 for t in targets
             ]
@@ -220,39 +231,38 @@ async def get_risk(
         # Churn stays the fallback, so a repo with no fix convention keeps
         # exactly the list it had. These are full ORM rows, so the fix columns
         # are already in memory and this adds no query.
-        target_set = set(targets)
-        res = await session.execute(
-            select(GitMetadata)
-            .where(
-                GitMetadata.repository_id == repo_id,
-                (GitMetadata.is_hotspot == True)  # noqa: E712
-                | (GitMetadata.bug_magnet == True),  # noqa: E712
-            )
-            .order_by(
-                GitMetadata.bug_magnet.desc(),
-                GitMetadata.fix_mass.desc(),
-                GitMetadata.churn_percentile.desc(),
-            )
-            .limit(len(targets) + 5)
-        )
-        all_hotspots = filter_rows_by_attr(list(res.scalars().all()), "file_path", exclude_spec)
         global_hotspots = []
-        for h in all_hotspots:
-            if h.file_path in target_set:
-                continue
-            entry = {
-                "file_path": h.file_path,
-                "hotspot_score": h.churn_percentile,
-                "is_hotspot": True,
-                "primary_owner": h.primary_owner_name,
-            }
-            # Silent on files with no counted fixes, so a repo without fix
-            # history pays nothing for this.
-            fixes = fix_annotation(h)
-            if fixes is not None:
-                entry.update(fixes)
-            global_hotspots.append(entry)
-        global_hotspots = global_hotspots[:5]
+        if len(targets) > 1 and not changed_files:
+            target_set = set(targets)
+            res = await session.execute(
+                select(GitMetadata)
+                .where(
+                    GitMetadata.repository_id == repo_id,
+                    (GitMetadata.is_hotspot == True)  # noqa: E712
+                    | (GitMetadata.bug_magnet == True),  # noqa: E712
+                )
+                .order_by(
+                    GitMetadata.bug_magnet.desc(),
+                    GitMetadata.fix_mass.desc(),
+                    GitMetadata.churn_percentile.desc(),
+                )
+            )
+            all_hotspots = filter_rows_by_attr(
+                list(res.scalars().all()), "file_path", exclude_spec
+            )
+            for h in all_hotspots:
+                if h.file_path in target_set:
+                    continue
+                entry = {
+                    "file_path": h.file_path,
+                    "hotspot_score": h.churn_percentile,
+                    "is_hotspot": True,
+                    "primary_owner": h.primary_owner_name,
+                }
+                fixes = fix_annotation(h)
+                if fixes is not None:
+                    entry.update(fixes)
+                global_hotspots.append(entry)
 
         # A. PR blast radius (only when caller passes changed_files)
         pr_blast_radius: dict | None = None
@@ -263,7 +273,9 @@ async def get_risk(
             pr_blast_radius = await analyzer.analyze_files(changed_files, exclude_spec=exclude_spec)
 
     # Cross-repo blast radius enrichment (Phase 3 + 4)
-    await _enrich_cross_repo(results, ctx.alias)
+    await _enrich_cross_repo(
+        results, ctx.alias, collector, include_graph="graph" in include_set
+    )
 
     # ---- Code-health enrichment --------------------------------------------
     # Attach per-file health_score + top_biomarkers (up to 3) drawn from the
@@ -281,7 +293,6 @@ async def get_risk(
         **({"risk_scales": file_risk_scales()} if "scales" in include_set else {}),
     }
 
-    collector = OmissionCollector("get_risk", repo_root=ctx.path)
     if pr_blast_radius is not None:
         assert changed_files is not None
         # Governance risk — bounded query over changed_files (small set).
@@ -304,7 +315,14 @@ async def get_risk(
     elif len(targets) > 1:
         # Standard per-file risk request (no diff) — ambient orientation across
         # a set of targets. On one file the caller already named, it is noise.
-        response["global_hotspots"] = global_hotspots
+        cap_collection(
+            response,
+            "global_hotspots",
+            global_hotspots,
+            5,
+            collector,
+            label="global_hotspots beyond cap=5",
+        )
 
     response["_meta"] = _build_meta(
         repository=repository,

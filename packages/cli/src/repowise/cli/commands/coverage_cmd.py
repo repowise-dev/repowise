@@ -68,6 +68,12 @@ def coverage_group() -> None:
     help="Force a parser instead of auto-detecting from content.",
 )
 @click.option(
+    "--strict",
+    is_flag=True,
+    default=False,
+    help="Also fail when some report files did not map to the repo tree.",
+)
+@click.option(
     "--verbose",
     "-v",
     is_flag=True,
@@ -78,6 +84,7 @@ def coverage_add(
     paths: tuple[str, ...],
     repo: str | None,
     coverage_format: str | None,
+    strict: bool,
     verbose: bool,
 ) -> None:
     """Ingest coverage (auto-discovers reports when none are given).
@@ -94,6 +101,10 @@ def coverage_add(
         repowise coverage add coverage/lcov.info
         repowise coverage add .coverage            # per-test map from coverage.py
         repowise coverage add web.lcov api.lcov    # merged hit-wins
+
+    Exits non-zero when nothing was stored, so `coverage add ... || exit 1`
+    tells a complete ingest from a no-op. With --strict it also exits
+    non-zero when some report files did not map to the repo tree.
     """
     configure_cli_logging(verbose=verbose)
 
@@ -125,7 +136,7 @@ def coverage_add(
                 "then re-run, or pass a path:\n"
                 "  [cyan]repowise coverage add path/to/report[/cyan]"
             )
-            return
+            raise click.exceptions.Exit(1)
         console.print(
             f"Discovered {len(report_paths)} report(s): "
             + ", ".join(p.name for p in report_paths[:5])
@@ -136,7 +147,7 @@ def coverage_add(
     # text-parsing path (its binary bytes would not decode as UTF-8).
     agg_paths = [p for p in report_paths if not _is_sqlite(p)]
 
-    async def _do() -> None:
+    async def _do() -> bool:
         from repowise.core.persistence import (
             create_engine,
             create_session_factory,
@@ -157,18 +168,19 @@ def coverage_add(
                     "[yellow]No index yet — run `repowise init` once before "
                     "adding coverage.[/yellow]"
                 )
-                return
+                return False
             repo_keys = await _repo_file_keys(session, repo_row.id)
             if not repo_keys:
                 console.print(
                     "[yellow]No indexed files found — run `repowise init` first.[/yellow]"
                 )
-                return
+                return False
 
             head_sha = getattr(repo_row, "head_commit", None)
 
             # --- Per-file aggregate coverage (lcov / cobertura / clover / json).
             agg_matched = 0
+            unmapped = 0
             if agg_paths:
                 resolved, errors = build_coverage_map(
                     repo_path,
@@ -180,6 +192,12 @@ def coverage_add(
                 )
                 for path, err in errors:
                     console.print(f"[yellow]  {path.name}: {err}[/yellow]")
+                # Counted from `resolved`, not from inside the `resolved.files`
+                # branch below: total mapping loss leaves `files` empty, so
+                # reading the count in there reported 0 report files unmapped
+                # for the one run where every single one of them was.
+                skipped = resolved.unmatched + resolved.ambiguous
+                unmapped = len(skipped)
                 if resolved.files:
                     await save_coverage_files(
                         session,
@@ -193,7 +211,6 @@ def coverage_add(
                         f"[green]Ingested coverage for {resolved.matched} file(s)[/green] "
                         f"({resolved.matched_exact} exact, {resolved.matched_suffix} resolved)."
                     )
-                    skipped = resolved.unmatched + resolved.ambiguous
                     if skipped:
                         sample = ", ".join(skipped[:5])
                         console.print(
@@ -250,13 +267,23 @@ def coverage_add(
                     "If paths look prefixed (e.g. build/…), set "
                     "[cyan]coverage.strip_prefix[/cyan] in .repowise/config.yaml."
                 )
-                return
+                return False
+            if strict and unmapped:
+                console.print(
+                    f"[red]--strict: {unmapped} report file(s) did not map to the repo tree.[/red]"
+                )
+                return False
             console.print(
                 "Run [cyan]repowise health[/cyan] to fold coverage into the defect "
                 "scores, or [cyan]repowise coverage status[/cyan] to review it."
             )
+            return True
 
-    run_async(_do())
+    # A refresh is commonly scripted as `coverage add ... || exit 1`, so a run
+    # that stored nothing has to be distinguishable from a complete one by its
+    # exit status alone.
+    if not run_async(_do()):
+        raise click.exceptions.Exit(1)
 
 
 _SQLITE_MAGIC = b"SQLite format 3\x00"

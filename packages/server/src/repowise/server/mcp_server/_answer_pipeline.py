@@ -869,23 +869,28 @@ async def expand_via_graph(hits: list[dict], ctx: Any, repo_id: str) -> list[dic
     # Damp parent score by _GRAPH_EXPAND_DAMPING for child candidates; pick
     # the strongest parent each child connects to (taking the max parent
     # score is conservative — favors well-connected neighbors).
-    parent_score = max((h.get("score", 0.0) for h in hits[:_GRAPH_EXPAND_TOP_N]), default=0.0)
+    strongest_parent = max(
+        hits[:_GRAPH_EXPAND_TOP_N], key=lambda hit: hit.get("score", 0.0), default={}
+    )
+    parent_score = strongest_parent.get("score", 0.0)
+    confidence_factor = strongest_parent.get("_confidence_score_factor")
     candidates: list[dict] = []
     for path, summary, page_type in page_rows:
-        candidates.append(
-            {
-                "page_id": f"file_page:{path}",
-                "target_path": path,
-                "title": f"File: {path}",
-                "summary": summary or "",
-                "snippet": (summary or "")[:200],
-                "page_type": page_type or "file_page",
-                "score": parent_score * _GRAPH_EXPAND_DAMPING,
-                "_sources": {"graph_expand"},
-                "_expanded_from": "graph",
-                "_pagerank": pr_by_path.get(path, 0.0),
-            }
-        )
+        candidate = {
+            "page_id": f"file_page:{path}",
+            "target_path": path,
+            "title": f"File: {path}",
+            "summary": summary or "",
+            "snippet": (summary or "")[:200],
+            "page_type": page_type or "file_page",
+            "score": parent_score * _GRAPH_EXPAND_DAMPING,
+            "_sources": {"graph_expand"},
+            "_expanded_from": "graph",
+            "_pagerank": pr_by_path.get(path, 0.0),
+        }
+        if confidence_factor is not None:
+            candidate["_confidence_score_factor"] = confidence_factor
+        candidates.append(candidate)
 
     # Rank candidates by PageRank within the expansion set so we pick the
     # most central neighbor first when we have multiple plausible ones.

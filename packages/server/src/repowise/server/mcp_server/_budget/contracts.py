@@ -85,6 +85,35 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
         expansion_argument="include",
         protected=("answer", "confidence", "citations", "next_action_hint"),
     ),
+    # Dropping docs and episodes whole, and first, served 0 of 50 pages and 0 of
+    # 12 episodes on a file whose decision lane was 40 near-duplicates. They are
+    # ranked tails now, so a squeeze costs rows rather than the lane, and the
+    # decision lane pays before the lanes that answer.
+    #
+    # Search mode has no top-level origin_story or git_archaeology (its origin
+    # lives under the protected target_context), so for that shape the fix is
+    # the tail entries alone; the block entries only bite in path mode.
+    "get_why": ResponseBudgetContract(
+        "blocks",
+        (
+            # Titles the decisions lane already carries.
+            "origin_story.linked_decisions",
+            "decisions[]",
+            "code_rationale",
+            "git_archaeology.file_commits",
+            "git_archaeology.cross_references",
+            "git_archaeology.git_log",
+            # Ranked tails, moved here from the front of this tuple. Episodes
+            # last: they answer "what constrains changing this" when no decision
+            # governs the file.
+            "related_documentation[]",
+            "episodes[]",
+            "related_documentation",
+            "origin_story",
+        ),
+        expansion_argument=None,
+        protected=("mode", "query", "path", "paths", "target_context", "alignment"),
+    ),
     "get_overview": ResponseBudgetContract(
         "blocks",
         (
@@ -107,6 +136,37 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "content_md",
         ),
         protected=("title", "architecture", "entry_points"),
+    ),
+    "get_health": ResponseBudgetContract(
+        "blocks",
+        (
+            "suggestion_legend",
+            "coverage.files[]",
+            "trend.recent[]",
+            "trend.alerts[]",
+            "churn_complexity[]",
+            "test_findings[]",
+            "top_findings[]",
+            "findings[]",
+            "worst_files[]",
+            "modules[]",
+            "trends[]",
+            "metrics[]",
+            "refactoring_plans[]",
+            "performance_opportunities[]",
+            "high_leverage_files[]",
+            "secondary_rankings",
+        ),
+        protected=(
+            "mode",
+            "directive",
+            "targets",
+            "unresolved",
+            "known_modules",
+            "kpis",
+            "distribution",
+            "gap_analysis",
+        ),
     ),
 }
 
@@ -259,6 +319,23 @@ def _emergency_fit(
             return
 
 
+def _reconcile_health_plan_status(result: dict[str, Any]) -> None:
+    """Keep plan availability honest after the final budget mutates collections."""
+    status = result.get("refactoring_plans_status")
+    plans = result.get("refactoring_plans")
+    if not isinstance(status, dict) or status.get("state") != "available":
+        return
+    if plans is not None and (not isinstance(plans, list) or plans):
+        return
+    if not result.get("refactoring_plans_total", 0):
+        return
+    status.update(
+        state="available_not_emitted",
+        reason="response_budget",
+        message="Plans exist but were removed by the final response budget.",
+    )
+
+
 def enforce_response_budget(
     tool: str,
     result: Any,
@@ -305,12 +382,36 @@ def enforce_response_budget(
             headroom=0,
             record_counts=True,
         )
+        if tool == "get_health":
+            plans = result.get("refactoring_plans")
+            profiles = result.get("validation_profiles")
+            if isinstance(plans, list) and isinstance(profiles, list):
+                referenced = {
+                    plan.get("validation_profile_id")
+                    for plan in plans
+                    if isinstance(plan, dict) and plan.get("validation_profile_id")
+                }
+                kept_profiles = [
+                    profile
+                    for profile in profiles
+                    if isinstance(profile, dict) and profile.get("id") in referenced
+                ]
+                dropped_profiles = [profile for profile in profiles if profile not in kept_profiles]
+                if dropped_profiles:
+                    collector.add("validation_profiles no longer referenced after response budgeting", dropped_profiles)
+                    result["validation_profiles"] = kept_profiles
+                    result["validation_profiles_emitted"] = len(kept_profiles)
+                    result["validation_profiles_reduced_reason"] = "response_budget"
+                    result["truncated"] = True
         collector.attach(result)
 
     if response_chars(result) > limit:
         emergency = OmissionCollector(tool, repo_root=repo_root)
         _emergency_fit(result, contract, emergency, working_limit)
         emergency.attach(result)
+
+    if tool == "get_health":
+        _reconcile_health_plan_status(result)
 
     if result.get("truncated"):
         result.setdefault("_meta", {}).setdefault("state", {})["truncated"] = True

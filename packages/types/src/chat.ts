@@ -24,6 +24,48 @@ import type { DeadCodeFinding } from "./dead-code.js";
 import type { DecisionRecord } from "./decisions.js";
 
 // ---------------------------------------------------------------------------
+// Product context surrounding a chat composer
+// ---------------------------------------------------------------------------
+
+export type ChatContextKind =
+  | "repository"
+  | "overview"
+  | "documentation"
+  | "architecture"
+  | "graph"
+  | "health"
+  | "refactoring"
+  | "file"
+  | "symbol"
+  | "module"
+  | "commit"
+  | "contributor"
+  | "decision"
+  | "risk"
+  | "security"
+  | "usage"
+  | "settings"
+  | "chat";
+
+export type ChatContextTargetKind =
+  | "path"
+  | "symbol"
+  | "module"
+  | "dependency"
+  | "commit"
+  | "person"
+  | "decision"
+  | "documentation";
+
+/** Portable navigation context supplied by a product host for one chat turn. */
+export interface ChatContext {
+  kind: ChatContextKind;
+  label: string;
+  target?: string;
+  targetKind?: ChatContextTargetKind;
+}
+
+// ---------------------------------------------------------------------------
 // Conversations + messages
 // ---------------------------------------------------------------------------
 
@@ -32,6 +74,7 @@ export interface Conversation {
   repository_id: string;
   title: string;
   message_count: number;
+  pinned?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -41,6 +84,8 @@ export interface ChatToolCall {
   name: string;
   arguments?: Record<string, unknown>;
   result?: Record<string, unknown>;
+  summary?: string;
+  artifact_type?: string;
 }
 
 export interface ChatMessage {
@@ -50,6 +95,8 @@ export interface ChatMessage {
   content: {
     text?: string;
     tool_calls?: ChatToolCall[];
+    provider?: string;
+    model?: string;
   };
   created_at: string;
 }
@@ -75,6 +122,9 @@ export interface ChatUIMessage {
   text: string;
   toolCalls: ChatUIToolCall[];
   isStreaming: boolean;
+  /** Provenance recorded on assistant responses. */
+  provider?: string;
+  model?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -400,5 +450,5 @@ export type ChatSSEEvent =
       artifact: ChatArtifact;
       citations?: ChatCitation[];
     }
-  | { type: "done"; conversation_id: string; message_id: string }
+  | { type: "done"; conversation_id: string; message_id: string; user_message_id?: string; provider?: string; model?: string }
   | { type: "error"; message: string };

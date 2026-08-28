@@ -14,14 +14,20 @@ handler already used ``data`` + ``type``; this one branch did not.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -138,3 +144,111 @@ async def test_a_completed_turn_ends_the_stream_with_done():
     assert events, f"stream carried no readable data events: {body!r}"
     assert events[-1]["type"] == "done"
     assert events[-1]["conversation_id"]
+    assert events[-1]["user_message_id"]
+    assert events[-1]["provider"] == "test"
+    assert events[-1]["model"] == "test-model"
+
+
+@pytest.mark.asyncio
+async def test_conversation_history_supports_rename_pin_fork_and_delete_undo():
+    app = await _make_app()
+    with patch(
+        "repowise.server.routers.chat.get_chat_provider_instance",
+        return_value=_SilentProvider(),
+    ):
+        events = _data_events(await _post(app, {"message": "original question"}))
+    conversation_id = events[-1]["conversation_id"]
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        updated = await client.patch(
+            f"/api/repos/{_REPO_ID}/chat/conversations/{conversation_id}",
+            json={"title": "Pinned investigation", "pinned": True},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["title"] == "Pinned investigation"
+        assert updated.json()["pinned"] is True
+
+        messages = await client.get(
+            f"/api/repos/{_REPO_ID}/chat/conversations/{conversation_id}"
+        )
+        user_message_id = messages.json()["messages"][0]["id"]
+        forked_before = await client.post(
+            f"/api/repos/{_REPO_ID}/chat/conversations/{conversation_id}/fork",
+            json={"before_message_id": user_message_id},
+        )
+        assert forked_before.status_code == 200
+        assert forked_before.json()["message_count"] == 0
+
+        bad_point = await client.post(
+            f"/api/repos/{_REPO_ID}/chat/conversations/{conversation_id}/fork",
+            json={"before_message_id": "missing"},
+        )
+        assert bad_point.status_code == 404
+
+        blank_title = await client.patch(
+            f"/api/repos/{_REPO_ID}/chat/conversations/{conversation_id}",
+            json={"title": "   "},
+        )
+        assert blank_title.status_code == 422
+
+        forked = await client.post(
+            f"/api/repos/{_REPO_ID}/chat/conversations/{conversation_id}/fork",
+            json={},
+        )
+        assert forked.status_code == 200
+        assert forked.json()["message_count"] == 2
+
+        deleted = await client.delete(
+            f"/api/repos/{_REPO_ID}/chat/conversations/{conversation_id}"
+        )
+        assert deleted.status_code == 200
+        listed = await client.get(f"/api/repos/{_REPO_ID}/chat/conversations")
+        assert all(row["id"] != conversation_id for row in listed.json())
+
+        restored = await client.post(
+            f"/api/repos/{_REPO_ID}/chat/conversations/{conversation_id}/restore"
+        )
+        assert restored.status_code == 200
+        listed = await client.get(f"/api/repos/{_REPO_ID}/chat/conversations")
+        assert any(row["id"] == conversation_id for row in listed.json())
+
+
+def test_conversation_refinement_migration_upgrades_sqlite() -> None:
+    core_root = Path("packages/core").resolve()
+    with tempfile.TemporaryDirectory() as tmp:
+        database_path = Path(tmp) / "chat-migration.db"
+        url = f"sqlite+aiosqlite:///{database_path}"
+        previous_url = os.environ.get("DATABASE_URL")
+        previous_cwd = Path.cwd()
+        os.environ["DATABASE_URL"] = url
+        try:
+            os.chdir(core_root)
+            config = Config("alembic.ini")
+            config.set_main_option("sqlalchemy.url", url)
+            with patch("logging.config.fileConfig"):
+                command.upgrade(config, "0055")
+                command.upgrade(config, "0056")
+        finally:
+            os.chdir(previous_cwd)
+            if previous_url is None:
+                os.environ.pop("DATABASE_URL", None)
+            else:
+                os.environ["DATABASE_URL"] = previous_url
+
+        engine = create_async_engine(url, connect_args={"check_same_thread": False})
+
+        async def verify() -> None:
+            async with engine.connect() as connection:
+                columns = await connection.run_sync(
+                    lambda sync_connection: {
+                        column["name"]
+                        for column in inspect(sync_connection).get_columns("conversations")
+                    }
+                )
+                assert {"pinned", "deleted_at"} <= columns
+            await engine.dispose()
+
+        import asyncio
+
+        asyncio.run(verify())

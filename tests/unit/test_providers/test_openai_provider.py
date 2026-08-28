@@ -468,6 +468,89 @@ async def test_generate_rejects_off_for_non_qwen_model():
 
 
 # ---------------------------------------------------------------------------
+# Streaming chat compatibility
+# ---------------------------------------------------------------------------
+
+
+class _EmptyChatStream:
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-5.6",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "openai/gpt-5.6-sol-2026-08-01",
+    ],
+)
+async def test_stream_chat_disables_gpt_5_6_reasoning_with_function_tools(model):
+    """Use the Chat Completions-compatible setting across the GPT-5.6 family."""
+    provider = OpenAIProvider(api_key="sk-test", model=model)
+    captured_kwargs: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured_kwargs.append(kwargs)
+        return _EmptyChatStream()
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = fake_create
+        provider._client = mock_client.return_value
+        events = [
+            event
+            async for event in provider.stream_chat(
+                messages=[{"role": "user", "content": "Inspect this repository"}],
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_overview",
+                            "description": "Read repository overview",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                system_prompt="Use repository tools.",
+            )
+        ]
+
+    assert events == []
+    assert captured_kwargs[0]["reasoning_effort"] == "none"
+    assert captured_kwargs[0]["tools"][0]["function"]["name"] == "get_overview"
+
+
+@pytest.mark.parametrize("model", ["gpt-5.6", "gpt-5.6-terra", "gpt-5.6-luna"])
+async def test_stream_chat_keeps_gpt_5_6_default_reasoning_without_tools(model):
+    provider = OpenAIProvider(api_key="sk-test", model=model)
+    captured_kwargs: list[dict] = []
+
+    async def fake_create(**kwargs):
+        captured_kwargs.append(kwargs)
+        return _EmptyChatStream()
+
+    with patch("openai.AsyncOpenAI") as mock_client:
+        mock_client.return_value.chat.completions.create = fake_create
+        provider._client = mock_client.return_value
+        events = [
+            event
+            async for event in provider.stream_chat(
+                messages=[{"role": "user", "content": "Say hello"}],
+                tools=[],
+                system_prompt="Be concise.",
+            )
+        ]
+
+    assert events == []
+    assert "reasoning_effort" not in captured_kwargs[0]
+
+
+# ---------------------------------------------------------------------------
 # Error mapping
 # ---------------------------------------------------------------------------
 

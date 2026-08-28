@@ -47,3 +47,114 @@ export interface ExternalSystemsRegistry {
   ecosystems: string[];
   manifests: string[];
 }
+
+export type ExternalSystemLinkState = "linked" | "unlinked";
+export type ExternalSystemsSummaryScope = "primary" | "all";
+
+/** One canonical package with declaration and persisted graph-usage aggregates. */
+export interface ExternalSystemSummaryEntry {
+  package_key: string;
+  name: string;
+  display_name: string;
+  ecosystem: string;
+  category: string;
+  io_kind: C4IoKind | null;
+  runtime_declared: boolean;
+  dev_declared: boolean;
+  declaration_count: number;
+  manifest_count: number;
+  versions: string[];
+  versions_total: number;
+  versions_truncated: boolean;
+  multiple_versions: boolean;
+  external_node_count: number;
+  import_edge_count: number;
+  importing_file_count: number;
+  link_state: ExternalSystemLinkState;
+}
+
+/** Bounded package summaries for the external-dependency scan surface. */
+export interface ExternalSystemsSummary {
+  items: ExternalSystemSummaryEntry[];
+  returned: number;
+  total_packages: number;
+  limit: number;
+  offset: number;
+  truncated: boolean;
+  scope: ExternalSystemsSummaryScope;
+  excluded_declarations: number;
+  total_declarations: number;
+  runtime_packages: number;
+  dev_only_packages: number;
+  observed_packages: number;
+  linked_packages: number;
+  unlinked_packages: number;
+  linked_without_imports: number;
+  ecosystems: string[];
+  manifest_count: number;
+}
+
+export type ExternalSystemMatchBasis = "exact" | "subpath" | "mapped" | "mixed" | "unresolved";
+
+export interface ExternalSystemGraphTarget {
+  node_id: string;
+  match_basis: Exclude<ExternalSystemMatchBasis, "mixed" | "unresolved">;
+}
+
+export interface ExternalSystemRelationshipNode {
+  aggregate_key: string;
+  label: string;
+  community_id: number;
+  importing_file_count: number;
+  import_edge_count: number;
+  top_file: string | null;
+}
+
+export interface ExternalSystemRelationshipEdge {
+  source: string;
+  target: string;
+  import_edge_count: number;
+}
+
+export interface ExternalSystemRelationshipGraph {
+  package_key: string;
+  package_name: string;
+  package_node_id: string;
+  match_basis: ExternalSystemMatchBasis;
+  matched_external_nodes: ExternalSystemGraphTarget[];
+  matched_external_nodes_total: number;
+  matched_external_nodes_truncated: boolean;
+  evidence_target_limit: number;
+  evidence_truncated: boolean;
+  nodes: ExternalSystemRelationshipNode[];
+  edges: ExternalSystemRelationshipEdge[];
+  aggregate_total: number;
+  aggregate_returned: number;
+  edge_total: number;
+  edge_returned: number;
+  importing_file_total: number;
+  import_edge_total: number;
+  node_limit: number;
+  edge_limit: number;
+  truncated: boolean;
+  scope: ExternalSystemsSummaryScope;
+}
+
+export interface ExternalSystemImportingFile {
+  path: string;
+  language: string;
+  import_edge_count: number;
+  matched_external_node_count: number;
+}
+
+export interface ExternalSystemImportingFiles {
+  package_key: string;
+  aggregate_key: string;
+  items: ExternalSystemImportingFile[];
+  total: number;
+  returned: number;
+  limit: number;
+  offset: number;
+  truncated: boolean;
+  scope: ExternalSystemsSummaryScope;
+}

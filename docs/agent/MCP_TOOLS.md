@@ -323,6 +323,7 @@ Also resolves **omission refs** (`repowise#<12-hex>`) from truncated responses.
 | `context_lines` | int | No | Extra source lines before/after the symbol (0-50, default 0) |
 | `depth` | int | No | Follow the call graph outward from this symbol and include what it calls, with bodies (1-3, default 1 = this symbol only). Out-of-range values clamp. |
 | `repo` | string | No | *(workspace only)* Usually omitted; `"all"` is not supported |
+| `reference` | object | No | A structured `continuation_reference` or `fetch_reference` emitted by this tool; pass it unchanged to retain both id and repository scope. |
 
 **Returns:** For a symbol id or range: the source (bounded at ~600 lines,
 each line prefixed with its file line number in the same format as a `Read`
@@ -611,12 +612,15 @@ Architectural decision intelligence. Falls back to git archaeology when no decis
 | `query` | string | No | Natural language question about decisions, OR a file/module path |
 | `targets` | list[string] | No | File paths to anchor an NL `query` search to |
 | `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` (only when `query` is given) |
+| `id` | string | No | A decision id or `ev_...` evidence id previously emitted by `get_why`; resolves it directly without relevance search |
+| `reference` | object | No | An emitted evidence reference object; pass it unchanged to retain both id and repository scope. |
 
 **Modes:**
 
 1. **NL search**: pass a question, optionally anchored to `targets`: `get_why(query="why JWT over sessions?")` -> searches decision records.
 2. **Path-based**: pass a file path as `query`: `get_why(query="src/auth/service.ts")` -> returns decisions governing that file plus its origin story.
 3. **Health dashboard**: no `query`: `get_why()` -> stale decisions, conflicts, ungoverned hotspots.
+4. **Reference lookup**: pass `id`: `get_why(id="ev_...")` -> the exact evidence and supporting decision in one call.
 
 **Returns:** Matching decision records with title, rationale, alternatives considered, affected files, staleness score. Health mode returns stale decisions, conflicts, and ungoverned hotspots.
 
@@ -654,6 +658,7 @@ Unreachable code, unused exports, unused internals, and zombie packages, sorted 
 | `include_zombie_packages` | boolean | No | Include zombie-package findings (default `true`) |
 | `no_unreachable` | boolean | No | Exclude `unreachable_file` findings (default `false`) |
 | `no_unused_exports` | boolean | No | Exclude `unused_export` findings (default `false`) |
+| `finding_id` | string | No | Resolve an emitted stable finding `id` directly in one call |
 
 **Returns:** Dead code findings grouped by confidence tier (high >= 0.8, medium, low). Each finding includes: file path, kind, confidence score, line count, and cleanup impact estimate. In workspace mode, confidence is lowered on findings other repos still import.
 
@@ -674,8 +679,21 @@ get_dead_code(kind="unused_export", group_by="owner")
 Code-health marker scores: the same deterministic markers the
 `repowise health` CLI computes, across three signals (defect risk,
 maintainability, performance), exposed for agentic workflows. Zero LLM calls.
-Use it to **self-check a change before opening a PR**: the same signals a
-code-health merge-gate judges it on.
+Use it to inspect stored health analysis before a change and after committing
+health-relevant changes and running `repowise update`: neither re-calling
+`get_health` nor updating an uncommitted working tree recomputes those metrics.
+
+**Safe recipes:**
+
+```text
+get_health(only=["directive"])
+get_health(targets=["path"], include=["refactoring"])
+get_health(targets=["module:path"], only=["modules","metrics"])
+get_health(include=["trend"], only=["trend"])
+get_health(include=["accuracy"], only=["accuracy"])
+get_health(include=["coverage"], only=["coverage"])
+get_health(include=["performance","refactoring"], only=["performance_opportunities","refactoring_plans"])
+```
 
 **Parameters:**
 
@@ -686,6 +704,8 @@ code-health merge-gate judges it on.
 | `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode`, `_meta`, `unresolved`, `known_modules` and each kept list's `*_total` sibling always survive. The three `include` **block** names work as aliases: `biomarkers`→`findings`, `accuracy`→`defect_accuracy`, `refactoring`→`refactoring_plans`. The `include` **dimension** names (`performance`, `defect`, `maintainability`) do not — they filter rows inside several blocks and have no single key to resolve to, so they land in `unknown_only_keys`. Nor does `signals`, which merges into `metrics[].signals` — in targeted mode, where `signals` applies, name `metrics` instead. |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 | `limit` | int | No | Max rows in **every** ranked list (default 20, capped at 50). `0` means no rows; the `*_total` siblings still report the true counts. |
+| `finding_id` | string | No | Resolve an emitted stable health-finding `id` directly in one call. |
+| `plan_id` | string | No | Resolve an emitted stable refactoring-plan `id` directly in one call. |
 
 **Returns:** Dashboard mode (no `targets`) returns a `directive`, repo-level KPIs
 (hotspot health, average health, worst performer, maintainability / performance
@@ -695,7 +715,8 @@ per-dimension scores, and the score breakdown. Each finding carries a `dimension
 (`defect` / `maintainability` / `performance`).
 
 **Lead with `directive`.** Dashboard mode opens with the single file to fix
-first, its dominant finding, `recovers_points` / `share_of_repo_gap_pct` (what
+first, its dominant finding, `recovers_weighted_deficit_points` /
+`share_of_repo_gap_pct` (what
 fixing it buys the headline; the share is bounded by 100% and sums to 100%
 across `high_leverage_files` — the gross deficit of below-target files is the
 denominator, not the net gap, so a single file cannot read as closing more than
@@ -703,10 +724,14 @@ the whole remaining gap), and `then`, the next two by leverage. Every other
 block ranks and describes; this one recommends. Same role as `get_risk`'s
 `directive`. Rank by `weighted_deficit`, not `score` — the score floors at 1.0.
 
+`recovers_points` remains an exact deprecated alias during the compatibility
+window; `recovers_points_compatibility` names its replacement.
+
 **Nothing is dropped silently.** Any `targets` entry that matched nothing is
 named in `unresolved` with a reason (`not_indexed` → run `repowise update`,
 `no_such_path`, `excluded`, `no_such_module`; a missed module name also returns
-`known_modules`), so an empty `findings` list means healthy and nothing else. A
+`known_modules`). Missing stored analysis is explicitly unavailable rather than
+fabricated as a healthy score. A
 target set that resolves to nothing still answers in targeted mode rather than
 falling back to the repo dashboard. Every capped list carries a `*_total`
 sibling — including under `only`, which retains it automatically. `unresolved`
@@ -714,7 +739,10 @@ and `known_modules` survive any `only` projection too, for the same reason
 `mode` does: a caller who has to ask for the error report in order to see it
 does not have an error report.
 
-`_meta.health_analyzed_at` dates the health pass, which is separate from
+`_meta.health_analysis` explicitly labels the result as stored analysis,
+states that the call did not recompute it, distinguishes index/live-Git facts
+from source-byte verification, and gives the exact commit-then-update refresh
+precondition. `_meta.health_analyzed_at` dates the health pass, which is separate from
 indexing and can lag it, and `_meta.health_analyzed_commit` says which commit
 those scores were computed against. The incremental update path rescores only
 the files that changed, so the metrics table can hold rows from several passes
@@ -760,7 +788,7 @@ make that actionable rather than a mystery:
   (dashboard mode) is the top-N ranked by it, distinct from `worst_files`, which
   sorts by raw score and ranks a 30-line file at 1.0 equal to a 1,200-line file at
   1.0 that moves the average ~40x more.
-- `weighted_deficit`, `directive.recovers_points` and
+- `weighted_deficit`, `directive.recovers_weighted_deficit_points` and
   `gap_analysis.weighted_gap_points` share one unit — *score-points x NLOC* —
   which compares against itself and nothing else. Every `high_leverage_files`
   row and the `directive` also carry `share_of_repo_gap_pct`, the same quantity
@@ -768,6 +796,10 @@ make that actionable rather than a mystery:
   (`gap_analysis.weighted_gross_gap_points`), so the shares are bounded by 100%
   and sum to 100% by construction; that plus
   `gap_analysis.files_to_reach_target` is what answers "is this worth doing".
+- `_meta.health_semantics` gives the numerator, gross-deficit denominator,
+  nonnegative unbounded scale and direction. These are deterministic heuristic
+  triage points, not probabilities, normalized score points, percentages or
+  guaranteed improvement.
 - `kpis.non_code_files` and `kpis.average_health_code_only` say how much of the
   headline is markdown/JSON/YAML. No biomarker walks those files, so they score
   a mechanical 10.0 meaning "nothing looked at this" — on this repo, 233 of
@@ -812,6 +844,14 @@ The opt-in enrichments:
   plans on the files that move the headline surface first; `refactoring_plans_total`
   reports the full count behind the cap. Each plan echoes its
   `file_weighted_deficit`. Full shapes in [`docs/layers/REFACTORING.md`](../layers/REFACTORING.md).
+- A requested empty plan list includes `refactoring_plans_status.reason`:
+  `no_applicable_findings`, `plan_analysis_indeterminate`,
+  `no_eligible_targets`, or `analysis_unavailable`. The structured-analysis
+  fallback includes a concrete `get_symbol` or `get_context` source call and
+  explicitly names the two facts the stored data cannot distinguish: no
+  supported transformation vs a disabled or failed detector.
+  Projection exclusion emits no plan warning; a zero-row cursor window is
+  reported separately as `request_window_empty`.
 - **dimension filter** narrows the returned findings to one pillar, e.g.
   `include=["biomarkers", "performance"]`.
 
@@ -879,7 +919,7 @@ of the ten-tool headline set.
 
 Lists the repos this server is serving. No parameters.
 
-**Returns:** In workspace mode, `workspace: true`, the workspace root, the default repo alias, and every configured repo alias (`repos`). In single-repo mode, `workspace: false` and a single `"default"` alias.
+**Returns:** In workspace mode, `workspace: true`, the workspace root, the default repo alias, and every configured repo's `alias`, config-relative `path`, and `absolute_path`. Any of those emitted identities can be passed unchanged as `repo` to workspace-aware tools. In single-repo mode, `workspace: false` and a single `"default"` alias.
 
 **When to use:** Discovering the `repo` aliases to pass to other tools, especially in workspace mode.
 
@@ -994,7 +1034,7 @@ get_execution_flows(entry_point="src/cli/main.py::main", max_depth=4)
 
 Turns one structured refactoring plan from `get_health(include=["refactoring"])` into actual generated code and a unified diff, grounded on the plan plus the real source spans it references. For Extract Class, the result includes an LCOM4 before/after self-check.
 
-**Off by default twice over:** it must be opted into the tool surface (`mcp.tools: ["+generate_refactoring_code"]`), and even then returns `{"error": "disabled", ...}` unless `refactoring.llm.enabled: true` is set in the repo's `.repowise/config.yaml`. When enabled, it uses the repo's configured LLM provider/model (bring your own key) and caches results by a content hash, so an unchanged plan never regenerates.
+**Off by default twice over:** it must be opted into the tool surface (`mcp.tools: ["+generate_refactoring_code"]`), and generation remains unavailable unless `refactoring.llm.enabled: true` is set in the repo's `.repowise/config.yaml`. A valid plan id still resolves while generation is disabled, returning the canonical plan plus `generation.available: false`. When enabled, it uses the repo's configured LLM provider/model (bring your own key) and caches results by a content hash, so an unchanged plan never regenerates.
 
 **Parameters:**
 
@@ -1016,7 +1056,7 @@ generate_refactoring_code(suggestion_id="a1b2c3d4")
 In workspace mode (initialized with `repowise init .`), all tools accept an optional `repo` parameter:
 
 - **Omit `repo`**: queries the default (primary) repo
-- **`repo="backend"`**: targets a specific repo by alias
+- **`repo="backend"`**: targets a specific repo by any `alias`, `path`, or `absolute_path` emitted by `list_repos`
 - **`repo="all"`**: queries across all workspace repos (fully supported by `search_codebase`; `get_context` and `get_overview` also accept it; not supported by `get_symbol`, `get_dependency_path`, or `get_execution_flows`)
 
 The MCP server automatically enriches responses with cross-repo intelligence:

@@ -43,6 +43,7 @@ Returns a flat dict (not wrapped in `targets`) so the agent can pipe the
 from __future__ import annotations
 
 import re
+import sqlite3
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -56,6 +57,7 @@ from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
+    _is_workspace_mode,
     _resolve_repo_context,
     _unsupported_repo_all,
     is_excluded,
@@ -63,6 +65,12 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import symbol_hint as _symbol_hint
+from repowise.server.mcp_server._references import (
+    omission_reference,
+    path_identity,
+    source_reference,
+    symbol_identity,
+)
 from repowise.server.mcp_server._symbol_lookup import (
     NAME_SEPARATORS,
     bare_name,
@@ -84,10 +92,6 @@ _log = __import__("logging").getLogger("repowise.mcp.symbol")
 # token cost (S1 dogfood). The rare overflow gets a clean `continuation`
 # token rather than a guessed range read.
 _MAX_SOURCE_LINES = 600
-
-# Omission-ref dispatch: "repowise#<12-hex>" never collides with a
-# "{path}::{name}" symbol_id. Also tolerates a pasted whole marker.
-_OMISSION_REF_RE = re.compile(r"^repowise#([0-9a-f]{12})$")
 
 # Range-read dispatch: "path/to/file.py:140-180". A single colon followed by
 # a numeric range never collides with "{path}::{name}" (double colon) or an
@@ -139,6 +143,7 @@ async def _expand_callees(
     repo_root: Path,
     depth: int,
     exclude_spec: Any,
+    repository: str = "default",
 ) -> dict[str, Any] | None:
     """Breadth-first walk of the call graph from *root_row*, bodies included.
 
@@ -198,7 +203,7 @@ async def _expand_callees(
 
         for row in rows:
             entry: dict[str, Any] = {
-                "symbol_id": row.symbol_id,
+                "symbol_id": symbol_identity(row.symbol_id),
                 "name": row.name,
                 "file": row.file_path,
                 "kind": row.kind,
@@ -224,7 +229,15 @@ async def _expand_callees(
             if len(numbered) > remaining:
                 # Out of budget: name the read that fetches it rather than
                 # dropping the symbol silently.
-                entry["fetch_with"] = f"{row.file_path}:{check.start_line}-{check.end_line}"
+                fetch_reference = source_reference(
+                    repository,
+                    row.file_path,
+                    lines=[check.start_line, check.end_line],
+                    verification_basis="live",
+                    source_kind="source",
+                )
+                entry["fetch_with"] = fetch_reference["id"]
+                entry["fetch_reference"] = fetch_reference
                 omitted.append(entry)
                 continue
             remaining -= len(numbered)
@@ -238,7 +251,15 @@ async def _expand_callees(
             )
             if end < check.end_line:
                 entry["truncated"] = True
-                entry["continuation"] = f"{row.file_path}:{end + 1}-{check.end_line}"
+                continuation_reference = source_reference(
+                    repository,
+                    row.file_path,
+                    lines=[end + 1, check.end_line],
+                    verification_basis="live",
+                    source_kind="source",
+                )
+                entry["continuation"] = continuation_reference["id"]
+                entry["continuation_reference"] = continuation_reference
             entries.append(entry)
 
         frontier = next_ids
@@ -262,17 +283,10 @@ def _clean_symbol_signature(signature: str | None) -> str:
 
 def _extract_omission_ref(symbol_id: str) -> str | None:
     """Return the 12-hex omission ref when *symbol_id* is ref-shaped, else None."""
-    candidate = symbol_id.strip()
-    match = _OMISSION_REF_RE.match(candidate)
-    if match:
-        return match.group(1)
-    if candidate.startswith("[repowise#"):
-        from repowise.core.distill.markers import MARKER_RE
+    from repowise.server.mcp_server._references import omission_reference
 
-        marker = MARKER_RE.search(candidate)
-        if marker:
-            return marker.group("ref")
-    return None
+    canonical = omission_reference(symbol_id)
+    return canonical.removeprefix("repowise#") if canonical else None
 
 
 def _resolve_omission_ref(
@@ -286,6 +300,7 @@ def _resolve_omission_ref(
     """
     from repowise.core.distill.store import OmissionStore, default_store_path
 
+    canonical_ref = f"repowise#{ref}"
     candidates: list[Path] = []
     if repo_root:
         candidates.append(default_store_path(Path(str(repo_root))))
@@ -295,20 +310,25 @@ def _resolve_omission_ref(
 
     record: dict | None = None
     for db_path in candidates:
-        if not db_path.exists():
-            continue
-        store = OmissionStore(db_path)
         try:
-            record = store.get_record(ref, query=query)
-        finally:
-            store.close()
+            if not db_path.exists():
+                continue
+            store = OmissionStore(db_path)
+            try:
+                record = store.get_record(ref, query=query)
+            finally:
+                store.close()
+        except (OSError, sqlite3.Error):
+            # An inaccessible fallback store is equivalent to a missing ref.
+            # Recovery must never make get_symbol itself fail.
+            continue
         if record is not None:
             break
 
     if record is None:
         return {
             "symbol_id": symbol_id,
-            "ref": ref,
+            "ref": canonical_ref,
             "error": (
                 f"No stored content for omission ref {ref!r} — it may have "
                 "expired (7-day TTL), been pruned, or been produced in a "
@@ -320,7 +340,7 @@ def _resolve_omission_ref(
     created = record.get("created_at")
     response: dict[str, Any] = {
         "symbol_id": symbol_id,
-        "ref": ref,
+        "ref": canonical_ref,
         "kind": "omission",
         "source": record.get("source"),
         "original_tokens": record.get("original_tokens"),
@@ -406,7 +426,15 @@ async def _resolve_range_read(
     if range_truncated and e < remainder_end:
         # Same clean-continuation contract as a truncated symbol read: name the
         # exact next range instead of leaving the agent to guess it.
-        response["continuation"] = f"{path}:{e + 1}-{remainder_end}"
+        continuation_reference = source_reference(
+            ctx.alias,
+            path,
+            lines=[e + 1, remainder_end],
+            verification_basis="live",
+            source_kind="source",
+        )
+        response["continuation"] = continuation_reference["id"]
+        response["continuation_reference"] = continuation_reference
         response["note"] = (
             f"Range capped at {_MAX_RANGE_LINES} lines; served {s}-{e}. "
             f"Continue in one call: get_symbol({response['continuation']!r})."
@@ -559,7 +587,7 @@ async def _render_ambiguous(
         text = text_cache[row.file_path]
 
         entry: dict[str, Any] = {
-            "symbol_id": row.symbol_id,
+            "symbol_id": symbol_identity(row.symbol_id),
             "file": row.file_path,
             "name": row.name,
             "kind": row.kind,
@@ -581,7 +609,15 @@ async def _render_ambiguous(
 
         numbered = _number_lines(source, start)
         if i > 0 and len(numbered) > remaining:
-            entry["fetch_with"] = f"{row.file_path}:{start}-{end}"
+            fetch_reference = source_reference(
+                ctx.alias,
+                row.file_path,
+                lines=[start, end],
+                verification_basis="live",
+                source_kind="source",
+            )
+            entry["fetch_with"] = fetch_reference["id"]
+            entry["fetch_reference"] = fetch_reference
             not_rendered.append(entry)
             continue
         remaining -= len(numbered)
@@ -628,6 +664,7 @@ async def get_symbol(
     query: str | None = None,
     id: str | None = None,
     depth: int = 1,
+    reference: dict[str, Any] | None = None,
 ) -> dict:
     """Follow-up read of one symbol whose id another response already gave you.
 
@@ -636,17 +673,10 @@ async def get_symbol(
     one call instead of many. Reach here for a body that was elided, or for a
     ``continuation`` / omission ref. Never walk a file symbol by symbol.
 
-    Raw source of one indexed symbol, bounded (~600 lines). ``source`` uses
-    Read's exact line-numbered format; treat it as an already-performed Read.
-    ``verified: true`` = bounds checked (or corrected) against the live file:
-    no follow-up Read needed. ``bounds: "approximate"`` = the symbol moved and
-    re-location failed. An ambiguous id (overloads, re-exports) returns ALL
-    matching bodies in ``candidates``; none is silently chosen. Also serves
-    live range reads ("path.py:140-180", ≤200 lines, always verified) and
-    omission refs ("repowise#<12-hex>"). An index miss returns fallback_lines
-    from a live grep rather than a dead end. When ``truncated`` is true the
-    response carries a ``continuation`` token: the exact range read that
-    fetches the remainder; pass it straight back to get_symbol.
+    Returns verified, line-numbered source for one indexed symbol, live range,
+    or omission ref. Ambiguity returns every candidate; an index miss returns
+    live fallback lines. A truncated result carries the exact continuation to
+    pass straight back.
 
     Args:
         symbol_id: "path/to/file.py::Name", "path/to/file.py:140-180" for a
@@ -657,7 +687,18 @@ async def get_symbol(
         id: accepted alias for ``symbol_id``.
         depth: 1 (default) is this symbol alone; 2-3 also returns the bodies
             it calls, transitively, in ``callee_bodies``.
+        reference: structured source reference emitted by this tool. Its id
+            and repository are accepted together without caller translation.
     """
+    if reference:
+        if not symbol_id and not id and isinstance(reference.get("id"), str):
+            symbol_id = reference["id"]
+        if (
+            repo is None
+            and _is_workspace_mode()
+            and isinstance(reference.get("repository"), str)
+        ):
+            repo = reference["repository"]
     if repo == "all":
         return _unsupported_repo_all("get_symbol")
     ctx = await _resolve_repo_context(repo)
@@ -680,17 +721,26 @@ async def get_symbol(
 
     omission_ref = _extract_omission_ref(symbol_id)
     if omission_ref is not None:
-        return _resolve_omission_ref(symbol_id, omission_ref, query, ctx.path, t0)
+        canonical_omission = omission_reference(symbol_id) or symbol_id
+        return _resolve_omission_ref(
+            canonical_omission, omission_ref, query, ctx.path, t0
+        )
 
     # Range read: "path/to/file.py:140-180" (single colon + numeric range —
     # never collides with "{path}::{name}").
     range_match = _RANGE_ID_RE.match(symbol_id.strip())
     if range_match and "::" not in symbol_id:
+        normalized_path = path_identity(range_match.group("path"))
+        range_start = int(range_match.group("start"))
+        range_end = int(range_match.group("end"))
+        if range_end < range_start:
+            range_start, range_end = range_end, range_start
+        normalized_id = f"{normalized_path}:{range_start}-{range_end}"
         return await _resolve_range_read(
-            symbol_id,
-            range_match.group("path"),
-            int(range_match.group("start")),
-            int(range_match.group("end")),
+            normalized_id,
+            normalized_path,
+            range_start,
+            range_end,
             max(0, min(50, context_lines)),
             ctx,
             t0,
@@ -820,7 +870,7 @@ async def get_symbol(
     ) > _MAX_SOURCE_LINES
 
     response = {
-        "symbol_id": row.symbol_id,
+        "symbol_id": symbol_identity(row.symbol_id),
         "file": row.file_path,
         "name": row.name,
         "kind": row.kind,
@@ -847,7 +897,15 @@ async def get_symbol(
         # fetches the remainder so the agent never has to guess the next span
         # (the S1 dogfood found it would otherwise grub-around with a guessed
         # range, doubling the call cost).
-        response["continuation"] = f"{row.file_path}:{end + 1}-{check.end_line}"
+        continuation_reference = source_reference(
+            ctx.alias,
+            row.file_path,
+            lines=[end + 1, check.end_line],
+            verification_basis="live",
+            source_kind="source",
+        )
+        response["continuation"] = continuation_reference["id"]
+        response["continuation_reference"] = continuation_reference
         response["note"] = (
             f"Symbol body ({check.start_line}-{check.end_line}) exceeds the "
             f"{_MAX_SOURCE_LINES}-line serve cap; served {start}-{end}. Fetch "
@@ -865,7 +923,13 @@ async def get_symbol(
     if depth > 1:
         async with get_session(ctx.session_factory) as session:
             callee_block = await _expand_callees(
-                session, repository.id, row, repo_root, depth, exclude_spec
+                session,
+                repository.id,
+                row,
+                repo_root,
+                depth,
+                exclude_spec,
+                ctx.alias,
             )
         if callee_block is not None:
             response["callee_bodies"] = callee_block

@@ -1,4 +1,4 @@
-"""Golden contracts for the five shared-budget canonical MCP tools."""
+"""Golden contracts for the shared-budget canonical MCP tools."""
 
 from __future__ import annotations
 
@@ -20,6 +20,10 @@ from repowise.server.mcp_server._budget import (
 
 
 def _payload(tool: str, pad: int) -> dict[str, Any]:
+    if tool == "get_health":
+        pad = min(pad, 10_000)
+    if tool == "get_why":
+        pad = min(pad, 9_000)
     rows = [{"id": i, "evidence": f"EVIDENCE_{tool}_{i}_" + "x" * pad} for i in range(3)]
     meta = {"contract_version": 1, "indexed_commit": "a" * 12}
     if tool == "get_context":
@@ -56,6 +60,40 @@ def _payload(tool: str, pad: int) -> dict[str, Any]:
             "retrieval": rows,
             "_meta": meta,
         }
+    if tool == "get_why":
+        decisions = [
+            {
+                "id": row["id"],
+                "title": f"Decision {row['id']}",
+                "rationale": row["evidence"],
+                "provenance": "historical",
+                "evidence_refs": [
+                    {
+                        "id": f"ev_{row['id']}",
+                        "repository": "test-repo",
+                        "kind": "commit",
+                        "commit": f"{row['id']:040x}",
+                    }
+                ],
+            }
+            for row in rows
+        ]
+        return {
+            "mode": "search",
+            "query": "why is the response bounded",
+            "decisions": decisions,
+            "_meta": meta,
+        }
+    if tool == "get_health":
+        return {
+            "mode": "dashboard",
+            "directive": {"fix_first": "src/large.py", "reason": "highest leverage"},
+            "kpis": {"average_health": 4.2, "file_count": 3},
+            "high_leverage_files": rows,
+            "high_leverage_files_total": len(rows),
+            "high_leverage_files_emitted": len(rows),
+            "_meta": meta,
+        }
     return {
         "title": "Large repository",
         "architecture": {"layers": [{"name": "Service", "file_count": 10}]},
@@ -83,6 +121,25 @@ def _enforce(tool: str, payload: dict[str, Any], include: list[str] | None = Non
     )
 
 
+def test_health_plan_status_tracks_final_budget_removal(setup_mcp: str) -> None:
+    payload = {
+        "mode": "dashboard",
+        "directive": None,
+        "kpis": {"average_health": 7.0},
+        "refactoring_plans": [{"id": "plan_1", "evidence": "x" * 30_000}],
+        "refactoring_plans_total": 1,
+        "refactoring_plans_status": {"state": "available", "reason": None},
+        "_meta": {"contract_version": 1},
+    }
+
+    result = _enforce("get_health", payload)
+
+    assert result.get("refactoring_plans", []) == []
+    assert result["refactoring_plans_total"] == 1
+    assert result["refactoring_plans_status"]["state"] == "available_not_emitted"
+    assert result["refactoring_plans_status"]["reason"] == "response_budget"
+
+
 @pytest.mark.parametrize(
     ("tool", "required"),
     [
@@ -90,7 +147,9 @@ def _enforce(tool: str, payload: dict[str, Any], include: list[str] | None = Non
         ("get_risk", "directive"),
         ("get_change_risk", "classification"),
         ("get_answer", "answer"),
+        ("get_why", "query"),
         ("get_overview", "title"),
+        ("get_health", "directive"),
     ],
 )
 @pytest.mark.parametrize(("case", "pad"), [("minimum", 0), ("typical", 600)])
@@ -127,7 +186,9 @@ def test_default_payload_goldens_keep_action_fields_and_exact_accounting(
         ("get_risk", "directive"),
         ("get_change_risk", "classification"),
         ("get_answer", "answer"),
+        ("get_why", "query"),
         ("get_overview", "title"),
+        ("get_health", "directive"),
     ],
 )
 def test_adversarial_payload_goldens_fit_and_recover_in_one_lookup(
@@ -153,6 +214,8 @@ def test_adversarial_payload_goldens_fit_and_recover_in_one_lookup(
     assert result["truncated"] is True
     refs = result["_meta"]["omitted"]["refs"]
     assert refs
+    if tool == "get_health":
+        assert len(refs) == 1
     if tool == "get_risk":
         reductions = result["_meta"].get("reductions", [])
         assert reductions and all(
@@ -163,6 +226,10 @@ def test_adversarial_payload_goldens_fit_and_recover_in_one_lookup(
         assert result["prior_fixes_total"] == 3
         assert result["prior_fixes_emitted"] == 0
         assert result["prior_fixes_reduced_reason"] == "response_budget"
+    elif tool == "get_health":
+        assert result["high_leverage_files_total"] == 3
+        assert result["high_leverage_files_emitted"] < 3
+        assert result["high_leverage_files_reduced_reason"] == "response_budget"
 
     store = OmissionStore(default_store_path(repo))
     try:
@@ -170,6 +237,59 @@ def test_adversarial_payload_goldens_fit_and_recover_in_one_lookup(
     finally:
         store.close()
     assert any(value is not None and f"EVIDENCE_{tool}" in value for value in recovered)
+    if tool == "get_why":
+        assert len(refs) == 1
+        recovered_payload = recovered[0] or ""
+        emitted_ids = {row["id"] for row in result["decisions"]}
+        for row_id in set(range(3)) - emitted_ids:
+            assert f'"id": {row_id}' in recovered_payload
+            assert f'"id": "ev_{row_id}"' in recovered_payload
+        for row_id in emitted_ids:
+            assert f'"id": {row_id}' not in recovered_payload
+    if tool == "get_health":
+        joined = recovered[0] or ""
+        emitted_ids = {row["id"] for row in result["high_leverage_files"]}
+        for row_id in set(range(3)) - emitted_ids:
+            assert f'"id": {row_id}' in joined
+        for row_id in emitted_ids:
+            assert f'"id": {row_id}' not in joined
+
+
+def test_health_budget_prunes_profiles_for_removed_plans(
+    setup_mcp: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import repowise.server.mcp_server as mcp_mod
+
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+    plans = [
+        {"id": f"plan-{index}", "validation_profile_id": f"profile-{index}"}
+        for index in range(8)
+    ]
+    profiles = [
+        {
+            "id": f"profile-{index}",
+            "commands": [f"pytest tests/test_{index}.py " + "x" * 6_000],
+        }
+        for index in range(8)
+    ]
+    payload = {
+        "mode": "targets",
+        "targets": ["src/large.py"],
+        "refactoring_plans": plans,
+        "refactoring_plans_total": len(plans),
+        "validation_profiles": profiles,
+        "validation_profiles_total": len(profiles),
+        "_meta": {"contract_version": 1},
+    }
+
+    result = _enforce("get_health", payload, ["refactoring"])
+    referenced = {plan["validation_profile_id"] for plan in result["refactoring_plans"]}
+    retained = {profile["id"] for profile in result["validation_profiles"]}
+    assert retained == referenced
+    assert result["validation_profiles_emitted"] == len(retained)
+    assert result["validation_profiles_reduced_reason"] == "response_budget"
+    assert result["_meta"]["response_budget"]["serialized_chars"] <= EXPANDED_RESPONSE_CHARS
 
 
 def test_explicit_include_uses_the_expansion_tier(
@@ -229,6 +349,29 @@ async def test_middleware_budgets_after_trust_metadata(
         json.dumps(result, separators=(",", ":"), default=str)
     )
     assert accounting["serialized_chars"] <= DEFAULT_RESPONSE_CHARS
+
+
+@pytest.mark.asyncio
+async def test_get_why_middleware_accounts_after_trust_and_keeps_refs_recoverable(
+    setup_mcp: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import repowise.server.mcp_server as mcp_mod
+
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
+
+    async def get_why() -> dict:
+        return _payload("get_why", 15_000)
+
+    result = await tool_middleware(get_why)()
+    accounting = result["_meta"]["response_budget"]
+    assert result["_meta"]["contract_version"] == 1
+    assert accounting["serialized_chars"] == len(
+        json.dumps(result, separators=(",", ":"), default=str)
+    )
+    assert accounting["serialized_chars"] <= DEFAULT_RESPONSE_CHARS
+    assert all(row["evidence_refs"] for row in result["decisions"])
+    assert len(result["_meta"]["omitted"]["refs"]) == 1
 
 
 @pytest.mark.asyncio

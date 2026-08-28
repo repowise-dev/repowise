@@ -1367,16 +1367,13 @@ async def refresh_external_systems(
     ]
 
     from repowise.core.persistence.crud import (
+        build_external_system_link_map,
         link_graph_nodes_to_external_systems,
         replace_external_systems,
     )
 
     id_map = await replace_external_systems(session, repo_id, systems)
-    # Collapse multi-manifest duplicates: any id for a given name works (the
-    # C4 renderer only needs name/category/ecosystem, stable across rows).
-    name_to_id: dict[str, int] = {}
-    for (name, _declared_in), sys_id in id_map.items():
-        name_to_id.setdefault(name, sys_id)
+    name_to_id = build_external_system_link_map(systems, id_map)
     await link_graph_nodes_to_external_systems(session, repo_id, name_to_id)
     log(f"External systems refreshed: [cyan]{len(systems)}[/cyan] deps")
     return True

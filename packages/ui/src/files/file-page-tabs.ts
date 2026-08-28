@@ -102,6 +102,18 @@ export function fileTabsFor(data: FileDetailResponse): FileTabDef[] {
   });
 }
 
+/** Narrow a `?tab=` string to a tab this page actually renders.
+ *
+ *  Lives here rather than beside `FilePage`: that module is `"use client"`, so
+ *  every export of it is a client reference, and a server component that
+ *  imported this one got "it's not possible to invoke a client function from
+ *  the server" instead of a tab id. */
+export function asFilePageTab(value: string | undefined): FilePageTab | undefined {
+  return value && (FILE_PAGE_TABS as readonly string[]).includes(value)
+    ? (value as FilePageTab)
+    : undefined;
+}
+
 /** The tab a `?tab=` value resolves to, given what this file actually has.
  *  A deep link to Decisions on an ungoverned file lands on Overview rather
  *  than on a tab that is not in the row. */

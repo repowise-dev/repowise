@@ -141,16 +141,17 @@ def test_collector_store_failure_degrades_silently(tmp_path: Path):
     assert "recovery_unavailable" in response["_meta"]
 
 
-def test_collector_chunks_large_recovery_documents(repo_root: Path):
+def test_collector_keeps_large_recovery_document_in_one_call(repo_root: Path):
     collector = OmissionCollector("test_tool", repo_root=repo_root)
     collector.add("large", "x" * 70_000)
     response: dict = {"_meta": {}}
     collector.attach(response)
 
     refs = response["_meta"]["omitted"]["refs"]
-    assert len(refs) == 3
-    assert len(response["omission_markers"]) == 3
-    assert all(len(_store_get(repo_root, ref) or "") <= 28_000 for ref in refs)
+    assert len(refs) == 1
+    assert "omission_markers" not in response
+    recovered = _store_get(repo_root, refs[0]) or ""
+    assert recovered.endswith("x" * 70_000)
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +369,7 @@ def test_fit_to_budget_reports_total_emitted_and_reason(repo_root: Path):
     assert response["results_omitted"] == 6 - len(response["results"])
 
 
-def test_fit_to_budget_preserves_projection_reason_and_persisted_omission_count(
+def test_fit_to_budget_composes_projection_reason_and_full_omission_count(
     repo_root: Path,
 ):
     response = {
@@ -392,7 +393,7 @@ def test_fit_to_budget_preserves_projection_reason_and_persisted_omission_count(
     assert response["results_total"] == 8
     assert response["results_emitted"] == len(response["results"])
     assert response["results_reduced_reason"].endswith("_and_response_budget")
-    assert response["results_omitted"] == 3 - len(response["results"])
+    assert response["results_omitted"] == 8 - len(response["results"])
 
 
 def test_fit_to_budget_can_reduce_a_ranked_mapping(repo_root: Path):
@@ -480,7 +481,7 @@ async def test_get_symbol_resolves_omission_ref(setup_mcp, repo_root: Path):
     assert result["kind"] == "omission"
     assert result["content"] == content
     assert result["source"] == "mcp:test"
-    assert result["ref"] == ref
+    assert result["ref"] == f"repowise#{ref}"
     assert "created_at" in result
 
     filtered = await get_symbol(f"repowise#{ref}", query="^ERROR")

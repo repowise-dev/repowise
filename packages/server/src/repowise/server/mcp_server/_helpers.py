@@ -294,6 +294,9 @@ _ORIGIN_STOP_WORDS = frozenset(
     {"the", "a", "an", "is", "for", "to", "of", "in", "and", "or", "with"}
 )
 
+#: Decisions the origin summary names, and the ceiling on its evidence clauses.
+_ORIGIN_NARRATED_DECISIONS = 3
+
 
 def _meaningful_words(text: str) -> set[str]:
     """Lowercase keyword set with common stop-words removed."""
@@ -381,9 +384,11 @@ def _origin_summary_parts(
         )
 
     if linked_decisions:
-        decision_titles = [d["title"] for d in linked_decisions[:3]]
-        parts.append(f"Governed by: {', '.join(decision_titles)}.")
-        for ld in linked_decisions:
+        named = linked_decisions[:_ORIGIN_NARRATED_DECISIONS]
+        parts.append(f"Governed by: {', '.join(d['title'] for d in named)}.")
+        # Unbounded, a file with 40 linked decisions got 16 evidence clauses,
+        # restating titles the caller's own cap had already removed.
+        for ld in named:
             if ld["evidence_commits"]:
                 ec = ld["evidence_commits"][0]
                 parts.append(
@@ -446,12 +451,12 @@ def _build_origin_story(
         "available": True,
         "primary_author": primary,
         "author_commit_pct": git_meta.primary_owner_commit_pct,
-        "contributors": authors[:5],
+        "contributors": authors,
         "total_commits": total,
         "first_commit": first_date,
         "last_commit": last_date,
         "age_days": age,
-        "key_commits": commits[:5],
+        "key_commits": commits,
         "linked_decisions": linked_decisions,
         "summary": " ".join(parts),
     }

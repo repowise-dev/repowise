@@ -165,6 +165,21 @@ def _openai_temperature(model: str, requested: float) -> float:
     return requested
 
 
+def _openai_chat_tool_kwargs(model: str, *, has_tools: bool) -> dict[str, Any]:
+    """Return Chat Completions overrides required by tool-enabled models.
+
+    GPT-5.6 models default to a non-none reasoning effort. OpenAI recommends
+    the Responses API for reasoning with tool-calling, while this provider's
+    repository chat loop still uses Chat Completions. Keep the family's normal
+    reasoning default for generation and only disable it when function tools
+    are attached. Migrating the shared chat protocol is a separate change.
+    """
+    leaf = _model_leaf(model)
+    if has_tools and (leaf == "gpt-5.6" or leaf.startswith("gpt-5.6-")):
+        return {"reasoning_effort": "none"}
+    return {}
+
+
 def _is_openai_text_model(model_id: str, *, allow_namespaced: bool = False) -> bool:
     """Keep chat-capable ids, including arbitrary ids from custom gateways."""
     leaf = _model_leaf(model_id)
@@ -474,6 +489,7 @@ class OpenAIProvider(BaseProvider):
         }
         if tools:
             kwargs["tools"] = tools
+        kwargs.update(_openai_chat_tool_kwargs(self._model, has_tools=bool(tools)))
 
         try:
             stream = await self._client.chat.completions.create(**kwargs)

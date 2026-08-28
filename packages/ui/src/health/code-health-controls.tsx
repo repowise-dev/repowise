@@ -62,7 +62,7 @@ export function FilterChip({
   );
 }
 
-/** Two-state segmented toggle (Queue / All files). */
+/** Segmented toggle for a single axis (Queue / All files, prompt target agent). */
 export function ViewToggle<T extends string>({
   value,
   options,

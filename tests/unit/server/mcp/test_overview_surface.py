@@ -188,3 +188,25 @@ async def test_live_registry_recipe_calls_bind_to_current_tool_signatures(setup_
         assert recipe_requirements[recipe["name"]] <= set(
             result["tool_surface"]["enabled"]
         )
+
+    health_recipes = {
+        recipe["name"]: recipe["call"]
+        for recipe in result["tool_surface"]["recipes"]
+        if recipe["name"].startswith("health_")
+    }
+    assert health_recipes == {
+        "health_directive": 'get_health(only=["directive"])',
+        "health_file_self_check": (
+            'get_health(targets=["path"], include=["refactoring"])'
+        ),
+        "health_module_triage": (
+            'get_health(targets=["module:path"], only=["modules","metrics"])'
+        ),
+        "health_trend": 'get_health(include=["trend"], only=["trend"])',
+        "health_accuracy": 'get_health(include=["accuracy"], only=["accuracy"])',
+        "health_coverage": 'get_health(include=["coverage"], only=["coverage"])',
+        "health_performance_refactoring": (
+            'get_health(include=["performance","refactoring"], '
+            'only=["performance_opportunities","refactoring_plans"])'
+        ),
+    }
