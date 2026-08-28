@@ -213,14 +213,24 @@ def _load_repo_context(repo_path: str | Path | None) -> tuple[dict[str, Any], di
     """
     if repo_path is None:
         return {}, {}
-    from repowise.core.repo_config import load_repo_config, load_repo_env
+    from repowise.core.repo_config import RepoConfigError, load_repo_config, load_repo_env
 
     try:
         cfg = load_repo_config(repo_path)
+    except RepoConfigError:
+        # A broken config.yaml must surface, not silently resolve as defaults:
+        # the user's provider/model selection would vanish and chat would pick
+        # an auto-detected provider nobody configured. Name the repo so a
+        # workspace server points at the right one.
+        logger.warning("Repo config parse failed for %s; using defaults", repo_path)
+        cfg = {}
     except Exception:
         cfg = {}
     try:
         env = load_repo_env(repo_path)
+    except RepoConfigError:
+        logger.warning("Repo .env unreadable for %s; using environment only", repo_path)
+        env = {}
     except Exception:
         env = {}
     return cfg, env

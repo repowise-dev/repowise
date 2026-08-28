@@ -8,6 +8,16 @@ from typing import Any
 CONFIG_FILENAME = "config.yaml"
 
 
+class RepoConfigError(ValueError):
+    """A repo-local ``.repowise/config.yaml`` or ``.env`` could not be parsed.
+
+    Raised instead of leaking the raw parser exception so callers can
+    distinguish \"no config file\" (a normal empty dict) from \"the config file
+    is broken\" (something the user must fix). The message names the file and
+    the underlying parse error.
+    """
+
+
 def get_repowise_dir(repo_path: Path | str) -> Path:
     """Return the repo-local ``.repowise`` directory."""
     return Path(repo_path) / ".repowise"
@@ -24,7 +34,12 @@ def load_repo_config(repo_path: Path | str) -> dict[str, Any]:
         import yaml  # type: ignore[import-untyped]
 
         result = yaml.safe_load(text) or {}
-        if isinstance(result, dict) and isinstance(result.get("reasoning"), bool):
+        if not isinstance(result, dict):
+            raise RepoConfigError(
+                f"Could not parse {config_path}: expected a YAML mapping, "
+                f"got {type(result).__name__}"
+            )
+        if isinstance(result.get("reasoning"), bool):
             raw_reasoning = _read_flat_scalar(text, "reasoning")
             if raw_reasoning:
                 result["reasoning"] = raw_reasoning
@@ -37,6 +52,13 @@ def load_repo_config(repo_path: Path | str) -> dict[str, Any]:
                 key, _, value = line.partition(":")
                 result[key.strip()] = value.strip()
         return result
+    except Exception as exc:
+        # A broken config must never be silently treated as "no config": the
+        # user's provider/model/coverage settings would silently vanish and
+        # every run would use defaults. Name the file and the parse error.
+        raise RepoConfigError(
+            f"Could not parse {config_path}: {exc}"
+        ) from exc
 
 
 def save_repo_config(repo_path: Path | str, config: dict[str, Any]) -> None:
@@ -106,8 +128,11 @@ def load_repo_env(repo_path: Path | str) -> dict[str, str]:
     result: dict[str, str] = {}
     try:
         text = env_file.read_text(encoding="utf-8")
-    except OSError:
-        return {}
+    except OSError as exc:
+        # The file exists (we checked above) but cannot be read — a
+        # permission problem, not "no env file". Silent {} would resolve
+        # every provider as unconfigured with no explanation.
+        raise RepoConfigError(f"Could not read {env_file}: {exc}") from exc
 
     for raw_line in text.splitlines():
         line = raw_line.strip()

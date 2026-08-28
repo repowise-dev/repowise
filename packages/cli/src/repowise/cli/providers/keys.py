@@ -85,10 +85,17 @@ def resolve_embedder_api_key(embedder_name: str, repo_path: Any = None) -> KeyLo
 
     if repo_path is not None:
         searched.append(f"{Path(repo_path) / '.repowise' / '.env'}")
-        try:
-            from repowise.core.repo_config import load_repo_env
+        from repowise.core.repo_config import RepoConfigError, load_repo_env
 
+        try:
             overlay = load_repo_env(repo_path)
+        except RepoConfigError as exc:
+            # A broken .env must surface — a key silently read as missing is
+            # indistinguishable from "not configured" (issue #852).
+            from repowise.cli.helpers import err_console
+
+            err_console.print(f"[yellow]Warning:[/yellow] {exc}")
+            overlay = {}
         except Exception:
             overlay = {}
         for var in env_vars:

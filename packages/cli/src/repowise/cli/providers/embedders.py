@@ -148,10 +148,17 @@ def resolve_embedder_for_repo(repo_path: Any) -> str:
     # ``os.environ``: a workspace resolves several repos in one process, and a
     # merge is first-writer-wins, so the first repo's key would silently answer
     # for every sibling afterwards.
-    try:
-        from repowise.core.repo_config import load_repo_env
+    from repowise.core.repo_config import RepoConfigError, load_repo_env
 
+    try:
         overlay = load_repo_env(repo_path)
+    except RepoConfigError as exc:
+        # A broken .env must surface — the embedder it pins would silently
+        # fall back to detection (issue #852).
+        from repowise.cli.helpers import err_console
+
+        err_console.print(f"[yellow]Warning:[/yellow] {exc}")
+        overlay = {}
     except Exception:
         overlay = {}
     return resolve_embedder(None, overlay)
