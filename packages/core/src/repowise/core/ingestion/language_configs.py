@@ -430,3 +430,6 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
 # copying keeps them from drifting apart.
 LANGUAGE_CONFIGS["svelte"] = LANGUAGE_CONFIGS["typescript"]
 LANGUAGE_CONFIGS["vue"] = LANGUAGE_CONFIGS["typescript"]
+# Razor projects its C# regions (``@code`` / ``@{ }`` blocks) into a C#
+# buffer through the same sfc_source seam, so the C# config applies verbatim.
+LANGUAGE_CONFIGS["razor"] = LANGUAGE_CONFIGS["csharp"]

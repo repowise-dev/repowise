@@ -228,6 +228,26 @@ what a parent actually writes), `<Foo />` in markup mints a call edge, and a
 handler referenced only from `on:click={inc}` or `@click="inc"` carries an edge
 instead of reading as dead code.
 
+### Razor / Blazor markup (`.razor`, `.cshtml`)
+
+Razor is the same one-file-two-languages shape, with one difference: there is
+no usable `tree-sitter-razor` on PyPI (and an HTML grammar actively mis-parses
+it — `List<Order>` reads as an HTML element). So the locator in
+`sfc_source.py` **byte-scans** instead: `@code { }`, `@functions { }` and
+`@{ }` interiors are brace-matched and projected into a C# buffer at
+byte-identical offsets, PascalCase markup tags (`<RadzenDataGrid />`) mint
+component call edges, and the file itself becomes a symbol named after the
+filename. The C# queries, `LanguageConfig`, complexity map and perf dialect
+all apply verbatim.
+
+The C# body is projected at top level (variant A), so `@code` members land as
+call edges but not yet as symbols, and `@using` / `@inject` / `@bind` are
+deliberately not projected — the same binding-form ceiling Svelte's `{#each}`
+heads and Vue's `v-for` get. See
+[repowise#1404](https://github.com/repowise-dev/repowise/issues/1404) for the
+planned follow-ups (a `class X{` wrapper so `@code` members become symbols,
+attribute-expression projections, `@inject` DI edges).
+
 ---
 
 ## Good tier

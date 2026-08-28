@@ -46,6 +46,7 @@ from .php import SPEC as _PHP
 from .proto import SPEC as _PROTO
 from .python import SPEC as _PYTHON
 from .r import SPEC as _R
+from .razor import SPEC as _RAZOR
 from .ruby import SPEC as _RUBY
 from .rust import SPEC as _RUST
 from .scala import SPEC as _SCALA
@@ -88,6 +89,12 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _KOTLIN,
     _RUBY,
     _CSHARP,
+    # Must follow _CSHARP: shares_grammar_with resolves against the registry
+    # built so far, so csharp's grammar has to be loaded first. Razor/Blazor
+    # markup (.razor, .cshtml) projects its C# regions (``@code`` / ``@{ }``
+    # blocks) into a C# buffer via ``sfc_source``, exactly as svelte/vue
+    # project into TypeScript.
+    _RAZOR,
     _PHP,
     _SWIFT,
     _SCALA,

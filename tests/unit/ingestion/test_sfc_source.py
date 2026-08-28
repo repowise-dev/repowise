@@ -196,7 +196,9 @@ class TestVueOffsetInvariants:
     def test_non_ascii_markup_keeps_offsets(self) -> None:
         # A multi-byte character in the markup must not shift the script that
         # follows it — the blanking works in bytes, not code points.
-        src = "<template><p>日本語のテキスト</p></template>\n<script>const a = 1;</script>\n".encode()
+        src = (
+            "<template><p>日本語のテキスト</p></template>\n<script>const a = 1;</script>\n".encode()
+        )
         prepared = prepare_source("vue", src)
         assert len(prepared) == len(src)
         assert prepared.index(b"const a = 1;") == src.index(b"const a = 1;")
@@ -332,3 +334,165 @@ class TestVueDegradation:
         prepared = prepare_source("vue", src)
         assert len(prepared) == len(src)
         assert prepared.count(b"\n") == src.count(b"\n")
+
+
+# ---------------------------------------------------------------------------
+# Razor / Blazor
+# ---------------------------------------------------------------------------
+
+_RAZOR_COMPONENT = b"""@page "/orders"
+@inject OrderService OrderService
+
+<RadzenAlert AlertStyle="AlertStyle.Warning">
+    Some orders require attention.
+</RadzenAlert>
+
+<RadzenDataGrid Data="@orders" TItem="Order">
+    <Columns>
+        <RadzenDataGridColumn TItem="Order" Property="Name" Title="Name" />
+    </Columns>
+</RadzenDataGrid>
+
+<RadzenButton Text="Save" Click="@SaveOrders" />
+
+@code {
+    private List<Order> orders = new();
+
+    private async Task SaveAsync()
+    {
+        await OrderService.SaveOrdersAsync(orders);
+    }
+}
+"""
+
+
+class TestRazorOffsetInvariants:
+    """Byte length and line numbering must survive the projection untouched."""
+
+    def test_length_is_preserved(self) -> None:
+        assert len(prepare_source("razor", _RAZOR_COMPONENT)) == len(_RAZOR_COMPONENT)
+
+    def test_line_count_is_preserved(self) -> None:
+        prepared = prepare_source("razor", _RAZOR_COMPONENT)
+        assert prepared.count(b"\n") == _RAZOR_COMPONENT.count(b"\n")
+
+    def test_code_block_lines_are_byte_identical(self) -> None:
+        prepared = prepare_source("razor", _RAZOR_COMPONENT).splitlines()
+        original = _RAZOR_COMPONENT.splitlines()
+        # The @code interior (1-indexed lines 17-22) is projected verbatim.
+        # The brace lines themselves are fenced to ``;`` by design, so they
+        # are excluded — the offset, not the byte, is what must survive there.
+        for index in range(16, 22):
+            assert prepared[index] == original[index]
+
+    def test_markup_lines_are_blanked(self) -> None:
+        prepared = prepare_source("razor", _RAZOR_COMPONENT).splitlines()
+        # Directives and markup (lines 1, 2, 4, 8, 14) become whitespace.
+        for index in (0, 1, 3, 7, 13):
+            assert prepared[index].strip() == b""
+
+    def test_non_ascii_markup_keeps_offsets(self) -> None:
+        src = '@code { var s = "héllo wörld 🎉"; }\n<p>résumé</p>\n'.encode()
+        prepared = prepare_source("razor", src)
+        assert len(prepared) == len(src)
+        assert prepared.count(b"\n") == src.count(b"\n")
+
+    def test_cshtml_extension_shares_the_projection(self) -> None:
+        # .cshtml files carry the same razor tag, so the locator applies.
+        from repowise.core.ingestion.models import EXTENSION_TO_LANGUAGE
+
+        assert EXTENSION_TO_LANGUAGE[".cshtml"] == "razor"
+        prepared = prepare_source("razor", _RAZOR_COMPONENT)
+        assert len(prepared) == len(_RAZOR_COMPONENT)
+
+
+class TestRazorBlanking:
+    def test_statement_block_is_projected(self) -> None:
+        src = b"@{\n    var total = orders.Sum(o => o.Amount);\n}\n"
+        prepared = prepare_source("razor", src)
+        assert b"total" in prepared
+        assert b"Sum" in prepared
+
+    def test_functions_block_is_projected(self) -> None:
+        src = b"@functions {\n    public int Count { get; set; }\n}\n"
+        prepared = prepare_source("razor", src)
+        assert b"Count" in prepared
+
+    def test_markup_and_directives_are_blanked(self) -> None:
+        prepared = prepare_source("razor", _RAZOR_COMPONENT)
+        assert b"RadzenAlert" not in prepared
+        assert b"@page" not in prepared
+        assert b"@inject" not in prepared
+        assert b"Click" not in prepared
+        # Attribute binding values (@orders, @SaveOrders) are not call edges
+        # and are blanked with the rest of the markup. ``SaveOrdersAsync``
+        # (inside @code) legitimately survives — the bound name without the
+        # sigil must not.
+        assert b"@SaveOrders" not in prepared
+        assert b"SaveOrdersAsync" in prepared
+
+    def test_generics_inside_code_are_not_treated_as_markup(self) -> None:
+        # ``List<Order>`` is a generic type argument inside @code, not a
+        # component tag. The tag pass must skip C# regions.
+        names = {name for name, _ in scan("razor", _RAZOR_COMPONENT).component_tags}
+        assert "Order" not in names
+        assert "List" not in names
+
+    def test_adjacent_blocks_are_fenced(self) -> None:
+        src = b"@{ var a = 1; }\n@{ var b = 2; }\n"
+        prepared = prepare_source("razor", src)
+        compact = prepared.replace(b" ", b"")
+        # Each interior is fenced on both sides; the trailing ``;`` inside
+        # the body plus the fenced closing brace give the ``;;`` run.
+        assert b";vara=1;;" in compact
+        assert b";varb=2;;" in compact
+
+
+class TestRazorComponentTags:
+    def test_capitalized_tags_are_component_usages(self) -> None:
+        names = {name for name, _ in scan("razor", _RAZOR_COMPONENT).component_tags}
+        assert {
+            "RadzenAlert",
+            "RadzenDataGrid",
+            "RadzenDataGridColumn",
+            "RadzenButton",
+            "Columns",
+        } <= names
+
+    def test_lowercase_html_elements_are_not_components(self) -> None:
+        src = b"<div><span>hi</span></div>\n@code { }\n"
+        assert scan("razor", src).component_tags == ()
+
+    def test_tag_line_numbers_point_at_the_original_file(self) -> None:
+        tags = dict(scan("razor", _RAZOR_COMPONENT).component_tags)
+        assert tags["RadzenDataGrid"] == 8
+
+    def test_comparisons_inside_code_are_not_tags(self) -> None:
+        src = b"@code { if (a < B) { Go(); } }\n"
+        names = {name for name, _ in scan("razor", src).component_tags}
+        assert names == set()
+
+
+class TestRazorDegradation:
+    @pytest.mark.parametrize(
+        "src",
+        [
+            b"",
+            b"<p>markup only, no code block</p>\n",
+            b"@code {",
+            b"@code",
+            b"@",
+            b"@using System.Linq\n",
+            b"@@code { this is escaped markup }\n",
+            b"<RadzenDataGrid",
+        ],
+    )
+    def test_malformed_or_code_less_input_never_raises(self, src: bytes) -> None:
+        prepared = prepare_source("razor", src)
+        assert len(prepared) == len(src)
+        assert prepared.count(b"\n") == src.count(b"\n")
+
+    def test_unterminated_code_block_degrades_to_no_spans(self) -> None:
+        src = b"@code {\n    private int x;\n"
+        result = scan("razor", src)
+        assert result.js_spans == ()
