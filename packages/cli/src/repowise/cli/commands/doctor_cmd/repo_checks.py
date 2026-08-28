@@ -231,7 +231,19 @@ def _run_repo_checks(
                 return 0
 
             stale_count = run_async(_check_stale())
-            checks.append(_check("Stale pages", stale_count == 0, f"{stale_count} stale"))
+            if stale_count:
+                checks.append(
+                    _check(
+                        "Stale pages",
+                        False,
+                        f"{stale_count} stale — pages whose content lags the code "
+                        "(change cascade exceeded the regeneration budget). "
+                        "`repowise update --full` regenerates them; "
+                        "`--repair` cannot, it only fixes store drift.",
+                    )
+                )
+            else:
+                checks.append(_check("Stale pages", True, "0 stale"))
         except Exception:
             checks.append(_check("Stale pages", True, "Could not check"))
 
@@ -691,8 +703,21 @@ def _run_repo_checks(
 
         repaired_count = run_async(_repair())
         console.print(f"[bold green]Repaired {repaired_count} entries.[/bold green]")
+        if stale_count:
+            console.print(
+                "[yellow]Stale pages are not store drift, so --repair leaves them "
+                "alone: they are pages the last docs run could not regenerate "
+                "within its budget. Run `repowise update --full` to clear them.[/yellow]"
+            )
     elif repair and not has_mismatches and not registration_wedged and not agents_need_refresh:
-        console.print("[green]Nothing to repair.[/green]")
+        if stale_count:
+            console.print(
+                f"[yellow]No store drift to repair, but {stale_count} stale page(s) "
+                "remain — they are content lag, not drift. `repowise update --full` "
+                "regenerates them.[/yellow]"
+            )
+        else:
+            console.print("[green]Nothing to repair.[/green]")
 
     if repair and agents_need_refresh:
         from repowise.cli.commands.agents_cmd import refresh_wired_agents
