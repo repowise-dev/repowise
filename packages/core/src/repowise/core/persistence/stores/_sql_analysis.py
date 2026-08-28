@@ -281,6 +281,7 @@ class _SqlAnalysisMixin(AnalysisIndexStore):
         *,
         source_format: str,
         ingested_commit_sha: str | None = None,
+        mapping_partial: bool = False,
     ) -> None:
         await crud.save_coverage_files(
             self._session,
@@ -288,6 +289,7 @@ class _SqlAnalysisMixin(AnalysisIndexStore):
             files,
             source_format=source_format,
             ingested_commit_sha=ingested_commit_sha,
+            mapping_partial=mapping_partial,
         )
 
     async def load_coverage_for_repo(

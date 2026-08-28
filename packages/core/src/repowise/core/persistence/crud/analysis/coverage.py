@@ -19,12 +19,15 @@ async def save_coverage_files(
     *,
     source_format: str,
     ingested_commit_sha: str | None = None,
+    mapping_partial: bool = False,
 ) -> None:
     """Replace coverage rows for *repository_id* with *files*.
 
     Mirrors the delete-then-insert pattern used by the health writers.
     *files* is a list of ``FileCoverage`` dataclasses (or dicts with the
-    same shape).
+    same shape). ``mapping_partial`` marks the whole ingest as a fragment
+    (fewer than half the report's files mapped to the repo tree, #1746);
+    it is a property of the ingest, not of any one row.
     """
     existing = await session.execute(
         select(CoverageFile).where(CoverageFile.repository_id == repository_id)
@@ -57,6 +60,7 @@ async def save_coverage_files(
                     repository_id=repository_id,
                     source_format=source_format,
                     ingested_commit_sha=ingested_commit_sha,
+                    mapping_partial=mapping_partial,
                     **{
                         k: v
                         for k, v in data.items()
@@ -66,6 +70,7 @@ async def save_coverage_files(
                             "repository_id",
                             "source_format",
                             "ingested_commit_sha",
+                            "mapping_partial",
                         )
                         and hasattr(CoverageFile, k)
                     },
@@ -84,6 +89,7 @@ _COVERAGE_SCALAR_COLUMNS = (
     CoverageFile.line_coverage_pct,
     CoverageFile.branch_coverage_pct,
     CoverageFile.total_coverable_lines,
+    CoverageFile.mapping_partial,
     CoverageFile.ingested_at,
     CoverageFile.ingested_commit_sha,
 )
@@ -162,6 +168,7 @@ async def get_coverage_summary(
             "line_coverage_pct": None,
             "branch_coverage_pct": None,
             "source_format": None,
+            "mapping_partial": None,
             "ingested_at": None,
             "ingested_commit_sha": None,
         }
@@ -183,6 +190,11 @@ async def get_coverage_summary(
     else:
         branch_pct = None
     latest = max(rows, key=lambda r: r.ingested_at)
+    # A partial ingest is a whole-table property: every row of the latest
+    # delete-then-insert batch carries the same flag, so any row reports the
+    # table's. Rows written before the flag existed read False (column
+    # default), which is correct for complete legacy ingests.
+    mapping_partial = bool(getattr(latest, "mapping_partial", False))
     return {
         "file_count": len(rows),
         "covered_lines": covered,
@@ -190,6 +202,7 @@ async def get_coverage_summary(
         "line_coverage_pct": round(line_pct, 2),
         "branch_coverage_pct": round(branch_pct, 2) if branch_pct is not None else None,
         "source_format": latest.source_format,
+        "mapping_partial": mapping_partial,
         "ingested_at": latest.ingested_at,
         "ingested_commit_sha": latest.ingested_commit_sha,
     }

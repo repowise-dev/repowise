@@ -105,13 +105,13 @@ def _build_pipeline_coverage(
     explicit_paths: list[Path] | None,
     *,
     progress: ProgressCallback | None,
-) -> tuple[dict[str, dict], list[Any], str | None]:
+) -> tuple[dict[str, dict], list[Any], str | None, bool]:
     """Discover/parse/resolve coverage reports for an indexing run.
 
-    Returns ``(coverage_map, resolved_files, source_format)``. Best-effort:
-    any failure logs and yields an empty map so health analysis proceeds
-    without coverage. Unmatched report files are surfaced via *progress* so
-    "coverage didn't show up" is never silent.
+    Returns ``(coverage_map, resolved_files, source_format, mapping_partial)``.
+    Best-effort: any failure logs and yields an empty map so health analysis
+    proceeds without coverage. Unmatched report files are surfaced via
+    *progress* so "coverage didn't show up" is never silent.
     """
     try:
         from repowise.core.analysis.health.coverage import (
@@ -130,10 +130,10 @@ def _build_pipeline_coverage(
         elif cfg.auto_discover:
             report_paths = discover_artifacts(repo_path, globs=cfg.artifacts or None)
         else:
-            return {}, [], None
+            return {}, [], None, False
 
         if not report_paths:
-            return {}, [], None
+            return {}, [], None, False
 
         repo_keys = {pf.file_info.path for pf in parsed_files}
         resolved, errors = build_coverage_map(
@@ -161,15 +161,26 @@ def _build_pipeline_coverage(
                     f"(e.g. {sample}). Set coverage.strip_prefix in "
                     f".repowise/config.yaml if paths are off.",
                 )
+            if resolved.mapping_partial:
+                progress.on_message(
+                    "warning",
+                    "  ↳ more than half the report did not map: the stored "
+                    "coverage is a fragment, not the whole repository.",
+                )
             for path, err in errors:
                 progress.on_message("warning", f"  ↳ coverage {path.name}: {err}")
 
-        return resolved.coverage_map, resolved.files, resolved.source_format
+        return (
+            resolved.coverage_map,
+            resolved.files,
+            resolved.source_format,
+            resolved.mapping_partial,
+        )
     except Exception as exc:
         if progress:
             progress.on_message("warning", f"Coverage ingestion skipped: {exc}")
         logger.debug("pipeline_coverage_failed", error=str(exc))
-        return {}, [], None
+        return {}, [], None, False
 
 
 async def _run_health_analysis(
@@ -214,8 +225,14 @@ async def _run_health_analysis(
         coverage_map: dict[str, dict] = {}
         coverage_files: list[Any] = []
         coverage_format: str | None = None
+        coverage_mapping_partial = False
         if repo_path is not None:
-            coverage_map, coverage_files, coverage_format = _build_pipeline_coverage(
+            (
+                coverage_map,
+                coverage_files,
+                coverage_format,
+                coverage_mapping_partial,
+            ) = _build_pipeline_coverage(
                 repo_path, parsed_files, coverage_report_paths, progress=progress
             )
 
@@ -256,6 +273,7 @@ async def _run_health_analysis(
         if coverage_files:
             report.coverage_files = coverage_files
             report.coverage_format = coverage_format
+            report.coverage_mapping_partial = coverage_mapping_partial
 
         if progress:
             findings_count = len(report.findings)

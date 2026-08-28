@@ -180,6 +180,7 @@ def _empty_summary() -> dict[str, Any]:
         "line_coverage_pct": None,
         "branch_coverage_pct": None,
         "source_format": None,
+        "mapping_partial": None,
         "ingested_at": None,
         "ingested_commit_sha": None,
     }

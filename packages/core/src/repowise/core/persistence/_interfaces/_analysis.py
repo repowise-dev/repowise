@@ -238,6 +238,7 @@ class AnalysisIndexStore(ABC):
         *,
         source_format: str,
         ingested_commit_sha: str | None = None,
+        mapping_partial: bool = False,
     ) -> None: ...
 
     @abstractmethod

@@ -232,6 +232,59 @@ def test_build_coverage_map_end_to_end(tmp_path: Path) -> None:
     assert not errors
     assert "src/a.ts" in resolved.coverage_map
     assert resolved.coverage_map["src/a.ts"]["line_coverage_pct"] == 50.0
+    assert resolved.mapping_partial is False
+
+
+# ---------------------------------------------------------------------------
+# mapping_partial — severe path-mapping loss (issue #1746)
+# ---------------------------------------------------------------------------
+
+
+def test_mapping_partial_false_when_majority_maps() -> None:
+    keys = {"src/a.py", "src/b.py"}
+    report = _report([_fc("src/a.py"), _fc("src/b.py"), _fc("/abs/other/c.py")])
+    res = resolve_reports([report], keys)
+    assert res.matched == 2
+    assert res.mapping_partial is False
+
+
+def test_mapping_partial_true_when_majority_unmapped() -> None:
+    """Issue #1746: a report that maps 1 of 5 files is a fragment, and the
+    ingest must not present its aggregate as repository coverage."""
+    keys = {"src/a.py"}
+    report = _report(
+        [_fc("src/a.py"), _fc("/abs/one/b.py"), _fc("/abs/two/c.py"),
+         _fc("/abs/three/d.py"), _fc("/abs/four/e.py")]
+    )
+    res = resolve_reports([report], keys)
+    assert res.matched == 1
+    assert len(res.unmatched) == 4
+    assert res.mapping_partial is True
+
+
+def test_mapping_partial_measured_on_report_files_not_matched_keys() -> None:
+    """Merging the same key across reports must not shrink the denominator."""
+    keys = {"src/a.py"}
+    res = resolve_reports(
+        [_report([_fc("src/a.py"), _fc("/abs/other/b.py")]),
+         _report([_fc("src/a.py")])],
+        keys,
+    )
+    # 3 report files, 2 matched (a.py twice, merged hit-wins) → not partial
+    assert res.matched == 2
+    assert res.mapping_partial is False
+
+
+def test_build_coverage_map_flags_partial(tmp_path: Path) -> None:
+    lcov = "SF:/ci/build/src/a.ts\nDA:1,1\nend_of_record\nSF:/ci/other/b.ts\nDA:1,1\nend_of_record\nSF:/ci/other/c.ts\nDA:1,1\nend_of_record\n"
+    report_path = tmp_path / "coverage" / "lcov.info"
+    report_path.parent.mkdir()
+    report_path.write_text(lcov)
+
+    keys = {"src/a.ts"}
+    resolved, errors = build_coverage_map(tmp_path, [report_path], keys)
+    assert not errors
+    assert resolved.mapping_partial is True
 
 
 # ---------------------------------------------------------------------------

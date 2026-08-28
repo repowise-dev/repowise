@@ -86,6 +86,9 @@ class HealthReport:
     # to the ``coverage_files`` table. Empty when no coverage was ingested.
     coverage_files: list[Any] = field(default_factory=list)
     coverage_format: str | None = None
+    # True when the ingested coverage report mapped fewer than half its files
+    # to the repo tree (#1746); carried so the persister can stamp the rows.
+    coverage_mapping_partial: bool = False
     # Incremental writers replace all dimensions only for ``authoritative_paths``.
     # ``performance_authoritative_paths`` may be wider: the bounded execution
     # closure whose performance rows/plans were recomputed for full parity.
