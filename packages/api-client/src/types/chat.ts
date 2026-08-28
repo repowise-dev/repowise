@@ -22,6 +22,8 @@ export interface ChatMessageResponse {
       name: string;
       arguments?: Record<string, unknown>;
       result?: Record<string, unknown>;
+      summary?: string;
+      artifact_type?: string;
     }>;
   };
   created_at: string;

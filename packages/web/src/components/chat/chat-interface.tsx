@@ -4,13 +4,13 @@ import { useEffect, useRef } from "react";
 import useSWR from "swr";
 import Link from "next/link";
 import { ChatInterface as ChatInterfaceShell } from "@repowise-dev/ui/chat/chat-interface";
-import { useChat } from "@/lib/hooks/use-chat";
 import { pageHref } from "@/lib/utils/page-href";
 import { listConversations } from "@/lib/api/chat";
 import { getProviders } from "@/lib/api/providers";
 import { getRepoStats } from "@/lib/api/repos";
 import { ModelSelector } from "./model-selector";
 import { ConversationHistory } from "./conversation-history";
+import { useRepositoryChat } from "./repository-chat-provider";
 
 interface ChatInterfaceProps {
   repoId: string;
@@ -38,7 +38,8 @@ export function ChatInterface({
     sendMessage,
     loadConversation,
     reset,
-  } = useChat(repoId);
+    pageContext,
+  } = useRepositoryChat();
 
   // Provider guard: surface "no chat provider configured" BEFORE the first
   // send instead of erroring after.
@@ -91,10 +92,11 @@ export function ChatInterface({
     <ChatInterfaceShell
       repoId={repoId}
       {...(repoName !== undefined ? { repoName } : {})}
+      context={pageContext}
       messages={messages}
       isStreaming={isStreaming}
       error={error}
-      onSend={(text) => sendMessage(text)}
+      onSend={(text) => sendMessage(text, { context: pageContext })}
       onCancel={reset}
       buildCitationHref={(s) => pageHref(repoId, s.pageId)}
       modelSelectorSlot={<ModelSelector repoId={repoId} />}

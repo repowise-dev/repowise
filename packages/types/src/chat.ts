@@ -24,6 +24,48 @@ import type { DeadCodeFinding } from "./dead-code.js";
 import type { DecisionRecord } from "./decisions.js";
 
 // ---------------------------------------------------------------------------
+// Product context surrounding a chat composer
+// ---------------------------------------------------------------------------
+
+export type ChatContextKind =
+  | "repository"
+  | "overview"
+  | "documentation"
+  | "architecture"
+  | "graph"
+  | "health"
+  | "refactoring"
+  | "file"
+  | "symbol"
+  | "module"
+  | "commit"
+  | "contributor"
+  | "decision"
+  | "risk"
+  | "security"
+  | "usage"
+  | "settings"
+  | "chat";
+
+export type ChatContextTargetKind =
+  | "path"
+  | "symbol"
+  | "module"
+  | "dependency"
+  | "commit"
+  | "person"
+  | "decision"
+  | "documentation";
+
+/** Portable navigation context supplied by a product host for one chat turn. */
+export interface ChatContext {
+  kind: ChatContextKind;
+  label: string;
+  target?: string;
+  targetKind?: ChatContextTargetKind;
+}
+
+// ---------------------------------------------------------------------------
 // Conversations + messages
 // ---------------------------------------------------------------------------
 
@@ -41,6 +83,8 @@ export interface ChatToolCall {
   name: string;
   arguments?: Record<string, unknown>;
   result?: Record<string, unknown>;
+  summary?: string;
+  artifact_type?: string;
 }
 
 export interface ChatMessage {

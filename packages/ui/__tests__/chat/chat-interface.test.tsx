@@ -69,6 +69,32 @@ describe("ChatInterface shell", () => {
     expect(onSend).toHaveBeenCalledWith("hi there");
   });
 
+  it("uses contextual placeholder, suggestions, and current-view metadata", () => {
+    render(
+      <ChatInterface
+        repoId="r1"
+        messages={[]}
+        isStreaming={false}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        context={{
+          kind: "file",
+          label: "Files",
+          target: "packages/core/src/index.ts",
+          targetKind: "path",
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText("Chat message")).toHaveAttribute(
+      "placeholder",
+      "Ask about this file",
+    );
+    expect(screen.getByText("Explain this file's responsibility")).toBeInTheDocument();
+    expect(screen.getByText("Current view")).toBeInTheDocument();
+    expect(screen.getByText("packages/core/src/index.ts")).toBeInTheDocument();
+  });
+
   it("renders Stop button and invokes onCancel while streaming", () => {
     const onCancel = vi.fn();
     render(

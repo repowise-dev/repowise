@@ -32,6 +32,11 @@ import { cn } from "../lib/cn";
 import { BrandMark } from "../shared/brand-mark";
 import { ChatMessage } from "./chat-message";
 import { ArtifactPanel, type Artifact } from "./artifact-panel";
+import { ChatContextIndicator } from "./chat-context-indicator";
+import {
+  getChatContextPresentation,
+  type ChatContext,
+} from "./chat-context";
 import type { ChatUIMessage } from "@repowise-dev/types/chat";
 import type { SourceReference } from "./source-citations";
 
@@ -52,6 +57,8 @@ export interface ChatInterfaceProps {
   repoId: string;
   /** Optional repo display name shown in the empty state heading. */
   repoName?: string;
+  /** Product surface surrounding this composer. */
+  context?: ChatContext;
 
   /** Conversation transcript (UI-flattened). */
   messages: ChatUIMessage[];
@@ -87,7 +94,9 @@ export interface ChatInterfaceProps {
   /** Logo shown above the empty-state heading. */
   emptyStateLogoSrc?: string;
   /** Override default suggestion chips. */
-  suggestions?: string[];
+  suggestions?: readonly string[];
+  /** Override the context-derived composer placeholder. */
+  placeholder?: string;
   /** Orientation line under the empty-state subtitle — index status, page
    *  counts, branch, last sync. Keeps the blank page honest about what's
    *  loaded, and is the only figure on it, so it is not buried. */
@@ -101,6 +110,7 @@ export interface ChatInterfaceProps {
 export function ChatInterface({
   repoId,
   repoName,
+  context,
   messages,
   isStreaming,
   error,
@@ -112,7 +122,8 @@ export function ChatInterface({
   buildCitationHref,
   linkPrefix,
   emptyStateLogoSrc = "/repowise-logo.png",
-  suggestions = DEFAULT_SUGGESTIONS,
+  suggestions,
+  placeholder,
   statusSlot,
   sendDisabled = false,
   sendDisabledReason,
@@ -124,6 +135,14 @@ export function ChatInterface({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const isEmpty = messages.length === 0;
+  const contextPresentation = getChatContextPresentation(context);
+  const visibleSuggestions =
+    suggestions ?? (context ? contextPresentation.suggestions : DEFAULT_SUGGESTIONS);
+  const composerPlaceholder = placeholder ?? contextPresentation.placeholder;
+  const showContext =
+    context !== undefined &&
+    context.kind !== "repository" &&
+    context.kind !== "chat";
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView?.({ behavior: "smooth" });
@@ -247,7 +266,7 @@ export function ChatInterface({
               <div>
                 <p className={cn(MICRO_LABEL, "mb-1")}>Start with</p>
                 <ul className="border-t border-[var(--color-border-default)]">
-                  {suggestions.map((s) => (
+                  {visibleSuggestions.map((s) => (
                     <li key={s}>
                       <button
                         className="group flex w-full items-center gap-3 border-b border-[var(--color-border-default)] py-3 text-left text-[15px] text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent-primary)]"
@@ -301,6 +320,7 @@ export function ChatInterface({
               {sendDisabledReason}
             </div>
           )}
+          {showContext && context && <ChatContextIndicator context={context} />}
           <div
             className={cn(
               "flex items-end gap-2 rounded-2xl border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-4 py-3",
@@ -317,7 +337,7 @@ export function ChatInterface({
                   void handleSubmit();
                 }
               }}
-              placeholder="Ask a question, or paste a file path"
+              placeholder={composerPlaceholder}
               aria-label="Chat message"
               disabled={sendDisabled}
               rows={1}

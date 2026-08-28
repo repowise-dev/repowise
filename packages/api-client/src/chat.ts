@@ -4,6 +4,7 @@
 
 import { apiGet, apiDelete, BASE_URL, buildHeaders } from "./client";
 import type { ConversationResponse, ChatMessageResponse } from "./types";
+import type { ChatContext } from "@repowise-dev/types/chat";
 
 export async function listConversations(
   repoId: string,
@@ -41,6 +42,7 @@ export async function postChatMessage(
     conversationId?: string;
     provider?: string;
     model?: string;
+    context?: ChatContext;
     /**
      * Aborts the request itself, not just the caller's read loop. Without it,
      * a cancelled or superseded send leaves the POST running on the server and
@@ -62,6 +64,14 @@ export async function postChatMessage(
       conversation_id: opts.conversationId ?? null,
       provider: opts.provider ?? null,
       model: opts.model ?? null,
+      context: opts.context
+        ? {
+            kind: opts.context.kind,
+            label: opts.context.label,
+            target: opts.context.target ?? null,
+            target_kind: opts.context.targetKind ?? null,
+          }
+        : null,
     }),
     ...(opts.signal ? { signal: opts.signal } : {}),
   });

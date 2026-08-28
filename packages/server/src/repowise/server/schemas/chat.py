@@ -4,8 +4,49 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class ChatPageContext(BaseModel):
+    """Navigation metadata supplied by a product chat surface."""
+
+    kind: Literal[
+        "repository",
+        "overview",
+        "documentation",
+        "architecture",
+        "graph",
+        "health",
+        "refactoring",
+        "file",
+        "symbol",
+        "module",
+        "dependency",
+        "commit",
+        "contributor",
+        "decision",
+        "risk",
+        "security",
+        "usage",
+        "settings",
+        "chat",
+    ]
+    label: str = Field(max_length=120)
+    target: str | None = Field(default=None, max_length=2000)
+    target_kind: (
+        Literal[
+            "path",
+            "symbol",
+            "module",
+            "commit",
+            "person",
+            "decision",
+            "documentation",
+        ]
+        | None
+    ) = None
 
 
 class ChatRequest(BaseModel):
@@ -13,6 +54,7 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = None
     provider: str | None = None
     model: str | None = None
+    context: ChatPageContext | None = None
 
 
 class ConversationResponse(BaseModel):

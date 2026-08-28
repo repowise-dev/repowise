@@ -1,13 +1,15 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { postChatMessage, getConversation } from "@/lib/api/chat";
 import type { ChatSSEEvent } from "@/lib/api/types";
 import type {
+  ChatContext,
   ChatUIToolCall as ChatToolCall,
   ChatUIMessage as ChatMessage,
 } from "@repowise-dev/types/chat";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
+import { toChatUiMessages } from "@/lib/chat/to-chat-ui-messages";
 
 export type { ChatToolCall, ChatMessage };
 
@@ -18,22 +20,38 @@ export interface UseChatState {
   error: string | null;
 }
 
+const EMPTY_CHAT_STATE: UseChatState = {
+  messages: [],
+  conversationId: null,
+  isStreaming: false,
+  error: null,
+};
+
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
 
 export function useChat(repoId: string) {
-  const [state, setState] = useState<UseChatState>({
-    messages: [],
-    conversationId: null,
-    isStreaming: false,
-    error: null,
-  });
+  const [state, setState] = useState<UseChatState>(EMPTY_CHAT_STATE);
 
   const abortRef = useRef<AbortController | null>(null);
+  const activeRepoRef = useRef(repoId);
+
+  useEffect(() => {
+    if (activeRepoRef.current !== repoId) {
+      abortRef.current?.abort();
+      abortRef.current = null;
+      activeRepoRef.current = repoId;
+      setState(EMPTY_CHAT_STATE);
+    }
+    return () => abortRef.current?.abort();
+  }, [repoId]);
 
   const sendMessage = useCallback(
-    async (text: string, opts?: { provider?: string; model?: string }) => {
+    async (
+      text: string,
+      opts?: { provider?: string; model?: string; context?: ChatContext },
+    ) => {
       abortRef.current?.abort();
       const abort = new AbortController();
       abortRef.current = abort;
@@ -74,9 +92,13 @@ export function useChat(repoId: string) {
       try {
         const res = await postChatMessage(repoId, {
           message: text,
-          conversationId: state.conversationId ?? undefined,
+          conversationId:
+            activeRepoRef.current === repoId
+              ? state.conversationId ?? undefined
+              : undefined,
           provider: opts?.provider,
           model: opts?.model,
+          context: opts?.context,
           signal: abort.signal,
         });
 
@@ -136,6 +158,7 @@ export function useChat(repoId: string) {
       }
 
       function handleEvent(ev: ChatSSEEvent, asstId: string) {
+        if (activeRepoRef.current !== repoId) return;
         if (ev.type === "done" || ev.type === "error") settled = true;
         setState((prev) => {
           const messages = prev.messages.map((m) => {
@@ -207,20 +230,8 @@ export function useChat(repoId: string) {
     async (conversationId: string) => {
       try {
         const data = await getConversation(repoId, conversationId);
-        const msgs: ChatMessage[] = data.messages.map((m) => ({
-          id: m.id,
-          serverId: m.id,
-          role: m.role,
-          text: m.content.text ?? "",
-          toolCalls: (m.content.tool_calls ?? []).map((tc) => ({
-            id: tc.id,
-            name: tc.name,
-            arguments: tc.arguments ?? {},
-            result: tc.result,
-            status: "done" as const,
-          })),
-          isStreaming: false,
-        }));
+        if (activeRepoRef.current !== repoId) return;
+        const msgs = toChatUiMessages(data.messages);
         setState({
           messages: msgs,
           conversationId,
@@ -228,6 +239,7 @@ export function useChat(repoId: string) {
           error: null,
         });
       } catch (err) {
+        if (activeRepoRef.current !== repoId) return;
         setState((prev) => ({
           ...prev,
           error: toFriendlyMessage(err),
@@ -239,13 +251,9 @@ export function useChat(repoId: string) {
 
   const reset = useCallback(() => {
     abortRef.current?.abort();
-    setState({
-      messages: [],
-      conversationId: null,
-      isStreaming: false,
-      error: null,
-    });
+    setState(EMPTY_CHAT_STATE);
   }, []);
 
-  return { ...state, sendMessage, loadConversation, reset };
+  const visibleState = activeRepoRef.current === repoId ? state : EMPTY_CHAT_STATE;
+  return { ...visibleState, sendMessage, loadConversation, reset };
 }
