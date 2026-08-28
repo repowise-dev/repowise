@@ -249,11 +249,24 @@ export function useChat(repoId: string) {
     [repoId],
   );
 
+  const cancel = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setState((prev) => ({
+      ...prev,
+      isStreaming: false,
+      messages: prev.messages.map((message) =>
+        message.isStreaming ? { ...message, isStreaming: false } : message,
+      ),
+    }));
+  }, []);
+
   const reset = useCallback(() => {
     abortRef.current?.abort();
+    abortRef.current = null;
     setState(EMPTY_CHAT_STATE);
   }, []);
 
   const visibleState = activeRepoRef.current === repoId ? state : EMPTY_CHAT_STATE;
-  return { ...visibleState, sendMessage, loadConversation, reset };
+  return { ...visibleState, sendMessage, loadConversation, cancel, reset };
 }

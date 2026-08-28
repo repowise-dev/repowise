@@ -37,6 +37,7 @@ export function ChatInterface({
     error,
     sendMessage,
     loadConversation,
+    cancel,
     reset,
     pageContext,
   } = useRepositoryChat();
@@ -97,7 +98,7 @@ export function ChatInterface({
       isStreaming={isStreaming}
       error={error}
       onSend={(text) => sendMessage(text, { context: pageContext })}
-      onCancel={reset}
+      onCancel={cancel}
       buildCitationHref={(s) => pageHref(repoId, s.pageId)}
       modelSelectorSlot={<ModelSelector repoId={repoId} />}
       statusSlot={

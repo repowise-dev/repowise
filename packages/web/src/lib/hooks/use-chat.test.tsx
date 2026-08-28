@@ -51,6 +51,23 @@ describe("useChat lifecycle", () => {
     expect(result.current.conversationId).toBeNull();
   });
 
+  it("cancels streaming without erasing the conversation", () => {
+    const { result } = renderHook(() => useChat("r1"));
+
+    act(() => {
+      void result.current.sendMessage("Explain this page");
+    });
+    expect(result.current.messages).toHaveLength(2);
+    expect(result.current.isStreaming).toBe(true);
+
+    act(() => result.current.cancel());
+
+    expect(mocks.signal?.aborted).toBe(true);
+    expect(result.current.messages).toHaveLength(2);
+    expect(result.current.messages.at(-1)?.isStreaming).toBe(false);
+    expect(result.current.isStreaming).toBe(false);
+  });
+
   it.each(["resolve", "reject"] as const)(
     "ignores a late conversation %s from the previous repository",
     async (outcome) => {
