@@ -155,7 +155,7 @@ export function ContextRenderer({ data }: { data: ContextArtifactData }) {
         const md = info.docs?.content_md ?? "";
         return (
           <div key={target}>
-            <h3 className="text-xs font-mono text-[var(--color-accent-primary)] mb-2 break-all">
+            <h3 className="text-xs font-mono text-[var(--color-text-secondary)] mb-2 break-all">
               {target}
             </h3>
             {md ? (

@@ -74,6 +74,7 @@ export interface Conversation {
   repository_id: string;
   title: string;
   message_count: number;
+  pinned?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -94,6 +95,8 @@ export interface ChatMessage {
   content: {
     text?: string;
     tool_calls?: ChatToolCall[];
+    provider?: string;
+    model?: string;
   };
   created_at: string;
 }
@@ -119,6 +122,9 @@ export interface ChatUIMessage {
   text: string;
   toolCalls: ChatUIToolCall[];
   isStreaming: boolean;
+  /** Provenance recorded on assistant responses. */
+  provider?: string;
+  model?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -444,5 +450,5 @@ export type ChatSSEEvent =
       artifact: ChatArtifact;
       citations?: ChatCitation[];
     }
-  | { type: "done"; conversation_id: string; message_id: string }
+  | { type: "done"; conversation_id: string; message_id: string; user_message_id?: string; provider?: string; model?: string }
   | { type: "error"; message: string };

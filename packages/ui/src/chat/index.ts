@@ -1,6 +1,8 @@
 export * from "./artifact-panel";
 export * from "./artifacts";
 export * from "./chat-interface";
+export * from "./use-chat-scroll";
+export * from "./use-chat-draft";
 export * from "./chat-composer";
 export * from "./chat-dock";
 export * from "./chat-context";
@@ -9,6 +11,7 @@ export * from "../shared/markdown";
 export * from "./chat-message";
 export * from "./conversation-history";
 export * from "./model-selector";
+export * from "./message-actions";
 export * from "./source-citation";
 export * from "./source-citations";
 export * from "./tool-call-block";

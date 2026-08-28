@@ -52,6 +52,68 @@ describe("ChatInterface shell", () => {
     expect(screen.queryByText(/Ask anything about/i)).not.toBeInTheDocument();
   });
 
+  it("does not scroll the transcript on streaming message updates", () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(Element.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    const streaming = { ...ASSISTANT_MSG, isStreaming: true, text: "First" };
+    const view = render(
+      <ChatInterface
+        repoId="r1"
+        messages={[USER_MSG, streaming]}
+        isStreaming
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    scrollIntoView.mockClear();
+
+    view.rerender(
+      <ChatInterface
+        repoId="r1"
+        messages={[USER_MSG, { ...streaming, text: "First second" }]}
+        isStreaming
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it("passes explicit page and dock density profiles to transcript turns", () => {
+    const view = render(
+      <ChatInterface
+        repoId="r1"
+        messages={[USER_MSG, ASSISTANT_MSG]}
+        isStreaming={false}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("article", { name: "Repowise" })).toHaveAttribute(
+      "data-chat-density",
+      "page",
+    );
+
+    view.rerender(
+      <ChatInterface
+        variant="dock"
+        repoId="r1"
+        messages={[USER_MSG, ASSISTANT_MSG]}
+        isStreaming={false}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("article", { name: "Repowise" })).toHaveAttribute(
+      "data-chat-density",
+      "dock",
+    );
+  });
+
   it("invokes onSend with trimmed text when the user submits", () => {
     const onSend = vi.fn();
     render(
@@ -110,7 +172,7 @@ describe("ChatInterface shell", () => {
     expect(onCancel).toHaveBeenCalled();
   });
 
-  it("renders modelSelectorSlot + historySlot in the active-conversation header", () => {
+  it("renders history in the header and model choice in the composer footer", () => {
     render(
       <ChatInterface
         repoId="r1"
@@ -124,5 +186,25 @@ describe("ChatInterface shell", () => {
     );
     expect(screen.getByTestId("model-slot")).toBeInTheDocument();
     expect(screen.getByTestId("history-slot")).toBeInTheDocument();
+    const model = screen.getByTestId("model-slot");
+    const shortcut = screen.getByText("Shift+Enter for newline");
+    expect(model.compareDocumentPosition(shortcut) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Send message" }).className).not.toContain("accent-fill");
+  });
+
+  it("announces meaningful stream transitions without announcing token deltas", () => {
+    const streaming = { ...ASSISTANT_MSG, isStreaming: true, text: "First" };
+    const view = render(
+      <ChatInterface repoId="r1" messages={[USER_MSG, ASSISTANT_MSG]} isStreaming={false} onSend={vi.fn()} onCancel={vi.fn()} />,
+    );
+    view.rerender(
+      <ChatInterface repoId="r1" messages={[USER_MSG, streaming]} isStreaming onSend={vi.fn()} onCancel={vi.fn()} />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Working on your answer.");
+    view.rerender(
+      <ChatInterface repoId="r1" messages={[USER_MSG, { ...ASSISTANT_MSG, text: "First second" }]} isStreaming={false} onSend={vi.fn()} onCancel={vi.fn()} />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Answer complete.");
+    expect(screen.getByRole("status")).not.toHaveTextContent("First second");
   });
 });

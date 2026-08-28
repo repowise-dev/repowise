@@ -26,7 +26,7 @@ import {
   type RefObject,
   type ReactNode,
 } from "react";
-import { Send, PanelRight } from "lucide-react";
+import { ArrowDown, Send, PanelRight } from "lucide-react";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../lib/cn";
@@ -41,6 +41,7 @@ import {
 import type { ChatUIMessage } from "@repowise-dev/types/chat";
 import type { SourceReference } from "./source-citations";
 import { ChatComposer } from "./chat-composer";
+import { useChatScroll } from "./use-chat-scroll";
 
 const DEFAULT_SUGGESTIONS = [
   "Give me an overview of this codebase",
@@ -75,8 +76,7 @@ export interface ChatInterfaceProps {
   onCancel: () => void;
 
   /**
-   * Slot rendered in the right side of the active-conversation header bar AND
-   * in the empty-state composer footer. Typically a `<ModelSelector />`
+   * Slot rendered at the left side of the composer footer. Typically a `<ModelSelector />`
    * wrapper that owns its providers SWR.
    */
   modelSelectorSlot?: ReactNode;
@@ -89,6 +89,8 @@ export interface ChatInterfaceProps {
 
   /** Avatar src forwarded to `ChatMessage`. */
   assistantAvatarSrc?: string;
+  /** Optional host-supplied avatar for user turns. */
+  userAvatarSrc?: string;
   /** Forwarded to `SourceCitations` for href customisation. */
   buildCitationHref?: (source: SourceReference) => string;
   /** Forwarded to `SourceCitations` for route-agnostic link generation. */
@@ -114,6 +116,8 @@ export interface ChatInterfaceProps {
   onDraftChange?: (draft: string) => void;
   onContextRemove?: () => void;
   composerRef?: RefObject<HTMLTextAreaElement | null>;
+  onRetry?: (message: ChatUIMessage) => void | Promise<void>;
+  onEditAndResend?: (message: ChatUIMessage, text: string) => void | Promise<void>;
 }
 
 export function ChatInterface({
@@ -128,6 +132,7 @@ export function ChatInterface({
   modelSelectorSlot,
   historySlot,
   assistantAvatarSrc,
+  userAvatarSrc,
   buildCitationHref,
   linkPrefix,
   emptyStateLogoSrc = "/repowise-logo.png",
@@ -141,13 +146,14 @@ export function ChatInterface({
   onDraftChange,
   onContextRemove,
   composerRef,
+  onRetry,
+  onEditAndResend,
 }: ChatInterfaceProps) {
   const [internalInput, setInternalInput] = useState("");
   const input = draft ?? internalInput;
   const setInput = onDraftChange ?? setInternalInput;
   const [artifactPanelOpen, setArtifactPanelOpen] = useState(false);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
-  const bottomRef = useRef<HTMLDivElement>(null);
   const internalTextareaRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = composerRef ?? internalTextareaRef;
 
@@ -161,9 +167,50 @@ export function ChatInterface({
     context.kind !== "repository" &&
     context.kind !== "chat";
 
+  const {
+    viewportRef,
+    contentRef,
+    hasContentBelow,
+    isFollowingLive,
+    revealNewTurn,
+    jumpToLatest,
+  } = useChatScroll();
+  const [announcement, setAnnouncement] = useState("");
+  const previousStreaming = useRef(isStreaming);
+  const cancelledRef = useRef(false);
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView?.({ behavior: "smooth" });
-  }, [messages]);
+    if (error) setAnnouncement(`Answer failed. ${error}`);
+    else if (!previousStreaming.current && isStreaming) {
+      cancelledRef.current = false;
+      setAnnouncement("Working on your answer.");
+    } else if (previousStreaming.current && !isStreaming) {
+      if (!cancelledRef.current) setAnnouncement("Answer complete.");
+    }
+    previousStreaming.current = isStreaming;
+  }, [error, isStreaming]);
+
+  const handleSend = useCallback(
+    (text: string) => {
+      revealNewTurn();
+      return onSend(text);
+    },
+    [onSend, revealNewTurn],
+  );
+
+  const handleCancel = useCallback(() => {
+    cancelledRef.current = true;
+    setAnnouncement("Answer stopped.");
+    onCancel();
+  }, [onCancel]);
+
+  const handleFollowUp = useCallback(
+    (text: string) => {
+      setInput(text);
+      textareaRef.current?.focus();
+    },
+    [setInput, textareaRef],
+  );
 
   const handleViewArtifact = useCallback(
     (artifact: { type: string; data: Record<string, unknown> }) => {
@@ -208,7 +255,7 @@ export function ChatInterface({
   return (
     <div className="flex h-full min-h-0 flex-col" data-chat-variant={variant}>
       {/* The one chrome row. */}
-      {(historySlot || modelSelectorSlot) && (
+      {(historySlot || totalArtifactCount > 0) && (
         <div className="flex items-center justify-between gap-2 px-[var(--page-pad)] py-2.5 border-b border-[var(--color-border-default)] shrink-0 bg-[var(--color-bg-surface)]">
           <div className="flex min-w-0 items-center gap-2">{historySlot}</div>
           <div className="flex items-center gap-2 shrink-0">
@@ -219,7 +266,7 @@ export function ChatInterface({
                 className={cn(
                   "h-8 text-xs gap-1.5 tabular-nums",
                   artifactPulse &&
-                    "animate-pulse text-[var(--color-accent-primary)]",
+                    "animate-pulse text-[var(--color-accent-secondary)]",
                 )}
                 onClick={() => setArtifactPanelOpen(true)}
               >
@@ -228,7 +275,6 @@ export function ChatInterface({
                 {totalArtifactCount}
               </Button>
             )}
-            {modelSelectorSlot}
           </div>
         </div>
       )}
@@ -241,8 +287,8 @@ export function ChatInterface({
           // Top-anchored rather than centred — vertical centring would need a
           // height Radix's `display:table` viewport wrapper does not pass down,
           // and the section style reads left-aligned everywhere else anyway.
-          <ScrollArea className="h-full">
-            <div className={cn("mx-auto flex max-w-2xl flex-col", variant === "dock" ? "gap-5 px-4 py-7" : "gap-10 px-[var(--page-pad)] py-14")}>
+          <ScrollArea className="h-full" viewportRef={viewportRef}>
+            <div ref={contentRef} className={cn("mx-auto flex max-w-2xl flex-col", variant === "dock" ? "gap-5 px-4 py-7" : "gap-10 px-[var(--page-pad)] py-14")}>
               <div className="space-y-4">
                 {variant !== "dock" && <BrandMark darkSrc={emptyStateLogoSrc} size={40} />}
                 <h2 className={cn("font-semibold text-[var(--color-text-primary)]", variant === "dock" ? "text-lg" : "text-[22px]")}>
@@ -268,7 +314,7 @@ export function ChatInterface({
                   {visibleSuggestions.slice(0, variant === "dock" ? 3 : undefined).map((s) => (
                     <li key={s}>
                       <button
-                        className="group flex w-full items-center gap-3 border-b border-[var(--color-border-default)] py-3 text-left text-[15px] text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-accent-primary)]"
+                        className="group flex w-full items-center gap-3 border-b border-[var(--color-border-default)] py-3 text-left text-[15px] text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)]"
                         onClick={() => handleSuggestion(s)}
                       >
                         <span className="flex-1 min-w-0">{s}</span>
@@ -281,29 +327,73 @@ export function ChatInterface({
             </div>
           </ScrollArea>
         ) : (
-          <ScrollArea className="h-full">
-            <div className={cn("mx-auto max-w-3xl", variant === "dock" ? "space-y-7 px-4 py-6" : "space-y-10 px-[var(--page-pad)] py-10")}>
-              {messages.map((m) => (
+          <ScrollArea
+            className="h-full"
+            viewportRef={viewportRef}
+            viewportClassName="[overflow-anchor:auto]"
+          >
+            <div
+              ref={contentRef}
+              className={cn(
+                "mx-auto w-full",
+                variant === "dock"
+                  ? "max-w-full space-y-6 px-4 py-5"
+                  : "max-w-[960px] space-y-10 px-[var(--page-pad)] py-10",
+              )}
+            >
+              {messages.map((m, index) => {
+                const previousAssistant = messages
+                  .slice(0, index)
+                  .reverse()
+                  .find((candidate) => candidate.role === "assistant");
+                const modelChanged = Boolean(
+                  m.role === "assistant" &&
+                  previousAssistant &&
+                  `${previousAssistant.provider ?? ""}:${previousAssistant.model ?? ""}` !==
+                    `${m.provider ?? ""}:${m.model ?? ""}`,
+                );
+                return (
                 <ChatMessage
                   key={m.id}
                   message={m}
                   repoId={repoId}
                   onViewArtifact={handleViewArtifact}
                   {...(assistantAvatarSrc ? { assistantAvatarSrc } : {})}
+                  {...(userAvatarSrc ? { userAvatarSrc } : {})}
+                  density={variant}
+                  modelChanged={modelChanged}
+                  {...(onRetry ? { onRetry } : {})}
+                  {...(onEditAndResend ? { onEditAndResend } : {})}
+                  onFollowUp={handleFollowUp}
                   {...(buildCitationHref ? { buildCitationHref } : {})}
                   {...(linkPrefix ? { linkPrefix } : {})}
                 />
-              ))}
+                );
+              })}
               {error && (
                 <div className="rounded-lg border border-[var(--color-error)]/30 bg-[var(--color-error)]/10 px-4 py-2.5 text-sm text-[var(--color-error)]">
                   {error}
                 </div>
               )}
-              <div ref={bottomRef} />
             </div>
           </ScrollArea>
         )}
+        {!isEmpty && hasContentBelow && (
+          <button
+            type="button"
+            onClick={jumpToLatest}
+            aria-pressed={isFollowingLive}
+            className="absolute bottom-3 left-1/2 z-10 inline-flex min-h-9 -translate-x-1/2 items-center gap-1.5 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] px-3 text-xs font-medium text-[var(--color-text-secondary)] shadow-[var(--shadow-sm)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          >
+            <ArrowDown className="h-3.5 w-3.5" />
+            Jump to latest
+          </button>
+        )}
       </div>
+
+      <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {announcement}
+      </span>
 
       {/* Input area. The composer keeps its elevation: it is a genuinely
           interactive surface, which is what rule 1 reserves elevation for. */}
@@ -314,7 +404,7 @@ export function ChatInterface({
           !isEmpty && "border-t border-[var(--color-border-default)]",
         )}
       >
-        <div className="max-w-3xl mx-auto">
+        <div className={cn("mx-auto w-full", variant === "dock" ? "max-w-full" : "max-w-[960px]")}>
           {sendDisabled && sendDisabledReason && (
             <div className="mb-2 rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/10 px-3 py-2 text-xs text-[var(--color-text-secondary)]">
               {sendDisabledReason}
@@ -329,15 +419,16 @@ export function ChatInterface({
           <ChatComposer
             value={input}
             onValueChange={setInput}
-            onSend={onSend}
-            onCancel={onCancel}
+            onSend={handleSend}
+            onCancel={handleCancel}
             isStreaming={isStreaming}
             placeholder={composerPlaceholder}
             disabled={sendDisabled}
             compact={variant === "dock"}
             textareaRef={textareaRef}
+            {...(modelSelectorSlot ? { footer: modelSelectorSlot } : {})}
           />
-          {isEmpty && (
+          {isEmpty && !modelSelectorSlot && (
             <p className={cn(MICRO_LABEL, "mt-2.5 text-center")}>
               Shift+Enter for newline · Enter to send
             </p>

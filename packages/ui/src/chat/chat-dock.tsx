@@ -256,7 +256,7 @@ export function ChatDock({
           }
           className="group flex min-h-11 items-center gap-2 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] py-1.5 pl-1.5 pr-3 shadow-[var(--shadow-md)] outline-none transition-[border-color,box-shadow,transform] hover:border-[var(--color-border-hover)] hover:shadow-[var(--shadow-lg)] focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] motion-safe:hover:-translate-y-px motion-reduce:transition-none"
         >
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-accent-muted)]">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-bg-elevated)]">
             <BrandMark
               darkSrc={owlDarkSrc}
               lightSrc={owlLightSrc}
@@ -274,7 +274,7 @@ export function ChatDock({
                   "block h-1.5 w-1.5 rounded-full",
                   isStreaming
                     ? "bg-[var(--color-text-tertiary)] motion-safe:animate-pulse"
-                    : "bg-[var(--color-accent-primary)]",
+                    : "bg-[var(--color-accent-secondary)]",
                 )}
               />
             </span>
@@ -351,7 +351,7 @@ export function ChatDock({
               setDraft(suggestion);
               compactTextareaRef.current?.focus();
             }}
-            className="mt-2 block max-w-full truncate rounded-md px-1 py-1 text-left text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="mt-2 block max-w-full truncate rounded-md px-1 py-1 text-left text-xs text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
           >
             <span className="mr-1.5 text-[var(--color-text-tertiary)]">Try</span>
             {suggestion}
@@ -376,7 +376,7 @@ export function ChatDock({
     >
       <DialogPrimitive.Portal>
         {isMobile && (
-          <DialogPrimitive.Overlay className="fixed inset-0 z-[var(--z-modal)] bg-black/40" />
+          <DialogPrimitive.Overlay className="fixed inset-0 z-[var(--z-modal)] bg-[color-mix(in_srgb,var(--color-bg-root)_72%,transparent)]" />
         )}
         <DialogPrimitive.Content
           style={expandedDockStyle}
@@ -384,7 +384,7 @@ export function ChatDock({
           onInteractOutside={(event) => {
             if (!isMobile) event.preventDefault();
           }}
-          className="fixed inset-x-0 bottom-0 z-[var(--z-modal)] flex h-[min(88dvh,760px)] flex-col overflow-hidden rounded-t-2xl border-t border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] pb-[env(safe-area-inset-bottom)] shadow-[var(--shadow-xl)] outline-none md:inset-x-auto md:bottom-[max(var(--chat-dock-bottom-offset),env(safe-area-inset-bottom))] md:right-[max(1rem,env(safe-area-inset-right))] md:w-[min(480px,calc(100vw-2rem))] md:rounded-2xl md:border"
+          className="fixed inset-x-0 bottom-0 z-[var(--z-modal)] flex h-[min(88dvh,760px)] flex-col overflow-hidden rounded-t-2xl border-t border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] pb-[env(safe-area-inset-bottom)] shadow-[var(--shadow-xl)] outline-none md:inset-x-auto md:bottom-[max(var(--chat-dock-bottom-offset),env(safe-area-inset-bottom))] md:right-[max(1rem,env(safe-area-inset-right))] md:w-[min(520px,calc(100vw-2rem))] md:rounded-2xl md:border xl:w-[min(580px,calc(100vw-2rem))]"
         >
           <DialogPrimitive.Title className="sr-only">
             Repository chat
@@ -393,7 +393,7 @@ export function ChatDock({
             <div className="h-1 w-10 rounded-full bg-[var(--color-border-hover)]" />
           </div>
           <header className="flex min-w-0 items-center gap-2 border-b border-[var(--color-border-default)] px-3 py-2">
-            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-accent-muted)]">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-bg-elevated)]">
               <BrandMark darkSrc={owlDarkSrc} lightSrc={owlLightSrc} size={25} alt="" />
             </span>
             <div className="min-w-0 flex-1">
@@ -408,7 +408,7 @@ export function ChatDock({
               <button
                 type="button"
                 onClick={onOpenFullChat}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
               >
                 <MessageCircle className="h-3.5 w-3.5" />
                 Full chat
