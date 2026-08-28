@@ -18,6 +18,7 @@ from repowise.core.analysis.dead_code.file_reachability import (
 from repowise.core.ids import file_path_of, is_external
 from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
 
+from ...co_change import parse_partners
 from ..categories import file_category
 from ..entry_points import orientation_entry_points, rank_entry_point_paths
 from ..models import GenerationConfig
@@ -630,7 +631,6 @@ class ContextAssembler:
         empty when there is no git metadata, so a repository indexed without
         history renders none of it rather than a fabricated health line.
         """
-        import json as _json
         from collections import Counter
 
         if not git_meta_map:
@@ -651,22 +651,11 @@ class ContextAssembler:
         # another module. History coupling the import graph never shows.
         coupled: Counter[str] = Counter()
         for m in metas:
-            raw = m.get("co_change_partners_json") or "[]"
-            try:
-                partners = _json.loads(raw) if isinstance(raw, str) else raw
-            except Exception:
-                partners = []
-            for p in partners:
-                # Co-change entries are dicts keyed by ``file_path`` (see
-                # git_indexer/co_change.py); tolerate a bare string too.
-                partner_path = (p.get("file_path") or p.get("path")) if isinstance(p, dict) else p
-                if (
-                    isinstance(partner_path, str)
-                    and partner_path
-                    and partner_path not in member_set
-                ):
-                    module = partner_path.rsplit("/", 1)[0] if "/" in partner_path else partner_path
-                    coupled[module] += 1
+            for p in parse_partners(m.get("co_change_partners_json")):
+                if p.file_path in member_set:
+                    continue
+                module = p.file_path.rsplit("/", 1)[0] if "/" in p.file_path else p.file_path
+                coupled[module] += 1
         coupled_modules = [{"path": path, "count": count} for path, count in coupled.most_common(5)]
 
         bugfix_total = sum(int(m.get("prior_defect_count") or 0) for m in metas)
@@ -1031,12 +1020,7 @@ class ContextAssembler:
         if len(sig_commits) >= 8:
             return "thorough"
 
-        co_json = git_meta.get("co_change_partners_json", "[]")
-        try:
-            co_partners = _json.loads(co_json) if isinstance(co_json, str) else co_json
-        except Exception:
-            co_partners = []
-        if co_partners:
+        if parse_partners(git_meta.get("co_change_partners_json")):
             return "thorough"
 
         # Downgrade conditions

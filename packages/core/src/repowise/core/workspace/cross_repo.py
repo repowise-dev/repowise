@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from ..co_change import CO_CHANGE_DECAY_TAU
 from ..fsutils import atomic_write_text
 from .config import WorkspaceConfig, ensure_workspace_data_dir
 
@@ -37,9 +38,6 @@ CROSS_REPO_EDGES_FILENAME = "cross_repo_edges.json"
 # discards older versions so stale scores never reach consumers that assume
 # the new semantics (v2: strength became a bounded [0,1) session share).
 _OVERLAY_VERSION: int = 2
-
-# Same decay constant as intra-repo co-change (git_indexer.py)
-_CO_CHANGE_DECAY_TAU: float = 180.0
 
 _DEFAULT_TIME_WINDOW_HOURS: int = 24
 _DEFAULT_COMMIT_LIMIT: int = 500
@@ -467,7 +465,7 @@ def detect_cross_repo_co_changes(
         for session in _build_sessions(tagged_commits, window_seconds):
             last_ts = max(c.timestamp for _, c in session)
             age_days = max((now_ts - last_ts) / 86400.0, 0.0)
-            weight = math.exp(-age_days / _CO_CHANGE_DECAY_TAU)
+            weight = math.exp(-age_days / CO_CHANGE_DECAY_TAU)
 
             # Files per repo for this session, with how many of the
             # session's commits touched each one

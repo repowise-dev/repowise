@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from repowise.core.ingestion.git_indexer import GitIndexer
+from repowise.core.ingestion.git_indexer.co_change import compute_co_changes_and_entropy
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -154,8 +155,6 @@ class TestCoChangeDetection:
     """Files changed together >= 3 times are detected as co-change partners."""
 
     def test_co_change_detection(self) -> None:
-        indexer = GitIndexer("/tmp/repo")
-
         mock_repo = MagicMock()
         all_files = {"a.py", "b.py", "c.py"}
 
@@ -174,7 +173,9 @@ class TestCoChangeDetection:
         )
         mock_repo.git.log.return_value = raw_log
 
-        result = indexer._compute_co_changes(mock_repo, all_files, commit_limit=500, min_count=3)
+        result, _entropy = compute_co_changes_and_entropy(
+            mock_repo, all_files, commit_limit=500, min_count=3
+        )
 
         # a.py <-> b.py should appear (co-changed 4 times, >= min_count=3)
         assert "a.py" in result
@@ -958,8 +959,6 @@ class TestCoChangeBelowThresholdSkipped:
     """Pairs with co-change count < min_count are not stored."""
 
     def test_co_change_below_threshold_skipped(self) -> None:
-        indexer = GitIndexer("/tmp/repo")
-
         mock_repo = MagicMock()
         all_files = {"x.py", "y.py", "z.py"}
 
@@ -975,7 +974,9 @@ class TestCoChangeBelowThresholdSkipped:
         )
         mock_repo.git.log.return_value = raw_log
 
-        result = indexer._compute_co_changes(mock_repo, all_files, commit_limit=500, min_count=3)
+        result, _entropy = compute_co_changes_and_entropy(
+            mock_repo, all_files, commit_limit=500, min_count=3
+        )
 
         # No pairs should appear since none reach min_count=3
         assert result == {}

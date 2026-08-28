@@ -17,7 +17,6 @@ to ``None`` / empty rather than 500-ing the page.
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
@@ -27,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import Integer, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.co_change import parse_partners
 from repowise.core.ingestion.git_indexer import build_identity_resolver
 from repowise.core.ingestion.git_indexer.agent_provenance import agent_from_identity
 from repowise.core.persistence import crud
@@ -728,15 +728,9 @@ async def _records(
     # Strongest hidden coupling pair (max co-change count across files)
     best_pair: dict[str, Any] | None = None
     for m in all_meta:
-        try:
-            partners = json.loads(m.co_change_partners_json or "[]")
-        except Exception:
-            continue
-        for p in partners:
-            count = p.get("co_change_count", 0)
-            other = p.get("file_path") or p.get("partner")
-            if other and (best_pair is None or count > best_pair["count"]):
-                best_pair = {"a": m.file_path, "b": other, "count": count}
+        for p in parse_partners(m.co_change_partners_json):
+            if best_pair is None or p.weight > best_pair["count"]:
+                best_pair = {"a": m.file_path, "b": p.file_path, "count": p.weight}
     if best_pair and best_pair["count"] > 0:
         out["strongest_coupling"] = best_pair
 

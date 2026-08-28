@@ -37,9 +37,9 @@ from ...ingestion.git_indexer.function_blame import (
 from ...ingestion.package_roots import module_for as _module_for
 from ...ingestion.package_roots import package_roots_from_paths as _package_roots
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
+from ..graph_view import HasEdge, ImportEdgeView
 from ..test_reachability import files_reached_by_tests
 from .biomarkers import FileContext, detect_all
-from .biomarkers.base import HasEdge
 from .complexity import FileComplexity, FunctionComplexity, walk_file
 from .coverage import is_test_file as _coverage_is_test_file
 from .dataflow import FileDataflowCache
@@ -150,32 +150,6 @@ def _read_source_lines(abs_path: str) -> list[str] | None:
     except OSError:
         return None
     return text.splitlines()
-
-
-class _ImportEdgeView:
-    """Thin ``HasEdge`` adapter over a NetworkX DiGraph.
-
-    The graph stores ``edge_type`` as an attribute on each (single)
-    edge between two file nodes. We look it up directly rather than
-    pulling NetworkX into the biomarker test surface.
-    """
-
-    __slots__ = ("_graph",)
-
-    def __init__(self, graph: Any) -> None:
-        self._graph = graph
-
-    def has_edge(self, src: str, dst: str, key: str = "imports") -> bool:
-        g = self._graph
-        if g is None:
-            return False
-        try:
-            if not g.has_edge(src, dst):
-                return False
-            data = g.get_edge_data(src, dst) or {}
-        except Exception:
-            return False
-        return data.get("edge_type") == key
 
 
 def _percentile_p80(counts: list[int]) -> int | None:
@@ -463,7 +437,7 @@ class HealthAnalyzer:
         path_basenames = _path_basenames(analyzed_paths)
         package_roots = self._package_boundaries(analyzed_paths)
         repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
-        graph_view: HasEdge | None = _ImportEdgeView(self.graph) if self.graph is not None else None
+        graph_view: HasEdge | None = ImportEdgeView(self.graph) if self.graph is not None else None
 
         # Duplication runs once, up-front, so each file biomarker can see
         # its clone list. Cheap when the repo is small; when disabled
@@ -647,7 +621,7 @@ class HealthAnalyzer:
         path_basenames = _path_basenames(analyzed_paths)
         package_roots = self._package_boundaries(analyzed_paths)
         repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
-        graph_view: HasEdge | None = _ImportEdgeView(self.graph) if self.graph is not None else None
+        graph_view: HasEdge | None = ImportEdgeView(self.graph) if self.graph is not None else None
 
         # Duplication is only consumed by the biomarker stage, so it can
         # overlap with the pre-walk instead of blocking it — on large

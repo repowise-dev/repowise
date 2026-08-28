@@ -32,7 +32,7 @@ from ._constants import (
 
 logger = structlog.get_logger(__name__)
 
-__all__ = ["compute_co_changes", "compute_co_changes_and_entropy"]
+__all__ = ["compute_co_changes_and_entropy"]
 
 
 def compute_co_changes_and_entropy(
@@ -187,23 +187,3 @@ def compute_co_changes_and_entropy(
     )
 
     return dict(result), entropy
-
-
-def compute_co_changes(
-    repo: Any,
-    all_files: set[str],
-    commit_limit: int = _DEFAULT_CO_CHANGE_COMMIT_LIMIT,
-    min_count: int = _DEFAULT_CO_CHANGE_MIN_COUNT,
-    on_commit_done: Callable[[], None] | None = None,
-    on_co_change_start: Callable[[int], None] | None = None,
-) -> dict[str, list[dict]]:
-    """Co-change-only wrapper over :func:`compute_co_changes_and_entropy`.
-
-    Preserves the historical signature for the instance shim and existing
-    tests. Production indexing calls the combined function directly so the
-    single ``git log`` walk feeds both signals.
-    """
-    co_changes, _entropy = compute_co_changes_and_entropy(
-        repo, all_files, commit_limit, min_count, on_commit_done, on_co_change_start
-    )
-    return co_changes

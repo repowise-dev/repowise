@@ -10,6 +10,7 @@ import contextlib
 import re
 from typing import Any
 
+from ...co_change import CO_CHANGE_DECAY_TAU, MIN_CO_CHANGE_WEIGHT
 from ..languages.registry import REGISTRY as _LANG_REGISTRY
 
 # Silence GitPython's _CatFileContentStream.__del__ ValueError spam.
@@ -143,7 +144,7 @@ _DEFAULT_CO_CHANGE_COMMIT_LIMIT: int = 2000
 # stable services) that produced empty co-change tables. Two recent
 # co-changes is enough signal to surface in the UI, and the dashboard
 # already sorts partners by weight so the ranking is unaffected.
-_DEFAULT_CO_CHANGE_MIN_COUNT: int = 2
+_DEFAULT_CO_CHANGE_MIN_COUNT: int = MIN_CO_CHANGE_WEIGHT
 
 # Commits that touch a very large number of files (mass renames,
 # copyright header sweeps, code-mod runs) produce O(N^2) pairs and
@@ -336,7 +337,7 @@ def classify_commit_category(subject: str) -> str:
 
 
 # Co-change temporal decay: half-life ~125 days (lambda for exp(-t/tau)).
-_CO_CHANGE_DECAY_TAU: float = 180.0
+_CO_CHANGE_DECAY_TAU: float = CO_CHANGE_DECAY_TAU
 
 # Hotspot temporal decay: half-life for exponentially weighted churn score.
 HOTSPOT_HALFLIFE_DAYS: float = 180.0

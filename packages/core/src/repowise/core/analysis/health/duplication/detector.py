@@ -20,7 +20,6 @@ size.
 
 from __future__ import annotations
 
-import json
 import time
 from collections import defaultdict
 from collections.abc import Iterable
@@ -31,6 +30,7 @@ from typing import Any
 import structlog
 
 from repowise.core.cancellation import check_cancelled
+from repowise.core.co_change import parse_partners
 
 from .limits import DuplicationDiagnostics, DuplicationLimits, looks_minified
 from .rabin_karp import WindowHash, index_by_hash, rolling_hashes
@@ -56,7 +56,7 @@ class ClonePair:
     b_start_line: int
     b_end_line: int
     token_count: int
-    co_change_count: int = 0  # 0 when files don't share co-change history
+    co_change_count: float = 0.0  # 0 when files don't share co-change history
 
     @property
     def is_intra_file(self) -> bool:
@@ -93,42 +93,25 @@ def _read_source(abs_path: str) -> bytes | None:
         return None
 
 
-def _parse_co_change_partners(meta: dict[str, Any]) -> dict[str, int]:
-    raw = meta.get("co_change_partners_json")
-    if not raw:
-        return {}
-    try:
-        partners = json.loads(raw)
-    except (TypeError, ValueError):
-        return {}
-    out: dict[str, int] = {}
-    for p in partners:
-        if not isinstance(p, dict):
-            continue
-        path = p.get("file_path") or p.get("path")
-        count = p.get("co_change_count") or p.get("count") or 0
-        if not path:
-            continue
-        try:
-            out[str(path)] = int(count)
-        except (TypeError, ValueError):
-            continue
-    return out
+def _partner_weight(meta: dict[str, Any], partner_path: str) -> float:
+    """The decayed co-change weight *meta*'s file carries for *partner_path*."""
+    for p in parse_partners(meta.get("co_change_partners_json")):
+        if p.file_path == partner_path:
+            return p.weight
+    return 0.0
 
 
 def _co_change_score(
     file_a: str,
     file_b: str,
     git_meta_map: dict[str, dict[str, Any]],
-) -> int:
+) -> float:
     """Bidirectional max — co-change matrices are stored per file, but
     the same pair shows up from both sides, sometimes with slightly
     different counts depending on the window. Take the max."""
     a_meta = git_meta_map.get(file_a, {}) or {}
     b_meta = git_meta_map.get(file_b, {}) or {}
-    from_a = _parse_co_change_partners(a_meta).get(file_b, 0)
-    from_b = _parse_co_change_partners(b_meta).get(file_a, 0)
-    return max(from_a, from_b)
+    return max(_partner_weight(a_meta, file_b), _partner_weight(b_meta, file_a))
 
 
 def _tokens_equal(

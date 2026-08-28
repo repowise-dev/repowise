@@ -14,7 +14,6 @@ co_change_partners_json field stored in git_metadata rows.
 
 from __future__ import annotations
 
-import json
 import math
 import os
 from collections import Counter, defaultdict
@@ -25,6 +24,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.risk_semantics import structural_impact_contract
+from repowise.core.co_change import parse_partners
 from repowise.core.exclusion import build_exclude_spec, is_excluded
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence.models import GitMetadata, GraphNode, Repository
@@ -318,11 +318,9 @@ class PRBlastRadiusAnalyzer:
 
         warnings = []
         for meta in res.scalars().all():
-            partners = json.loads(meta.co_change_partners_json or "[]")
-            for partner in partners:
-                partner_path = partner.get("file_path") or partner.get("path") or ""
-                score = float(partner.get("co_change_count") or partner.get("count") or 0)
-                if partner_path and partner_path not in changed_set:
+            for partner in parse_partners(meta.co_change_partners_json):
+                partner_path, score = partner.file_path, partner.weight
+                if partner_path not in changed_set:
                     warnings.append(
                         {
                             "changed": meta.file_path,
@@ -333,8 +331,8 @@ class PRBlastRadiusAnalyzer:
                             "evidence_kind": "historical",
                             "provenance": "git_history",
                             **(
-                                {"support": partner["frequency"]}
-                                if partner.get("frequency") is not None
+                                {"support": partner.record["frequency"]}
+                                if partner.record.get("frequency") is not None
                                 else {}
                             ),
                         }

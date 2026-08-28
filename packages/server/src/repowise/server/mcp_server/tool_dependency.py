@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.co_change import parse_partners
 from repowise.core.ingestion.models import TEMPORAL_EDGE_TYPES
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -142,14 +142,12 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
                 )
             )
             src_meta = src_res.scalar_one_or_none()
-            if src_meta and src_meta.co_change_partners_json:
-                partners = json.loads(src_meta.co_change_partners_json)
-                for p in partners:
-                    partner_path = p.get("file_path", "")
-                    if partner_path == target:
+            if src_meta:
+                for p in parse_partners(src_meta.co_change_partners_json):
+                    if p.file_path == target:
                         result_data["co_change_signal"] = {
-                            "co_change_count": p.get("co_change_count", 0),
-                            "last_co_change": p.get("last_co_change"),
+                            "co_change_count": p.weight,
+                            "last_co_change": p.last_co_change,
                             "note": (
                                 "No import dependency, but these files co-change "
                                 "frequently — likely logical coupling."

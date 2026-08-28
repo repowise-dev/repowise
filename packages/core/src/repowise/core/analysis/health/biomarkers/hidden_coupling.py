@@ -16,16 +16,14 @@ Fires when:
   co-change)
 
 Tier-aware: when ``co_change_partners_json`` is empty (ESSENTIAL git
-tier, plan §1.2.1) the detector short-circuits to zero findings. The
-empty short-circuit is explicit so backfill behavior is testable.
+tier) the detector short-circuits to zero findings. The empty
+short-circuit is explicit so backfill behavior is testable.
 """
 
 from __future__ import annotations
 
-import json
-from typing import Any
-
-from ....test_paths import is_test_related_path
+from ....co_change import parse_partners
+from ....test_paths import is_test_to_production_pair
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -43,29 +41,6 @@ _MAX_FINDINGS_PER_FILE = 3
 _MIN_CO_CHANGE_FOR_HIGH = 8
 
 
-def _parse_partners(meta: dict[str, Any]) -> dict[str, int]:
-    raw = meta.get("co_change_partners_json")
-    if not raw:
-        return {}
-    try:
-        partners = json.loads(raw)
-    except (TypeError, ValueError):
-        return {}
-    out: dict[str, int] = {}
-    for p in partners:
-        if not isinstance(p, dict):
-            continue
-        path = p.get("file_path") or p.get("path")
-        count = p.get("co_change_count") or p.get("count") or 0
-        if not path:
-            continue
-        try:
-            out[str(path)] = int(count)
-        except (TypeError, ValueError):
-            continue
-    return out
-
-
 def _as_int(value: object, default: int = 0) -> int:
     try:
         return int(value or 0)  # type: ignore[arg-type]
@@ -73,7 +48,7 @@ def _as_int(value: object, default: int = 0) -> int:
         return default
 
 
-def _severity_for(correlation: float, co_count: int) -> Severity:
+def _severity_for(correlation: float, co_count: float) -> Severity:
     # Confidence-weight by absolute sample size: below the co-change floor the
     # ratio isn't trustworthy enough to assert HIGH/CRITICAL, so cap at MEDIUM.
     if co_count < _MIN_CO_CHANGE_FOR_HIGH:
@@ -91,8 +66,8 @@ class HiddenCouplingDetector:
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         meta = ctx.git_meta or {}
-        partners = _parse_partners(meta)
-        # Explicit ESSENTIAL-tier short-circuit (plan §1.2.1).
+        partners = parse_partners(meta.get("co_change_partners_json"))
+        # Explicit ESSENTIAL-tier short-circuit.
         if not partners:
             return []
 
@@ -100,12 +75,12 @@ class HiddenCouplingDetector:
         if total_self < _MIN_COMMITS:
             return []
 
-        self_is_test = is_test_related_path(ctx.file_path, ctx.language)
         graph = ctx.graph_view
         counts = ctx.repo_commit_counts or {}
 
-        candidates: list[tuple[float, str, int]] = []
-        for partner_path, co_count in partners.items():
+        candidates: list[tuple[float, str, float]] = []
+        for partner in partners:
+            partner_path, co_count = partner.file_path, partner.weight
             if partner_path == ctx.file_path:
                 continue
             partner_total = counts.get(partner_path, 0)
@@ -117,11 +92,11 @@ class HiddenCouplingDetector:
             correlation = co_count / denom
             if correlation < _MIN_CORRELATION:
                 continue
-            # Skip test ↔ production pairings — expected to co-change. The
-            # partner is a bare path from the co-change record and ``graph_view``
-            # exposes only ``has_edge``, so there is no node to read its stored
-            # flag from and no language to pass; the path rules are all we have.
-            if self_is_test ^ is_test_related_path(partner_path):
+            # Test ↔ production pairs are expected to co-change, so they carry
+            # no finding.
+            if is_test_to_production_pair(
+                ctx.file_path, partner_path, code_language=ctx.language
+            ):
                 continue
             # Skip when an explicit import edge already documents the
             # coupling.
@@ -150,13 +125,13 @@ class HiddenCouplingDetector:
                     details={
                         "partner": partner_path,
                         "correlation": round(correlation, 3),
-                        "co_change_count": co_count,
+                        "co_change_count": round(co_count, 2),
                         "self_commits": total_self,
                         "partner_commits": counts.get(partner_path, 0),
                     },
                     reason=(
                         f"{partner_path} co-changes with this file "
-                        f"{co_count} times ({correlation:.0%} of shared "
+                        f"{round(co_count, 2)} times ({correlation:.0%} of shared "
                         "commits) but no static dependency exists"
                     ),
                 )

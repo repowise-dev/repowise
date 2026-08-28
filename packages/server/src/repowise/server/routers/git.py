@@ -33,6 +33,7 @@ from repowise.core.analysis.change_risk import (
     scores_excluding,
 )
 from repowise.core.analysis.risk_semantics import change_risk_authority
+from repowise.core.co_change import parse_partners
 from repowise.core.ingestion.git_indexer._constants import (
     EVOLUTION_CATEGORIES,
     classify_commit_category,
@@ -609,8 +610,11 @@ async def get_co_changes(
     if meta is None:
         raise HTTPException(status_code=404, detail="Git metadata not found")
 
-    partners = json.loads(meta.co_change_partners_json)
-    filtered = [p for p in partners if p.get("co_change_count", 0) >= min_count]
+    filtered = [
+        p.record
+        for p in parse_partners(meta.co_change_partners_json)
+        if p.weight >= min_count
+    ]
 
     return {
         "file_path": file_path,

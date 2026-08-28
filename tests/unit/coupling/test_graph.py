@@ -131,3 +131,17 @@ def test_empty_inputs() -> None:
     assert g.nodes == []
     assert g.edges == []
     assert g.total_edges == 0
+
+
+def test_a_bare_string_partner_does_not_crash_the_join() -> None:
+    """A non-record element must not reach ``.get`` and raise out of the route."""
+    metrics = [_Metric("a.py"), _Metric("b.py")]
+    git = {
+        "a.py": _Git(
+            co_change_partners_json=json.dumps(
+                ["b.py", {"file_path": "b.py", "co_change_count": 4.0, "last_co_change": None}]
+            )
+        )
+    }
+    g = coupling_graph(metrics, git)
+    assert g.edges == [CouplingEdge("a.py", "b.py", 4.0, None)]

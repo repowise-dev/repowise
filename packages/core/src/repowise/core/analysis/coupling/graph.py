@@ -17,7 +17,8 @@ Honesty rules:
 
 * Co-change is a *temporal* hint (files committed together), not a verified
   code dependency -- the strength is the decay-weighted count the indexer
-  already thresholds (``>= 0.5``); we surface it verbatim and never invent one.
+  already thresholds (``MIN_CO_CHANGE_WEIGHT``); we surface it verbatim and
+  never invent one.
 * We do **not** fabricate a "strengthening / weakening" trend: co-change history
   is not snapshotted, so a trend is not derivable. ``strength`` (magnitude) and
   ``last_co_change`` (recency) are the only honest encodings.
@@ -28,9 +29,10 @@ Honesty rules:
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Protocol
+
+from ...co_change import canonical_pair, parse_partners
 
 
 class MetricLike(Protocol):
@@ -99,21 +101,6 @@ class CouplingGraph:
     total_edges: int
 
 
-def _parse_partners(raw: str | None) -> list[dict]:
-    """Parse a ``co_change_partners_json`` cell, tolerating absent/bad JSON.
-
-    Mirrors the defensive parsing in :mod:`analysis.health.trends`: a malformed
-    cell yields no partners rather than raising.
-    """
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(raw)
-    except (ValueError, TypeError):
-        return []
-    return parsed if isinstance(parsed, list) else []
-
-
 def coupling_graph(
     metrics: list[MetricLike],
     git_meta_by_path: dict[str, GitMetaLike],
@@ -138,18 +125,12 @@ def coupling_graph(
     # Deduplicate symmetric partner records into undirected edges.
     best: dict[tuple[str, str], tuple[float, str | None]] = {}
     for src, meta in git_meta_by_path.items():
-        for partner in _parse_partners(meta.co_change_partners_json):
-            dst = partner.get("file_path")
-            if not dst or dst == src:
+        for partner in parse_partners(meta.co_change_partners_json):
+            dst = partner.file_path
+            if dst == src or partner.weight <= 0:
                 continue
-            try:
-                strength = float(partner.get("co_change_count") or 0.0)
-            except (ValueError, TypeError):
-                continue
-            if strength <= 0:
-                continue
-            last = partner.get("last_co_change")
-            key = (src, dst) if src < dst else (dst, src)
+            strength, last = partner.weight, partner.last_co_change
+            key = canonical_pair(src, dst)
             prev = best.get(key)
             if prev is None:
                 best[key] = (strength, last)

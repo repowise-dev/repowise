@@ -297,3 +297,16 @@ def is_test_related_path(path: str, language: str | None = None) -> bool:
     search should prefer :func:`is_test_path`, so fixtures stay findable.
     """
     return _classify(path, language) != ""
+
+
+def is_test_to_production_pair(
+    code_path: str, partner_path: str, *, code_language: str | None = None
+) -> bool:
+    """Whether exactly one of the two paths is test material.
+
+    A test and the code it covers are supposed to change together, so a signal
+    derived from history has nothing to say about such a pair. *partner_path*
+    takes no language because callers reach this from a bare path recorded
+    against another file, with no node to read a stored flag from.
+    """
+    return is_test_related_path(code_path, code_language) ^ is_test_related_path(partner_path)

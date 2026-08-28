@@ -22,9 +22,9 @@ detector emits nothing.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
+from ....co_change import parse_partners
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -35,24 +35,8 @@ _MIN_COMMITS_90D = 3
 
 
 def _count_scatter(meta: dict[str, Any]) -> int:
-    raw = meta.get("co_change_partners_json")
-    if not raw:
-        return 0
-    try:
-        partners = json.loads(raw)
-    except (TypeError, ValueError):
-        return 0
-    scatter = 0
-    for p in partners:
-        if not isinstance(p, dict):
-            continue
-        weight = p.get("co_change_count") or p.get("count") or 0
-        try:
-            if float(weight) >= _MIN_PARTNER_WEIGHT:
-                scatter += 1
-        except (TypeError, ValueError):
-            continue
-    return scatter
+    partners = parse_partners(meta.get("co_change_partners_json"))
+    return sum(1 for p in partners if p.weight >= _MIN_PARTNER_WEIGHT)
 
 
 def _as_int(value: object, default: int = 0) -> int:

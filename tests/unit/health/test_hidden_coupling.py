@@ -22,14 +22,14 @@ class _FakeGraph:
         return (src, dst, key) in self._edges
 
 
-def _partners(d: dict[str, int]) -> str:
+def _partners(d: dict[str, float]) -> str:
     return json.dumps([{"file_path": p, "co_change_count": c} for p, c in d.items()])
 
 
 def _ctx(
     path: str,
     *,
-    partners: dict[str, int],
+    partners: dict[str, float],
     self_commits: int,
     repo_commits: dict[str, int],
     graph: _FakeGraph | None = None,
@@ -215,3 +215,29 @@ def test_pair_dedupes_naturally_by_frozenset():
         frozenset({b.file_path, out_b[0].details["partner"]}),
     }
     assert pairs == {frozenset({"src/a.py", "src/b.py"})}
+
+
+def test_fractional_weight_is_not_truncated_before_the_correlation():
+    """The weight is a decayed sum, and the correlation divides by it. Dropping
+    the fraction moves 8.9/11 from 0.81 to 0.73 -- across the critical band."""
+    ctx = _ctx(
+        "src/payments.py",
+        partners={"src/billing.py": 8.9},
+        self_commits=11,
+        repo_commits={"src/billing.py": 11},
+    )
+    (finding,) = HiddenCouplingDetector().detect(ctx)
+    assert finding.severity is Severity.CRITICAL
+    assert finding.details["co_change_count"] == 8.9
+
+
+def test_fractional_weight_can_be_the_whole_finding():
+    """5.9/11 is 0.54 and clears the correlation floor; truncated to 5 it is
+    0.45 and the finding disappears entirely."""
+    ctx = _ctx(
+        "src/payments.py",
+        partners={"src/billing.py": 5.9},
+        self_commits=11,
+        repo_commits={"src/billing.py": 11},
+    )
+    assert len(HiddenCouplingDetector().detect(ctx)) == 1

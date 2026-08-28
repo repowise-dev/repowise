@@ -7,6 +7,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from repowise.core.co_change import parse_partners
 from repowise.server.schemas.risk_semantics import RiskAuthority
 
 
@@ -78,7 +79,10 @@ class GitMetadataResponse(BaseModel):
             recent_owner_commit_pct=obj.recent_owner_commit_pct,  # type: ignore[attr-defined]
             top_authors=json.loads(obj.top_authors_json),  # type: ignore[attr-defined]
             significant_commits=json.loads(obj.significant_commits_json),  # type: ignore[attr-defined]
-            co_change_partners=json.loads(obj.co_change_partners_json),  # type: ignore[attr-defined]
+            co_change_partners=[
+                p.record
+                for p in parse_partners(obj.co_change_partners_json)  # type: ignore[attr-defined]
+            ],
             is_hotspot=obj.is_hotspot,  # type: ignore[attr-defined]
             is_stable=obj.is_stable,  # type: ignore[attr-defined]
             # Normalize 0-1 -> 0-100 to match the rest of the HTTP API.

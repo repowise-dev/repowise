@@ -7,10 +7,9 @@ framework-mediated wiring.
 
 from __future__ import annotations
 
-import json
-
 import structlog
 
+from ...co_change import canonical_pair, parse_partners
 from ..resolvers import ResolverContext
 from ..resolvers.go import read_go_module_path, read_go_modules
 from ._stem import build_stem_map
@@ -27,24 +26,14 @@ class EdgesMixin:
         seen: set[tuple[str, str]] = set()
 
         for file_path, meta in git_meta_map.items():
-            co_json = meta.get("co_change_partners_json", "[]")
-            if isinstance(co_json, str):
-                try:
-                    partners = json.loads(co_json)
-                except Exception:
-                    partners = []
-            else:
-                partners = co_json
-
-            for partner in partners:
-                partner_path = partner.get("file_path", "")
-                co_count = partner.get("co_change_count", 0)
+            for partner in parse_partners(meta.get("co_change_partners_json")):
+                partner_path, co_count = partner.file_path, partner.weight
                 if co_count < min_count:
                     continue
                 if partner_path not in self._graph:
                     continue
 
-                pair = tuple(sorted([file_path, partner_path]))
+                pair = canonical_pair(file_path, partner_path)
                 if pair in seen:
                     continue
                 seen.add(pair)
