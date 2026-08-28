@@ -203,4 +203,14 @@ describe("useChat lifecycle", () => {
     expect(result.current.messages).toEqual([]);
     expect(result.current.conversationId).toBeNull();
   });
+
+  it("stores artifact mutations outside transcript messages", () => {
+    const { result } = renderHook(() => useChat("r1"));
+    const artifact = { id: "a1", version: 1 as const, type: "risk", tool_name: "get_risk", presentation: "risk", pinned: true, data: {} };
+    const messages = result.current.messages;
+    act(() => result.current.replaceArtifact(artifact));
+    expect(result.current.artifactOverrides.a1).toEqual(artifact);
+    expect(result.current.messages).toBe(messages);
+  });
+
 });

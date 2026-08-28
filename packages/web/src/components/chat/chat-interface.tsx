@@ -5,12 +5,12 @@ import useSWR from "swr";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ChatInterface as ChatInterfaceShell } from "@repowise-dev/ui/chat/chat-interface";
-import { useChatDraft } from "@repowise-dev/ui/chat";
+import { getArtifactSourceTarget, useChatDraft } from "@repowise-dev/ui/chat";
 import { pageHref } from "@/lib/utils/page-href";
 import { getProviders } from "@/lib/api/providers";
 import { getRepoStats } from "@/lib/api/repos";
-import { forkConversation } from "@/lib/api/chat";
-import type { ChatUIMessage } from "@repowise-dev/types/chat";
+import { forkConversation, setConversationArtifactPinned } from "@/lib/api/chat";
+import type { ChatArtifact, ChatUIMessage } from "@repowise-dev/types/chat";
 import { ModelSelector } from "./model-selector";
 import { ConversationHistory } from "./conversation-history";
 import { useRepositoryChat } from "./repository-chat-provider";
@@ -46,11 +46,17 @@ export function ChatInterface({
     selectedProvider,
     selectedModel,
     selectModel,
+    artifactOverrides,
+    replaceArtifact,
   } = useRepositoryChat();
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
+  const searchParamsRef = useRef(searchParams);
+  searchParamsRef.current = searchParams;
   const urlConversationId = searchParams.get("conversation");
+  const activeArtifactId = searchParams.get("artifact");
+  const compareArtifactId = searchParams.get("compare");
   const [draft, setDraft] = useChatDraft(
     `repowise:chat-draft:${repoId}:${urlConversationId ?? conversationId ?? "new"}`,
   );
@@ -132,6 +138,27 @@ export function ChatInterface({
     router.push(`${pathname}?conversation=${encodeURIComponent(fork.id)}`);
     await sendWithConversationModel(text);
   }, [conversationId, loadConversation, pathname, repoId, router, sendWithConversationModel]);
+  const updateArtifactUrl = useCallback((key: "artifact" | "compare", artifactId: string | null) => {
+    const next = new URLSearchParams(searchParamsRef.current.toString());
+    if (artifactId) next.set(key, artifactId);
+    else {
+      next.delete(key);
+      if (key === "artifact") next.delete("compare");
+    }
+    const query = next.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname);
+  }, [pathname, router]);
+  const pinArtifact = useCallback(async (artifact: ChatArtifact, pinned: boolean) => {
+    if (!conversationId) return;
+    replaceArtifact(await setConversationArtifactPinned(repoId, conversationId, artifact.id, pinned));
+  }, [conversationId, repoId, replaceArtifact]);
+  const navigateArtifact = useCallback((artifactId: string | null) => updateArtifactUrl("artifact", artifactId), [updateArtifactUrl]);
+  const compareArtifact = useCallback((artifactId: string | null) => updateArtifactUrl("compare", artifactId), [updateArtifactUrl]);
+  const openArtifactSource = useCallback((artifact: ChatArtifact) => {
+    const target = getArtifactSourceTarget(artifact);
+    if (target?.pageId) router.push(pageHref(repoId, target.pageId));
+    else if (target?.path) router.push(pageHref(repoId, `file_page:${target.path}`));
+  }, [repoId, router]);
 
   return (
     <div className="flex h-full min-h-0 overflow-hidden">
@@ -161,6 +188,13 @@ export function ChatInterface({
       modelSelectorSlot={<ModelSelector repoId={repoId} activeProvider={selectedProvider} activeModel={selectedModel} onSelect={selectModel} />}
       onRetry={retryMessage}
       onEditAndResend={editAndResend}
+      activeArtifactId={activeArtifactId}
+      compareArtifactId={compareArtifactId}
+      onArtifactNavigate={navigateArtifact}
+      onArtifactCompare={compareArtifact}
+      onArtifactPin={pinArtifact}
+      onOpenArtifactSource={openArtifactSource}
+      artifactOverrides={artifactOverrides}
       statusSlot={
         // Orientation, in one line: what was indexed, and which commit it was
         // indexed from. The branch and SHA used to sit in a second page header

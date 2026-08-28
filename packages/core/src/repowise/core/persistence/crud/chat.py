@@ -160,6 +160,20 @@ async def list_chat_messages(session: AsyncSession, conversation_id: str) -> lis
     return list(result.scalars().all())
 
 
+async def update_chat_message_content(
+    session: AsyncSession,
+    message_id: str,
+    content: dict,
+) -> ChatMessage | None:
+    """Replace one message envelope after an artifact metadata mutation."""
+    message = await session.get(ChatMessage, message_id)
+    if message is None:
+        return None
+    message.content_json = json.dumps(content)
+    await session.flush()
+    return message
+
+
 async def count_chat_messages(session: AsyncSession, conversation_id: str) -> int:
     result = await session.execute(
         select(func.count())

@@ -26,6 +26,7 @@ from .cli_registry import (
     register_lazy_command,
 )
 from .mcp_tool_registry import (
+    TOOL_SAFETY_KINDS,
     TOOL_TIERS,
     MCPToolRegistry,
     ToolEntry,
@@ -41,6 +42,7 @@ from .pipeline_hooks import (
 )
 
 __all__ = [
+    "TOOL_SAFETY_KINDS",
     "TOOL_TIERS",
     "CLIRegistry",
     "HookPhase",

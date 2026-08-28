@@ -37,7 +37,14 @@ from repowise.server.mcp_server._helpers import (
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
 
-@mcp.tool(default=False, surface_order=230, trust_kind="structural")
+@mcp.tool(
+    default=False,
+    surface_order=230,
+    trust_kind="structural",
+    artifact_type="call_path",
+    presentation="call_path",
+    evidence_basis="inferred",
+)
 async def get_execution_flows(
     top_n: int = 10,
     max_depth: int = 8,

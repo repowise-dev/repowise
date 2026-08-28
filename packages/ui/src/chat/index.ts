@@ -1,4 +1,5 @@
 export * from "./artifact-panel";
+export * from "./artifact-source";
 export * from "./artifacts";
 export * from "./chat-interface";
 export * from "./use-chat-scroll";

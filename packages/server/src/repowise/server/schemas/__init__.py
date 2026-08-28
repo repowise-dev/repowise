@@ -35,6 +35,7 @@ from .c4 import (
     C4SystemResponse,
 )
 from .chat import (
+    ArtifactUpdateRequest,
     ChatMessageResponse,
     ChatRequest,
     ConversationForkRequest,
@@ -226,6 +227,7 @@ from .zoom import (
 )
 
 __all__ = [
+    "ArtifactUpdateRequest",
     "AgentTrendBucket",
     "AgentTrendResponse",
     "ArchEdgeResponse",

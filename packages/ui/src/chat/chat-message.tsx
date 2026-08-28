@@ -9,12 +9,12 @@ import { WorkingOrb } from "./working-orb";
 import { MessageActions } from "./message-actions";
 import { Markdown } from "../shared/markdown";
 import { SourceCitations, type SourceReference } from "./source-citations";
-import type { ChatUIMessage } from "@repowise-dev/types/chat";
+import type { ChatArtifact, ChatUIMessage } from "@repowise-dev/types/chat";
 
 interface ChatMessageProps {
   message: ChatUIMessage;
   repoId: string;
-  onViewArtifact?: (artifact: { type: string; data: Record<string, unknown> }) => void;
+  onViewArtifact?: (artifact: ChatArtifact) => void;
   /** Optional avatar src for the assistant. Defaults to `/repowise-logo.png`. */
   assistantAvatarSrc?: string;
   /** Forwarded to `SourceCitations` so consumers can customise the link path. */

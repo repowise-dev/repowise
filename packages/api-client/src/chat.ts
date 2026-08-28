@@ -4,7 +4,7 @@
 
 import { apiGet, apiDelete, apiPatch, apiPost, BASE_URL, buildHeaders } from "./client";
 import type { ConversationResponse, ChatMessageResponse } from "./types";
-import type { ChatContext } from "@repowise-dev/types/chat";
+import type { ChatArtifact, ChatContext } from "@repowise-dev/types/chat";
 
 export async function listConversations(
   repoId: string,
@@ -52,6 +52,28 @@ export async function forkConversation(
     through_message_id: point?.throughMessageId ?? null,
     before_message_id: point?.beforeMessageId ?? null,
   });
+}
+
+export async function getConversationArtifact(
+  repoId: string,
+  conversationId: string,
+  artifactId: string,
+): Promise<ChatArtifact> {
+  return apiGet(
+    `/api/repos/${repoId}/chat/conversations/${conversationId}/artifacts/${artifactId}`,
+  );
+}
+
+export async function setConversationArtifactPinned(
+  repoId: string,
+  conversationId: string,
+  artifactId: string,
+  pinned: boolean,
+): Promise<ChatArtifact> {
+  return apiPatch(
+    `/api/repos/${repoId}/chat/conversations/${conversationId}/artifacts/${artifactId}`,
+    { pinned },
+  );
 }
 
 /**

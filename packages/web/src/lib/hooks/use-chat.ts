@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { postChatMessage, getConversation } from "@/lib/api/chat";
 import type { ChatSSEEvent } from "@/lib/api/types";
 import type {
+  ChatArtifact,
   ChatContext,
   ChatUIToolCall as ChatToolCall,
   ChatUIMessage as ChatMessage,
@@ -43,6 +44,7 @@ function stopRunningTools(message: ChatMessage, summary: string): ChatMessage {
 
 export function useChat(repoId: string) {
   const [state, setState] = useState<UseChatState>(EMPTY_CHAT_STATE);
+  const [artifactOverrides, setArtifactOverrides] = useState<Record<string, ChatArtifact>>({});
 
   const abortRef = useRef<AbortController | null>(null);
   const activeRepoRef = useRef(repoId);
@@ -57,6 +59,7 @@ export function useChat(repoId: string) {
       activeRepoRef.current = repoId;
       conversationIdRef.current = null;
       setState(EMPTY_CHAT_STATE);
+      setArtifactOverrides({});
     }
     return () => abortRef.current?.abort();
   }, [repoId]);
@@ -243,7 +246,7 @@ export function useChat(repoId: string) {
                     tc.id === ev.tool_id
                       ? {
                           ...tc,
-                          result: ev.artifact.data,
+                          result: ev.artifact.data as unknown as Record<string, unknown>,
                           summary: ev.summary,
                           artifact: ev.artifact,
                           status: "done" as const,
@@ -301,6 +304,7 @@ export function useChat(repoId: string) {
           isStreaming: false,
           error: null,
         });
+        setArtifactOverrides({});
       } catch (err) {
         if (activeRepoRef.current !== repoId || loadRequestRef.current !== requestId) return;
         setState((prev) => ({
@@ -330,8 +334,13 @@ export function useChat(repoId: string) {
     loadRequestRef.current += 1;
     conversationIdRef.current = null;
     setState(EMPTY_CHAT_STATE);
+    setArtifactOverrides({});
+  }, []);
+
+  const replaceArtifact = useCallback((artifact: ChatArtifact) => {
+    setArtifactOverrides((current) => ({ ...current, [artifact.id]: artifact }));
   }, []);
 
   const visibleState = activeRepoRef.current === repoId ? state : EMPTY_CHAT_STATE;
-  return { ...visibleState, sendMessage, loadConversation, cancel, reset };
+  return { ...visibleState, artifactOverrides, sendMessage, loadConversation, cancel, reset, replaceArtifact };
 }

@@ -810,6 +810,8 @@ _projected_get_answer = projected_answer(_get_answer_raw)
 
 @mcp.tool(
     surface_order=10,
+    artifact_type="answer",
+    presentation="answer",
     recipes=(
         ToolRecipe(
             "answer_question",

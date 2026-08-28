@@ -17,12 +17,23 @@ export function toChatUiMessages(
       arguments: toolCall.arguments ?? {},
       result: toolCall.result,
       summary: toolCall.summary,
-      ...(toolCall.result
+      ...(toolCall.artifact
+        ? { artifact: toolCall.artifact }
+        : toolCall.result
         ? {
             artifact: {
+              id: `legacy-${message.id}-${toolCall.id}`,
+              version: 1 as const,
               type:
                 toolCall.artifact_type ??
                 getLegacyChatArtifactType(toolCall.name),
+              tool_name: toolCall.name,
+              title: toolCall.summary ?? toolCall.name,
+              presentation:
+                toolCall.artifact_type ??
+                getLegacyChatArtifactType(toolCall.name),
+              evidence: { basis: "unknown" },
+              pinned: false,
               data: toolCall.result,
             },
           }

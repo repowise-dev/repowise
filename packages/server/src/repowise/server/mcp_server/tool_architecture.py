@@ -21,7 +21,14 @@ from repowise.server.mcp_server._meta import persisted_analysis_meta as _analysi
 _MCP_CORE_MEMBER_LIMIT = 25
 
 
-@mcp.tool(default=False, requires_workspace=True, surface_order=200, trust_kind="structural")
+@mcp.tool(
+    default=False,
+    requires_workspace=True,
+    surface_order=200,
+    trust_kind="structural",
+    artifact_type="workspace_architecture",
+    presentation="dependency_graph",
+)
 async def get_architecture() -> dict[str, Any]:
     """Workspace architecture metrics — coupling, core, and a 1-10 score.
 

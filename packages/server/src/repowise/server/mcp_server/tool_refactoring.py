@@ -20,7 +20,14 @@ from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 
 
-@mcp.tool(default=False, surface_order=240, trust_kind="generated")
+@mcp.tool(
+    default=False,
+    surface_order=240,
+    trust_kind="generated",
+    artifact_type="refactoring",
+    presentation="source_diff",
+    safety="generative",
+)
 async def generate_refactoring_code(suggestion_id: str, repo: str | None = None) -> dict:
     """Generate refactored code + a unified diff for one refactoring plan.
 

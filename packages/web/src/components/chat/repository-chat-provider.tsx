@@ -12,7 +12,7 @@ import {
 import { usePathname, useSearchParams } from "next/navigation";
 import type { ChatContext as PageChatContext } from "@repowise-dev/ui/chat";
 import { useChat } from "@/lib/hooks/use-chat";
-import { getRepositoryChatContext } from "./repository-chat-context";
+import { getRepositoryChatContext, getRepositoryChatContextQuery } from "./repository-chat-context";
 
 type ChatController = ReturnType<typeof useChat>;
 
@@ -64,9 +64,10 @@ export function RepositoryChatProvider({
   }, [modelIdentity, repoId]);
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const contextQuery = getRepositoryChatContextQuery(searchParams);
   const pageContext = useMemo(
-    () => getRepositoryChatContext(pathname, searchParams),
-    [pathname, searchParams],
+    () => getRepositoryChatContext(pathname, new URLSearchParams(contextQuery)),
+    [contextQuery, pathname],
   );
   const {
     messages,
@@ -77,6 +78,8 @@ export function RepositoryChatProvider({
     loadConversation,
     cancel,
     reset,
+    artifactOverrides,
+    replaceArtifact,
   } = chat;
   const value = useMemo<RepositoryChatValue>(
     () => ({
@@ -94,6 +97,8 @@ export function RepositoryChatProvider({
       loadConversation,
       cancel,
       reset,
+      artifactOverrides,
+      replaceArtifact,
     }),
     [
       repoId,
@@ -107,6 +112,8 @@ export function RepositoryChatProvider({
       loadConversation,
       cancel,
       reset,
+      artifactOverrides,
+      replaceArtifact,
       modelSelection,
       selectModel,
     ],

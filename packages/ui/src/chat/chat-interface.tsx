@@ -21,6 +21,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type RefObject,
@@ -32,13 +33,13 @@ import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../lib/cn";
 import { BrandMark } from "../shared/brand-mark";
 import { ChatMessage } from "./chat-message";
-import { ArtifactPanel, type Artifact } from "./artifact-panel";
+import { ArtifactPanel } from "./artifact-panel";
 import { ChatContextIndicator } from "./chat-context-indicator";
 import {
   getChatContextPresentation,
   type ChatContext,
 } from "./chat-context";
-import type { ChatUIMessage } from "@repowise-dev/types/chat";
+import type { ChatArtifact, ChatUIMessage } from "@repowise-dev/types/chat";
 import type { SourceReference } from "./source-citations";
 import { ChatComposer } from "./chat-composer";
 import { useChatScroll } from "./use-chat-scroll";
@@ -118,6 +119,15 @@ export interface ChatInterfaceProps {
   composerRef?: RefObject<HTMLTextAreaElement | null>;
   onRetry?: (message: ChatUIMessage) => void | Promise<void>;
   onEditAndResend?: (message: ChatUIMessage, text: string) => void | Promise<void>;
+  /** Controlled artifact deep links. Hosts own URL and persistence concerns. */
+  activeArtifactId?: string | null;
+  compareArtifactId?: string | null;
+  onArtifactNavigate?: (artifactId: string | null) => void;
+  onArtifactCompare?: (artifactId: string | null) => void;
+  onArtifactPin?: (artifact: ChatArtifact, pinned: boolean) => void | Promise<void>;
+  onOpenArtifactSource?: (artifact: ChatArtifact) => void;
+  /** Host-side artifact overlays (for example a persisted pin response). */
+  artifactOverrides?: Readonly<Record<string, ChatArtifact>>;
 }
 
 export function ChatInterface({
@@ -148,12 +158,35 @@ export function ChatInterface({
   composerRef,
   onRetry,
   onEditAndResend,
+  activeArtifactId,
+  compareArtifactId,
+  onArtifactNavigate,
+  onArtifactCompare,
+  onArtifactPin,
+  onOpenArtifactSource,
+  artifactOverrides,
 }: ChatInterfaceProps) {
   const [internalInput, setInternalInput] = useState("");
   const input = draft ?? internalInput;
   const setInput = onDraftChange ?? setInternalInput;
   const [artifactPanelOpen, setArtifactPanelOpen] = useState(false);
-  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [internalArtifactId, setInternalArtifactId] = useState<string | null>(null);
+  const [internalCompareId, setInternalCompareId] = useState<string | null>(null);
+  const selectedArtifactId = activeArtifactId ?? internalArtifactId;
+  const selectedCompareId = compareArtifactId ?? internalCompareId;
+  const artifacts = useMemo(() => {
+    const seen = new Set<string>();
+    const restored: ChatArtifact[] = [];
+    for (const message of messages) {
+      for (const toolCall of message.toolCalls) {
+        if (toolCall.artifact && !seen.has(toolCall.artifact.id)) {
+          seen.add(toolCall.artifact.id);
+          restored.push(artifactOverrides?.[toolCall.artifact.id] ?? toolCall.artifact);
+        }
+      }
+    }
+    return restored;
+  }, [artifactOverrides, messages]);
   const internalTextareaRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = composerRef ?? internalTextareaRef;
 
@@ -213,20 +246,35 @@ export function ChatInterface({
   );
 
   const handleViewArtifact = useCallback(
-    (artifact: { type: string; data: Record<string, unknown> }) => {
-      const title = (artifact.data.title as string) ?? artifact.type;
-      const newArt: Artifact = { type: artifact.type, title, data: artifact.data };
-      setArtifacts((prev) => {
-        const existing = prev.findIndex(
-          (a) => a.type === newArt.type && a.title === newArt.title,
-        );
-        if (existing >= 0) return prev;
-        return [...prev, newArt];
-      });
+    (artifact: ChatArtifact) => {
+      setInternalArtifactId(artifact.id);
+      onArtifactNavigate?.(artifact.id);
       setArtifactPanelOpen(true);
     },
-    [],
+    [onArtifactNavigate],
   );
+
+  const selectArtifact = useCallback((artifactId: string) => {
+    setInternalArtifactId(artifactId);
+    onArtifactNavigate?.(artifactId);
+    if (artifactId === selectedCompareId) {
+      setInternalCompareId(null);
+      onArtifactCompare?.(null);
+    }
+  }, [onArtifactCompare, onArtifactNavigate, selectedCompareId]);
+  const compareArtifact = useCallback((artifactId: string | null) => {
+    const next = artifactId ? artifacts.find((item) => item.id !== artifactId)?.id ?? null : null;
+    setInternalCompareId(next);
+    onArtifactCompare?.(next);
+  }, [artifacts, onArtifactCompare]);
+  const closeArtifacts = useCallback(() => {
+    setArtifactPanelOpen(false);
+    onArtifactNavigate?.(null);
+  }, [onArtifactNavigate]);
+
+  useEffect(() => {
+    if (activeArtifactId && artifacts.some((artifact) => artifact.id === activeArtifactId)) setArtifactPanelOpen(true);
+  }, [activeArtifactId, artifacts]);
 
   // Pulse the artifact-panel button when a new artifact lands while the
   // panel is closed, so streamed diagrams don't arrive silently.
@@ -438,8 +486,15 @@ export function ChatInterface({
 
       <ArtifactPanel
         artifacts={artifacts}
+        activeArtifactId={selectedArtifactId}
+        compareArtifactId={selectedCompareId}
         open={artifactPanelOpen}
-        onClose={() => setArtifactPanelOpen(false)}
+        onClose={closeArtifacts}
+        onSelect={selectArtifact}
+        onCompare={compareArtifact}
+        onFollowUp={handleFollowUp}
+        {...(onArtifactPin ? { onPin: onArtifactPin } : {})}
+        {...(onOpenArtifactSource ? { onOpenSource: onOpenArtifactSource } : {})}
       />
     </div>
   );

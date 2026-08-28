@@ -89,6 +89,9 @@ def _drop_opt_in_blocks(response: dict, include: set[str]) -> None:
 
 @mcp.tool(
     surface_order=50,
+    artifact_type="risk",
+    presentation="risk",
+    evidence_basis="measured",
     recipes=(
         ToolRecipe(
             "assess_hotspot",

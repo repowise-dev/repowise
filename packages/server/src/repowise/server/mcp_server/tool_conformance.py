@@ -27,6 +27,8 @@ _MCP_CYCLE_LIMIT = 25
     requires_workspace=True,
     surface_order=250,
     trust_kind="structural",
+    artifact_type="conformance",
+    presentation="conformance",
 )
 async def get_conformance(repo: str | None = None) -> dict[str, Any]:
     """Architecture conformance — dependency-rule violations + cycles.

@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { getRepositoryChatContext } from "./repository-chat-context";
+import { getRepositoryChatContext, getRepositoryChatContextQuery } from "./repository-chat-context";
 
 const params = (entries: Record<string, string>) => new URLSearchParams(entries);
 
 describe("getRepositoryChatContext", () => {
+  it("excludes conversation workspace state from context identity", () => {
+    const params = new URLSearchParams("file=src%2Fchat.ts&conversation=c1&artifact=a1&compare=a2");
+    expect(getRepositoryChatContextQuery(params)).toBe("file=src%2Fchat.ts");
+  });
   it("returns a repository fallback at the repo root", () => {
     expect(getRepositoryChatContext("/repos/r1")).toEqual({
       kind: "repository",

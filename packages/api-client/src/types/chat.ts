@@ -2,6 +2,8 @@
 // Chat
 // ---------------------------------------------------------------------------
 
+import type { ChatArtifact } from "@repowise-dev/types/chat";
+
 export interface ConversationResponse {
   id: string;
   repository_id: string;
@@ -25,6 +27,7 @@ export interface ChatMessageResponse {
       result?: Record<string, unknown>;
       summary?: string;
       artifact_type?: string;
+      artifact?: ChatArtifact;
     }>;
     provider?: string;
     model?: string;
@@ -45,7 +48,7 @@ export type ChatSSEEvent =
       tool_id: string;
       tool_name: string;
       summary: string;
-      artifact: { type: string; data: Record<string, unknown> };
+      artifact: ChatArtifact;
     }
   | { type: "done"; conversation_id: string; message_id: string; user_message_id?: string; provider?: string; model?: string }
   | { type: "error"; message: string };

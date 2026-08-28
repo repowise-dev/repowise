@@ -1,322 +1,68 @@
-"""Chat tool registry — single source of truth for tool schemas and execution.
-
-Imports the 7 MCP tool functions directly and exposes them as a callable registry
-for the agentic chat loop. Also provides OpenAI-format tool definitions for the LLM.
-"""
+"""Thin chat adapter over the canonical MCP registry and selected surface."""
 
 from __future__ import annotations
 
+import inspect
 import logging
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
+from repowise.core.registry import ToolEntry
+from repowise.server.mcp_server._tool_selection import (
+    get_registered_tool,
+    selected_tool_entries,
+)
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class ToolDef:
-    """A tool definition with schema and callable."""
+@dataclass(frozen=True)
+class ChatToolContract:
+    """One request-scoped projection of a canonical MCP entry."""
 
-    name: str
+    entry: ToolEntry
     description: str
-    parameters: dict[str, Any]  # JSON Schema
-    function: Callable[..., Awaitable[dict[str, Any]]]
-    artifact_type: str  # For the frontend artifact panel
+    parameters: dict[str, Any]
 
 
-# ---------------------------------------------------------------------------
-# Tool schemas (matching FastMCP's auto-generated schemas from function sigs)
-# ---------------------------------------------------------------------------
-
-_TOOL_SCHEMAS: list[dict[str, Any]] = [
-    {
-        "name": "get_overview",
-        "description": "Get a high-level overview of the repository: architecture, key modules, entry points.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "repo": {
-                    "type": "string",
-                    "description": "Repository path, name, or ID. Omit if only one repo.",
-                },
-            },
-            "required": [],
-        },
-        "artifact_type": "overview",
-    },
-    {
-        "name": "get_context",
-        "description": (
-            "Triage card for files/modules/symbols: docs, freshness, hotspot bit, "
-            "signatures. Opt into full_doc, ownership, last_change, callers/callees, "
-            "metrics, community, decisions, health, or skeleton (body-elided source)."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "targets": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "File paths, module paths, or symbol names to look up.",
-                },
-                "include": {
-                    "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": [
-                            "full_doc",
-                            "ownership",
-                            "last_change",
-                            "callers",
-                            "callees",
-                            "metrics",
-                            "community",
-                            "decisions",
-                            "health",
-                            "skeleton",
-                        ],
-                    },
-                    "description": (
-                        "Opt-in blocks (docs + freshness are always on): "
-                        "full_doc | ownership | last_change | callers | callees | "
-                        "metrics | community | decisions | health | skeleton."
-                    ),
-                },
-                "compact": {
-                    "type": "boolean",
-                    "description": (
-                        "Default true. False adds structure, imports, and docstrings "
-                        "to the triage card."
-                    ),
-                    "default": True,
-                },
-                "repo": {"type": "string", "description": "Repository identifier."},
-            },
-            "required": ["targets"],
-        },
-        "artifact_type": "wiki_page",
-    },
-    {
-        "name": "get_risk",
-        "description": "Assess modification risk with trend analysis: hotspot score + velocity (increasing/stable/decreasing), risk type (churn-heavy/bug-prone/high-coupling), impact surface (top 3 modules that would break), dependents, co-change partners, ownership.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "targets": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "File paths to assess risk for.",
-                },
-                "repo": {"type": "string", "description": "Repository identifier."},
-            },
-            "required": ["targets"],
-        },
-        "artifact_type": "risk_report",
-    },
-    {
-        "name": "get_change_risk",
-        "description": "Rank a live commit or branch range against recent repository changes. The percentile/classification is authoritative; the 0-10 diff-shape score is supporting, not a probability. Use get_risk for indexed file history and structural reach.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "revspec": {
-                    "type": "string",
-                    "description": "Commit or base..head range to score. Defaults to HEAD.",
-                    "default": "HEAD",
-                },
-                "repo": {"type": "string", "description": "Repository identifier."},
-                "extensions": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "File suffixes to count, for example .py or .ts.",
-                },
-                "exclude_patterns": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Gitignore-style paths to omit from the score and baseline.",
-                },
-                "baseline": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "default": 200,
-                    "description": "Recent commits used for percentile ranking; 0 disables it.",
-                },
-            },
-            "required": [],
-        },
-        "artifact_type": "risk_report",
-    },
-    {
-        "name": "get_why",
-        "description": "Intent archaeology: understand why code was built a certain way. Path lookup returns origin story (who, when, key commits linked to decisions) and alignment score. Natural language search scores across all decision fields. Use targets to anchor search to specific files.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Natural language question, file/module path, or omit for health dashboard.",
-                },
-                "targets": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "File paths to anchor the search. Decisions governing these files are prioritized.",
-                },
-                "repo": {"type": "string", "description": "Repository identifier."},
-            },
-            "required": [],
-        },
-        "artifact_type": "decisions",
-    },
-    {
-        "name": "search_codebase",
-        "description": "Semantic and full-text search across all wiki documentation pages.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Natural language search query."},
-                "limit": {
-                    "type": "integer",
-                    "description": "Max results (default 5).",
-                    "default": 5,
-                },
-                "page_type": {
-                    "type": "string",
-                    "description": "Filter by page type (e.g., file_page, module_page).",
-                },
-                "repo": {"type": "string", "description": "Repository identifier."},
-            },
-            "required": ["query"],
-        },
-        "artifact_type": "search_results",
-    },
-    {
-        "name": "get_dead_code",
-        "description": "Get a tiered refactor plan for dead code. Returns findings in high/medium/low confidence tiers with per-directory rollups, ownership hotspots, and impact estimates. Use group_by for rollup views, tier to focus on one band.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "repo": {"type": "string", "description": "Repository identifier."},
-                "kind": {
-                    "type": "string",
-                    "description": "Filter: unreachable_file, unused_export, unused_internal, zombie_package.",
-                },
-                "min_confidence": {
-                    "type": "number",
-                    "description": (
-                        f"Minimum confidence threshold (default {RISK_CAP_CONFIDENCE}; "
-                        "matches RISK_CAP_CONFIDENCE)."
-                    ),
-                    "default": RISK_CAP_CONFIDENCE,
-                },
-                "safe_only": {
-                    "type": "boolean",
-                    "description": "Only return safe-to-delete findings.",
-                    "default": False,
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max findings per tier (default 20).",
-                    "default": 20,
-                },
-                "tier": {
-                    "type": "string",
-                    "description": "Focus on one tier: high (>=0.8), medium (0.5-0.8), or low (<0.5).",
-                },
-                "directory": {
-                    "type": "string",
-                    "description": "Filter to a directory prefix (e.g. src/legacy).",
-                },
-                "owner": {"type": "string", "description": "Filter by primary owner name."},
-                "group_by": {
-                    "type": "string",
-                    "description": "Rollup view: 'directory' or 'owner'.",
-                },
-            },
-            "required": [],
-        },
-        "artifact_type": "dead_code",
-    },
-]
-
-
-def _build_registry() -> dict[str, ToolDef]:
-    """Build the tool registry by importing MCP tool functions."""
-    from repowise.server.mcp_server import (
-        get_change_risk,
-        get_context,
-        get_dead_code,
-        get_overview,
-        get_risk,
-        get_why,
-        search_codebase,
-    )
-
-    async def _search_concept(query: str, **kwargs):
-        # Chat surfaces wiki documentation pages (see the schema/artifact_type
-        # below), so pin the concept branch — the symbol/path modes return
-        # symbol/file shapes the chat artifact renderer doesn't expect.
-        kwargs["mode"] = "concept"
-        return await search_codebase(query, **kwargs)
-
-    func_map: dict[str, Callable] = {
-        "get_overview": get_overview,
-        "get_context": get_context,
-        "get_change_risk": get_change_risk,
-        "get_risk": get_risk,
-        "get_why": get_why,
-        "search_codebase": _search_concept,
-        "get_dead_code": get_dead_code,
-    }
-
-    registry: dict[str, ToolDef] = {}
-    for schema in _TOOL_SCHEMAS:
-        name = schema["name"]
-        registry[name] = ToolDef(
-            name=name,
-            description=schema["description"],
-            parameters=schema["parameters"],
-            function=func_map[name],
-            artifact_type=schema["artifact_type"],
+def get_tool_catalog(repo_path: str | None) -> list[ChatToolContract]:
+    """Return the repository's configured MCP surface with generated schemas."""
+    catalog: list[ChatToolContract] = []
+    for entry in selected_tool_entries(repo_path):
+        registered = get_registered_tool(entry.name)
+        if registered is None:
+            logger.error("Registered MCP entry has no FastMCP contract: %s", entry.name)
+            continue
+        catalog.append(
+            ChatToolContract(
+                entry=entry,
+                description=str(registered.description or ""),
+                parameters=dict(registered.parameters),
+            )
         )
-    return registry
+    return catalog
 
 
-# Lazy singleton
-_registry: dict[str, ToolDef] | None = None
-
-
-def get_tool_registry() -> dict[str, ToolDef]:
-    """Get the tool registry (lazy-initialized)."""
-    global _registry
-    if _registry is None:
-        _registry = _build_registry()
-    return _registry
-
-
-def get_tool_schemas_for_llm() -> list[dict[str, Any]]:
-    """Return OpenAI-format tool definitions for the LLM."""
+def get_tool_schemas_for_llm(repo_path: str | None) -> list[dict[str, Any]]:
+    """Return OpenAI-format definitions from FastMCP's canonical schemas."""
     return [
         {
             "type": "function",
             "function": {
-                "name": schema["name"],
-                "description": schema["description"],
-                "parameters": schema["parameters"],
+                "name": tool.entry.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
             },
         }
-        for schema in _TOOL_SCHEMAS
+        for tool in get_tool_catalog(repo_path)
     ]
 
 
 def _make_json_serializable(obj: Any) -> Any:
-    """Recursively ensure an object is JSON-serializable."""
     if obj is None or isinstance(obj, (bool, int, float, str)):
         return obj
     if isinstance(obj, dict):
-        return {str(k): _make_json_serializable(v) for k, v in obj.items()}
+        return {str(key): _make_json_serializable(value) for key, value in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [_make_json_serializable(item) for item in obj]
     if hasattr(obj, "__dict__"):
@@ -324,15 +70,9 @@ def _make_json_serializable(obj: Any) -> Any:
     return str(obj)
 
 
-def _scope_repo_arg(tool_def: ToolDef, arguments: dict[str, Any], repo: str | None) -> None:
-    """Point a tool call at the repo the chat page is on.
-
-    The model only sees the repo *name* in the system prompt, so left to
-    itself it passes a string that may not be a workspace alias at all. We
-    keep its value when it names a real repo (so "compare with gateway"
-    still works) and otherwise substitute the caller's alias.
-    """
-    if not repo or "repo" not in tool_def.parameters.get("properties", {}):
+def _scope_repo_arg(entry: ToolEntry, arguments: dict[str, Any], repo: str | None) -> None:
+    """Backstop a model-supplied repo value with the active workspace alias."""
+    if not repo or "repo" not in inspect.signature(entry.fn).parameters:
         return
 
     import repowise.server.mcp_server as mcp_mod
@@ -347,34 +87,86 @@ def _scope_repo_arg(tool_def: ToolDef, arguments: dict[str, Any], repo: str | No
     arguments["repo"] = repo
 
 
-async def execute_tool(
-    name: str, arguments: dict[str, Any], repo: str | None = None
+async def execute_entry(
+    entry: ToolEntry,
+    arguments: dict[str, Any],
+    *,
+    repo: str | None = None,
+    confirmed: bool = False,
 ) -> dict[str, Any]:
-    """Execute a tool by name and return JSON-serializable result.
-
-    ``repo`` is the alias of the repo the request is scoped to (workspace
-    mode). It backstops the ``repo`` argument the model supplies.
-    """
-    registry = get_tool_registry()
-    tool_def = registry.get(name)
-    if not tool_def:
-        return {"error": f"Unknown tool: {name}"}
+    """Execute one selected registry entry under its safety contract."""
+    if entry.safety == "mutating" and not confirmed:
+        return {
+            "error": f"{entry.name} requires explicit confirmation before it can run",
+            "error_code": "confirmation_required",
+            "requires_confirmation": True,
+            "tool_name": entry.name,
+        }
 
     try:
-        arguments = dict(arguments)
-        _scope_repo_arg(tool_def, arguments, repo)
-        result = await tool_def.function(**arguments)
-        return _make_json_serializable(result)
+        scoped_arguments = dict(arguments)
+        _scope_repo_arg(entry, scoped_arguments, repo)
+        return _make_json_serializable(await entry.fn(**scoped_arguments))
     except Exception as exc:
-        logger.exception("Tool execution failed: %s", name)
-        return {"error": f"{type(exc).__name__}: {exc}"}
+        logger.exception("Tool execution failed: %s", entry.name)
+        return {"error": f"{type(exc).__name__}: {exc}", "error_code": "tool_failed"}
 
 
-def get_artifact_type(tool_name: str) -> str:
-    """Get the artifact type for a tool's results."""
-    registry = get_tool_registry()
-    tool_def = registry.get(tool_name)
-    return tool_def.artifact_type if tool_def else "unknown"
+async def execute_tool(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    repo_path: str | None = None,
+    repo: str | None = None,
+    confirmed: bool = False,
+) -> dict[str, Any]:
+    """Execute a tool only when it belongs to the configured MCP surface."""
+    tool = next(
+        (candidate for candidate in get_tool_catalog(repo_path) if candidate.entry.name == name),
+        None,
+    )
+    if tool is None:
+        return {
+            "error": f"Tool is not enabled for this repository: {name}",
+            "error_code": "tool_not_enabled",
+        }
+    return await execute_entry(tool.entry, arguments, repo=repo, confirmed=confirmed)
+
+
+def get_artifact_type(tool_name: str, repo_path: str | None) -> str:
+    tool = next(
+        (
+            candidate
+            for candidate in get_tool_catalog(repo_path)
+            if candidate.entry.name == tool_name
+        ),
+        None,
+    )
+    return tool.entry.artifact_type if tool is not None else "generic"
+
+
+def get_artifact_presentation(tool_name: str, repo_path: str | None) -> str:
+    tool = next(
+        (
+            candidate
+            for candidate in get_tool_catalog(repo_path)
+            if candidate.entry.name == tool_name
+        ),
+        None,
+    )
+    return tool.entry.presentation if tool is not None else "generic"
+
+
+def get_artifact_evidence_basis(tool_name: str, repo_path: str | None) -> str:
+    tool = next(
+        (
+            candidate
+            for candidate in get_tool_catalog(repo_path)
+            if candidate.entry.name == tool_name
+        ),
+        None,
+    )
+    return tool.entry.evidence_basis if tool is not None else "unknown"
 
 
 def init_tool_state(
@@ -384,11 +176,7 @@ def init_tool_state(
     decision_store: Any | None = None,
     repo_path: str | None = None,
 ) -> None:
-    """Bridge FastAPI app state to the MCP server module globals.
-
-    Must be called during app lifespan startup so that direct tool calls
-    from the chat router use the same DB session factory and stores.
-    """
+    """Bridge FastAPI app state to the MCP server module globals."""
     import repowise.server.mcp_server as mcp_mod
 
     mcp_mod._session_factory = session_factory
@@ -409,12 +197,7 @@ def set_tool_workspace(
     workspace_root: Any = _UNSET,
     cross_repo_enricher: Any = _UNSET,
 ) -> None:
-    """Publish workspace state to the MCP tool globals.
-
-    The stdio MCP server sets these in its own lifespan; the HTTP server has
-    to do the same or the tools resolve every alias against the primary
-    repo's database alone (issue #970). Arguments left out are untouched.
-    """
+    """Publish workspace state to the MCP tool globals used by both surfaces."""
     import repowise.server.mcp_server as mcp_mod
 
     if registry is not _UNSET:

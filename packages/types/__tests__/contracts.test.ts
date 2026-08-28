@@ -76,7 +76,11 @@ describe("ChatArtifact discriminated union", () => {
 
   it("falls through to GenericArtifact for unknown tool types", () => {
     const generic: ChatArtifact = {
+      id: "artifact-1",
+      version: 1,
       type: "future_tool_we_havent_typed_yet",
+      tool_name: "future_tool",
+      presentation: "generic",
       data: { whatever: 1 },
     };
     expectTypeOf(generic).toMatchTypeOf<GenericArtifact>();

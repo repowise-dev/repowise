@@ -1043,6 +1043,9 @@ def _compute_kpis(
 
 @mcp.tool(
     surface_order=90,
+    artifact_type="health",
+    presentation="health",
+    evidence_basis="measured",
     recipes=(
         ToolRecipe(
             "health_directive",

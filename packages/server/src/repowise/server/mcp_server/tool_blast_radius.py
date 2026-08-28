@@ -29,7 +29,14 @@ _MCP_IMPACTED_LIMIT = 25
 _SYMBOL_CONSUMER_LIMIT = 10
 
 
-@mcp.tool(default=False, requires_workspace=True, surface_order=210, trust_kind="structural")
+@mcp.tool(
+    default=False,
+    requires_workspace=True,
+    surface_order=210,
+    trust_kind="structural",
+    artifact_type="dependency_graph",
+    presentation="dependency_graph",
+)
 async def get_blast_radius(
     targets: list[str],
     max_depth: int = 3,

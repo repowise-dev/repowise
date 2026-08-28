@@ -943,7 +943,7 @@ def _build_guided_tour(
         result.setdefault("architecture", {})["layer_order"] = layer_order
 
 
-@mcp.tool(surface_order=80)
+@mcp.tool(surface_order=80, artifact_type="overview", presentation="overview")
 async def get_overview(repo: str | None = None, include: list[str] | None = None) -> dict:
     """Architecture map for an unfamiliar repo — first call when you don't know your way around.
 

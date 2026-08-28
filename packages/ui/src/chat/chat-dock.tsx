@@ -8,7 +8,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import type { ChatUIMessage } from "@repowise-dev/types/chat";
+import type { ChatArtifact, ChatUIMessage } from "@repowise-dev/types/chat";
 import { BrandMark } from "../shared/brand-mark";
 import { Button } from "../ui/button";
 import { cn } from "../lib/cn";
@@ -137,6 +137,9 @@ export interface ChatDockProps {
   owlLightSrc?: string;
   /** Clears host page controls anchored near the viewport bottom. */
   collisionInset?: string;
+  onArtifactPin?: (artifact: ChatArtifact, pinned: boolean) => void | Promise<void>;
+  onOpenArtifactSource?: (artifact: ChatArtifact) => void;
+  artifactOverrides?: Readonly<Record<string, ChatArtifact>>;
 }
 
 function contextIdentity(context: ChatContext) {
@@ -166,6 +169,9 @@ export function ChatDock({
   owlDarkSrc = "/repowise-logo.png",
   owlLightSrc = "/repowise-logo-light.png",
   collisionInset = "1rem",
+  onArtifactPin,
+  onOpenArtifactSource,
+  artifactOverrides,
 }: ChatDockProps) {
   const { mode, draft, setMode, setDraft } = usePersistentDockState(storageKey);
   const [dismissedContext, setDismissedContext] = useState<string | null>(null);
@@ -455,6 +461,9 @@ export function ChatDock({
               {...(assistantAvatarSrc ? { assistantAvatarSrc } : {})}
               {...(buildCitationHref ? { buildCitationHref } : {})}
               {...(linkPrefix ? { linkPrefix } : {})}
+              {...(onArtifactPin ? { onArtifactPin } : {})}
+              {...(onOpenArtifactSource ? { onOpenArtifactSource } : {})}
+              {...(artifactOverrides ? { artifactOverrides } : {})}
             />
           </div>
         </DialogPrimitive.Content>

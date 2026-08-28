@@ -768,6 +768,71 @@ export function DiagramRenderer({ data }: { data: DiagramArtifactData }) {
 }
 
 // ---------------------------------------------------------------------------
+// Source, health, and selective path views
+// ---------------------------------------------------------------------------
+
+export function SourceRenderer({ data }: { data: Record<string, unknown> }) {
+  const source = typeof data.source === "string" ? data.source : typeof data.content === "string" ? data.content : "";
+  const path = typeof data.file === "string" ? data.file : typeof data.path === "string" ? data.path : typeof data.file_path === "string" ? data.file_path : typeof data.target === "string" ? data.target : "Source";
+  const fallback = Array.isArray(data.fallback_lines) ? data.fallback_lines : [];
+  if (!source && fallback.length === 0) return <p className="text-xs text-[var(--color-text-tertiary)]">No source content was returned.</p>;
+  return (
+    <div className="space-y-3">
+      <p className="truncate font-mono text-xs text-[var(--color-text-secondary)]" title={path}>{path}</p>
+      <pre className="max-h-[60vh] overflow-auto border-l border-[var(--color-border-default)] pl-3 font-mono text-[11px] leading-relaxed text-[var(--color-text-secondary)] whitespace-pre-wrap break-words">{source || fallback.map((line) => typeof line === "string" ? line : JSON.stringify(line)).join("\n")}</pre>
+    </div>
+  );
+}
+
+export function HealthRenderer({ data }: { data: Record<string, unknown> }) {
+  const findings = Array.isArray(data.findings) ? data.findings : Array.isArray(data.top_findings) ? data.top_findings : [];
+  const files = Array.isArray(data.ranked_files) ? data.ranked_files : Array.isArray(data.worst_files) ? data.worst_files : [];
+  const kpis = data.kpis && typeof data.kpis === "object" ? data.kpis as Record<string, unknown> : {};
+  const scores = data.scores && typeof data.scores === "object" ? data.scores as Record<string, unknown> : {};
+  const dimensions = ["defect", "maintainability", "performance"]
+    .map((key) => [key, data[key] ?? scores[key]] as const)
+    .filter((entry) => entry[1] !== undefined);
+  const headlineKpis = [
+    ["average health", kpis.average_health ?? data.average_health],
+    ["hotspot health", kpis.hotspot_health ?? data.hotspot_health],
+    ["maintainability", kpis.maintainability_average ?? data.maintainability_average],
+    ["performance", kpis.performance_average ?? data.performance_average],
+    ["code-only health", kpis.average_health_code_only ?? data.average_health_code_only],
+    ["worst performer", kpis.worst_performer_score ?? data.worst_performer_score],
+  ].filter((entry): entry is [string, unknown] => entry[1] !== undefined && entry[1] !== null);
+  const rows = findings.length > 0 ? findings : files;
+  if (rows.length === 0 && dimensions.length === 0 && headlineKpis.length === 0) return <p className="text-xs text-[var(--color-text-tertiary)]">No health findings were returned for these targets.</p>;
+  return (
+    <div className="space-y-4">
+      {(headlineKpis.length > 0 || dimensions.length > 0) && <div className="space-y-1">{[...headlineKpis, ...dimensions].map(([label, value]) => <StatRow key={label} label={label} value={typeof value === "object" ? JSON.stringify(value) : String(value)} />)}</div>}
+      {rows.length > 0 && <div><SectionTitle icon={Activity}>{findings.length > 0 ? "Findings" : "Worst files"}</SectionTitle><ol className="border-t border-[var(--color-border-default)]">{rows.slice(0, 50).map((finding, index) => { const row = finding as Record<string, unknown>; const title = String(row.title ?? row.file_path ?? row.path ?? row.kind ?? `Finding ${index + 1}`); return <li key={`${title}:${index}`} className="border-b border-[var(--color-border-default)] py-2"><p className="font-mono text-xs text-[var(--color-text-primary)] break-all">{title}</p>{row.reason || row.summary || row.message ? <p className="mt-1 text-xs text-[var(--color-text-secondary)]">{String(row.reason ?? row.summary ?? row.message)}</p> : null}</li>; })}</ol></div>}
+    </div>
+  );
+}
+
+function extractPath(data: Record<string, unknown>): Array<{ node: string; relationship?: string }> {
+  if (Array.isArray(data.path)) return data.path.map((item) => typeof item === "string" ? { node: item } : { node: String((item as Record<string, unknown>).node ?? (item as Record<string, unknown>).name ?? (item as Record<string, unknown>).id ?? "Unknown node"), ...(typeof (item as Record<string, unknown>).relationship === "string" ? { relationship: String((item as Record<string, unknown>).relationship) } : {}) });
+  if (Array.isArray(data.nodes)) return data.nodes.map((item) => typeof item === "string" ? { node: item } : { node: String((item as Record<string, unknown>).node ?? (item as Record<string, unknown>).name ?? (item as Record<string, unknown>).id ?? "Unknown node") });
+  const paths = Array.isArray(data.paths) ? data.paths : [];
+  const first = paths[0];
+  return Array.isArray(first) ? first.map((item) => ({ node: String(item) })) : [];
+}
+
+export function DependencyPathRenderer({ data }: { data: Record<string, unknown> }) {
+  const path = extractPath(data);
+  if (path.length === 0) return <p className="text-xs text-[var(--color-text-tertiary)]">No dependency path was found. This does not prove that no runtime relationship exists.</p>;
+  return <div><SectionTitle icon={GitBranch}>Selected dependency path</SectionTitle><ol className="space-y-1">{path.slice(0, 100).map((item, index) => <li key={`${item.node}:${index}`} className="flex items-center gap-2 font-mono text-xs text-[var(--color-text-secondary)]"><span className="w-5 shrink-0 tabular-nums text-[var(--color-text-tertiary)]">{index + 1}</span><span className="break-all">{item.node}</span>{item.relationship && <span className="text-[10px] text-[var(--color-text-tertiary)]">{item.relationship}</span>}</li>)}</ol></div>;
+}
+
+export function CallPathRenderer({ data }: { data: Record<string, unknown> }) {
+  const flows = Array.isArray(data.flows) ? data.flows : Array.isArray(data.execution_flows) ? data.execution_flows : [];
+  const path = extractPath(data);
+  if (flows.length === 0 && path.length === 0) return <p className="text-xs text-[var(--color-text-tertiary)]">No indexed call path was returned. Dynamic calls may be outside structural coverage.</p>;
+  if (path.length > 0) return <DependencyPathRenderer data={{ path }} />;
+  return <div><SectionTitle icon={ArrowRight}>Selected execution flows</SectionTitle><ol className="border-t border-[var(--color-border-default)]">{flows.slice(0, 25).map((flow, index) => { const row = flow as Record<string, unknown>; const trace = Array.isArray(row.trace) ? row.trace.map(String) : []; return <li key={index} className="border-b border-[var(--color-border-default)] py-2 text-xs text-[var(--color-text-secondary)]"><span className="font-mono break-all">{String(row.entry_point_name ?? row.name ?? row.title ?? row.entry_point ?? `Flow ${index + 1}`)}</span>{trace.length > 0 && <ol className="mt-2 space-y-1 border-l border-[var(--color-border-default)] pl-3">{trace.slice(0, 50).map((node, traceIndex) => <li key={`${node}:${traceIndex}`} className="font-mono text-[11px] break-all">{node}</li>)}</ol>}{typeof row.termination === "string" && row.termination.length > 0 && <p className="mt-2 text-[10px] text-[var(--color-text-tertiary)]">Stopped: {row.termination}</p>}</li>; })}</ol></div>;
+}
+
+// ---------------------------------------------------------------------------
 // Generic JSON fallback
 // ---------------------------------------------------------------------------
 

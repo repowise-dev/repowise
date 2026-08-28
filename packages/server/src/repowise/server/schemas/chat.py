@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from repowise.server.chat_artifacts import normalize_message_artifacts
+
 
 class ChatPageContext(BaseModel):
     """Navigation metadata supplied by a product chat surface."""
@@ -89,6 +91,10 @@ class ConversationForkRequest(BaseModel):
     before_message_id: str | None = None
 
 
+class ArtifactUpdateRequest(BaseModel):
+    pinned: bool
+
+
 class ChatMessageResponse(BaseModel):
     id: str
     conversation_id: str
@@ -103,6 +109,11 @@ class ChatMessageResponse(BaseModel):
             content = json.loads(content_str) if isinstance(content_str, str) else content_str
         except Exception:
             content = {"text": content_str}
+        if isinstance(content, dict):
+            content = normalize_message_artifacts(
+                content,
+                message_id=str(obj.id),  # type: ignore[attr-defined]
+            )
         return cls(
             id=obj.id,  # type: ignore[attr-defined]
             conversation_id=obj.conversation_id,  # type: ignore[attr-defined]

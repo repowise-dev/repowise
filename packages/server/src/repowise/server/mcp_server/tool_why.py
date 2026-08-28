@@ -106,6 +106,9 @@ def _stamp_answer_basis(result: dict) -> dict:
 
 @mcp.tool(
     surface_order=70,
+    artifact_type="decisions",
+    presentation="decision_evidence",
+    evidence_basis="inferred",
     recipes=(
         ToolRecipe(
             "read_rationale",

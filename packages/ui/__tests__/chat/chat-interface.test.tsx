@@ -20,6 +20,58 @@ const USER_MSG: ChatUIMessage = {
 };
 
 describe("ChatInterface shell", () => {
+  it("restores and opens a durable artifact by stable ID", () => {
+    const withArtifact: ChatUIMessage = {
+      ...ASSISTANT_MSG,
+      toolCalls: [{
+        id: "tool-1",
+        name: "search_codebase",
+        arguments: {},
+        status: "done",
+        artifact: {
+          id: "artifact-1",
+          version: 1,
+          type: "search_results",
+          tool_name: "search_codebase",
+          title: "Chat search",
+          presentation: "search_results",
+          evidence: { basis: "unknown" },
+          data: { query: "chat", results: [] },
+        },
+      }],
+    };
+    render(<ChatInterface repoId="r1" messages={[withArtifact]} activeArtifactId="artifact-1" isStreaming={false} onSend={vi.fn()} onCancel={vi.fn()} />);
+    expect(screen.getByText("Artifact workspace")).toBeInTheDocument();
+    expect(screen.getByText("Chat search")).toBeInTheDocument();
+    expect(screen.getByText("No results found.")).toBeInTheDocument();
+  });
+
+  it("clears comparison when its artifact becomes the primary selection", () => {
+    const onArtifactCompare = vi.fn();
+    const withArtifacts: ChatUIMessage = {
+      ...ASSISTANT_MSG,
+      toolCalls: ["artifact-1", "artifact-2"].map((id, index) => ({
+        id: `tool-${index}`,
+        name: "search_codebase",
+        arguments: {},
+        status: "done" as const,
+        artifact: {
+          id,
+          version: 1 as const,
+          type: "search_results",
+          tool_name: "search_codebase",
+          title: index === 0 ? "First result" : "Second result",
+          presentation: "search_results",
+          evidence: { basis: "unknown" as const },
+          data: { query: "chat", results: [] },
+        },
+      })),
+    };
+    render(<ChatInterface repoId="r1" messages={[withArtifacts]} activeArtifactId="artifact-1" compareArtifactId="artifact-2" onArtifactCompare={onArtifactCompare} isStreaming={false} onSend={vi.fn()} onCancel={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Second result" }));
+    expect(onArtifactCompare).toHaveBeenCalledWith(null);
+  });
+
   it("renders empty-state heading + suggestion chips when messages is empty", () => {
     render(
       <ChatInterface

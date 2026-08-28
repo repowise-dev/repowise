@@ -258,6 +258,33 @@ def selected_tool_names(*, is_workspace: bool) -> set[str]:
     return resolve_enabled_tools(mcp_tool_registry.entries(), is_workspace=is_workspace)
 
 
+def selected_tool_entries(repo_path: str | None) -> list[ToolEntry]:
+    """Return the configured MCP entries available to one repository.
+
+    This is the shared selection seam for external MCP clients and in-product
+    chat. It deliberately resolves from the live registry on every request so
+    neither surface can grow a second catalog or retain a stale config view.
+    """
+    _ensure_registered()
+    entries = mcp_tool_registry.entries()
+    enabled = resolve_enabled_tools(
+        entries,
+        is_workspace=_is_workspace(repo_path),
+        override=_read_config_override(repo_path),
+    )
+    return [
+        entry
+        for entry in sorted(entries, key=lambda item: (item.surface_order, item.name))
+        if entry.name in enabled
+    ]
+
+
+def get_registered_tool(name: str) -> Any | None:
+    """Return FastMCP's generated tool contract for a registry entry."""
+    _ensure_registered()
+    return (_full_surface or {}).get(name)
+
+
 def _tool_description(name: str, fn: Any | None = None) -> str:
     """One-line description for a tool, from its registered FastMCP schema."""
     tool = (_full_surface or {}).get(name)
@@ -291,6 +318,10 @@ def registry_tool_rows(entries: Iterable[ToolEntry] | None = None) -> list[dict[
                 }
                 for recipe in entry.recipes
             ],
+            "artifact_type": entry.artifact_type,
+            "presentation": entry.presentation,
+            "safety": entry.safety,
+            "evidence_basis": entry.evidence_basis,
         }
         for entry in sorted(catalog, key=lambda item: (item.surface_order, item.name))
     ]

@@ -55,7 +55,12 @@ _SHED_ORDER = response_budget_shed_order("get_change_risk")
 #: Per-field units and calibration. Identical on every call, so it is opt-in.
 _INCLUDE_BLOCKS = frozenset({"scales"})
 
-@mcp.tool(surface_order=60)
+@mcp.tool(
+    surface_order=60,
+    artifact_type="change_risk",
+    presentation="change_risk",
+    evidence_basis="measured",
+)
 async def get_change_risk(
     revspec: str | None = None,
     repo: str | None = None,

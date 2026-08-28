@@ -4,11 +4,11 @@ import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { ToolCallBlock } from "./tool-call-block";
 import { WorkingOrb } from "./working-orb";
-import type { ChatUIToolCall } from "@repowise-dev/types/chat";
+import type { ChatArtifact, ChatUIToolCall } from "@repowise-dev/types/chat";
 
 interface ToolCallGroupProps {
   toolCalls: ChatUIToolCall[];
-  onViewArtifact?: (artifact: { type: string; data: Record<string, unknown> }) => void;
+  onViewArtifact?: (artifact: ChatArtifact) => void;
 }
 
 /**

@@ -3,6 +3,41 @@ import type { ChatMessageResponse } from "@/lib/api/types";
 import { toChatUiMessages } from "./to-chat-ui-messages";
 
 describe("toChatUiMessages", () => {
+  it("restores the persisted artifact envelope without rebuilding it", () => {
+    const stored: ChatMessageResponse[] = [
+      {
+        id: "m1",
+        conversation_id: "c1",
+        role: "assistant",
+        content: {
+          tool_calls: [
+            {
+              id: "t1",
+              name: "get_health",
+              artifact: {
+                id: "artifact-1",
+                version: 1,
+                type: "health",
+                tool_name: "get_health",
+                presentation: "health",
+                data: { score: 8.4 },
+                pinned: true,
+              },
+            },
+          ],
+        },
+        created_at: "2026-08-28T00:00:00Z",
+      },
+    ];
+
+    expect(toChatUiMessages(stored)[0]?.toolCalls[0]?.artifact).toMatchObject({
+      id: "artifact-1",
+      type: "health",
+      data: { score: 8.4 },
+      pinned: true,
+    });
+  });
+
   it("restores artifacts from stored tool results", () => {
     const stored: ChatMessageResponse[] = [
       {
@@ -25,7 +60,7 @@ describe("toChatUiMessages", () => {
     ];
 
     const [message] = toChatUiMessages(stored);
-    expect(message?.toolCalls[0]?.artifact).toEqual({
+    expect(message?.toolCalls[0]?.artifact).toMatchObject({
       type: "risk_report",
       data: { targets: { "src/a.ts": { trend: "increasing" } } },
     });

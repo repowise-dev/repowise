@@ -3,8 +3,9 @@
 import useSWR from "swr";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChatDock } from "@repowise-dev/ui/chat";
+import { ChatDock, getArtifactSourceTarget } from "@repowise-dev/ui/chat";
 import { getProviders } from "@/lib/api/providers";
+import { setConversationArtifactPinned } from "@/lib/api/chat";
 import { pageHref } from "@/lib/utils/page-href";
 import { ModelSelector } from "./model-selector";
 import { ConversationHistory } from "./conversation-history";
@@ -59,6 +60,16 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
       })}
       onCancel={chat.cancel}
       buildCitationHref={(source) => pageHref(chat.repoId, source.pageId)}
+      onArtifactPin={async (artifact, pinned) => {
+        if (!chat.conversationId) return;
+        chat.replaceArtifact(await setConversationArtifactPinned(chat.repoId, chat.conversationId, artifact.id, pinned));
+      }}
+      artifactOverrides={chat.artifactOverrides}
+      onOpenArtifactSource={(artifact) => {
+        const target = getArtifactSourceTarget(artifact);
+        if (target?.pageId) router.push(pageHref(chat.repoId, target.pageId));
+        else if (target?.path) router.push(pageHref(chat.repoId, `file_page:${target.path}`));
+      }}
       onOpenFullChat={() => router.push(
         chat.conversationId
           ? `/repos/${chat.repoId}/chat?conversation=${encodeURIComponent(chat.conversationId)}`

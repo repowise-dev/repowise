@@ -31,8 +31,10 @@ from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from repowise.core.persistence import crud
 from repowise.core.persistence.database import init_db
 from repowise.core.persistence.models import Repository
+from repowise.server.chat_artifacts import normalize_message_artifacts
 from repowise.server.routers import chat
 
 _NOW = datetime(2026, 8, 15, 10, 0, 0, tzinfo=UTC)
@@ -105,9 +107,7 @@ def _data_events(body: str) -> list[dict]:
 async def _post(app: FastAPI, payload: dict) -> str:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        response = await client.post(
-            f"/api/repos/{_REPO_ID}/chat/messages", json=payload
-        )
+        response = await client.post(f"/api/repos/{_REPO_ID}/chat/messages", json=payload)
     assert response.status_code == 200, response.text
     return response.text
 
@@ -120,9 +120,7 @@ async def test_unknown_conversation_ends_the_stream_with_a_typed_error():
         "repowise.server.routers.chat.get_chat_provider_instance",
         return_value=_SilentProvider(),
     ):
-        body = await _post(
-            app, {"message": "hi", "conversation_id": "no-such-conversation"}
-        )
+        body = await _post(app, {"message": "hi", "conversation_id": "no-such-conversation"})
 
     events = _data_events(body)
     assert events, f"stream carried no readable data events: {body!r}"
@@ -169,9 +167,7 @@ async def test_conversation_history_supports_rename_pin_fork_and_delete_undo():
         assert updated.json()["title"] == "Pinned investigation"
         assert updated.json()["pinned"] is True
 
-        messages = await client.get(
-            f"/api/repos/{_REPO_ID}/chat/conversations/{conversation_id}"
-        )
+        messages = await client.get(f"/api/repos/{_REPO_ID}/chat/conversations/{conversation_id}")
         user_message_id = messages.json()["messages"][0]["id"]
         forked_before = await client.post(
             f"/api/repos/{_REPO_ID}/chat/conversations/{conversation_id}/fork",
@@ -199,9 +195,7 @@ async def test_conversation_history_supports_rename_pin_fork_and_delete_undo():
         assert forked.status_code == 200
         assert forked.json()["message_count"] == 2
 
-        deleted = await client.delete(
-            f"/api/repos/{_REPO_ID}/chat/conversations/{conversation_id}"
-        )
+        deleted = await client.delete(f"/api/repos/{_REPO_ID}/chat/conversations/{conversation_id}")
         assert deleted.status_code == 200
         listed = await client.get(f"/api/repos/{_REPO_ID}/chat/conversations")
         assert all(row["id"] != conversation_id for row in listed.json())
@@ -212,6 +206,64 @@ async def test_conversation_history_supports_rename_pin_fork_and_delete_undo():
         assert restored.status_code == 200
         listed = await client.get(f"/api/repos/{_REPO_ID}/chat/conversations")
         assert any(row["id"] == conversation_id for row in listed.json())
+
+
+@pytest.mark.asyncio
+async def test_artifact_lookup_pin_and_repository_isolation():
+    app = await _make_app()
+    async with app.state.session_factory() as session:
+        conversation = await crud.create_conversation(
+            session,
+            repository_id=_REPO_ID,
+            title="Artifacts",
+        )
+        message = await crud.create_chat_message(
+            session,
+            conversation_id=conversation.id,
+            role="assistant",
+            content={
+                "tool_calls": [
+                    {
+                        "id": "tool-1",
+                        "name": "get_context",
+                        "result": {"targets": {"src/a.py": {}}},
+                        "artifact_type": "context",
+                    }
+                ]
+            },
+        )
+        await session.commit()
+
+    normalized = normalize_message_artifacts(
+        json.loads(message.content_json),
+        message_id=message.id,
+    )
+    artifact_id = normalized["tool_calls"][0]["artifact"]["id"]
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        fetched = await client.get(
+            f"/api/repos/{_REPO_ID}/chat/conversations/{conversation.id}/artifacts/{artifact_id}"
+        )
+        assert fetched.status_code == 200
+        assert fetched.json()["id"] == artifact_id
+
+        isolated = await client.get(
+            f"/api/repos/other-repo/chat/conversations/{conversation.id}/artifacts/{artifact_id}"
+        )
+        assert isolated.status_code == 404
+
+        pinned = await client.patch(
+            f"/api/repos/{_REPO_ID}/chat/conversations/{conversation.id}/artifacts/{artifact_id}",
+            json={"pinned": True},
+        )
+        assert pinned.status_code == 200
+        assert pinned.json()["pinned"] is True
+
+        restored = await client.get(f"/api/repos/{_REPO_ID}/chat/conversations/{conversation.id}")
+        call = restored.json()["messages"][0]["content"]["tool_calls"][0]
+        assert call["artifact"]["pinned"] is True
+        assert "result" not in call
 
 
 def test_conversation_refinement_migration_upgrades_sqlite() -> None:

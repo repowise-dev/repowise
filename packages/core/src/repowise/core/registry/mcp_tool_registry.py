@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from typing import Any
 
 TOOL_TIERS = frozenset({"canonical", "utility", "specialist"})
+TOOL_SAFETY_KINDS = frozenset({"read_only", "generative", "mutating"})
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,10 @@ class ToolEntry:
     surface_order: int = 1000
     trust_kind: str | None = None
     recipes: tuple[ToolRecipe, ...] = ()
+    artifact_type: str = "generic"
+    presentation: str = "generic"
+    safety: str = "read_only"
+    evidence_basis: str = "unknown"
 
 
 class MCPToolRegistry:
@@ -84,6 +89,10 @@ class MCPToolRegistry:
         surface_order: int = 1000,
         trust_kind: str | None = None,
         recipes: tuple[ToolRecipe, ...] = (),
+        artifact_type: str = "generic",
+        presentation: str = "generic",
+        safety: str = "read_only",
+        evidence_basis: str = "unknown",
         **kwargs: Any,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]] | Callable[..., Any]:
         """Decorator that schedules a function for FastMCP registration.
@@ -113,6 +122,13 @@ class MCPToolRegistry:
                 raise ValueError("canonical MCP tools must be default and single-repo eligible")
             if resolved_tier == "specialist" and default:
                 raise ValueError("specialist MCP tools must be opt-in (default=False)")
+            if safety not in TOOL_SAFETY_KINDS:
+                raise ValueError(
+                    f"unknown MCP tool safety {safety!r}; "
+                    f"expected one of {sorted(TOOL_SAFETY_KINDS)}"
+                )
+            if evidence_basis not in {"measured", "inferred", "unknown"}:
+                raise ValueError("artifact evidence_basis must be measured, inferred, or unknown")
             self._entries.append(
                 ToolEntry(
                     fn=fn,
@@ -123,6 +139,10 @@ class MCPToolRegistry:
                     surface_order=surface_order,
                     trust_kind=trust_kind,
                     recipes=recipes,
+                    artifact_type=artifact_type,
+                    presentation=presentation,
+                    safety=safety,
+                    evidence_basis=evidence_basis,
                 )
             )
             fn.__dict__["__repowise_trust_kind__"] = trust_kind
@@ -184,4 +204,11 @@ mcp_tool_registry = MCPToolRegistry()
 """Process-wide default registry used by the OSS MCP server."""
 
 
-__all__ = ["TOOL_TIERS", "MCPToolRegistry", "ToolEntry", "ToolRecipe", "mcp_tool_registry"]
+__all__ = [
+    "TOOL_SAFETY_KINDS",
+    "TOOL_TIERS",
+    "MCPToolRegistry",
+    "ToolEntry",
+    "ToolRecipe",
+    "mcp_tool_registry",
+]

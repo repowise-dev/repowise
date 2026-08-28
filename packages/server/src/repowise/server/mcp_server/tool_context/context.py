@@ -80,6 +80,8 @@ _INCLUDE_BLOCKS = frozenset(
 
 @mcp.tool(
     surface_order=20,
+    artifact_type="context",
+    presentation="context",
     recipes=(
         ToolRecipe(
             "read_file_shape",
