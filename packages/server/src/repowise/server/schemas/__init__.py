@@ -227,7 +227,6 @@ from .zoom import (
 )
 
 __all__ = [
-    "ArtifactUpdateRequest",
     "AgentTrendBucket",
     "AgentTrendResponse",
     "ArchEdgeResponse",
@@ -239,6 +238,7 @@ __all__ = [
     "ArchitectureGraphResponse",
     "ArchitectureNodeResponse",
     "ArchitectureViewResponse",
+    "ArtifactUpdateRequest",
     "BlastRadiusRequest",
     "BlastRadiusResponse",
     "C4ComponentResponse",
