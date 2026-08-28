@@ -146,7 +146,7 @@ class RefactoringContext:
     # Populated only by the full-index path; the incremental, re-score and
     # ``repowise health`` paths leave it empty. Split File degrades to the
     # callee's file path, so the signal weakens rather than changing namespace.
-    module_map: dict[str, str] = field(default_factory=dict)
+    community_label_map: dict[str, str] = field(default_factory=dict)
     # The repo's symbol/file graph (a ``networkx.DiGraph``, typed ``Any`` to
     # avoid importing networkx into the model layer). A shared read-only
     # reference — the graph-native detectors (Move Method, Break Cycle) read

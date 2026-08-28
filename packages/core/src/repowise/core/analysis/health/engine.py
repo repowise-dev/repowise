@@ -311,7 +311,7 @@ class HealthAnalyzer:
         performance_git_meta_map: dict[str, dict] | None = None,
         parsed_files: list[Any] | None = None,
         coverage_map: dict[str, dict[str, Any]] | None = None,
-        module_map: dict[str, str] | None = None,
+        community_label_map: dict[str, str] | None = None,
         duplication_cache_dir: Any | None = None,
         repo_root: Any | None = None,
     ) -> None:
@@ -324,12 +324,11 @@ class HealthAnalyzer:
         # total_coverable_lines}``. ``None``-equivalent files are simply
         # absent from the map.
         self.coverage_map = coverage_map or {}
-        # Per-file module label keyed by repo-relative POSIX path.
-        # Populated from graph community labels by the orchestrator. When
-        # missing, the engine falls back to the top-level directory so
-        # module rollups still group sensibly on small repos that didn't
-        # produce community labels.
-        self.module_map = module_map or {}
+        # Per-file community label keyed by repo-relative POSIX path,
+        # populated from graph community detection by the orchestrator and
+        # consumed only by the refactoring detectors. Distinct from the
+        # ``module`` column, which is a path derived from package boundaries.
+        self.community_label_map = community_label_map or {}
         # Directory for the duplication token/window cache (typically the
         # repo's ``.repowise``). None disables caching — the duplication
         # pass then re-tokenizes everything, exactly as before.
@@ -984,6 +983,8 @@ class HealthAnalyzer:
         clones = dup_report.pairs_by_file.get(file_path, [])
         dup_pct = dup_report.duplication_pct.get(file_path)
 
+        # The enclosing package root, falling back to the top-level directory
+        # when the repo has no nested packages.
         module = _module_for(file_path, package_roots)
 
         file_git_meta = self.git_meta_map.get(file_path, {}) or {}
@@ -1083,7 +1084,7 @@ class HealthAnalyzer:
             findings=findings,
             dependents_count=dependents_count,
             clones=list(clones),
-            module_map=self.module_map,
+            community_label_map=self.community_label_map,
             graph=self.graph,
             file_scc=(file_scc_index or {}).get(file_path),
             file_methods=(

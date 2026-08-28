@@ -17,6 +17,11 @@ from repowise.core.analysis.dead_code.file_reachability import (
 )
 from repowise.core.ids import file_path_of, is_external
 from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
+from repowise.core.ingestion.package_roots import (
+    module_for,
+    package_roots_from_paths,
+    scan_package_roots,
+)
 
 from ...co_change import parse_partners
 from ..categories import file_category
@@ -245,8 +250,11 @@ class ContextAssembler:
     ``config.token_budget`` tokens.
     """
 
-    def __init__(self, config: GenerationConfig) -> None:
+    def __init__(self, config: GenerationConfig, repo_path: Any | None = None) -> None:
         self._config = config
+        # Checkout root, used only to read package boundaries off disk.
+        self._repo_path = repo_path
+        self._package_roots: set[str] | None = None
 
     # ------------------------------------------------------------------
     # Token utilities
@@ -618,8 +626,30 @@ class ContextAssembler:
             most_fixed_file=most_fixed_file,
         )
 
-    @staticmethod
+    def _package_boundaries(self, known_paths: set[str]) -> set[str]:
+        """Package roots for this repo, resolved once.
+
+        Scans the checkout, exactly as the health writer does, so both producers
+        of ``module`` agree. The path-list fallback is for a caller with no
+        checkout, and it only sees manifests already in *known_paths* -- on an
+        incremental run that is the changed files alone, which is why the scan
+        is preferred rather than optional.
+        """
+        if self._package_roots is not None:
+            return self._package_roots
+        roots: set[str] | None = None
+        if self._repo_path is not None:
+            try:
+                roots = scan_package_roots(self._repo_path)
+            except OSError as exc:
+                log.debug("generation_package_root_scan_failed", error=str(exc))
+        if roots is None:
+            roots = package_roots_from_paths(known_paths)
+        self._package_roots = roots
+        return roots
+
     def _module_git_enrichment(
+        self,
         files: list[str],
         member_set: set[str],
         git_meta_map: dict[str, dict] | None,
@@ -640,6 +670,8 @@ class ContextAssembler:
         if not metas:
             return 0, 0, 0, [], 0, {}
 
+        roots = self._package_boundaries(set(git_meta_map))
+
         hotspot_count = sum(1 for m in metas if m.get("is_hotspot"))
         stable_count = sum(1 for m in metas if m.get("is_stable"))
         # bus_factor is the number of authors covering the bulk of a file's
@@ -654,8 +686,9 @@ class ContextAssembler:
             for p in parse_partners(m.get("co_change_partners_json")):
                 if p.file_path in member_set:
                     continue
-                module = p.file_path.rsplit("/", 1)[0] if "/" in p.file_path else p.file_path
-                coupled[module] += 1
+                module = module_for(p.file_path, roots)
+                if module:
+                    coupled[module] += 1
         coupled_modules = [{"path": path, "count": count} for path, count in coupled.most_common(5)]
 
         bugfix_total = sum(int(m.get("prior_defect_count") or 0) for m in metas)

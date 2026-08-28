@@ -93,7 +93,7 @@ async def run_generation(
     # Falls back to defaults when the pipeline entry point did not thread one through.
     base_config = generation_config if generation_config is not None else GenerationConfig()
     config = replace(base_config, max_concurrency=concurrency)
-    assembler = ContextAssembler(config)
+    assembler = ContextAssembler(config, repo_path=repo_path)
 
     # Test-run: limit to top 10 files by PageRank for a fast validation run.
     # Applied here rather than only in the orchestrator so it works whether the

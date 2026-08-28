@@ -64,6 +64,7 @@ from repowise.server.schemas import (
     RiskHistogramBucket,
     RiskRangeResponse,
 )
+from repowise.server.services.module_health import top_level_module
 from repowise.server.services.reviewer_suggestions import suggest_reviewers
 
 # Below this many sampled commits a percentile isn't worth showing; mirrors
@@ -560,9 +561,7 @@ async def get_ownership(
     else:
         modules: dict[str, list] = {}
         for m in all_meta:
-            parts = m.file_path.split("/")
-            module = parts[0] if len(parts) > 1 else "root"
-            modules.setdefault(module, []).append(m)
+            modules.setdefault(top_level_module(m.file_path), []).append(m)
 
         entries = []
         for module_path, files in sorted(modules.items()):

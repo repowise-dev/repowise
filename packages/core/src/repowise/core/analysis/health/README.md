@@ -18,7 +18,7 @@ analyzer = HealthAnalyzer(
     git_meta_map=git_meta_map,
     parsed_files=parsed_files,
     coverage_map=coverage_map,   # optional, see coverage/README.md
-    module_map=module_map,       # optional, file_path → community label
+    community_label_map=...,     # optional, file_path → community label
 )
 
 report = analyzer.analyze(config=None)

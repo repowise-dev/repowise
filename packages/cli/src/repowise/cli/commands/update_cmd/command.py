@@ -1660,7 +1660,7 @@ def run_update(
     # re-embedded, so every update silently evicted its pages from semantic
     # search — on long-lived repos the LanceDB corpus ended up holding
     # decisions and structural pages but zero current file pages.
-    assembler = ContextAssembler(config)
+    assembler = ContextAssembler(config, repo_path=repo_path)
     generator = PageGenerator(
         provider,
         assembler,

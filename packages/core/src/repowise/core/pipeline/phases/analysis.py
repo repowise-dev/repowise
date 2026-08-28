@@ -193,11 +193,11 @@ async def _run_health_analysis(
             # the entire pre-walk — most of the phase's wall-clock.
             progress.on_phase_start("health", 2 * len(parsed_files))
 
-        # Build a {file_path → community label} map so per-file metrics
-        # carry a real module name, not None. Community detection is
-        # already computed for the graph view, so this is essentially
-        # free.
-        module_map: dict[str, str] = {}
+        # Build a {file_path → community label} map for the refactoring
+        # detectors. Community detection is already computed for the graph
+        # view, so this is essentially free. It is not the ``module`` column:
+        # that is a path, written from the package boundaries.
+        community_label_map: dict[str, str] = {}
         try:
             cd = graph_builder.community_detection()
             ci = graph_builder.community_info()
@@ -205,9 +205,9 @@ async def _run_health_analysis(
                 info = ci.get(comm_id)
                 label = getattr(info, "label", None) if info else None
                 if label:
-                    module_map[node_id] = label
+                    community_label_map[node_id] = label
         except Exception as exc:
-            logger.debug("health_module_map_failed", error=str(exc))
+            logger.debug("health_community_label_map_failed", error=str(exc))
 
         # Ingest coverage (auto-discovered or explicitly passed) so biomarkers
         # see real line/branch coverage instead of the has_test_file fallback.
@@ -223,7 +223,7 @@ async def _run_health_analysis(
             graph_builder.graph(),
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
-            module_map=module_map,
+            community_label_map=community_label_map,
             coverage_map=coverage_map,
             duplication_cache_dir=(repo_path / ".repowise") if repo_path is not None else None,
             repo_root=repo_path,

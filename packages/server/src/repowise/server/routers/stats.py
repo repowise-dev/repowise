@@ -41,6 +41,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.services.module_health import top_level_module
 
 router = APIRouter(
     prefix="/api/repos",
@@ -582,8 +583,7 @@ def _people(all_meta: list[Any]) -> dict[str, Any]:
             owners[m.primary_owner_name] = owners.get(m.primary_owner_name, 0) + 1
         if (m.bus_factor or 0) == 1:
             single_owner_files += 1
-        parts = m.file_path.split("/")
-        module = parts[0] if len(parts) > 1 else "root"
+        module = top_level_module(m.file_path)
         module_file_totals[module] = module_file_totals.get(module, 0) + 1
         if m.primary_owner_name:
             bucket = module_owner_files.setdefault(module, {})

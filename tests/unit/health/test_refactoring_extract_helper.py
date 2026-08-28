@@ -65,7 +65,7 @@ def _ctx(
     clones: list[ClonePair],
     *,
     findings: list | None = None,
-    module_map: dict[str, str] | None = None,
+    community_label_map: dict[str, str] | None = None,
     source_lines: list[str] | None = None,
 ) -> RefactoringContext:
     return RefactoringContext(
@@ -76,7 +76,7 @@ def _ctx(
         findings=findings or [],
         dependents_count=0,
         clones=clones,
-        module_map=module_map or {},
+        community_label_map=community_label_map or {},
         source_lines=source_lines,
     )
 
@@ -336,8 +336,8 @@ def test_confidence_medium_when_dormant():
 # ---- suggested site ------------------------------------------------------
 
 
-def _site_for(module_map: dict[str, str] | None) -> dict:
-    """The suggested site for one fixed cross-package clone, under *module_map*.
+def _site_for(community_label_map: dict[str, str] | None) -> dict:
+    """The suggested site for one fixed cross-package clone, under *community_label_map*.
 
     The occurrences deliberately live in different top-level packages, so the
     only honest shared directory is the shallow ``pkg`` -- the case where a
@@ -346,7 +346,9 @@ def _site_for(module_map: dict[str, str] | None) -> dict:
     pair = _pair("pkg/api/a.py", "pkg/core/b.py", 10, 25, 40, 55)
     s = next(
         s
-        for s in detect_refactorings(_ctx("pkg/api/a.py", [pair], module_map=module_map))
+        for s in detect_refactorings(
+            _ctx("pkg/api/a.py", [pair], community_label_map=community_label_map)
+        )
         if s.refactoring_type == "extract_helper"
     )
     return s.plan
@@ -362,7 +364,7 @@ def test_suggested_site_ignores_a_hostile_community_label():
     """The load-bearing property: the plan no longer depends on which write
     path produced it.
 
-    ``module_map`` is populated by the full-index path alone -- the incremental,
+    ``community_label_map`` is populated by the full-index path alone -- the incremental,
     re-score and ``repowise health`` paths leave it empty -- so a label-derived
     site made the payload's namespace a function of the last writer. Here the
     label ``ui`` is on *neither* occurrence's path, which is the shape measured

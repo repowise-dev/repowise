@@ -2,17 +2,7 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
-
-# Strip the trailing " (N)" suffix that community detection appends to
-# disambiguate same-named modules. The leak is harmless in the DB but
-# noisy in the dashboard.
-_MODULE_SUFFIX = re.compile(r"\s*\(\d+\)\s*$")
-
-
-def _clean_module(name: str) -> str:
-    return _MODULE_SUFFIX.sub("", name).strip()
 
 
 def _module_rollups(metrics: list[Any]) -> list[dict]:
@@ -20,7 +10,7 @@ def _module_rollups(metrics: list[Any]) -> list[dict]:
     buckets: dict[str, list[Any]] = {}
     for m in metrics:
         if m.module:
-            buckets.setdefault(_clean_module(m.module), []).append(m)
+            buckets.setdefault(m.module, []).append(m)
     rows: list[dict] = []
     for name, group in buckets.items():
         total_nloc = sum(max(r.nloc, 1) for r in group)

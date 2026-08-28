@@ -16,7 +16,6 @@ from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
 
 from ._router import router
-from .aggregation import _clean_module
 
 _SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
@@ -113,7 +112,7 @@ async def health_work_queue(
                 "file_path": file_path,
                 "score": round(score, 2),
                 "nloc": nloc,
-                "module": _clean_module(m.module) if (m and m.module) else None,
+                "module": m.module if (m and m.module) else None,
                 "primary_biomarker": primary.biomarker_type,
                 "primary_severity": primary.severity,
                 "primary_reason": primary.reason,

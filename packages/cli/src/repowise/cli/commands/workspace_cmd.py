@@ -774,7 +774,7 @@ def _generate_docs_for_added_repo(
         # Whole-repo selection, so honour the per-repo file-page cap.
         max_file_pages=resolve_max_file_pages(config=repo_cfg),
     )
-    assembler = ContextAssembler(config)
+    assembler = ContextAssembler(config, repo_path=repo_path)
     generator = PageGenerator(
         provider, assembler, config, language=config.language, repo_path=repo_path
     )

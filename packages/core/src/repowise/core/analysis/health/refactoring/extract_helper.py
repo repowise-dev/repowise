@@ -424,7 +424,7 @@ class ExtractHelperDetector(RefactoringDetector):
           in** — ``module: "ui"`` for a block shared by ``packages/api-client``,
           ``packages/types`` and ``packages/ui``. Acting on it files shared code
           into a package two thirds of its callers are not in.
-        - **The namespace depended on the writer.** ``module_map`` is populated
+        - **The namespace depended on the writer.** ``community_label_map`` is populated
           only by the full-index path; the incremental, re-score and
           ``repowise health`` paths leave it empty, so the same clone got
           ``"ui"`` or ``None`` depending on which pass last wrote the row. That

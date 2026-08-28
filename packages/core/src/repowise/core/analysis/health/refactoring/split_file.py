@@ -472,7 +472,7 @@ class SplitFileDetector(RefactoringDetector):
                     cdata = graph.nodes.get(callee, {})
                     fpath = cdata.get("file_path")
                     if fpath and fpath != ctx.file_path:
-                        label = ctx.module_map.get(fpath) or fpath
+                        label = ctx.community_label_map.get(fpath) or fpath
                         foreign_of[owner].add(label)
                         # The imported names this file pulls from the callee's
                         # file approximate the dependency surface this symbol
