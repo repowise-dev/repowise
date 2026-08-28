@@ -194,6 +194,7 @@ async def _run_upgrade(
         create_session_factory,
         get_session,
         init_db,
+        load_prior_pages,
         upsert_pages_from_generated,
         upsert_repository,
     )
@@ -210,6 +211,17 @@ async def _run_upgrade(
     async with get_session(sf) as session:
         repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
         repo_id = repo.id
+
+    # 1b. Load prior pages for cross-run reuse: a fast index's template wiki
+    # is replaced wholesale, but an ``--index-only`` repo whose pages a model
+    # already wrote (a re-run of ``update --full``) must not re-bill them.
+    # The subject-keyed gate (issue #1089) reuses unchanged pages and only
+    # bills the ones whose subject or renderer moved.
+    try:
+        async with get_session(sf) as session:
+            prior_pages = await load_prior_pages(session, repo_id)
+    except Exception:
+        prior_pages = {}
 
     # 2. Backfill the git tier ESSENTIAL -> FULL (resumable via JobStore).
     git_meta_map = await _backfill_git(
@@ -280,6 +292,7 @@ async def _run_upgrade(
         progress=None,
         cost_tracker=cost_tracker,
         generation_config=config,
+        prior_pages=prior_pages,
     )
 
     # Flush buffered cost rows now generation is done (best-effort).

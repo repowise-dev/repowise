@@ -259,12 +259,17 @@ def run_repo_generation(
     resume: bool,
     verbose: bool,
     test_run: bool = False,
+    reuse_prior_pages: bool = True,
 ) -> list[Any]:
     """Generate wiki pages for one repo and enrich its knowledge graph.
 
     Builds the embedder + vector store + cost tracker, runs the resume-friendly
     generation wrapper, enriches the KG, and flushes buffered cost rows in one
     transaction (kept out of the contended generation window, issue #326).
+
+    ``reuse_prior_pages=False`` (``repowise init --force``) disables the
+    cross-run reuse gate so every page is regenerated, as the flag's help
+    text has always promised (issue #1089).
 
     Mutates ``result`` in place with ``generated_pages``, ``preserved_page_ids``
     (the pages a resumed run skipped, which persistence must not sweep) and
@@ -342,6 +347,7 @@ def run_repo_generation(
                 progress=gen_callback,
                 resume=resume,
                 preserved_page_ids=preserved_page_ids,
+                reuse_prior_pages=reuse_prior_pages,
                 cost_tracker=cost_tracker,
                 generation_config=gen_config,
                 # In-memory curated modules: on a fresh init the

@@ -266,6 +266,7 @@ def _run_generation_phase(
     embedder_name_resolved: str,
     resume: bool,
     test_run: bool,
+    reuse_prior_pages: bool = True,
 ) -> tuple[bool, bool]:
     """Run the LLM generation phase for a single-repo init.
 
@@ -273,6 +274,9 @@ def _run_generation_phase(
     and the caller should return immediately; ``cost_declined`` is True when the
     user declined the cost gate (generation skipped, index still saved). Mutates
     ``result`` in place with the generated pages, vector store, and enriched KG.
+
+    ``reuse_prior_pages=False`` is ``--force``: every page is regenerated
+    instead of reused from the prior run (issue #1089).
     """
     from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
     from repowise.core.generation import GenerationConfig
@@ -395,6 +399,7 @@ def _run_generation_phase(
         resume=resume,
         verbose=True,
         test_run=test_run,
+        reuse_prior_pages=reuse_prior_pages,
     )
     return False, False
 
@@ -1411,6 +1416,9 @@ def init_command(
             # say nothing, so a template wiki is never a run to continue.
             resume=resume and _prior_docs_mode != "deterministic",
             test_run=test_run,
+            # ``--force`` regenerates every page: the reuse gate is off, so
+            # nothing is carried over from the prior run (issue #1089).
+            reuse_prior_pages=not force,
         )
         if gen_stop:
             return
