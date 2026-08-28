@@ -7,6 +7,7 @@ export interface ConversationResponse {
   repository_id: string;
   title: string;
   message_count: number;
+  pinned?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -25,6 +26,8 @@ export interface ChatMessageResponse {
       summary?: string;
       artifact_type?: string;
     }>;
+    provider?: string;
+    model?: string;
   };
   created_at: string;
 }
@@ -44,5 +47,5 @@ export type ChatSSEEvent =
       summary: string;
       artifact: { type: string; data: Record<string, unknown> };
     }
-  | { type: "done"; conversation_id: string; message_id: string }
+  | { type: "done"; conversation_id: string; message_id: string; user_message_id?: string; provider?: string; model?: string }
   | { type: "error"; message: string };

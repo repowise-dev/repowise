@@ -62,6 +62,7 @@ class ConversationResponse(BaseModel):
     repository_id: str
     title: str
     message_count: int = 0
+    pinned: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -72,9 +73,20 @@ class ConversationResponse(BaseModel):
             repository_id=obj.repository_id,  # type: ignore[attr-defined]
             title=obj.title,  # type: ignore[attr-defined]
             message_count=message_count,
+            pinned=bool(getattr(obj, "pinned", False)),
             created_at=obj.created_at,  # type: ignore[attr-defined]
             updated_at=obj.updated_at,  # type: ignore[attr-defined]
         )
+
+
+class ConversationUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    pinned: bool | None = None
+
+
+class ConversationForkRequest(BaseModel):
+    through_message_id: str | None = None
+    before_message_id: str | None = None
 
 
 class ChatMessageResponse(BaseModel):

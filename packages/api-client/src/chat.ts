@@ -2,7 +2,7 @@
  * Chat API module — conversation management and SSE message streaming.
  */
 
-import { apiGet, apiDelete, BASE_URL, buildHeaders } from "./client";
+import { apiGet, apiDelete, apiPatch, apiPost, BASE_URL, buildHeaders } from "./client";
 import type { ConversationResponse, ChatMessageResponse } from "./types";
 import type { ChatContext } from "@repowise-dev/types/chat";
 
@@ -29,6 +29,29 @@ export async function deleteConversation(
   conversationId: string,
 ): Promise<void> {
   await apiDelete(`/api/repos/${repoId}/chat/conversations/${conversationId}`);
+}
+
+export async function restoreConversation(repoId: string, conversationId: string) {
+  return apiPost<ConversationResponse>(`/api/repos/${repoId}/chat/conversations/${conversationId}/restore`);
+}
+
+export async function updateConversation(
+  repoId: string,
+  conversationId: string,
+  patch: { title?: string; pinned?: boolean },
+) {
+  return apiPatch<ConversationResponse>(`/api/repos/${repoId}/chat/conversations/${conversationId}`, patch);
+}
+
+export async function forkConversation(
+  repoId: string,
+  conversationId: string,
+  point?: { throughMessageId?: string; beforeMessageId?: string },
+) {
+  return apiPost<ConversationResponse>(`/api/repos/${repoId}/chat/conversations/${conversationId}/fork`, {
+    through_message_id: point?.throughMessageId ?? null,
+    before_message_id: point?.beforeMessageId ?? null,
+  });
 }
 
 /**

@@ -37,7 +37,9 @@ from .c4 import (
 from .chat import (
     ChatMessageResponse,
     ChatRequest,
+    ConversationForkRequest,
     ConversationResponse,
+    ConversationUpdateRequest,
 )
 from .code_quality import (
     DeadCodeFindingResponse,
@@ -266,6 +268,8 @@ __all__ = [
     "CommunitySliceResponse",
     "CommunitySummaryItem",
     "ConversationResponse",
+    "ConversationForkRequest",
+    "ConversationUpdateRequest",
     "CoordinatorHealthResponse",
     "CostGroupResponse",
     "CostSummaryResponse",

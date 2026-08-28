@@ -27,7 +27,9 @@ from repowise.server.provider_config import get_chat_provider_instance
 from repowise.server.schemas import (
     ChatMessageResponse,
     ChatRequest,
+    ConversationForkRequest,
     ConversationResponse,
+    ConversationUpdateRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -166,6 +168,7 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
     async def event_stream():
         conv_id = body.conversation_id
         msg_id = ""
+        user_msg_id = ""
 
         try:
             # Emit retry interval
@@ -175,7 +178,7 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
             async with get_session(factory) as session:
                 if conv_id:
                     conv = await crud.get_conversation(session, conv_id)
-                    if not conv or conv.repository_id != repo_id:
+                    if not conv or conv.repository_id != repo_id or conv.deleted_at is not None:
                         # Every other failure here goes out on the ``data``
                         # channel carrying a ``type``, which is the only shape
                         # the client switches on. This one used to be an
@@ -195,12 +198,13 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
                     conv_id = conv.id
 
                 # Save user message
-                await crud.create_chat_message(
+                user_msg = await crud.create_chat_message(
                     session,
                     conversation_id=conv_id,
                     role="user",
                     content={"text": body.message},
                 )
+                user_msg_id = user_msg.id
 
             # Build message history from DB
             async with get_session(factory) as session:
@@ -394,6 +398,8 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
                     content={
                         "text": final_text,
                         "tool_calls": tool_calls_made,
+                        "provider": provider.provider_name,
+                        "model": provider.model_name,
                     },
                 )
                 msg_id = msg.id
@@ -405,6 +411,9 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
                     "type": "done",
                     "conversation_id": conv_id,
                     "message_id": msg_id,
+                    "user_message_id": user_msg_id,
+                    "provider": provider.provider_name,
+                    "model": provider.model_name,
                 },
             )
 
@@ -456,7 +465,7 @@ async def get_conversation(
     session=Depends(get_db_session),
 ):
     conv = await crud.get_conversation(session, conversation_id)
-    if not conv or conv.repository_id != repo_id:
+    if not conv or conv.repository_id != repo_id or conv.deleted_at is not None:
         raise HTTPException(404, "Conversation not found")
 
     messages = await crud.list_chat_messages(session, conversation_id)
@@ -477,6 +486,62 @@ async def delete_conversation(
         raise HTTPException(404, "Conversation not found")
     await crud.delete_conversation(session, conversation_id)
     return {"ok": True}
+
+
+@router.post("/api/repos/{repo_id}/chat/conversations/{conversation_id}/restore")
+async def restore_conversation(repo_id: str, conversation_id: str, session=Depends(get_db_session)):
+    conv = await crud.get_conversation(session, conversation_id)
+    if not conv or conv.repository_id != repo_id:
+        raise HTTPException(404, "Conversation not found")
+    restored = await crud.restore_conversation(session, conversation_id)
+    return ConversationResponse.from_orm(restored)
+
+
+@router.patch("/api/repos/{repo_id}/chat/conversations/{conversation_id}")
+async def update_conversation(
+    repo_id: str,
+    conversation_id: str,
+    body: ConversationUpdateRequest,
+    session=Depends(get_db_session),
+):
+    conv = await crud.get_conversation(session, conversation_id)
+    if not conv or conv.repository_id != repo_id or conv.deleted_at is not None:
+        raise HTTPException(404, "Conversation not found")
+    if body.title is not None:
+        title = body.title.strip()
+        if not title:
+            raise HTTPException(422, "Conversation title cannot be blank")
+        conv = await crud.update_conversation_title(session, conversation_id, title)
+    if body.pinned is not None:
+        conv = await crud.set_conversation_pinned(session, conversation_id, body.pinned)
+    return ConversationResponse.from_orm(conv)
+
+
+@router.post("/api/repos/{repo_id}/chat/conversations/{conversation_id}/fork")
+async def fork_conversation(
+    repo_id: str,
+    conversation_id: str,
+    body: ConversationForkRequest,
+    session=Depends(get_db_session),
+):
+    conv = await crud.get_conversation(session, conversation_id)
+    if not conv or conv.repository_id != repo_id or conv.deleted_at is not None:
+        raise HTTPException(404, "Conversation not found")
+    if body.through_message_id is not None and body.before_message_id is not None:
+        raise HTTPException(422, "Choose either a through or before fork point")
+    fork_point = body.through_message_id or body.before_message_id
+    if fork_point is not None:
+        messages = await crud.list_chat_messages(session, conversation_id)
+        if all(message.id != fork_point for message in messages):
+            raise HTTPException(404, "Fork point not found")
+    fork = await crud.fork_conversation(
+        session,
+        conversation_id,
+        through_message_id=body.through_message_id,
+        before_message_id=body.before_message_id,
+    )
+    count = await crud.count_chat_messages(session, fork.id)
+    return ConversationResponse.from_orm(fork, message_count=count)
 
 
 # ---------------------------------------------------------------------------

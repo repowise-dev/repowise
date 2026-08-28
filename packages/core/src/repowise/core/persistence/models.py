@@ -1040,6 +1040,8 @@ class Conversation(Base):
         String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
     )
     title: Mapped[str] = mapped_column(Text, nullable=False, default="New conversation")
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
