@@ -41,9 +41,9 @@ from repowise.core.generation.layers import (
     ADJACENT_LAYERS,
     compute_layer_order,
     infer_layer,
-    is_support_path,
     layer_order_basis,
 )
+from repowise.core.support_paths import is_support_path
 from repowise.core.generation.tour import (
     DEFAULT_MAX_STOPS,
     build_tour,

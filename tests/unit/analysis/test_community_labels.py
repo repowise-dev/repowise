@@ -113,3 +113,38 @@ class TestDetectFileCommunitiesLabels:
         # The informative segments survive somewhere in the labels.
         joined = " ".join(labels)
         assert "ingestion" in joined and "web" in joined
+
+
+class TestExampleSeparation:
+    """Example trees are demoted alongside tests, not partitioned as production."""
+
+    def test_examples_are_demoted_with_tests_not_partitioned(self):
+        # An example and a test, neither importing production code. Partitioned
+        # as production they would each be an isolate with its own community;
+        # demoted they share the non-core catch-all.
+        paths = ["src/a1.py", "src/a2.py", "examples/demo.py", "tests/test_a.py"]
+        g = nx.DiGraph()
+        for path in paths:
+            g.add_node(
+                path,
+                node_type="file",
+                language="python",
+                is_test=path.startswith("tests/"),
+            )
+        g.add_edge("src/a1.py", "src/a2.py", edge_type="imports")
+
+        assignment, _info, _algo = detect_file_communities(g)
+
+        assert assignment["examples/demo.py"] == assignment["tests/test_a.py"]
+        assert assignment["examples/demo.py"] != assignment["src/a1.py"]
+
+    def test_example_files_keep_an_assignment(self):
+        # Demoted, not dropped: every file still lands in a community, so
+        # nothing becomes unreachable.
+        paths = ["src/a.py", "src/b.py", "examples/demo.py", "benches/bench.py"]
+        edges = [("src/a.py", "src/b.py"), ("examples/demo.py", "src/a.py")]
+        assignment, _info, _algo = detect_file_communities(_graph(paths, edges))
+
+        assert set(assignment) == set(paths)
+        # An example joins the community of the production file it imports.
+        assert assignment["examples/demo.py"] == assignment["src/a.py"]
