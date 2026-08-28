@@ -85,17 +85,30 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
         expansion_argument="include",
         protected=("answer", "confidence", "citations", "next_action_hint"),
     ),
+    # Dropping docs and episodes whole, and first, served 0 of 50 pages and 0 of
+    # 12 episodes on a file whose decision lane was 40 near-duplicates. They are
+    # ranked tails now, so a squeeze costs rows rather than the lane, and the
+    # decision lane pays before the lanes that answer.
+    #
+    # Search mode has no top-level origin_story or git_archaeology (its origin
+    # lives under the protected target_context), so for that shape the fix is
+    # the tail entries alone; the block entries only bite in path mode.
     "get_why": ResponseBudgetContract(
         "blocks",
         (
-            "related_documentation",
-            "episodes",
+            # Titles the decisions lane already carries.
             "origin_story.linked_decisions",
             "decisions[]",
             "code_rationale",
             "git_archaeology.file_commits",
             "git_archaeology.cross_references",
             "git_archaeology.git_log",
+            # Ranked tails, moved here from the front of this tuple. Episodes
+            # last: they answer "what constrains changing this" when no decision
+            # governs the file.
+            "related_documentation[]",
+            "episodes[]",
+            "related_documentation",
             "origin_story",
         ),
         expansion_argument=None,
