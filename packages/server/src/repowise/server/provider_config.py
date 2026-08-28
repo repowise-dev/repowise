@@ -142,6 +142,20 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "requires_key": False,
     },
     {
+        "id": "codex_cli",
+        "name": "Codex (Local CLI)",
+        "default_model": "codex_cli/default",
+        "models": [
+            # The CLI's model list comes from the authenticated codex catalog
+            # at runtime (see core/providers/llm/codex_cli.py), so the static
+            # catalog only names the sentinel default; list_provider_status
+            # appends the resolved active model when it isn't cataloged.
+            "codex_cli/default",
+        ],
+        "env_keys": [],
+        "requires_key": False,
+    },
+    {
         "id": "opencode",
         "name": "OpenCode (Local CLI)",
         "default_model": "opencode/default",
