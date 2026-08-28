@@ -624,6 +624,8 @@ Architectural decision intelligence. Falls back to git archaeology when no decis
 
 **Returns:** Matching decision records with title, rationale, alternatives considered, affected files, staleness score. Health mode returns stale decisions, conflicts, and ungoverned hotspots.
 
+`answer_basis` names the strongest lane the response rests on: `decision`, `episode`, `rationale`, `archaeology`, or `documentation`. Only `decision` is a ruling; the rest are evidence to weigh. Absent when no lane was served, and on the health dashboard.
+
 **When to use:** Before architectural changes, understand existing intent and constraints. After changes, record new decisions.
 
 **Example calls:**

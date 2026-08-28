@@ -60,6 +60,50 @@ from repowise.server.mcp_server._why_relevance import (
 )
 
 
+def _has_archaeology(archaeology: Any) -> bool:
+    """Whether an archaeology block found anything.
+
+    ``_git_archaeology_fallback`` always returns a dict, carrying ``triggered``
+    and a summary that may say it found nothing, so the block's presence proves
+    only that it ran.
+    """
+    return isinstance(archaeology, dict) and any(
+        archaeology.get(lane)
+        for lane in ("file_commits", "cross_references", "git_log")
+    )
+
+
+def _stamp_answer_basis(result: dict) -> dict:
+    """Name the strongest lane the response actually rests on.
+
+    This tool serves commit messages and mined comments beside decision
+    records. Only a decision is a ruling; the rest are evidence a reader has to
+    weigh. Per-row ``provenance`` answers that one row at a time, which is no
+    help in deciding how much of the whole response to trust.
+
+    Absent when nothing was served, so a refusal cannot read as an answer.
+    Re-derived after the budget pass has shed, so the claim cannot outlive the
+    lane it names; clears first to stay correct on that second call.
+    """
+    result.pop("answer_basis", None)
+    entries = [
+        e for e in (result.get("target_context") or {}).values() if isinstance(e, dict)
+    ]
+    if result.get("decisions") or any(e.get("governing_decisions") for e in entries):
+        result["answer_basis"] = "decision"
+    elif result.get("episodes"):
+        result["answer_basis"] = "episode"
+    elif result.get("code_rationale"):
+        result["answer_basis"] = "rationale"
+    elif _has_archaeology(result.get("git_archaeology")) or any(
+        _has_archaeology(e.get("git_archaeology")) for e in entries
+    ):
+        result["answer_basis"] = "archaeology"
+    elif result.get("related_documentation"):
+        result["answer_basis"] = "documentation"
+    return result
+
+
 @mcp.tool(
     surface_order=70,
     recipes=(
@@ -85,7 +129,10 @@ async def get_why(
     (decision health dashboard). Falls back to git archaeology when no
     decisions exist for a path — never empty. Evidence-bearing rows carry an
     explicit ``provenance`` and self-contained ``evidence_refs``; matching ids
-    mean shared evidence, not independent corroboration.
+    mean shared evidence, not independent corroboration. ``answer_basis`` names
+    the strongest lane the response rests on (decision, episode, rationale,
+    archaeology, documentation); only a decision is a ruling, the rest are
+    evidence to weigh.
 
     Args:
         query: question, file/module path, or omit for the dashboard.
@@ -108,13 +155,13 @@ async def get_why(
     if id:
         if repo == "all":
             return _unsupported_repo_all("get_why (reference lookup)")
-        return await _why_reference(id, repo, reference=reference)
+        return _stamp_answer_basis(await _why_reference(id, repo, reference=reference))
 
     # --- repo="all": search decisions across ALL repos ---
     if repo == "all":
         if not query:
             return _unsupported_repo_all("get_why (health dashboard)")
-        return await _why_workspace_search(query)
+        return _stamp_answer_basis(await _why_workspace_search(query))
 
     # --- Mode 1: No query → the targets, or the health dashboard ---
     # Targets first: a caller who named files and asked nothing has asked about
@@ -123,15 +170,17 @@ async def get_why(
     # what was asked about.
     if not query:
         if targets:
-            return await _why_targets(list(targets), repo)
+            return _stamp_answer_basis(await _why_targets(list(targets), repo))
+        # The dashboard is an orientation call, not an answer, so it carries no
+        # basis to name.
         return await _why_health_dashboard(repo)
 
     # --- Mode 2: Path → decisions, origin story, alignment ---
     if _is_path(query):
-        return await _why_path(query, repo)
+        return _stamp_answer_basis(await _why_path(query, repo))
 
     # --- Mode 3: Natural language → target-aware search ---
-    return await _why_search(query, targets, repo)
+    return _stamp_answer_basis(await _why_search(query, targets, repo))
 
 
 async def _why_reference(
@@ -721,9 +770,10 @@ def _fit_path_response(
     2. Drop governing records from the tail, all the way to none if it comes
        to that. They are sorted best-first, so the tail is review-queue noise,
        and an empty list plus a marker beats a rejected response.
-    3. Drop the fallback blocks the ungoverned branch adds
-       (``code_rationale``, then ``git_archaeology``), then ``origin_story``
-       whole. What survives — mode, path, alignment, ``_meta`` — is bounded.
+    3. Trim the fallback blocks the ungoverned branch adds (``code_rationale``,
+       then ``git_archaeology``) to a tail, dropping them whole only if that is
+       not enough, then ``origin_story``. What survives — mode, path,
+       alignment, ``_meta`` — is bounded.
 
     Every drop goes to the omission store, so the agent gets a
     ``[repowise#<ref>]`` marker it can expand rather than a silently shortened
@@ -763,7 +813,10 @@ def _fit_path_response(
     # the sequence meant the decisions loop ran with the episode block still
     # inflating the response, and a governing record was evicted to make room
     # for an episode that then survived — measured, not theorised.
-    _shed("origin_story.linked_decisions", "episodes")
+    # ``episodes[]`` floors at one row, so the whole-block entry behind it is
+    # what still empties the lane before the decisions loop below. Trimming
+    # first is why mild pressure costs rows: this served 0 of 20.
+    _shed("origin_story.linked_decisions", "episodes[]", "episodes")
 
     decisions: list = result_data.get("decisions") or []
     while decisions and _over():
@@ -783,7 +836,13 @@ def _fit_path_response(
             result_data["decisions_truncated"] = True
             result_data["decisions_omitted"] = result_data["decisions_total"] - len(decisions)
 
+    # The ungoverned branch's whole answer, and it served 0 of 58 mined
+    # rationale comments on a file with no governing record at all.
     _shed(
+        "code_rationale[]",
+        "git_archaeology.file_commits[]",
+        "git_archaeology.cross_references[]",
+        "git_archaeology.git_log[]",
         "code_rationale",
         "git_archaeology.file_commits",
         "git_archaeology.cross_references",

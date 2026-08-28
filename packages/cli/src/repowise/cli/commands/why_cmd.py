@@ -158,6 +158,9 @@ def project(payload: dict) -> dict:
         out["counts"] = payload["counts"]
     if payload.get("alignment"):
         out["alignment"] = payload["alignment"]
+    # Which lane the answer rests on. Only "decision" is a ruling.
+    if payload.get("answer_basis"):
+        out["answer_basis"] = payload["answer_basis"]
 
     decisions = payload.get("decisions")
     if decisions is not None:
