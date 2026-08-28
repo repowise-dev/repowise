@@ -107,7 +107,6 @@ class TestScanFile:
         ("source", "expected"),
         [
             ("eval (payload);\n", {"eval_call"}),
-            ("exec\n  (payload);\n", {"exec_call"}),
             ("window.eval(payload);\n", {"eval_call"}),
             ("const result = `${eval(payload)}`;\n", {"eval_call"}),
             ("retrieval (payload);\n", set()),
@@ -115,11 +114,38 @@ class TestScanFile:
             ("// eval(payload)\n", set()),
             ("/* exec(payload) */\n", set()),
             ('const text = "eval(payload)";\n', set()),
+            # ``exec`` is not a global in JavaScript, so a bare call is a local
+            # function, and a call on a receiver is ``RegExp.prototype.exec``.
+            # Neither spawns anything; see the corpus test below.
+            ("exec\n  (payload);\n", set()),
+            ("const m = /^a(b)$/.exec(cell);\n", set()),
+            ("while ((m = re.exec(expr)) !== null) {}\n", set()),
         ],
     )
     def test_fallback_eval_exec_call_corpus(self, source: str, expected: set[str]) -> None:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
         findings = asyncio.run(scanner.scan_file("calls.js", source, symbols=[]))
+        assert {row["kind"] for row in findings if row["kind"].endswith("_call")} == expected
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ('import { exec } from "child_process";\nexec(cmd);\n', {"exec_call"}),
+            ('const cp = require("child_process");\ncp.execSync(cmd);\n', {"exec_call"}),
+            (
+                'import { execFile } from "node:child_process";\nexecFile(bin, args);\n',
+                {"exec_call"},
+            ),
+            # Regex parsing in a file that also spawns: the gate is per file, so
+            # this is the residual false positive the gate cannot remove.
+            ('require("child_process");\nconst m = /a/.exec(s);\n', {"exec_call"}),
+        ],
+    )
+    def test_js_exec_is_reported_only_when_child_process_is_present(
+        self, source: str, expected: set[str]
+    ) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("spawn.ts", source, symbols=[]))
         assert {row["kind"] for row in findings if row["kind"].endswith("_call")} == expected
 
     def test_combined_prefilter_uses_the_same_safe_call_boundaries(self) -> None:
@@ -130,6 +156,29 @@ class TestScanFile:
         assert _ANY_PATTERN.search("window.eval(")
         assert not _ANY_PATTERN.search("retrieval (")
         assert not _ANY_PATTERN.search("my_eval(")
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            'const API_KEY = "abc123";\n',
+            "const N8N_API_KEY = 'abc123';\n",
+            'SECRET = "abc123"\n',
+            'PASSWORD = "abc123"\n',
+        ],
+    )
+    def test_secret_patterns_are_case_insensitive(self, source: str) -> None:
+        """The constant form is how a pinned credential is usually written.
+
+        Also covers the prefilter: ``_ANY_PATTERN`` is built from the patterns'
+        source text, so a per-pattern ``re.IGNORECASE`` flag would be dropped
+        there and the line would never reach the pattern loop.
+        """
+        from repowise.core.analysis.security_scan import _ANY_PATTERN
+
+        assert _ANY_PATTERN.search(source)
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("config.ts", source, symbols=[]))
+        assert {row["kind"] for row in findings} & {"hardcoded_secret", "hardcoded_password"}
 
     def test_single_line_subprocess_shell_true_is_flagged(self) -> None:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]

@@ -46,13 +46,36 @@ _CALL_PATTERNS: list[tuple[re.Pattern, str, str]] = [
 ]
 _CALL_KINDS = frozenset(kind for _, kind, _ in _CALL_PATTERNS)
 
+# ``exec`` is not a global in JavaScript; the name belongs to
+# ``RegExp.prototype.exec``. The receiver-chain prefix above therefore matches
+# ``re.exec(str)``, ``/x/.exec(s)`` and ``pattern.exec(xml)`` — idiomatic parsing
+# code, reported at ``high``. Measured on a 17-repo TypeScript corpus, every
+# ``exec_call`` hit outside Python was a regex match and none was a process
+# spawn, so the kind was pure noise on those languages.
+#
+# The dangerous call in JavaScript comes from ``child_process``, so that is what
+# gates it: a file that never names the module cannot spawn one. ``eval`` needs
+# no such gate — it is a genuine global there.
+_CHILD_PROCESS_IMPORT = re.compile(r"child_process|node:child_process")
+_JS_EXEC_CALL = re.compile(r"(?<![\w$])(?:[A-Za-z_$][\w$]*\s*\.\s*)*exec(?:File)?(?:Sync)?\s*\(")
+
 _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     *_CALL_PATTERNS,
     (re.compile(r"pickle\.loads"), "pickle_loads", "high"),
     (re.compile(r"subprocess\..*shell\s*=\s*True"), "subprocess_shell_true", "high"),
     (re.compile(r"os\.system"), "os_system", "high"),
-    (re.compile(r"password\s*=\s*['\"]"), "hardcoded_password", "high"),
-    (re.compile(r"(?:api_?key|secret)\s*=\s*['\"]"), "hardcoded_secret", "high"),
+    # Case-insensitive: the constant form (``API_KEY = "..."``, ``SECRET = "..."``)
+    # is the common one for a credential pinned in source, and the lowercase-only
+    # patterns walked straight past it. Found by scanning a corpus in which a
+    # live ``N8N_API_KEY = '...'`` sat unreported.
+    #
+    # Case-insensitivity is written as a scoped inline group rather than the
+    # ``re.IGNORECASE`` flag on purpose: ``_ANY_PATTERN`` below is built by
+    # concatenating these patterns' *source text*, which drops per-pattern
+    # flags. A flag here would leave the prefilter case-sensitive and it would
+    # reject the line before the pattern ever ran.
+    (re.compile(r"(?i:password)\s*=\s*['\"]"), "hardcoded_password", "high"),
+    (re.compile(r"(?i:api_?key|secret)\s*=\s*['\"]"), "hardcoded_secret", "high"),
     (re.compile(r'f[\'"].*SELECT.*\{.*\}'), "fstring_sql", "med"),
     (re.compile(r"\.execute\(\s*[\'\"]\s*SELECT.*\+"), "concat_sql", "med"),
     (re.compile(r"verify\s*=\s*False"), "tls_verify_false", "med"),
@@ -237,13 +260,25 @@ def _call_findings(file_path: str, source: str) -> list[dict]:
     masked = _mask_comments_and_strings(source)
     lines = source.splitlines()
     findings = []
+
+    def add(kind: str, severity: str, offset: int) -> None:
+        lineno = source.count("\n", 0, offset) + 1
+        snippet = lines[lineno - 1].strip()[:120] if lineno <= len(lines) else ""
+        findings.append({"kind": kind, "severity": severity, "snippet": snippet, "line": lineno})
+
+    is_python = file_path.lower().endswith((".py", ".pyi"))
     for pattern, kind, severity in _CALL_PATTERNS:
+        if kind == "exec_call" and not is_python:
+            continue  # handled below, gated on child_process
         for match in pattern.finditer(masked):
-            lineno = source.count("\n", 0, match.start()) + 1
-            snippet = lines[lineno - 1].strip()[:120] if lineno <= len(lines) else ""
-            findings.append(
-                {"kind": kind, "severity": severity, "snippet": snippet, "line": lineno}
-            )
+            add(kind, severity, match.start())
+
+    # The module name is searched in raw source on purpose: it arrives as a
+    # string literal (``require("child_process")``), which masking blanks.
+    if not is_python and _CHILD_PROCESS_IMPORT.search(source):
+        for match in _JS_EXEC_CALL.finditer(masked):
+            add("exec_call", "high", match.start())
+
     return findings
 
 
