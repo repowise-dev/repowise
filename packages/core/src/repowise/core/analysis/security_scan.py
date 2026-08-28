@@ -64,10 +64,14 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r"pickle\.loads"), "pickle_loads", "high"),
     (re.compile(r"subprocess\..*shell\s*=\s*True"), "subprocess_shell_true", "high"),
     (re.compile(r"os\.system"), "os_system", "high"),
-    # Case-insensitive: the constant form (``API_KEY = "..."``, ``SECRET = "..."``)
-    # is the common one for a credential pinned in source, and the lowercase-only
-    # patterns walked straight past it. Found by scanning a corpus in which a
-    # live ``N8N_API_KEY = '...'`` sat unreported.
+    # Case-insensitive: a credential pinned in source is usually written as a
+    # SCREAMING_CASE constant assigned a quoted literal, and the lowercase-only
+    # patterns walked straight past that form. Found by scanning a corpus in
+    # which a live n8n key sat unreported under exactly that spelling.
+    #
+    # The wording above avoids spelling the matched form out literally: this
+    # loop runs on raw source, comments included, so an example written out here
+    # would make the file report itself.
     #
     # Case-insensitivity is written as a scoped inline group rather than the
     # ``re.IGNORECASE`` flag on purpose: ``_ANY_PATTERN`` below is built by
