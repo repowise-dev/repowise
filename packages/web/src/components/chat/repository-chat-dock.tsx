@@ -45,17 +45,25 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
 
   return (
     <ChatDock
-      storageKey={`repowise:chat-dock:${chat.repoId}`}
+      storageKey={`repowise:chat-dock:${chat.repoId}:${chat.conversationId ?? "new"}`}
       repoId={chat.repoId}
       repoName={chat.repoName}
       context={chat.pageContext}
       messages={chat.messages}
       isStreaming={chat.isStreaming}
       error={chat.error}
-      onSend={(text, context) => chat.sendMessage(text, { context })}
+      onSend={(text, context) => chat.sendMessage(text, {
+        context,
+        ...(chat.selectedProvider ? { provider: chat.selectedProvider } : {}),
+        ...(chat.selectedModel ? { model: chat.selectedModel } : {}),
+      })}
       onCancel={chat.cancel}
       buildCitationHref={(source) => pageHref(chat.repoId, source.pageId)}
-      onOpenFullChat={() => router.push(`/repos/${chat.repoId}/chat`)}
+      onOpenFullChat={() => router.push(
+        chat.conversationId
+          ? `/repos/${chat.repoId}/chat?conversation=${encodeURIComponent(chat.conversationId)}`
+          : `/repos/${chat.repoId}/chat`,
+      )}
       {...(collisionInset ? { collisionInset } : {})}
       sendDisabled={!anyConfigured}
       sendDisabledReason={
@@ -70,7 +78,7 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
           .
         </span>
       }
-      modelSelectorSlot={<ModelSelector repoId={chat.repoId} />}
+      modelSelectorSlot={<ModelSelector repoId={chat.repoId} activeProvider={chat.selectedProvider} activeModel={chat.selectedModel} onSelect={chat.selectModel} />}
       historySlot={
         <ConversationHistory
           repoId={chat.repoId}

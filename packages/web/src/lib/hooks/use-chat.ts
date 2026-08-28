@@ -27,6 +27,16 @@ const EMPTY_CHAT_STATE: UseChatState = {
   error: null,
 };
 
+function stopRunningTools(message: ChatMessage, summary: string): ChatMessage {
+  return {
+    ...message,
+    isStreaming: false,
+    toolCalls: message.toolCalls.map((tool) =>
+      tool.status === "running" ? { ...tool, status: "error" as const, summary } : tool,
+    ),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
@@ -36,12 +46,16 @@ export function useChat(repoId: string) {
 
   const abortRef = useRef<AbortController | null>(null);
   const activeRepoRef = useRef(repoId);
+  const conversationIdRef = useRef<string | null>(null);
+  const loadRequestRef = useRef(0);
 
   useEffect(() => {
     if (activeRepoRef.current !== repoId) {
       abortRef.current?.abort();
       abortRef.current = null;
+      loadRequestRef.current += 1;
       activeRepoRef.current = repoId;
+      conversationIdRef.current = null;
       setState(EMPTY_CHAT_STATE);
     }
     return () => abortRef.current?.abort();
@@ -53,11 +67,44 @@ export function useChat(repoId: string) {
       opts?: { provider?: string; model?: string; context?: ChatContext },
     ) => {
       abortRef.current?.abort();
+      loadRequestRef.current += 1;
       const abort = new AbortController();
       abortRef.current = abort;
 
       const userMsgId = `user-${Date.now()}`;
       const asstMsgId = `asst-${Date.now()}`;
+      let pendingText = "";
+      let textFrame: number | null = null;
+
+      const flushText = () => {
+        if (textFrame !== null) {
+          window.cancelAnimationFrame(textFrame);
+          textFrame = null;
+        }
+        if (!pendingText || abort.signal.aborted || activeRepoRef.current !== repoId) {
+          pendingText = "";
+          return;
+        }
+        const text = pendingText;
+        pendingText = "";
+        setState((prev) => ({
+          ...prev,
+          messages: prev.messages.map((message) =>
+            message.id === asstMsgId
+              ? { ...message, text: message.text + text }
+              : message,
+          ),
+        }));
+      };
+
+      const queueText = (text: string) => {
+        pendingText += text;
+        if (textFrame !== null) return;
+        textFrame = window.requestAnimationFrame(() => {
+          textFrame = null;
+          flushText();
+        });
+      };
 
       setState((prev) => ({
         ...prev,
@@ -94,7 +141,7 @@ export function useChat(repoId: string) {
           message: text,
           conversationId:
             activeRepoRef.current === repoId
-              ? state.conversationId ?? undefined
+              ? conversationIdRef.current ?? undefined
               : undefined,
           provider: opts?.provider,
           model: opts?.model,
@@ -131,6 +178,7 @@ export function useChat(repoId: string) {
           }
         }
       } catch (err: unknown) {
+        if (textFrame !== null) window.cancelAnimationFrame(textFrame);
         if (!abort.signal.aborted) {
           settled = true;
           setState((prev) => ({
@@ -138,13 +186,14 @@ export function useChat(repoId: string) {
             isStreaming: false,
             error: toFriendlyMessage(err),
             messages: prev.messages.map((m) =>
-              m.id === asstMsgId ? { ...m, isStreaming: false } : m,
+              m.id === asstMsgId ? stopRunningTools(m, "Stopped after an error") : m,
             ),
           }));
         }
       }
 
       if (!settled && !abort.signal.aborted) {
+        flushText();
         setState((prev) => ({
           ...prev,
           isStreaming: false,
@@ -152,7 +201,7 @@ export function useChat(repoId: string) {
             prev.error ??
             "The response ended before it finished. The server log should say why.",
           messages: prev.messages.map((m) =>
-            m.id === asstMsgId ? { ...m, isStreaming: false } : m,
+            m.id === asstMsgId ? stopRunningTools(m, "Response ended early") : m,
           ),
         }));
       }
@@ -160,14 +209,19 @@ export function useChat(repoId: string) {
       function handleEvent(ev: ChatSSEEvent, asstId: string) {
         if (activeRepoRef.current !== repoId) return;
         if (ev.type === "done" || ev.type === "error") settled = true;
+        if (ev.type === "text_delta") {
+          queueText(ev.text);
+          return;
+        }
+        flushText();
         setState((prev) => {
           const messages = prev.messages.map((m) => {
+            if (ev.type === "done" && m.id === userMsgId) {
+              return ev.user_message_id ? { ...m, serverId: ev.user_message_id } : m;
+            }
             if (m.id !== asstId) return m;
 
             switch (ev.type) {
-              case "text_delta":
-                return { ...m, text: m.text + ev.text };
-
               case "tool_start":
                 return {
                   ...m,
@@ -199,10 +253,16 @@ export function useChat(repoId: string) {
                 };
 
               case "done":
-                return { ...m, isStreaming: false, serverId: ev.message_id };
+                return {
+                  ...m,
+                  isStreaming: false,
+                  serverId: ev.message_id,
+                  ...(ev.provider ? { provider: ev.provider } : {}),
+                  ...(ev.model ? { model: ev.model } : {}),
+                };
 
               case "error":
-                return { ...m, isStreaming: false };
+                return stopRunningTools(m, ev.message);
 
               default:
                 return m;
@@ -221,17 +281,20 @@ export function useChat(repoId: string) {
             messages,
           };
         });
+        if (ev.type === "done") conversationIdRef.current = ev.conversation_id;
       }
     },
-    [repoId, state.conversationId],
+    [repoId],
   );
 
   const loadConversation = useCallback(
     async (conversationId: string) => {
+      const requestId = ++loadRequestRef.current;
       try {
         const data = await getConversation(repoId, conversationId);
-        if (activeRepoRef.current !== repoId) return;
+        if (activeRepoRef.current !== repoId || loadRequestRef.current !== requestId) return;
         const msgs = toChatUiMessages(data.messages);
+        conversationIdRef.current = conversationId;
         setState({
           messages: msgs,
           conversationId,
@@ -239,7 +302,7 @@ export function useChat(repoId: string) {
           error: null,
         });
       } catch (err) {
-        if (activeRepoRef.current !== repoId) return;
+        if (activeRepoRef.current !== repoId || loadRequestRef.current !== requestId) return;
         setState((prev) => ({
           ...prev,
           error: toFriendlyMessage(err),
@@ -256,7 +319,7 @@ export function useChat(repoId: string) {
       ...prev,
       isStreaming: false,
       messages: prev.messages.map((message) =>
-        message.isStreaming ? { ...message, isStreaming: false } : message,
+        message.isStreaming ? stopRunningTools(message, "Stopped") : message,
       ),
     }));
   }, []);
@@ -264,6 +327,8 @@ export function useChat(repoId: string) {
   const reset = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
+    loadRequestRef.current += 1;
+    conversationIdRef.current = null;
     setState(EMPTY_CHAT_STATE);
   }, []);
 

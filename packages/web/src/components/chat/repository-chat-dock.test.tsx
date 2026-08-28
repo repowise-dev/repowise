@@ -21,6 +21,9 @@ vi.mock("./repository-chat-provider", () => ({
     sendMessage: vi.fn(),
     loadConversation: vi.fn(),
     reset: vi.fn(),
+    selectedProvider: null,
+    selectedModel: null,
+    selectModel: vi.fn(),
   }),
 }));
 

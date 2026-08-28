@@ -30,5 +30,7 @@ export function toChatUiMessages(
       status: "done" as const,
     })),
     isStreaming: false,
+    ...(message.content.provider ? { provider: message.content.provider } : {}),
+    ...(message.content.model ? { model: message.content.model } : {}),
   }));
 }

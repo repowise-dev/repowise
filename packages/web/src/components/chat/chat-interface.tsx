@@ -1,13 +1,16 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import React, { useCallback, useEffect, useRef } from "react";
 import useSWR from "swr";
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ChatInterface as ChatInterfaceShell } from "@repowise-dev/ui/chat/chat-interface";
+import { useChatDraft } from "@repowise-dev/ui/chat";
 import { pageHref } from "@/lib/utils/page-href";
-import { listConversations } from "@/lib/api/chat";
 import { getProviders } from "@/lib/api/providers";
 import { getRepoStats } from "@/lib/api/repos";
+import { forkConversation } from "@/lib/api/chat";
+import type { ChatUIMessage } from "@repowise-dev/types/chat";
 import { ModelSelector } from "./model-selector";
 import { ConversationHistory } from "./conversation-history";
 import { useRepositoryChat } from "./repository-chat-provider";
@@ -40,7 +43,17 @@ export function ChatInterface({
     cancel,
     reset,
     pageContext,
+    selectedProvider,
+    selectedModel,
+    selectModel,
   } = useRepositoryChat();
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const urlConversationId = searchParams.get("conversation");
+  const [draft, setDraft] = useChatDraft(
+    `repowise:chat-draft:${repoId}:${urlConversationId ?? conversationId ?? "new"}`,
+  );
 
   // Provider guard: surface "no chat provider configured" BEFORE the first
   // send instead of erroring after.
@@ -59,48 +72,95 @@ export function ChatInterface({
     { revalidateOnFocus: false },
   );
 
-  // Fire the seeded question exactly once (guards StrictMode double-effects).
-  const seededRef = useRef(false);
+  // A plain /chat URL is an explicit fresh workspace. Only an addressable
+  // conversation URL restores history, which keeps returning users from being
+  // dropped at the bottom of an old answer they did not choose to reopen.
+  const lifecycleRef = useRef("");
+  const awaitingFreshIdRef = useRef(false);
   useEffect(() => {
-    if (!initialQuestion || seededRef.current) return;
-    seededRef.current = true;
-    void sendMessage(initialQuestion);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialQuestion]);
-
-  // Resume the most recent conversation when landing on a blank chat (no
-  // seeded question). Once only; "New conversation" still resets cleanly.
-  const resumedRef = useRef(false);
-  useEffect(() => {
-    if (resumedRef.current || seededRef.current || initialQuestion) return;
-    if (messages.length > 0 || conversationId) return;
-    resumedRef.current = true;
-    void (async () => {
-      try {
-        const conversations = await listConversations(repoId);
-        const latest = conversations[0];
-        if (latest && latest.message_count > 0) {
-          await loadConversation(latest.id);
-        }
-      } catch {
-        // Resume is best-effort; a blank chat is a fine fallback.
+    const identity = `${repoId}:${urlConversationId ?? "new"}:${initialQuestion ?? ""}`;
+    if (lifecycleRef.current === identity) return;
+    lifecycleRef.current = identity;
+    if (urlConversationId) {
+      awaitingFreshIdRef.current = false;
+      if (urlConversationId !== conversationId) {
+        void loadConversation(urlConversationId);
       }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repoId]);
+      return;
+    }
+    awaitingFreshIdRef.current = true;
+    reset();
+    if (initialQuestion) void sendMessage(initialQuestion, {
+      context: pageContext,
+      ...(selectedProvider ? { provider: selectedProvider } : {}),
+      ...(selectedModel ? { model: selectedModel } : {}),
+    });
+  }, [conversationId, initialQuestion, loadConversation, pageContext, repoId, reset, selectedModel, selectedProvider, sendMessage, urlConversationId]);
+
+  useEffect(() => {
+    if (!awaitingFreshIdRef.current || !conversationId) return;
+    awaitingFreshIdRef.current = false;
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("q");
+    next.set("conversation", conversationId);
+    router.replace(`${pathname}?${next.toString()}`);
+  }, [conversationId, pathname, router, searchParams]);
+
+  const selectConversation = useCallback(
+    (id: string) => router.push(`${pathname}?conversation=${encodeURIComponent(id)}`),
+    [pathname, router],
+  );
+  const newConversation = useCallback(() => router.push(pathname), [pathname, router]);
+  const buildCitationHref = useCallback(
+    (source: { pageId: string }) => pageHref(repoId, source.pageId),
+    [repoId],
+  );
+  const sendWithConversationModel = useCallback((text: string) => sendMessage(text, {
+    context: pageContext,
+    ...(selectedProvider ? { provider: selectedProvider } : {}),
+    ...(selectedModel ? { model: selectedModel } : {}),
+  }), [pageContext, selectedModel, selectedProvider, sendMessage]);
+  const retryMessage = useCallback((message: ChatUIMessage) => {
+    const index = messages.findIndex((candidate) => candidate.id === message.id);
+    const previousUser = messages.slice(0, index).reverse().find((candidate) => candidate.role === "user");
+    if (previousUser) return sendWithConversationModel(previousUser.text);
+  }, [messages, sendWithConversationModel]);
+  const editAndResend = useCallback(async (message: ChatUIMessage, text: string) => {
+    if (!conversationId || !message.serverId) return;
+    const fork = await forkConversation(repoId, conversationId, { beforeMessageId: message.serverId });
+    await loadConversation(fork.id);
+    router.push(`${pathname}?conversation=${encodeURIComponent(fork.id)}`);
+    await sendWithConversationModel(text);
+  }, [conversationId, loadConversation, pathname, repoId, router, sendWithConversationModel]);
 
   return (
-    <ChatInterfaceShell
+    <div className="flex h-full min-h-0 overflow-hidden">
+      <ConversationHistory
+        repoId={repoId}
+        activeConversationId={conversationId}
+        onSelect={selectConversation}
+        onNew={newConversation}
+        variant="rail"
+        collapsible
+        railPreferenceKey={`repowise:chat-history-rail:${repoId}`}
+        className="hidden h-full shrink-0 overflow-hidden transition-[width] duration-150 lg:block lg:data-[collapsed=true]:w-12 lg:data-[collapsed=false]:w-64 2xl:data-[collapsed=false]:w-72 motion-reduce:transition-none"
+      />
+      <div className="h-full min-h-0 min-w-0 flex-1">
+      <ChatInterfaceShell
       repoId={repoId}
       {...(repoName !== undefined ? { repoName } : {})}
       context={pageContext}
       messages={messages}
       isStreaming={isStreaming}
       error={error}
-      onSend={(text) => sendMessage(text, { context: pageContext })}
+      onSend={sendWithConversationModel}
       onCancel={cancel}
-      buildCitationHref={(s) => pageHref(repoId, s.pageId)}
-      modelSelectorSlot={<ModelSelector repoId={repoId} />}
+      draft={draft}
+      onDraftChange={setDraft}
+      buildCitationHref={buildCitationHref}
+      modelSelectorSlot={<ModelSelector repoId={repoId} activeProvider={selectedProvider} activeModel={selectedModel} onSelect={selectModel} />}
+      onRetry={retryMessage}
+      onEditAndResend={editAndResend}
       statusSlot={
         // Orientation, in one line: what was indexed, and which commit it was
         // indexed from. The branch and SHA used to sit in a second page header
@@ -133,13 +193,17 @@ export function ChatInterface({
         </span>
       }
       historySlot={
-        <ConversationHistory
-          repoId={repoId}
-          activeConversationId={conversationId}
-          onSelect={loadConversation}
-          onNew={reset}
-        />
+        <div className="lg:hidden">
+          <ConversationHistory
+            repoId={repoId}
+            activeConversationId={conversationId}
+            onSelect={selectConversation}
+            onNew={newConversation}
+          />
+        </div>
       }
     />
+      </div>
+    </div>
   );
 }
