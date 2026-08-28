@@ -28,8 +28,11 @@ export function SigmaControls({
   // palette in this app — the same class of drift as `--color-bg-glass`, and
   // it survived for the same reason: it only ever renders on top of a diagram,
   // where a plane one step off reads as deliberate.
+  // Mobile-first sizing, matching graph-toolbar's buttons: 36px is a usable
+  // touch target on a phone, and the compact 28px returns from `sm` up where a
+  // pointer is doing the aiming.
   const btnClass =
-    "flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]";
+    "flex h-9 w-9 sm:h-7 sm:w-7 items-center justify-center rounded-md text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]";
 
   return (
     <div className="absolute bottom-3 right-3 z-10 flex flex-col items-end gap-1.5">

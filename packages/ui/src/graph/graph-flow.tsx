@@ -1130,9 +1130,10 @@ export function GraphFlow(props: GraphFlowProps) {
         />
       </div>
 
-      {/* Path Finder */}
+      {/* Path Finder. Carries the same viewport clamp as the flows panel below;
+          without it the panel runs off the side of a phone. */}
       {showPathFinder && renderPathFinder && (
-        <div className="absolute top-14 right-3 z-10">
+        <div className="absolute top-14 right-3 z-10 w-[min(20rem,calc(100vw-1.5rem))]">
           {renderPathFinder({
             initialFrom: pathFrom,
             initialTo: pathTo,

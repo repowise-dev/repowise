@@ -2,13 +2,11 @@
 
 import * as React from "react";
 import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
-import { VirtualizedTable } from "../shared/virtualized-table";
-import { clickableRowProps, CLICKABLE_ROW_CLS } from "../shared/responsive-table";
+import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { AiPromptButton } from "../health/ai-prompt-button";
 import { cn } from "../lib/cn";
-import { formatDate, formatDateTime } from "../lib/format";
+import { disambiguateBasenames, formatDate, formatDateTime } from "../lib/format";
 import type { CouplingEdge } from "@repowise-dev/types/coupling";
 
 /**
@@ -43,52 +41,12 @@ interface CouplingTableProps {
 type SortKey = "strength" | "last";
 type SortDir = "asc" | "desc";
 
-function basename(path: string): string {
-  return path.split("/").pop() ?? path;
-}
+// Capped against the viewport, not a flat 600px, so the inner scroller is not
+// a nested scroll trap on a phone.
+const VIRTUALIZE = { maxHeight: "min(600px, 70vh)" };
 
-/** A clickable column header that toggles/shows the active sort direction. */
-function SortHeader({
-  label,
-  columnKey,
-  sortKey,
-  sortDir,
-  onToggle,
-}: {
-  label: React.ReactNode;
-  columnKey: SortKey;
-  sortKey: SortKey;
-  sortDir: SortDir;
-  onToggle: (key: SortKey) => void;
-}) {
-  const active = sortKey === columnKey;
-  return (
-    <button
-      type="button"
-      onClick={() => onToggle(columnKey)}
-      aria-sort={active ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
-      className="inline-flex items-center gap-1 font-medium uppercase tracking-wider hover:text-[var(--color-text-secondary)]"
-    >
-      {label}
-      {active ? (
-        sortDir === "asc" ? (
-          <ArrowUp className="h-3 w-3" />
-        ) : (
-          <ArrowDown className="h-3 w-3" />
-        )
-      ) : (
-        // Reserve the arrow slot so the label doesn't shift when it activates.
-        <span className="inline-block h-3 w-3" />
-      )}
-    </button>
-  );
-}
-
-// Column-priority hide classes, mirroring the shared ResponsiveTable scale:
-// priority 2 hides below md (768px), priority 3 hides below lg (1024px). The
-// "pair" identity column (priority 1) is always visible.
-const HIDE_BELOW_MD = "max-md:hidden";
-const HIDE_BELOW_LG = "max-lg:hidden";
+const STRENGTH_HELP =
+  "Recency-weighted count of commits that touched both files. Higher means more or more-recent shared changes. It is not a percentage or a verified dependency.";
 
 /**
  * The precise, sortable companion to the coupling diagram: one row per
@@ -114,9 +72,10 @@ export function CouplingTable({
   const [sortKey, setSortKey] = useState<SortKey>("strength");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
-  // The strength bars are normalized to the strongest coupling; recompute only
-  // when the edge list changes rather than on every render.
-  const maxStrength = useMemo(() => Math.max(...edges.map((e) => e.strength), 1), [edges]);
+  // Bars normalize to the strongest coupling. `reduce`, not `Math.max(...)`:
+  // the edge list is not capped client-side and a spread of tens of thousands
+  // of arguments overflows the call stack.
+  const maxStrength = useMemo(() => edges.reduce((m, e) => Math.max(m, e.strength), 1), [edges]);
 
   const sorted = useMemo(() => {
     const dir = sortDir === "asc" ? 1 : -1;
@@ -126,14 +85,20 @@ export function CouplingTable({
     return [...edges].sort((a, b) => (val(a) - val(b)) * dir);
   }, [edges, sortKey, sortDir]);
 
-  const toggleSort = (key: SortKey) => {
+  const toggleSort = (key: string) => {
     if (key === sortKey) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
-      setSortKey(key);
+      setSortKey(key as SortKey);
       setSortDir("desc");
     }
   };
+
+  // Both ends of every pair, labelled the way the diagram labels them.
+  const labels = useMemo(
+    () => disambiguateBasenames(edges.flatMap((e) => [e.source, e.target])),
+    [edges],
+  );
 
   const incident = (e: CouplingEdge) =>
     focusedPath != null && (e.source === focusedPath || e.target === focusedPath);
@@ -164,7 +129,7 @@ export function CouplingTable({
             className={cn(cls, "hover:text-[var(--color-accent-primary)] hover:underline")}
           >
             {prefix}
-            {basename(path)}
+            {labels.get(path) ?? path}
           </Anchor>
         </span>
       );
@@ -172,7 +137,7 @@ export function CouplingTable({
     return (
       <span className={cls} title={path}>
         {prefix}
-        {basename(path)}
+        {labels.get(path) ?? path}
       </span>
     );
   };
@@ -186,102 +151,107 @@ export function CouplingTable({
     );
   }
 
-  const header = (
-    <tr className="bg-[var(--color-bg-elevated)] text-[var(--color-text-tertiary)] text-xs uppercase tracking-wider">
-      <th className="px-3 py-2 text-left font-medium whitespace-nowrap min-w-[200px]">
-        Coupled files
-      </th>
-      <th className={`px-3 py-2 text-left font-medium whitespace-nowrap w-36 ${HIDE_BELOW_MD}`}>
-        <SortHeader
-          columnKey="strength"
-          sortKey={sortKey}
-          sortDir={sortDir}
-          onToggle={toggleSort}
-          label={
-            <span
-              title="Recency-weighted count of commits that touched both files. Higher means more or more-recent shared changes. It is not a percentage or a verified dependency."
-              className="cursor-help underline decoration-dotted underline-offset-2"
-            >
-              Strength
-            </span>
-          }
-        />
-      </th>
-      <th className={`px-3 py-2 text-left font-medium whitespace-nowrap ${HIDE_BELOW_LG}`}>
-        <SortHeader
-          columnKey="last"
-          sortKey={sortKey}
-          sortDir={sortDir}
-          onToggle={toggleSort}
-          label="Last"
-        />
-      </th>
-      {onGeneratePrompt ? (
-        <th className={`px-3 py-2 text-left font-medium whitespace-nowrap w-10 ${HIDE_BELOW_LG}`} />
-      ) : null}
-    </tr>
-  );
-
-  const renderRow = (e: CouplingEdge) => {
-    const onClick = onPinToggle
-      ? () => onPinToggle(pinnedPath === e.source ? null : e.source)
-      : undefined;
-    const isSelected = pinnedPath != null && pinnedPath === e.source;
-    return (
-      <tr
-        className={cn(
-          "border-t border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)]",
-          isSelected && "bg-[var(--color-accent-muted)]/30",
-          onClick && CLICKABLE_ROW_CLS,
-        )}
-        onMouseEnter={onHover ? () => onHover(e.source) : undefined}
-        {...(onClick ? clickableRowProps(onClick) : {})}
-      >
-        <td className="px-3 py-2 text-left min-w-[200px]">
-          <div className="flex flex-col gap-0.5">
-            {fileCell(e.source, e)}
-            {fileCell(e.target, e, "↔ ")}
-          </div>
-        </td>
-        <td className={`px-3 py-2 text-left ${HIDE_BELOW_MD}`}>
-          <div className="flex items-center gap-2 min-w-[100px]">
-            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
-              <div
-                className="h-full rounded-full bg-[var(--color-accent-primary)]"
-                style={{ width: `${Math.max(6, Math.round((e.strength / maxStrength) * 100))}%` }}
-              />
-            </div>
-            <span className="w-8 text-right text-xs tabular-nums text-[var(--color-text-tertiary)]">
-              {e.strength}
-            </span>
-          </div>
-        </td>
-        <td className={`px-3 py-2 text-left text-xs text-[var(--color-text-tertiary)] ${HIDE_BELOW_LG}`}>
-          <span title={e.last_co_change ? formatDateTime(e.last_co_change) : undefined}>
-            {e.last_co_change ? formatDate(e.last_co_change) : "—"}
-          </span>
-        </td>
-        {onGeneratePrompt ? (
-          <td className={`px-3 py-2 text-left w-10 ${HIDE_BELOW_LG}`}>
-            <AiPromptButton
-              variant="icon"
-              label="AI decouple prompt"
-              onClick={() => onGeneratePrompt(e)}
+  const columns: ResponsiveColumn<CouplingEdge>[] = [
+    {
+      key: "pair",
+      header: "Coupled files",
+      priority: 1,
+      cellClassName: "min-w-[200px]",
+      headerClassName: "min-w-[200px]",
+      render: (e) => (
+        <div className="flex flex-col gap-0.5">
+          {fileCell(e.source, e)}
+          {fileCell(e.target, e, "↔ ")}
+        </div>
+      ),
+    },
+    {
+      key: "strength",
+      // Priority 1: strength is why the row is in the table at all.
+      priority: 1,
+      sortable: true,
+      mobileLabel: "Strength",
+      headerClassName: "w-36",
+      header: (
+        <span
+          title={STRENGTH_HELP}
+          className="cursor-help underline decoration-dotted underline-offset-2"
+        >
+          Strength
+        </span>
+      ),
+      render: (e) => (
+        <div className="flex items-center gap-2 min-w-[100px]">
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
+            <div
+              className="h-full rounded-full bg-[var(--color-accent-primary)]"
+              style={{ width: `${Math.max(6, Math.round((e.strength / maxStrength) * 100))}%` }}
             />
-          </td>
-        ) : null}
-      </tr>
-    );
-  };
+          </div>
+          <span className="w-8 text-right text-xs tabular-nums text-[var(--color-text-tertiary)]">
+            {e.strength}
+          </span>
+        </div>
+      ),
+      // The bar is meaningless at card width; the number carries it.
+      mobileRender: (e) => e.strength,
+    },
+    {
+      key: "last",
+      header: "Last",
+      mobileLabel: "Last",
+      priority: 2,
+      sortable: true,
+      cellClassName: "text-xs text-[var(--color-text-tertiary)]",
+      render: (e) => (
+        <span title={e.last_co_change ? formatDateTime(e.last_co_change) : undefined}>
+          {e.last_co_change ? formatDate(e.last_co_change) : "—"}
+        </span>
+      ),
+    },
+    ...(onGeneratePrompt
+      ? [
+          {
+            key: "prompt",
+            header: "",
+            priority: 2 as const,
+            headerClassName: "w-10",
+            cellClassName: "w-10",
+            render: (e: CouplingEdge) => (
+              <AiPromptButton
+                variant="icon"
+                label="AI decouple prompt"
+                onClick={() => onGeneratePrompt(e)}
+              />
+            ),
+          },
+        ]
+      : []),
+  ];
 
   return (
     <div onMouseLeave={onHover ? () => onHover(null) : undefined}>
-      <VirtualizedTable<CouplingEdge>
+      {/* `rowClassName`, not `selectedKey`: a pin selects a file and several
+          rows can share that source. */}
+      <ResponsiveTable<CouplingEdge>
+        columns={columns}
         rows={sorted}
         rowKey={(e) => `${e.source}|${e.target}`}
-        header={header}
-        renderRow={renderRow}
-        aria-label="Change-coupling pairs"
+        rowClassName={(e) =>
+          pinnedPath != null && pinnedPath === e.source
+            ? "bg-[var(--color-accent-muted)]/30"
+            : undefined
+        }
+        {...(onPinToggle
+          ? { onRowClick: (e) => onPinToggle(pinnedPath === e.source ? null : e.source) }
+          : {})}
+        {...(onHover ? { onRowHover: (e) => onHover(e.source) } : {})}
+        sortField={sortKey}
+        sortOrder={sortDir}
+        onSort={toggleSort}
+        stacked="md"
+        virtualize={VIRTUALIZE}
+        caption="Change-coupling pairs"
       />
     </div>
   );

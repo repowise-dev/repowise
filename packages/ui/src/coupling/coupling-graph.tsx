@@ -9,6 +9,7 @@ import { curveBundle, lineRadial } from "d3-shape";
 import { bandForScore } from "@repowise-dev/types";
 import type { CouplingEdge, CouplingNode } from "@repowise-dev/types/coupling";
 import type { HealthBand } from "@repowise-dev/types/health";
+import { disambiguateBasenames } from "../lib/format";
 
 export interface CouplingGraphProps {
   nodes: CouplingNode[];
@@ -175,7 +176,9 @@ export function CouplingGraph({
       .radius((d) => d.y!)
       .angle((d) => d.x!);
 
-    const maxStrength = Math.max(...edges.map((e) => e.strength), 1);
+    // `reduce`, not a spread: an uncapped payload can carry tens of thousands
+    // of edges, and spreading that many arguments overflows the stack.
+    const maxStrength = edges.reduce((m, e) => Math.max(m, e.strength), 1);
     const drawn = edges
       .map((e) => {
         const s = leafByPath.get(e.source);
@@ -191,7 +194,7 @@ export function CouplingGraph({
       degree.set(e.source, (degree.get(e.source) ?? 0) + 1);
       degree.set(e.target, (degree.get(e.target) ?? 0) + 1);
     }
-    const maxNloc = Math.max(...nodes.map((n) => n.nloc), 1);
+    const maxNloc = nodes.reduce((m, n) => Math.max(m, n.nloc), 1);
 
     // Arc groups: the first stripped segment of each leaf (the module band).
     const groups = new Map<string, { a0: number; a1: number }>();
@@ -221,11 +224,19 @@ export function CouplingGraph({
     };
   }, [nodes, edges, size]);
 
+  // Before the early return below: hooks may not sit behind a conditional.
+  const ringLabels = useMemo(
+    () => disambiguateBasenames(nodes.map((n) => n.file_path)),
+    [nodes],
+  );
+
   if (!layout) {
+    // `size` is the diagram's coordinate space, not the viewport's, so scaling
+    // the empty box by it fills most of a phone screen with nothing.
     return (
       <div
-        className="flex items-center justify-center rounded-xl border border-dashed border-[var(--color-border-default)] text-center text-sm text-[var(--color-text-tertiary)]"
-        style={{ minHeight: size * 0.6 }}
+        className="flex items-center justify-center rounded-xl border border-dashed border-[var(--color-border-default)] p-4 text-center text-sm text-[var(--color-text-tertiary)]"
+        style={{ minHeight: `min(${size * 0.6}px, 40vh)` }}
       >
         Not enough shared git history to map coupling yet. Files need to have
         been committed together.
@@ -248,21 +259,12 @@ export function CouplingGraph({
       .map(([path]) => path),
   );
 
-  // Disambiguate basename collisions: when two files share a basename, prepend
-  // the immediate parent dir so the ring labels stay distinct.
-  const basenameCounts = new Map<string, number>();
-  for (const n of nodes) {
-    const base = n.file_path.split("/").pop() ?? n.file_path;
-    basenameCounts.set(base, (basenameCounts.get(base) ?? 0) + 1);
-  }
-  const labelFor = (full: string) => {
-    const segs = full.split("/");
-    const base = segs.at(-1) ?? full;
-    if ((basenameCounts.get(base) ?? 0) > 1 && segs.length > 1) {
-      return `${segs.at(-2)}/${base}`;
-    }
-    return base;
-  };
+  // Shared with the table so both name a file the same way.
+  const labelFor = (full: string) => ringLabels.get(full) ?? full;
+
+  // Sized from the arc each leaf owns, so targets grow on a sparse ring and
+  // never overlap on a dense one.
+  const hitRadius = Math.min(14, ((2 * Math.PI * radius) / Math.max(leaves.length, 1)) / 2);
 
   // Neighbors of the focused file (for dimming + dot emphasis). O(1) lookup
   // into the precomputed adjacency map instead of an O(E) rescan per focus.
@@ -383,6 +385,11 @@ export function CouplingGraph({
                 }}
                 className="cursor-pointer"
               >
+                {/* Invisible tap target: the painted dot is a few viewBox units,
+                    which is 1-3 CSS px on a phone. Without this a tap misses it,
+                    hits the background rect, and clears the trace. */}
+                <circle cx={x} cy={y} r={Math.max(r, hitRadius)} fill="transparent" />
+
                 {/* Persistent ring on the pinned file so the sticky selection
                     stays readable even while hovering elsewhere. */}
                 {isPinned && (
@@ -440,7 +447,9 @@ export function CouplingGraph({
         <span className="inline-flex items-center gap-1.5">
           <span className="h-2 w-2 rounded-full bg-[var(--color-error)]" /> alert
         </span>
-        <span className="ml-auto">
+        {/* `min-w-0` so this can shrink and wrap rather than force the row
+            wider than the viewport; right-aligned only once there is room. */}
+        <span className="min-w-0 basis-full sm:basis-auto sm:ml-auto">
           {totalEdges && totalEdges > drawn.length
             ? `showing ${drawn.length} of ${totalEdges} couplings · `
             : `${drawn.length} couplings · `}

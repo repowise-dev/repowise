@@ -219,6 +219,16 @@ interface WireFilesIndex {
   totals: { files?: number; loc?: number };
 }
 
+/**
+ * Coupling as it arrives, not as `CouplingGraphResponse` promises: a snapshot
+ * written before the coupling analyzer ran omits `nodes`/`edges` entirely.
+ */
+interface WireCoupling {
+  nodes?: CouplingGraphResponse["nodes"];
+  edges?: CouplingGraphResponse["edges"];
+  total_edges?: number;
+}
+
 // ---------------------------------------------------------------------------
 // Mapping helpers (exported for tests)
 // ---------------------------------------------------------------------------
@@ -829,7 +839,14 @@ export function createHostedProvider(config: HostedProviderConfig): HostedProvid
       snapGet(repoId, `/communities/${communityId}/slice`),
     getModuleGraph: (repoId) => snapGet(repoId, "/module-graph"),
     getExecutionFlows: (repoId, params) => snapGet(repoId, "/execution-flows", params),
-    getCoupling: (repoId, opts) => snapGet(repoId, "/coupling", opts),
+    async getCoupling(repoId, opts): Promise<CouplingGraphResponse> {
+      const res = await snapGet<WireCoupling>(repoId, "/coupling", opts);
+      const nodes = res.nodes ?? [];
+      const edges = res.edges ?? [];
+      // Falling back to the post-cap length understates the pre-cap count, but
+      // an honest "showing N of N" beats `NaN` downstream.
+      return { nodes, edges, total_edges: res.total_edges ?? edges.length };
+    },
 
     async getFilesIndex(repoId): Promise<FilesIndexResponse> {
       // Same rows, different envelope: hosted totals/language_counts vs the

@@ -5,11 +5,16 @@ import { useEffect, useMemo, useState } from "react";
 import { Search, X } from "lucide-react";
 import { CouplingGraph } from "./coupling-graph";
 import { CouplingTable } from "./coupling-table";
-import { GraphCanvasShell } from "../graph/graph-canvas-shell";
 import { AiPromptModal, buildCouplingAiPrompt } from "../health";
 import { fileEntityPath } from "../shared/entity/routes";
 import { cn } from "../lib/cn";
-import type { CouplingEdge, CouplingGraphResponse } from "@repowise-dev/types/coupling";
+import { truncatePath } from "../lib/format";
+import type { CouplingEdge, CouplingGraphResponse, CouplingNode } from "@repowise-dev/types/coupling";
+
+// Stable identities so the `?? []` fallbacks do not invalidate a memo on every
+// render when the payload really is missing its arrays.
+const NO_NODES: CouplingNode[] = [];
+const NO_EDGES: CouplingEdge[] = [];
 
 /** Injected link component (e.g. Next's Link); defaults to a plain anchor. */
 type LinkLike = React.ElementType<{
@@ -55,10 +60,6 @@ function topHub(edges: CouplingEdge[]): string | null {
   return best;
 }
 
-function shortName(path: string): string {
-  return path.split("/").pop() ?? path;
-}
-
 /**
  * The full change-coupling surface: the edge-bundling diagram (centerpiece)
  * over a precise, sortable, filterable table, sharing one focus model. A
@@ -77,11 +78,16 @@ export function CouplingExplorer({
   initialFocus,
   onFocusChange,
 }: CouplingExplorerProps) {
+  // The wire type declares these required but a snapshot can omit them. The
+  // hosted client normalizes too; this covers every dereference below.
+  const nodes = data.nodes ?? NO_NODES;
+  const edges = data.edges ?? NO_EDGES;
+
   const defaultPin = useMemo(
     () =>
       initialFocus !== undefined && initialFocus !== ""
         ? initialFocus
-        : topHub(data.edges),
+        : topHub(edges),
     // Only seed once from the initial data/prop; user actions drive it after.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -98,10 +104,7 @@ export function CouplingExplorer({
   
   // Drop a stale pin if a background revalidation returns an edge set that no
   // longer contains it, so the guidance never claims to trace a vanished file.
-  const nodePaths = useMemo(
-    () => new Set(data.nodes.map((n) => n.file_path)),
-    [data.nodes],
-  );
+  const nodePaths = useMemo(() => new Set(nodes.map((n) => n.file_path)), [nodes]);
   useEffect(() => {
     if (pinned && !nodePaths.has(pinned)) changePin(null);
     // Intentionally keyed on pin + payload only; changePin always closes over
@@ -114,11 +117,11 @@ export function CouplingExplorer({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return data.edges;
-    return data.edges.filter(
+    if (!q) return edges;
+    return edges.filter(
       (e) => e.source.toLowerCase().includes(q) || e.target.toLowerCase().includes(q),
     );
-  }, [data.edges, query]);
+  }, [edges, query]);
 
   const linkForPath = repoLinkPrefix
     ? (path: string) => fileEntityPath(repoLinkPrefix, path)
@@ -126,34 +129,40 @@ export function CouplingExplorer({
 
   return (
     <div className="space-y-5">
-      <GraphCanvasShell className="block h-auto">
-        <div className="mx-auto w-full max-w-[820px]">
-          {/* Guidance line so the diagram is not a mystery until you touch it.
-              Echoes the pinned file so the sticky selection is always named. */}
-          <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">
-            {pinned ? (
-              <>
-                Tracing{" "}
-                <span className="font-mono text-[var(--color-text-secondary)]" title={pinned}>
-                  {shortName(pinned)}
-                </span>
-                . Hover any file to peek, click to pin, or click empty space to clear.
-              </>
-            ) : (
-              <>Hover a file to trace what changes with it; click to pin the view.</>
-            )}
-          </p>
-          <CouplingGraph
-            nodes={data.nodes}
-            edges={data.edges}
-            totalEdges={data.total_edges}
-            focusedPath={focus}
-            pinnedPath={pinned}
-            onHover={setHover}
-            onPinToggle={changePin}
-          />
-        </div>
-      </GraphCanvasShell>
+      {/* No GraphCanvasShell: it hosts fixed-height canvases behind an
+          `overflow-hidden` body, which clips this intrinsically-sized SVG. */}
+      <div className="mx-auto w-full max-w-[820px]">
+        {/* Guidance line so the diagram is not a mystery until you touch it.
+            Echoes the pinned file so the sticky selection is always named. */}
+        <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">
+          {pinned ? (
+            <>
+              Tracing{" "}
+              {/* Trailing folders kept: a bare basename is ambiguous wherever
+                  `mod.rs`/`index.ts`/`__init__.py` conventions apply. */}
+              <span
+                className="font-mono break-all text-[var(--color-text-secondary)]"
+                title={pinned}
+              >
+                {truncatePath(pinned, 44)}
+              </span>
+              . Hover any file to peek, tap or click to pin, or tap empty space
+              to clear.
+            </>
+          ) : (
+            <>Tap or hover a file to trace what changes with it; click to pin.</>
+          )}
+        </p>
+        <CouplingGraph
+          nodes={nodes}
+          edges={edges}
+          totalEdges={data.total_edges}
+          focusedPath={focus}
+          pinnedPath={pinned}
+          onHover={setHover}
+          onPinToggle={changePin}
+        />
+      </div>
 
       <div className="space-y-3 border-t border-[var(--color-border-default)] pt-4">
         <div className="flex flex-wrap items-center justify-between gap-3">

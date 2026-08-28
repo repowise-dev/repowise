@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
+import { disambiguateBasenames } from "../lib/format";
 
 interface ImpactGraphProps {
   result: BlastRadiusResponse;
@@ -17,10 +18,6 @@ const INNER_R = 132;
 const OUTER_R = 196;
 const MAX_DIRECT = 12;
 const MAX_TRANSITIVE = 18;
-
-function basename(path: string): string {
-  return path.split("/").pop() || path;
-}
 
 /** Within-change visual emphasis, not a public risk classification. */
 function structuralInk(share: number): string {
@@ -55,10 +52,17 @@ export function ImpactGraph({ result, changedFiles }: ImpactGraphProps) {
       0,
     );
     const transitiveRows = result.transitive_affected.slice(0, MAX_TRANSITIVE);
-    const depthCeil = Math.max(
+    const depthCeil = result.transitive_affected.reduce(
+      (value, t) => Math.max(value, t.depth || 1),
       1,
-      ...result.transitive_affected.map((t) => t.depth || 1),
     );
+
+    // One label set across all three rings, which share a canvas.
+    const labels = disambiguateBasenames([
+      ...changedFiles.slice(0, 6),
+      ...directRows.map((d) => d.path),
+      ...transitiveRows.map((t) => t.path),
+    ]);
 
     const centreNodes: PlacedNode[] = changedFiles.slice(0, 6).map((path, i, arr) => {
       const angle =
@@ -66,7 +70,7 @@ export function ImpactGraph({ result, changedFiles }: ImpactGraphProps) {
       const spread = arr.length === 1 ? 0 : 30;
       return {
         key: `c-${path}`,
-        label: basename(path),
+        label: labels.get(path) ?? path,
         full: path,
         x: CX + Math.cos(angle) * spread,
         y: CY + Math.sin(angle) * spread,
@@ -82,7 +86,7 @@ export function ImpactGraph({ result, changedFiles }: ImpactGraphProps) {
         maxStructuralScore > 0 ? d.structural_score / maxStructuralScore : 0;
       const node: PlacedNode = {
         key: `d-${d.path}`,
-        label: basename(d.path),
+        label: labels.get(d.path) ?? d.path,
         full: `${d.path} · raw structural weight ${d.structural_score.toFixed(4)} · centrality ${(d.centrality * 100).toFixed(0)}%`,
         x: CX + Math.cos(angle) * INNER_R,
         y: CY + Math.sin(angle) * INNER_R,
@@ -99,7 +103,7 @@ export function ImpactGraph({ result, changedFiles }: ImpactGraphProps) {
       const depthFrac = (t.depth || 1) / depthCeil;
       return {
         key: `t-${t.path}`,
-        label: basename(t.path),
+        label: labels.get(t.path) ?? t.path,
         full: `${t.path} · depth ${t.depth}`,
         x: CX + Math.cos(angle) * OUTER_R,
         y: CY + Math.sin(angle) * OUTER_R,

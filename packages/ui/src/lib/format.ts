@@ -134,6 +134,49 @@ export function truncatePath(path: string, maxChars = 60): string {
   return filename.length <= maxChars ? `…/${filename}` : `…${filename.slice(-(maxChars - 1))}`;
 }
 
+/**
+ * Shortest labels that still tell a set of paths apart: `src/css/mod.rs` and
+ * `src/text/mod.rs` become `css/mod.rs` and `text/mod.rs`, while a path whose
+ * basename is already unique keeps it. Each path grows by one trailing segment
+ * per round until it is unique or has no segments left.
+ *
+ * Prefer {@link truncatePath} for a path shown on its own; this is for many
+ * paths displayed side by side, where a bare basename can be ambiguous.
+ */
+export function disambiguateBasenames(paths: Iterable<string>): Map<string, string> {
+  const labels = new Map<string, string>();
+  const unique = [...new Set(paths)];
+
+  // Segments in use, grown only for the paths still tied at this depth.
+  let depth = 1;
+  let pending = unique;
+  while (pending.length > 0) {
+    const byLabel = new Map<string, string[]>();
+    for (const path of pending) {
+      const label = path.split("/").slice(-depth).join("/");
+      const group = byLabel.get(label);
+      if (group) group.push(path);
+      else byLabel.set(label, [path]);
+    }
+
+    const stillTied: string[] = [];
+    for (const [label, group] of byLabel) {
+      // One path holds this label, or the group is already shown in full:
+      // unreachable for a deduplicated set, but it bounds the loop.
+      const exhausted = group.every((p) => p.split("/").length <= depth);
+      if (group.length === 1 || exhausted) {
+        for (const path of group) labels.set(path, label);
+      } else {
+        stillTied.push(...group);
+      }
+    }
+    pending = stillTied;
+    depth += 1;
+  }
+
+  return labels;
+}
+
 /** Format age in days to split units: 45 → "1 month 15 days", 400 → "1 year 1 month" */
 export function formatAgeDays(n: number): string {
   if (n < 1) return "< 1 day";

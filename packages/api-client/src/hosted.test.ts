@@ -518,3 +518,39 @@ describe("indexing lifecycle", () => {
     expect(calls[0]!.url).toContain("/snapshots/snap-2");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Coupling normalization
+// ---------------------------------------------------------------------------
+
+describe("getCoupling", () => {
+  it("fills in nodes/edges a snapshot artifact omitted", async () => {
+    // A snapshot written before the coupling analyzer ran has no `nodes`/`edges`
+    // key at all. `CouplingGraphResponse` declares them required, so an
+    // unnormalized pass-through put `undefined` where the explorer iterates and
+    // threw during render, blanking the whole architecture page.
+    const { p } = provider([REPOS_ROUTE, ["/coupling", { total_edges: 0 }]]);
+    const graph = await p.getCoupling("repo-1");
+    expect(graph.nodes).toEqual([]);
+    expect(graph.edges).toEqual([]);
+    expect(graph.total_edges).toBe(0);
+  });
+
+  it("falls back to the drawn edge count when total_edges is absent", async () => {
+    const edges = [{ source: "a.rs", target: "b.rs", strength: 3, last_co_change: null }];
+    const { p } = provider([REPOS_ROUTE, ["/coupling", { edges }]]);
+    const graph = await p.getCoupling("repo-1");
+    expect(graph.edges).toHaveLength(1);
+    expect(graph.total_edges).toBe(1);
+  });
+
+  it("passes a well-formed payload through unchanged", async () => {
+    const body = {
+      nodes: [{ file_path: "a.rs", module: "src", score: 7, nloc: 100 }],
+      edges: [{ source: "a.rs", target: "b.rs", strength: 3, last_co_change: "2026-06-01" }],
+      total_edges: 9,
+    };
+    const { p } = provider([REPOS_ROUTE, ["/coupling", body]]);
+    expect(await p.getCoupling("repo-1")).toEqual(body);
+  });
+});

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import type { CouplingEdge, CouplingNode } from "@repowise-dev/types/coupling";
 import { CouplingGraph } from "../../src/coupling/coupling-graph.js";
 import { CouplingTable } from "../../src/coupling/coupling-table.js";
@@ -60,17 +60,21 @@ describe("CouplingGraph", () => {
 });
 
 describe("CouplingTable", () => {
+  // Stacked-card mode keeps a second copy of every row in the DOM; scope to the
+  // table so a query does not match both trees.
+  const inTable = () => within(screen.getByRole("table"));
+
   it("renders a row per coupling, strongest first", () => {
     const edges = [edge("a.py", "b.py", 4), edge("c.py", "d.py", 1)];
     render(<CouplingTable edges={edges} />);
-    expect(screen.getByText("a.py")).toBeInTheDocument();
-    expect(screen.getByText("↔ b.py")).toBeInTheDocument();
+    expect(inTable().getByText("a.py")).toBeInTheDocument();
+    expect(inTable().getByText("↔ b.py")).toBeInTheDocument();
   });
 
   it("toggles the pin on row click", () => {
     const onPinToggle = vi.fn();
     render(<CouplingTable edges={[edge("a.py", "b.py", 4)]} pinnedPath={null} onPinToggle={onPinToggle} />);
-    fireEvent.click(screen.getByText("a.py"));
+    fireEvent.click(inTable().getByText("a.py"));
     expect(onPinToggle).toHaveBeenCalledWith("a.py");
   });
 

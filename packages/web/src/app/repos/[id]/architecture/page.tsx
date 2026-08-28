@@ -42,6 +42,7 @@ import { useRouter } from "next/navigation";
 import { useQueryState, parseAsStringLiteral } from "nuqs";
 import { Code2 } from "lucide-react";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
+import { ErrorBoundary } from "@repowise-dev/ui/shared";
 import { GraphView } from "@/components/architecture/graph-view";
 import { DependenciesView } from "@/components/architecture/dependencies-view";
 import { SymbolTableWrapper as SymbolTable } from "@/components/symbols/symbol-table-wrapper";
@@ -206,7 +207,11 @@ export default function ArchitecturePage({
                 {COUPLING_DISCLAIMER}
               </p>
             </div>
-            <CouplingTab repoId={repoId} />
+            {/* Contain a render throw to the tab instead of letting it reach
+                the route boundary and blank the page. */}
+            <ErrorBoundary title="Couldn't load change coupling">
+              <CouplingTab repoId={repoId} />
+            </ErrorBoundary>
           </div>
         )}
       </div>
