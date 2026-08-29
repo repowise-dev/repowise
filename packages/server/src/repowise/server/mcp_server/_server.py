@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import sys
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -167,8 +168,30 @@ def _embedder_kwargs(name: str) -> dict[str, Any]:
     if model:
         kwargs["model"] = model
     if name == "gemini":
-        dims = os.environ.get("REPOWISE_EMBEDDING_DIMS")
-        kwargs["output_dimensionality"] = int(dims) if dims else 768
+        dims_raw = os.environ.get("REPOWISE_EMBEDDING_DIMS")
+        dims = 768
+        if dims_raw:
+            try:
+                parsed = int(dims_raw)
+            except (ValueError, OverflowError):
+                parsed = 0
+            if parsed > 0:
+                dims = parsed
+            else:
+                _log.warning(
+                    "embedding_dims_invalid",
+                    extra={
+                        "var": "REPOWISE_EMBEDDING_DIMS",
+                        "value": dims_raw,
+                        "using": dims,
+                    },
+                )
+                print(
+                    f"REPOWISE_EMBEDDING_DIMS={dims_raw!r} is not a positive integer;"
+                    f" using {dims}.",
+                    file=sys.stderr,
+                )
+        kwargs["output_dimensionality"] = dims
 
     env_vars = _EMBEDDER_KEY_ENV.get(name, ())
     if env_vars and not any(os.environ.get(var) for var in env_vars):
