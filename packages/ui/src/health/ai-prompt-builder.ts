@@ -14,7 +14,11 @@
 
 import { deadCodeRiskFactorLabel } from "@repowise-dev/types/dead-code";
 import type { PerformanceOpportunity } from "@repowise-dev/types/health";
-import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
+import type {
+  OpportunityStep,
+  RefactoringOpportunityDetailResolved,
+  RefactoringPlan,
+} from "@repowise-dev/types/refactoring";
 
 import { biomarkerInfo, CATEGORY_LABEL } from "./biomarker-glossary";
 import type { HealthWorkItem } from "./refactoring-card";
@@ -27,6 +31,9 @@ import {
   extractMethodPlan,
   helperSite,
   moveTarget,
+  splitGroups,
+  splitResidual,
+  splitShimRequired,
 } from "../refactoring/types";
 import { typeMeta } from "../refactoring/meta";
 
@@ -1542,6 +1549,33 @@ function refactoringPlanSteps(plan: RefactoringPlan): string {
         "For each edge, invert the dependency or introduce an abstraction/interface so the importer no longer needs the importee at module load time. Don't just move the import inside a function unless that genuinely breaks the cycle.",
       ].join("\n");
     }
+    case "split_file": {
+      const groups = splitGroups(plan).filter((g) => g.symbols.length > 0);
+      const residual = splitResidual(plan);
+      const shim = splitShimRequired(plan);
+      const lines = groups.map(
+        (g, i) => `- **${g.suggested_file ?? `part${i + 1}`}** — ${g.symbols.join(", ")}`,
+      );
+      return [
+        `Split \`${plan.file_path}\` into ${groups.length} file${
+          groups.length === 1 ? "" : "s"
+        } along the seams below. Move each group's symbols together:`,
+        "",
+        lines.join("\n"),
+        residual.length
+          ? `\nLeave in the original file (shared by more than one group): ${residual
+              .map((symbol) => `\`${symbol}\``)
+              .join(", ")}.`
+          : "",
+        "",
+        shim
+          ? "Other files import this module, so keep the original path importable: re-export the moved symbols from it, or update every importer. Do not break the existing import surface."
+          : "Update every importer of the moved symbols.",
+        "The suggested filenames are a starting point, not a requirement; rename them if the repo has a clearer convention.",
+      ]
+        .filter((line) => line !== "")
+        .join("\n");
+    }
     default:
       return "Apply the refactoring described above.";
   }
@@ -1681,6 +1715,248 @@ export interface FileHealthPromptSignals {
   in_degree?: number | null;
   out_degree?: number | null;
   age_days?: number | null;
+}
+
+export interface BuildRefactoringOpportunityPromptOptions {
+  opportunity: RefactoringOpportunityDetailResolved;
+  flavor?: AiPromptFlavor;
+  repoName?: string;
+}
+
+/** `- Mechanical (dataflow proved the extraction).` */
+function stepApplicabilityLine(step: OpportunityStep): string {
+  const classification =
+    step.applicability.classification === "mechanical" ? "Mechanical" : "Judgment";
+  const reasons = step.applicability.reasons.map((r) => r.replace(/_/g, " ")).join("; ");
+  const unknowns = step.applicability.unknowns.length
+    ? ` Not established: ${step.applicability.unknowns
+        .map((u) => u.replace(/_/g, " "))
+        .join(", ")}.`
+    : "";
+  return `${classification}${reasons ? ` — ${reasons}` : ""}.${unknowns}`;
+}
+
+/**
+ * The ordered steps, each one saying what kind of change it is.
+ *
+ * `relocated_by` gets its own sentence rather than a footnote. A step it marks
+ * names an earlier step that moves its symbol to another file, so its own path
+ * and span describe where the symbol *was* — an agent that follows those
+ * coordinates after applying step one lands in the wrong file, and nothing else
+ * in the payload would tell it so.
+ */
+function opportunitySteps(opportunity: RefactoringOpportunityDetailResolved): string {
+  const byId = new Map(opportunity.plans.map((plan) => [plan.id, plan]));
+  return opportunity.steps
+    .map((step, i) => {
+      const plan = byId.get(step.plan_id);
+      const meta = typeMeta(step.refactoring_type);
+      const lines: (string | null)[] = [
+        `${i + 1}. **${meta.label}** — ${planSourceLink(step.file_path, step.line_start, step.line_end)}${
+          step.target_symbol ? ` — \`${step.target_symbol}\`` : ""
+        }`,
+        `   - Step id: \`${step.plan_id}\``,
+        `   - ${stepApplicabilityLine(step)}`,
+        step.relocated_by
+          ? `   - **Locate it again first.** Step \`${step.relocated_by}\` moves this symbol to another file, so the path and lines above are where it was, not where it will be when you get here.`
+          : null,
+        plan
+          ? indentBlock(refactoringPlanSteps(plan), "   ")
+          : // Not a silent gap: a step whose payload did not come back still
+            // says so rather than rendering a header with no instruction.
+            `   - The detail for this step was not in this payload. Ask for it by id: \`${step.plan_id}\`.`,
+      ];
+      return lines.filter(Boolean).join("\n");
+    })
+    .join("\n\n");
+}
+
+/** Indent a multi-line block so it reads as the body of its numbered step. */
+function indentBlock(body: string, pad: string): string {
+  return body
+    .split("\n")
+    .map((line) => (line.trim() === "" ? "" : `${pad}${line}`))
+    .join("\n");
+}
+
+/** The observations behind the diagnosis, never presented as work. */
+function opportunityEvidence(opportunity: RefactoringOpportunityDetailResolved): string {
+  if (opportunity.evidence.length === 0) return "";
+  const rows = opportunity.evidence.map((item) => {
+    const meta = typeMeta(item.refactoring_type);
+    const detail = Object.entries(item.summary)
+      .filter(([, value]) => value !== null && value !== undefined && value !== "")
+      .map(([key, value]) => `${key.replace(/_/g, " ")}: ${String(value)}`)
+      .join("; ");
+    return `- ${meta.label}${item.target_symbol ? ` \`${item.target_symbol}\`` : ""}${
+      detail ? ` — ${detail}` : ""
+    }`;
+  });
+  return [
+    "## Evidence behind the diagnosis",
+    "",
+    "Supporting observations, not extra work. They are why the diagnosis reads the way it does.",
+    "",
+    rows.join("\n"),
+    opportunity.evidence_truncated
+      ? `\n${opportunity.evidence_emitted} of ${opportunity.evidence_total} shown.`
+      : "",
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
+}
+
+/** The validation profiles the steps share, with their runnable commands. */
+function opportunityValidation(opportunity: RefactoringOpportunityDetailResolved): string {
+  if (opportunity.validation_profiles.length === 0) return "";
+  const blocks = opportunity.validation_profiles.map((profile) => {
+    const evidence =
+      profile.basis === "unknown"
+        ? "No measured or inferred guarding test was found; treat this as a validation gap."
+        : `${profile.total} guarding test${profile.total === 1 ? "" : "s"} via ${
+            profile.via ?? profile.basis
+          }${profile.truncated ? ` (showing ${profile.tests.length})` : ""}.`;
+    return bulletList([
+      evidence,
+      profile.tests.length
+        ? `Tests: ${profile.tests.map((test) => `\`${test}\``).join(", ")}.`
+        : null,
+      profile.commands.length
+        ? `Run: ${profile.commands.map((command) => `\`${command}\``).join("; ")}.`
+        : null,
+    ]);
+  });
+  return ["## Validation plan", "", blocks.join("\n")].join("\n");
+}
+
+/**
+ * The line that tells an MCP-capable agent it can pull this record itself.
+ *
+ * An id in a prompt with no call that resolves it is noise — the work-queue
+ * prompt prints `- Target: <id>` and nothing accepts it, which is the mistake
+ * this deliberately does not repeat. So the id is stated for every flavor,
+ * because it is how a person reports completion and how staleness is detected,
+ * but only the MCP flavor is told to call anything with it. Every other flavor
+ * gets the whole plan inlined above and is told plainly that it cannot query
+ * back, rather than being handed a tool name it has no way to invoke.
+ */
+function opportunityHandoff(
+  opportunity: RefactoringOpportunityDetailResolved,
+  flavor: AiPromptFlavor,
+): string {
+  if (flavor === "claude-code-mcp") {
+    return [
+      "## Pull this record yourself",
+      "",
+      `\`get_health(opportunity_id="${opportunity.opportunity_id}")\``,
+      "",
+      "That returns this same opportunity from the index: every ordered step with its mechanical/judgment classification and reasons, the member plans' payloads, the validation profiles with runnable commands, the evidence, and structured next actions. Call it before you start — the steps below are a snapshot, and the index is the record.",
+    ].join("\n");
+  }
+  return [
+    "## This opportunity's id",
+    "",
+    `\`${opportunity.opportunity_id}\``,
+    "",
+    "Quote it when you report back. You have no tool here that resolves it, so everything needed to execute the work is inlined above rather than left behind a call you cannot make.",
+  ].join("\n");
+}
+
+/**
+ * Build a ready-to-paste prompt that hands a coding agent ONE composed
+ * refactoring opportunity: the file, what it leads with, its ordered steps with
+ * the mechanical/judgment split, the evidence, the validation commands, and the
+ * stable id that resolves back to the record.
+ *
+ * This is the opportunity-level sibling of `buildRefactoringPlanPrompt`, which
+ * still handles a single step.
+ */
+export function buildRefactoringOpportunityPrompt({
+  opportunity,
+  flavor = "generic",
+  repoName,
+}: BuildRefactoringOpportunityPromptOptions): string {
+  const repoLine = repoName ? ` (\`${repoName}\`)` : "";
+  const meta = typeMeta(opportunity.lead_refactoring_type || "");
+  const others = opportunity.affected_files.filter((f) => f !== opportunity.file_path);
+
+  // Tri-state, and all three states survive. `null` means no dominant finding
+  // was recorded to compare against, which is not the claim `false` makes.
+  const primaryLine =
+    opportunity.addresses_primary_problem === true
+      ? "These steps address the file's dominant diagnosed problem."
+      : opportunity.addresses_primary_problem === false
+        ? "These steps do NOT address the file's dominant diagnosed problem — they are real work, but not the biggest cost in this file. Say so if you think something else should come first."
+        : "No dominant problem was recorded for this file, so whether these steps address the main one is unknown — not answered either way.";
+
+  const anyRelocated = opportunity.steps.some((step) => Boolean(step.relocated_by));
+
+  const constraintList = [
+    "Preserve behavior exactly — this is a refactoring, not a feature change. No public API or observable behavior should shift.",
+    "Apply the steps in the order given. It is dependency-safe; reordering it is not.",
+    anyRelocated
+      ? "Where a step says to locate its symbol again, do that before touching it: an earlier step moves it, so the recorded path and lines go stale mid-run."
+      : null,
+    "A step marked Judgment has an unproven obligation. Read the real code and decide before applying it; do not treat it like a mechanical one.",
+    "Run the project's tests (and type-checker/linter) after the change; the suite must stay green.",
+    "If, after reading the real code, a step looks wrong or unsafe, stop and explain why instead of forcing it — the detection is static and can be a false positive.",
+    others.length > 0
+      ? `Keep these co-affected files consistent: ${others.map((f) => `\`${f}\``).join(", ")}.`
+      : null,
+  ];
+
+  const completionContract = [
+    "1. The refactored code, with each step above applied in order.",
+    "2. Per step: whether you applied it, and for anything you skipped, the reason.",
+    "3. A short note on what you renamed or introduced and why.",
+    "4. Confirmation the tests pass (or the exact failures if they don't).",
+    `5. The opportunity id \`${opportunity.opportunity_id}\`, so the work can be matched back to the record.`,
+  ];
+
+  return [
+    FLAVOR_PREAMBLE[flavor],
+    "",
+    `## ${meta.label} in \`${opportunity.file_path}\`${repoLine}`,
+    "",
+    bulletList([
+      `Opportunity: \`${opportunity.opportunity_id}\``,
+      `File: \`${opportunity.file_path}\``,
+      opportunity.lead_biomarker
+        ? `Leading cause: ${opportunity.lead_biomarker.replace(/_/g, " ")}.`
+        : null,
+      `${opportunity.step_count} step${opportunity.step_count === 1 ? "" : "s"}: ${opportunity.mechanical_steps} mechanical, ${opportunity.judgment_steps} judgment.`,
+      opportunity.recoverable_health > 0
+        ? `Recovers ~${opportunity.recoverable_health.toFixed(2)} of health score if applied.`
+        : null,
+      `Effort: ${opportunity.effort_bucket} bucket. Detector confidence: ${opportunity.confidence}.`,
+      primaryLine,
+    ]),
+    "",
+    "## The steps, in order",
+    "",
+    anyRelocated
+      ? `${opportunity.ordering_note ?? "One or more steps below are moved by an earlier step; each says so on its own line."}\n`
+      : "",
+    opportunitySteps(opportunity),
+    "",
+    opportunityEvidence(opportunity),
+    "",
+    opportunityValidation(opportunity),
+    "",
+    "## Hard constraints",
+    "",
+    bulletList(constraintList),
+    "",
+    "## What I expect back",
+    "",
+    completionContract.join("\n"),
+    "",
+    opportunityHandoff(opportunity, flavor),
+    "",
+    explorationCloser(flavor, opportunity.file_path, "refactor"),
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
 }
 
 export interface BuildFileHealthPromptOptions {

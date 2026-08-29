@@ -5,10 +5,9 @@ export * from "./plan-before";
 export * from "./plan-comparison";
 export * from "./diff-view";
 export * from "./generate-code-panel";
-export * from "./plan-rows";
-// Retired from the web surface, still mounted by the VS Code webview, which
-// has not been reworked. A use was removed here, not the component.
-export * from "./refactoring-plan-card";
+export * from "./opportunity";
+export * from "./opportunity-rows";
+export * from "./opportunity-drawer";
 export * from "./structural-map";
 export * from "./start-here";
 export * from "./refactoring-lede";

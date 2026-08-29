@@ -29,6 +29,7 @@ from ...models import (
     _new_uuid,
     _now_utc,
 )
+from ...sql import LIKE_ESCAPE, escape_like
 
 if TYPE_CHECKING:
     from ....analysis.health.refactoring.opportunity import (
@@ -40,6 +41,11 @@ _PERF_TYPE = "performance_fix"
 # Plan states an opportunity is still composed from. ``resolved`` and
 # ``false_positive`` are the two that stop describing work.
 _LIVE_PLAN_STATUSES = frozenset({"open", "acknowledged"})
+
+# Terminal states a person chose. An opportunity in one of these is not composed
+# again, so the reconciler must not read its absence as "the work disappeared"
+# and restate the decision as its own.
+_DECIDED_STATUSES = frozenset({"resolved", "false_positive"})
 
 # Orders the queue can be read in. Every one ends in a unique column so the
 # total order is deterministic and a deep offset cannot repeat or skip a row.
@@ -122,6 +128,7 @@ def _details_payload(
     *,
     validations: dict[str, dict[str, Any]],
     finding_ids: dict[str, list[str]],
+    figures: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Everything explanatory, kept out of the indexed columns.
 
@@ -154,6 +161,9 @@ def _details_payload(
         "rank_factors": dict(opportunity.rank_factors),
         "why_ranked": [dict(item) for item in opportunity.why_ranked],
         "validation_profiles": list(profiles.values()),
+        # Absent rather than zero on a store written before this existed: a
+        # zero here would plot a 1,400-line file at the origin.
+        **(figures or {}),
         **(
             {"lead_finding_ids": finding_ids.get(opportunity.lead_biomarker or "", [])}
             if finding_ids
@@ -305,6 +315,7 @@ async def finalize_refactoring_opportunities(
     step_plan_ids = {step.plan_id for item in opportunities for step in item.steps}
     step_rows = [row for row in live_plans if row.public_id in step_plan_ids]
     validations: dict[str, dict[str, Any]] = {}
+    file_figures: dict[str, dict[str, int]] = {}
     if step_rows:
         # Keyed by the storage id ``rehydrate_suggestion`` carries through, never
         # by position: ``hydrate_recommendations`` returns its results in rank
@@ -317,6 +328,16 @@ async def finalize_refactoring_opportunities(
             public_id = public_by_storage.get(
                 getattr(recommendation.suggestion, "id", None)
             )
+            # The file's size and reach, which hydration has already computed
+            # here and which nothing else on the read path can answer cheaply.
+            # Recorded per file so the structural field can plot one mark per
+            # opportunity without joining back to the unbounded plan list.
+            path = getattr(recommendation.suggestion, "file_path", None)
+            if path and path not in file_figures:
+                file_figures[path] = {
+                    "file_nloc": int(recommendation.file_nloc or 0),
+                    "dependents": int(recommendation.dependents or 0),
+                }
             # Through ``as_dict`` rather than the attribute: ``validation`` is a
             # dataclass, and the serialized form is the one every surface shows.
             validation = recommendation.as_dict().get("validation")
@@ -335,6 +356,7 @@ async def finalize_refactoring_opportunities(
             item,
             validations=validations,
             finding_ids=finding_ids.get(item.file_path, {}),
+            figures=file_figures.get(item.file_path),
         )
         for item in opportunities
     }
@@ -433,7 +455,11 @@ async def _reconcile_opportunities(
             setattr(row, name, value)
         row.updated_at = now
     for key, row in stored.items():
-        if key not in seen and row.status != "resolved":
+        # A person's decision stands. Both terminal states mean "nobody will
+        # compose this again", so an uncomposed row is expected in either case -
+        # but they are different claims, and auto-resolving a dismissal would
+        # quietly restate "this was never real" as "this got done".
+        if key not in seen and row.status not in _DECIDED_STATUSES:
             row.status = "resolved"
             row.updated_at = now
     await session.flush()
@@ -474,10 +500,11 @@ def _opportunity_filters(
     repository_id: str,
     *,
     status: str,
-    lead_type: str | None,
+    lead_types: list[str] | None,
     confidence: str | None,
     effort: str | None,
     file_paths: list[str] | None,
+    path_contains: str | None,
     mechanical_only: bool,
     addresses_primary: bool | None,
 ) -> list[Any]:
@@ -485,14 +512,31 @@ def _opportunity_filters(
         RefactoringOpportunity.repository_id == repository_id,
         RefactoringOpportunity.status == status,
     ]
-    if lead_type is not None:
-        predicates.append(RefactoringOpportunity.lead_refactoring_type == lead_type)
+    if lead_types:
+        # One value is still one equality; a list is how the board's
+        # "Structural" tab asks for its four types without four round trips.
+        predicates.append(
+            RefactoringOpportunity.lead_refactoring_type == lead_types[0]
+            if len(lead_types) == 1
+            else RefactoringOpportunity.lead_refactoring_type.in_(lead_types)
+        )
     if confidence is not None:
         predicates.append(RefactoringOpportunity.confidence == confidence)
     if effort is not None:
         predicates.append(RefactoringOpportunity.effort_bucket == effort)
     if file_paths is not None:
         predicates.append(RefactoringOpportunity.file_path.in_(file_paths))
+    if path_contains:
+        # A residual filter over the open set, not an index seek: the board's
+        # search box is the one caller, and it is bounded by open row count
+        # rather than by page. Escaping goes through the shared helper so a
+        # path fragment is read as a path fragment here the same way it is
+        # everywhere else that builds a LIKE.
+        predicates.append(
+            RefactoringOpportunity.file_path.ilike(
+                f"%{escape_like(path_contains)}%", escape=LIKE_ESCAPE
+            )
+        )
     if mechanical_only:
         predicates.append(RefactoringOpportunity.mechanical_steps > 0)
     if addresses_primary is not None:
@@ -507,10 +551,11 @@ async def list_refactoring_opportunities(
     repository_id: str,
     *,
     status: str = "open",
-    lead_type: str | None = None,
+    lead_types: list[str] | None = None,
     confidence: str | None = None,
     effort: str | None = None,
     file_paths: list[str] | None = None,
+    path_contains: str | None = None,
     mechanical_only: bool = False,
     addresses_primary: bool | None = None,
     order: str = DEFAULT_ORDER,
@@ -521,10 +566,11 @@ async def list_refactoring_opportunities(
     predicates = _opportunity_filters(
         repository_id,
         status=status,
-        lead_type=lead_type,
+        lead_types=lead_types,
         confidence=confidence,
         effort=effort,
         file_paths=file_paths,
+        path_contains=path_contains,
         mechanical_only=mechanical_only,
         addresses_primary=addresses_primary,
     )
@@ -560,6 +606,80 @@ async def get_refactoring_opportunity(
         .limit(1)
     )
     return result.scalar_one_or_none()
+
+
+async def update_refactoring_opportunity_status(
+    session: AsyncSession,
+    repository_id: str,
+    opportunity_id: str,
+    status: str,
+    *,
+    reason: str = "user",
+) -> tuple[RefactoringOpportunity, int] | None:
+    """Transition one opportunity by transitioning the steps it is made of.
+
+    An opportunity has no lifecycle of its own: its state is the rollup of its
+    member plans, and those already have one transition owner. So this applies
+    that owner to each member and then re-reads the rollup, rather than writing
+    a second, divergent decision onto the summary row.
+
+    The stored ``status`` column is refreshed here too, because it is what every
+    indexed read filters on - leaving it for the next index would hide a
+    dismissed opportunity from nothing at all. Returns ``None`` for an unknown
+    id, and raises ``ValueError`` for a status outside the triage vocabulary.
+    """
+    from ....analysis.health.refactoring.opportunity import roll_up_status
+    from .refactoring import ALLOWED_STATUSES, update_refactoring_suggestion_status
+
+    if status not in ALLOWED_STATUSES:
+        raise ValueError(f"unknown refactoring status: {status}")
+    row = await get_refactoring_opportunity(session, repository_id, opportunity_id)
+    if row is None:
+        return None
+
+    # Stored as a JSON string, like every other ``*_json`` column.
+    raw = row.details_json
+    details: dict[str, Any] = {}
+    if isinstance(raw, str) and raw:
+        try:
+            loaded = json.loads(raw)
+        except ValueError:
+            loaded = None
+        if isinstance(loaded, dict):
+            details = loaded
+    elif isinstance(raw, dict):
+        details = raw
+    plan_ids = [
+        step.get("plan_id")
+        for step in details.get("steps", [])
+        if isinstance(step, dict) and step.get("plan_id")
+    ]
+    states: list[str] = []
+    updated = 0
+    for plan_id in plan_ids:
+        plan = await update_refactoring_suggestion_status(
+            session, repository_id, str(plan_id), status, reason=reason
+        )
+        # A step whose plan no longer resolves is not silently counted as
+        # transitioned; it reads as open, which is what an untriaged step is.
+        states.append(plan.status if plan is not None else "open")
+        if plan is not None:
+            updated += 1
+
+    # Nothing was written, so there is no decision to roll up, and the row is
+    # left exactly as it was. This branch matters because the rollup of an empty
+    # set is ``open``: without it, a row whose steps are missing or whose plan
+    # ids no longer resolve would answer a request to dismiss it with a cheerful
+    # "open" and an HTTP 200, and the one thing the caller asked for would be
+    # the one thing that did not happen. The caller reads ``steps_updated`` to
+    # tell this apart from success.
+    if not updated:
+        return row, 0
+
+    row.status = roll_up_status(states)
+    row.updated_at = _now_utc()
+    await session.flush()
+    return row, updated
 
 
 async def get_refactoring_summary(
@@ -609,4 +729,5 @@ __all__ = [
     "get_refactoring_summary",
     "list_refactoring_opportunities",
     "refactoring_facet_counts",
+    "update_refactoring_opportunity_status",
 ]

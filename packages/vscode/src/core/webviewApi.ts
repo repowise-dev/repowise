@@ -22,13 +22,18 @@ import {
   searchNodes,
 } from "@repowise-dev/api-client/graph";
 import {
+  getRefactoringOpportunities,
+  getRefactoringOpportunity,
   getRefactoringPlan,
   getRefactoringTargets,
 } from "@repowise-dev/api-client/refactoring";
 import { listDecisions } from "@repowise-dev/api-client/decisions";
 import { getPageById, listAllPages } from "@repowise-dev/api-client/pages";
 import { getRiskRange } from "@repowise-dev/api-client/risk";
-import { buildRefactoringPlanPrompt } from "@repowise-dev/ui/health/ai-prompt-builder";
+import {
+  buildRefactoringOpportunityPrompt,
+  buildRefactoringPlanPrompt,
+} from "@repowise-dev/ui/health/ai-prompt-builder";
 import { CONFIG_SECTION } from "../constants";
 import {
   SETTING_KEYS,
@@ -283,10 +288,33 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
     executionFlows: () => cached("graph:flows", (id) => getExecutionFlows(id)),
 
     // Refactoring
-    refactoringTargets: (filePath) =>
-      cached(`refactor:targets:${filePath ?? ""}`, (id) =>
-        getRefactoringTargets(id, filePath ? { filePath } : {}),
+    refactoringOpportunities: (filePath) =>
+      cached(`refactor:opps:${filePath ?? ""}`, (id) =>
+        getRefactoringOpportunities(id, {
+          ...(filePath ? { filePath } : {}),
+          // The row renders counts, not steps; the detail call carries those.
+          stepPreview: 0,
+          limit: 100,
+        }),
       ),
+    refactoringOpportunity: (opportunityId) =>
+      cached(`refactor:opp:${opportunityId}`, (id) =>
+        getRefactoringOpportunity(id, opportunityId, { stepLimit: 50, evidenceLimit: 20 }),
+      ),
+    refactoringOpportunityPrompt: async (opportunityId, flavor) => {
+      const detail = await cached(`refactor:opp:${opportunityId}`, (id) =>
+        getRefactoringOpportunity(id, opportunityId, { stepLimit: 50, evidenceLimit: 20 }),
+      );
+      if (!detail.resolved) {
+        throw new Error(`No refactoring opportunity resolves for ${opportunityId}.`);
+      }
+      const repoName = ctx.repo?.name;
+      return buildRefactoringOpportunityPrompt({
+        opportunity: detail,
+        flavor,
+        ...(repoName ? { repoName } : {}),
+      });
+    },
     refactoringPlan: (suggestionId) =>
       cached(`refactor:plan:${suggestionId}`, (id) => getRefactoringPlan(id, suggestionId)),
     refactoringPrompt: async (suggestionId, flavor) => {

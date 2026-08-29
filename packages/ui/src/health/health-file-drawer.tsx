@@ -20,6 +20,7 @@ import { AiPromptButton } from "./ai-prompt-button";
 import { AiPromptModal } from "./ai-prompt-modal";
 import { buildFileHealthAiPrompt } from "./ai-prompt-builder";
 import { FileSignalsPanel } from "./file-signals-panel";
+import { FindingOpportunityLink } from "./file-opportunity";
 import { CollapsibleSection } from "../shared/collapsible-section";
 import { formatRelativeTimeOrNull } from "../lib/format";
 import { Sparkline } from "./sparkline";
@@ -38,6 +39,7 @@ import type {
   FileSignals,
   PerformanceOpportunity,
 } from "@repowise-dev/types/health";
+import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
 import { SeverityMark } from "./severity-mark";
 import { ImpactFigure } from "./impact-figure";
 
@@ -90,6 +92,13 @@ export interface HealthFileDrawerProps {
   } | null;
   findings?: HealthDrawerFinding[];
   suggestions?: Record<string, string>;
+  /**
+   * The file's composed refactoring opportunity, when the host can supply one.
+   * Findings whose cause it addresses get a link to it; the rest do not, so the
+   * drawer never offers a plan for a problem the plan does not answer.
+   */
+  opportunity?: RefactoringOpportunity | null | undefined;
+  refactoringOpportunityHref?: ((opportunityId: string) => string) | undefined;
   /** Per-file score trajectory; renders a compact sparkline when populated. */
   trend?: FileHealthTrend | null;
   /** Process / people / topology signals; the panel is silent when absent. */
@@ -143,6 +152,8 @@ export function HealthFileDrawer({
   breakdown,
   findings = [],
   suggestions = {},
+  opportunity,
+  refactoringOpportunityHref,
   trend,
   signals,
   fileViewHref,
@@ -257,6 +268,11 @@ export function HealthFileDrawer({
             {suggestions[f.biomarker_type]}
           </p>
         ) : null}
+        <FindingOpportunityLink
+          opportunity={opportunity}
+          biomarkerType={f.biomarker_type}
+          href={refactoringOpportunityHref}
+        />
         {onFindingStatusChange ? (
           <div className="flex flex-wrap items-center gap-1.5 pt-1">
             {TRIAGE_STATUSES.map((opt) => {

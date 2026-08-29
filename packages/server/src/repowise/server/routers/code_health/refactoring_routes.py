@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.models import primary_finding
 from repowise.core.analysis.health.suggestions import suggestion_for as _suggestion_for
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
@@ -100,7 +101,7 @@ async def health_work_queue(
         m = metric_by_path.get(file_path)
         nloc = m.nloc if m is not None else 0
         score = m.score if m is not None else 10.0
-        primary = max(fs, key=lambda x: x.health_impact)
+        primary = primary_finding(fs)
         total_impact = round(sum(x.health_impact for x in fs), 3)
         effort_bucket = _effort_for_nloc(nloc)
         if effort_rank[effort_bucket] > max_effort_rank:

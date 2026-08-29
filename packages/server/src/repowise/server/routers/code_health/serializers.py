@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from repowise.core.analysis.health.models import primary_finding
 from repowise.core.analysis.health.signals import FileSignals
 from repowise.core.analysis.health.trends import FileTrend
 
@@ -54,7 +55,7 @@ def _primary_and_magnitude(findings: list[Any]) -> dict:
     """
     if not findings:
         return {"primary_biomarker": None, "primary_reason": None, "total_deduction": None}
-    primary = max(findings, key=lambda x: x.health_impact)
+    primary = primary_finding(findings)
     total = sum(float(x.health_impact or 0.0) for x in findings)
     return {
         "primary_biomarker": primary.biomarker_type,

@@ -184,6 +184,7 @@ export default async function FileEntityPage({ params, searchParams }: Props) {
     healthPanel: (
       <FileHealthPanel
         repoId={id}
+        filePath={detail.file_path}
         health={detail.health}
         functionBlame={detail.function_blame}
       />

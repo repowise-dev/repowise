@@ -82,6 +82,7 @@ from .refactoring_opportunities import (
     get_refactoring_summary,
     list_refactoring_opportunities,
     refactoring_facet_counts,
+    update_refactoring_opportunity_status,
 )
 
 __all__ = [
@@ -141,6 +142,7 @@ __all__ = [
     "tests_covering_files",
     "update_dead_code_status",
     "update_health_finding_status",
+    "update_refactoring_opportunity_status",
     "update_refactoring_suggestion_status",
     "upsert_health_findings",
     "upsert_health_metrics",

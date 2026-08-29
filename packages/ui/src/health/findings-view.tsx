@@ -117,6 +117,12 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
       limit: 1000,
     })) as HealthWorkItemFinding[];
 
+  // Undefined when this host cannot answer, so the card stays silent rather
+  // than rendering "no plan" for a question it never asked.
+  const loadOpportunity = adapter.getFileOpportunity
+    ? (filePath: string) => adapter.getFileOpportunity!(filePath)
+    : undefined;
+
   // The prompt promises the agent "every marker", so hydrate before opening
   // rather than letting the builder fall back to the primary finding alone.
   const openPrompt = async (t: HealthWorkItem) => {
@@ -372,6 +378,8 @@ export function FindingsView({ adapter }: { adapter: CodeHealthAdapter }) {
                         onStatusChange={handleStatus}
                         onGeneratePrompt={(t) => void openPrompt(t)}
                         onLoadFindings={loadFindings}
+                        onLoadOpportunity={loadOpportunity}
+                        refactoringOpportunityHref={adapter.refactoringOpportunityHref}
                       />
                     </section>
                   ))}

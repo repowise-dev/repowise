@@ -14,7 +14,10 @@ import type {
 } from "@repowise-dev/types/health";
 import type { Paginated } from "@repowise-dev/types";
 import type { CodeHealthOverlay } from "./map/types";
-import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
+import type {
+  RefactoringOpportunity,
+  RefactoringPlan,
+} from "@repowise-dev/types/refactoring";
 
 /** Subset of the findings list query the shared views need. */
 export interface CodeHealthFindingsQuery {
@@ -105,6 +108,13 @@ export interface CodeHealthAdapter {
   symbolHref?(symbolId: string): string | undefined;
   /** Exact stable-id handoff into the existing structured-plan page. */
   refactoringPlanHref?(planId: string, opportunityId: string): string;
+  /**
+   * The file's one composed refactoring opportunity, or null when it has none.
+   * Optional: a host that cannot answer offers no link rather than a dead one.
+   */
+  getFileOpportunity?(filePath: string): Promise<RefactoringOpportunity | null>;
+  /** Deep link into the refactoring surface for one opportunity. */
+  refactoringOpportunityHref?(opportunityId: string): string;
   /**
    * Where this cause lives on the one map. Optional: a host without a galaxy
    * offers no link rather than a second map.

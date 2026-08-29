@@ -20,6 +20,10 @@ import {
   updateFindingStatus,
 } from "@/lib/api/code-health";
 import { HealthFileDrawerHost } from "@/components/health/health-file-drawer-host";
+import {
+  getFileOpportunity,
+  refactoringOpportunityHref,
+} from "@/lib/api/file-opportunity";
 
 export function FindingsTab({ repoId: id }: { repoId: string }) {
   const router = useRouter();
@@ -29,6 +33,9 @@ export function FindingsTab({ repoId: id }: { repoId: string }) {
     cacheKey: id,
     getOverview: (limit) => getHealthOverview(id, limit),
     listFindings: (opts) => listHealthFindings(id, opts),
+    getFileOpportunity: (filePath) => getFileOpportunity(id, filePath),
+    refactoringOpportunityHref: (opportunityId) =>
+      refactoringOpportunityHref(id, opportunityId),
     listFiles: (opts) => listHealthFiles(id, opts),
     getHealthWorkQueue: (opts) => getHealthWorkQueue(id, opts),
     updateFindingStatus: (findingId, status) =>

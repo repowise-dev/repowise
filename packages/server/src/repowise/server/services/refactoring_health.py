@@ -16,6 +16,7 @@ module reads what the finalizer wrote.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -75,12 +76,13 @@ _UNAVAILABLE = {
 class RefactoringQuery:
     """A normalized queue request. The only shape either adapter passes down."""
 
-    lead_type: str | None = None
+    lead_types: tuple[str, ...] | None = None
     confidence: str | None = None
     effort: str | None = None
     mechanical_only: bool = False
     addresses_primary: bool | None = None
     file_paths: tuple[str, ...] | None = None
+    path_contains: str | None = None
     view: str = DEFAULT_VIEW
     order: str | None = None
     limit: int = 20
@@ -107,12 +109,13 @@ class RefactoringPage:
 
 def parse_query(
     *,
-    lead_type: str | None = None,
+    lead_type: str | Sequence[str] | None = None,
     confidence: str | None = None,
     effort: str | None = None,
     mechanical: bool | None = None,
     addresses_primary: bool | None = None,
     file_paths: list[str] | tuple[str, ...] | None = None,
+    search: str | None = None,
     view: str | None = None,
     order: str | None = None,
     limit: int = 20,
@@ -134,18 +137,36 @@ def parse_query(
         ignored[name] = value
         return None
 
+    def admit_many(
+        name: str, value: str | Sequence[str] | None, allowed: tuple[str, ...]
+    ) -> tuple[str, ...] | None:
+        """One value or several. A comma-separated string is how a query
+        parameter carries a set; every member is admitted on its own, so a
+        misspelling in a list is reported rather than narrowing the result to
+        the members that happened to be spelled right."""
+        if value is None:
+            return None
+        raw = value.split(",") if isinstance(value, str) else list(value)
+        kept = [item.strip() for item in raw if item.strip()]
+        good = tuple(item for item in kept if item in allowed)
+        bad = [item for item in kept if item not in allowed]
+        if bad:
+            ignored[name] = ",".join(bad)
+        return good or None
+
     resolved_view = view or DEFAULT_VIEW
     if resolved_view not in _VIEW_ORDERS:
         ignored["refactoring_view"] = resolved_view
         resolved_view = DEFAULT_VIEW
     return (
         RefactoringQuery(
-            lead_type=admit("refactoring_type", lead_type, _TYPES),
+            lead_types=admit_many("refactoring_type", lead_type, _TYPES),
             confidence=admit("confidence", confidence, _CONFIDENCES),
             effort=admit("effort", effort, _EFFORTS),
             mechanical_only=bool(mechanical),
             addresses_primary=addresses_primary,
             file_paths=tuple(file_paths) if file_paths else None,
+            path_contains=(search or "").strip() or None,
             view=resolved_view,
             order=admit("order", order, CANONICAL_ORDERS),
             limit=max(int(limit), 0),
@@ -208,10 +229,11 @@ class RefactoringHealthService:
         rows, total = await list_refactoring_opportunities(
             self._session,
             self._repository_id,
-            lead_type=query.lead_type,
+            lead_types=list(query.lead_types) if query.lead_types else None,
             confidence=query.confidence,
             effort=query.effort,
             file_paths=list(query.file_paths) if query.file_paths else None,
+            path_contains=query.path_contains,
             mechanical_only=query.mechanical_only,
             addresses_primary=query.addresses_primary,
             order=query.resolved_order,
@@ -551,6 +573,12 @@ class RefactoringHealthService:
             "rank_factors": details.get("rank_factors") or {},
             "why_ranked": details.get("why_ranked") or [],
         }
+        # The file's own size and reach, recorded by the finalizer. Omitted when
+        # the store predates them, so a surface can tell "not measured" from a
+        # genuine zero rather than plotting an unmeasured file at the origin.
+        for key in ("file_nloc", "dependents"):
+            if isinstance(details.get(key), int):
+                payload[key] = details[key]
         if steps_limit is not None:
             kept = steps[: max(steps_limit, 0)]
             payload["steps"] = kept
