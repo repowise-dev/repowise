@@ -8,7 +8,16 @@ function node(path: string, score: number | null = 7, nloc = 100): CouplingNode 
   return { file_path: path, module: path.split("/")[0] ?? null, score, nloc };
 }
 function edge(s: string, t: string, strength = 3, last: string | null = "2026-06-01"): CouplingEdge {
-  return { source: s, target: t, strength, last_co_change: last };
+  return {
+    source: s,
+    target: t,
+    strength,
+    last_co_change: last,
+    support: 0,
+    confidence_ab: null,
+    confidence_ba: null,
+    structural: null,
+  };
 }
 
 describe("CouplingGraph", () => {

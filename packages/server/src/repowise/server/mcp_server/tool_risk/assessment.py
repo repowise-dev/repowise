@@ -341,9 +341,8 @@ def _build_co_changes(
         }
         if types:
             row["structural_relationship_types"] = types
-        support = partner.record.get("frequency", partner.record.get("shared_commit_count"))
-        if support is not None:
-            row["support"] = support
+        if partner.support:
+            row["support"] = partner.support
         rows.append(row)
     population = filter_dicts_by_key(rows, "file_path", exclude_spec)
     return population, len(population)

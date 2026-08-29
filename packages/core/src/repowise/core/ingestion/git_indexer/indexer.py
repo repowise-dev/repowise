@@ -24,9 +24,9 @@ from ._constants import (
     _DEEP_WALK_COMMIT_LIMIT,
     _DEEP_WALK_MIN_FALLBACK,
     _DEFAULT_CO_CHANGE_COMMIT_LIMIT,
-    _DEFAULT_CO_CHANGE_MIN_COUNT,
     _DEFAULT_COMMIT_LIMIT,
     _FILE_INDEX_TIMEOUT_SECS,
+    _MAX_PARTNERS_PER_FILE,
 )
 from .co_change import compute_co_changes_and_entropy
 from .enrich import compute_percentiles
@@ -255,7 +255,7 @@ class GitIndexer:
                 repo,
                 set(tracked_files),
                 max(self.commit_limit, _DEFAULT_CO_CHANGE_COMMIT_LIMIT),
-                _DEFAULT_CO_CHANGE_MIN_COUNT,
+                _MAX_PARTNERS_PER_FILE,
                 on_commit_done,
                 on_co_change_start,
                 as_of_ts,
@@ -540,7 +540,7 @@ class GitIndexer:
                     repo,
                     set(all_files),
                     max(self.commit_limit, _DEFAULT_CO_CHANGE_COMMIT_LIMIT),
-                    _DEFAULT_CO_CHANGE_MIN_COUNT,
+                    _MAX_PARTNERS_PER_FILE,
                     None,
                     None,
                     as_of_ts,

@@ -33,7 +33,7 @@ from repowise.core.analysis.change_risk import (
     scores_excluding,
 )
 from repowise.core.analysis.risk_semantics import change_risk_authority
-from repowise.core.co_change import parse_partners
+from repowise.core.co_change import MIN_CO_CHANGE_SUPPORT, parse_partners
 from repowise.core.ingestion.git_indexer._constants import (
     EVOLUTION_CATEGORIES,
     classify_commit_category,
@@ -601,18 +601,19 @@ async def get_ownership(
 async def get_co_changes(
     repo_id: str,
     file_path: str = Query(..., description="Relative file path"),
-    min_count: int = Query(3, ge=1),
+    min_count: int = Query(MIN_CO_CHANGE_SUPPORT, ge=1),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    """Get files that frequently change together with the given file."""
+    """Get files that frequently change together with the given file.
+
+    ``min_count`` is a number of shared commits, not the decayed weight.
+    """
     meta = await crud.get_git_metadata(session, repo_id, file_path)
     if meta is None:
         raise HTTPException(status_code=404, detail="Git metadata not found")
 
     filtered = [
-        p.record
-        for p in parse_partners(meta.co_change_partners_json)
-        if p.weight >= min_count
+        p.record for p in parse_partners(meta.co_change_partners_json) if p.support >= min_count
     ]
 
     return {

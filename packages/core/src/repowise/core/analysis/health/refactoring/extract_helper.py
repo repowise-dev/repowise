@@ -245,7 +245,7 @@ class _Block:
         self.anchor_start = min(self.anchor_start, start)
         self.anchor_end = max(self.anchor_end, end)
         self.token_count = max(self.token_count, int(getattr(pair, "token_count", 0)))
-        self.co_change = max(self.co_change, int(getattr(pair, "co_change_count", 0)))
+        self.co_change = max(self.co_change, int(getattr(pair, "co_change_count", 0) or 0))
         # The anchor-side region of this pair is always an occurrence; add it
         # plus the partner region(s). Intra-file pairs contribute both regions.
         self.occurrences.add((anchor, start, end))
@@ -278,7 +278,7 @@ class ExtractHelperDetector(RefactoringDetector):
 
         # Stable order: biggest recovery first, then — because dry_violation
         # deductions are near-uniform, so impact rarely separates clones — the
-        # plan's "co_change x span" priority (actively co-modified, larger
+        # co-change x span priority (actively co-modified, larger
         # blocks first), then target for a fully deterministic tie-break.
         out.sort(
             key=lambda s: (

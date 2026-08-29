@@ -9,7 +9,16 @@ function edge(
   strength = 3,
   last: string | null = "2026-06-01",
 ): CouplingEdge {
-  return { source: s, target: t, strength, last_co_change: last };
+  return {
+    source: s,
+    target: t,
+    strength,
+    last_co_change: last,
+    support: 0,
+    confidence_ab: null,
+    confidence_ba: null,
+    structural: null,
+  };
 }
 
 // The table collapses to stacked cards below `md`, and ResponsiveTable keeps
@@ -74,5 +83,50 @@ describe("CouplingTable (virtualized)", () => {
     const btn = inTable().getByRole("button", { name: /ai decouple prompt/i });
     fireEvent.click(btn);
     expect(onGenerate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("CouplingTable together column", () => {
+  const withSupport = (
+    s: string,
+    t: string,
+    support: number,
+    ab: number | null,
+    ba: number | null,
+  ): CouplingEdge => ({
+    ...edge(s, t),
+    support,
+    confidence_ab: ab,
+    confidence_ba: ba,
+  });
+
+  it("shows the shared commit count and the stronger of the two directions", () => {
+    render(<CouplingTable edges={[withSupport("a/README.md", "b/BENCH.md", 11, 0.11, 0.92)]} />);
+    expect(inTable().getByText("11 commits")).toBeInTheDocument();
+    // 0.92 is the claim the pair actually supports; 0.11 would undersell it.
+    expect(inTable().getByText("up to 92% of one side")).toBeInTheDocument();
+  });
+
+  it("renders a dash when the index recorded no support", () => {
+    render(<CouplingTable edges={[edge("a.py", "b.py")]} />);
+    expect(inTable().queryByText(/commits$/)).not.toBeInTheDocument();
+  });
+
+  it("omits the confidence line when neither side has a commit total", () => {
+    render(<CouplingTable edges={[withSupport("a.py", "b.py", 4, null, null)]} />);
+    expect(inTable().getByText("4 commits")).toBeInTheDocument();
+    expect(inTable().queryByText(/of one side/)).not.toBeInTheDocument();
+  });
+
+  it("sorts by shared commits, not by date", () => {
+    const edges = [
+      { ...withSupport("a.py", "b.py", 2, 0.5, 0.5), last_co_change: "2026-06-09" },
+      { ...withSupport("c.py", "d.py", 40, 0.9, 0.9), last_co_change: "2026-06-01" },
+    ];
+    render(<CouplingTable edges={edges} />);
+    fireEvent.click(inTable().getByText("Together"));
+    const rows = inTable().getAllByRole("row").slice(1);
+    // Descending by support puts the 40 first; by date it would be the 2.
+    expect(within(rows[0]!).getByText("40 commits")).toBeInTheDocument();
   });
 });

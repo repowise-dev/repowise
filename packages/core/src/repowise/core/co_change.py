@@ -29,7 +29,11 @@ from dataclasses import dataclass, field
 
 __all__ = [
     "CO_CHANGE_DECAY_TAU",
-    "MIN_CO_CHANGE_WEIGHT",
+    "MAX_PARTNERS_PER_FILE",
+    "MIN_CO_CHANGE_SUPPORT",
+    "STRUCTURAL_CORROBORATED",
+    "STRUCTURAL_NOT_APPLICABLE",
+    "STRUCTURAL_UNEXPLAINED",
     "CoChangePartner",
     "canonical_pair",
     "parse_partners",
@@ -42,9 +46,22 @@ __all__ = [
 # between them would silently change what a weight means.
 CO_CHANGE_DECAY_TAU: float = 180.0
 
-# Minimum decayed weight for a pair to be worth recording. Two co-changes in
-# the last few weeks clear it; older ones need proportionally more.
-MIN_CO_CHANGE_WEIGHT: int = 2
+# Minimum number of shared commits for a pair to be worth recording. Counted
+# raw, so it keeps its meaning if the weighting changes.
+MIN_CO_CHANGE_SUPPORT: int = 2
+
+# Strongest partners kept per file. Bounds the column on a repo where a few
+# files co-change with thousands of others.
+MAX_PARTNERS_PER_FILE: int = 25
+
+# Whether an import-graph edge explains a pair. ``NOT_APPLICABLE`` is not a
+# weaker ``UNEXPLAINED``: a file the parser never ingested cannot carry an edge
+# in either direction, so there is nothing to corroborate. Only
+# ``UNEXPLAINED`` is a finding. ``None`` means an index written before the
+# distinction existed.
+STRUCTURAL_CORROBORATED = "corroborated"
+STRUCTURAL_UNEXPLAINED = "unexplained"
+STRUCTURAL_NOT_APPLICABLE = "not_applicable"
 
 
 @dataclass(frozen=True)
@@ -52,15 +69,32 @@ class CoChangePartner:
     """One file that changed together with the file the record belongs to.
 
     ``weight`` is the recency-decayed sum the indexer persists, not a number of
-    commits. ``record`` is the verbatim source record, for callers that put it
-    back on the wire or read a field this module does not model; it is excluded
-    from equality so two partners compare on their meaning.
+    commits; ``support`` is that plain count. ``self_commits`` and
+    ``partner_commits`` are each file's commit total over the same walk, so
+    ``support / self_commits`` is an honest directional confidence. They are
+    zero on an index written before they were recorded.
+
+    ``record`` is the verbatim source record, for callers that put it back on
+    the wire or read a field this module does not model; it is excluded from
+    equality so two partners compare on their meaning.
     """
 
     file_path: str
     weight: float
     last_co_change: str | None = None
+    support: int = 0
+    self_commits: int = 0
+    partner_commits: int = 0
+    structural: str | None = None
     record: dict = field(default_factory=dict, compare=False, repr=False)
+
+
+def _as_count(value: object) -> int:
+    """A non-negative integer, or 0 for anything that is not one."""
+    try:
+        return max(int(value), 0)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
 
 
 def parse_partners(raw: object) -> list[CoChangePartner]:
@@ -70,7 +104,8 @@ def parse_partners(raw: object) -> list[CoChangePartner]:
     elements within it, yielding fewer partners rather than raising. Also
     accepts an already-decoded list, which the graph builder holds. The ``path``
     and ``count`` aliases are accepted alongside the canonical ``file_path`` and
-    ``co_change_count``.
+    ``co_change_count``; ``frequency`` is the support count, named to match the
+    cross-repo miner's records.
     """
     if not raw:
         return []
@@ -96,11 +131,16 @@ def parse_partners(raw: object) -> list[CoChangePartner]:
         except (TypeError, ValueError):
             continue
         last = record.get("last_co_change")
+        structural = record.get("structural")
         out.append(
             CoChangePartner(
                 file_path=str(path),
                 weight=weight,
                 last_co_change=last if isinstance(last, str) else None,
+                support=_as_count(record.get("frequency")),
+                self_commits=_as_count(record.get("self_commits")),
+                partner_commits=_as_count(record.get("partner_commits")),
+                structural=structural if isinstance(structural, str) else None,
                 record=record,
             )
         )

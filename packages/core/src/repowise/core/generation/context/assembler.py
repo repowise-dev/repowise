@@ -23,7 +23,7 @@ from repowise.core.ingestion.package_roots import (
     scan_package_roots,
 )
 
-from ...co_change import parse_partners
+from ...co_change import STRUCTURAL_UNEXPLAINED, parse_partners
 from ..categories import file_category
 from ..entry_points import orientation_entry_points, rank_entry_point_paths
 from ..models import GenerationConfig
@@ -680,11 +680,12 @@ class ContextAssembler:
         single_owner_files = sum(1 for m in metas if 0 < (m.get("bus_factor") or 0) <= 1)
 
         # Files this subsystem changes together with in history but that live in
-        # another module. History coupling the import graph never shows.
+        # another module. Restricted to pairs the dependency graph does not
+        # explain, because the page claims exactly that.
         coupled: Counter[str] = Counter()
         for m in metas:
             for p in parse_partners(m.get("co_change_partners_json")):
-                if p.file_path in member_set:
+                if p.file_path in member_set or p.structural != STRUCTURAL_UNEXPLAINED:
                     continue
                 module = module_for(p.file_path, roots)
                 if module:

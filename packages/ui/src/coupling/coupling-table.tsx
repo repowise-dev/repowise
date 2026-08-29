@@ -38,7 +38,7 @@ interface CouplingTableProps {
   LinkComponent?: LinkLike | undefined;
 }
 
-type SortKey = "strength" | "last";
+type SortKey = "strength" | "last" | "together";
 type SortDir = "asc" | "desc";
 
 // Capped against the viewport, not a flat 600px, so the inner scroller is not
@@ -47,6 +47,17 @@ const VIRTUALIZE = { maxHeight: "min(600px, 70vh)" };
 
 const STRENGTH_HELP =
   "Recency-weighted count of commits that touched both files. Higher means more or more-recent shared changes. It is not a percentage or a verified dependency.";
+
+const TOGETHER_HELP =
+  "Shared commits, and how much of each file's own history they account for. A pair can be one-sided: a file that never changes alone is a stronger finding than two files that both change often.";
+
+// The higher of the two directions: the strongest claim the pair supports.
+function peakConfidence(e: CouplingEdge): number | null {
+  const values = [e.confidence_ab, e.confidence_ba].filter(
+    (v): v is number => typeof v === "number",
+  );
+  return values.length ? values.reduce((m, v) => Math.max(m, v), 0) : null;
+}
 
 /**
  * The precise, sortable companion to the coupling diagram: one row per
@@ -79,8 +90,11 @@ export function CouplingTable({
 
   const sorted = useMemo(() => {
     const dir = sortDir === "asc" ? 1 : -1;
-    const val = (e: CouplingEdge) =>
-      sortKey === "strength" ? e.strength : e.last_co_change ? Date.parse(e.last_co_change) : 0;
+    const val = (e: CouplingEdge) => {
+      if (sortKey === "strength") return e.strength;
+      if (sortKey === "together") return e.support;
+      return e.last_co_change ? Date.parse(e.last_co_change) : 0;
+    };
     // Copy before sorting: never mutate the caller's edge array in place.
     return [...edges].sort((a, b) => (val(a) - val(b)) * dir);
   }, [edges, sortKey, sortDir]);
@@ -195,6 +209,36 @@ export function CouplingTable({
       ),
       // The bar is meaningless at card width; the number carries it.
       mobileRender: (e) => e.strength,
+    },
+    {
+      key: "together",
+      header: (
+        <span
+          title={TOGETHER_HELP}
+          className="cursor-help underline decoration-dotted underline-offset-2"
+        >
+          Together
+        </span>
+      ),
+      mobileLabel: "Together",
+      priority: 2,
+      sortable: true,
+      headerClassName: "w-32",
+      cellClassName: "text-xs tabular-nums",
+      render: (e) => {
+        if (!e.support) return <span className="text-[var(--color-text-tertiary)]">—</span>;
+        const peak = peakConfidence(e);
+        return (
+          <div className="flex flex-col leading-tight">
+            <span>{e.support} commits</span>
+            {peak !== null && (
+              <span className="text-[var(--color-text-tertiary)]">
+                up to {Math.round(peak * 100)}% of one side
+              </span>
+            )}
+          </div>
+        );
+      },
     },
     {
       key: "last",

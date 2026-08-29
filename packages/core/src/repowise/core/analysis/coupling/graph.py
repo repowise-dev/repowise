@@ -16,9 +16,14 @@ export.
 Honesty rules:
 
 * Co-change is a *temporal* hint (files committed together), not a verified
-  code dependency -- the strength is the decay-weighted count the indexer
-  already thresholds (``MIN_CO_CHANGE_WEIGHT``); we surface it verbatim and
-  never invent one.
+  code dependency. ``strength`` is the indexer's decay-weighted score, surfaced
+  verbatim; ``support`` is the plain number of shared commits behind it.
+* ``confidence_ab`` and ``confidence_ba`` are read off the two files' own commit
+  totals, so they can disagree: a file that never changes without its partner
+  is a different finding from two files that merely change often. Both come
+  from the same walk as ``support``, so the ratio is not mixing populations.
+* ``structural`` says whether the dependency graph explains the pair. Absent
+  for a file the parser never ingested, where there is no edge to look for.
 * We do **not** fabricate a "strengthening / weakening" trend: co-change history
   is not snapshotted, so a trend is not derivable. ``strength`` (magnitude) and
   ``last_co_change`` (recency) are the only honest encodings.
@@ -82,14 +87,51 @@ class CouplingEdge:
 
     ``source``/``target`` are sorted lexicographically so the pair is stable and
     deduplicated. ``strength`` is the decay-weighted co-change count (verbatim
-    from the indexer; not a percentage). ``last_co_change`` is the ISO date of
-    the most recent shared commit, or ``None`` if unknown.
+    from the indexer; not a percentage). ``support`` is how many commits touched
+    both. ``confidence_ab`` is the share of ``source``'s commits that also
+    touched ``target``, and ``confidence_ba`` the reverse; either is ``None``
+    when the commit total is unknown. ``last_co_change`` is the ISO date of the
+    most recent shared commit, or ``None`` if unknown.
     """
 
     source: str
     target: str
     strength: float
     last_co_change: str | None
+    support: int = 0
+    confidence_ab: float | None = None
+    confidence_ba: float | None = None
+    structural: str | None = None
+
+
+@dataclass(frozen=True)
+class _Pair:
+    """One pair mid-merge, before it becomes an edge."""
+
+    strength: float
+    last: str | None
+    support: int
+    commits_a: int
+    commits_b: int
+    structural: str | None
+
+    def merge(self, other: _Pair) -> _Pair:
+        """Combine the two directions of the same pair, keeping the best of each."""
+        return _Pair(
+            strength=max(self.strength, other.strength),
+            last=max((d for d in (self.last, other.last) if d), default=None),
+            support=max(self.support, other.support),
+            commits_a=max(self.commits_a, other.commits_a),
+            commits_b=max(self.commits_b, other.commits_b),
+            structural=self.structural or other.structural,
+        )
+
+
+def _ratio(support: int, commits: int) -> float | None:
+    """Share of *commits* that also touched the partner, or ``None`` if unknown."""
+    if support <= 0 or commits <= 0:
+        return None
+    return round(min(support / commits, 1.0), 3)
 
 
 @dataclass
@@ -122,28 +164,41 @@ def coupling_graph(
     couplings; ``total_edges`` reports the pre-cap count for an honest "showing
     N of M" line. Only files referenced by a kept edge become nodes.
     """
-    # Deduplicate symmetric partner records into undirected edges.
-    best: dict[tuple[str, str], tuple[float, str | None]] = {}
+    # Deduplicate symmetric partner records into undirected edges. Each side
+    # records the pair from its own vantage point, so keep whichever is
+    # strongest and carry both files' commit totals off it.
+    best: dict[tuple[str, str], _Pair] = {}
     for src, meta in git_meta_by_path.items():
         for partner in parse_partners(meta.co_change_partners_json):
             dst = partner.file_path
             if dst == src or partner.weight <= 0:
                 continue
-            strength, last = partner.weight, partner.last_co_change
             key = canonical_pair(src, dst)
+            # Orient the record's two commit totals onto the canonical pair.
+            forward = src == key[0]
+            seen = _Pair(
+                strength=partner.weight,
+                last=partner.last_co_change,
+                support=partner.support,
+                commits_a=partner.self_commits if forward else partner.partner_commits,
+                commits_b=partner.partner_commits if forward else partner.self_commits,
+                structural=partner.structural,
+            )
             prev = best.get(key)
-            if prev is None:
-                best[key] = (strength, last)
-            else:
-                prev_strength, prev_last = prev
-                best[key] = (
-                    max(prev_strength, strength),
-                    max((d for d in (prev_last, last) if d), default=None),
-                )
+            best[key] = seen if prev is None else prev.merge(seen)
 
     edges = [
-        CouplingEdge(source=a, target=b, strength=round(strength, 2), last_co_change=last)
-        for (a, b), (strength, last) in best.items()
+        CouplingEdge(
+            source=a,
+            target=b,
+            strength=round(pair.strength, 4),
+            last_co_change=pair.last,
+            support=pair.support,
+            confidence_ab=_ratio(pair.support, pair.commits_a),
+            confidence_ba=_ratio(pair.support, pair.commits_b),
+            structural=pair.structural,
+        )
+        for (a, b), pair in best.items()
     ]
     edges.sort(key=lambda e: e.strength, reverse=True)
     total = len(edges)

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from ..ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
+
 __all__ = ["HasEdge", "ImportEdgeView"]
 
 
@@ -20,6 +22,10 @@ class HasEdge(Protocol):
     """Minimal graph view: does an edge of some type join these two files?"""
 
     def has_edge(self, src: str, dst: str, key: str = "imports") -> bool: ...
+
+    def has_dependency(self, a: str, b: str) -> bool: ...
+
+    def knows(self, path: str) -> bool: ...
 
 
 class ImportEdgeView:
@@ -47,3 +53,39 @@ class ImportEdgeView:
         except Exception:
             return False
         return data.get("edge_type") == key
+
+    def has_dependency(self, a: str, b: str) -> bool:
+        """Whether any file-level dependency joins the two, either direction.
+
+        ``imports`` is only one of these; matching it alone reports a pair as
+        unexplained when a type reference or a framework binding already
+        accounts for it.
+        """
+        return self._typed(a, b) or self._typed(b, a)
+
+    def _typed(self, src: str, dst: str) -> bool:
+        g = self._graph
+        if g is None:
+            return False
+        try:
+            if not g.has_edge(src, dst):
+                return False
+            data = g.get_edge_data(src, dst) or {}
+        except Exception:
+            return False
+        return data.get("edge_type") in FILE_DEPENDENCY_EDGE_TYPES
+
+    def knows(self, path: str) -> bool:
+        """Whether the parser ingested this file, so an edge is possible at all.
+
+        A lockfile or a changelog is tracked by git and co-changes constantly,
+        but never becomes a node, so it has no edge to find and its absence
+        says nothing.
+        """
+        g = self._graph
+        if g is None:
+            return False
+        try:
+            return path in g
+        except Exception:
+            return False

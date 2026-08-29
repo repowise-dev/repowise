@@ -49,6 +49,11 @@ from .code_quality import (
     RepoStatsResponse,
     SecurityFindingResponse,
 )
+from .coupling import (
+    CouplingEdgeResponse,
+    CouplingGraphResponse,
+    CouplingNodeResponse,
+)
 from .decisions import (
     DecisionCodeEdge,
     DecisionCountsResponse,
@@ -275,6 +280,9 @@ __all__ = [
     "CoordinatorHealthResponse",
     "CostGroupResponse",
     "CostSummaryResponse",
+    "CouplingEdgeResponse",
+    "CouplingGraphResponse",
+    "CouplingNodeResponse",
     "DeadCodeFindingResponse",
     "DeadCodeGraphNodeResponse",
     "DeadCodeGraphResponse",

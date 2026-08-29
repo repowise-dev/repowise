@@ -234,18 +234,6 @@ def _compute_repo_active_contributors(git_meta_map: dict[str, dict]) -> int | No
         return None
 
 
-def _build_repo_commit_counts(git_meta_map: dict[str, dict]) -> dict[str, int]:
-    out: dict[str, int] = {}
-    for path, meta in git_meta_map.items():
-        if not isinstance(meta, dict):
-            continue
-        try:
-            out[path] = int(meta.get("commit_count_total") or 0)
-        except (TypeError, ValueError):
-            continue
-    return out
-
-
 def _path_basenames(all_paths: set[str]) -> set[str]:
     """Final path components of *all_paths*, split on ``/`` only.
 
@@ -435,7 +423,6 @@ class HealthAnalyzer:
         analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
         path_basenames = _path_basenames(analyzed_paths)
         package_roots = self._package_boundaries(analyzed_paths)
-        repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
         graph_view: HasEdge | None = ImportEdgeView(self.graph) if self.graph is not None else None
 
         # Duplication runs once, up-front, so each file biomarker can see
@@ -529,7 +516,6 @@ class HealthAnalyzer:
                 disabled=file_disabled,
                 dup_report=dup_report,
                 graph_view=graph_view,
-                repo_commit_counts=repo_commit_counts,
                 repo_function_mod_p80=repo_fn_mod_p80,
                 repo_dependents_p80=repo_dependents_p80,
                 repo_active_contributors_90d=repo_active_contributors,
@@ -619,7 +605,6 @@ class HealthAnalyzer:
         analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
         path_basenames = _path_basenames(analyzed_paths)
         package_roots = self._package_boundaries(analyzed_paths)
-        repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
         graph_view: HasEdge | None = ImportEdgeView(self.graph) if self.graph is not None else None
 
         # Duplication is only consumed by the biomarker stage, so it can
@@ -727,7 +712,6 @@ class HealthAnalyzer:
                 disabled=file_disabled,
                 dup_report=dup_report,
                 graph_view=graph_view,
-                repo_commit_counts=repo_commit_counts,
                 repo_function_mod_p80=repo_fn_mod_p80,
                 repo_dependents_p80=repo_dependents_p80,
                 repo_active_contributors_90d=repo_active_contributors,
@@ -939,7 +923,6 @@ class HealthAnalyzer:
         disabled: list[str],
         dup_report: DuplicationReport,
         graph_view: HasEdge | None = None,
-        repo_commit_counts: dict[str, int] | None = None,
         repo_function_mod_p80: int | None = None,
         repo_dependents_p80: int | None = None,
         repo_active_contributors_90d: int | None = None,
@@ -1024,7 +1007,6 @@ class HealthAnalyzer:
             clones=list(clones),
             duplication_pct=dup_pct,
             graph_view=graph_view,
-            repo_commit_counts=repo_commit_counts or {},
             blame_index=blame_index,
             repo_function_mod_p80=repo_function_mod_p80,
             repo_active_contributors_90d=repo_active_contributors_90d,

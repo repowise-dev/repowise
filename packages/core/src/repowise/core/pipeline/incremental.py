@@ -273,6 +273,7 @@ async def rebuild_graph_and_git(
     try:
         from repowise.core.ingestion.git_indexer import GitIndexer
         from repowise.core.ingestion.git_indexer.tiers import GitIndexTier
+        from repowise.core.pipeline.phases.git import label_co_change_structure
 
         try:
             tier = GitIndexTier(git_tier) if git_tier else GitIndexTier.FULL
@@ -303,6 +304,11 @@ async def rebuild_graph_and_git(
             on_warning=log,
         )
         git_meta_map = {m["file_path"]: m for m in updated_meta}
+        label_co_change_structure(graph_builder, git_meta_map)
+        if idle_decay_sink:
+            # Idle rows carry the same column and are persisted on their own
+            # path, having been serialized before the graph existed.
+            label_co_change_structure(graph_builder, idle_decay_sink)
         if co_change_full:
             graph_builder.update_co_change_edges(
                 {

@@ -22,6 +22,10 @@ function edge(s: string, t: string, strength = 3): CouplingEdge {
     target: t,
     strength,
     last_co_change: "2026-06-01",
+    support: 0,
+    confidence_ab: null,
+    confidence_ba: null,
+    structural: null,
   };
 }
 

@@ -56,7 +56,7 @@ class ClonePair:
     b_start_line: int
     b_end_line: int
     token_count: int
-    co_change_count: float = 0.0  # 0 when files don't share co-change history
+    co_change_count: int = 0  # shared commits; 0 when the files have no history together
 
     @property
     def is_intra_file(self) -> bool:
@@ -93,25 +93,29 @@ def _read_source(abs_path: str) -> bytes | None:
         return None
 
 
-def _partner_weight(meta: dict[str, Any], partner_path: str) -> float:
-    """The decayed co-change weight *meta*'s file carries for *partner_path*."""
+def _partner_support(meta: dict[str, Any], partner_path: str) -> int:
+    """Commits *meta*'s file shares with *partner_path*.
+
+    The plain count, not the decayed weight: consumers render it as "co-changed
+    N times" and compare it to a whole number.
+    """
     for p in parse_partners(meta.get("co_change_partners_json")):
         if p.file_path == partner_path:
-            return p.weight
-    return 0.0
+            return p.support
+    return 0
 
 
 def _co_change_score(
     file_a: str,
     file_b: str,
     git_meta_map: dict[str, dict[str, Any]],
-) -> float:
+) -> int:
     """Bidirectional max — co-change matrices are stored per file, but
-    the same pair shows up from both sides, sometimes with slightly
-    different counts depending on the window. Take the max."""
+    the same pair shows up from both sides, and a per-file cap can drop it from
+    one of them. Take the max."""
     a_meta = git_meta_map.get(file_a, {}) or {}
     b_meta = git_meta_map.get(file_b, {}) or {}
-    return max(_partner_weight(a_meta, file_b), _partner_weight(b_meta, file_a))
+    return max(_partner_support(a_meta, file_b), _partner_support(b_meta, file_a))
 
 
 def _tokens_equal(

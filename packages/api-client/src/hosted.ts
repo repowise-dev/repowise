@@ -16,7 +16,7 @@
  */
 
 import type { ArchitectureView, C4L1, C4L2, C4L3 } from "@repowise-dev/ui/c4";
-import type { CouplingGraphResponse } from "@repowise-dev/types/coupling";
+import type { CouplingEdge, CouplingGraphResponse } from "@repowise-dev/types/coupling";
 import type { FileDetailResponse, FilesIndexResponse } from "@repowise-dev/types/files";
 import type {
   ChurnComplexityResponse,
@@ -221,11 +221,12 @@ interface WireFilesIndex {
 
 /**
  * Coupling as it arrives, not as `CouplingGraphResponse` promises: a snapshot
- * written before the coupling analyzer ran omits `nodes`/`edges` entirely.
+ * written before the coupling analyzer ran omits `nodes`/`edges` entirely, and
+ * one written before support/confidence existed omits those per edge.
  */
 interface WireCoupling {
   nodes?: CouplingGraphResponse["nodes"];
-  edges?: CouplingGraphResponse["edges"];
+  edges?: Partial<CouplingEdge>[];
   total_edges?: number;
 }
 
@@ -842,7 +843,18 @@ export function createHostedProvider(config: HostedProviderConfig): HostedProvid
     async getCoupling(repoId, opts): Promise<CouplingGraphResponse> {
       const res = await snapGet<WireCoupling>(repoId, "/coupling", opts);
       const nodes = res.nodes ?? [];
-      const edges = res.edges ?? [];
+      // An older snapshot has no support/confidence/structural. Zero and null
+      // read as "not measured", which the table already renders as a dash.
+      const edges: CouplingEdge[] = (res.edges ?? []).map((e) => ({
+        source: e.source ?? "",
+        target: e.target ?? "",
+        strength: e.strength ?? 0,
+        last_co_change: e.last_co_change ?? null,
+        support: e.support ?? 0,
+        confidence_ab: e.confidence_ab ?? null,
+        confidence_ba: e.confidence_ba ?? null,
+        structural: e.structural ?? null,
+      }));
       // Falling back to the post-cap length understates the pre-cap count, but
       // an honest "showing N of N" beats `NaN` downstream.
       return { nodes, edges, total_edges: res.total_edges ?? edges.length };

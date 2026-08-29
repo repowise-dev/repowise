@@ -725,12 +725,13 @@ async def _records(
                 "pagerank": round(float(central[1]), 4),
             }
 
-    # Strongest hidden coupling pair (max co-change count across files)
+    # The pair with the most shared commits. Counted, not weighted: the card
+    # renders it as "changed together N times".
     best_pair: dict[str, Any] | None = None
     for m in all_meta:
         for p in parse_partners(m.co_change_partners_json):
-            if best_pair is None or p.weight > best_pair["count"]:
-                best_pair = {"a": m.file_path, "b": p.file_path, "count": p.weight}
+            if best_pair is None or p.support > best_pair["count"]:
+                best_pair = {"a": m.file_path, "b": p.file_path, "count": p.support}
     if best_pair and best_pair["count"] > 0:
         out["strongest_coupling"] = best_pair
 

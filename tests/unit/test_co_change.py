@@ -95,3 +95,51 @@ class TestRawRecord:
         a = parse_partners(json.dumps([{"file_path": "a.py", "count": 1, "extra": 1}]))
         b = parse_partners(json.dumps([{"file_path": "a.py", "count": 1}]))
         assert a == b
+
+
+class TestSupportAndConfidence:
+    def test_reads_the_support_count_and_both_commit_totals(self) -> None:
+        raw = json.dumps(
+            [
+                {
+                    "file_path": "a.py",
+                    "co_change_count": 4.25,
+                    "frequency": 9,
+                    "self_commits": 10,
+                    "partner_commits": 30,
+                }
+            ]
+        )
+        (p,) = parse_partners(raw)
+        assert p.support == 9
+        assert (p.self_commits, p.partner_commits) == (10, 30)
+
+    def test_counts_missing_or_malformed_read_as_zero(self) -> None:
+        (p,) = parse_partners(
+            json.dumps([{"file_path": "a.py", "count": 1, "frequency": "many"}])
+        )
+        assert p.support == 0
+
+    def test_weight_keeps_its_fraction(self) -> None:
+        """The weight is a decayed sum, so truncating it moves severity bands."""
+        (p,) = parse_partners(json.dumps([{"file_path": "a.py", "co_change_count": 8.9}]))
+        assert p.weight == 8.9
+
+
+class TestStructuralLabel:
+    def test_reads_the_label(self) -> None:
+        (p,) = parse_partners(
+            json.dumps([{"file_path": "a.py", "count": 1, "structural": "unexplained"}])
+        )
+        assert p.structural == "unexplained"
+
+    def test_an_unlabelled_record_is_none_not_unexplained(self) -> None:
+        """An older index must not have its silence read as a finding."""
+        (p,) = parse_partners(json.dumps([{"file_path": "a.py", "count": 1}]))
+        assert p.structural is None
+
+    def test_a_non_string_label_is_none(self) -> None:
+        (p,) = parse_partners(
+            json.dumps([{"file_path": "a.py", "count": 1, "structural": 3}])
+        )
+        assert p.structural is None
