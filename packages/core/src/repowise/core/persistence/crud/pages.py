@@ -659,3 +659,95 @@ async def get_stale_pages(
         )
     )
     return list(result.scalars().all())
+
+
+async def get_stale_structural_file_paths(
+    session: AsyncSession,
+    repository_id: str,
+) -> list[str]:
+    """Return file paths of structural pages currently marked stale or expired in DB for *repository_id*.
+
+    Covers file_page rows and other structural pages whose freshness_status is 'stale'
+    or 'expired'. Extracting their file paths allows update commands to reconcile
+    lingering stale structural pages even when the repo is already at HEAD.
+    """
+    from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
+
+    result = await session.execute(
+        select(Page.id, Page.page_type, Page.target_path).where(
+            Page.repository_id == repository_id,
+            Page.freshness_status.in_(["stale", "expired"]),
+        )
+    )
+    stale_paths: list[str] = []
+    for pid, page_type, target_path in result:
+        if page_type in STRUCTURAL_PAGE_TYPES or page_type == "file_page":
+            if page_type == "file_page" and target_path:
+                stale_paths.append(target_path)
+            elif pid.startswith("file_page:"):
+                stale_paths.append(pid[len("file_page:") :])
+            elif target_path:
+                file_path = target_path.split("::", 1)[0]
+                if file_path:
+                    stale_paths.append(file_path)
+    return list(dict.fromkeys(stale_paths))
+
+
+def load_stale_structural_file_paths(repo_path: Any) -> list[str]:
+    """Sync wrapper around _load_stale_structural_file_paths_async."""
+    import asyncio
+    import concurrent.futures
+    from pathlib import Path
+
+    path_obj = Path(repo_path)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(
+                lambda: asyncio.run(_load_stale_structural_file_paths_async(path_obj))
+            ).result()
+    return asyncio.run(_load_stale_structural_file_paths_async(path_obj))
+
+
+async def _load_stale_structural_file_paths_async(repo_path: Any) -> list[str]:
+    """Load stale structural file paths for *repo_path* from the database."""
+    from pathlib import Path
+
+    import structlog
+
+    from ..database import (
+        create_engine,
+        create_session_factory,
+        get_configured_db_url,
+        get_repo_db_path,
+        get_session,
+        resolve_db_url,
+    )
+    from .repository import get_repository_by_path
+
+    logger = structlog.get_logger(__name__)
+    path_obj = Path(repo_path)
+
+    # Store reachability check: if no env DB URL is set and local wiki.db doesn't exist, return []
+    if get_configured_db_url() is None and not get_repo_db_path(path_obj).exists():
+        return []
+
+    url = resolve_db_url(path_obj)
+    engine = create_engine(url)
+    try:
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(path_obj))
+            if repo is None:
+                return []
+            return await get_stale_structural_file_paths(session, repo.id)
+    except Exception as exc:
+        logger.debug("load_stale_structural_file_paths_failed", error=str(exc))
+        return []
+    finally:
+        await engine.dispose()
+

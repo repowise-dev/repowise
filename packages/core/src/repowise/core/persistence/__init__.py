@@ -61,6 +61,8 @@ from .crud import (
     get_scc_members,
     get_stale_decisions,
     get_stale_pages,
+    get_stale_structural_file_paths,
+    load_stale_structural_file_paths,
     get_top_entry_points,
     link_graph_nodes_to_external_systems,
     list_chat_messages,

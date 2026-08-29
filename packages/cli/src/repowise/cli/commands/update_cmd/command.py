@@ -819,21 +819,21 @@ def run_update(
     if not dry_run:
         _repair_module_attribution(repo_path)
 
-    # Stale structural pages (e.g. file_page rows marked stale or expired) in
-    # the DB must be reconciled even when HEAD has not moved.
-    from .deterministic import load_stale_structural_file_paths
-
-    stale_db_paths = load_stale_structural_file_paths(repo_path)
-
+    stale_db_paths: list[str] = []
     if (
         head
         and head == base_ref
         and not config_changed
         and not renderer_changed
         and not working_tree_diffs
-        and not stale_db_paths
     ):
-        console.print("[green]Already up to date.[/green]")
+        # Stale structural pages (e.g. file_page rows marked stale or expired) in
+        # the DB must be reconciled even when HEAD has not moved.
+        from repowise.core.persistence import load_stale_structural_file_paths
+
+        stale_db_paths = load_stale_structural_file_paths(repo_path)
+        if not stale_db_paths:
+            console.print("[green]Already up to date.[/green]")
         # D7: on a template (index-only) wiki, "up to date" is true of the code
         # but the pages are still unwritten. Point at the command that writes
         # them rather than leaving the user at a dead end, the way `update

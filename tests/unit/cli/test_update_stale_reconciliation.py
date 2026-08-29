@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from repowise.cli.commands.doctor_cmd import repo_checks
-from repowise.cli.commands.update_cmd.deterministic import load_stale_structural_file_paths
+from repowise.core.persistence import load_stale_structural_file_paths
 from repowise.core.workspace.update import check_repo_staleness
 
 
@@ -145,3 +145,79 @@ def test_doctor_detects_stale_pages_and_clears_after_reconciliation(tmp_path: Pa
     # 2. Verify load_stale_structural_file_paths returns the 2 stale paths
     stale_paths = load_stale_structural_file_paths(repo_path)
     assert sorted(stale_paths) == ["bar.py", "foo.py"]
+
+
+def test_stale_structural_paths_scoped_to_repository(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """load_stale_structural_file_paths filters by repository_id in a shared database."""
+    import git as gitpython
+
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_page,
+        upsert_repository,
+    )
+
+    db_file = tmp_path / "shared_wiki.db"
+    db_url = f"sqlite+aiosqlite:///{db_file}"
+    monkeypatch.setenv("REPOWISE_DB_URL", db_url)
+
+    repo_a = (tmp_path / "repo_a").resolve()
+    repo_b = (tmp_path / "repo_b").resolve()
+    repo_a.mkdir()
+    repo_b.mkdir()
+    gitpython.Repo.init(repo_a)
+    gitpython.Repo.init(repo_b)
+
+    async def _setup_shared_db() -> None:
+        engine = create_engine(db_url)
+        await init_db(engine)
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            r_a = await upsert_repository(session, name="repo_a", local_path=str(repo_a))
+            r_b = await upsert_repository(session, name="repo_b", local_path=str(repo_b))
+
+            # Add stale page for Repo A
+            await upsert_page(
+                session,
+                page_id="file_page:a.py",
+                repository_id=r_a.id,
+                page_type="file_page",
+                title="File: a.py",
+                content="code",
+                summary="",
+                target_path="a.py",
+                source_hash="",
+                model_name="mock",
+                provider_name="mock",
+                freshness_status="stale",
+            )
+            # Add stale page for Repo B
+            await upsert_page(
+                session,
+                page_id="file_page:b.py",
+                repository_id=r_b.id,
+                page_type="file_page",
+                title="File: b.py",
+                content="code",
+                summary="",
+                target_path="b.py",
+                source_hash="",
+                model_name="mock",
+                provider_name="mock",
+                freshness_status="stale",
+            )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(_setup_shared_db())
+
+    # Query repo A: must only return a.py
+    stale_a = load_stale_structural_file_paths(repo_a)
+    assert stale_a == ["a.py"]
+
+    # Query repo B: must only return b.py
+    stale_b = load_stale_structural_file_paths(repo_b)
+    assert stale_b == ["b.py"]
