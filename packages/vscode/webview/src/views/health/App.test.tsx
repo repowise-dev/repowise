@@ -7,6 +7,7 @@ import type {
   HealthTrendResponse,
 } from "@repowise-dev/types/health";
 import { OVERLAY_SPECS } from "@repowise-dev/ui/health/code-health-map";
+import { scoreBand, scoreTextColor } from "@repowise-dev/ui/health/tokens";
 import type { WebviewHost } from "../../runtime/rpc";
 import { App } from "./App";
 
@@ -174,7 +175,7 @@ describe("Health dashboard", () => {
     expect(screen.getByText("demo-repo")).toBeTruthy();
   });
 
-  it("paints a focused file's score the colour the map paints the same file", async () => {
+  it("bands a focused file's score the way the map bands the same file", async () => {
     const { host } = makeHost();
     render(
       <App
@@ -186,16 +187,21 @@ describe("Health dashboard", () => {
     );
 
     const figure = await screen.findByText("7.6");
-    const mapFill = OVERLAY_SPECS.health.fill(
-      files.files.find((f) => f.file_path === "src/mid.py")!,
-    );
+    const file = files.files.find((f) => f.file_path === "src/mid.py")!;
 
     // The contradiction this replaced: the panel called 7.6 green while the
-    // canvas beside it coloured the same node amber. A passing render test
-    // would not have caught that, so assert against the map's own fill table
-    // rather than against a colour written out here a third time.
-    expect(mapFill).toBe("var(--color-caution)");
-    expect(figure.className).toContain(mapFill);
+    // canvas beside it coloured the same node amber.
+    //
+    // The two are no longer the same colour value, and must not be asserted to
+    // be. Inking text and filling a disc are different jobs, so the map paints
+    // from the canvas ramp and the panel from the semantic one. What may never
+    // differ is the band beneath both, which is what this pins: the map fills
+    // the node token for this file's band, and the figure carries the ink that
+    // the same band function gives the same score.
+    const band = scoreBand(file.score);
+    expect(band).toBe("fair");
+    expect(OVERLAY_SPECS.health.fill(file)).toBe(`var(--color-node-${band})`);
+    expect(figure.className).toContain(scoreTextColor(file.score));
   });
 
   it("shows an error panel when the host fails", async () => {
