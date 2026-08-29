@@ -13,9 +13,19 @@ import { formatHealthImpact } from "./tokens";
  */
 export function ImpactFigure({
   impact,
+  tone = "deduction",
   className,
 }: {
   impact: number | null | undefined;
+  /**
+   * How loud the figure is.
+   *
+   * `deduction` is the red, for a figure that is the point of its row.
+   * `muted` is for a long list of them, where every row already carries a
+   * severity mark and colouring the numbers too turns a breakdown into a wall
+   * of red that ranks nothing.
+   */
+  tone?: "deduction" | "muted";
   className?: string;
 }) {
   const figure = formatHealthImpact(impact);
@@ -27,7 +37,13 @@ export function ImpactFigure({
     );
   }
   return (
-    <span className={cn("shrink-0 tabular-nums text-[var(--color-error)]", className)}>
+    <span
+      className={cn(
+        "shrink-0 tabular-nums",
+        tone === "muted" ? "text-[var(--color-text-tertiary)]" : "text-[var(--color-error)]",
+        className,
+      )}
+    >
       {figure}
     </span>
   );

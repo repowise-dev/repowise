@@ -16,6 +16,9 @@ import {
 } from "./biomarker-glossary";
 import { BiomarkerDetails, type BiomarkerDetailsRecord } from "./biomarker-details";
 import { ScoreBreakdown, type ScoreBreakdownCategory } from "./score-breakdown";
+import { AiPromptButton } from "./ai-prompt-button";
+import { AiPromptModal } from "./ai-prompt-modal";
+import { buildFileHealthAiPrompt } from "./ai-prompt-builder";
 import { FileSignalsPanel } from "./file-signals-panel";
 import { CollapsibleSection } from "../shared/collapsible-section";
 import { formatRelativeTimeOrNull } from "../lib/format";
@@ -116,6 +119,8 @@ export interface HealthFileDrawerProps {
   performanceLoading?: boolean;
   /** Open one cause on the performance surface. */
   onOpportunitySelect?: ((opportunityId: string) => void) | undefined;
+  /** Named in the agent prompt so a pasted prompt says which repo it is for. */
+  repoName?: string;
 }
 
 /** Bucket for one-off file-level markers, kept pooled so a file with several
@@ -150,8 +155,10 @@ export function HealthFileDrawer({
   performance,
   performanceLoading = false,
   onOpportunitySelect,
+  repoName,
 }: HealthFileDrawerProps) {
   const [statusOverride, setStatusOverride] = useState<Record<string, string>>({});
+  const [promptOpen, setPromptOpen] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const setStatus = async (id: string, status: string) => {
     if (!onFindingStatusChange) return;
@@ -461,18 +468,25 @@ export function HealthFileDrawer({
                     </div>
                   ) : null}
 
-                  {/* The one action. It was two links to the same page, one a
-                      tertiary line at the top and one accent-coloured in the
-                      middle of the body. */}
-                  {(permalinkHref ?? fileViewHref) ? (
-                    <a
-                      href={permalinkHref ?? fileViewHref}
-                      className="inline-flex w-fit items-center gap-1.5 text-sm font-medium text-[var(--color-accent-primary)] hover:underline"
-                    >
-                      <ExternalLink className="h-3.5 w-3.5" />
-                      Open full page
-                    </a>
-                  ) : null}
+                  {/* Two actions, and only two: read the whole file's report,
+                      or hand what this drawer knows to an agent. The link was
+                      once duplicated, a tertiary line at the top and an
+                      accent-coloured one in the body, both to the same page. */}
+                  <div className="flex flex-wrap items-center gap-3">
+                    {(permalinkHref ?? fileViewHref) ? (
+                      <a
+                        href={permalinkHref ?? fileViewHref}
+                        className="inline-flex w-fit items-center gap-1.5 text-sm font-medium text-[var(--color-accent-primary)] hover:underline"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        Open full page
+                      </a>
+                    ) : null}
+                    <AiPromptButton
+                      onClick={() => setPromptOpen(true)}
+                      label="AI prompt"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -493,17 +507,24 @@ export function HealthFileDrawer({
 
               <BugHistorySection signals={signals} />
 
+              {/* Collapsed by default. This is the audit trail for a number
+                  the drawer already states at the top, beside a leading cause
+                  that names the biggest contributor in words. A reader who
+                  wants the per-category arithmetic can ask for it; one who
+                  does not should not scroll past it to reach the findings. */}
               {breakdown ? (
-                <section className="flex flex-col gap-2">
-                  <h3 className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-                    Why this score
-                  </h3>
+                <CollapsibleSection
+                  title="Why this score"
+                  hint={`−${breakdown.total_deduction.toFixed(2)} across ${
+                    breakdown.categories.length
+                  } ${breakdown.categories.length === 1 ? "category" : "categories"}`}
+                >
                   <ScoreBreakdown
                     score={breakdown.score}
                     totalDeduction={breakdown.total_deduction}
                     categories={breakdown.categories}
                   />
-                </section>
+                </CollapsibleSection>
               ) : null}
 
               {findings.length > 0 ? (
@@ -536,6 +557,39 @@ export function HealthFileDrawer({
             </>
           )}
         </div>
+
+        {/* Everything the drawer knows about this file, as one prompt. The
+            modal renders through a portal, so it sits here for locality
+            rather than for layout. */}
+        <AiPromptModal
+          open={promptOpen}
+          onOpenChange={setPromptOpen}
+          filePath={metric?.file_path ?? null}
+          title="AI prompt for this file"
+          description="Every scored finding, category ceiling, open performance cause and change signal this drawer holds, written up so an agent can triage the file before it edits anything."
+          getPrompt={
+            metric
+              ? (flavor) =>
+                  buildFileHealthAiPrompt({
+                    file: metric,
+                    findings: findings.map((f) => ({
+                      ...f,
+                      // Triage applied in this session but not yet refetched,
+                      // so a finding just marked resolved leaves the prompt.
+                      status: statusOverride[f.id] ?? f.status,
+                      details: f.details as Record<string, unknown> | null | undefined,
+                    })),
+                    categories: breakdown?.categories ?? [],
+                    signals: signals ?? null,
+                    performance: performance ?? null,
+                    trendDelta: trend?.delta ?? null,
+                    suggestions,
+                    flavor,
+                    ...(repoName ? { repoName } : {}),
+                  })
+              : null
+          }
+        />
     </AdaptivePanel>
   );
 }
