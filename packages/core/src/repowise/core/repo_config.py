@@ -27,7 +27,11 @@ def load_repo_config(repo_path: Path | str) -> dict[str, Any]:
         if isinstance(result, dict) and isinstance(result.get("reasoning"), bool):
             raw_reasoning = _read_flat_scalar(text, "reasoning")
             if raw_reasoning:
-                result["reasoning"] = raw_reasoning
+                # Map common boolean strings to valid reasoning modes so
+                # ``reasoning: false`` and ``reasoning: true`` work as users
+                # expect instead of raising a ValueError.
+                bool_to_reasoning: dict[str, str] = {"true": "auto", "false": "off"}
+                result["reasoning"] = bool_to_reasoning.get(raw_reasoning, raw_reasoning)
         return result
     except ImportError:
         # Simple line-by-line parser for the flat key: value format we write.
