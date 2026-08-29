@@ -11,6 +11,11 @@ complementary evidence about where the change lands. The supporting 0–10 score
 measures how big and spread out a change is; it is not a probability. See
 [What the score does and does not buy](#what-the-score-does-and-does-not-buy).
 
+Everything below describes diff shape, which is what `repowise risk` reports.
+The `get_change_risk` MCP tool leads instead with what the change newly made
+worse — it compares the health of both revisions and keeps diff shape as
+supporting context. See [MCP tools](../agent/MCP_TOOLS.md#get_change_risk).
+
 ```bash
 repowise risk                 # score uncommitted work, else HEAD
 repowise risk HEAD            # score the last commit
@@ -315,8 +320,9 @@ CLI `--json` output and this table carry it unconditionally.
 
 ## Cross-repo change risk (workspace mode)
 
-> **Note:** This section describes `get_risk` in PR mode (`changed_files`). `get_change_risk` is
-> pure diff-shape scoring and does not access the workspace graph — it produces no cross-repo fields.
+> **Note:** This section describes `get_risk` in PR mode (`changed_files`).
+> `get_change_risk` carries its own `cross_repo` block, built from workspace
+> contracts rather than from the graph traversal described here.
 
 In a workspace, a change rarely stops at the repo boundary. When `get_risk` is
 called in PR mode (`changed_files`), its `directive` block gains two cross-repo

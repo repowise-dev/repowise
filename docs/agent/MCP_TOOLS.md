@@ -57,7 +57,7 @@ Also see [Configuring the tool surface](#configuring-the-tool-surface), [Reversi
 | `get_symbol` | Raw source bytes for one symbol | When you need one function/class body |
 | `search_codebase` | Hybrid symbol / path / concept search | Finding a symbol or file, or discovering code by topic |
 | `get_risk` | Modification risk | Before changing hotspot files |
-| `get_change_risk` | Live commit or range risk | Before merging a commit or PR range |
+| `get_change_risk` | What a commit or range newly made worse | Before merging a commit or PR range |
 | `get_why` | Architectural decisions | Before structural changes |
 | `get_dead_code` | Unreachable code | Cleanup tasks |
 | `get_health` | Code-health marker scores | Before refactoring, find the worst files |
@@ -499,9 +499,9 @@ get_risk(targets=["src/auth/middleware.ts"], include=["graph", "churn"])
 
 ## `get_change_risk`
 
-Live risk scoring for one commit or a `base..head` range. Unlike `get_risk`,
-which evaluates indexed files and can report blast radius, this scores the
-shape of the live diff and needs no index refresh.
+Review one commit, a `base..head` range, or uncommitted work. Unlike
+`get_risk`, which evaluates indexed files and can report blast radius, this
+compares the two revisions directly and needs no index refresh.
 
 **Parameters:**
 
@@ -512,30 +512,52 @@ shape of the live diff and needs no index refresh.
 | `extensions` | list[string] | No | File suffixes to count, such as `[".py", ".ts"]` |
 | `exclude_patterns` | list[string] | No | Gitignore-style paths to omit; combined with root `.riskignore` rules |
 | `baseline` | int | No | Recent commits to sample for percentile ranking (default `200`; `0` disables every percentile, `risk_percentile` and `fix_history.percentile` alike) |
+| `include` | list[string] | No | `"findings"` for every change finding, `"diagnostics"` for the raw score mechanics, `"scales"` for units and calibration |
+| `finding_id` | string | No | Expand one `health_delta` finding by its id |
 
-**Returns:** `risk_authority` identifies `risk_percentile` and `classification`
-as the benchmarked, population-relative authority for live change review.
-`fix_history` reports the recency-weighted bug-fix record of the
-files the change touches, with `files` naming where the pressure sits and
-`percentile` ranking it against the same measure over the repo's own recent
-commits. Triage on
-this: it is the part that separates a small edit to a fragile file from a large
-edit to a safe one. `available` is false when the history walk could not run.
+**Returns:** `directive` leads with a `status`
+(`review_required`, `review_recommended`, `clear_in_analyzed_scope`, `unknown`),
+a headline, bounded reasons, and concrete next actions.
 
-`score` is a supporting, offline-calibrated 0-10 model output that measures diff
-size and spread, not a probability and not where the change lands — see
-`score_measures` — and `score_unit` names the unit it is calibrated on (a single
-commit, so a PR-sized range reads high by construction). `risk_percentile`,
-`review_priority` and `classification` rank that same diff shape against recent
-commits. `fallback_band` carries the absolute band and appears only when no
-baseline was available. `working_tree` says whether uncommitted work was the
-subject. `baseline_sample_size` reports how many filtered commits informed the
-percentile; `features`, `drivers`, and combined `exclude_patterns` make the
-result auditable. `risk_authority` always names the field to act on;
-`include=["scales"]` adds each field's kind, unit, range, calibration,
-authority, and shared thresholds. When a baseline is unavailable,
-`fallback_band` is the absolute per-commit classification; it is distinct from
-population-relative percentile behavior.
+`health_delta` is what the change newly made worse, across defect,
+maintainability and performance. Both revisions are analysed from their own
+content, so a finding present at head is reported only when the diff explains
+it. `scope` counts changed, eligible, analysed, skipped and failed files, and
+`status` distinguishes `available` from `partial` and `unavailable` — a
+`partial` comparison is never a clean bill, and `skipped` says why each file
+was left out. `introduced`, `worsened` and `resolved` are totals;
+`top_findings` carries the three most actionable, with `findings_total` and a
+recovery call for the rest.
+
+Each finding names its `dimension`, `biomarker`, `severity`, `path`, `symbol`
+and head-side `lines`, a `reason`, and an `attribution` — `basis`
+(`added_lines`, `changed_symbol`, `changed_call_edge`, `new_file`,
+`file_change`, `context_change`, `unknown`) with a `confidence`. Identity
+ignores line numbers, so moving code introduces nothing and a rename carries
+its findings across. Performance findings carry `opportunity_id` and
+`opportunity_rank` and are ordered by opportunity rank and actionability, never
+by defect impact, which is zero for them by construction. `inspect` gives the
+exact `finding_id` call that expands one; ids are bound to the two revisions
+that produced them. A finding that exactly matches a stored one also carries a
+`health_reference` for `get_health(finding_id=...)`.
+
+`fix_history` reports the recency-weighted bug-fix record of the files the
+change touches, with `files` naming where the pressure sits and `percentile`
+ranking it against the same measure over the repo's own recent commits. It is
+the part that separates a small edit to a fragile file from a large edit to a
+safe one. `available` is false when the history walk could not run.
+
+`change_shape` carries the supporting diff-shape reading: `score`,
+`risk_percentile`, `review_priority`, `classification`, `fallback_band` and
+`is_fix`, which also stay at the top level. `score` is an offline-calibrated
+0-10 output measuring diff size and spread — not a probability, and not where
+the change lands. `fallback_band` appears only when no baseline was available.
+`working_tree` says whether uncommitted work was the subject.
+
+`include=["diagnostics"]` adds the raw mechanics: `risk_authority`,
+`score_measures`, `score_unit`, `baseline_sample_size`, `features` and
+`drivers`. `include=["scales"]` adds each field's kind, unit, range,
+calibration and thresholds. Both are identical on every call, so ask once.
 
 It also returns `impacted_tests`, whose `tests_to_run` names the tests the
 per-test coverage map proves execute the change's changed *lines* (line-precise,
@@ -590,13 +612,15 @@ not enough to accuse one commit of causing them. The block is absent entirely
 on an index with no fix history.
 
 **When to use:** Before merging a commit or PR range, especially when you need
-to assess the diff itself rather than the risk of an already-indexed file.
+to assess the change itself rather than the risk of an already-indexed file.
 
 **Example calls:**
 
 ```
 get_change_risk()
 get_change_risk(revspec="main..HEAD", extensions=[".py"], exclude_patterns=["tests/"])
+get_change_risk(revspec="main..HEAD", include=["findings"])
+get_change_risk(revspec="main..HEAD", finding_id="chf_27a13be11e7ee33f")
 ```
 
 ---

@@ -220,7 +220,7 @@ too, so the same index serves you and your agent. See [VS Code](../agent/VSCODE.
 > *"What's the blast radius if I change `src/auth.py`? Use `get_context` with
 > `include: ["callers"]`."*
 >
-> *"Score my branch with `get_change_risk` for `main..HEAD`."*
+> *"Review my branch with `get_change_risk` for `main..HEAD`."*
 
 You should get a graph-grounded answer immediately, instead of a run of greps and
 file reads. That is the whole point.
