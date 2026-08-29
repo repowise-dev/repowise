@@ -1513,6 +1513,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     from repowise.core.persistence.crud import (
         bulk_upsert_decisions,
         finalize_performance_opportunities,
+        finalize_refactoring_opportunities,
         recompute_decision_staleness,
         save_coverage_files,
         save_dead_code_findings,
@@ -1564,6 +1565,12 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
                 repo_id,
                 analyzed_commit=head_sha,
                 plan_policy=getattr(hr, "performance_plan_policy", None),
+            )
+            # Fold the plans just written into per-file opportunities. Last in
+            # the savepoint because it composes over the stored rows, so it has
+            # to see the reconciliation above rather than the detector output.
+            await finalize_refactoring_opportunities(
+                session, repo_id, analyzed_commit=head_sha
             )
         # Resolved coverage rows, when a report was ingested this run.
         coverage_files = getattr(hr, "coverage_files", None)

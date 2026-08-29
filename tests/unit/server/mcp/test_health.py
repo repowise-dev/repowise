@@ -21,9 +21,14 @@ async def test_get_health_dashboard(setup_mcp, health_data):
     assert result["mode"] == "dashboard"
     assert result["kpis"]["file_count"] == 2
     assert result["kpis"]["worst_performer_path"] == "src/auth/service.py"
-    # Two leads, both first: the defect one and the performance pillar's own,
-    # which carries no defect impact and so never competed for the first.
-    assert list(result)[:3] == ["directive", "performance_directive", "mode"]
+    # Three leads, all first: the defect one, and one per pillar that carries
+    # no defect impact and so never competed for it.
+    assert list(result)[:4] == [
+        "directive",
+        "refactoring_directive",
+        "performance_directive",
+        "mode",
+    ]
     assert "high_leverage_files" in result
     assert "worst_files" not in result
     assert result["secondary_rankings"]["worst_files"]["total"] == 2
@@ -186,10 +191,16 @@ async def test_get_health_dashboard_surfaces_leverage(setup_mcp, health_data):
 
 @pytest.mark.asyncio
 async def test_get_health_refactoring_capped_and_leverage_ranked(setup_mcp, health_data):
-    """refactoring_plans is bounded by limit and reports the honest total."""
+    """refactoring_plans is bounded by limit and reports the honest total.
+
+    Named explicitly: ``include=["refactoring"]`` leads with the composed
+    opportunity queue, and the raw plan list is the opt-in projection.
+    """
     from repowise.server.mcp_server import get_health
 
-    result = await get_health(include=["refactoring"], limit=5)
+    result = await get_health(
+        include=["refactoring"], only=["refactoring_plans"], limit=5
+    )
     assert "refactoring_plans" in result
     assert len(result["refactoring_plans"]) <= 5
     # Honest truncation signal is always present when refactoring is requested.
@@ -285,9 +296,14 @@ def test_validation_profiles_deduplicate_without_dropping_commands_or_target_tes
 
 
 @pytest.mark.asyncio
-async def test_target_freshness_uses_only_the_requested_health_rows(
-    setup_mcp, health_data, session
-):
+async def test_freshness_is_a_repository_fact_in_every_mode(setup_mcp, health_data, session):
+    """Whether the analysis recorded its commit cannot depend on the mode asked.
+
+    Each mode used to compute "latest analysed row" over whatever rows it was
+    reporting on, so a call scoped to an older file reported that file's commit
+    as the repository's, and a detail call could read ``available`` at the same
+    instant the dashboard read ``degraded``. The block is repository-wide now.
+    """
     from datetime import UTC, datetime
 
     from sqlalchemy import select
@@ -311,10 +327,17 @@ async def test_target_freshness_uses_only_the_requested_health_rows(
     by_path["src/db/models.py"].analyzed_commit = "b" * 40
     await session.flush()
 
-    result = await get_health(targets=["src/auth/service.py"], only=["metrics"])
-    assert result["_meta"]["health_analyzed_at"].startswith("2025-01-01")
-    assert result["_meta"]["health_analyzed_commit"] == "a" * 12
-    assert "health_analyzed_commits_distinct" not in result["_meta"]
+    scoped = await get_health(targets=["src/auth/service.py"], only=["metrics"])
+    dashboard = await get_health(only=["kpis"])
+    for meta in (scoped["_meta"], dashboard["_meta"]):
+        # The repository's newest analysed row, not the scoped file's.
+        assert meta["health_analyzed_at"].startswith("2026-01-01")
+        assert meta["health_analyzed_commit"] == "b" * 12
+        assert meta["health_analyzed_commits_distinct"] == 2
+    assert (
+        scoped["_meta"]["health_analysis"]["status"]
+        == dashboard["_meta"]["health_analysis"]["status"]
+    )
 
 
 @pytest.mark.asyncio
@@ -1592,9 +1615,14 @@ async def test_refactoring_plans_spread_across_files(setup_mcp, health_data, ses
         ],
     )
 
-    plans = (await get_health(include=["refactoring"], limit=4, refactoring_view="file_spread"))[
-        "refactoring_plans"
-    ]
+    plans = (
+        await get_health(
+            include=["refactoring"],
+            only=["refactoring_plans"],
+            limit=4,
+            refactoring_view="file_spread",
+        )
+    )["refactoring_plans"]
     assert len(plans) == 4
     # Both files are represented rather than the worst file owning the list.
     assert len({p["file_path"] for p in plans}) == 2
@@ -1628,7 +1656,9 @@ async def test_refactoring_spread_is_exhaustive_when_one_file_has_them_all(
         ],
     )
 
-    plans = (await get_health(include=["refactoring"], limit=4))["refactoring_plans"]
+    plans = (
+        await get_health(include=["refactoring"], only=["refactoring_plans"], limit=4)
+    )["refactoring_plans"]
     assert len(plans) == 4
     assert {p["file_path"] for p in plans} == {"src/auth/service.py"}
 

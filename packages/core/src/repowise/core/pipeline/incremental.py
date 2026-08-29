@@ -939,6 +939,7 @@ async def persist_partial_health(session: Any, repo_id: str, report: Any) -> Non
     """
     from repowise.core.persistence.crud import (
         finalize_performance_opportunities,
+        finalize_refactoring_opportunities,
         upsert_health_findings,
         upsert_health_metrics,
         upsert_refactoring_suggestions,
@@ -1003,6 +1004,12 @@ async def persist_partial_health(session: Any, repo_id: str, report: Any) -> Non
             repo_id,
             analyzed_commit=analyzed_commit,
             plan_policy=getattr(report, "performance_plan_policy", None),
+        )
+        # Repository-wide, like the queue above and for the same reason: an
+        # opportunity folds a file's plans, and a file this run did not touch
+        # can still lose one when a cross-file plan elsewhere resolves.
+        await finalize_refactoring_opportunities(
+            session, repo_id, analyzed_commit=analyzed_commit
         )
     # Per-function blame rollup for the changed files (keeps git_function_blame
     # current between full indexes; FULL git tier only — empty otherwise).

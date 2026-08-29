@@ -80,7 +80,6 @@ SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
         invariant_paths=(
             "metrics",
             "findings",
-            "refactoring_plans",
             "_meta.health_analysis",
             "_meta.health_semantics",
         ),
@@ -108,7 +107,6 @@ SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
         invariant_paths=(
             "metrics",
             "findings",
-            "refactoring_plans",
             "_meta.health_analysis",
             "_meta.health_semantics",
         ),
@@ -206,7 +204,9 @@ SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
         ),
         comparison="independent performance and refactoring projections",
         comparison_kwargs=_frozen(
-            include=("performance", "refactoring"), limit=1
+            include=("performance", "refactoring"),
+            only=("performance_opportunities", "refactoring_plans"),
+            limit=1,
         ),
         plans_requested=True,
         expected_plan_count=1,
@@ -244,7 +244,6 @@ SEALED_HEALTH_SEMANTICS: tuple[HealthSemanticsCase, ...] = (
         recovery="none",
         invariant_paths=(
             "findings",
-            "refactoring_plans",
             "_meta.health_analysis",
             "_meta.health_semantics",
         ),
@@ -495,7 +494,10 @@ async def test_sealed_projection_invariance_uses_independent_calls(setup_mcp, he
     assert directive["_meta"]["health_analysis"] == dashboard["_meta"]["health_analysis"]
 
     broad = await get_health(
-        targets=["src/auth/service.py"], include=["refactoring"], limit=2
+        targets=["src/auth/service.py"],
+        include=["refactoring"],
+        only=["metrics", "findings", "refactoring_plans", "kpis"],
+        limit=2,
     )
     narrow = await get_health(
         targets=["src/auth/service.py"],

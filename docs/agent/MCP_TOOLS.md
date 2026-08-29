@@ -719,6 +719,8 @@ get_health(include=["trend"], only=["trend"])
 get_health(include=["accuracy"], only=["accuracy"])
 get_health(include=["coverage"], only=["coverage"])
 get_health(include=["performance","refactoring"], only=["performance_opportunities","refactoring_plans"])
+get_health(include=["refactoring"], only=["refactoring_opportunities"], limit=6)
+get_health(opportunity_id="refop2_...")
 ```
 
 **Parameters:**
@@ -727,12 +729,18 @@ get_health(include=["performance","refactoring"], only=["performance_opportuniti
 |-----------|------|----------|-------------|
 | `targets` | list[string] | No | File paths, or `module:foo` to expand a module's file set. Empty means dashboard mode. |
 | `include` | list[string] | No | Opt-in blocks (default response stays lean): `"biomarkers"` (findings in dashboard mode), `"refactoring"` (structured, graph-aware refactoring plans; see below), `"trend"` (snapshot diff + declining / predicted-decline alerts), `"coverage"`, `"accuracy"` (the "does the score find the bugs?" stat, dashboard mode), `"signals"` (per-file process / people / topology signals, targeted mode), `"churn_complexity"` (churn x complexity quadrant points, dashboard mode), and a dimension name (`"performance"` / `"defect"` / `"maintainability"`) to filter findings to that pillar. |
-| `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode`, `_meta`, `unresolved`, `known_modules` and each kept list's `*_total` sibling always survive. The three `include` **block** names work as aliases: `biomarkers`→`findings`, `accuracy`→`defect_accuracy`, `refactoring`→`refactoring_plans`. The `include` **dimension** names (`performance`, `defect`, `maintainability`) do not — they filter rows inside several blocks and have no single key to resolve to, so they land in `unknown_only_keys`. Nor does `signals`, which merges into `metrics[].signals` — in targeted mode, where `signals` applies, name `metrics` instead. |
+| `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode`, `_meta`, `unresolved`, `known_modules` and each kept list's `*_total` sibling always survive. The three `include` **block** names work as aliases: `biomarkers`→`findings`, `accuracy`→`defect_accuracy`, `refactoring`→`refactoring_plans`. Note that `refactoring_plans` is the raw
+per-detector list and is now **opt-in**: `include=["refactoring"]` leads with
+`refactoring_opportunities`, the composed unit, and emitting both would ship two
+representations of the same work in one response. The `include` **dimension** names (`performance`, `defect`, `maintainability`) do not — they filter rows inside several blocks and have no single key to resolve to, so they land in `unknown_only_keys`. Nor does `signals`, which merges into `metrics[].signals` — in targeted mode, where `signals` applies, name `metrics` instead. |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 | `limit` | int | No | Max rows in **every** ranked list (default 20, capped at 50). `0` means no rows; the `*_total` siblings still report the true counts. |
 | `finding_id` | string | No | Resolve an emitted stable health-finding `id` directly in one call. |
 | `plan_id` | string | No | Resolve an emitted stable refactoring-plan `id` directly in one call. |
-| `opportunity_id` | string | No | Resolve a performance opportunity `id` directly. Mutually exclusive with the two above; passing more than one returns `mode: "conflict"` naming them rather than answering about whichever was checked first. |
+| `opportunity_id` | string | No | Resolve one opportunity `id` directly. The prefix picks the pillar: `perf...` is a performance cause, `refop...` a composed refactoring. Mutually exclusive with the two above; passing more than one returns `mode: "conflict"` naming them rather than answering about whichever was checked first. |
+| `refactoring_type` / `refactoring_confidence` / `refactoring_effort` | string | No | Queue filters over the same read model and vocabulary the REST route uses. An unrecognized value is reported back in `ignored_arguments` rather than silently narrowing to nothing. |
+| `refactoring_view` | string | No | Named ordering for `refactoring_opportunities`. `diversified` (default) round-robins the rank order over cause, refactoring type and area, because the ranked head is a genuine run of ties; `canonical` is the published rank order verbatim, ties and all; `file_spread` asked for one row per file, which a composed opportunity satisfies by construction, so it resolves onto the diversified order. Both older values keep working. It also selects the legacy `refactoring_plans` list's view, where `diversified` resolves to that list's historical `canonical` default. |
+| `cursor` | int | No | Zero-based offset into a ranked collection; the `recovery` block names the exact next call. |
 | `performance_view` | string | No | `detail` (default) or `summary`. `summary` keeps identity, counts and plan state and drops the explanatory fields. |
 | `performance_context` | string | No | `production` / `tooling` / `test` / `unknown` / `all`. |
 | `performance_boundary` | string | No | `db` / `network` / `filesystem` / `subprocess` / `lock` / `none`. |
@@ -866,7 +874,26 @@ The opt-in enrichments:
 - **`churn_complexity`** returns `churn_complexity` points (one per recently-changed
   file: 90-day commit count, max CCN, NLOC, score, churn percentile): the
   refactor zone where volatility and tangle collide.
-- **`refactoring`** returns ranked, structured refactoring plans (not template
+- **`refactoring`** returns `refactoring_opportunities`: one composed unit per
+  file, carrying the diagnosis it leads with (`lead_biomarker`), whether it
+  actually addresses that diagnosis (`addresses_primary_problem`, tri-state -
+  `null` means no dominant finding was recorded, which is not `false`), its
+  ordered `steps` with a `mechanical` / `judgment` `applicability` each, and
+  counts for the evidence behind it. Ordered by `refactoring_view`. A step
+  carrying `relocated_by` names an earlier step that moves its symbol to another
+  file: locate the symbol again before applying it, because the step's own
+  `file_path` and span describe where the symbol was.
+  `get_health(opportunity_id="refop...")` returns the full ordered steps, the
+  member plan payloads, the validation profile and structured `next_actions`;
+  `only=["refactoring_evidence"]` plus `cursor` pages the evidence.
+- **`refactoring_directive`** rides on a bare `get_health()`: one opportunity,
+  what it addresses, and the exact `opportunity_id` call that opens it. One
+  primary-key read; it never touches the queue. **`refactoring_summary`**
+  (`only=["refactoring_summary"]`) is the rollup by type, effort, confidence,
+  lifecycle and mechanical-vs-judgment, with facets.
+- **`refactoring_plans`** is the raw per-detector list, unchanged and still
+  addressable by `plan_id`, but **opt-in**: name it in `only` to get it. It
+  returns ranked, structured refactoring plans (not template
   strings): `extract_class` (the cohesion `groups` to split into), `extract_helper`
   (clone `occurrences` + `suggested_site`), `move_method` (`{method, from_class,
   to_class}`), and `break_cycle` (the import `cut_edges`). Each plan carries its

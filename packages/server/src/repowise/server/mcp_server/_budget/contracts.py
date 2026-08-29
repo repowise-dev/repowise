@@ -177,6 +177,8 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "trends[]",
             "metrics[]",
             "refactoring_plans[]",
+            "refactoring_opportunities[]",
+            "refactoring_summary",
             "performance_opportunities[]",
             "performance_summary",
             "high_leverage_files[]",
@@ -185,10 +187,11 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
         protected=(
             "mode",
             "directive",
-            # The performance lead is bounded by construction and is the only
-            # actionable performance content a bare dashboard carries, so
-            # shedding it would leave the pillar with counts and nothing to do.
+            # Both pillar leads are bounded by construction and are the only
+            # actionable content a bare dashboard carries for them, so shedding
+            # one would leave that pillar with counts and nothing to do.
             "performance_directive",
+            "refactoring_directive",
             "opportunity_id",
             "model_state",
             "targets",

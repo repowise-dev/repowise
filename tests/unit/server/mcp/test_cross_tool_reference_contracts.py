@@ -542,6 +542,14 @@ async def test_canonical_emitter_reference_inventory(reference_repo, health_data
             [context_target], include=["callers", "callees"]
         )
     )
+    # The plan list is an opt-in projection now: ``include=["refactoring"]``
+    # leads with composed opportunities. The plan reference is still emitted by
+    # get_health, so the inventory asks the call that carries it.
+    responses["get_health"].append(
+        await tool_middleware(get_health)(
+            include=["refactoring"], only=["refactoring_plans"]
+        )
+    )
     inventory = {
         emitter: [
             ref

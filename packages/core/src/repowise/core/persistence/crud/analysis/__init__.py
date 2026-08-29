@@ -76,6 +76,13 @@ from .refactoring import (
     update_refactoring_suggestion_status,
     upsert_refactoring_suggestions,
 )
+from .refactoring_opportunities import (
+    finalize_refactoring_opportunities,
+    get_refactoring_opportunity,
+    get_refactoring_summary,
+    list_refactoring_opportunities,
+    refactoring_facet_counts,
+)
 
 __all__ = [
     "FILE_TREND_SNAPSHOT_WINDOW",
@@ -87,6 +94,7 @@ __all__ = [
     "covered_source_files",
     "files_covered_by",
     "finalize_performance_opportunities",
+    "finalize_refactoring_opportunities",
     "finalize_refactoring_suggestions",
     "get_average_health",
     "get_coverage_summary",
@@ -104,17 +112,21 @@ __all__ = [
     "get_performance_opportunity",
     "get_performance_plan_rows",
     "get_performance_summary",
+    "get_refactoring_opportunity",
     "get_refactoring_suggestion",
     "get_refactoring_suggestions",
+    "get_refactoring_summary",
     "get_test_coverage_summary",
     "list_evidence_for_opportunities",
     "list_health_snapshots",
     "list_opportunity_evidence",
     "list_performance_opportunities",
+    "list_refactoring_opportunities",
     "load_coverage_for_repo",
     "opportunity_details",
     "performance_facet_counts",
     "performance_file_rollups",
+    "refactoring_facet_counts",
     "replace_dead_code_findings",
     "replace_governance_findings",
     "save_coverage_files",

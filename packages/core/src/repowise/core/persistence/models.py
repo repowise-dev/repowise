@@ -1446,6 +1446,127 @@ class PerformanceSummary(Base):
     )
 
 
+class RefactoringOpportunity(Base):
+    """One file's composed refactoring work, materialized for serving.
+
+    Composition folds a file's plans into one ordered, precondition-aware
+    opportunity. Folding at read time costs the whole repository per request
+    (measured: 91 ms over 2,283 plans, 787 ms at ten times that), and the
+    validation profile behind each step costs another second of test-reachability
+    walking. Both run once, when plans are persisted, and land here; a page is
+    then an indexed range scan.
+
+    Filter, order and identity live in columns because SQLite and PostgreSQL
+    both index those and neither indexes a JSON predicate portably. The ordered
+    steps, evidence, rank factors and validation profiles stay in
+    ``details_json``, where a new fact costs no migration.
+    """
+
+    __tablename__ = "refactoring_opportunities"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    # ``refop<model>_<digest>``, the digest of the member plan ids. Unique per
+    # repository *and* model version, for the reason the plan id is.
+    opportunity_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    refactoring_model_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Rolled up from the member plans' triage, never written directly here.
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+    # Position in the deterministic rank order.
+    rank_position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Position in the diversified default order. Separate column because the
+    # two orders answer different questions and both have to be indexed: rank
+    # answers "what scores highest", queue answers "what should a queue show
+    # first" when the ranked head is a run of ties from one package.
+    queue_position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rank_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # The file's dominant biomarker; ``None`` when no finding names one.
+    lead_biomarker: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lead_refactoring_type: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    # Tri-state on purpose: ``None`` means no lead was available to compare
+    # against, which is not the same claim as "does not address it".
+    addresses_primary_problem: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    effort_bucket: Mapped[str] = mapped_column(String(4), nullable=False, default="M")
+    confidence: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
+    step_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    mechanical_steps: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    judgment_steps: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    evidence_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    affected_files_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    recoverable_health: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    details_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    analyzed_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "repository_id",
+            "refactoring_model_version",
+            "opportunity_id",
+            name="uq_refactoring_opportunities_repo_model_id",
+        ),
+        Index("ix_refactoring_opportunities_repo_id", "repository_id", "opportunity_id"),
+        Index(
+            "ix_refactoring_opportunities_repo_status_queue",
+            "repository_id",
+            "status",
+            "queue_position",
+        ),
+        Index(
+            "ix_refactoring_opportunities_repo_status_rank",
+            "repository_id",
+            "status",
+            "rank_position",
+        ),
+        Index(
+            "ix_refactoring_opportunities_repo_status_type_rank",
+            "repository_id",
+            "status",
+            "lead_refactoring_type",
+            "rank_position",
+        ),
+        Index(
+            "ix_refactoring_opportunities_repo_status_path",
+            "repository_id",
+            "status",
+            "file_path",
+        ),
+    )
+
+
+class RefactoringSummary(Base):
+    """The current refactoring headline for one repository, in one row.
+
+    A bare dashboard has to lead with one actionable opportunity without
+    touching the queue, so the lead and the rollup are written by the
+    transaction that materializes the opportunities and read back by primary
+    key. Current state, never history.
+    """
+
+    __tablename__ = "refactoring_summaries"
+
+    repository_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("repositories.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    refactoring_model_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    opportunities_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    summary_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    analyzed_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+
 class HealthFileMetric(Base):
     """Per-file aggregate metrics + final score."""
 
