@@ -113,7 +113,7 @@ export function Sidebar({
     <aside
       className={cn(
         "hidden md:flex h-full flex-col border-r border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shrink-0 motion-safe:transition-all motion-safe:duration-200",
-        isIconOnly ? "w-[56px]" : "w-[260px]",
+        isIconOnly ? "w-[56px]" : "w-[280px]",
       )}
     >
       {/* Logo. Collapsed (56px) can't fit logo + toggle on one row — the
@@ -172,13 +172,13 @@ export function Sidebar({
               cross-repo views tuck behind a toggle unless one is active. */}
           {isWorkspace && (
             <>
-              <Separator className="my-4" />
+              {isIconOnly && <Separator className="my-4" />}
               {!isIconOnly && (
                 <button
                   onClick={() => setWorkspaceNavOpen((v) => !v)}
                   aria-expanded={workspaceNavOpen}
                   aria-controls="sidebar-workspace-nav"
-                  className="mb-1 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)]"
+                  className="mb-1 mt-4 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-secondary)]"
                 >
                   <span className="flex-1 truncate text-left">Workspace</span>
                   {workspaceNavOpen ? (
@@ -189,7 +189,20 @@ export function Sidebar({
                 </button>
               )}
               {(isIconOnly || workspaceNavOpen) && (
-                <nav className="space-y-1" id="sidebar-workspace-nav">
+                // Workspace is a disclosure, exactly like a repository, so its
+                // items are CHILDREN and get the child treatment: the same
+                // indent, rule, and `sm` size a repo's own nav items get.
+                // They were rendering at level-1 size, which made System Map
+                // and Conformance look heavier than the repositories they
+                // sit under.
+                <nav
+                  className={cn(
+                    "space-y-0.5",
+                    !isIconOnly &&
+                      "ml-3.5 mt-0.5 border-l border-[var(--color-border-default)] pl-3",
+                  )}
+                  id="sidebar-workspace-nav"
+                >
                   {(isIconOnly && !isWorkspaceRoute
                     ? WORKSPACE_NAV.slice(0, 1)
                     : WORKSPACE_NAV
@@ -198,6 +211,7 @@ export function Sidebar({
                       key={item.href}
                       item={item}
                       isActive={item.exact ? pathname === item.href : pathname.startsWith(`${item.href}`)}
+                      size={isIconOnly ? "default" : "sm"}
                       iconOnly={isIconOnly}
                     />
                   ))}
@@ -263,7 +277,7 @@ export function Sidebar({
                       <Link
                         key={repo.id}
                         href={indexHref}
-                        className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-base text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)]"
+                        className={cn(ROW, ROW_L1, "text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-elevated)]")}
                         title={
                           isMissing
                             ? "Directory missing — open Workspace to remove or fix"
@@ -272,8 +286,10 @@ export function Sidebar({
                               : "Not indexed yet. Open the repo to index."
                         }
                       >
-                        <Circle className="h-2 w-2 shrink-0 stroke-current" />
-                        <span className="flex-1 truncate text-left font-medium">
+                        <RowGlyph>
+                          <Circle className="h-2 w-2 stroke-current" />
+                        </RowGlyph>
+                        <span className="min-w-0 flex-1 truncate text-left">
                           {repo.workspace_alias ?? repo.name}
                         </span>
                         <span className="shrink-0 rounded-full bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-tertiary)]">
@@ -340,23 +356,31 @@ export function Sidebar({
                         onClick={() => toggleRepo(repo.id)}
                         aria-expanded={isExpanded}
                         aria-controls={`sidebar-repo-${repo.id}`}
-                        className={cn(
-                          "flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-base transition-colors hover:bg-[var(--color-bg-elevated)]",
-                          isActive
-                            ? "text-[var(--color-text-primary)]"
-                            : "text-[var(--color-text-secondary)]",
-                        )}
+                        // The name still truncates at ~24 characters, so the
+                        // title carries the rest.
+                        title={repo.name}
+                        className={cn(ROW, ROW_L1, isActive ? ROW_ACTIVE : ROW_IDLE)}
                       >
-                        <Circle
-                          className={cn("h-2 w-2 shrink-0", isActive ? "fill-[var(--color-accent-primary)] text-[var(--color-accent-primary)]" : "fill-[var(--color-text-tertiary)] text-[var(--color-text-tertiary)]")}
-                        />
-                        <span className="flex-1 truncate text-left font-medium">
+                        <RowGlyph>
+                          <Circle
+                            className={cn(
+                              "h-2 w-2",
+                              isActive
+                                ? "fill-[var(--color-accent-primary)] text-[var(--color-accent-primary)]"
+                                : "fill-[var(--color-text-tertiary)] text-[var(--color-text-tertiary)]",
+                            )}
+                          />
+                        </RowGlyph>
+                        <span className="min-w-0 flex-1 truncate text-left">
                           {repo.name}
                         </span>
+                        {/* Narrower than the leading slot on purpose: this is
+                            a disclosure affordance, not a peer of the icon
+                            column, and every px here is a px off the name. */}
                         {isExpanded ? (
-                          <ChevronDown className="h-4 w-4 shrink-0 opacity-40" />
+                          <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-40" />
                         ) : (
-                          <ChevronRight className="h-4 w-4 shrink-0 opacity-40" />
+                          <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-40" />
                         )}
                       </button>
                       {isExpanded && (
@@ -428,14 +452,19 @@ export function Sidebar({
           at 56px the whole footer used to disappear, so theme, feedback, and
           version were unreachable without expanding first. */}
       {isIconOnly ? (
-        <div className="flex flex-col items-center border-t border-[var(--color-border-default)] py-2">
+        <div className="flex flex-col items-center border-t border-[var(--color-border-default)] py-1.5">
           <ThemeToggle compact />
         </div>
       ) : (
-        <div className="flex flex-col gap-3 border-t border-[var(--color-border-default)] px-4 py-3">
-          <ThemeToggle className="w-full justify-between" />
+        <div className="flex flex-col gap-2 border-t border-[var(--color-border-default)] px-3 py-2">
           <FeedbackButton />
-          <VersionFooter />
+          {/* Version and theme share a row. The toggle was a full-width
+              bordered track stacked on its own line, which made a
+              once-per-session control the tallest thing in the footer. */}
+          <div className="flex items-center justify-between gap-2">
+            <VersionFooter />
+            <ThemeToggle compact />
+          </div>
         </div>
       )}
     </aside>
@@ -464,16 +493,46 @@ function SidebarSearchButton({ iconOnly }: { iconOnly: boolean }) {
   }
 
   return (
-    <button
-      onClick={openPalette}
-      className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-base text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
-    >
-      <Search className="h-[18px] w-[18px] shrink-0" />
+    <button onClick={openPalette} className={cn(ROW, ROW_L1, ROW_IDLE)}>
+      <RowGlyph>
+        <Search className="h-4 w-4" />
+      </RowGlyph>
       <span className="flex-1 truncate text-left">Search</span>
       <kbd className="rounded border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-tertiary)]">
         ⌘K
       </kbd>
     </button>
+  );
+}
+
+/**
+ * One row shape for the whole sidebar, so every level-1 row (Dashboard,
+ * Settings, Search, each repository) is the same height and every label
+ * starts at the same x. The leading slot is a FIXED 18px box whatever it
+ * holds — an 18px icon or an 8px status dot — because otherwise the repo
+ * labels sat 10px left of the global-nav labels and the column read ragged.
+ */
+const ROW = "flex w-full items-center gap-2 rounded-lg px-2 transition-colors";
+const ROW_L1 = "py-1.5 text-base";
+const ROW_L2 = "py-1.5 text-xs";
+
+/**
+ * Selected, quietly. This used to be an accent-muted wash plus accent text,
+ * which coloured the entire row; on a sidebar where several rows can look
+ * active at once that reads as noise. The ground carries the selection and a
+ * single accent touch on the leading glyph carries the identity.
+ */
+const ROW_ACTIVE =
+  "bg-[var(--color-bg-elevated)] font-medium text-[var(--color-text-primary)]";
+const ROW_IDLE =
+  "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]";
+
+/** The fixed-width leading slot that keeps every label on the same column. */
+function RowGlyph({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+      {children}
+    </span>
   );
 }
 
@@ -500,7 +559,7 @@ function SidebarNavItem({
             className={cn(
               "flex items-center justify-center rounded-lg p-2.5 transition-colors",
               isActive
-                ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                ? "bg-[var(--color-bg-elevated)] text-[var(--color-accent-primary)]"
                 : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
             )}
           >
@@ -515,15 +574,17 @@ function SidebarNavItem({
   return (
     <Link
       href={item.href}
-      className={cn(
-        "flex items-center gap-2.5 rounded-lg px-2 transition-colors",
-        size === "sm" ? "py-1.5 text-xs" : "py-2 text-base",
-        isActive
-          ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
-          : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
-      )}
+      title={item.label}
+      className={cn(ROW, size === "sm" ? ROW_L2 : ROW_L1, isActive ? ROW_ACTIVE : ROW_IDLE)}
     >
-      <Icon className={cn("shrink-0", size === "sm" ? "h-4 w-4" : "h-[18px] w-[18px]")} />
+      <RowGlyph>
+        <Icon
+          className={cn(
+            size === "sm" ? "h-3.5 w-3.5" : "h-4 w-4",
+            isActive && "text-[var(--color-accent-primary)]",
+          )}
+        />
+      </RowGlyph>
       <span className="truncate">{item.label}</span>
     </Link>
   );

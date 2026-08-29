@@ -15,8 +15,8 @@ export function AppShellSkeleton() {
       className="flex h-screen overflow-hidden"
       label="Loading Repowise"
     >
-      {/* Matches Sidebar's expanded width (`w-[260px]`). */}
-      <div className="hidden w-[260px] shrink-0 flex-col gap-2 border-r border-[var(--color-border-default)] p-4 md:flex">
+      {/* Matches Sidebar's expanded width (`w-[280px]`). */}
+      <div className="hidden w-[280px] shrink-0 flex-col gap-2 border-r border-[var(--color-border-default)] p-4 md:flex">
         <Skeleton className="h-8 w-32" />
         <div className="mt-4 space-y-1.5">
           {Array.from({ length: 3 }).map((_, i) => (

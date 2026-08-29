@@ -85,7 +85,7 @@ export function ThemeToggle({ compact = false, className }: ThemeToggleProps) {
             onClick={() => setTheme(opt.value)}
             className={cn(
               "inline-flex items-center justify-center gap-1.5 rounded-md text-xs font-medium transition-colors",
-              compact ? "px-2 py-1.5" : "px-3 py-1.5",
+              compact ? "px-1.5 py-1" : "px-3 py-1.5",
               // Selected-ness comes from the ancestor `dark` class, so it is
               // right on the first painted frame. Each option is styled
               // selected in its own theme and quiet in the other.
