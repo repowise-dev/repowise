@@ -446,10 +446,19 @@ class ASTParser:
                 # environment, and it does not become truer on the four
                 # thousandth shell script.
                 _MISSING_GRAMMAR_REPORTED.add(lang)
-                log.debug("tree-sitter grammar unavailable", language=lang)
+                log.warning(
+                    "tree-sitter grammar unavailable",
+                    language=lang,
+                    path=file_info.path,
+                    hint=f"pip install tree-sitter-{lang} or add to pyproject dependencies",
+                )
             # Languages without a grammar may still carry regex-tier import
             # extraction (their specs declare import_support="partial");
             # symbols stay empty — the regex tier claims no symbol knowledge.
+            # Surface as a parse_error when the language is known but the
+            # grammar is missing so Diagnostics/health can report incomplete
+            # coverage instead of silent 0% success. Unknown/config-less
+            # languages keep parse_errors empty (not a missing-grammar case).
             from .lightweight_imports import extract_lightweight_imports
 
             return ParsedFile(
@@ -458,7 +467,7 @@ class ASTParser:
                 imports=extract_lightweight_imports(file_info, source),
                 exports=[],
                 docstring=None,
-                parse_errors=[],
+                parse_errors=[f"missing grammar: {lang}"] if config is not None else [],
                 content_hash=content_hash,
             )
 
