@@ -277,9 +277,14 @@ def structural_impact_contract(score: float, *, full_scale: bool = False) -> dic
                     "equivalent_value": True,
                 },
                 "direct_risks.temporal_hotspot": {
-                    "kind": "normalized_component_score",
-                    "unit": "ratio",
-                    "range": {"minimum": 0.0, "maximum": 1.0},
+                    "kind": "raw_decayed_churn",
+                    "unit": "decayed_line_hundreds",
+                    "range": {"minimum": 0.0, "maximum": None},
+                    "note": (
+                        "Unbounded exponentially-decayed sum of per-commit churn "
+                        "(halflife 180 d); each commit contributes up to 3.0. "
+                        "Use churn_percentile for a normalised 0-1 rank."
+                    ),
                 },
                 "direct_risks.centrality": {
                     "kind": "graph_centrality",
