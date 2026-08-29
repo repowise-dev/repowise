@@ -56,6 +56,7 @@ from .perf import (
     link_performance_findings,
 )
 from .refactoring import (
+    PerformancePlanPolicy,
     RefactoringContext,
     RefactoringSuggestion,
     detect_refactorings,
@@ -552,6 +553,10 @@ class HealthAnalyzer:
             kpis=kpis,
             function_blame_rows=self._function_blame_rows(walked),
             refactoring_suggestions=suggestions,
+            performance_plan_policy=PerformancePlanPolicy(
+                enabled=refactoring_enabled and "performance_fix" not in disabled_refactorings,
+                min_confidence=refactoring_min_confidence,
+            ),
         )
 
     async def analyze_async(
@@ -744,6 +749,10 @@ class HealthAnalyzer:
             kpis=kpis,
             function_blame_rows=self._function_blame_rows(walked),
             refactoring_suggestions=suggestions,
+            performance_plan_policy=PerformancePlanPolicy(
+                enabled=refactoring_enabled and "performance_fix" not in disabled_refactorings,
+                min_confidence=refactoring_min_confidence,
+            ),
         )
 
     # ------------------------------------------------------------------

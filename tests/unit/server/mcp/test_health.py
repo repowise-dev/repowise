@@ -21,7 +21,9 @@ async def test_get_health_dashboard(setup_mcp, health_data):
     assert result["mode"] == "dashboard"
     assert result["kpis"]["file_count"] == 2
     assert result["kpis"]["worst_performer_path"] == "src/auth/service.py"
-    assert list(result)[:2] == ["directive", "mode"]
+    # Two leads, both first: the defect one and the performance pillar's own,
+    # which carries no defect impact and so never competed for the first.
+    assert list(result)[:3] == ["directive", "performance_directive", "mode"]
     assert "high_leverage_files" in result
     assert "worst_files" not in result
     assert result["secondary_rankings"]["worst_files"]["total"] == 2
@@ -388,11 +390,20 @@ async def test_combined_recommendation_lede_is_compact_and_self_directing(
             }
         ],
     )
+    # The queue is materialized, so the fixture's findings only reach the lede
+    # once the writer both index paths use has grouped them.
+    from repowise.core.persistence.crud import finalize_performance_opportunities
+
+    await finalize_performance_opportunities(session, health_data)
+    await session.commit()
+
     result = await get_health(include=["performance", "refactoring"], only=["recommendation_lede"])
     lede = result["recommendation_lede"]
     assert set(result) <= {"mode", "recommendation_lede", "_meta"}
     assert lede["performance_opportunities_total"] == 1
-    assert lede["refactoring_plans_total"] == 1
+    # Two: the seeded extract-class plan, and the authoritative performance
+    # plan the finalizer generated for the fixture's own opportunity.
+    assert lede["refactoring_plans_total"] == 2
     assert lede["performance_lead"]["boundary_kind"] == "db"
     assert {"benefit", "leverage", "cost", "risk"} <= set(lede["recommendation_lead"])
     assert "validation" not in lede["recommendation_lead"]

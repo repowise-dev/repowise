@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -16,10 +16,11 @@ from repowise.core.analysis.health.churn_complexity import churn_complexity_poin
 from repowise.core.analysis.health.complexity.languages import LANGUAGE_MAPS
 from repowise.core.analysis.health.coverage import decay_since, measurement_ref
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
+from repowise.core.analysis.health.finding_identity import finding_public_id
 from repowise.core.analysis.health.grading import HEALTHY_MIN, band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
 from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
-from repowise.core.analysis.health.perf.opportunities import build_performance_opportunities
+from repowise.core.analysis.health.perf.opportunity_rank import observation_rank
 from repowise.core.analysis.health.refactoring.recommendations import (
     Recommendation,
     build_recommendations,
@@ -36,6 +37,7 @@ from repowise.core.persistence.crud import (
     get_coverage_summary,
     get_file_language_map,
     get_git_metadata_bulk,
+    get_health_finding_by_public_id,
     get_hotspot_file_paths,
     get_node_degree_counts_bulk,
     get_refactoring_suggestions,
@@ -60,106 +62,226 @@ from repowise.server.mcp_server._helpers import (
     filter_rows_by_attr,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._references import path_identity, stable_entity_id
+from repowise.server.mcp_server._references import (
+    path_identity,
+    refactoring_plan_id,
+    stable_entity_id,
+)
+from repowise.server.services.performance_health import (
+    PerformanceHealthService,
+    PerformancePage,
+    evidence_block,
+    parse_query,
+)
 
-# How much a single execution of each I/O boundary costs, as an order of
-# magnitude rather than a measurement: a process spawn is milliseconds, a wire
-# round-trip is hundreds of microseconds up, a pooled local query is tens, and a
-# filesystem call is usually a page-cache hit. "A subprocess spawn in a loop is
-# not a filesystem stat in a loop" is the whole point of ranking on this.
-_PERF_BOUNDARY_POINTS = {"subprocess": 4, "network": 3, "db": 2, "lock": 2, "filesystem": 1}
+_PERFORMANCE_COLLECTION_CAP = 6
+"""Opportunities per response, independent of ``limit``. ``cursor`` pages it."""
 
-# What the marker itself proves about *how often* the boundary cost is paid.
-# Two independent proofs, and neither dominates — which is why the three signals
-# are added rather than multiplied:
-#
-#   * a **multiplier** — the cost repeats per iteration (N), per nested pair
-#     (N x M), or quadratically. Every ``*_in_loop`` marker carries this.
-#   * **hotness** — the cost is paid on a request-reachable path.
-#     ``hot_path_sync_io`` and ``nested_loop_quadratic`` are the request-
-#     reachability signal, and it needs no new column: both are emitted **only**
-#     for a function ``perf.ranking.PerfRanker`` called hot (top-quintile
-#     call-graph in-degree, or a churny/hotspot file), so their presence is
-#     already a proof. ``blocking_io_under_lock`` proves something adjacent —
-#     every thread serializes behind the wait.
-#
-# ``hot_path_sync_io`` therefore sits level with a plain loop marker, not above
-# it: it proves hotness and no multiplier, and a loop proves a multiplier and no
-# hotness. Boundary kind is what separates them in practice.
-#
-# Deliberately not ``severity``: the column disagrees with this ordering and
-# cannot be fixed from here without a re-score. ``hot_path_sync_io`` is written
-# ``LOW`` and ``io_in_loop`` ``MEDIUM``, so the marker carrying a hotness proof
-# is graded *below* the ungated one — and on this repo severity takes exactly
-# two values across all 697 perf findings (522 medium, 175 low), which is not
-# an ordering.
-#
-# Exhaustive over the 20 detectors declaring ``category = "performance"``;
-# ``test_perf_rank.py`` fails if a new one is added without a weight, so the
-# default below is a guard rather than a resting place.
-_PERF_MARKER_POINTS = {
-    # Superlinear, and gated on hotness.
-    "nested_loop_quadratic": 5,
-    # N x M round-trips, or a wait every thread queues behind.
-    "nested_loop_with_io": 4,
-    "blocking_io_under_lock": 4,
-    "sql_cartesian_join": 4,
-    # One boundary crossing per iteration — the N+1 family.
-    "io_in_loop": 3,
-    "serial_await_in_loop": 3,
-    "lock_in_loop": 3,
-    "goroutine_in_unbounded_loop": 3,
-    "resource_construction_in_loop": 3,
-    # One crossing, but proven to sit on a hot path.
-    "hot_path_sync_io": 3,
-    # In-loop CPU/allocation costs: real, and orders below a round-trip.
-    "blocking_sync_in_async": 2,
-    "pandas_iterrows_in_loop": 2,
-    "pd_concat_in_loop": 2,
-    "json_parse_in_loop": 2,
-    "array_spread_in_reduce": 2,
-    "defer_in_loop": 2,
-    "regex_compile_in_loop": 1,
-    "string_concat_in_loop": 1,
-    "membership_test_against_list_in_loop": 1,
-    "list_insert_zero_in_loop": 1,
-}
+_PERFORMANCE_EVIDENCE_CAP = 3
+"""Evidence rows per opportunity in the collection. The detail call pages more."""
 
-# Unknown marker. Deliberately the floor, not the middle: a detector added
-# without a weight should under-rank rather than jump the queue, the same
-# degrade-to-no-signal direction the perf gate itself takes.
-_PERF_UNKNOWN_MARKER_POINTS = 1
+_PERFORMANCE_EVIDENCE_PAGE_CAP = 20
+"""Ceiling on one evidence page. ``limit`` still means what it says below it,
+including ``limit=0`` for the totals and no rows."""
 
-# A hit whose loop and whose sink are in different functions. Worth a point on
-# its own: an intra-function loop is often visibly bounded at the call site,
-# while a cross-function N+1 is the one nobody sees by reading the loop.
-_PERF_CROSSFN_POINTS = 1
+
+def _selector_conflict(**selectors: str | None) -> dict[str, Any] | None:
+    """Refuse two detail selectors instead of answering about one of them.
+
+    Preferring whichever was checked first gave a caller a confident answer to
+    a question they had not only asked, with no sign the other was dropped.
+    """
+    named = sorted(name for name, value in selectors.items() if value)
+    if len(named) < 2:
+        return None
+    return {
+        "mode": "conflict",
+        "resolved": False,
+        "reason": "mutually_exclusive_selectors",
+        "selectors": named,
+        "detail": "Pass exactly one of finding_id, plan_id, opportunity_id.",
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class _PerformanceBlocks:
+    """Everything the performance pillar contributes to one response."""
+
+    page: PerformancePage | None = None
+    summary: dict[str, Any] | None = None
+    directive: dict[str, Any] | None = None
+    ignored: dict[str, str] = field(default_factory=dict)
+
+
+async def _performance_blocks(
+    service: PerformanceHealthService,
+    *,
+    wants: Any,
+    included: bool,
+    file_paths: tuple[str, ...] | None,
+    scoped: bool,
+    limit: int,
+    cursor: int,
+    view: str | None,
+    context: str | None,
+    boundary: str | None,
+    confidence: str | None,
+    sort: str | None,
+) -> _PerformanceBlocks:
+    """Read the materialized queue, its rollup, and the dashboard lead.
+
+    Each block is gated on surviving the projection, so a caller that asked for
+    one of the three does not pay for the other two.
+    """
+    page = None
+    ignored: dict[str, str] = {}
+    if included:
+        # The lede quotes only the first row and no evidence, so a projection
+        # down to it reads one row rather than a page of six.
+        emits_queue = wants("performance_opportunities")
+        query, ignored = parse_query(
+            context=context,
+            boundary=boundary,
+            confidence=confidence,
+            view=view,
+            sort=sort,
+            file_paths=file_paths,
+            limit=min(max(limit, 0), _PERFORMANCE_COLLECTION_CAP) if emits_queue else 1,
+            offset=cursor if emits_queue else 0,
+        )
+        page = await service.page(
+            query,
+            evidence_per_item=_PERFORMANCE_EVIDENCE_CAP if emits_queue else 0,
+            # Facets are rendered by the summary block alone, so a queue or a
+            # lede does not pay for the aggregate.
+            with_facets=wants("performance_summary"),
+        )
+    return _PerformanceBlocks(
+        page=page,
+        summary=await service.summary() if included and wants("performance_summary") else None,
+        # The bare dashboard lead: one primary-key read of the current summary
+        # row, so it does not grow with the repository and never touches the
+        # queue.
+        directive=(
+            await service.directive() if not scoped and wants("performance_directive") else None
+        ),
+        ignored=ignored,
+    )
+
+
+async def _resolve_finding(
+    session: Any, repository_id: str, finding_id: str, repository: str
+) -> Any:
+    """Find one health finding by any id form a caller can be holding.
+
+    The public id is a column, so the common case is a seek. The scan is the
+    compatibility path: a raw storage id, or an id minted before the column
+    existed, still has to resolve.
+    """
+    match = await get_health_finding_by_public_id(session, repository_id, finding_id)
+    if match is not None:
+        return match
+    rows = (
+        (
+            await session.execute(
+                select(HealthFinding).where(
+                    HealthFinding.repository_id == repository_id,
+                    HealthFinding.status == "open",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return next(
+        (
+            row
+            for row in rows
+            if finding_id
+            in {
+                row.id,
+                _health_finding_id(row, repository),
+                _legacy_health_finding_id(row, repository),
+            }
+        ),
+        None,
+    )
+
+
+async def _performance_detail_response(
+    session: Any,
+    repository: Any,
+    reference_repository: str,
+    opportunity_id: str,
+    *,
+    evidence_only: bool,
+    limit: int,
+    cursor: int,
+) -> dict[str, Any]:
+    """One causal opportunity, or one page of the evidence behind it.
+
+    ``limit`` means what it means everywhere else, ``0`` included: reading it
+    as "unset" would return a page the caller declined.
+    """
+    service = PerformanceHealthService(session, repository.id, reference_repository)
+    evidence_limit = min(max(limit, 0), _PERFORMANCE_EVIDENCE_PAGE_CAP)
+    if evidence_only:
+        rows, total = await service.evidence(
+            opportunity_id, limit=evidence_limit, offset=cursor
+        )
+        return {
+            "mode": "performance_evidence",
+            "opportunity_id": opportunity_id,
+            "resolved": total > 0,
+            **evidence_block(rows, total, cursor),
+            "_meta": _build_meta(repository=repository),
+        }
+    detail = await service.detail(opportunity_id, evidence_limit=evidence_limit)
+    file_path = detail.get("file_path")
+    result = {
+        "mode": "performance_opportunity",
+        **detail,
+        "_meta": _build_meta(
+            repository=repository, targets=[file_path] if file_path else None
+        ),
+    }
+    metric_rows = (
+        list(
+            (
+                await session.execute(
+                    select(HealthFileMetric).where(
+                        HealthFileMetric.repository_id == repository.id,
+                        HealthFileMetric.file_path == file_path,
+                    )
+                )
+            ).scalars()
+        )
+        if file_path
+        else []
+    )
+    _attach_health_analysis_meta(result["_meta"], metric_rows)
+    return result
 
 
 def _perf_rank(biomarker_type: str | None, details: Any) -> int:
-    """Order-of-magnitude ranking key for one ``performance`` finding.
+    """Order-of-magnitude ordering key for one ``performance`` finding.
 
-    The performance dimension had none. Every finding carries
-    ``health_impact: 0`` by construction — the dimension is deliberately never
-    blended into the score — so the list came back in whatever order the impact
-    tie broke, which is file order. "Which of these 697 matters" was
-    unanswerable from the payload, and worse, the *cap* was arbitrary too: with
-    ``include=['performance']`` the head is 20 of 697 chosen by nothing.
+    Every performance finding carries ``health_impact: 0`` by construction, so
+    without a key the list came back in file order and "which of these matters"
+    was unanswerable from the payload.
 
-    Additive over three signals the payload already carries, in points rather
-    than a calibrated scale, because it is an **ordering key and not a score**.
-    Nothing here is blended into ``score`` / ``performance_score``, and nothing
-    here was fitted against the defect corpus — the frozen weights this file
-    documents stay frozen. A caller who disagrees can re-rank: every input is in
+    The weights live with the opportunity ranking rather than here. Two tables
+    used to answer "which marker costs more" and they had already drifted apart
+    on markers both named, so a finding and the opportunity built from it could
+    disagree about the same evidence. Nothing here is blended into ``score`` or
+    ``performance_score``; a caller who disagrees can re-rank from
     ``biomarker_type`` and ``details`` on the same row.
     """
     if not isinstance(details, dict):
         details = {}
-    points = _PERF_MARKER_POINTS.get(biomarker_type or "", _PERF_UNKNOWN_MARKER_POINTS)
-    points += _PERF_BOUNDARY_POINTS.get(details.get("boundary_kind") or "", 0)
-    if details.get("cross_function"):
-        points += _PERF_CROSSFN_POINTS
-    return points
+    return observation_rank(
+        biomarker_type, details.get("boundary_kind"), bool(details.get("cross_function"))
+    )
 
 
 def _rank_emitted(rows: list[Any]) -> list[Any]:
@@ -200,7 +322,23 @@ def _rank_emitted(rows: list[Any]) -> list[Any]:
     return sorted(rows, key=key)
 
 
-def _health_finding_id(f: HealthFinding, repository: str) -> str:
+def _health_finding_id(f: Any, repository: str) -> str:
+    """The finding's public id: the stored one, else the same kernel recomputed.
+
+    Storage row ids are republished on every analysis, so they cannot be quoted
+    back. This is the id evidence carries and the ``finding_id`` selector
+    resolves, and it is a column, so resolving it is a seek.
+    """
+    stored = getattr(f, "public_id", None)
+    return stored if isinstance(stored, str) and stored else finding_public_id(f)
+
+
+def _legacy_health_finding_id(f: Any, repository: str) -> str:
+    """The pre-column id form, still accepted so a quoted one keeps resolving.
+
+    Its kernel held generated prose and derived detail keys, so it moved
+    whenever a detector reworded itself or a later model changed its mind.
+    """
     try:
         details = json.loads(f.details_json) if f.details_json else {}
     except (TypeError, json.JSONDecodeError):
@@ -254,27 +392,8 @@ def _serialize_finding(f: HealthFinding, repository: str = "default") -> dict[st
 
 
 def _refactoring_plan_id(r: Any, repository: str) -> str:
-    suggestion = r.suggestion if isinstance(r, Recommendation) else r
-    raw_plan = getattr(suggestion, "plan", None)
-    if raw_plan is None:
-        raw_plan = getattr(suggestion, "plan_json", None) or "{}"
-        try:
-            raw_plan = json.loads(raw_plan)
-        except (TypeError, json.JSONDecodeError):
-            raw_plan = str(raw_plan)
-    return stable_entity_id(
-        "plan",
-        repository,
-        {
-            "path": path_identity(suggestion.file_path),
-            "kind": suggestion.refactoring_type,
-            "symbol": suggestion.target_symbol or "",
-            "line_start": suggestion.line_start,
-            "line_end": suggestion.line_end,
-            "source_biomarker": suggestion.source_biomarker or "",
-            "plan": raw_plan,
-        },
-    )
+    """Unwrap a hydrated recommendation, then defer to the identity owner."""
+    return refactoring_plan_id(r.suggestion if isinstance(r, Recommendation) else r, repository)
 
 
 def _serialize_refactoring(
@@ -1083,6 +1202,22 @@ def _compute_kpis(
             'only=["performance_opportunities","refactoring_plans"])',
             ("get_health",),
         ),
+        ToolRecipe(
+            "health_performance_summary",
+            'get_health(include=["performance"], only=["performance_summary"])',
+            ("get_health",),
+        ),
+        ToolRecipe(
+            "health_performance_opportunity",
+            'get_health(opportunity_id="perf...")',
+            ("get_health",),
+        ),
+        ToolRecipe(
+            "health_performance_evidence",
+            'get_health(opportunity_id="perf...", '
+            'only=["performance_evidence"], cursor=0)',
+            ("get_health",),
+        ),
     ),
 )
 async def get_health(
@@ -1095,36 +1230,49 @@ async def get_health(
     cursor: int = 0,
     finding_id: str | None = None,
     plan_id: str | None = None,
+    opportunity_id: str | None = None,
+    performance_view: str | None = None,
+    performance_context: str | None = None,
+    performance_boundary: str | None = None,
+    performance_confidence: str | None = None,
+    performance_sort: str | None = None,
 ) -> dict:
     """Code-health scores and findings from stored analysis.
 
     No ``targets`` returns a dashboard; targets return ranked files and findings.
-    This verifies Git/index facts but never recomputes health. For comparisons,
-    commit health changes then run ``repowise update``; it ignores uncommitted edits.
+    Never recomputes health: commit changes, then run ``repowise update``.
+    Every block and accepted value: docs/agent/MCP_TOOLS.md.
 
     Args:
-        targets: file paths or ``module:<name>``. Empty → dashboard. Unmatched
-            targets appear in ``unresolved`` and survive any ``only``.
+        targets: file paths or ``module:<name>``. Empty means dashboard;
+            unmatched ones appear in ``unresolved``, surviving any ``only``.
         include: ``biomarkers`` | ``refactoring`` | ``trend`` | ``coverage`` |
-            ``accuracy`` | ``signals`` | ``churn_complexity`` |
-            ``performance``/``defect``/``maintainability`` (dimension).
-            ``performance`` adds causal opportunities; with ``refactoring``,
-            a compact recommendation lede. Pair with ``only`` to project.
-        only: top-level keys to keep; identity, counts, unresolved targets,
-            and recovery metadata survive. ``biomarkers``, ``accuracy``, and
-            ``refactoring`` alias; ``performance``, ``defect``, and
-            ``maintainability`` do not.
+            ``accuracy`` | ``signals`` | ``churn_complexity``, or one dimension
+            name. ``performance`` also adds the opportunity queue.
+        only: keys to keep; identity, counts and recovery survive.
+            ``biomarkers``, ``accuracy`` and ``refactoring`` alias their block
+            key. ``performance``, ``defect`` and ``maintainability`` do not:
+            they filter rows and land in ``unknown_only_keys``.
         repo: usually omitted.
-        limit: max rows per ranked list (``0`` for none). Performance
-            opportunities and refactoring plans have independent caps of 6;
-            performance evidence is capped at 3 rows per opportunity.
-        refactoring_view: ``canonical`` (default) or diversified
-            ``file_spread``.
-        cursor: zero-based offset for top-level ranked collections.
+        limit: max rows per ranked list, ``0`` for none.
+        refactoring_view: ``canonical`` (default) or ``file_spread``.
+        cursor: zero-based offset for ranked collections.
         finding_id: stable ``id`` emitted by a health finding.
         plan_id: stable ``id`` emitted by a refactoring plan.
+        opportunity_id: ``perf...`` id from ``performance_directive`` or the
+            queue: the cause, its plan or why there is none, and evidence,
+            which ``only=["performance_evidence"]`` plus ``cursor`` pages.
+            Excludes the two ids above.
+        performance_view / _context / _boundary / _confidence / _sort: queue
+            projection and filters; the facets list their values.
+
     """
     started = perf_counter()
+    conflict = _selector_conflict(
+        finding_id=finding_id, plan_id=plan_id, opportunity_id=opportunity_id
+    )
+    if conflict is not None:
+        return conflict
     # ``0`` means none, matching the ``module_limit`` convention on the REST
     # coverage route. It used to clamp up to 1, so the documented way to ask for
     # "the totals, none of the rows" silently returned a row.
@@ -1170,8 +1318,10 @@ async def get_health(
     # block that carries findings survives the projection.
     wants_findings = wants("findings") or wants("top_findings")
     wants_test_findings = wants("test_findings")
-    wants_performance_opportunities = wants("performance_opportunities") or wants(
-        "recommendation_lede"
+    wants_performance_opportunities = (
+        wants("performance_opportunities")
+        or wants("recommendation_lede")
+        or wants("performance_summary")
     )
     # Everything downstream of the test/production split, in one place.
     #
@@ -1219,6 +1369,7 @@ async def get_health(
         "coverage.files",
         "refactoring_plans",
         "performance_opportunities",
+        "performance_evidence",
     }
 
     def bounded(rows: list[Any], label: str, *, cap: int | None = None) -> list[Any]:
@@ -1256,25 +1407,8 @@ async def get_health(
         reference_repository = ctx.alias or repository.name
 
         if finding_id:
-            rows = list(
-                (
-                    await session.execute(
-                        select(HealthFinding).where(
-                            HealthFinding.repository_id == repository.id,
-                            HealthFinding.status == "open",
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            match = next(
-                (
-                    row
-                    for row in rows
-                    if finding_id in {row.id, _health_finding_id(row, reference_repository)}
-                ),
-                None,
+            match = await _resolve_finding(
+                session, repository.id, finding_id, reference_repository
             )
             result = {
                 "mode": "finding",
@@ -1304,6 +1438,17 @@ async def get_health(
             )
             _attach_health_analysis_meta(result["_meta"], metric_rows)
             return result
+
+        if opportunity_id:
+            return await _performance_detail_response(
+                session,
+                repository,
+                reference_repository,
+                opportunity_id,
+                evidence_only=only_set == {"performance_evidence"},
+                limit=limit,
+                cursor=cursor,
+            )
 
         if plan_id:
             plan_rows = await get_refactoring_suggestions(session, repository.id)
@@ -1648,6 +1793,27 @@ async def get_health(
                 view=refactoring_view,  # type: ignore[arg-type]
             )
 
+        # The materialized causal read model. Filtering, ordering, paging, plan
+        # linkage, and facets are the shared service's; this tool caps the
+        # collection, pages it, and serializes what comes back.
+        performance_service = PerformanceHealthService(
+            session, repository.id, reference_repository
+        )
+        performance = await _performance_blocks(
+            performance_service,
+            wants=wants,
+            included="performance" in include_set and wants_performance_opportunities,
+            file_paths=tuple(effective_targets) if scoped else None,
+            scoped=scoped,
+            limit=limit,
+            cursor=cursor,
+            view=performance_view,
+            context=performance_context,
+            boundary=performance_boundary,
+            confidence=performance_confidence,
+            sort=performance_sort,
+        )
+
         coverage_rows: list[Any] = []
         coverage_summary: dict[str, Any] = {}
         if "coverage" in include_set and not nothing_resolved:
@@ -1913,6 +2079,15 @@ async def get_health(
                 plan_biomarkers_by_path,
                 plan_count_by_path,
             ),
+            # A second, additive lead for the performance pillar. The block
+            # above is unchanged: performance findings carry no defect impact,
+            # so they never competed for it and the dashboard said nothing an
+            # agent could act on about them.
+            **(
+                {"performance_directive": performance.directive}
+                if performance.directive is not None
+                else {}
+            ),
             "mode": "dashboard",
             "kpis": kpis,
             "distribution": health_distribution(all_metrics),
@@ -2114,50 +2289,38 @@ async def get_health(
         if len(recent) > limit:
             result["trend"]["recent_reduced_reason"] = "limit"
 
-    opportunities = []
-    if "performance" in include_set and wants_performance_opportunities:
-        performance_rows = [row for row in lead_rows if _in_dimensions(row, {"performance"})]
-        opportunities = build_performance_opportunities(
-            performance_rows,
-            evidence_limit=max(len(performance_rows), 3),
-        )
-        opportunity_payload = []
-        selected_opportunities = bounded(
-            opportunities,
-            "performance_opportunities",
-            cap=min(limit, 6),
-        )
-        for opportunity in selected_opportunities:
-            payload = opportunity.as_dict()
-            evidence = list(payload.get("evidence", []))
-            payload["evidence"] = bounded(
-                evidence,
-                f"performance_opportunities.{opportunity.opportunity_id}.evidence",
-                cap=3,
+    if performance.page is not None and wants("performance_opportunities"):
+        result["performance_opportunities"] = performance.page.items
+        result["performance_opportunities_total"] = performance.page.total
+        result["performance_opportunities_emitted"] = len(performance.page.items)
+        if performance.page.next_offset is not None:
+            page_recoveries["performance_opportunities"] = (
+                performance.page.next_offset,
+                _PERFORMANCE_COLLECTION_CAP,
+                performance.page.total - performance.page.next_offset,
             )
-            payload["evidence_total"] = payload.get("observations_total", len(evidence))
-            payload["evidence_emitted"] = len(payload["evidence"])
-            if payload["evidence_emitted"] < payload["evidence_total"]:
-                payload["evidence_reduced_reason"] = "evidence_cap"
-            opportunity_payload.append(payload)
-        result["performance_opportunities"] = opportunity_payload
-        result["performance_opportunities_total"] = len(opportunities)
+        if performance.ignored:
+            result["ignored_arguments"] = {
+                **result.get("ignored_arguments", {}),
+                **performance.ignored,
+            }
+
+    if performance.summary is not None:
+        result["performance_summary"] = {
+            **performance.summary,
+            "facets": performance.page.facets if performance.page else {},
+            "next_call": (
+                "get_health(include=['performance'], "
+                "only=['performance_opportunities'], limit=6)"
+            ),
+        }
 
     if {"performance", "refactoring"} <= include_set and wants("recommendation_lede"):
-        performance_lead = opportunities[0] if opportunities else None
+        performance_lead = (
+            performance.page.items[0] if performance.page and performance.page.items else None
+        )
         recommendation_lead = (
             refactoring_recommendations[0] if refactoring_recommendations else None
-        )
-        matching = next(
-            (
-                recommendation
-                for recommendation in refactoring_recommendations
-                if performance_lead is not None
-                and recommendation.suggestion.refactoring_type == "performance_fix"
-                and (recommendation.suggestion.evidence or {}).get("opportunity_id")
-                == performance_lead.opportunity_id
-            ),
-            None,
         )
         lead_payload = (
             _serialize_refactoring(recommendation_lead, reference_repository)
@@ -2165,16 +2328,21 @@ async def get_health(
             else None
         )
         result["recommendation_lede"] = {
-            "performance_opportunities_total": len(opportunities),
+            "performance_opportunities_total": (
+                performance.page.total if performance.page else 0
+            ),
             "refactoring_plans_total": len(refactoring_recommendations),
             "performance_lead": (
                 {
-                    "opportunity_id": performance_lead.opportunity_id,
-                    "intervention_symbol": performance_lead.intervention_symbol,
-                    "boundary_kind": performance_lead.boundary_kind,
-                    "execution_context": performance_lead.execution_context,
-                    "affected_call_sites_total": performance_lead.affected_call_sites_total,
-                    "rank_score": performance_lead.rank_score,
+                    key: performance_lead[key]
+                    for key in (
+                        "opportunity_id",
+                        "intervention_symbol",
+                        "boundary_kind",
+                        "execution_context",
+                        "affected_call_sites_total",
+                        "rank_score",
+                    )
                 }
                 if performance_lead
                 else None
@@ -2197,8 +2365,14 @@ async def get_health(
                 if lead_payload
                 else None
             ),
+            # The exact plan for the exact lead, from the one place that decides
+            # plan linkage. This used to match on a key the plan writer never
+            # wrote, so it was unconditionally null.
             "performance_plan_id": (
-                _refactoring_plan_id(matching, reference_repository) if matching else None
+                performance_lead["plan_reference"] if performance_lead else None
+            ),
+            "performance_plan_reason": (
+                performance_lead["plan_reason"] if performance_lead else None
             ),
             "next_call": (
                 f"get_health(targets={raw_targets!r}, repo={repo!r}, "
@@ -2279,7 +2453,9 @@ async def get_health(
         "test_findings": test_findings_total,
         "churn_complexity": len(churn_points),
         "refactoring_plans": len(refactoring_recommendations),
-        "performance_opportunities": len(opportunities),
+        "performance_opportunities": (
+            performance.page.total if performance.page is not None else 0
+        ),
     }
     for key, total in collection_totals.items():
         if total is None:
@@ -2331,6 +2507,9 @@ async def get_health(
                 "unknown_include_keys",
                 "unknown_include_keys_total",
                 "unknown_include_keys_emitted",
+                # A rejected filter value is a caller-error report, so it
+                # survives a projection for the same reason ``unresolved`` does.
+                "ignored_arguments",
                 "recovery",
             }
             | {

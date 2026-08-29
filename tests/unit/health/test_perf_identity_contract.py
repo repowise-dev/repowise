@@ -17,6 +17,7 @@ import copy
 
 import pytest
 
+from repowise.core.analysis.health.finding_identity import finding_public_id
 from repowise.core.analysis.health.perf.opportunities import (
     PERFORMANCE_MODEL_VERSION,
     build_performance_opportunities,
@@ -266,24 +267,46 @@ def test_the_plan_id_is_absent_from_plan_evidence_today() -> None:
     assert "opportunity_id" not in plan.evidence
 
 
-def test_a_performance_finding_has_no_content_derived_public_reference() -> None:
-    """The only stable public key on a performance finding is its group id.
+def test_evidence_is_addressed_by_a_content_derived_public_reference() -> None:
+    """Evidence carries the finding's public id, never a storage row id.
 
-    ``evidence[].finding_id`` is the storage row id: empty in memory, a random
-    UUID once persisted. Nothing joins on it across a reindex, so it is not
-    an identity.
+    The row id is republished on every analysis, so a caller who quoted one
+    back was quoting a value that no longer existed. The public id is derived
+    from the finding's own coordinates, so it survives the reindex and is the
+    same string before and after persistence.
     """
     in_memory = _row()
     del in_memory["id"]
-    opportunity = build_performance_opportunities([in_memory])[0]
-    assert opportunity.evidence[0]["finding_id"] == ""
+    reference = build_performance_opportunities([in_memory])[0].evidence[0]["finding_id"]
+    assert reference == finding_public_id(in_memory)
 
     persisted = _row(id="8f14e45fceea167a5a36dedd4bea2543")
-    assert build_performance_opportunities([persisted])[0].evidence[0]["finding_id"] == (
-        "8f14e45fceea167a5a36dedd4bea2543"
+    assert build_performance_opportunities([persisted])[0].evidence[0]["finding_id"] == reference
+
+    stored = _row(id="8f14e45fceea167a5a36dedd4bea2543", public_id="finding_already_stored")
+    assert build_performance_opportunities([stored])[0].evidence[0]["finding_id"] == (
+        "finding_already_stored"
     )
     link_performance_findings([persisted])
     assert persisted["details"]["opportunity_id"] == CROSS_FUNCTION_ID
+
+
+def test_the_public_finding_id_ignores_prose_and_derived_details() -> None:
+    """Rewording a detector, or a later model changing its mind, moves nothing.
+
+    The id is stored on the row and quoted by agents, so anything that can
+    change without the finding moving has to stay out of its kernel.
+    """
+    base = _row()
+    assert finding_public_id(base) == finding_public_id(_row(reason="reworded entirely"))
+    assert finding_public_id(base) == finding_public_id(
+        _row(details={**base["details"], "opportunity_id": "perf9_deadbeef"})
+    )
+    assert finding_public_id(base) == finding_public_id(
+        _row(details={**base["details"], "reliable_entry_reachability": True})
+    )
+    # Structural coordinates are in the kernel, so a real move is a new id.
+    assert finding_public_id(base) != finding_public_id(_row(line_start=999))
 
 
 def test_a_path_node_that_names_nothing_never_becomes_an_intervention_symbol() -> None:

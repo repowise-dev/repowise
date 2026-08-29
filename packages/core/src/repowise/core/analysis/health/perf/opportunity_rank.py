@@ -20,17 +20,54 @@ from math import log2
 from typing import Any
 
 BOUNDARY_POINTS = {"subprocess": 5, "network": 4, "db": 4, "lock": 3, "filesystem": 2}
+"""What one crossing of each boundary costs, as an order of magnitude.
+
+A process spawn is milliseconds, a wire round-trip hundreds of microseconds up,
+a pooled local query tens, and a filesystem call is usually a page-cache hit.
+"A subprocess spawn in a loop is not a stat in a loop" is the whole point.
+"""
+
 MULTIPLIER_POINTS = {
+    # Superlinear in the input.
     "nested_loop_with_io": 6,
     "nested_loop_quadratic": 6,
+    "sql_cartesian_join": 6,
+    # One wait every other thread queues behind.
     "blocking_io_under_lock": 5,
+    # One boundary crossing per iteration, or one proven to sit on a hot path.
     "io_in_loop": 4,
     "serial_await_in_loop": 4,
     "resource_construction_in_loop": 4,
+    "goroutine_in_unbounded_loop": 4,
+    "hot_path_sync_io": 4,
+    # In-loop CPU or allocation: real, and orders below a round-trip.
     "membership_test_against_list_in_loop": 3,
     "string_concat_in_loop": 3,
+    "blocking_sync_in_async": 3,
+    "pandas_iterrows_in_loop": 3,
+    "pd_concat_in_loop": 3,
+    "json_parse_in_loop": 3,
+    "array_spread_in_reduce": 3,
+    "defer_in_loop": 3,
+    "regex_compile_in_loop": 3,
+    "list_insert_zero_in_loop": 3,
+    # Repeated acquisition with no boundary behind it.
     "lock_in_loop": 2,
 }
+"""How often the marker proves the cost is paid.
+
+Exhaustive over every detector declaring the performance category, because
+both the observation order and the opportunity order read it and a marker
+missing from here would silently take the floor on both.
+"""
+
+UNKNOWN_MULTIPLIER_POINTS = 1
+"""A detector added without a weight under-ranks rather than jumps the queue."""
+
+CROSS_FUNCTION_POINTS = 1
+"""A loop and a sink in different functions is the one nobody sees by reading
+the loop, so it earns a point that an intra-function hit does not."""
+
 CONTEXT_POINTS = {"production": 3, "tooling": 2, "test": 1, "unknown": 1}
 PROVENANCE_POINTS = {"call-site": 3, "direct": 3, "reliable-edge": 2, "name-fallback": 0}
 
@@ -114,6 +151,20 @@ def change_risk(affected_files: int) -> str:
     return _band(affected_files, _CHANGE_RISK_BANDS, "wide")
 
 
+def observation_rank(marker: str | None, boundary: str | None, cross_function: bool) -> int:
+    """Order-of-magnitude key for one raw observation, not one opportunity.
+
+    Findings all carry zero health impact by construction, so without this the
+    performance rows in a ranked list came back in file order. Same tables as
+    the opportunity order above, deliberately: "which marker costs more" is one
+    question, and answering it twice with two sets of numbers is how the two
+    surfaces came to disagree about the same marker.
+    """
+    points = MULTIPLIER_POINTS.get(marker or "", UNKNOWN_MULTIPLIER_POINTS)
+    points += BOUNDARY_POINTS.get(boundary or "", 0)
+    return points + (CROSS_FUNCTION_POINTS if cross_function else 0)
+
+
 def rank_factors(
     *,
     marker: str,
@@ -174,13 +225,16 @@ __all__ = [
     "AMPLIFICATION",
     "BOUNDARY_POINTS",
     "CONTEXT_POINTS",
+    "CROSS_FUNCTION_POINTS",
     "MULTIPLIER_POINTS",
     "PROVENANCE_POINTS",
+    "UNKNOWN_MULTIPLIER_POINTS",
     "amplification",
     "change_risk",
     "dominant_marker",
     "exposure",
     "leverage",
+    "observation_rank",
     "rank_factors",
     "rank_sort_key",
     "weakest_provenance",

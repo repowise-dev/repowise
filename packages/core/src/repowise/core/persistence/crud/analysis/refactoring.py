@@ -37,6 +37,17 @@ def _refactoring_row_kwargs(suggestion: Any, repository_id: str) -> dict:
             if key in data:
                 data[f"{key}_json"] = json.dumps(data.pop(key) or {})
 
+    if data.get("refactoring_type") == "performance_fix":
+        # Lift the causal id out of the plan payload into its own column. Two
+        # surfaces used to answer "does this opportunity have a plan" by reading
+        # two different JSON fields, and one of them always said no.
+        try:
+            plan = json.loads(data.get("plan_json") or "{}")
+        except (TypeError, ValueError):
+            plan = {}
+        if isinstance(plan, dict) and isinstance(plan.get("opportunity_id"), str):
+            data.setdefault("opportunity_id", plan["opportunity_id"])
+
     return {
         "id": _new_uuid(),
         "repository_id": repository_id,

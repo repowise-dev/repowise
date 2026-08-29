@@ -708,6 +708,12 @@ get_health(include=["performance","refactoring"], only=["performance_opportuniti
 | `limit` | int | No | Max rows in **every** ranked list (default 20, capped at 50). `0` means no rows; the `*_total` siblings still report the true counts. |
 | `finding_id` | string | No | Resolve an emitted stable health-finding `id` directly in one call. |
 | `plan_id` | string | No | Resolve an emitted stable refactoring-plan `id` directly in one call. |
+| `opportunity_id` | string | No | Resolve a performance opportunity `id` directly. Mutually exclusive with the two above; passing more than one returns `mode: "conflict"` naming them rather than answering about whichever was checked first. |
+| `performance_view` | string | No | `detail` (default) or `summary`. `summary` keeps identity, counts and plan state and drops the explanatory fields. |
+| `performance_context` | string | No | `production` / `tooling` / `test` / `unknown` / `all`. |
+| `performance_boundary` | string | No | `db` / `network` / `filesystem` / `subprocess` / `lock` / `none`. |
+| `performance_confidence` | string | No | Evidence confidence: `high` / `medium` / `low`. Fix safety and actionability are separate facets. |
+| `performance_sort` | string | No | `rank` (default) / `leverage` / `observations`. |
 
 **Returns:** Dashboard mode (no `targets`) returns a `directive`, repo-level KPIs
 (hotspot health, average health, worst performer, maintainability / performance
@@ -870,9 +876,14 @@ payload:
 
 | signal | reads | why |
 |---|---|---|
-| the marker | `biomarker_type` | superlinear (`nested_loop_quadratic` 5) > N×M or lock-serialized (4) > one crossing per iteration, or one crossing proven on a hot path (3) > in-loop CPU/allocation (2) > cheap in-loop idioms (1) |
-| the boundary | `details.boundary_kind` | `subprocess` 4 > `network` 3 > `db`/`lock` 2 > `filesystem` 1 — a process spawn in a loop is not a stat in a loop |
+| the marker | `biomarker_type` | superlinear (`nested_loop_quadratic`, `nested_loop_with_io`, `sql_cartesian_join` 6) > lock-serialized (5) > one crossing per iteration, or one proven on a hot path (4) > in-loop CPU/allocation (3) > repeated acquisition with no boundary (2); an unweighted marker takes the floor (1) |
+| the boundary | `details.boundary_kind` | `subprocess` 5 > `network`/`db` 4 > `lock` 3 > `filesystem` 2. A process spawn in a loop is not a stat in a loop |
 | the call shape | `details.cross_function` | +1. An intra-function loop is usually visibly bounded at the call site; a cross-function N+1 is the one nobody sees by reading the loop |
+
+These are the same weights the causal opportunity ranking reads. Two tables
+used to answer "which marker costs more" and had drifted apart on markers both
+named, so a finding and the opportunity built from it could disagree about the
+same evidence.
 
 Request-reachability is read off the marker rather than a column:
 `hot_path_sync_io` and `nested_loop_quadratic` are only ever emitted for a
@@ -909,6 +920,33 @@ get_health(include=["accuracy"], only=["accuracy"])   # the block, without the d
 get_health(only=["top_findings"])                     # + top_findings_total, automatically
 get_health(only=["kpis"], limit=0)                    # headline numbers, no rows at all
 ```
+
+### Performance: one lead, then drill down
+
+A bare `get_health()` carries `performance_directive`: one bounded lead with
+its status (`plan_ready` / `advisory` / `investigate` / `clear` / `unavailable`),
+up to three `why_ranked` facets, the exact plan state, and a structured
+`next_action`. Performance findings carry `health_impact: 0` by construction, so
+they never competed for the main `directive` and the dashboard used to report
+counts and nothing to act on. `clear` means no supported pattern surfaced, which
+is not a claim about how the code runs; `unavailable` means this index has not
+materialized the analysis yet, or did so under an older model.
+
+```
+get_health()                                                  # the lead
+get_health(include=["performance"], only=["performance_summary"])
+get_health(include=["performance"], only=["performance_opportunities"], performance_context="production")
+get_health(opportunity_id="perf2_...")                        # the cause, its plan, its evidence
+get_health(opportunity_id="perf2_...", only=["performance_evidence"], cursor=3)
+```
+
+Ids are stable within a performance model version and are never translated
+across one, because grouping decides membership and two models disagree about
+it. An id from an older model resolves to `model_state.state: "stale_model"`
+with `refresh_required`, rather than failing to match and reading as "no plan".
+Evidence rows carry the finding's public `finding_id`, which round-trips through
+the `finding_id` selector; storage row ids are republished on every analysis and
+are never emitted.
 
 ---
 

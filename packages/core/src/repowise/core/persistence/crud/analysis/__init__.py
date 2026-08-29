@@ -8,7 +8,7 @@ imports are unaffected.
 
 from __future__ import annotations
 
-from . import coverage, coverage_map, dead_code, health, refactoring  # noqa: F401
+from . import coverage, coverage_map, dead_code, health, performance, refactoring  # noqa: F401
 from .coverage import (
     get_coverage_summary,
     load_coverage_for_repo,
@@ -54,6 +54,18 @@ from .health import (
     upsert_health_findings,
     upsert_health_metrics,
 )
+from .performance import (
+    finalize_performance_opportunities,
+    get_health_finding_by_public_id,
+    get_performance_opportunity,
+    get_performance_plan_rows,
+    get_performance_summary,
+    list_evidence_for_opportunities,
+    list_opportunity_evidence,
+    list_performance_opportunities,
+    opportunity_details,
+    performance_facet_counts,
+)
 from .refactoring import (
     get_refactoring_suggestion,
     get_refactoring_suggestions,
@@ -69,23 +81,33 @@ __all__ = [
     "backfill_module_attribution",
     "covered_source_files",
     "files_covered_by",
+    "finalize_performance_opportunities",
     "get_average_health",
     "get_coverage_summary",
     "get_dead_code_findings",
     "get_dead_code_summary",
     "get_deduction_by_path",
     "get_file_language_map",
+    "get_health_finding_by_public_id",
     "get_health_findings",
     "get_health_metrics",
     "get_health_snapshot_file_counts",
     "get_health_snapshot_headline",
     "get_health_summary",
     "get_perf_coverage",
+    "get_performance_opportunity",
+    "get_performance_plan_rows",
+    "get_performance_summary",
     "get_refactoring_suggestion",
     "get_refactoring_suggestions",
     "get_test_coverage_summary",
+    "list_evidence_for_opportunities",
     "list_health_snapshots",
+    "list_opportunity_evidence",
+    "list_performance_opportunities",
     "load_coverage_for_repo",
+    "opportunity_details",
+    "performance_facet_counts",
     "replace_dead_code_findings",
     "replace_governance_findings",
     "save_coverage_files",

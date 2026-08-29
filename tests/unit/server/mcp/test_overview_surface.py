@@ -209,4 +209,12 @@ async def test_live_registry_recipe_calls_bind_to_current_tool_signatures(setup_
             'get_health(include=["performance","refactoring"], '
             'only=["performance_opportunities","refactoring_plans"])'
         ),
+        "health_performance_summary": (
+            'get_health(include=["performance"], only=["performance_summary"])'
+        ),
+        "health_performance_opportunity": 'get_health(opportunity_id="perf...")',
+        "health_performance_evidence": (
+            'get_health(opportunity_id="perf...", '
+            'only=["performance_evidence"], cursor=0)'
+        ),
     }

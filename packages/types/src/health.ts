@@ -253,8 +253,33 @@ export interface PerformanceOpportunityEvidence {
   provenance: string;
 }
 
+export type PerformanceActionabilityState = "plan_ready" | "advisory" | "investigate";
+export type PerformancePlanStatus = "available" | "no_safe_plan" | "not_persisted";
+
+/** One rank term, the input it read, and the points it contributed. */
+export interface PerformanceWhyRanked {
+  factor: string;
+  value: string | number | boolean | null;
+  points: number;
+}
+
+/**
+ * The facets that are not published anywhere else on the row.
+ * `confidence` stays evidence confidence and `fix.safety` stays fix safety,
+ * so no value appears twice.
+ */
+export interface PerformanceOpportunityFacets {
+  actionability_confidence: PerformanceOpportunityConfidence;
+  exposure: string;
+  amplification: string;
+  leverage: string;
+  change_risk: string;
+}
+
 export interface PerformanceOpportunity {
   opportunity_id: string;
+  /** Ids are stable within a model version and never translated across one. */
+  performance_model_version: number;
   biomarker_type: string;
   biomarker_types: string[];
   boundary_kind: C4IoKind | null;
@@ -262,34 +287,99 @@ export interface PerformanceOpportunity {
   terminal_sink: string | null;
   shared_path_suffix: string[];
   intervention_symbol: string | null;
+  /** The file holding the symbol worth editing. */
+  file_path: string;
+  resource_fingerprints: string[];
   affected_call_sites_total: number;
   affected_files_total: number;
   observations_total: number;
   evidence: PerformanceOpportunityEvidence[];
   evidence_truncated: boolean;
+  evidence_total: number;
+  evidence_emitted: number;
+  /** Offset for the next evidence page, absent once the last one is emitted. */
+  evidence_next_cursor?: number;
   reliable_entry_reachability: boolean | null;
   provenance: string;
+  /** Evidence confidence: how reliably the call path resolved. */
   confidence: PerformanceOpportunityConfidence;
+  facets: PerformanceOpportunityFacets;
+  actionability_state: PerformanceActionabilityState;
+  actionability_reason: string;
+  prerequisites: string[];
   rank_score: number;
+  rank_position: number;
   rank_factors: Record<string, number>;
+  why_ranked: PerformanceWhyRanked[];
   fix: PerformanceOpportunityFix | null;
   /** Exact stored match. Never inferred from file, marker, or rank. */
   plan_id: string | null;
-  plan_status: "available" | "no_safe_plan" | "not_persisted";
+  plan_status: PerformancePlanStatus;
   plan_reason: string;
 }
 
-export interface PerformanceOpportunitySummary {
+/** Whether a quoted id still names something this index can resolve. */
+export interface PerformanceModelState {
+  state: "current" | "stale_model" | "unrecognized";
+  opportunity_id: string;
+  requested_model_version: number | null;
+  performance_model_version: number;
+  refresh_required: boolean;
+}
+
+/**
+ * One opportunity by id. An unresolved id still answers, with the model state
+ * and what to do about it, rather than reading as "nothing to fix here".
+ */
+export type PerformanceOpportunityDetail =
+  | ({
+      resolved: true;
+      lifecycle_status: "open" | "resolved";
+      analyzed_commit: string | null;
+      model_state: PerformanceModelState;
+      evidence_total: number;
+      evidence_emitted: number;
+      evidence_next_cursor?: number;
+    } & PerformanceOpportunity)
+  | {
+      resolved: false;
+      opportunity_id: string;
+      model_state: PerformanceModelState;
+      detail: string;
+    };
+
+/** Counts per value for one filter, cross-filtered by the other filters. */
+export interface PerformanceFacetCount {
+  value: string;
   total: number;
+}
+
+export type PerformanceFacets = Record<string, PerformanceFacetCount[]>;
+
+export interface PerformanceOpportunitySummary {
+  /** `current` once materialized, `stale_model` after a model bump, or
+   * `unavailable` when this index has not been analyzed yet. */
+  status: "current" | "stale_model" | "unavailable";
+  total: number;
+  performance_model_version?: number;
+  analyzed_commit?: string | null;
+  actionability?: Partial<Record<PerformanceActionabilityState, number>>;
+  context?: Partial<Record<PerformanceExecutionContext, number>>;
+  boundary?: Record<string, number>;
+  with_plan_total: number;
+  /** Flat counters the current tab reads, projected from `context` above. */
   production_total: number;
   tooling_total: number;
   test_total: number;
-  with_plan_total: number;
+  unknown_total: number;
   without_plan_total: number;
 }
 
 export interface PerformanceOpportunityPage extends Paginated<PerformanceOpportunity> {
   summary: PerformanceOpportunitySummary;
+  facets: PerformanceFacets;
+  /** Filter values the server did not recognize, named rather than dropped. */
+  ignored_arguments?: Record<string, string>;
 }
 
 export interface HealthModuleRow {

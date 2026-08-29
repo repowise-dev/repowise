@@ -14,6 +14,10 @@ import type {
   HealthFileBreakdownResponse,
   HealthOverviewResponse,
   HealthTrendResponse,
+  PerformanceActionabilityState,
+  PerformanceExecutionContext,
+  PerformanceOpportunityConfidence,
+  PerformanceOpportunityDetail,
   PerformanceOpportunityPage,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
@@ -45,6 +49,15 @@ export type {
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
   ModuleCoverageRow,
+  PerformanceActionabilityState,
+  PerformanceExecutionContext,
+  PerformanceFacets,
+  PerformanceOpportunity,
+  PerformanceOpportunityConfidence,
+  PerformanceOpportunityDetail,
+  PerformanceOpportunityEvidence,
+  PerformanceOpportunityPage,
+  PerformanceOpportunitySummary,
   RefactoringQuery,
   RefactoringTarget,
   RefactoringTargetsResponse,
@@ -74,7 +87,18 @@ export async function listHealthFindings(
 }
 
 export interface PerformanceOpportunityPageParams {
-  context?: "production_tooling" | "test" | "all";
+  /**
+   * Canonical contexts. `production_tooling` is a retired spelling the server
+   * still answers as Production+Tooling; it is never returned as a context.
+   */
+  context?: PerformanceExecutionContext | "all" | "production_tooling";
+  boundary?: string;
+  /** Evidence confidence, reported apart from fix safety and actionability. */
+  confidence?: PerformanceOpportunityConfidence;
+  actionability?: PerformanceActionabilityState;
+  /** `summary` drops the explanatory fields and keeps identity and counts. */
+  view?: "detail" | "summary";
+  sort?: "rank" | "leverage" | "observations";
   limit?: number;
   offset?: number;
 }
@@ -85,7 +109,28 @@ export async function getPerformanceOpportunities(
 ): Promise<PerformanceOpportunityPage> {
   return apiGet<PerformanceOpportunityPage>(
     `/api/repos/${repoId}/health/performance-opportunities`,
-    { context: opts.context, limit: opts.limit, offset: opts.offset },
+    {
+      context: opts.context,
+      boundary: opts.boundary,
+      confidence: opts.confidence,
+      actionability: opts.actionability,
+      view: opts.view,
+      sort: opts.sort,
+      limit: opts.limit,
+      offset: opts.offset,
+    },
+  );
+}
+
+/** One opportunity by its stable id, with bounded evidence. */
+export async function getPerformanceOpportunity(
+  repoId: string,
+  opportunityId: string,
+  opts: { evidenceLimit?: number; evidenceOffset?: number } = {},
+): Promise<PerformanceOpportunityDetail> {
+  return apiGet<PerformanceOpportunityDetail>(
+    `/api/repos/${repoId}/health/performance-opportunities/${encodeURIComponent(opportunityId)}`,
+    { evidence_limit: opts.evidenceLimit, evidence_offset: opts.evidenceOffset },
   );
 }
 

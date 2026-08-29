@@ -7,31 +7,11 @@ in: analyzer dataclass, ORM row, or plain dict all reduce here.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any
 
-
-def field(row: Any, name: str, default: Any = None) -> Any:
-    """Read one attribute from a dataclass, an ORM row, or a dict."""
-    if isinstance(row, dict):
-        return row.get(name, default)
-    return getattr(row, name, default)
-
-
-def detail_map(row: Any) -> dict[str, Any]:
-    """The finding's open ``details`` payload, whether stored or in memory."""
-    value = field(row, "details", None)
-    if isinstance(value, dict):
-        return value
-    raw = field(row, "details_json", None)
-    if isinstance(raw, str):
-        try:
-            loaded = json.loads(raw)
-            return loaded if isinstance(loaded, dict) else {}
-        except (TypeError, ValueError):
-            return {}
-    return {}
+from ..finding_identity import finding_public_id
+from ..rows import detail_map, field
 
 
 def is_performance(row: Any) -> bool:
@@ -125,8 +105,9 @@ class ObservationFacts:
 def observation_facts(row: Any) -> ObservationFacts:
     details = detail_map(row)
     raw_path = details.get("path", ())
+    stored = field(row, "public_id", None)
     return ObservationFacts(
-        finding_id=str(field(row, "id", "") or ""),
+        finding_id=stored if isinstance(stored, str) and stored else finding_public_id(row),
         file_path=str(field(row, "file_path", "")),
         function_name=field(row, "function_name", None),
         line_start=field(row, "line_start", None),
@@ -152,8 +133,9 @@ def performance_facts(rows: list[Any]) -> list[ObservationFacts]:
 def evidence_row(facts: ObservationFacts) -> dict[str, Any]:
     """One public evidence entry.
 
-    ``finding_id`` is the storage row id, not a content hash: empty before
-    persistence, a fresh UUID after. It points within one index only.
+    ``finding_id`` is the finding's public id, which round-trips through the
+    ``finding_id`` selector on both surfaces. Storage row ids are republished
+    on every analysis and never leave this package.
     """
     return {
         "finding_id": facts.finding_id,

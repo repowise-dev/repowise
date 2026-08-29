@@ -125,6 +125,35 @@ def stable_entity_id(prefix: str, repository: str, coordinates: Mapping[str, obj
     return f"{prefix}_{content_id(identity)}"
 
 
+def refactoring_plan_id(suggestion: Any, repository: str) -> str:
+    """Return the public ID for one refactoring plan, ORM row or dataclass.
+
+    Lives here rather than beside one caller because two surfaces address the
+    same plan and must arrive at the same string.
+    """
+
+    raw_plan = getattr(suggestion, "plan", None)
+    if raw_plan is None:
+        raw_plan = getattr(suggestion, "plan_json", None) or "{}"
+        try:
+            raw_plan = json.loads(raw_plan)
+        except (TypeError, json.JSONDecodeError):
+            raw_plan = str(raw_plan)
+    return stable_entity_id(
+        "plan",
+        repository,
+        {
+            "path": path_identity(suggestion.file_path),
+            "kind": suggestion.refactoring_type,
+            "symbol": suggestion.target_symbol or "",
+            "line_start": suggestion.line_start,
+            "line_end": suggestion.line_end,
+            "source_biomarker": suggestion.source_biomarker or "",
+            "plan": raw_plan,
+        },
+    )
+
+
 # Compatibility aliases for the get_why-specific module that originally
 # owned these primitives. Keeping the private spellings prevents a mechanical
 # promotion from changing sealed evidence identities or downstream imports.
@@ -138,6 +167,7 @@ __all__ = [
     "content_id",
     "omission_reference",
     "path_identity",
+    "refactoring_plan_id",
     "reference",
     "repository_identity",
     "source_reference",
