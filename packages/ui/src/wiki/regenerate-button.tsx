@@ -1,7 +1,8 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Loader2, RefreshCw, Sparkles } from "lucide-react";
+import { RefreshCw, Sparkles } from "lucide-react";
+import { Spinner } from "../ui/spinner";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -50,7 +51,7 @@ export function RegenerateButton({
   inline = false,
 }: RegenerateButtonProps) {
   const isWrite = mode === "write";
-  const Icon = isLoading ? Loader2 : isWrite ? Sparkles : RefreshCw;
+  const Icon = isWrite ? Sparkles : RefreshCw;
 
   return (
     <>
@@ -62,7 +63,11 @@ export function RegenerateButton({
           className="inline-flex items-center gap-1 rounded-full border border-[var(--color-accent-primary)]/40 bg-[var(--color-accent-muted)] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-accent-primary)] transition-colors hover:bg-[var(--color-accent-muted)] hover:text-[var(--color-accent-hover)] disabled:opacity-60"
           aria-label={isWrite ? "Write this page with AI" : "Regenerate this page"}
         >
-          <Icon className={cn("h-2.5 w-2.5", isLoading && "animate-spin")} />
+          {isLoading ? (
+            <Spinner className="h-2.5 w-2.5" />
+          ) : (
+            <Icon className="h-2.5 w-2.5" />
+          )}
           {isWrite ? "Write with AI" : "Regenerate"}
         </button>
       ) : (
@@ -78,13 +83,16 @@ export function RegenerateButton({
           )}
           aria-label={isWrite ? "Write this page with AI" : "Regenerate this page"}
         >
-          <Icon
-            className={cn(
-              "h-3.5 w-3.5",
-              isLoading && "animate-spin",
-              isWrite && !isLoading && "text-[var(--color-accent-primary)]",
-            )}
-          />
+          {isLoading ? (
+            <Spinner size="sm" />
+          ) : (
+            <Icon
+              className={cn(
+                "h-3.5 w-3.5",
+                isWrite && "text-[var(--color-accent-primary)]",
+              )}
+            />
+          )}
           <span className="hidden sm:inline">
             {isWrite ? "Write with AI" : "Regenerate"}
           </span>
@@ -293,7 +301,7 @@ export function GenerateConfirmDialog({
             >
               {estimateLoading ? (
                 <span className="inline-flex items-center gap-1.5">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <Spinner size="sm" />
                   Analyzing the repository to price this accurately…
                 </span>
               ) : estimate ? (
@@ -334,7 +342,7 @@ export function GenerateConfirmDialog({
               </Button>
               <Button size="sm" onClick={onConfirm} disabled={launching}>
                 {launching ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <Spinner size="sm" />
                 ) : isWrite ? (
                   <>
                     <Sparkles className="mr-1.5 h-3.5 w-3.5" />

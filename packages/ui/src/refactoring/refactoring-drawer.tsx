@@ -23,6 +23,7 @@ import type { ReactNode } from "react";
 import { Layers, Sparkles, TrendingUp, Wand2 } from "lucide-react";
 
 import { Sheet, SheetContent, SheetTitle } from "../ui/sheet";
+import { Skeleton, SkeletonRegion } from "../ui/skeleton";
 import { formatNumber } from "../lib/format";
 import { PlanComparison } from "./plan-comparison";
 import { GenerateCodePanel } from "./generate-code-panel";
@@ -88,10 +89,10 @@ export function RefactoringDrawer({
             <SheetTitle className="border-b border-[var(--color-border-default)] px-5 py-4 pr-12 text-[15px]">
               Loading structured plan
             </SheetTitle>
-            <div className="space-y-4 px-5 py-5" aria-busy="true">
-              <div className="h-16 animate-pulse bg-[var(--color-bg-surface)]" />
-              <div className="h-40 animate-pulse bg-[var(--color-bg-surface)]" />
-            </div>
+            <SkeletonRegion className="space-y-4 px-5 py-5" label="Loading structured plan">
+              <Skeleton className="h-16 rounded-none" />
+              <Skeleton className="h-40 rounded-none" />
+            </SkeletonRegion>
           </>
         ) : error ? (
           <>

@@ -4,6 +4,7 @@ import { AlertTriangle, Gauge, Info } from "lucide-react";
 import type { PerformanceOpportunitySummary } from "@repowise-dev/types/health";
 
 import { EmptyState } from "../../shared/empty-state";
+import { Skeleton, SkeletonRegion } from "../../ui/skeleton";
 
 /**
  * Every state the queue can be in other than "here are the rows". They are
@@ -15,18 +16,15 @@ import { EmptyState } from "../../shared/empty-state";
 
 export function QueueSkeleton() {
   return (
-    <div className="space-y-8" aria-busy="true">
-      <div className="h-32 animate-pulse rounded bg-[var(--color-bg-surface)]" />
-      <div className="h-10 animate-pulse rounded bg-[var(--color-bg-surface)]" />
+    <SkeletonRegion className="space-y-8" label="Loading performance opportunities">
+      <Skeleton className="h-32 rounded" />
+      <Skeleton className="h-10 rounded" />
       <div className="space-y-px">
         {[0, 1, 2, 3, 4].map((row) => (
-          <div key={row} className="h-[86px] animate-pulse bg-[var(--color-bg-surface)]" />
+          <Skeleton key={row} className="h-[86px] rounded-none" />
         ))}
       </div>
-      <span className="sr-only" role="status">
-        Loading performance opportunities
-      </span>
-    </div>
+    </SkeletonRegion>
   );
 }
 

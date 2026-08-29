@@ -19,6 +19,7 @@ import { Wrench, RotateCw } from "lucide-react";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
+import { Skeleton, SkeletonRegion } from "@repowise-dev/ui/ui/skeleton";
 import {
   RefactoringBoard,
   RefactoringDrawer,
@@ -203,11 +204,11 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
           </div>
         ) : isLoading ? (
           // Matches the real layout's shapes: a lede block, a ribbon, a field.
-          <div className="space-y-8">
-            <div className="h-32 animate-pulse rounded-xl bg-[var(--color-bg-surface)]" />
-            <div className="h-16 animate-pulse rounded-xl bg-[var(--color-bg-surface)]" />
-            <div className="h-72 animate-pulse rounded-xl bg-[var(--color-bg-surface)]" />
-          </div>
+          <SkeletonRegion className="space-y-8" label="Loading refactoring plans">
+            <Skeleton className="h-32 rounded-xl" />
+            <Skeleton className="h-16 rounded-xl" />
+            <Skeleton className="h-72 rounded-xl" />
+          </SkeletonRegion>
         ) : (
           <RefactoringBoard
             plans={plans}

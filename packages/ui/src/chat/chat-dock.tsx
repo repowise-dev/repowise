@@ -11,6 +11,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import type { ChatArtifact, ChatUIMessage } from "@repowise-dev/types/chat";
 import { BrandMark } from "../shared/brand-mark";
 import { Button } from "../ui/button";
+import { ActivityDot } from "../ui/activity-dot";
 import { cn } from "../lib/cn";
 import type { SourceReference } from "./source-citations";
 import { ChatComposer } from "./chat-composer";
@@ -275,14 +276,11 @@ export function ChatDock({
           </span>
           {statusText && (
             <span aria-hidden>
-              <span
-                className={cn(
-                  "block h-1.5 w-1.5 rounded-full",
-                  isStreaming
-                    ? "bg-[var(--color-text-tertiary)] motion-safe:animate-pulse"
-                    : "bg-[var(--color-accent-secondary)]",
-                )}
-              />
+              {isStreaming ? (
+                <ActivityDot className="block h-1.5 w-1.5 bg-[var(--color-text-tertiary)]" />
+              ) : (
+                <span className="block h-1.5 w-1.5 rounded-full bg-[var(--color-accent-secondary)]" />
+              )}
             </span>
           )}
         </button>

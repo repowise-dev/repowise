@@ -356,7 +356,7 @@ export default function CodeHealthPage() {
       maxWidth="wide"
       actions={
         <Button size="sm" variant="outline" onClick={refresh} disabled={refreshing}>
-          <RotateCw className={`mr-1.5 h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />{" "}
+          <RotateCw className={`mr-1.5 h-3.5 w-3.5 ${refreshing ? "motion-safe:animate-spin" : ""}`} />{" "}
           {refreshing ? "Refreshing…" : "Refresh"}
         </Button>
       }

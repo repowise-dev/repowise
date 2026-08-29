@@ -1,6 +1,7 @@
 "use client";
 
 import { ZoomIn, ZoomOut, Maximize, Focus, Play, Pause } from "lucide-react";
+import { ActivityDot } from "../../ui/activity-dot";
 
 interface SigmaControlsProps {
   onZoomIn: () => void;
@@ -37,7 +38,8 @@ export function SigmaControls({
   return (
     <div className="absolute bottom-3 right-3 z-10 flex flex-col items-end gap-1.5">
       {isLayoutRunning && (
-        <div className="animate-pulse whitespace-nowrap rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/85 px-2 py-1 text-[10px] text-[var(--color-accent-primary)] shadow-sm backdrop-blur-sm">
+        <div className="flex items-center gap-1.5 whitespace-nowrap rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/85 px-2 py-1 text-[10px] text-[var(--color-accent-primary)] shadow-sm backdrop-blur-sm">
+          <ActivityDot className="h-1.5 w-1.5" />
           Arranging…
         </div>
       )}

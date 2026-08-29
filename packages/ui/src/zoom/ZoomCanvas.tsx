@@ -26,6 +26,7 @@ import type { ZoomMap, ZoomNode, ZoomRelation } from "./types";
 import { describeRelations, summarizeRelations } from "./relation-summary";
 import { healthBandLabel, KIND_LABEL, nodeRoles } from "./node-signals";
 import { useThemeVersion } from "../shared/use-theme-tokens";
+import { usePrefersReducedMotion } from "../hooks/use-prefers-reduced-motion";
 
 export interface ZoomCanvasHandle {
   /** Fly the camera to frame a node by id. Returns false if it is not laid out. */
@@ -66,19 +67,6 @@ interface HoverState {
   node: ZoomNode;
   sx: number;
   sy: number;
-}
-
-function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(false);
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
-    setReduced(mq.matches);
-    const onChange = () => setReduced(mq.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
-  return reduced;
 }
 
 export const ZoomCanvas = forwardRef<ZoomCanvasHandle, ZoomCanvasProps>(function ZoomCanvas(

@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { Check, Loader2, TriangleAlert, Wand2 } from "lucide-react";
+import { Check, TriangleAlert, Wand2 } from "lucide-react";
+import { Spinner } from "../ui/spinner";
 import { Switch } from "../ui/switch";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
@@ -84,7 +85,7 @@ export function RefactoringSettingsCard({
   if (loading || value === null) {
     return (
       <div className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
-        <Loader2 className="h-4 w-4 animate-spin" />
+        <Spinner />
         Loading settings…
       </div>
     );
@@ -154,7 +155,7 @@ export function RefactoringSettingsCard({
           disabled={!dirty || save === "saving"}
           className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--color-accent-primary)] px-3.5 py-2 text-sm font-semibold text-[var(--color-bg-surface)] transition-opacity hover:opacity-90 disabled:opacity-50"
         >
-          {save === "saving" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+          {save === "saving" ? <Spinner /> : null}
           Save
         </button>
         {save === "saved" ? (

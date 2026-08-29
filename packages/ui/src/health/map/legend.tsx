@@ -13,6 +13,7 @@ import { Fragment } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { OVERLAY_ORDER, OVERLAY_SPECS, type LegendRow, type OverlaySpec } from "./lens";
 import type { CodeHealthOverlay } from "./types";
+import { ActivityDot } from "../../ui/activity-dot";
 
 /** One key swatch: a disc in the row's fill. */
 function Swatch({ row, size }: { row: LegendRow; size: number }) {
@@ -49,7 +50,7 @@ export function MapLegendRows({ spec, loading }: { spec: OverlaySpec; loading: b
   if (loading) {
     return (
       <div className="flex items-center gap-1.5 text-[var(--color-text-tertiary)]">
-        <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-[var(--color-text-tertiary)]" />
+        <ActivityDot className="h-2.5 w-2.5 bg-[var(--color-text-tertiary)]" />
         loading {spec.label.toLowerCase()}…
       </div>
     );
@@ -161,7 +162,7 @@ export function MapLegend({
     >
       {loading ? (
         <span className="flex items-center gap-1.5">
-          <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--color-text-tertiary)]" />
+          <ActivityDot className="bg-[var(--color-text-tertiary)]" />
           loading {spec.label.toLowerCase()}…
         </span>
       ) : (

@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Route, Loader2, X, ArrowRight, Search, ChevronDown } from "lucide-react";
+import { Route, X, ArrowRight, Search, ChevronDown } from "lucide-react";
+import { Spinner } from "../ui/spinner";
 import { Button } from "../ui/button";
 import { useDebounce } from "../hooks/use-debounce";
 import type { GraphPath, NodeSearchResult } from "@repowise-dev/types/graph";
@@ -238,7 +239,7 @@ export function PathFinderPanel({
         }}
       >
         {loading ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <Spinner size="sm" />
         ) : (
           <Route className="h-3.5 w-3.5" />
         )}

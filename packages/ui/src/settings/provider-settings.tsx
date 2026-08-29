@@ -4,11 +4,11 @@ import { useState } from "react";
 import {
   Check,
   KeyRound,
-  Loader2,
   Plug,
   Trash2,
   X,
 } from "lucide-react";
+import { Spinner } from "../ui/spinner";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -200,7 +200,7 @@ function ProviderRow({
               aria-label={`Use ${provider.name}`}
             >
               {busy === "activate" ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <Spinner size="sm" />
               ) : (
                 "Use"
               )}
@@ -217,7 +217,7 @@ function ProviderRow({
               aria-label={`Test ${provider.name} connection`}
             >
               {status === "testing" ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <Spinner size="sm" />
               ) : (
                 <Plug className="h-3.5 w-3.5" />
               )}
@@ -248,7 +248,7 @@ function ProviderRow({
               aria-label={`Remove ${provider.name} key`}
             >
               {busy === "remove" ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <Spinner size="sm" />
               ) : (
                 <Trash2 className="h-3.5 w-3.5" />
               )}
@@ -288,7 +288,7 @@ function ProviderRow({
             aria-label={`Save ${provider.name} API key`}
           >
             {busy === "save" ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <Spinner size="sm" />
             ) : (
               "Save"
             )}

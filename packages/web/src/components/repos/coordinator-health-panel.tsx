@@ -106,7 +106,7 @@ export function CoordinatorHealthPanel({ repoId, initial }: Props) {
         onClick={refresh}
         disabled={loading}
       >
-        <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${loading ? "animate-spin" : ""}`} />
+        <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${loading ? "motion-safe:animate-spin" : ""}`} />
         {loading ? "Checking…" : "Refresh"}
       </Button>
     </div>

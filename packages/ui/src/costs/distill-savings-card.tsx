@@ -2,6 +2,7 @@
 
 import { Scissors, Sparkles, Zap } from "lucide-react";
 import { Card, CardContent } from "../ui/card";
+import { Skeleton, SkeletonRegion } from "../ui/skeleton";
 import { formatCost, formatTokens } from "../lib/format";
 
 export interface DistillSavingsGroup {
@@ -76,7 +77,9 @@ export function DistillSavingsCard({ data }: DistillSavingsCardProps) {
     return (
       <Card>
         <CardContent className="py-10">
-          <div className="h-24 w-full animate-pulse rounded-lg bg-[var(--color-bg-inset)]" />
+          <SkeletonRegion label="Loading agent token savings">
+            <Skeleton className="h-24 w-full rounded-lg" />
+          </SkeletonRegion>
         </CardContent>
       </Card>
     );

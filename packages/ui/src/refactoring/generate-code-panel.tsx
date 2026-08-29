@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { Check, Copy, Loader2, RotateCw, Sparkles, TriangleAlert, Wand2 } from "lucide-react";
+import { Check, Copy, RotateCw, Sparkles, TriangleAlert, Wand2 } from "lucide-react";
+import { Spinner } from "../ui/spinner";
 import { DiffView } from "./diff-view";
 import {
   generatedVerdict,
@@ -76,7 +77,7 @@ export function GenerateCodePanel({ plan, onGenerate }: GenerateCodePanelProps) 
   if (state.status === "loading") {
     return (
       <div className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
-        <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent-primary)]" />
+        <Spinner className="text-[var(--color-accent-primary)]" />
         Generating the refactored code…
       </div>
     );

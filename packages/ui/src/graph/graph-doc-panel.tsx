@@ -7,9 +7,9 @@ import {
   ExternalLink,
   Clock,
   Cpu,
-  Loader2,
   AlertCircle,
 } from "lucide-react";
+import { Spinner } from "../ui/spinner";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { Markdown } from "../shared/markdown";
@@ -105,7 +105,7 @@ export function GraphDocPanel({
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
         {isLoading && (
           <div className="flex items-center justify-center h-32">
-            <Loader2 className="h-5 w-5 animate-spin text-[var(--color-accent-primary)]" />
+            <Spinner size="lg" label="Loading documentation" className="text-[var(--color-accent-primary)]" />
           </div>
         )}
 

@@ -6,10 +6,10 @@ import {
   ArrowLeft,
   CheckCircle2,
   FileText,
-  Loader2,
   Settings,
   XCircle,
 } from "lucide-react";
+import { Spinner } from "../ui/spinner";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -401,7 +401,7 @@ export function AddRepoWizard({ adapter, open, onOpenChange }: AddRepoWizardProp
               <DialogTitle>Getting ready to index</DialogTitle>
             </DialogHeader>
             <div className="flex flex-col items-center gap-3 py-8">
-              <Loader2 className="h-6 w-6 animate-spin text-[var(--color-accent-primary)]" />
+              <Spinner size="xl" className="text-[var(--color-accent-primary)]" />
               <p className="text-sm text-[var(--color-text-secondary)]">
                 Checking the provider and sizing the repository…
               </p>

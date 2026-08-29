@@ -12,7 +12,8 @@
  */
 
 import * as React from "react";
-import { Check, Copy, Loader2 } from "lucide-react";
+import { Check, Copy } from "lucide-react";
+import { Spinner } from "../ui/spinner";
 import { cn } from "../lib/cn";
 
 export const SETTINGS_MICRO_LABEL =
@@ -113,7 +114,7 @@ export function SaveIndicator({
     >
       {state === "saving" && (
         <>
-          <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+          <Spinner size="xs" />
           Saving…
         </>
       )}

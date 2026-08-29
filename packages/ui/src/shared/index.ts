@@ -30,8 +30,10 @@ export { OwlLoader, type OwlLoaderProps } from "./owl-loader";
 export {
   TableSkeleton,
   CardSkeleton,
+  PageSkeleton,
   type TableSkeletonProps,
   type CardSkeletonProps,
+  type PageSkeletonProps,
 } from "./loading-skeletons";
 export { PageShell, type PageShellProps } from "./page-shell";
 export { ViewTabs, type ViewTab, type ViewTabsProps } from "./view-tabs";

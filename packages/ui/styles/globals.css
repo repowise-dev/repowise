@@ -807,3 +807,58 @@ body {
     stroke-dashoffset: -20;
   }
 }
+
+/* -------------------------------------------------------------------- */
+/* Loading sweep                                                         */
+/* -------------------------------------------------------------------- */
+
+/* The `Skeleton` primitive paints a still fill. Motion belongs to the
+   pending REGION, not to each box: ~190 boxes on their own clocks is what
+   reads as busy. Wrapping a region in `SkeletonRegion` runs one slow pass
+   over every skeleton inside it.
+
+   `background-attachment: fixed` anchors the gradient to the viewport, so
+   every box in the region shows its own slice of ONE moving plane and the
+   highlight travels across the region rather than restarting inside each
+   box. Where a browser degrades fixed attachment to scroll, the sweep falls
+   back to per-box — still one shared clock, just not one shared plane.
+
+   Under reduced motion the global rule near "Reduced Motion" above collapses
+   this to a single 0.01ms pass, leaving the still silhouette. */
+
+:root {
+  /* Light: elevated is warm paper, so the sweep reads as a shadow passing. */
+  --color-skeleton-sweep: var(--color-bg-inset);
+}
+
+.dark {
+  /* Dark: the ground is near-black, so the sweep reads as light passing. */
+  --color-skeleton-sweep: var(--color-bg-overlay);
+}
+
+.skeleton-region [data-skeleton] {
+  background-image: linear-gradient(
+    100deg,
+    transparent 42%,
+    var(--color-skeleton-sweep) 50%,
+    transparent 58%
+  );
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+  background-size: 200vw 100%;
+  animation: skeleton-sweep 1.9s ease-in-out infinite;
+}
+
+/* The highlight sits at 50% of a 200vw-wide image, so it lands at viewport
+   x = 100vw + position. Offsetting -120vw..20vw walks it from just off the
+   left edge to just off the right, once per cycle. Anywhere the image does
+   not reach, `no-repeat` leaves the flat fill — which is the resting state,
+   so there is no seam. */
+@keyframes skeleton-sweep {
+  from {
+    background-position: -120vw 0;
+  }
+  to {
+    background-position: 20vw 0;
+  }
+}

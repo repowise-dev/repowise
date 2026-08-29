@@ -29,6 +29,7 @@ import {
 } from "react";
 import { ArrowDown, Send, PanelRight } from "lucide-react";
 import { Button } from "../ui/button";
+import { ActivityDot } from "../ui/activity-dot";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../lib/cn";
 import { BrandMark } from "../shared/brand-mark";
@@ -313,11 +314,13 @@ export function ChatInterface({
                 size="sm"
                 className={cn(
                   "h-8 text-xs gap-1.5 tabular-nums",
-                  artifactPulse &&
-                    "animate-pulse text-[var(--color-accent-secondary)]",
+                  artifactPulse && "text-[var(--color-accent-secondary)]",
                 )}
                 onClick={() => setArtifactPanelOpen(true)}
               >
+                {artifactPulse ? (
+                  <ActivityDot className="h-1.5 w-1.5 bg-[var(--color-accent-secondary)]" />
+                ) : null}
                 <PanelRight className="h-4 w-4" />
                 <span className="sr-only sm:not-sr-only">Artifacts</span>
                 {totalArtifactCount}
