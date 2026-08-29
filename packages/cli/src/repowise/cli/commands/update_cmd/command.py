@@ -1203,9 +1203,9 @@ def run_update(
         affected.regenerate = list(dict.fromkeys([*affected.regenerate, *stale_renderer_paths]))
         console.print(f"Pages from an older renderer: [cyan]{len(stale_renderer_paths)}[/cyan]")
 
-    if cascade_budget_is_auto and cascade_budget == 50 and getattr(affected, "stale_due_to_budget", 0) > 0:
+    if affected.stale_due_to_budget > 0:
         console.print(
-            f"\n[yellow]⚠ Cascade budget capped at 50 pages. "
+            f"\n[yellow]⚠ Cascade budget of {cascade_budget} pages was reached. "
             f"{affected.stale_due_to_budget} dependent pages were skipped and marked stale.[/yellow]"
         )
         console.print(
