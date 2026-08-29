@@ -223,9 +223,11 @@ def test_adversarial_payload_goldens_fit_and_recover_in_one_lookup(
             for row in reductions
         )
     elif tool == "get_change_risk":
-        assert result["prior_fixes_total"] == 3
-        assert result["prior_fixes_emitted"] == 0
-        assert result["prior_fixes_reduced_reason"] == "response_budget"
+        # Diff-shape history sheds before the action blocks: fix_history's rows
+        # go first, and the directive/health_delta never do.
+        assert result["fix_history"]["files_total"] == 3
+        assert result["fix_history"]["files_emitted"] < 3
+        assert result["fix_history"]["files_reduced_reason"] == "response_budget"
     elif tool == "get_health":
         assert result["high_leverage_files_total"] == 3
         assert result["high_leverage_files_emitted"] < 3

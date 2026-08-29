@@ -86,7 +86,9 @@ class DuplicationReport:
     diagnostics: dict[str, int | bool] = field(default_factory=dict)
 
 
-def _read_source(abs_path: str) -> bytes | None:
+def _read_source(abs_path: str, read_source: Any | None = None) -> bytes | None:
+    if read_source is not None:
+        return read_source(abs_path)
     try:
         return Path(abs_path).read_bytes()
     except OSError:
@@ -186,6 +188,7 @@ def detect_clones(
     limits: DuplicationLimits | None = None,
     cache_dir: Path | None = None,
     changed_files: set[str] | None = None,
+    source_reader: Any | None = None,
 ) -> DuplicationReport:
     """Run the duplication pipeline over the supplied parsed files.
 
@@ -238,6 +241,7 @@ def detect_clones(
                 cache,
                 index,
                 cache_dir,
+                source_reader,
             )
             if report is not None:
                 return report
@@ -245,7 +249,7 @@ def detect_clones(
         diag = DuplicationDiagnostics()
 
     per_file_kinds, per_file_nloc, all_windows, per_file_hash = _collect_windows(
-        parsed_list, window_tokens, lim, diag, cache
+        parsed_list, window_tokens, lim, diag, cache, source_reader
     )
     if cache is not None:
         cache.save()
@@ -295,6 +299,7 @@ def _collect_windows(
     limits: DuplicationLimits,
     diag: DuplicationDiagnostics,
     cache: Any | None = None,
+    read_source: Any | None = None,
 ) -> tuple[dict[str, list[str]], dict[str, int], list[WindowHash], dict[str, str]]:
     """Tokenize each file once and emit its rolling-hash windows.
 
@@ -323,7 +328,7 @@ def _collect_windows(
         path = pf.file_info.path
         language = pf.file_info.language
 
-        source = _read_source(pf.file_info.abs_path)
+        source = _read_source(pf.file_info.abs_path, read_source)
         if source is None:
             diag.skipped_unreadable += 1
             continue
@@ -498,6 +503,7 @@ def _detect_clones_incremental(
     cache: Any,
     index: Any,
     cache_dir: Path,
+    read_source: Any | None = None,
 ) -> DuplicationReport | None:
     """Splice the persisted raw-pair multiset instead of recomputing it.
 
@@ -541,7 +547,7 @@ def _detect_clones_incremental(
     #    Sorted for deterministic window-budget behaviour.
     changed_pfs = [current[p] for p in sorted(changed)]
     new_kinds, new_nloc, new_windows, new_hash = _collect_windows(
-        changed_pfs, window_tokens, lim, diag, cache
+        changed_pfs, window_tokens, lim, diag, cache, read_source
     )
     if diag.window_budget_hit:
         return None

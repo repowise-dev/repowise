@@ -238,7 +238,72 @@ export interface RiskReportArtifactData {
   classification?: string;
   warning?: string;
   error?: string;
+  /** `get_change_risk` action-first blocks. */
+  directive?: ChangeRiskDirective;
+  health_delta?: ChangeHealthDeltaData;
+  change_shape?: Record<string, unknown>;
+  impacted_tests?: { tests_to_run?: string[]; status?: string; summary?: string };
+  /** Bug-fix record of the touched files: the "historically fragile" signal. */
+  fix_history?: {
+    available?: boolean;
+    files?: Array<{ path: string; churn: number; fix_pressure: number }>;
+  };
+  prior_fixes?: { files_with_fixes?: number; total_fixes?: number };
   [k: string]: unknown;
+}
+
+/** What the change did to the codebase's health, and how sure the tool is. */
+export interface ChangeFindingRow {
+  id: string;
+  change: "introduced" | "worsened";
+  dimension: "defect" | "maintainability" | "performance";
+  biomarker: string;
+  severity: "low" | "medium" | "high" | "critical";
+  path: string;
+  reason: string;
+  attribution: { basis: string; confidence: "high" | "medium" | "low"; why: string };
+  symbol?: string;
+  lines?: [number, number];
+  severity_before?: string;
+  suggestion?: string;
+  opportunity_id?: string;
+  opportunity_rank?: number;
+  inspect?: string;
+}
+
+export interface ChangeHealthDeltaData {
+  /** `partial` and `unavailable` must never render as a clean result. */
+  status:
+    | "available"
+    | "partial"
+    | "unavailable"
+    | "unsupported_range"
+    | "too_large"
+    | "timeout"
+    | "analyzer_mismatch"
+    | "rules_mismatch"
+    | "stale_baseline";
+  explanation: string;
+  introduced: number;
+  worsened: number;
+  resolved: number;
+  top_findings: ChangeFindingRow[];
+  findings_total: number;
+  findings_emitted: number;
+  by_dimension?: Record<string, number>;
+  by_severity?: Record<string, number>;
+  scope?: { changed: number; eligible: number; analyzed: number; skipped: number; failed: number };
+  skipped?: { total: number; by_reason: Record<string, number> };
+  base?: { ref: string; sha: string; kind: string };
+  head?: { ref: string; sha: string; kind: string };
+  limits?: string[];
+}
+
+export interface ChangeRiskDirective {
+  status: "review_required" | "review_recommended" | "clear_in_analyzed_scope" | "unknown";
+  headline: string;
+  reasons?: string[];
+  next_actions?: string[];
 }
 export interface RiskReportArtifact extends ArtifactEnvelopeIdentity {
   type: "risk_report";

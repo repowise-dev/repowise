@@ -55,14 +55,27 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
     "get_change_risk": ResponseBudgetContract(
         "blocks",
         (
+            # Cheapest loss first. Diff-shape context and history go before the
+            # delta and the tests, so what to do survives what the diff weighs.
             "exclude_patterns",
-            "prior_fixes",
-            "impacted_tests",
-            "cross_repo",
+            "change_shape",
             "fix_history.files[]",
             "fix_history.files",
+            "fix_history",
+            "prior_fixes",
+            "cross_repo",
+            "impacted_tests",
+            "health_delta.limits",
+            "health_delta.skipped",
+            "health_delta.top_findings[]",
         ),
-        protected=("classification", "risk_percentile", "risk_authority", "score"),
+        protected=(
+            "directive",
+            "health_delta",
+            "classification",
+            "risk_percentile",
+            "score",
+        ),
     ),
     "get_answer": ResponseBudgetContract(
         "blocks",

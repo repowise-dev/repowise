@@ -64,6 +64,7 @@ from .refactoring import (
 )
 from .refactoring.graph_signals import build_file_scc_index, build_methods_by_file
 from .scoring import attach_impacts, compute_kpis, remap_severities, score_file
+from .source_reader import SourceReader, disk_source_reader
 
 log = structlog.get_logger(__name__)
 
@@ -124,7 +125,7 @@ def _log_duplication_diagnostics(report: DuplicationReport) -> None:
         log.debug("health_duplication_limits", **diag)
 
 
-def _read_source_lines(abs_path: str) -> list[str] | None:
+def _read_source_lines(abs_path: str, read_source: SourceReader) -> list[str] | None:
     """Read a file's source as 1-indexed lines for the Extract Helper snippet.
 
     Failure-isolated: a read or decode error yields ``None`` (the detector then
@@ -132,9 +133,12 @@ def _read_source_lines(abs_path: str) -> list[str] | None:
     health pass. Decodes UTF-8 leniently since the snippet is for display, not
     re-parsing.
     """
+    raw = read_source(abs_path)
+    if raw is None:
+        return None
     try:
-        text = Path(abs_path).read_bytes().decode("utf-8", errors="replace")
-    except OSError:
+        text = raw.decode("utf-8", errors="replace")
+    except (UnicodeError, AttributeError):
         return None
     return text.splitlines()
 
@@ -289,6 +293,7 @@ class HealthAnalyzer:
         community_label_map: dict[str, str] | None = None,
         duplication_cache_dir: Any | None = None,
         repo_root: Any | None = None,
+        source_reader: SourceReader | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
@@ -312,6 +317,9 @@ class HealthAnalyzer:
         # falls back to inferring them from the analyzed file list, which sees
         # only the manifests the traverser emitted.
         self.repo_root = repo_root
+        # Every source read in the pass. Defaults to the working tree; a
+        # revision comparison supplies bytes instead.
+        self.read_source: SourceReader = source_reader or disk_source_reader
         self._package_roots_cache: set[str] | None = None
         self._tests_reach_cache: set[str] | None = None
         self._execution_graph_cache: CallGraphIndex | None = None
@@ -426,6 +434,7 @@ class HealthAnalyzer:
                     self.parsed_files,
                     self.git_meta_map,
                     cache_dir=self.duplication_cache_dir,
+                    source_reader=self.read_source,
                     changed_files=changed_set,
                 )
                 _log_duplication_diagnostics(dup_report)
@@ -475,7 +484,7 @@ class HealthAnalyzer:
         # One shared dataflow service for the whole pass: the promotion pass
         # and the Extract Method detector below read the same lazily parsed
         # per-file object, so no file is parsed twice for dataflow.
-        dataflow_cache = FileDataflowCache()
+        dataflow_cache = FileDataflowCache(self.read_source)
         # Dataflow promotion: mark advisory perf hits whose loop is provably
         # iteration-independent (runs after the graph passes so the
         # centrality-gated nested-loop hits are present to promote).
@@ -606,6 +615,7 @@ class HealthAnalyzer:
                     self.parsed_files,
                     self.git_meta_map,
                     cache_dir=self.duplication_cache_dir,
+                    source_reader=self.read_source,
                     changed_files=changed_set,
                 )
             )
@@ -668,7 +678,7 @@ class HealthAnalyzer:
         walked = list(walked)
         self._apply_crossfn_perf(walked)
         # One shared dataflow service per pass (see the sync path above).
-        dataflow_cache = FileDataflowCache()
+        dataflow_cache = FileDataflowCache(self.read_source)
         # Dataflow promotion: mark advisory perf hits whose loop is provably
         # iteration-independent (after the graph passes populate the hits).
         apply_perf_promotions(walked, dataflow=dataflow_cache)
@@ -853,9 +863,8 @@ class HealthAnalyzer:
     def _walk(self, pf: Any) -> FileComplexity:
         path = pf.file_info.abs_path
         language = pf.file_info.language
-        try:
-            source = Path(path).read_bytes()
-        except OSError:
+        source = self.read_source(path)
+        if source is None:
             return FileComplexity(functions=[], classes=[])
         if language == "sql":
             # SQL has no tree-sitter grammar here; the sqlglot-backed walker
@@ -884,7 +893,7 @@ class HealthAnalyzer:
         """
         if not any(getattr(f, "biomarker_type", "") in _EXTRACT_METHOD_SOURCES for f in findings):
             return []
-        cache = dataflow_cache if dataflow_cache is not None else FileDataflowCache()
+        cache = dataflow_cache if dataflow_cache is not None else FileDataflowCache(self.read_source)
         return cache.get(pf.file_info.abs_path, pf.file_info.language).flagged_analyses()
 
     def _populate_symbol_complexity(self, pf: Any, fc_list: list[FunctionComplexity]) -> None:
@@ -1065,7 +1074,9 @@ class HealthAnalyzer:
             # detector's snippet). Reading it unconditionally would put a
             # repo-sized read back into the per-file path; gating on clones keeps
             # it proportional to the small set of files that actually carry one.
-            source_lines=_read_source_lines(pf.file_info.abs_path) if clones else None,
+            source_lines=(
+                _read_source_lines(pf.file_info.abs_path, self.read_source) if clones else None
+            ),
         )
         suggestions = detect_refactorings(
             rctx,
