@@ -1104,7 +1104,8 @@ class TestInitSeedFrom:
 
         from click.testing import CliRunner
 
-        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+        # Leave REPOWISE_DB_URL pinned (as git_work_repo sets it) to verify
+        # that the delegated update does not leak worktree pages into the base DB.
 
         # Every file gets a structural page now, so no coverage knob is needed
         # to keep the new file from being tier-gated out.
@@ -1116,7 +1117,7 @@ class TestInitSeedFrom:
         assert r0.exit_code == 0, r0.output
 
         _git(["checkout", "-b", "feature"], git_work_repo)
-        (git_work_repo / "new_file.py").write_text("print('hello')\n", encoding="utf-8")
+        (git_work_repo / "new_file.py").write_text("def my_func(): pass\n", encoding="utf-8")
         _git(["add", "new_file.py"], git_work_repo)
         _git(["commit", "-m", "feature commit"], git_work_repo)
 
@@ -1151,11 +1152,9 @@ class TestInitSeedFrom:
                 "SELECT target_path FROM wiki_pages",
             )
             assert len(paths) > 0, "Seeded pages should have survived"
-            # Note: no assertion that new_file.py gets its own file page. The
-            # update-time selection budget is computed over the affected-file
-            # subset (not the whole repo), so a small update batch rarely
-            # selects a brand-new file for a page. Tracked as #746;
-            # independent of seeding.
+
+            # Since the file has a symbol and we have 1.0 coverage, it must be selected
+            assert "new_file.py" in paths, f"Expected 'new_file.py' in {paths}"
             state = json.loads(
                 (worktree_dir / ".repowise" / "state.json").read_text(encoding="utf-8")
             )

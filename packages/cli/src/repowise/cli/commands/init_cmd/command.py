@@ -830,34 +830,52 @@ def init_command(
             repo_paths=[r.path for r in scan.repos],
             seed_base=seed_base,
             include_submodules=include_submodules,
+            dry_run=dry_run,
         )
         if seeded:
+            if dry_run:
+                console.print(
+                    "[dim]Dry run: Would seed worktree index and delegate to update.[/dim]"
+                )
+                return
+
             console.print(f"[{OK}]Worktree index seeded successfully. Delegating to update...[/]")
             from repowise.cli.commands.update_cmd.command import run_update
 
             is_workspace = len(scan.repos) > 1 and not no_workspace
 
-            # Delegate to update
-            run_update(
-                path=str(repo_path),
-                provider_name=provider_name,
-                model=model,
-                since=None,
-                reasoning=reasoning,
-                cascade_budget=None,
-                dry_run=dry_run,
-                workspace=is_workspace,
-                no_workspace=no_workspace,
-                repo_alias=None,
-                index_only=index_only,
-                docs_flag=None,
-                full=force,
-                agents_md=agents_md,
-                concurrency=concurrency,
-                no_cost_tracking=no_cost_tracking,
-                verbose=verbose,
-                progress=progress,
-            )
+            from repowise.core.persistence.database import DB_ENV_VARS
+
+            # Strip db-pin env vars to enforce worktree DB resolution (note: potential process-global race condition).
+            old_db_urls = {}
+            for env_key in DB_ENV_VARS:
+                if env_key in os.environ:
+                    old_db_urls[env_key] = os.environ.pop(env_key)
+
+            try:
+                # Delegate to update
+                run_update(
+                    path=str(repo_path),
+                    provider_name=provider_name,
+                    model=model,
+                    since=None,
+                    reasoning=reasoning,
+                    cascade_budget=None,
+                    dry_run=dry_run,
+                    workspace=is_workspace,
+                    no_workspace=no_workspace,
+                    repo_alias=None,
+                    index_only=index_only,
+                    docs_flag=None,
+                    full=force,
+                    agents_md=agents_md,
+                    concurrency=concurrency,
+                    no_cost_tracking=no_cost_tracking,
+                    verbose=verbose,
+                    progress=progress,
+                )
+            finally:
+                os.environ.update(old_db_urls)
             return
     if len(scan.repos) > 1 and not no_workspace:
         _workspace_init(
@@ -1529,7 +1547,6 @@ def init_command(
     # ---- Post-run: config, state, MCP, editor project files ----
     if commit_limit is not None:
         save_config_partial(repo_path, commit_limit=resolved_commit_limit)
-
     # One flag, one meaning: --no-editor-setup now suppresses the project-local
     # writes as well as the global registration. The paths come back so the
     # completion panel can name what landed in the working tree.
