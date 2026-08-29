@@ -199,8 +199,7 @@ export default function ArchitecturePage({
         {activeTab === "coupling" && (
           <div className="mx-auto max-w-[1500px] p-4 sm:p-6">
             {/* Wider than the other tabs: the pairs table carries a sentence
-                per row plus both modules, and 1100px squeezed that into ragged
-                two-line cells. The ring inside keeps its own 820px cap. */}
+                per row plus both modules. The ring keeps its own 820px cap. */}
             <div className="mb-2">
               <h1 className="mb-1 flex items-center gap-2 text-xl font-semibold text-[var(--color-text-primary)]">
                 <Code2 className="h-5 w-5 text-[var(--color-accent-primary)]" />

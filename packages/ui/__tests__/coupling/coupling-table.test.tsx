@@ -81,8 +81,7 @@ describe("CouplingTable (virtualized)", () => {
   });
 
   it("keeps per-row actions out of the table", () => {
-    // The AI prompt moved into the pair panel, where it can carry a label and
-    // an explanation. An unlabelled sparkles icon in a dense row was a riddle.
+    // The AI prompt lives in the pair panel, where it can carry a label.
     render(<CouplingTable edges={[edge("a.py", "b.py")]} hasDetails />);
     expect(inTable().queryByRole("button", { name: /ai decouple prompt/i })).not.toBeInTheDocument();
   });
@@ -177,7 +176,7 @@ describe("CouplingTable together column", () => {
   });
 
   it("selects a row from either end of the pair, not only the smaller path", () => {
-    // `b.py` is the target; pinning it used to leave the row unstyled.
+    // `b.py` is the target: a pin on either end selects the row.
     const { container } = render(
       <CouplingTable edges={[edge("a.py", "b.py", 4)]} pinnedPath="b.py" />,
     );

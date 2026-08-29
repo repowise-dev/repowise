@@ -68,9 +68,8 @@ type Selection =
   | { kind: "pair"; source: string; target: string };
 
 /**
- * The pair separator in a serialized selection. Shared with the table's row
- * key. A path containing this character round-trips as a plain file path
- * instead, because the split halves will not match two known nodes.
+ * The pair separator in a serialized selection. A path containing it
+ * round-trips as a plain file path, since the halves match no known node.
  */
 const PAIR_SEP = "|";
 
@@ -139,12 +138,9 @@ const SEGMENTS: { key: CouplingSegment | "all"; label: string; help: string }[] 
  * trace what it changes with, click to pin, click empty space to clear.
  *
  * The structural segment is the page's front door. Unfiltered, the strongest
- * couplings in any repo are release plumbing (a lockfile and the manifest that
- * regenerates it), which is true and useless; the default segment is the pairs
- * the dependency graph cannot explain, because that is what this surface exists
- * to find. Both the segment and the search box drive the ring and the table
- * together — narrowing one view and not the other, with no indication why, was
- * the old behaviour and it read as a bug.
+ * couplings in any repo are release plumbing, which is true and useless, so the
+ * default segment is the pairs the dependency graph cannot explain. The segment
+ * and the search box both narrow the ring and the table together.
  *
  * This composition lives in the shared package (not the app) so both the OSS
  * and hosted apps get the same interaction from a single source; the app only
@@ -180,9 +176,8 @@ export function CouplingExplorer({
   /** The pair whose detail panel is open. Set alongside the pin by a row click. */
   const [detailEdge, setDetailEdge] = useState<CouplingEdge | null>(null);
 
-  // How many edges each segment holds. An index written before the structural
-  // label existed leaves every edge unlabelled, so the control has nothing to
-  // offer and is hidden rather than shown filtering to zero.
+  // An index with no structural labels leaves the control nothing to offer,
+  // so it hides rather than filtering every segment to zero.
   const counts = useMemo(() => {
     const tally = { unexplained: 0, explained: 0, outside: 0, unlabelled: 0 };
     for (const e of edges) {
@@ -309,9 +304,9 @@ export function CouplingExplorer({
             <>Tap or hover a file to trace what changes with it; click to pin.</>
           )}
         </p>
-        {/* No `totalEdges`: the diagram would report "showing 98 of 14,115",
-            which silently folds the cap and the active filter into one number.
-            The header line below owns that story; the legend just counts arcs. */}
+        {/* No `totalEdges`: one number cannot honestly carry both the cap and
+            the active filter. The header line below owns that; the legend
+            counts the arcs it drew. */}
         <CouplingGraph
           nodes={filteredNodes}
           edges={filtered}
@@ -472,9 +467,8 @@ export function CouplingExplorer({
                   edge: promptEdge,
                   flavor,
                   ...(repoName ? { repoName } : {}),
-                  // The facts the page already holds. Withholding them left the
-                  // model to re-derive from scratch the very thing the prompt
-                  // asks it to judge.
+                  // The facts the page already holds, so the model is not
+                  // asked to re-derive what it is being asked to judge.
                   nodes: {
                     [promptEdge.source]: nodeByPath.get(promptEdge.source) ?? {},
                     [promptEdge.target]: nodeByPath.get(promptEdge.target) ?? {},

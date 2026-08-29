@@ -285,9 +285,8 @@ export function CouplingGraph({
   // never overlap on a dense one.
   const hitRadius = Math.min(14, ((2 * Math.PI * radius) / Math.max(leaves.length, 1)) / 2);
 
-  // Neighbors of the focused file (for dimming + dot emphasis). O(1) lookup
-  // into the precomputed adjacency map instead of an O(E) rescan per focus.
-  // A focused pair has no fan to light, so it takes no neighbors.
+  // Neighbors of the focused file, for dimming + dot emphasis. A focused pair
+  // has no fan to light, so it takes none.
   const neighbors =
     (focusedPair == null && focus ? adjacency.get(focus) : undefined) ?? EMPTY_SET;
   // Something is selected — either one file's whole fan, or one arc.
@@ -298,13 +297,8 @@ export function CouplingGraph({
 
   return (
     <div>
-      {/* The ring is mouse-only: its nodes are `<g>` elements with no tab
-          stop, and rebuilding it for keyboard would be a lot of work for a
-          poor result when the table already holds the same data, sorted and
-          operable. So it is marked decorative and points at that table rather
-          than advertising itself as something a keyboard can drive. Announcing
-          it as `role="img"` was worse than silence: it also made the per-dot
-          `<title>` tooltips presentational, so nothing was exposed anyway. */}
+      {/* Decorative, not operable: the ring is mouse-only, and the table
+          below holds the same data in a form a keyboard can drive. */}
       <svg
         viewBox={`0 0 ${size} ${size}`}
         width="100%"
@@ -370,9 +364,8 @@ export function CouplingGraph({
                 ? isSamePair(edge, focusedPair)
                 : focus === edge.source || focus === edge.target;
               const dim = anyFocus && !incident;
-              // With one file focused the arc takes the partner's health; with
-              // a pair focused there is no "other" end, so it takes the worse
-              // of the two — the end worth looking at first.
+              // One file focused: the partner's health. A pair focused: the
+              // worse of the two, since neither end is "the other" one.
               const partnerPath = focus === edge.source ? edge.target : edge.source;
               const scores = focusedPair
                 ? [nodeByPath.get(edge.source)?.score, nodeByPath.get(edge.target)?.score].filter(
@@ -412,9 +405,8 @@ export function CouplingGraph({
             const isNeighbor = neighbors.has(n.file_path);
             const dim = anyFocus && !isFocus && !isNeighbor;
             const isHub = hubPaths.has(n.file_path);
-            // Hub labels grow the labelled set rather than swapping it out:
-            // focusing used to make every hub name vanish, so the ring the
-            // reader had just oriented themselves on changed identity.
+            // Focus grows the labelled set rather than swapping it out, so
+            // the ring keeps the identity the reader oriented on.
             const showLabel = isFocus || isNeighbor || isHub;
             // Labels radiate along each file's own spoke so angularly-adjacent
             // hubs fan out instead of stacking on a shared baseline. Flip the

@@ -55,8 +55,7 @@ describe("CouplingGraph", () => {
     const { container } = render(
       <CouplingGraph nodes={nodes} edges={edges} tableId="pairs" />,
     );
-    // The ring has no tab stop and no operable role, so claiming `role="img"`
-    // only suppressed the per-dot titles without exposing anything.
+    // No tab stop and no operable role, so it must not announce itself as one.
     const svg = container.querySelector("svg")!;
     expect(svg).toHaveAttribute("aria-hidden", "true");
     expect(svg.getAttribute("role")).toBeNull();
@@ -79,9 +78,9 @@ describe("CouplingGraph", () => {
     );
     const arcs = [...container.querySelectorAll('g[fill="none"] > path')];
     const lit = arcs.filter((p) => Number(p.getAttribute("stroke-opacity")) > 0.5);
-    // One arc lit: focusing a.py alone would have lit both of its couplings.
+    // One arc: focusing a.py alone would light both of its couplings.
     expect(lit).toHaveLength(1);
-    // A persistent ring on each end, not only on the smaller path.
+    // A persistent ring on each end.
     expect(container.querySelectorAll('circle[stroke="var(--color-accent-primary)"]')).toHaveLength(
       2,
     );

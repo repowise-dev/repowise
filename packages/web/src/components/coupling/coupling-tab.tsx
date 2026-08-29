@@ -23,9 +23,8 @@ const INITIAL_LIMIT = 200;
  * bumps propagate it to hosted; this host only supplies the repo link prefix,
  * Next's Link, `?focus=` URL sync for the pinned selection, and the cap.
  *
- * The cap starts at 200 and the explorer offers to raise it: the route accepts
- * up to 1000, and telling a reader they are seeing 200 of 812 couplings with no
- * way to see the rest is worse than not counting at all.
+ * The cap starts at 200 and the explorer offers to raise it to the route's
+ * ceiling, so the "showing N of M" line is never a dead end.
  */
 export function CouplingTab({ repoId }: { repoId: string }) {
   const [limit, setLimit] = useState(INITIAL_LIMIT);

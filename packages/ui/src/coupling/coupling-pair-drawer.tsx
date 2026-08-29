@@ -1,14 +1,12 @@
 "use client";
 
 import * as React from "react";
-import { ArrowRight, GitCommitHorizontal } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { AdaptivePanel } from "../shared/adaptive-panel";
-import { StatGrid, StatTile } from "../shared/stat-grid";
 import { HealthBadge } from "../health/health-badge";
 import { AiPromptButton } from "../health/ai-prompt-button";
-import { cn } from "../lib/cn";
 import { formatDate, formatDateTime } from "../lib/format";
-import { couplingClaim, peakConfidence, segmentOf } from "./claim";
+import { couplingClaim, segmentOf, type CouplingSegment } from "./claim";
 import type { CouplingEdge, CouplingNode } from "@repowise-dev/types/coupling";
 
 /** Injected link component (e.g. Next's Link); defaults to a plain anchor. */
@@ -24,7 +22,7 @@ export interface CouplingPairDrawerProps {
   onClose: () => void;
   /** Node facts by path, for module / health / size. */
   nodeByPath: ReadonlyMap<string, CouplingNode>;
-  /** How many files each end couples with, for "one of N couplings". */
+  /** How many files each end couples with, over the unfiltered edge set. */
   degreeByPath: ReadonlyMap<string, number>;
   /** Resolve a file's detail-page href; when absent, paths render unlinked. */
   linkForPath?: ((path: string) => string) | undefined;
@@ -33,38 +31,54 @@ export interface CouplingPairDrawerProps {
   onGeneratePrompt?: (edge: CouplingEdge) => void;
 }
 
-/** The verdict, as a sentence plus the reason it is or is not a finding. */
-const VERDICT: Record<string, { title: string; body: string; tone: string }> = {
+/**
+ * The graph's verdict as a dot plus a word, and the reasoning behind it.
+ *
+ * Only `unexplained` takes a semantic color: it is the exception worth
+ * marking. Explained and outside-the-graph are ordinary states, and coloring
+ * every verdict would make the mark mean nothing.
+ */
+const VERDICT: Record<CouplingSegment, { word: string; dot: string; body: string }> = {
   unexplained: {
-    title: "Nothing in the dependency graph connects these files",
-    body: "Both are parsed into the graph, and there is no import, type use, framework wiring, or read between them. They move together for a reason the code does not state — a shared concept with no owner, a leaky abstraction, or copy-paste.",
-    tone: "border-[var(--color-caution)]/40 bg-[var(--color-caution)]/10",
+    word: "Unexplained",
+    dot: "bg-[var(--color-caution)]",
+    body: "Both files are in the dependency graph, and no import, type use, framework wiring, or read connects them. They move together for a reason the code does not state — a shared concept with no owner, a leaky abstraction, or copy-paste.",
   },
   explained: {
-    title: "A dependency already connects these files",
-    body: "The graph accounts for the co-change, so this is not hidden coupling. Worth a look only if the dependency itself is the wrong shape.",
-    tone: "border-[var(--color-border-default)] bg-[var(--color-bg-inset)]",
+    word: "Explained",
+    dot: "bg-[var(--color-text-tertiary)]",
+    body: "A dependency already connects these files, so the co-change is accounted for. Worth a look only if the dependency itself is the wrong shape.",
   },
   outside: {
-    title: "At least one side is outside the dependency graph",
-    body: "A file the parser never ingested — a lockfile, changelog, config, or doc — has no edge to find, so its absence is not evidence of anything. The coupling is real, but it is release plumbing rather than a code-structure question.",
-    tone: "border-[var(--color-border-default)] bg-[var(--color-bg-inset)]",
+    word: "Outside the graph",
+    dot: "bg-[var(--color-text-tertiary)]",
+    body: "At least one side was never parsed — a lockfile, changelog, config, or doc — so there was no edge to look for and its absence is not evidence of anything. The coupling is real, but it is release plumbing rather than a code-structure question.",
   },
 };
 
-function pct(v: number | null | undefined): string {
-  return typeof v === "number" ? `${Math.round(v * 100)}%` : "—";
+const MICRO = "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
+
+function pct(v: number | null | undefined): string | null {
+  return typeof v === "number" ? `${Math.round(v * 100)}%` : null;
+}
+
+function basename(path: string): string {
+  return path.split("/").pop() ?? path;
 }
 
 /**
- * Everything the page knows about one co-changing pair, in the surface the
- * table row could never hold: the claim spelled out, the graph's verdict and
- * why it matters, both directional shares side by side, each file's module /
- * health / size / degree, and a route onward to either file's page.
+ * Everything the page knows about one co-changing pair, in the surface a table
+ * row could never hold: the claim spelled out, the graph's verdict and why it
+ * does or does not matter, both directional shares side by side, each file's
+ * module / health / size / degree, and a route onward to either file page.
  *
- * A right-side panel on desktop (non-modal, so the lit arc stays visible
- * behind it) and a swipe-dismissable bottom sheet on mobile, via the shared
- * `AdaptivePanel` — the same surface every other entity drawer uses.
+ * Shaped like the file-health drawer: a lede sentence, a hairline definition
+ * list, then sections under mono micro-headings. A border is reserved for an
+ * object you can open or act on, so facts are separated by hairlines and space
+ * rather than each taking a card.
+ *
+ * `AdaptivePanel` makes it a non-modal right panel on desktop, leaving the lit
+ * arc visible behind it, and a bottom sheet on mobile.
  */
 export function CouplingPairDrawer({
   edge,
@@ -77,73 +91,77 @@ export function CouplingPairDrawer({
 }: CouplingPairDrawerProps) {
   const Anchor: LinkLike = LinkComponent ?? "a";
   const segment = edge ? segmentOf(edge) : null;
-  const verdict = segment ? VERDICT[segment] : undefined;
+  const verdict = segment ? VERDICT[segment] : null;
 
-  const fileBlock = (path: string, side: "A" | "B") => {
-    const node = nodeByPath.get(path);
-    const degree = degreeByPath.get(path) ?? 0;
-    const name = path.split("/").pop() ?? path;
-    const dir = path.slice(0, path.length - name.length).replace(/\/$/, "");
-    return (
-      <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <p className="text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
-              File {side}
-            </p>
-            {/* The full path, wrapped rather than truncated: this is the one
-                place a reader can see exactly which file is meant. */}
-            <p className="mt-0.5 break-all font-mono text-xs text-[var(--color-text-secondary)]">
-              {dir ? `${dir}/` : ""}
-              <span className="text-[var(--color-text-primary)]">{name}</span>
-            </p>
-          </div>
-          <HealthBadge score={node?.score ?? null} size="sm" />
-        </div>
-        <dl className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--color-text-tertiary)]">
-          {node?.module && (
-            <div className="flex gap-1">
-              <dt>Module</dt>
-              <dd className="text-[var(--color-text-secondary)]">{node.module}</dd>
-            </div>
-          )}
-          {node?.nloc ? (
-            <div className="flex gap-1">
-              <dt>Lines</dt>
-              <dd className="tabular-nums text-[var(--color-text-secondary)]">{node.nloc}</dd>
-            </div>
-          ) : null}
-          <div className="flex gap-1">
-            <dt>Couples with</dt>
-            <dd className="tabular-nums text-[var(--color-text-secondary)]">
-              {degree} {degree === 1 ? "file" : "files"}
-            </dd>
-          </div>
-        </dl>
-        {linkForPath && (
-          <Anchor
-            href={linkForPath(path)}
-            className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-[var(--color-accent-primary)] hover:underline"
-          >
-            Open file page
-            <ArrowRight className="h-3 w-3" />
-          </Anchor>
-        )}
-      </div>
-    );
-  };
+  const moduleA = edge ? (nodeByPath.get(edge.source)?.module ?? null) : null;
+  const moduleB = edge ? (nodeByPath.get(edge.target)?.module ?? null) : null;
+
+  const facts: { label: string; value: React.ReactNode }[] = edge
+    ? [
+        {
+          label: "Shared commits",
+          value: (
+            <span className="text-lg font-semibold tabular-nums text-[var(--color-text-primary)]">
+              {edge.support || (
+                <span className="text-xs font-normal text-[var(--color-text-tertiary)]">
+                  not recorded
+                </span>
+              )}
+            </span>
+          ),
+        },
+        {
+          label: "Strength",
+          value: (
+            <span className="text-xs tabular-nums text-[var(--color-text-primary)]">
+              {edge.strength}{" "}
+              <span className="text-[var(--color-text-tertiary)]">recency-weighted</span>
+            </span>
+          ),
+        },
+        {
+          label: "Last together",
+          value: (
+            <span
+              className="text-xs tabular-nums text-[var(--color-text-primary)]"
+              title={edge.last_co_change ? formatDateTime(edge.last_co_change) : undefined}
+            >
+              {edge.last_co_change ? formatDate(edge.last_co_change) : "unknown"}
+            </span>
+          ),
+        },
+        {
+          label: "Modules",
+          value: (
+            <span className="block truncate text-xs text-[var(--color-text-primary)]">
+              {moduleA && moduleA === moduleB ? (
+                <>
+                  within <span className="font-mono">{moduleA}</span>
+                </>
+              ) : moduleA || moduleB ? (
+                <span className="font-mono">
+                  {moduleA ?? "—"} ↔ {moduleB ?? "—"}
+                </span>
+              ) : (
+                <span className="text-[var(--color-text-tertiary)]">none</span>
+              )}
+            </span>
+          ),
+        },
+      ]
+    : [];
 
   return (
     <AdaptivePanel
       open={edge !== null}
       onOpenChange={(o) => !o && onClose()}
       modal={false}
-      widthClassName="md:max-w-[560px]"
+      widthClassName="md:max-w-[640px]"
       eyebrow="Change coupling"
       title={
         edge ? (
-          <span className="break-all font-mono text-sm">
-            {edge.source.split("/").pop()} ↔ {edge.target.split("/").pop()}
+          <span className="break-all font-mono">
+            {basename(edge.source)} ↔ {basename(edge.target)}
           </span>
         ) : (
           ""
@@ -151,105 +169,150 @@ export function CouplingPairDrawer({
       }
     >
       {edge && (
-        <div className="space-y-4 p-4">
-          {/* The claim, at reading size rather than as table small-print. */}
-          <p className="text-sm leading-relaxed text-[var(--color-text-primary)]">
-            {couplingClaim(edge, (p) => p.split("/").pop() ?? p)}
-          </p>
-
-          {verdict && (
-            <div className={cn("rounded-lg border p-3", verdict.tone)}>
-              <p className="text-xs font-semibold text-[var(--color-text-primary)]">
-                {verdict.title}
+        <div className="flex flex-col gap-6 px-4 py-4">
+          {/* Lede: the verdict names the kind of finding, the claim is the
+              sentence that makes it mean something. */}
+          <div className="flex flex-col gap-2">
+            {verdict && (
+              <p className="flex items-center gap-1.5">
+                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${verdict.dot}`} aria-hidden />
+                <span className={MICRO}>{verdict.word}</span>
               </p>
-              <p className="mt-1 text-xs leading-relaxed text-[var(--color-text-secondary)]">
+            )}
+            <p className="text-[15px] leading-relaxed text-[var(--color-text-primary)] [text-wrap:pretty]">
+              {couplingClaim(edge, basename)}
+            </p>
+            {verdict && (
+              <p className="text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
                 {verdict.body}
               </p>
-            </div>
-          )}
+            )}
+          </div>
 
-          <StatGrid columns={2}>
-            <StatTile
-              label="Shared commits"
-              value={edge.support || "—"}
-              hint="Commits that touched both files"
-            />
-            <StatTile
-              label="Strongest direction"
-              value={pct(peakConfidence(edge))}
-              hint="Of one file's own commits"
-            />
-            <StatTile
-              label="Strength"
-              value={edge.strength}
-              hint="Recency-weighted, not a percentage"
-            />
-            <StatTile
-              label="Last together"
-              value={edge.last_co_change ? formatDate(edge.last_co_change) : "—"}
-              {...(edge.last_co_change
-                ? { hint: formatDateTime(edge.last_co_change) }
-                : {})}
-            />
-          </StatGrid>
+          {/* A hairline ribbon, not tiles: four different kinds of fact, and
+              equal-weight boxes would claim they are one. */}
+          <dl className="grid grid-cols-2 border-y border-[var(--color-border-default)]">
+            {facts.map((f, i) => (
+              <div
+                key={f.label}
+                className={[
+                  "min-w-0 px-3 py-2.5 border-[var(--color-border-default)]",
+                  i % 2 === 1 ? "border-l" : "",
+                  i >= 2 ? "border-t" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+              >
+                <dt className={MICRO}>{f.label}</dt>
+                <dd className="mt-1">{f.value}</dd>
+              </div>
+            ))}
+          </dl>
 
-          {/* Both directions side by side: the asymmetry is the whole point,
-              and a single "up to N%" hides which side it belongs to. */}
-          <div className="rounded-lg border border-[var(--color-border-default)] p-3">
-            <p className="flex items-center gap-1.5 text-xs font-medium text-[var(--color-text-secondary)]">
-              <GitCommitHorizontal className="h-3.5 w-3.5" />
-              How much of each file's own history the pair accounts for
-            </p>
-            <div className="mt-2 space-y-2">
+          {/* The asymmetry is the finding, so each direction gets its own bar
+              rather than collapsing into a single "up to N%". */}
+          <section className="flex flex-col gap-2">
+            <h3 className={MICRO}>Share of each file&apos;s own commits</h3>
+            <div className="flex flex-col gap-3">
               {(
                 [
                   { path: edge.source, conf: edge.confidence_ab, other: edge.target },
                   { path: edge.target, conf: edge.confidence_ba, other: edge.source },
                 ] as const
-              ).map(({ path, conf, other }) => (
-                <div key={path}>
-                  <div className="flex items-baseline justify-between gap-2 text-xs">
-                    <span className="truncate font-mono text-[var(--color-text-secondary)]" title={path}>
-                      {path.split("/").pop()}
-                    </span>
-                    <span className="shrink-0 tabular-nums text-[var(--color-text-primary)]">
-                      {pct(conf)}
-                    </span>
-                  </div>
-                  <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
+              ).map(({ path, conf, other }) => {
+                const share = pct(conf);
+                return (
+                  <div key={path} className="min-w-0">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span
+                        className="truncate font-mono text-xs text-[var(--color-text-secondary)]"
+                        title={path}
+                      >
+                        {basename(path)}
+                      </span>
+                      <span className="shrink-0 text-xs font-semibold tabular-nums text-[var(--color-text-primary)]">
+                        {share ?? "unknown"}
+                      </span>
+                    </div>
                     <div
-                      className="h-full rounded-full bg-[var(--color-accent-primary)]"
-                      style={{ width: `${typeof conf === "number" ? Math.round(conf * 100) : 0}%` }}
-                    />
+                      className="mt-1.5 h-1 overflow-hidden rounded-full bg-[var(--color-bg-inset)]"
+                      role="presentation"
+                    >
+                      <div
+                        className="h-full rounded-full bg-[var(--color-accent-primary)]"
+                        style={{ width: share ?? "0%" }}
+                      />
+                    </div>
+                    <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
+                      {share
+                        ? `${share} of its commits also touched ${basename(other)}`
+                        : "This file's commit total is not on this index"}
+                    </p>
                   </div>
-                  <p className="mt-0.5 text-[11px] text-[var(--color-text-tertiary)]">
-                    {typeof conf === "number"
-                      ? `${pct(conf)} of its commits also touched ${other.split("/").pop()}`
-                      : "This file's commit total is unknown on this index"}
-                  </p>
-                </div>
-              ))}
+                );
+              })}
             </div>
-          </div>
+          </section>
 
-          <div className="grid gap-3 sm:grid-cols-2">
-            {fileBlock(edge.source, "A")}
-            {fileBlock(edge.target, "B")}
-          </div>
+          {/* The two files, as a hairline list. Each row is an object you can
+              open, so the row itself carries the one action. */}
+          <section className="flex flex-col gap-2">
+            <h3 className={MICRO}>The two files</h3>
+            <ul className="border-y border-[var(--color-border-default)]">
+              {[edge.source, edge.target].map((path) => {
+                const node = nodeByPath.get(path);
+                const degree = degreeByPath.get(path) ?? 0;
+                return (
+                  <li
+                    key={path}
+                    className="min-w-0 border-t border-[var(--color-border-default)] px-3 py-2.5 first:border-t-0"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      {/* Wrapped, not truncated: the one place the exact file
+                          is legible. */}
+                      <p className="min-w-0 break-all font-mono text-xs text-[var(--color-text-secondary)]">
+                        {path.slice(0, path.length - basename(path).length)}
+                        <span className="text-[var(--color-text-primary)]">{basename(path)}</span>
+                      </p>
+                      <HealthBadge score={node?.score ?? null} />
+                    </div>
+                    <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--color-text-tertiary)]">
+                      {node?.module && <span className="font-mono">{node.module}</span>}
+                      {node?.nloc ? <span className="tabular-nums">{node.nloc} lines</span> : null}
+                      <span className="tabular-nums">
+                        couples with {degree} {degree === 1 ? "file" : "files"}
+                      </span>
+                      {linkForPath && (
+                        <Anchor
+                          href={linkForPath(path)}
+                          className="inline-flex items-center gap-1 font-medium text-[var(--color-accent-primary)] hover:underline"
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                          Open file page
+                        </Anchor>
+                      )}
+                    </p>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
 
+          {/* The one action, named and explained. */}
           {onGeneratePrompt && (
-            <div className="rounded-lg border border-[var(--color-border-default)] p-3">
-              <p className="text-xs text-[var(--color-text-secondary)]">
-                Hand this pair to your AI agent with the evidence above already in the
-                prompt — it diagnoses whether the coupling is accidental or legitimate,
-                and proposes the smallest decoupling that holds.
+            <section className="flex flex-col gap-2">
+              <h3 className={MICRO}>Hand this to an agent</h3>
+              <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">
+                Builds a prompt carrying the evidence above, so your agent can judge
+                whether the coupling is accidental or legitimate and propose the
+                smallest decoupling that holds.
               </p>
               <AiPromptButton
                 label="AI decouple prompt"
                 onClick={() => onGeneratePrompt(edge)}
-                className="mt-2 w-full justify-center"
+                className="w-fit"
               />
-            </div>
+            </section>
           )}
         </div>
       )}

@@ -795,7 +795,7 @@ export function buildCouplingAiPrompt({
         ? `Shared commits: **${edge.support}** (undecayed count of commits that touched both)`
         : null,
       // The asymmetry is the content: a file that never changes alone is a
-      // different finding from two files that both change often.
+      // different finding from two that both change often.
       abPct && baPct
         ? `Directional confidence: ${abPct} of A's own commits also touched B; ${baPct} of B's also touched A. The larger share is the stronger claim; the smaller one says how independent that side still is.`
         : (abPct ?? baPct)

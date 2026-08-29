@@ -22,15 +22,13 @@ describe("buildCouplingAiPrompt", () => {
         "core/config.py": { module: "core", score: 8.1, nloc: 40 },
       },
     });
-    // The question is whether the coupling is accidental; the graph's verdict
-    // was the one fact the prompt used to withhold.
+    // The graph's verdict decides the question the prompt asks.
     expect(prompt).toContain("nothing connects them");
     expect(prompt).toContain("Shared commits: **27**");
     expect(prompt).toContain("47% of A's own commits also touched B");
     expect(prompt).toContain("100% of B's also touched A");
     expect(prompt).toContain("module `core`, health 3.2/10, 900 lines");
-    // `repoName` was never threaded from the call site, so this line never
-    // rendered in production.
+    // Only renders when the call site threads `repoName`.
     expect(prompt).toContain("(`repowise`)");
   });
 

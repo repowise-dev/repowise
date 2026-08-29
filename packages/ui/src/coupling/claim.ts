@@ -1,12 +1,10 @@
 /**
  * The one place that turns a coupling edge into words and into a segment.
  *
- * Both the table and the AI prompt used to restate the numbers their own way,
- * and the diagram had no way to say what a pair meant at all. `support` plus
- * the two directional confidences carry a claim the old `strength 4.16` never
- * could — that a file has never changed without its partner is a finding,
- * while "they both change a lot" is not — so the sentence is built once here
- * and reused wherever a pair is described.
+ * `support` and the two directional confidences carry a claim a single
+ * strength score cannot: a file that never changes without its partner is a
+ * finding, while "they both change a lot" is not. Every surface that describes
+ * a pair — table, panel, AI prompt — phrases it from here.
  */
 import type { CouplingEdge } from "@repowise-dev/types/coupling";
 
@@ -74,13 +72,11 @@ export function structuralClause(edge: CouplingEdge): string {
 
 /**
  * The pair's claim as a sentence, using *label* to name each file the way the
- * caller names it elsewhere (the disambiguated basename in the table, the full
- * path in a prompt).
+ * caller names it elsewhere.
  *
  * The asymmetry is the content: the side that rarely changes alone leads, and
- * the other side's independence is stated as the share of its own commits that
- * did *not* touch the first. Neither number is a derived commit total — only
- * the shares the wire carries and the shared-commit count behind them.
+ * the other side's independence follows. Every figure is one the wire carries;
+ * no commit total is derived from a rounded share.
  */
 export function couplingClaim(
   edge: CouplingEdge,

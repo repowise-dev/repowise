@@ -77,9 +77,8 @@ const TOGETHER_HELP =
  * and hovering a row peeks that pair in the diagram. Rows touching the focused
  * file are emphasized.
  *
- * There is deliberately no per-row action button. An icon-only affordance in a
- * dense row is a guessing game, and everything a row could offer now lives in
- * the panel the row opens, where it can be labelled and explained.
+ * Row actions live in that panel, not in the row: an icon-only affordance in
+ * a dense row cannot say what it does.
  *
  * The default order is the higher of the two directional confidences, not
  * strength: strength ranks "both change a lot" above "never changes without
@@ -273,8 +272,8 @@ export function CouplingTable({
     },
     {
       key: "strength",
-      // Demoted to priority 2: the sentence and the two shares carry the row
-      // now, and strength survives as a sort rather than as the headline.
+      // Behind the sentence and the shares: strength is a sort, not the
+      // headline the row leads with.
       priority: 2,
       sortable: true,
       mobileLabel: "Strength",
@@ -321,8 +320,8 @@ export function CouplingTable({
           {
             key: "details",
             header: "",
-            // Priority 1 so the affordance survives to the narrowest table;
-            // hidden in stacked cards, where the whole card is the target.
+            // Survives to the narrowest table; dropped from stacked cards,
+            // where the whole card is the target.
             priority: 1 as const,
             headerClassName: "w-8",
             cellClassName: "w-8 text-[var(--color-text-tertiary)]",
@@ -334,8 +333,8 @@ export function CouplingTable({
   ];
 
   const clearHover = onHoverPair ?? onHover;
-  // A row selects the whole pair when the host understands pairs; otherwise it
-  // keeps the old single-file behaviour so an uncontrolled table still works.
+  // A row selects the whole pair when the host understands pairs, and falls
+  // back to the single-file selection so an uncontrolled table still works.
   const rowClick = onPinPair
     ? (e: CouplingEdge) => onPinPair(isSamePair(e, pinnedPair) ? null : e)
     : onPinToggle
@@ -350,8 +349,7 @@ export function CouplingTable({
   return (
     <div id={id} onMouseLeave={clearHover ? () => clearHover(null) : undefined}>
       {/* `rowClassName`, not `selectedKey`: a single-file pin selects several
-          rows at once, and it matches on either end — a pair is unordered, so
-          lighting only the lexicographically-smaller side was arbitrary. */}
+          rows at once, and matches on either end since a pair is unordered. */}
       <ResponsiveTable<CouplingEdge>
         columns={columns}
         rows={sorted}

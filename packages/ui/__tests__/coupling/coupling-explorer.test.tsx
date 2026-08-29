@@ -185,6 +185,29 @@ describe("CouplingExplorer pair selection", () => {
     expect(links[0]).toHaveAttribute("href", "/repos/r/files/core/a.py");
   });
 
+  it("names both directions separately in the panel", () => {
+    const asymmetric = graph(
+      [node("core/a.py"), node("core/b.py")],
+      [
+        {
+          ...edge("core/a.py", "core/b.py", 5),
+          support: 27,
+          confidence_ab: 0.47,
+          confidence_ba: 1.0,
+          structural: "unexplained",
+        },
+      ],
+    );
+    render(<CouplingExplorer data={asymmetric} />);
+    fireEvent.click(inTable().getAllByRole("row")[1]!);
+    const panel = within(screen.getByRole("dialog"));
+    // A single "up to 100%" hides which side owns it; both shares are stated.
+    expect(panel.getByText("47%")).toBeInTheDocument();
+    expect(panel.getByText("100%")).toBeInTheDocument();
+    expect(panel.getByText(/47% of its commits also touched b\.py/)).toBeInTheDocument();
+    expect(panel.getByText("Unexplained")).toBeInTheDocument();
+  });
+
   it("treats an unrecognized pipe path as one file, not a pair", () => {
     const odd = graph(
       [node("weird|name.py"), node("core/b.py")],
