@@ -18,6 +18,7 @@ import { Separator } from "@repowise-dev/ui/ui/separator";
 import { AddRepoDialog } from "@/components/repos/add-repo-dialog";
 import { VersionFooter } from "./version-footer";
 import { FeedbackButton } from "./feedback-button";
+import { ThemeToggle } from "@repowise-dev/ui/shared/theme-toggle";
 import { cn } from "@/lib/utils/cn";
 import {
   GLOBAL_NAV,
@@ -115,7 +116,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                       key={item.href}
                       href={item.href}
                       className={cn(
-                        "flex items-center gap-2.5 rounded-lg px-2 py-2 text-sm transition-colors",
+                        "flex items-center gap-2.5 rounded-lg px-2 py-2 text-base transition-colors",
                         isActive
                           ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
                           : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
@@ -145,7 +146,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                           key={item.href}
                           href={item.href}
                           className={cn(
-                            "flex items-center gap-2.5 rounded-lg px-2 py-2 text-sm transition-colors",
+                            "flex items-center gap-2.5 rounded-lg px-2 py-2 text-base transition-colors",
                             isActive
                               ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
                               : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
@@ -175,7 +176,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                           <button
                             onClick={() => toggleRepo(repo.id)}
                             aria-expanded={isExpanded}
-                            className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-sm transition-colors hover:bg-[var(--color-bg-elevated)] text-[var(--color-text-secondary)]"
+                            className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-base transition-colors hover:bg-[var(--color-bg-elevated)] text-[var(--color-text-secondary)]"
                           >
                             <Circle className="h-2 w-2 shrink-0 fill-[var(--color-text-tertiary)] text-[var(--color-text-tertiary)]" />
                             <span className="flex-1 truncate text-left font-medium">
@@ -206,7 +207,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                                         key={item.href}
                                         href={item.href}
                                         className={cn(
-                                          "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-[13px] transition-colors",
+                                          "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs transition-colors",
                                           isActive
                                             ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
                                             : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
@@ -243,6 +244,9 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
           </ScrollArea>
 
           <div className="flex flex-col gap-3 border-t border-[var(--color-border-default)] px-4 py-3">
+            {/* Mobile had no theme control anywhere in the shell, so the
+                preference was simply unreachable on a phone. */}
+            <ThemeToggle className="w-full justify-between" />
             <FeedbackButton />
             <VersionFooter />
           </div>

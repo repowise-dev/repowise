@@ -32,9 +32,20 @@ interface SidebarProps {
   repos?: RepoResponse[];
   activeRepoId?: string;
   workspace?: WorkspaceResponse | null;
+  /**
+   * The repo list could not be fetched, as opposed to being genuinely empty.
+   * Without this the two render identically and a user whose API is down gets
+   * invited to onboard.
+   */
+  reposUnavailable?: boolean;
 }
 
-export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
+export function Sidebar({
+  repos = [],
+  activeRepoId,
+  workspace,
+  reposUnavailable = false,
+}: SidebarProps) {
   const isWorkspace = workspace?.is_workspace ?? false;
   const pathname = usePathname();
   const derivedActiveRepoId = React.useMemo(() => {
@@ -101,7 +112,7 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
   return (
     <aside
       className={cn(
-        "hidden md:flex h-full flex-col border-r border-[var(--color-border-default)] bg-[var(--color-bg-surface)] transition-all duration-200 shrink-0",
+        "hidden md:flex h-full flex-col border-r border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shrink-0 motion-safe:transition-all motion-safe:duration-200",
         isIconOnly ? "w-[56px]" : "w-[260px]",
       )}
     >
@@ -110,7 +121,10 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
       <div
         className={cn(
           "flex items-center gap-3",
-          isIconOnly ? "flex-col gap-1.5 px-0 pt-3 pb-1" : "h-14 px-4",
+          // Derived from content rather than asserted. `h-14` was the only
+          // fixed height in the sidebar, spent on static branding, and it set
+          // the 56px-vs-36px proportion against the nav rows below.
+          isIconOnly ? "flex-col gap-1.5 px-0 pt-3 pb-1" : "px-4 py-2.5",
         )}
       >
         <BrandLogo size={28} />
@@ -129,7 +143,12 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
           aria-expanded={!isIconOnly}
           aria-controls="sidebar-nav"
         >
-          <PanelLeft className={cn("h-4 w-4 transition-transform", isIconOnly && "rotate-180")} />
+          <PanelLeft
+            className={cn(
+              "h-4 w-4 motion-safe:transition-transform",
+              isIconOnly && "rotate-180",
+            )}
+          />
         </button>
       </div>
 
@@ -191,8 +210,10 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
             <>
               {!isIconOnly && (
                 <>
-                  <Separator className="my-4" />
-                  <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                  {/* A label or a rule, not both: the separator plus the
+                      heading plus the brand block above them stacked ~150px
+                      of chrome in front of the first repo row. */}
+                  <p className="mb-2 mt-4 px-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
                     Repositories
                   </p>
                 </>
@@ -242,7 +263,7 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
                       <Link
                         key={repo.id}
                         href={indexHref}
-                        className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-sm text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)]"
+                        className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-base text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-elevated)]"
                         title={
                           isMissing
                             ? "Directory missing — open Workspace to remove or fix"
@@ -320,7 +341,7 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
                         aria-expanded={isExpanded}
                         aria-controls={`sidebar-repo-${repo.id}`}
                         className={cn(
-                          "flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-sm transition-colors hover:bg-[var(--color-bg-elevated)]",
+                          "flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-base transition-colors hover:bg-[var(--color-bg-elevated)]",
                           isActive
                             ? "text-[var(--color-text-primary)]"
                             : "text-[var(--color-text-secondary)]",
@@ -378,17 +399,39 @@ export function Sidebar({ repos = [], activeRepoId, workspace }: SidebarProps) {
           {repos.length === 0 && !isIconOnly && (
             <>
               <Separator className="my-4" />
-              {/* First run: no repos to list, so the add action carries the sidebar. */}
-              <div className="px-0.5">
-                <AddRepoDialog />
-              </div>
+              {reposUnavailable ? (
+                // Say what happened. Offering "add your first repo" to
+                // someone whose server is unreachable is both wrong and
+                // unactionable.
+                <div className="space-y-1 px-2">
+                  <p className="text-xs font-medium text-[var(--color-text-primary)]">
+                    Can&apos;t reach the API
+                  </p>
+                  <p className="text-xs text-[var(--color-text-secondary)]">
+                    Your repositories could not be loaded. Check that the
+                    Repowise server is running, then reload.
+                  </p>
+                </div>
+              ) : (
+                // First run: no repos to list, so the add action carries the
+                // sidebar.
+                <div className="px-0.5">
+                  <AddRepoDialog />
+                </div>
+              )}
             </>
           )}
         </div>
       </ScrollArea>
 
-      {/* Footer */}
-      {!isIconOnly && (
+      {/* Footer. Collapsed, it keeps the theme control rather than vanishing:
+          at 56px the whole footer used to disappear, so theme, feedback, and
+          version were unreachable without expanding first. */}
+      {isIconOnly ? (
+        <div className="flex flex-col items-center border-t border-[var(--color-border-default)] py-2">
+          <ThemeToggle compact />
+        </div>
+      ) : (
         <div className="flex flex-col gap-3 border-t border-[var(--color-border-default)] px-4 py-3">
           <ThemeToggle className="w-full justify-between" />
           <FeedbackButton />
@@ -423,7 +466,7 @@ function SidebarSearchButton({ iconOnly }: { iconOnly: boolean }) {
   return (
     <button
       onClick={openPalette}
-      className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
+      className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-base text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
     >
       <Search className="h-[18px] w-[18px] shrink-0" />
       <span className="flex-1 truncate text-left">Search</span>
@@ -474,7 +517,7 @@ function SidebarNavItem({
       href={item.href}
       className={cn(
         "flex items-center gap-2.5 rounded-lg px-2 transition-colors",
-        size === "sm" ? "py-1.5 text-[13px]" : "py-2 text-sm",
+        size === "sm" ? "py-1.5 text-xs" : "py-2 text-base",
         isActive
           ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
           : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",

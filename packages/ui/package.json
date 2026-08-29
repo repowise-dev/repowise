@@ -86,6 +86,7 @@
     "./dependencies": "./src/dependencies/index.ts",
     "./dependencies/*": "./src/dependencies/*.tsx",
     "./costs": "./src/costs/index.ts",
+    "./costs/chart-height": "./src/costs/chart-height.ts",
     "./costs/*": "./src/costs/*.tsx",
     "./security": "./src/security/index.ts",
     "./security/*": "./src/security/*.tsx",
