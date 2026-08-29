@@ -10,6 +10,7 @@ import { bandForScore } from "@repowise-dev/types";
 import type { CouplingEdge, CouplingNode } from "@repowise-dev/types/coupling";
 import type { HealthBand } from "@repowise-dev/types/health";
 import { disambiguateBasenames } from "../lib/format";
+import { isSamePair, pairHas, type CouplingPair } from "./claim";
 
 export interface CouplingGraphProps {
   nodes: CouplingNode[];
@@ -24,10 +25,25 @@ export interface CouplingGraphProps {
   focusedPath?: string | null;
   /** The sticky selection (persistent ring). Falls back to internal pin. */
   pinnedPath?: string | null;
+  /**
+   * A focused *pair* rather than a single file — what a table row selects,
+   * since a coupling is about two files and neither of them owns it. When set
+   * it wins over `focusedPath`: the one arc between the two is lit and every
+   * other arc dims, instead of the whole fan of one end.
+   */
+  focusedPair?: CouplingPair | null;
+  /** The sticky pair selection (persistent rings on both ends). */
+  pinnedPair?: CouplingPair | null;
   /** Transient hover peek — mouse enters a dot, or leaves the canvas (null). */
   onHover?: (path: string | null) => void;
   /** Sticky selection changed — click a dot toggles it, click empty space clears it. */
   onPinToggle?: (path: string | null) => void;
+  /**
+   * DOM id of the table that lists the same couplings. The ring is not
+   * keyboard-operable, so it points at its accessible equivalent instead of
+   * pretending to be one.
+   */
+  tableId?: string;
   /** Square render size in px (viewBox edge). */
   size?: number;
 }
@@ -126,8 +142,11 @@ export function CouplingGraph({
   totalEdges,
   focusedPath,
   pinnedPath,
+  focusedPair,
+  pinnedPair,
   onHover,
   onPinToggle,
+  tableId,
   size = 760,
 }: CouplingGraphProps) {
   // Internal fallback for uncontrolled use (tests, standalone). When the host
@@ -268,18 +287,29 @@ export function CouplingGraph({
 
   // Neighbors of the focused file (for dimming + dot emphasis). O(1) lookup
   // into the precomputed adjacency map instead of an O(E) rescan per focus.
-  const neighbors = (focus ? adjacency.get(focus) : undefined) ?? EMPTY_SET;
+  // A focused pair has no fan to light, so it takes no neighbors.
+  const neighbors =
+    (focusedPair == null && focus ? adjacency.get(focus) : undefined) ?? EMPTY_SET;
+  // Something is selected — either one file's whole fan, or one arc.
+  const anyFocus = focusedPair != null || focus != null;
 
   const dotR = (n: CouplingNode) =>
     2 + Math.sqrt(n.nloc / maxNloc) * 2.4 + Math.min((degree.get(n.file_path) ?? 0) / 6, 2.6);
 
   return (
     <div>
+      {/* The ring is mouse-only: its nodes are `<g>` elements with no tab
+          stop, and rebuilding it for keyboard would be a lot of work for a
+          poor result when the table already holds the same data, sorted and
+          operable. So it is marked decorative and points at that table rather
+          than advertising itself as something a keyboard can drive. Announcing
+          it as `role="img"` was worse than silence: it also made the per-dot
+          `<title>` tooltips presentational, so nothing was exposed anyway. */}
       <svg
         viewBox={`0 0 ${size} ${size}`}
         width="100%"
-        role="img"
-        aria-label="Change-coupling diagram: files arranged in a ring, arcs link files that change together"
+        aria-hidden="true"
+        focusable="false"
         onMouseLeave={() => hover(null)}
       >
         {/* Background target: entering empty canvas drops the hover peek so the
@@ -336,12 +366,25 @@ export function CouplingGraph({
               couplings resolve to the partner's health color and the rest fade. */}
           <g fill="none">
             {drawn.map(({ edge, d }) => {
-              const incident = focus === edge.source || focus === edge.target;
-              const dim = focus != null && !incident;
+              const incident = focusedPair
+                ? isSamePair(edge, focusedPair)
+                : focus === edge.source || focus === edge.target;
+              const dim = anyFocus && !incident;
+              // With one file focused the arc takes the partner's health; with
+              // a pair focused there is no "other" end, so it takes the worse
+              // of the two — the end worth looking at first.
               const partnerPath = focus === edge.source ? edge.target : edge.source;
-              const partnerNode = incident ? nodeByPath.get(partnerPath) : undefined;
+              const scores = focusedPair
+                ? [nodeByPath.get(edge.source)?.score, nodeByPath.get(edge.target)?.score].filter(
+                    (s): s is number => typeof s === "number",
+                  )
+                : [nodeByPath.get(partnerPath)?.score].filter(
+                    (s): s is number => typeof s === "number",
+                  );
               const strengthFrac = edge.strength / maxStrength;
-              const stroke = incident ? inkFor(partnerNode?.score ?? null) : NEUTRAL_INK;
+              const stroke = incident
+                ? inkFor(scores.length ? Math.min(...scores) : null)
+                : NEUTRAL_INK;
               return (
                 <path
                   key={`${edge.source}|${edge.target}`}
@@ -360,14 +403,19 @@ export function CouplingGraph({
             const n = leaf.data.node;
             if (!n) return null;
             const [x, y] = project(leaf.x!, leaf.y!);
-            const isFocus = focus === n.file_path;
-            const isPinned = pinned === n.file_path;
+            const isFocus = focusedPair
+              ? pairHas(focusedPair, n.file_path)
+              : focus === n.file_path;
+            const isPinned = pinnedPair
+              ? pairHas(pinnedPair, n.file_path)
+              : pinned === n.file_path;
             const isNeighbor = neighbors.has(n.file_path);
-            const dim = focus != null && !isFocus && !isNeighbor;
+            const dim = anyFocus && !isFocus && !isNeighbor;
             const isHub = hubPaths.has(n.file_path);
-            // Always label the top hubs; reveal the rest on hover (focus +
-            // neighbors). No more all-or-nothing 36-node gate.
-            const showLabel = isFocus || isNeighbor || (focus == null && isHub);
+            // Hub labels grow the labelled set rather than swapping it out:
+            // focusing used to make every hub name vanish, so the ring the
+            // reader had just oriented themselves on changed identity.
+            const showLabel = isFocus || isNeighbor || isHub;
             // Labels radiate along each file's own spoke so angularly-adjacent
             // hubs fan out instead of stacking on a shared baseline. Flip the
             // left half so the text never renders upside-down.
@@ -456,6 +504,22 @@ export function CouplingGraph({
           dot size = lines + couplings · line opacity = strength
         </span>
       </div>
+
+      {/* The accessible equivalent, named and linked. */}
+      <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
+        The diagram is a visual summary.{" "}
+        {tableId ? (
+          <a
+            href={`#${tableId}`}
+            className="underline decoration-dotted underline-offset-2 hover:text-[var(--color-text-secondary)]"
+          >
+            The table below
+          </a>
+        ) : (
+          "The table below"
+        )}{" "}
+        lists the same couplings and is the keyboard-accessible version of it.
+      </p>
     </div>
   );
 }

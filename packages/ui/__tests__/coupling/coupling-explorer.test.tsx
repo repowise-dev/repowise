@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, waitFor, screen } from "@testing-library/react";
+import { render, waitFor, screen, fireEvent, within } from "@testing-library/react";
 import type {
   CouplingEdge,
   CouplingNode,
@@ -77,5 +77,107 @@ describe("CouplingExplorer", () => {
     render(<CouplingExplorer data={data} initialFocus="" />);
     const guidance = screen.getByText(/Tracing/i);
     expect(guidance).toHaveTextContent("Tracing hub.py");
+  });
+});
+
+// The arcs live in the diagram's dedicated `fill="none"` group; the module
+// bands are separate paths outside it.
+const arcs = (container: HTMLElement) =>
+  container.querySelectorAll('g[fill="none"] > path').length;
+const inTable = () => within(screen.getByRole("table"));
+
+function labelled(
+  s: string,
+  t: string,
+  structural: CouplingEdge["structural"],
+  strength = 3,
+): CouplingEdge {
+  return { ...edge(s, t, strength), structural };
+}
+
+describe("CouplingExplorer structural segments", () => {
+  // A lockfile pair that outranks everything on strength, and the real finding.
+  const plumbing = labelled("pyproject.toml", "uv.lock", "not_applicable", 90);
+  const explained = labelled("core/a.py", "core/b.py", "corroborated", 50);
+  const finding = labelled("core/c.py", "server/d.py", "unexplained", 10);
+  const data = graph(
+    [
+      node("pyproject.toml"),
+      node("uv.lock"),
+      node("core/a.py"),
+      node("core/b.py"),
+      node("core/c.py"),
+      node("server/d.py"),
+    ],
+    [plumbing, explained, finding],
+  );
+
+  it("opens on the unexplained segment, so release plumbing is not the headline", () => {
+    render(<CouplingExplorer data={data} />);
+    expect(inTable().getByText("c.py")).toBeInTheDocument();
+    expect(inTable().queryByText("↔ uv.lock")).not.toBeInTheDocument();
+    expect(inTable().queryByText("↔ b.py")).not.toBeInTheDocument();
+  });
+
+  it("drives the diagram with the same filter as the table", () => {
+    const { container } = render(<CouplingExplorer data={data} />);
+    // One unexplained pair → one arc, not all three.
+    expect(arcs(container)).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: /^All/ }));
+    expect(arcs(container)).toBe(3);
+  });
+
+  it("narrows the diagram when the search box narrows the table", () => {
+    const { container } = render(<CouplingExplorer data={data} />);
+    fireEvent.click(screen.getByRole("button", { name: /^All/ }));
+    expect(arcs(container)).toBe(3);
+    fireEvent.change(screen.getByLabelText(/filter the couplings by file path/i), {
+      target: { value: "uv.lock" },
+    });
+    expect(arcs(container)).toBe(1);
+  });
+
+  it("opens on All when nothing is unexplained, rather than on an empty list", () => {
+    const noFinding = graph(
+      [node("pyproject.toml"), node("uv.lock"), node("core/a.py"), node("core/b.py")],
+      [plumbing, explained],
+    );
+    render(<CouplingExplorer data={noFinding} />);
+    expect(inTable().getByText("↔ uv.lock")).toBeInTheDocument();
+  });
+
+  it("hides the segments on an index written before the structural check", () => {
+    const data = graph([node("a.py"), node("b.py")], [edge("a.py", "b.py")]);
+    render(<CouplingExplorer data={data} />);
+    expect(screen.queryByRole("group", { name: /dependency graph/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("CouplingExplorer pair selection", () => {
+  const data = graph(
+    [node("core/a.py"), node("core/b.py"), node("core/c.py")],
+    [edge("core/a.py", "core/b.py", 5), edge("core/a.py", "core/c.py", 2)],
+  );
+
+  it("pins both ends of the row's pair and serializes them to the focus", () => {
+    const onFocusChange = vi.fn();
+    render(<CouplingExplorer data={data} onFocusChange={onFocusChange} />);
+    fireEvent.click(inTable().getByText("↔ c.py"));
+    expect(onFocusChange).toHaveBeenCalledWith("core/a.py|core/c.py");
+    expect(screen.getByText(/Tracing/i)).toHaveTextContent("core/a.py ↔ core/c.py");
+  });
+
+  it("reopens a serialized pair from the initial focus", () => {
+    render(<CouplingExplorer data={data} initialFocus="core/a.py|core/b.py" />);
+    expect(screen.getByText(/Tracing/i)).toHaveTextContent("core/a.py ↔ core/b.py");
+  });
+
+  it("treats an unrecognized pipe path as one file, not a pair", () => {
+    const odd = graph(
+      [node("weird|name.py"), node("core/b.py")],
+      [edge("core/b.py", "weird|name.py")],
+    );
+    render(<CouplingExplorer data={odd} initialFocus="weird|name.py" />);
+    expect(screen.getByText(/Tracing/i)).toHaveTextContent("Tracing weird|name.py");
   });
 });

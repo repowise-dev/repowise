@@ -49,6 +49,55 @@ describe("CouplingGraph", () => {
     expect(onHover).toHaveBeenCalledWith(expect.any(String));
   });
 
+  it("is decorative and names the table as its accessible equivalent", () => {
+    const nodes = [node("api/a.py"), node("core/b.py")];
+    const edges = [edge("api/a.py", "core/b.py")];
+    const { container } = render(
+      <CouplingGraph nodes={nodes} edges={edges} tableId="pairs" />,
+    );
+    // The ring has no tab stop and no operable role, so claiming `role="img"`
+    // only suppressed the per-dot titles without exposing anything.
+    const svg = container.querySelector("svg")!;
+    expect(svg).toHaveAttribute("aria-hidden", "true");
+    expect(svg.getAttribute("role")).toBeNull();
+    expect(screen.getByRole("link", { name: /the table below/i })).toHaveAttribute(
+      "href",
+      "#pairs",
+    );
+  });
+
+  it("lights only the focused pair's arc, and rings both of its ends", () => {
+    const nodes = [node("api/a.py"), node("core/b.py"), node("ui/c.py")];
+    const edges = [edge("api/a.py", "core/b.py"), edge("api/a.py", "ui/c.py")];
+    const { container } = render(
+      <CouplingGraph
+        nodes={nodes}
+        edges={edges}
+        focusedPair={{ source: "api/a.py", target: "ui/c.py" }}
+        pinnedPair={{ source: "api/a.py", target: "ui/c.py" }}
+      />,
+    );
+    const arcs = [...container.querySelectorAll('g[fill="none"] > path')];
+    const lit = arcs.filter((p) => Number(p.getAttribute("stroke-opacity")) > 0.5);
+    // One arc lit: focusing a.py alone would have lit both of its couplings.
+    expect(lit).toHaveLength(1);
+    // A persistent ring on each end, not only on the smaller path.
+    expect(container.querySelectorAll('circle[stroke="var(--color-accent-primary)"]')).toHaveLength(
+      2,
+    );
+  });
+
+  it("keeps hub labels when a file is focused instead of swapping them out", () => {
+    const nodes = [node("api/a.py"), node("core/b.py"), node("ui/c.py")];
+    const edges = [edge("api/a.py", "core/b.py"), edge("core/b.py", "ui/c.py")];
+    const { container, rerender } = render(
+      <CouplingGraph nodes={nodes} edges={edges} focusedPath={null} />,
+    );
+    const unfocused = container.querySelectorAll("svg text").length;
+    rerender(<CouplingGraph nodes={nodes} edges={edges} focusedPath="api/a.py" />);
+    expect(container.querySelectorAll("svg text").length).toBeGreaterThanOrEqual(unfocused);
+  });
+
   it("pins a file on click (onPinToggle fires with the path)", () => {
     const nodes = [node("api/a.py"), node("core/b.py")];
     const edges = [edge("api/a.py", "core/b.py")];

@@ -62,11 +62,14 @@ describe("CouplingTable (virtualized)", () => {
     expect(link).toHaveAttribute("href", "/repos/r/files/api/a.py");
   });
 
-  it("sorts by strength ascending when the Strength header is toggled", () => {
+  it("sorts by strength ascending when the Strength header is toggled twice", () => {
     const edges = [edge("a.py", "b.py", 9), edge("c.py", "d.py", 1)];
     render(<CouplingTable edges={edges} />);
-    // Default is strength desc → strongest (9) first. Toggle to ascending.
-    fireEvent.click(inTable().getByRole("button", { name: /strength/i }));
+    // Default is confidence, not strength: the first click switches key and
+    // lands on desc (strongest first), the second flips it.
+    const strength = inTable().getByRole("button", { name: /strength/i });
+    fireEvent.click(strength);
+    fireEvent.click(strength);
     const rows = screen.getAllByRole("row").filter((r) => r.querySelector("td"));
     // First data row should now be the weakest pair (c.py ↔ d.py).
     expect(rows[0]).toHaveTextContent("c.py");
@@ -118,15 +121,56 @@ describe("CouplingTable together column", () => {
     expect(inTable().queryByText(/of one side/)).not.toBeInTheDocument();
   });
 
-  it("sorts by shared commits, not by date", () => {
+  it("opens ordered by the stronger direction, not by strength or date", () => {
     const edges = [
-      { ...withSupport("a.py", "b.py", 2, 0.5, 0.5), last_co_change: "2026-06-09" },
-      { ...withSupport("c.py", "d.py", 40, 0.9, 0.9), last_co_change: "2026-06-01" },
+      // Strongest and most recent, but only ever half one-sided.
+      { ...withSupport("a.py", "b.py", 90, 0.5, 0.5), strength: 40, last_co_change: "2026-06-09" },
+      // Weaker and older, but one side has never changed alone.
+      { ...withSupport("c.py", "d.py", 4, 0.02, 1.0), strength: 2, last_co_change: "2026-06-01" },
     ];
     render(<CouplingTable edges={edges} />);
-    fireEvent.click(inTable().getByText("Together"));
     const rows = inTable().getAllByRole("row").slice(1);
-    // Descending by support puts the 40 first; by date it would be the 2.
+    expect(within(rows[0]!).getByText("4 commits")).toBeInTheDocument();
+  });
+
+  it("breaks a confidence tie with the shared-commit count", () => {
+    const edges = [
+      withSupport("a.py", "b.py", 2, 0.9, 0.9),
+      withSupport("c.py", "d.py", 40, 0.9, 0.9),
+    ];
+    render(<CouplingTable edges={edges} />);
+    const rows = inTable().getAllByRole("row").slice(1);
     expect(within(rows[0]!).getByText("40 commits")).toBeInTheDocument();
+  });
+
+  it("states the asymmetry and the structural verdict as a sentence", () => {
+    const edges: CouplingEdge[] = [
+      {
+        ...withSupport("core/answer.py", "core/config.py", 27, 0.47, 1.0),
+        structural: "unexplained",
+      },
+    ];
+    render(<CouplingTable edges={edges} />);
+    expect(
+      inTable().getByText(
+        /config\.py has never changed without answer\.py \(27 shared commits\), while answer\.py changed without it 53% of the time\. No dependency in the graph connects them\./,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("pins the whole pair on row click when the host understands pairs", () => {
+    const onPinPair = vi.fn();
+    const e = edge("a.py", "b.py", 4);
+    render(<CouplingTable edges={[e]} onPinPair={onPinPair} />);
+    fireEvent.click(inTable().getByText("a.py"));
+    expect(onPinPair).toHaveBeenCalledWith(e);
+  });
+
+  it("selects a row from either end of the pair, not only the smaller path", () => {
+    // `b.py` is the target; pinning it used to leave the row unstyled.
+    const { container } = render(
+      <CouplingTable edges={[edge("a.py", "b.py", 4)]} pinnedPath="b.py" />,
+    );
+    expect(container.querySelector("tr.bg-\\[var\\(--color-accent-muted\\)\\]\\/30")).not.toBeNull();
   });
 });
