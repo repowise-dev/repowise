@@ -80,12 +80,22 @@ describe("CouplingTable (virtualized)", () => {
     expect(screen.getByText(/no couplings detected/i)).toBeInTheDocument();
   });
 
-  it("renders the AI decouple action when onGeneratePrompt is provided", () => {
-    const onGenerate = vi.fn();
-    render(<CouplingTable edges={[edge("a.py", "b.py")]} onGeneratePrompt={onGenerate} />);
-    const btn = inTable().getByRole("button", { name: /ai decouple prompt/i });
-    fireEvent.click(btn);
-    expect(onGenerate).toHaveBeenCalledTimes(1);
+  it("keeps per-row actions out of the table", () => {
+    // The AI prompt moved into the pair panel, where it can carry a label and
+    // an explanation. An unlabelled sparkles icon in a dense row was a riddle.
+    render(<CouplingTable edges={[edge("a.py", "b.py")]} hasDetails />);
+    expect(inTable().queryByRole("button", { name: /ai decouple prompt/i })).not.toBeInTheDocument();
+  });
+
+  it("names each side's module so a cross-boundary pair is visible", () => {
+    const moduleFor = (p: string) => (p.startsWith("ui/") ? "ui" : "server");
+    render(<CouplingTable edges={[edge("ui/a.py", "server/b.py")]} moduleFor={moduleFor} />);
+    expect(inTable().getByText(/ui/)).toBeInTheDocument();
+  });
+
+  it("says so when both files sit in the same module", () => {
+    render(<CouplingTable edges={[edge("ui/a.py", "ui/b.py")]} moduleFor={() => "ui"} />);
+    expect(inTable().getByText("within ui")).toBeInTheDocument();
   });
 });
 

@@ -2,6 +2,10 @@ export { CouplingGraph, type CouplingGraphProps } from "./coupling-graph";
 export { CouplingTable } from "./coupling-table";
 export { CouplingExplorer, type CouplingExplorerProps } from "./coupling-explorer";
 export {
+  CouplingPairDrawer,
+  type CouplingPairDrawerProps,
+} from "./coupling-pair-drawer";
+export {
   couplingClaim,
   isSamePair,
   pairHas,

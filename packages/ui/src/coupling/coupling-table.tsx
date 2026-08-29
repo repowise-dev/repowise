@@ -2,9 +2,9 @@
 
 import * as React from "react";
 import { useMemo, useState } from "react";
+import { ChevronRight } from "lucide-react";
 import { EmptyState } from "../shared/empty-state";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
-import { AiPromptButton } from "../health/ai-prompt-button";
 import { cn } from "../lib/cn";
 import { disambiguateBasenames, formatDate, formatDateTime } from "../lib/format";
 import { couplingClaim, isSamePair, peakConfidence, type CouplingPair } from "./claim";
@@ -41,8 +41,13 @@ interface CouplingTableProps {
   onPinPair?: (edge: CouplingEdge | null) => void;
   /** Transient pair peek, the hover counterpart of `onPinPair`. */
   onHoverPair?: (edge: CouplingEdge | null) => void;
-  /** When set, each row shows an "AI decouple prompt" action. */
-  onGeneratePrompt?: (edge: CouplingEdge) => void;
+  /**
+   * A file's module, for the "does this cross a boundary" column. Omit to
+   * drop the column entirely rather than render a row of dashes.
+   */
+  moduleFor?: ((path: string) => string | null) | undefined;
+  /** Whether rows advertise that clicking opens the pair's detail panel. */
+  hasDetails?: boolean;
   /** Resolve a file's detail-page href; when set, file names become links. */
   linkForPath?: ((path: string) => string) | undefined;
   /** Link component used for file links (defaults to a plain anchor). */
@@ -67,9 +72,14 @@ const TOGETHER_HELP =
 /**
  * The precise, sortable companion to the coupling diagram: one row per
  * coupling, led by the claim the numbers actually support rather than by a bare
- * strength score. Clicking a row pins both of its files in the ring; the two
- * file names are links to their detail pages, and hovering a row peeks that
- * pair in the diagram. Rows touching the focused file are emphasized.
+ * strength score. Clicking a row pins both of its files in the ring and opens
+ * the pair's detail panel; the two file names are links to their detail pages,
+ * and hovering a row peeks that pair in the diagram. Rows touching the focused
+ * file are emphasized.
+ *
+ * There is deliberately no per-row action button. An icon-only affordance in a
+ * dense row is a guessing game, and everything a row could offer now lives in
+ * the panel the row opens, where it can be labelled and explained.
  *
  * The default order is the higher of the two directional confidences, not
  * strength: strength ranks "both change a lot" above "never changes without
@@ -89,7 +99,8 @@ export function CouplingTable({
   onPinToggle,
   onPinPair,
   onHoverPair,
-  onGeneratePrompt,
+  moduleFor,
+  hasDetails,
   linkForPath,
   LinkComponent,
   id,
@@ -202,6 +213,34 @@ export function CouplingTable({
         </div>
       ),
     },
+    ...(moduleFor
+      ? [
+          {
+            key: "modules",
+            header: "Modules",
+            mobileLabel: "Modules",
+            // A cross-module pair is the interesting kind, so this earns a
+            // column — but it is the first to go when width runs out.
+            priority: 3 as const,
+            headerClassName: "w-40",
+            cellClassName: "text-xs",
+            render: (e: CouplingEdge) => {
+              const a = moduleFor(e.source);
+              const b = moduleFor(e.target);
+              if (!a && !b) return <span className="text-[var(--color-text-tertiary)]">—</span>;
+              if (a && a === b) {
+                return <span className="text-[var(--color-text-tertiary)]">within {a}</span>;
+              }
+              return (
+                <span className="break-words text-[var(--color-text-secondary)]">
+                  {a ?? "—"} <span className="text-[var(--color-text-tertiary)]">↔</span>{" "}
+                  {b ?? "—"}
+                </span>
+              );
+            },
+          },
+        ]
+      : []),
     {
       key: "together",
       header: (
@@ -277,21 +316,18 @@ export function CouplingTable({
         </span>
       ),
     },
-    ...(onGeneratePrompt
+    ...(hasDetails
       ? [
           {
-            key: "prompt",
+            key: "details",
             header: "",
-            priority: 2 as const,
-            headerClassName: "w-10",
-            cellClassName: "w-10",
-            render: (e: CouplingEdge) => (
-              <AiPromptButton
-                variant="icon"
-                label="AI decouple prompt"
-                onClick={() => onGeneratePrompt(e)}
-              />
-            ),
+            // Priority 1 so the affordance survives to the narrowest table;
+            // hidden in stacked cards, where the whole card is the target.
+            priority: 1 as const,
+            headerClassName: "w-8",
+            cellClassName: "w-8 text-[var(--color-text-tertiary)]",
+            hideInCard: true,
+            render: () => <ChevronRight className="h-4 w-4" aria-hidden />,
           },
         ]
       : []),

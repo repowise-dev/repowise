@@ -172,6 +172,19 @@ describe("CouplingExplorer pair selection", () => {
     expect(screen.getByText(/Tracing/i)).toHaveTextContent("core/a.py ↔ core/b.py");
   });
 
+  it("opens the pair's detail panel on the same click that pins it", () => {
+    render(<CouplingExplorer data={data} repoLinkPrefix="/repos/r" />);
+    // Not the file name: those are links and stop propagation so they can
+    // navigate. The rest of the row opens the panel.
+    fireEvent.click(inTable().getByText("↔ c.py").closest("tr")!);
+    const panel = screen.getByRole("dialog");
+    // The claim, the labelled AI action, and a route onward to each file.
+    expect(within(panel).getByRole("button", { name: /ai decouple prompt/i })).toBeInTheDocument();
+    const links = within(panel).getAllByRole("link", { name: /open file page/i });
+    expect(links).toHaveLength(2);
+    expect(links[0]).toHaveAttribute("href", "/repos/r/files/core/a.py");
+  });
+
   it("treats an unrecognized pipe path as one file, not a pair", () => {
     const odd = graph(
       [node("weird|name.py"), node("core/b.py")],

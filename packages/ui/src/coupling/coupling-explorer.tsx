@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Search, X } from "lucide-react";
 import { CouplingGraph } from "./coupling-graph";
 import { CouplingTable } from "./coupling-table";
+import { CouplingPairDrawer } from "./coupling-pair-drawer";
 import { segmentOf, type CouplingPair, type CouplingSegment } from "./claim";
 import { AiPromptModal, buildCouplingAiPrompt } from "../health";
 import { fileEntityPath } from "../shared/entity/routes";
@@ -176,6 +177,8 @@ export function CouplingExplorer({
   const [hover, setHover] = useState<Selection | null>(null);
   const [query, setQuery] = useState("");
   const [promptEdge, setPromptEdge] = useState<CouplingEdge | null>(null);
+  /** The pair whose detail panel is open. Set alongside the pin by a row click. */
+  const [detailEdge, setDetailEdge] = useState<CouplingEdge | null>(null);
 
   // How many edges each segment holds. An index written before the structural
   // label existed leaves every edge unlabelled, so the control has nothing to
@@ -250,6 +253,22 @@ export function CouplingExplorer({
     return m;
   }, [nodes]);
 
+  // Degree over the *unfiltered* edge set: "couples with 12 files" is a fact
+  // about the repo, not about the segment the reader happens to be in.
+  const degreeByPath = useMemo(() => {
+    const d = new Map<string, number>();
+    for (const e of edges) {
+      d.set(e.source, (d.get(e.source) ?? 0) + 1);
+      d.set(e.target, (d.get(e.target) ?? 0) + 1);
+    }
+    return d;
+  }, [edges]);
+
+  const moduleFor = useMemo(() => {
+    const anyModule = nodes.some((n) => n.module);
+    return anyModule ? (path: string) => nodeByPath.get(path)?.module ?? null : undefined;
+  }, [nodes, nodeByPath]);
+
   const linkForPath = repoLinkPrefix
     ? (path: string) => fileEntityPath(repoLinkPrefix, path)
     : undefined;
@@ -290,10 +309,12 @@ export function CouplingExplorer({
             <>Tap or hover a file to trace what changes with it; click to pin.</>
           )}
         </p>
+        {/* No `totalEdges`: the diagram would report "showing 98 of 14,115",
+            which silently folds the cap and the active filter into one number.
+            The header line below owns that story; the legend just counts arcs. */}
         <CouplingGraph
           nodes={filteredNodes}
           edges={filtered}
-          totalEdges={data.total_edges}
           focusedPath={focusedPath}
           pinnedPath={pinnedPath}
           focusedPair={focusedPair}
@@ -305,12 +326,33 @@ export function CouplingExplorer({
       </div>
 
       <div className="space-y-3 border-t border-[var(--color-border-default)] pt-4">
+        {/* Names the scope the segment counts are counted over, so "All 200"
+            and "14,115 couplings" stop looking like a contradiction. */}
+        <p className="text-xs text-[var(--color-text-secondary)]">
+          {capped ? (
+            <>
+              Showing the <strong className="font-medium">{edges.length}</strong> strongest
+              of{" "}
+              <strong className="font-medium">{data.total_edges.toLocaleString()}</strong>{" "}
+              couplings in this repository. The counts below describe those{" "}
+              {edges.length}.
+            </>
+          ) : (
+            <>
+              All <strong className="font-medium">{edges.length.toLocaleString()}</strong>{" "}
+              couplings in this repository.
+            </>
+          )}
+        </p>
+
         {segmentsAvailable && (
           <div className="flex flex-wrap items-center gap-2">
+            {/* Scrolls rather than wraps on a phone: a segmented control that
+                reflows to two rows stops reading as one control. */}
             <div
               role="group"
               aria-label="Filter couplings by what the dependency graph says"
-              className="inline-flex flex-wrap overflow-hidden rounded-md border border-[var(--color-border-default)]"
+              className="inline-flex max-w-full overflow-x-auto rounded-md border border-[var(--color-border-default)]"
             >
               {SEGMENTS.map((s) => {
                 const n = segmentCount(s.key);
@@ -323,7 +365,7 @@ export function CouplingExplorer({
                     aria-pressed={selected}
                     onClick={() => setSegment(s.key)}
                     className={cn(
-                      "h-8 border-r border-[var(--color-border-default)] px-2.5 text-xs last:border-r-0",
+                      "h-8 shrink-0 whitespace-nowrap border-r border-[var(--color-border-default)] px-2.5 text-xs last:border-r-0",
                       selected
                         ? "bg-[var(--color-accent-muted)]/40 font-medium text-[var(--color-text-primary)]"
                         : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
@@ -367,7 +409,7 @@ export function CouplingExplorer({
                   "hover:bg-[var(--color-bg-elevated)] disabled:opacity-60",
                 )}
               >
-                {loadingMore ? "Loading…" : `Load more of ${data.total_edges}`}
+                {loadingMore ? "Loading…" : "Load more"}
               </button>
             )}
             {pinned && (
@@ -394,17 +436,31 @@ export function CouplingExplorer({
           pinnedPair={pinnedPair}
           onHover={(path) => setHover(path ? { kind: "file", path } : null)}
           onPinToggle={(path) => changePin(path ? { kind: "file", path } : null)}
-          onPinPair={(edge) =>
-            changePin(edge ? { kind: "pair", source: edge.source, target: edge.target } : null)
-          }
+          onPinPair={(edge) => {
+            // One gesture, both outcomes: the pair lights in the ring and its
+            // detail panel opens. Clicking the pinned row again clears both.
+            changePin(edge ? { kind: "pair", source: edge.source, target: edge.target } : null);
+            setDetailEdge(edge);
+          }}
           onHoverPair={(edge) =>
             setHover(edge ? { kind: "pair", source: edge.source, target: edge.target } : null)
           }
-          onGeneratePrompt={setPromptEdge}
+          moduleFor={moduleFor}
+          hasDetails
           linkForPath={linkForPath}
           LinkComponent={LinkComponent}
         />
       </div>
+
+      <CouplingPairDrawer
+        edge={detailEdge}
+        onClose={() => setDetailEdge(null)}
+        nodeByPath={nodeByPath}
+        degreeByPath={degreeByPath}
+        linkForPath={linkForPath}
+        LinkComponent={LinkComponent}
+        onGeneratePrompt={setPromptEdge}
+      />
 
       <AiPromptModal
         open={promptEdge !== null}
