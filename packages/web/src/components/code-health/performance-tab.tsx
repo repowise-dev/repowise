@@ -14,6 +14,8 @@ import { getRefactoringPlan } from "@/lib/api/refactoring";
 
 /** The queue's own filter state, kept out of the page's `tab` and `lens`. */
 const FILTER_PARAM = "perf";
+/** Shared with the map, which uses the same name to pin a cause's files. */
+const OPPORTUNITY_PARAM = "opportunity";
 
 export function PerformanceTab({ repoId }: { repoId: string }) {
   const router = useRouter();
@@ -57,11 +59,27 @@ export function PerformanceTab({ repoId }: { repoId: string }) {
     [router, searchParams],
   );
 
+  // The open cause rides in the URL beside the filters, so the link the map
+  // and the file drawer mint opens it, and so an inspected cause is itself a
+  // link worth sending to somebody.
+  const onOpenOpportunityChange = useCallback(
+    (opportunityId: string | null) => {
+      const sp = new URLSearchParams(searchParams.toString());
+      if (opportunityId) sp.set(OPPORTUNITY_PARAM, opportunityId);
+      else sp.delete(OPPORTUNITY_PARAM);
+      const qs = sp.toString();
+      router.replace(qs ? `?${qs}` : "?", { scroll: false });
+    },
+    [router, searchParams],
+  );
+
   return (
     <PerformanceView
       adapter={adapter}
       initialFilters={searchParams.get(FILTER_PARAM) ?? undefined}
       onFiltersChange={onFiltersChange}
+      openOpportunityId={searchParams.get(OPPORTUNITY_PARAM)}
+      onOpenOpportunityChange={onOpenOpportunityChange}
     />
   );
 }

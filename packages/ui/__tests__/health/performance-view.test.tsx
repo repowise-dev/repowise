@@ -538,3 +538,59 @@ describe("PerformanceView accessibility", () => {
     expect(statuses.some((text) => text.includes("opportunities"))).toBe(true);
   });
 });
+
+describe("PerformanceView opened by a link", () => {
+  it("opens the cause the link names, even when the queue page does not hold it", async () => {
+    // The map and the file drawer mint links naming a cause by id. This
+    // repository has hundreds of them, so the named one is usually not on the
+    // page the filters would have loaded, and searching the page for it would
+    // find nothing.
+    const detail = resolvedDetail({ opportunity_id: "perf2_linked" });
+    const getPerformanceOpportunity = vi.fn(async () => detail);
+    render(
+      <PerformanceView
+        adapter={adapter({ getPerformanceOpportunity })}
+        openOpportunityId="perf2_linked"
+      />,
+    );
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(getPerformanceOpportunity).toHaveBeenCalledWith("perf2_linked", {
+      evidenceLimit: 8,
+    });
+  });
+
+  it("reports the id back so an inspected cause is itself a link", async () => {
+    const onOpenOpportunityChange = vi.fn();
+    render(
+      <PerformanceView adapter={adapter()} onOpenOpportunityChange={onOpenOpportunityChange} />,
+    );
+    await openFirstRow();
+    // The first row of the fixture page, by its stable id.
+    expect(onOpenOpportunityChange).toHaveBeenCalledWith(page().items[0]!.opportunity_id);
+  });
+
+  it("says so when the link names a cause this index cannot resolve", async () => {
+    const unresolved = {
+      resolved: false as const,
+      opportunity_id: "perf2_retired",
+      model_state: {
+        state: "stale_model" as const,
+        opportunity_id: "perf2_retired",
+        performance_model_version: 2,
+        requested_model_version: 1,
+        refresh_required: true,
+      },
+      detail: "That cause was written by an older model.",
+    };
+    render(
+      <PerformanceView
+        adapter={adapter({ getPerformanceOpportunity: vi.fn(async () => unresolved) })}
+        openOpportunityId="perf2_retired"
+      />,
+    );
+    // Named, not silently ignored: the link is shareable and the reader may be
+    // holding it somewhere else.
+    expect(await screen.findByText(/perf2_retired/)).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});

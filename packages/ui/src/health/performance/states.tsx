@@ -145,3 +145,39 @@ export function IgnoredArgumentsNotice({ ignored }: { ignored: Record<string, st
     </Notice>
   );
 }
+
+/**
+ * A link named a cause this index cannot resolve.
+ *
+ * Says which id, because the link is shareable and the reader may be holding
+ * it somewhere else, and offers the queue rather than leaving the page looking
+ * like it simply ignored them.
+ */
+export function LinkedCauseUnavailable({
+  opportunityId,
+  detail,
+  onDismiss,
+}: {
+  opportunityId: string;
+  detail: string | null;
+  onDismiss: () => void;
+}) {
+  return (
+    <p
+      role="status"
+      className="flex flex-wrap items-baseline gap-x-2 border-l-2 border-[var(--color-warning)] py-1.5 pl-3 text-sm text-[var(--color-text-secondary)]"
+    >
+      <span>
+        The link named <span className="break-all font-mono">{opportunityId}</span>, which this
+        index does not hold.{detail ? ` ${detail}` : ""} The queue below is unfiltered.
+      </span>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="rounded text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+      >
+        Dismiss
+      </button>
+    </p>
+  );
+}

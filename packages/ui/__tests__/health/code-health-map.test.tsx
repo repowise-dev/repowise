@@ -282,8 +282,11 @@ describe("map chrome, off canvas", () => {
     const { getByText } = render(<MapLegend overlay="performance" />);
     expect(getByText("5+ causes")).toBeInTheDocument();
     expect(getByText("Not analyzed")).toBeInTheDocument();
-    // The caption refuses the runtime claim the mark could be read as making.
-    expect(getByText(/not a runtime measurement/i)).toBeInTheDocument();
+    // The caption refuses the runtime claim the mark could be read as making,
+    // and names the two channels so a flat row of swatches is not the whole key.
+    expect(getByText(/never a runtime measurement/i)).toBeInTheDocument();
+    expect(getByText("Ring colour, how many")).toBeInTheDocument();
+    expect(getByText("Ring pattern, what you can do")).toBeInTheDocument();
   });
 
   it("MapLegend says it is loading rather than showing bands for absent data", () => {

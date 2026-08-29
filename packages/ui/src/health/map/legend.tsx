@@ -9,6 +9,7 @@
  */
 
 // Aliased: the bare name would shadow the DOM `KeyboardEvent`.
+import { Fragment } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { OVERLAY_ORDER, OVERLAY_SPECS, type LegendRow, type OverlaySpec } from "./lens";
 import type { CodeHealthOverlay } from "./types";
@@ -49,14 +50,18 @@ export function MapLegendRows({ spec, loading }: { spec: OverlaySpec; loading: b
   }
   return (
     <div className="flex flex-col gap-1">
-      {spec.legend.map((row) => (
-        <span
-          key={row.label}
-          className="flex items-center gap-1.5 text-[var(--color-text-tertiary)]"
-        >
-          <Swatch row={row} size={10} />
-          {row.label}
-        </span>
+      {spec.legend.map((row, i) => (
+        <Fragment key={row.label}>
+          {row.group && row.group !== spec.legend[i - 1]?.group ? (
+            <span className="mt-1 font-mono text-[9px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] first:mt-0">
+              {row.group}
+            </span>
+          ) : null}
+          <span className="flex items-center gap-1.5 text-[var(--color-text-tertiary)]">
+            <Swatch row={row} size={10} />
+            {row.label}
+          </span>
+        </Fragment>
       ))}
     </div>
   );
@@ -150,11 +155,18 @@ export function MapLegend({
           loading {spec.label.toLowerCase()}…
         </span>
       ) : (
-        spec.legend.map((row) => (
-          <span key={row.label} className="flex items-center gap-1.5">
-            <Swatch row={row} size={8} />
-            {row.label}
-          </span>
+        spec.legend.map((row, i) => (
+          <Fragment key={row.label}>
+            {row.group && row.group !== spec.legend[i - 1]?.group ? (
+              <span className="ml-1 font-mono text-[9px] uppercase tracking-[0.12em] first:ml-0">
+                {row.group}
+              </span>
+            ) : null}
+            <span className="flex items-center gap-1.5">
+              <Swatch row={row} size={8} />
+              {row.label}
+            </span>
+          </Fragment>
         ))
       )}
       <span className="font-mono text-[10px] uppercase tracking-[0.12em]">{spec.caption}</span>

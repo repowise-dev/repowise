@@ -5,6 +5,7 @@ import useSWR from "swr";
 import type {
   PerformanceContextFilter,
   PerformanceOpportunity,
+  PerformanceOpportunityDetail,
   PerformanceOpportunityPage,
 } from "@repowise-dev/types/health";
 import type { RefactoringPlan } from "@repowise-dev/types/refactoring";
@@ -38,6 +39,7 @@ import {
   EmptyQueue,
   FilteredEmpty,
   IgnoredArgumentsNotice,
+  LinkedCauseUnavailable,
   QueueError,
   QueueSkeleton,
   StaleModelNotice,
@@ -61,17 +63,31 @@ export function PerformanceView({
   adapter,
   initialFilters,
   onFiltersChange,
+  openOpportunityId,
+  onOpenOpportunityChange,
 }: {
   adapter: PerformanceViewAdapter;
   /** A serialized filter state, so a shared link opens the same queue. */
   initialFilters?: string | undefined;
   /** Called with the serialized state whenever a filter moves. */
   onFiltersChange?: ((search: string) => void) | undefined;
+  /**
+   * A cause to open on arrival, by its stable id. A link from the map or the
+   * file drawer names one, and it need not be on the page the filters would
+   * have loaded, so it is resolved by id rather than looked for in the queue.
+   */
+  openOpportunityId?: string | null;
+  /** Called with the open cause's id, or null when the drawer closes. */
+  onOpenOpportunityChange?: ((opportunityId: string | null) => void) | undefined;
 }) {
   const [filters, setFilters] = useState<PerformanceFilterState>(() =>
     initialFilters ? parseFilters(initialFilters) : INITIAL_FILTERS,
   );
   const [selected, setSelected] = useState<PerformanceOpportunity | null>(null);
+  const select = (next: PerformanceOpportunity | null) => {
+    setSelected(next);
+    onOpenOpportunityChange?.(next?.opportunity_id ?? null);
+  };
   // The handoff carries the verified plan when the drawer proved one, so a
   // plan-ready row hands over the ready payload rather than an instruction to
   // re-derive it.
@@ -103,6 +119,29 @@ export function PerformanceView({
   useEffect(() => {
     if (data) setCollapse(!capabilitiesOf(adapter, data).canonicalContexts);
   }, [adapter, data]);
+
+  // A link naming a cause opens it, whether or not the filters would have
+  // loaded the page it sits on. Resolved by id rather than searched for in the
+  // queue: this repository has 743 causes and a link is allowed to name any of
+  // them. The row shape and the detail shape share their fields, so what comes
+  // back drives the same drawer a click does.
+  const pendingId =
+    openOpportunityId && openOpportunityId !== selected?.opportunity_id
+      ? openOpportunityId
+      : null;
+  const { data: linked, error: linkError } = useSWR<PerformanceOpportunityDetail>(
+    pendingId && adapter.getPerformanceOpportunity
+      ? `performance-opportunity-link:${adapter.cacheKey}:${pendingId}`
+      : null,
+    () => adapter.getPerformanceOpportunity!(pendingId!, { evidenceLimit: 8 }),
+    { revalidateOnFocus: false },
+  );
+  useEffect(() => {
+    // Both branches of the detail carry an id, so the discriminant decides:
+    // an id from a retired model resolves to a state, not to a cause, and
+    // opening a drawer on it would render an empty panel.
+    if (linked?.resolved) setSelected(linked);
+  }, [linked]);
 
   if (!load) return <LegacyPerformanceFindings adapter={adapter} />;
   if (error && [404, 405].includes(Number((error as { status?: number }).status))) {
@@ -226,7 +265,7 @@ export function PerformanceView({
             adapter={adapter}
             showSections={filters.actionability === null}
             selectedId={selected?.opportunity_id ?? null}
-            onInspect={setSelected}
+            onInspect={select}
           />
         )}
 
@@ -248,12 +287,20 @@ export function PerformanceView({
         />
       </section>
 
+      {pendingId && (linkError || linked?.resolved === false) ? (
+        <LinkedCauseUnavailable
+          opportunityId={pendingId}
+          detail={linked && !linked.resolved ? linked.detail : null}
+          onDismiss={() => onOpenOpportunityChange?.(null)}
+        />
+      ) : null}
+
       <OpportunityDrawer
         opportunity={selected}
         adapter={adapter}
         detailEnabled={capabilities.detailById}
         planEnabled={capabilities.planById}
-        onClose={() => setSelected(null)}
+        onClose={() => select(null)}
         onAgentHandoff={(opportunity, plan) => setPromptFor({ opportunity, plan })}
       />
 

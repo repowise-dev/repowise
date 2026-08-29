@@ -15,8 +15,21 @@
 import { useMemo } from "react";
 import { cn } from "../../lib/cn";
 import { scoreBadgeClass } from "../tokens";
-import { PERFORMANCE_STATE_LABEL, performanceBurden, performanceSentence } from "./lens";
+import {
+  PERFORMANCE_STATE_LABEL,
+  burdenBand,
+  performanceBurden,
+  performanceSentence,
+} from "./lens";
 import type { CodeHealthMapFile, CodeHealthOverlay, MapScope } from "./types";
+
+/** The ring's colour per band, so the inspector's mark matches the canvas. */
+const RING_TONE: Record<0 | 1 | 2 | 3, string> = {
+  0: "var(--color-border-default)",
+  1: "var(--color-caution)",
+  2: "var(--color-warning)",
+  3: "var(--color-error)",
+};
 
 /** Rows the ranked list draws. Past this it is an inventory, not a lead. */
 export const FIELD_LIST_CAP = 50;
@@ -186,14 +199,29 @@ export function MapInspector({
       className="flex flex-col gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] p-3"
     >
       <div className="flex items-center gap-2">
-        <span
-          className={cn(
-            "inline-flex shrink-0 items-center justify-center rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums",
-            scoreBadgeClass(file.score),
-          )}
-        >
-          {file.score.toFixed(1)}
-        </span>
+        {/* The lens decides what leads. Under performance the defect score is
+            not the subject, and putting its coloured badge first told the
+            reader the file was fine while the ring beside it said otherwise. */}
+        {overlay === "performance" ? (
+          <span
+            aria-hidden
+            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
+            style={{
+              border: `2px ${burden.state === "actionable" ? "solid" : "dashed"} ${
+                burden.count > 0 ? RING_TONE[burdenBand(burden.count)] : "var(--color-border-default)"
+              }`,
+            }}
+          />
+        ) : (
+          <span
+            className={cn(
+              "inline-flex shrink-0 items-center justify-center rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums",
+              scoreBadgeClass(file.score),
+            )}
+          >
+            {file.score.toFixed(1)}
+          </span>
+        )}
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--color-text-primary)]">
           {name}
         </span>
@@ -217,7 +245,7 @@ export function MapInspector({
             <dt className="text-[var(--color-text-tertiary)]">
               Open {burden.unit}
             </dt>
-            <dd className="font-mono tabular-nums text-[var(--color-text-primary)]">
+            <dd className="font-mono text-base tabular-nums text-[var(--color-text-primary)]">
               {burden.count}
             </dd>
           </div>
@@ -239,6 +267,11 @@ export function MapInspector({
       ) : null}
 
       <div className="flex flex-wrap gap-x-3 gap-y-1 border-t border-[var(--color-border-default)] pt-2 text-xs text-[var(--color-text-secondary)]">
+        {overlay === "performance" ? (
+          // Still available, but as one supporting figure among several rather
+          // than as the headline the lens is not about.
+          <span className="tabular-nums">defect risk {file.score.toFixed(1)}</span>
+        ) : null}
         <span className="tabular-nums">{file.nloc.toLocaleString()} NLOC</span>
         {file.line_coverage_pct != null ? (
           <span className="tabular-nums">{Math.round(file.line_coverage_pct)}% coverage</span>

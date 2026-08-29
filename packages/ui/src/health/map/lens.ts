@@ -39,6 +39,13 @@ export interface LegendRow {
    */
   mark?: "dot" | "ring";
   dash?: string;
+  /**
+   * Which channel this row belongs to. The performance lens marks a node on
+   * two independent axes, and a flat list of swatches gives a reader no way to
+   * see that the first three are one axis and the next three another. The key
+   * prints the group once, where it changes.
+   */
+  group?: string;
 }
 
 /** Lens metadata: how to fill a node and what the key reads. */
@@ -243,17 +250,35 @@ export const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
   },
   performance: {
     label: "Performance",
-    caption: "ring colour = how many · pattern = what to do · not a runtime measurement",
+    caption:
+      "galaxy = module · dot = file, sized by lines of code · ring = open causes, never a runtime measurement",
     fill: performanceFill,
     legend: [
-      { fill: BAND_STROKE[3], label: "5+ causes", mark: "ring" },
-      { fill: BAND_STROKE[2], label: "2-4 causes", mark: "ring" },
-      { fill: BAND_STROKE[1], label: "1 cause", mark: "ring" },
-      { fill: NEUTRAL_FILL, label: "Stored plan", mark: "ring" },
-      { fill: NEUTRAL_FILL, label: "Advisory", mark: "ring", dash: "3 2" },
-      { fill: NEUTRAL_FILL, label: "Needs investigation", mark: "ring", dash: "1 2" },
-      { fill: NEUTRAL_FILL, label: "Analyzed, nothing surfaced" },
-      { fill: ABSENT_FILL, label: "Not analyzed" },
+      { group: "Ring colour, how many", fill: BAND_STROKE[3], label: "5+ causes", mark: "ring" },
+      { group: "Ring colour, how many", fill: BAND_STROKE[2], label: "2-4", mark: "ring" },
+      { group: "Ring colour, how many", fill: BAND_STROKE[1], label: "1", mark: "ring" },
+      {
+        group: "Ring pattern, what you can do",
+        fill: NEUTRAL_FILL,
+        label: "Stored plan",
+        mark: "ring",
+      },
+      {
+        group: "Ring pattern, what you can do",
+        fill: NEUTRAL_FILL,
+        label: "Advisory",
+        mark: "ring",
+        dash: "3 2",
+      },
+      {
+        group: "Ring pattern, what you can do",
+        fill: NEUTRAL_FILL,
+        label: "Investigate",
+        mark: "ring",
+        dash: "1 2",
+      },
+      { group: "No ring", fill: NEUTRAL_FILL, label: "Analyzed, nothing surfaced" },
+      { group: "No ring", fill: ABSENT_FILL, label: "Not analyzed" },
     ],
   },
   coverage: {

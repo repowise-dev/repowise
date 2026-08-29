@@ -310,6 +310,26 @@ describe("the inspector", () => {
     expect(getByText("Advisory")).toBeInTheDocument();
   });
 
+  it("leads with the burden, not the defect score, under its own lens", () => {
+    // The defect badge led here, so a file with a healthy score and a heavy
+    // ring beside it opened an inspector that said the opposite of the mark.
+    const { container, getByText } = render(
+      <MapInspector file={row} overlay="performance" onOpen={vi.fn()} onClose={vi.fn()} />,
+    );
+    expect(getByText("Open opportunities")).toBeInTheDocument();
+    expect(getByText(/defect risk 7\.0/)).toBeInTheDocument();
+    // The score badge, which is the defect ramp, is not the leading mark.
+    const leading = container.querySelector("section > div")?.firstElementChild;
+    expect(leading?.textContent).toBe("");
+  });
+
+  it("keeps the defect score leading under a score lens", () => {
+    const { getByText } = render(
+      <MapInspector file={row} overlay="health" onOpen={vi.fn()} onClose={vi.fn()} />,
+    );
+    expect(getByText("7.0")).toBeInTheDocument();
+  });
+
   it("says nothing about performance under another lens", () => {
     const { queryByText } = render(
       <MapInspector file={row} overlay="health" onOpen={vi.fn()} onClose={vi.fn()} />,
