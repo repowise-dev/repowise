@@ -25,7 +25,7 @@ For Extract Helper:
   "line_end": int}, ...], "suggested_site": {"directory": str | None},
   "duplicated_lines": int, "snippet": str | None,
   "snippet_start_line": int | None, "snippet_truncated": bool,
-  "suggested_name": str}`` lists every site of the duplicated block,
+  "suggested_name": None}`` lists every site of the duplicated block,
   where the shared helper should live, and the block itself: the anchor site's
   source
   text (identical across sites by definition, so stored once and capped at
@@ -46,10 +46,10 @@ For Extract Helper:
 For Extract Method:
 
 - ``plan`` = ``{"span": {"start": int, "end": int}, "params": [str, ...],
-  "returns": [str, ...], "suggested_name": str}`` — the lines to lift, the
-  inferred signature, and a deterministic starting name (from the slice's single
-  OUT value, else the enclosing function). Always a string; it is an editable
-  starting point and is not unique within a file.
+  "returns": [str, ...], "suggested_name": str | None}`` — the lines to lift,
+  the inferred signature, and a deterministic starting name (from the slice's
+  single informative OUT value, else absent). It is an editable starting point
+  and is not unique within a file.
 - ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` — the size and
   complexity the residual method sheds.
 - ``blast_radius`` = ``{"scope": "local"}`` — the one type whose blast radius is
@@ -81,7 +81,7 @@ For Break Cycle:
 For Split File:
 
 - ``plan`` = ``{"groups": [{"name": str | None, "symbols": [str, ...],
-  "suggested_file": str}], "residual": {"symbols": [...]} | None,
+  "suggested_file": str | None}], "residual": {"symbols": [...]} | None,
   "shim_required": bool}`` — the cohesive groups the file should split into
   (each with a suggested filename), the shared-utility ``core`` left behind,
   and whether a back-compat re-export shim is needed (false for same-package

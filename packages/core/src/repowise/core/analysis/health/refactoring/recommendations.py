@@ -215,9 +215,10 @@ def detector_native_benefit(suggestion: RefactoringSuggestion) -> float:
     benefit = _DETECTOR_BENEFIT.get(suggestion.refactoring_type)
     if benefit is not None:
         return benefit(suggestion.evidence or {})
-    # A detector that emitted a concrete graph-native plan has a real but
-    # deliberately small gain even when it is not a defect-health deduction.
-    return 1.0 if suggestion.refactoring_type else 0.0
+    # No health deduction and no detector-native measure: there is no
+    # evidence of a gain, and a flat placeholder is what let zero-impact clones
+    # in popular files lead the board. Report the absence.
+    return 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -474,7 +475,8 @@ def _priority_components(
     entry_bonus = 0.5 if (suggestion.evidence or {}).get("reliable_entry_reachability") else 0.0
     leverage = 0.5 * math.log1p(weighted_deficit) + math.log1p(max(0, dependents)) + entry_bonus
     surface = max(blast_size(suggestion), max(0, len(affected_files(suggestion)) - 1))
-    cost = _EFFORT_COST.get(suggestion.effort_bucket, 3.0) + math.log1p(surface)
+    # Blast radius is charged once, in ``risk``. Cost is the work itself.
+    cost = _EFFORT_COST.get(suggestion.effort_bucket, 3.0)
     provenance = str((suggestion.evidence or {}).get("provenance") or "")
     weak_graph = 1.0 if provenance in _WEAK_PROVENANCE else 0.0
     validation_risk = {
@@ -489,7 +491,11 @@ def _priority_components(
         + weak_graph
         + validation_risk
     )
-    priority = (1.0 + benefit) * (1.0 + leverage) / (1.0 + cost + risk)
+    # Benefit multiplies rather than offsets: leverage (the host file's
+    # deficit and dependents) scales a real gain, and scales nothing when
+    # there is none. A plan with no evidence of benefit scores 0 and cannot
+    # outrank one that recovers health, however popular its file.
+    priority = benefit * (1.0 + leverage) / (1.0 + cost + risk)
     return (
         round(benefit, 4),
         round(leverage, 4),

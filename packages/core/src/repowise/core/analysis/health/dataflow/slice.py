@@ -115,7 +115,7 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
 
     out: list[Extraction] = []
     evaluated = 0
-    for block in _all_blocks(fn_node, lmap.block_kinds, scope_kinds):
+    for block, loop in _all_blocks(fn_node, lmap.block_kinds, scope_kinds, lmap.loop_kinds):
         stmts = block.named_children
         n = len(stmts)
         is_body = block.id == body_container.id
@@ -160,6 +160,12 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
                 e = span[-1].end_point[0] + 1
                 params, returns = _infer_in_out(def_lines, use_lines, s, e)
                 if len(params) > _MAX_PARAMS or len(returns) > _MAX_RETURNS:
+                    continue
+                if not _outs_definitely_assigned(span, returns, def_lines, lmap):
+                    continue
+                if loop is not None and not _loop_carry_free(
+                    span, loop, s, e, def_lines, use_lines, lmap
+                ):
                     continue
                 out.append(
                     Extraction(
@@ -237,6 +243,268 @@ def _infer_in_out(
     return tuple(params), tuple(returns)
 
 
+def _outs_definitely_assigned(
+    span: list[Node],
+    returns: tuple[str, ...],
+    def_lines: dict[str, list[int]],
+    lmap: LanguageNodeMap,
+) -> bool:
+    """True when every OUT variable is written on *every* path through the span.
+
+    A conditionally written OUT is the unsound case line-based liveness cannot
+    see: the helper returns the unwritten value on the paths that skip the
+    write, and the caller's assignment then clobbers the live one. The proof
+    needs branch structure, so it runs structurally here and the span is
+    refused whenever the proof does not go through.
+    """
+    return all(_stmts_assign(span, var, def_lines.get(var, []), lmap) for var in returns)
+
+
+def _stmts_assign(stmts: list[Node], var: str, defs: list[int], lmap: LanguageNodeMap) -> bool:
+    """True when *stmts* writes *var* on every path through them."""
+    return any(_stmt_assigns(st, var, defs, lmap) for st in stmts)
+
+
+def _stmt_assigns(st: Node, var: str, defs: list[int], lmap: LanguageNodeMap) -> bool:
+    """True only when *st* is proved to write *var* however it is entered.
+
+    Positive proof only: a statement kind this cannot classify returns False.
+    Defaulting to True would let any statement sharing a line with a
+    conditional write stand in as the proof.
+    """
+    lo = st.start_point[0] + 1
+    hi = st.end_point[0] + 1
+    if not any(lo <= d <= hi for d in defs):
+        return False
+    if _is_conditional(st, lmap):
+        return _conditional_assigns(st, var, defs, lmap)
+    if st.type in lmap.block_kinds:
+        container = _unwrap_container(st, lmap.block_kinds)
+        return _stmts_assign(container.named_children, var, defs, lmap)
+    if st.type in lmap.with_kinds or st.type in lmap.statement_wrapper_kinds:
+        return _stmts_assign(list(st.named_children), var, defs, lmap)
+    return _unconditional_write(st, var, lmap)
+
+
+def _unconditional_write(st: Node, var: str, lmap: LanguageNodeMap) -> bool:
+    """True when *st* contains a write to *var* no branch or loop guards.
+
+    The walk stops at any control container (a loop body may run zero times, a
+    branch arm may not be taken, a catch arm may not fire) and at nested
+    scopes, so only writes on the statement's own straight-line path count.
+    """
+    write_kinds = lmap.assignment_kinds | lmap.augmented_assign_kinds | lmap.local_decl_kinds
+    if not write_kinds:
+        return False
+    barriers = (
+        lmap.loop_kinds
+        | lmap.try_kinds
+        | lmap.catch_kinds
+        | lmap.switch_kinds
+        | lmap.case_kinds
+        | lmap.branch_kinds
+        | lmap.if_kinds
+        | lmap.function_kinds
+        | lmap.lambda_kinds
+    )
+    if st.type in barriers:
+        return False
+    stack = [st]
+    while stack:
+        node = stack.pop()
+        if node.id != st.id and node.type in barriers:
+            continue
+        if node.type in write_kinds and _writes_var(node, var):
+            return True
+        stack.extend(node.children)
+    return False
+
+
+def _writes_var(node: Node, var: str) -> bool:
+    """True when *var* is on the binding side of this write node."""
+    for field in ("left", "pattern", "declarator", "name"):
+        target = node.child_by_field_name(field)
+        if target is not None:
+            return var in _identifiers(target)
+    return var in _identifiers(node)
+
+
+def _is_conditional(node: Node, lmap: LanguageNodeMap) -> bool:
+    return node.type in lmap.if_kinds or (
+        node.type in lmap.branch_kinds and node.child_by_field_name("condition") is not None
+    )
+
+
+def _conditional_assigns(node: Node, var: str, defs: list[int], lmap: LanguageNodeMap) -> bool:
+    """True when a conditional chain is exhaustive and every arm writes *var*.
+
+    Two chain shapes. Python flattens ``elif``/``else`` into repeated
+    ``alternative`` fields on one ``if``, so the terminal else is a sibling of
+    the chained arms. The C family nests instead: the single ``alternative`` is
+    another ``if``, whose own else ends the chain. Both must be exhaustive.
+    """
+    consequence = node.child_by_field_name("consequence") or node.child_by_field_name("body")
+    if consequence is None:
+        return False
+    alternatives = list(node.children_by_field_name("alternative"))
+    if not alternatives:
+        return False  # no else at all: some path skips the write
+    if not _branch_assigns(consequence, var, defs, lmap):
+        return False
+    for alt in alternatives:
+        if _is_conditional(alt, lmap):
+            # Nested chain (C family): it carries the chain's terminal else.
+            if len(alternatives) == 1:
+                return _conditional_assigns(alt, var, defs, lmap)
+            # Flattened chain (Python's ``elif``): the else is a sibling below.
+            arm = alt.child_by_field_name("consequence") or alt.child_by_field_name("body")
+            if arm is None or not _branch_assigns(arm, var, defs, lmap):
+                return False
+        elif not _branch_assigns(alt, var, defs, lmap):
+            return False
+    return any(not _is_conditional(alt, lmap) for alt in alternatives)
+
+
+def _branch_assigns(node: Node, var: str, defs: list[int], lmap: LanguageNodeMap) -> bool:
+    if _is_conditional(node, lmap):
+        return _conditional_assigns(node, var, defs, lmap)
+    if node.type in lmap.block_kinds:
+        container = _unwrap_container(node, lmap.block_kinds)
+        return _stmts_assign(container.named_children, var, defs, lmap)
+    return _stmts_assign(list(node.named_children), var, defs, lmap)
+
+
+def _loop_carry_free(
+    span: list[Node],
+    loop: Node,
+    s: int,
+    e: int,
+    def_lines: dict[str, list[int]],
+    use_lines: dict[str, list[int]],
+    lmap: LanguageNodeMap,
+) -> bool:
+    """True when a span nested in *loop* carries no state between iterations.
+
+    Two shapes are refused. A variable the span writes that is also read
+    earlier in the same loop is loop-carried: the helper would see this
+    iteration's value where the loop sees the previous one. And a call on a
+    name the loop header reads mutates the state the loop iterates over
+    (``entries.remove(entry)`` inside ``for entry in entries``), which an
+    IN/OUT signature cannot express at all.
+    """
+    loop_start = loop.start_point[0] + 1
+    for var, lines in def_lines.items():
+        if not any(s <= ln <= e for ln in lines):
+            continue
+        if any(loop_start <= ln < s for ln in use_lines.get(var, [])):
+            return False
+
+    carried = _loop_header_names(loop, lmap)
+    if not carried:
+        return True
+    scope_kinds = lmap.function_kinds | lmap.lambda_kinds
+    for st in span:
+        for call in _descend(st, lmap.call_kinds, scope_kinds):
+            callee = call.child_by_field_name("function")
+            if callee is None:
+                named = call.named_children
+                callee = named[0] if named else None
+            root = _receiver_root(callee) if callee is not None else None
+            if root is not None and root in carried:
+                return False
+    return True
+
+
+def _receiver_root(node: Node) -> str | None:
+    """The base name a call is made on: ``entries`` in ``entries.remove(x)``.
+
+    Only the root counts. Matching any name in the callee read
+    ``existing.pages.push(page)`` as touching the ``pages`` the loop iterates,
+    when the receiver is ``existing`` and the collision is in a member name.
+    """
+    cur = node
+    while True:
+        nxt = None
+        for field in ("object", "operand", "value", "argument", "function"):
+            child = cur.child_by_field_name(field)
+            if child is not None:
+                nxt = child
+                break
+        if nxt is None:
+            break
+        cur = nxt
+    if not cur.children and cur.type.endswith("identifier"):
+        text = cur.text
+        return text.decode("utf-8", "replace") if text else None
+    return None
+
+
+# Fields a loop header binds through. Read structurally: a line-range test
+# cannot tell the header's binder from a variable reassigned on the body's
+# first line, and getting that wrong drops the iterated collection out of the
+# carried set, which is exactly the name the mutation check exists to catch.
+_BINDER_FIELDS = ("left", "pattern", "declarator", "name")
+
+
+def _loop_header_names(loop: Node, lmap: LanguageNodeMap) -> set[str]:
+    """Names the loop header reads, minus the ones it binds (the loop variable)."""
+    body = loop.child_by_field_name("body")
+    names: set[str] = set()
+    # The binder is a field of the loop itself in most grammars, and of a
+    # header clause it wraps in Go's ``range``.
+    bound: set[str] = _binder_names(loop)
+    for child in loop.children:
+        if body is not None and child.id == body.id:
+            continue
+        names |= _identifiers(child)
+        bound |= _binder_names(child)
+    return names - bound
+
+
+def _binder_names(node: Node) -> set[str]:
+    """Identifiers in the binding position of *node* or of a header clause it
+    wraps (Go nests its range clause inside the ``for``)."""
+    out: set[str] = set()
+    for field in _BINDER_FIELDS:
+        target = node.child_by_field_name(field)
+        if target is not None:
+            out |= _identifiers(target)
+    if not out:
+        for child in node.named_children:
+            for field in _BINDER_FIELDS:
+                target = child.child_by_field_name(field)
+                if target is not None:
+                    out |= _identifiers(target)
+    return out
+
+
+def _identifiers(node: Node) -> set[str]:
+    out: set[str] = set()
+    stack = [node]
+    while stack:
+        cur = stack.pop()
+        if not cur.children and cur.type.endswith("identifier"):
+            text = cur.text
+            if text:
+                out.add(text.decode("utf-8", "replace"))
+        stack.extend(cur.children)
+    return out
+
+
+def _descend(root: Node, kinds: frozenset[str], skip: frozenset[str]) -> list[Node]:
+    found: list[Node] = []
+    stack = [root]
+    while stack:
+        cur = stack.pop()
+        if cur.type in kinds:
+            found.append(cur)
+        for child in cur.children:
+            if child.type in skip:
+                continue
+            stack.append(child)
+    return found
+
+
 def _unwrap_container(node: Node, block_kinds: frozenset[str]) -> Node:
     """Descend through a single nested statement-container (Go's
     ``block`` -> ``statement_list``) to the node whose named children are the
@@ -251,23 +519,31 @@ def _unwrap_container(node: Node, block_kinds: frozenset[str]) -> Node:
 
 
 def _all_blocks(
-    fn_node: Node, block_kinds: frozenset[str], scope_kinds: frozenset[str]
-) -> list[Node]:
+    fn_node: Node,
+    block_kinds: frozenset[str],
+    scope_kinds: frozenset[str],
+    loop_kinds: frozenset[str],
+) -> list[tuple[Node, Node | None]]:
     """Every statement container in the function (body + nested), excluding the
-    bodies of nested functions / lambdas."""
+    bodies of nested functions / lambdas, each paired with the innermost loop
+    enclosing it (``None`` at loop-free depth)."""
     body = fn_node.child_by_field_name("body")
     if body is None:
         return []
-    blocks: list[Node] = []
-    stack: list[Node] = [body]
+    blocks: list[tuple[Node, Node | None]] = []
+    stack: list[tuple[Node, Node | None]] = [(body, None)]
     while stack:
-        node = stack.pop()
+        node, loop = stack.pop()
         if node.type in block_kinds:
-            blocks.append(node)
+            blocks.append((node, loop))
+        is_loop = node.type in loop_kinds
+        body = node.child_by_field_name("body") if is_loop else None
         for child in node.children:
             if child.type in scope_kinds:
                 continue
-            stack.append(child)
+            # Only the loop's body repeats. A ``for ... else`` clause runs once.
+            in_loop = node if (is_loop and body is not None and child.id == body.id) else loop
+            stack.append((child, in_loop))
     return blocks
 
 

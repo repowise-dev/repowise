@@ -370,7 +370,7 @@ def _render_split_file_plans_console(plans: list[dict]) -> None:
         )
         for i, g in enumerate(groups, 1):
             console.print(
-                f"  [bold]{i}.[/bold] [green]{g.get('suggested_file')}[/green]: "
+                f"  [bold]{i}.[/bold] [green]{g.get('suggested_file') or '(unnamed)'}[/green]: "
                 f"{', '.join(g.get('symbols', []))}"
             )
         residual = pl.get("residual")
@@ -392,7 +392,8 @@ def _render_split_file_plans_md(plans: list[dict]) -> None:
             f"modularity {ev.get('modularity')}, split into {len(groups)} files:"
         )
         for i, g in enumerate(groups, 1):
-            click.echo(f"  {i}. `{g.get('suggested_file')}`: {', '.join(g.get('symbols', []))}")
+            name = g.get("suggested_file") or "(unnamed)"
+            click.echo(f"  {i}. `{name}`: {', '.join(g.get('symbols', []))}")
         residual = pl.get("residual")
         if residual and residual.get("symbols"):
             click.echo(f"  - core (shared): {', '.join(residual['symbols'])}")

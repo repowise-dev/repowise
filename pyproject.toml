@@ -192,7 +192,7 @@ line-length = 100
 # Language sample fixtures are analyzer *inputs*, not code we run. Several are
 # deliberately malformed (undefined names, unclosed file handles) because that is
 # exactly the finding the test asserts on. Linting them would fail forever.
-extend-exclude = ["tests/fixtures/lang_samples"]
+extend-exclude = ["tests/fixtures/lang_samples", "tests/fixtures/refactoring_corpus"]
 
 [tool.ruff.lint]
 select = [
