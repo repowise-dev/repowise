@@ -125,7 +125,7 @@ const SEGMENTS: { key: CouplingSegment | "all"; label: string; help: string }[] 
   {
     key: "outside",
     label: "Outside the graph",
-    help: "At least one side was never parsed — lockfiles, changelogs, config, docs. Real coupling, but not a code question.",
+    help: "At least one side can carry no dependency edge: manifests, changelogs, config, docs. Real coupling, but not a code question.",
   },
   { key: "all", label: "All", help: "Every coupling, including any the index never labelled." },
 ];
@@ -273,6 +273,22 @@ export function CouplingExplorer({
 
   const capped = data.total_edges > edges.length;
 
+  // The span the couplings are drawn across. Both counts are pre-cap, so the
+  // clause holds whether or not the edge list was capped; an older index
+  // reports neither, and "in this repository" stays true without them.
+  const spanClause =
+    data.coupled_files > 0 && data.total_files > 0 ? (
+      <>
+        {" "}
+        across{" "}
+        <strong className="font-medium">{data.coupled_files.toLocaleString()}</strong> of{" "}
+        <strong className="font-medium">{data.total_files.toLocaleString()}</strong> files
+        with commit history
+      </>
+    ) : (
+      " in this repository"
+    );
+
   return (
     <div className="space-y-5">
       {/* No GraphCanvasShell: it hosts fixed-height canvases behind an
@@ -322,20 +338,21 @@ export function CouplingExplorer({
 
       <div className="space-y-3 border-t border-[var(--color-border-default)] pt-4">
         {/* Names the scope the segment counts are counted over, so "All 200"
-            and "14,115 couplings" stop looking like a contradiction. */}
+            and "14,115 couplings" stop looking like a contradiction, and gives
+            that total a denominator: the same number over 300 files and over
+            3,000 files describes two different repositories. */}
         <p className="text-xs text-[var(--color-text-secondary)]">
           {capped ? (
             <>
               Showing the <strong className="font-medium">{edges.length}</strong> strongest
               of{" "}
               <strong className="font-medium">{data.total_edges.toLocaleString()}</strong>{" "}
-              couplings in this repository. The counts below describe those{" "}
-              {edges.length}.
+              couplings{spanClause}. The counts below describe those {edges.length}.
             </>
           ) : (
             <>
               All <strong className="font-medium">{edges.length.toLocaleString()}</strong>{" "}
-              couplings in this repository.
+              couplings{spanClause}.
             </>
           )}
         </p>

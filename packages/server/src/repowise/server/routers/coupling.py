@@ -50,4 +50,6 @@ async def coupling(
         nodes=[CouplingNodeResponse(**vars(n)) for n in graph.nodes],
         edges=[CouplingEdgeResponse(**vars(e)) for e in graph.edges],
         total_edges=graph.total_edges,
+        coupled_files=graph.coupled_files,
+        total_files=graph.total_files,
     )

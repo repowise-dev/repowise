@@ -7,6 +7,7 @@ export {
 } from "./coupling-pair-drawer";
 export {
   couplingClaim,
+  dependencyKindPhrase,
   isSamePair,
   pairHas,
   peakConfidence,

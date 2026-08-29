@@ -31,8 +31,15 @@ class EdgesMixin:
         """Record, on each partner, whether the graph explains the pair.
 
         Co-change is mined from git with no view of the code, so this is the
-        only point where both are in hand. Writes ``structural`` in place and
-        returns how many pairs came back unexplained.
+        only point where both are in hand. Writes ``structural`` and, when a
+        dependency was found, ``dependency_kind`` in place; returns how many
+        pairs came back unexplained.
+
+        An edge that exists is checked first, so a pair is never dismissed as
+        not-applicable while the graph is holding the very edge that explains
+        it. Only when nothing was found does it matter whether anything
+        *could* have been -- see
+        :meth:`~...analysis.graph_view.ImportEdgeView.can_carry_dependency`.
 
         Takes decoded partner lists; the wrapper in the git phase handles the
         JSON column the records are persisted in.
@@ -48,17 +55,22 @@ class EdgesMixin:
         view = ImportEdgeView(self._graph)
         unexplained = 0
         for file_path, partners in partners_by_file.items():
-            known_self = view.knows(file_path)
+            eligible_self = view.can_carry_dependency(file_path)
             for record in partners:
                 if not isinstance(record, dict):
                     continue
                 partner_path = record.get("file_path") or record.get("path")
                 if not partner_path:
                     continue
-                if not known_self or not view.knows(str(partner_path)):
-                    record["structural"] = STRUCTURAL_NOT_APPLICABLE
-                elif view.has_dependency(file_path, str(partner_path)):
+                partner_path = str(partner_path)
+                kind = view.dependency_kind(file_path, partner_path)
+                if kind is not None:
                     record["structural"] = STRUCTURAL_CORROBORATED
+                    record["dependency_kind"] = kind
+                    continue
+                record.pop("dependency_kind", None)
+                if not eligible_self or not view.can_carry_dependency(partner_path):
+                    record["structural"] = STRUCTURAL_NOT_APPLICABLE
                 else:
                     record["structural"] = STRUCTURAL_UNEXPLAINED
                     unexplained += 1

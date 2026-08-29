@@ -105,6 +105,54 @@ class TestStructuralLabel:
         partners = {"a.py": ["b.py", {"nope": 1}, {"file_path": "b.py", "frequency": 9}]}
         assert builder.label_co_change_structure(partners) == 1
 
+    def test_a_manifest_in_the_graph_is_still_not_applicable(
+        self, builder: GraphBuilder
+    ) -> None:
+        """The bug this replaced: a manifest *is* a node, so membership said
+        "unexplained" and dropped release plumbing into the findings segment.
+        No resolver can emit an edge for TOML, so there is nothing to find."""
+        builder._graph.add_node("pyproject.toml", language="toml")
+        partners = {"a.py": [{"file_path": "pyproject.toml", "frequency": 40}]}
+        assert builder.label_co_change_structure(partners) == 0
+        assert partners["a.py"][0]["structural"] == "not_applicable"
+
+    def test_a_doc_in_the_graph_is_not_applicable(self, builder: GraphBuilder) -> None:
+        builder._graph.add_node("README.md", language="markdown")
+        partners = {"a.py": [{"file_path": "README.md", "frequency": 40}]}
+        assert builder.label_co_change_structure(partners) == 0
+        assert partners["a.py"][0]["structural"] == "not_applicable"
+
+    def test_a_language_with_a_resolver_stays_a_finding(self, builder: GraphBuilder) -> None:
+        """The gate is "can a resolver emit an edge", not "is it code": HTML is
+        markup, but it resolves asset references, so a missing one is real."""
+        builder._graph.add_node("page.html", language="html")
+        partners = {"a.py": [{"file_path": "page.html", "frequency": 9}]}
+        assert builder.label_co_change_structure(partners) == 1
+        assert partners["a.py"][0]["structural"] == "unexplained"
+
+    def test_an_edge_outranks_the_language_gate(self, builder: GraphBuilder) -> None:
+        """An edge that exists explains the pair whatever the language is."""
+        builder._graph.add_node("page.html", language="markdown")
+        builder._graph.add_edge("a.py", "page.html", edge_type="framework")
+        partners = {"a.py": [{"file_path": "page.html", "frequency": 9}]}
+        assert builder.label_co_change_structure(partners) == 0
+        assert partners["a.py"][0]["structural"] == "corroborated"
+
+    def test_the_corroborating_edge_names_itself(self, builder: GraphBuilder) -> None:
+        builder._graph.add_edge("a.py", "b.py", edge_type="type_use")
+        partners = {"a.py": [{"file_path": "b.py", "frequency": 9}]}
+        builder.label_co_change_structure(partners)
+        assert partners["a.py"][0]["dependency_kind"] == "type_use"
+
+    def test_a_stale_kind_is_cleared_when_the_edge_goes(self, builder: GraphBuilder) -> None:
+        """Records are relabelled in place across runs, so a kind left behind
+        would claim a dependency the graph no longer has."""
+        partners = {
+            "a.py": [{"file_path": "b.py", "frequency": 9, "dependency_kind": "imports"}]
+        }
+        assert builder.label_co_change_structure(partners) == 1
+        assert "dependency_kind" not in partners["a.py"][0]
+
 
 class TestLabelPersistence:
     """``label_co_change_structure`` writes through the JSON column.

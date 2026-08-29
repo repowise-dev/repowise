@@ -17,6 +17,7 @@ function edge(s: string, t: string, strength = 3, last: string | null = "2026-06
     confidence_ab: null,
     confidence_ba: null,
     structural: null,
+    dependency_kind: null,
   };
 }
 

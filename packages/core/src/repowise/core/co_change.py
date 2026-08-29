@@ -55,10 +55,10 @@ MIN_CO_CHANGE_SUPPORT: int = 2
 MAX_PARTNERS_PER_FILE: int = 25
 
 # Whether an import-graph edge explains a pair. ``NOT_APPLICABLE`` is not a
-# weaker ``UNEXPLAINED``: a file the parser never ingested cannot carry an edge
-# in either direction, so there is nothing to corroborate. Only
-# ``UNEXPLAINED`` is a finding. ``None`` means an index written before the
-# distinction existed.
+# weaker ``UNEXPLAINED``: no resolver can emit an edge for a manifest, a
+# changelog or a file the parser never saw, so there is nothing to
+# corroborate. Only ``UNEXPLAINED`` is a finding. ``None`` means an index
+# written before the distinction existed.
 STRUCTURAL_CORROBORATED = "corroborated"
 STRUCTURAL_UNEXPLAINED = "unexplained"
 STRUCTURAL_NOT_APPLICABLE = "not_applicable"
@@ -74,6 +74,9 @@ class CoChangePartner:
     ``support / self_commits`` is an honest directional confidence. They are
     zero on an index written before they were recorded.
 
+    ``dependency_kind`` is the ``edge_type`` behind a ``corroborated``
+    verdict, and is ``None`` for every other verdict.
+
     ``record`` is the verbatim source record, for callers that put it back on
     the wire or read a field this module does not model; it is excluded from
     equality so two partners compare on their meaning.
@@ -86,6 +89,7 @@ class CoChangePartner:
     self_commits: int = 0
     partner_commits: int = 0
     structural: str | None = None
+    dependency_kind: str | None = None
     record: dict = field(default_factory=dict, compare=False, repr=False)
 
 
@@ -132,6 +136,7 @@ def parse_partners(raw: object) -> list[CoChangePartner]:
             continue
         last = record.get("last_co_change")
         structural = record.get("structural")
+        kind = record.get("dependency_kind")
         out.append(
             CoChangePartner(
                 file_path=str(path),
@@ -141,6 +146,7 @@ def parse_partners(raw: object) -> list[CoChangePartner]:
                 self_commits=_as_count(record.get("self_commits")),
                 partner_commits=_as_count(record.get("partner_commits")),
                 structural=structural if isinstance(structural, str) else None,
+                dependency_kind=kind if isinstance(kind, str) else None,
                 record=record,
             )
         )

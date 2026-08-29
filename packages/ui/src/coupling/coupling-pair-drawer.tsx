@@ -6,7 +6,12 @@ import { AdaptivePanel } from "../shared/adaptive-panel";
 import { HealthBadge } from "../health/health-badge";
 import { AiPromptButton } from "../health/ai-prompt-button";
 import { formatDate, formatDateTime } from "../lib/format";
-import { couplingClaim, segmentOf, type CouplingSegment } from "./claim";
+import {
+  couplingClaim,
+  dependencyKindPhrase,
+  segmentOf,
+  type CouplingSegment,
+} from "./claim";
 import type { CouplingEdge, CouplingNode } from "@repowise-dev/types/coupling";
 
 /** Injected link component (e.g. Next's Link); defaults to a plain anchor. */
@@ -52,7 +57,7 @@ const VERDICT: Record<CouplingSegment, { word: string; dot: string; body: string
   outside: {
     word: "Outside the graph",
     dot: "bg-[var(--color-text-tertiary)]",
-    body: "At least one side was never parsed — a lockfile, changelog, config, or doc — so there was no edge to look for and its absence is not evidence of anything. The coupling is real, but it is release plumbing rather than a code-structure question.",
+    body: "At least one side is a manifest, changelog, config, or doc, and no resolver can emit a dependency edge for it, so there was no edge to look for and its absence is not evidence of anything. The coupling is real, but it is release plumbing rather than a code-structure question.",
   },
 };
 
@@ -92,6 +97,7 @@ export function CouplingPairDrawer({
   const Anchor: LinkLike = LinkComponent ?? "a";
   const segment = edge ? segmentOf(edge) : null;
   const verdict = segment ? VERDICT[segment] : null;
+  const kindPhrase = edge ? dependencyKindPhrase(edge) : null;
 
   const moduleA = edge ? (nodeByPath.get(edge.source)?.module ?? null) : null;
   const moduleB = edge ? (nodeByPath.get(edge.target)?.module ?? null) : null;
@@ -177,6 +183,11 @@ export function CouplingPairDrawer({
               <p className="flex items-center gap-1.5">
                 <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${verdict.dot}`} aria-hidden />
                 <span className={MICRO}>{verdict.word}</span>
+                {/* The kind rides in the verdict line, where the reader is
+                    already asking what connects them. */}
+                {kindPhrase && (
+                  <span className={MICRO}>· {kindPhrase.toLowerCase()}</span>
+                )}
               </p>
             )}
             <p className="text-[15px] leading-relaxed text-[var(--color-text-primary)] [text-wrap:pretty]">

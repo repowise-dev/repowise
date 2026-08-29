@@ -91,7 +91,8 @@ class CouplingEdge:
     both. ``confidence_ab`` is the share of ``source``'s commits that also
     touched ``target``, and ``confidence_ba`` the reverse; either is ``None``
     when the commit total is unknown. ``last_co_change`` is the ISO date of the
-    most recent shared commit, or ``None`` if unknown.
+    most recent shared commit, or ``None`` if unknown. ``dependency_kind`` is
+    the graph edge behind a ``corroborated`` verdict, and ``None`` otherwise.
     """
 
     source: str
@@ -102,6 +103,7 @@ class CouplingEdge:
     confidence_ab: float | None = None
     confidence_ba: float | None = None
     structural: str | None = None
+    dependency_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -114,6 +116,7 @@ class _Pair:
     commits_a: int
     commits_b: int
     structural: str | None
+    dependency_kind: str | None
 
     def merge(self, other: _Pair) -> _Pair:
         """Combine the two directions of the same pair, keeping the best of each."""
@@ -124,6 +127,7 @@ class _Pair:
             commits_a=max(self.commits_a, other.commits_a),
             commits_b=max(self.commits_b, other.commits_b),
             structural=self.structural or other.structural,
+            dependency_kind=self.dependency_kind or other.dependency_kind,
         )
 
 
@@ -141,6 +145,12 @@ class CouplingGraph:
     nodes: list[CouplingNode]
     edges: list[CouplingEdge]
     total_edges: int
+    #: Distinct files appearing in at least one pre-cap pair, over the files
+    #: with any commit history. Gives ``total_edges`` a scale: 14,115
+    #: couplings across 300 files and across 3,000 files describe different
+    #: repositories.
+    coupled_files: int = 0
+    total_files: int = 0
 
 
 def coupling_graph(
@@ -162,7 +172,8 @@ def coupling_graph(
     observed strength and the most recent date. Edges are sorted by strength
     descending and capped at *limit* so a caller keeps the most consequential
     couplings; ``total_edges`` reports the pre-cap count for an honest "showing
-    N of M" line. Only files referenced by a kept edge become nodes.
+    N of M" line, ``coupled_files`` the distinct files those pairs span, and ``total_files``
+    how many files were considered at all. Only files referenced by a kept edge become nodes.
     """
     # Deduplicate symmetric partner records into undirected edges. Each side
     # records the pair from its own vantage point, so keep whichever is
@@ -183,6 +194,7 @@ def coupling_graph(
                 commits_a=partner.self_commits if forward else partner.partner_commits,
                 commits_b=partner.partner_commits if forward else partner.self_commits,
                 structural=partner.structural,
+                dependency_kind=partner.dependency_kind,
             )
             prev = best.get(key)
             best[key] = seen if prev is None else prev.merge(seen)
@@ -197,11 +209,15 @@ def coupling_graph(
             confidence_ab=_ratio(pair.support, pair.commits_a),
             confidence_ba=_ratio(pair.support, pair.commits_b),
             structural=pair.structural,
+            dependency_kind=pair.dependency_kind,
         )
         for (a, b), pair in best.items()
     ]
     edges.sort(key=lambda e: e.strength, reverse=True)
     total = len(edges)
+    # Counted over the keys of the pre-cap dict, so it scales `total_edges`
+    # rather than the capped slice below it.
+    coupled_files = len({path for key in best for path in key})
     edges = edges[:limit]
 
     # Build nodes only for files referenced by a kept edge.
@@ -221,4 +237,12 @@ def coupling_graph(
         for path in sorted(referenced)
     ]
 
-    return CouplingGraph(nodes=nodes, edges=edges, total_edges=total)
+    return CouplingGraph(
+        nodes=nodes,
+        edges=edges,
+        total_edges=total,
+        coupled_files=coupled_files,
+        # Every file the git walk recorded, coupled or not -- the denominator
+        # the coupled count is a share of.
+        total_files=len(git_meta_by_path),
+    )

@@ -228,6 +228,8 @@ interface WireCoupling {
   nodes?: CouplingGraphResponse["nodes"];
   edges?: Partial<CouplingEdge>[];
   total_edges?: number;
+  coupled_files?: number;
+  total_files?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -854,10 +856,19 @@ export function createHostedProvider(config: HostedProviderConfig): HostedProvid
         confidence_ab: e.confidence_ab ?? null,
         confidence_ba: e.confidence_ba ?? null,
         structural: e.structural ?? null,
+        dependency_kind: e.dependency_kind ?? null,
       }));
       // Falling back to the post-cap length understates the pre-cap count, but
       // an honest "showing N of N" beats `NaN` downstream.
-      return { nodes, edges, total_edges: res.total_edges ?? edges.length };
+      return {
+        nodes,
+        edges,
+        total_edges: res.total_edges ?? edges.length,
+        // An older snapshot carries no file count; deriving one from the
+        // capped edges would understate it, and 0 already reads as unknown.
+        coupled_files: res.coupled_files ?? 0,
+        total_files: res.total_files ?? 0,
+      };
     },
 
     async getFilesIndex(repoId): Promise<FilesIndexResponse> {

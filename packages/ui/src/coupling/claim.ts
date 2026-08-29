@@ -28,8 +28,9 @@ export function pairHas(pair: CouplingPair | null | undefined, path: string | nu
  * The reader-facing split of the list, derived from the wire's three-valued
  * `structural`. `unexplained` is the finding; `explained` is a pair the
  * dependency graph already accounts for; `outside` is a pair with at least one
- * side the parser never ingested (a lockfile, a changelog), where there was no
- * edge to look for and so no hidden coupling to claim.
+ * side no resolver could ever emit an edge for (a manifest, a changelog, a
+ * file the parser never saw), where there was no edge to look for and so no
+ * hidden coupling to claim.
  */
 export type CouplingSegment = "unexplained" | "explained" | "outside";
 
@@ -39,6 +40,32 @@ export function segmentOf(edge: CouplingEdge): CouplingSegment | null {
   if (edge.structural === "corroborated") return "explained";
   if (edge.structural === "not_applicable") return "outside";
   return null;
+}
+
+/**
+ * How the graph joins two files, as a noun phrase. Keyed on the wire's
+ * `edge_type`, so an unrecognized kind reads as `null` and the caller falls
+ * back to naming no kind at all rather than printing a raw identifier.
+ */
+const DEPENDENCY_KIND_WORDS: Record<string, string> = {
+  imports: "An import",
+  type_use: "A type reference",
+  framework: "Framework wiring",
+  dynamic_uses: "A dynamic reference",
+  dynamic_imports: "A dynamic import",
+  dynamic_url_route: "A URL route",
+  reads: "A member read",
+};
+
+/**
+ * The named dependency behind an explained pair, or `null` when there is none
+ * to name: a different segment, an index written before the kind was
+ * recorded, or a kind this table does not know.
+ */
+export function dependencyKindPhrase(edge: CouplingEdge): string | null {
+  if (segmentOf(edge) !== "explained") return null;
+  const kind = edge.dependency_kind;
+  return kind ? (DEPENDENCY_KIND_WORDS[kind] ?? null) : null;
 }
 
 /** The higher of the two directions: the strongest claim the pair supports. */
@@ -61,10 +88,16 @@ export function structuralClause(edge: CouplingEdge): string {
   switch (segmentOf(edge)) {
     case "unexplained":
       return "No dependency in the graph connects them.";
-    case "explained":
-      return "The dependency graph already connects them.";
+    case "explained": {
+      // Naming the kind is the point: an import and a framework binding are
+      // different explanations, and "explained" alone says neither.
+      const phrase = dependencyKindPhrase(edge);
+      return phrase
+        ? `${phrase} in the graph already connects them.`
+        : "The dependency graph already connects them.";
+    }
     case "outside":
-      return "At least one side is outside the dependency graph.";
+      return "At least one side cannot carry a dependency edge.";
     default:
       return "";
   }

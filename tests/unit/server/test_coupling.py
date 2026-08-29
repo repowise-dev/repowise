@@ -41,6 +41,7 @@ def test_edge_wire_shape() -> None:
         confidence_ab=0.9,
         confidence_ba=0.1,
         structural="unexplained",
+        dependency_kind=None,
     )
     assert CouplingEdgeResponse(**vars(e)).model_dump() == {
         "source": "a.py",
@@ -51,6 +52,7 @@ def test_edge_wire_shape() -> None:
         "confidence_ab": 0.9,
         "confidence_ba": 0.1,
         "structural": "unexplained",
+        "dependency_kind": None,
     }
 
 
@@ -66,4 +68,21 @@ def test_an_edge_from_an_older_index_still_serializes() -> None:
         "confidence_ab": None,
         "confidence_ba": None,
         "structural": None,
+        "dependency_kind": None,
     }
+
+
+def test_a_corroborated_edge_names_the_dependency() -> None:
+    """The kind rides beside the verdict: "explained" alone does not say how."""
+    e = CouplingEdge(
+        source="a.py",
+        target="b.py",
+        strength=4.25,
+        last_co_change="2026-06-01",
+        support=9,
+        structural="corroborated",
+        dependency_kind="type_use",
+    )
+    dumped = CouplingEdgeResponse(**vars(e)).model_dump()
+    assert dumped["structural"] == "corroborated"
+    assert dumped["dependency_kind"] == "type_use"

@@ -18,6 +18,7 @@ function edge(
     confidence_ab: null,
     confidence_ba: null,
     structural: null,
+    dependency_kind: null,
   };
 }
 

@@ -11,11 +11,21 @@ than one of them needs it, and a view of the graph belongs to none of them.
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from typing import Any, Protocol
 
+from ..ingestion.languages import REGISTRY
 from ..ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 
 __all__ = ["HasEdge", "ImportEdgeView"]
+
+
+def _language_of(path: str) -> str:
+    """The registry's language tag for *path*, or ``"unknown"``."""
+    name = PurePosixPath(path.replace("\\", "/")).name
+    return REGISTRY.from_filename(name) or REGISTRY.from_extension(
+        PurePosixPath(name).suffix.lower()
+    )
 
 
 class HasEdge(Protocol):
@@ -23,9 +33,9 @@ class HasEdge(Protocol):
 
     def has_edge(self, src: str, dst: str, key: str = "imports") -> bool: ...
 
-    def has_dependency(self, a: str, b: str) -> bool: ...
+    def dependency_kind(self, a: str, b: str) -> str | None: ...
 
-    def knows(self, path: str) -> bool: ...
+    def can_carry_dependency(self, path: str) -> bool: ...
 
 
 class ImportEdgeView:
@@ -54,38 +64,55 @@ class ImportEdgeView:
             return False
         return data.get("edge_type") == key
 
-    def has_dependency(self, a: str, b: str) -> bool:
-        """Whether any file-level dependency joins the two, either direction.
+    def dependency_kind(self, a: str, b: str) -> str | None:
+        """The ``edge_type`` of any file-level dependency joining the two.
 
         ``imports`` is only one of these; matching it alone reports a pair as
         unexplained when a type reference or a framework binding already
-        accounts for it.
+        accounts for it. The kind, not just a yes/no, because an import and a
+        framework binding are different claims about why two files move
+        together. Direction is not reported: the pair is undirected, and
+        ``a -> b`` is tried first only to make the answer deterministic.
         """
         return self._typed(a, b) or self._typed(b, a)
 
-    def _typed(self, src: str, dst: str) -> bool:
+    def _typed(self, src: str, dst: str) -> str | None:
         g = self._graph
         if g is None:
-            return False
+            return None
         try:
             if not g.has_edge(src, dst):
-                return False
+                return None
             data = g.get_edge_data(src, dst) or {}
         except Exception:
-            return False
-        return data.get("edge_type") in FILE_DEPENDENCY_EDGE_TYPES
+            return None
+        kind = data.get("edge_type")
+        return kind if kind in FILE_DEPENDENCY_EDGE_TYPES else None
 
-    def knows(self, path: str) -> bool:
-        """Whether the parser ingested this file, so an edge is possible at all.
+    def can_carry_dependency(self, path: str) -> bool:
+        """Whether an absent edge at *path* would mean anything.
 
-        A lockfile or a changelog is tracked by git and co-changes constantly,
-        but never becomes a node, so it has no edge to find and its absence
-        says nothing.
+        Being a node is not enough. ``pyproject.toml`` and ``README.md`` are
+        both ingested and both become nodes, yet no resolver can ever emit an
+        edge for them, so "no edge found" is a fact about the language rather
+        than about the repository. The registry already grades this per
+        language as ``import_support``; ``"none"`` is the generic stem-lookup
+        fallback, which is not a mechanism a finding can rest on.
+
+        A file the parser never saw fails here too: a lockfile in a blocked
+        directory has no edge to look for either.
         """
         g = self._graph
         if g is None:
             return False
         try:
-            return path in g
+            attrs = g.nodes[path]
         except Exception:
             return False
+        language = attrs.get("language")
+        if not isinstance(language, str):
+            # Not every node carries the attribute: a node synthesised for a
+            # dynamic edge target has none, and persistence drops null
+            # columns on rehydrate. The path answers the same question.
+            language = _language_of(path)
+        return REGISTRY.import_support_for(language) != "none"

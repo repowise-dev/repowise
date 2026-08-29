@@ -70,6 +70,26 @@ def test_edges_sorted_by_strength_and_capped_with_total() -> None:
     assert g.total_edges == 3  # pre-cap count preserved for the "showing N of M" line
 
 
+def test_coupled_files_counts_the_pre_cap_span_not_the_kept_nodes() -> None:
+    """The denominator scales ``total_edges``, so it must be counted before the
+    cap: keeping one of two disjoint pairs leaves two nodes, but four files
+    are coupled."""
+    metrics = [_Metric(p) for p in ("a.py", "b.py", "c.py", "d.py")]
+    git = {
+        "a.py": _git(("b.py", 5.0, None)),
+        "b.py": _git(("a.py", 5.0, None)),
+        "c.py": _git(("d.py", 1.0, None)),
+        "d.py": _git(("c.py", 1.0, None)),
+    }
+    g = coupling_graph(metrics, git, limit=1)
+    assert g.coupled_files == 4
+    assert len(g.nodes) == 2
+
+
+def test_coupled_files_is_zero_with_no_couplings() -> None:
+    assert coupling_graph([], {}).coupled_files == 0
+
+
 def test_nodes_only_for_files_in_kept_edges_and_enriched() -> None:
     metrics = [
         _Metric("a.py", score=3.0, nloc=200, module="api"),

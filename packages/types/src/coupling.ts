@@ -47,6 +47,12 @@ export interface CouplingEdge {
    * absence is not evidence of hidden coupling. `null` on an older index.
    */
   structural: CouplingStructure | null;
+  /**
+   * The graph edge behind a `corroborated` verdict -- `imports`, `type_use`,
+   * `framework`, and so on. `null` for every other verdict, and on an index
+   * written before the kind was recorded.
+   */
+  dependency_kind: string | null;
 }
 
 /** What the dependency graph says about a co-changing pair. */
@@ -58,4 +64,8 @@ export interface CouplingGraphResponse {
   edges: CouplingEdge[];
   /** Pre-cap edge count, for an honest "showing N of M couplings" line. */
   total_edges: number;
+  /** Distinct files spanned by those pre-cap pairs, so the count has a scale. */
+  coupled_files: number;
+  /** Files with any commit history: the denominator `coupled_files` is a share of. */
+  total_files: number;
 }

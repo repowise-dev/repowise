@@ -26,6 +26,7 @@ function edge(s: string, t: string, strength = 3): CouplingEdge {
     confidence_ab: null,
     confidence_ba: null,
     structural: null,
+    dependency_kind: null,
   };
 }
 
@@ -33,7 +34,13 @@ function graph(
   nodes: CouplingNode[],
   edges: CouplingEdge[],
 ): CouplingGraphResponse {
-  return { nodes, edges, total_edges: edges.length };
+  return {
+    nodes,
+    edges,
+    total_edges: edges.length,
+    coupled_files: nodes.length,
+    total_files: nodes.length,
+  };
 }
 
 describe("CouplingExplorer", () => {
@@ -206,6 +213,66 @@ describe("CouplingExplorer pair selection", () => {
     expect(panel.getByText("100%")).toBeInTheDocument();
     expect(panel.getByText(/47% of its commits also touched b\.py/)).toBeInTheDocument();
     expect(panel.getByText("Unexplained")).toBeInTheDocument();
+  });
+
+  it("names the dependency behind an explained pair", () => {
+    const explained = graph(
+      [node("core/a.py"), node("core/b.py")],
+      [
+        {
+          ...edge("core/a.py", "core/b.py", 5),
+          support: 9,
+          structural: "corroborated",
+          dependency_kind: "type_use",
+        },
+      ],
+    );
+    render(<CouplingExplorer data={explained} />);
+    fireEvent.click(inTable().getAllByRole("row")[1]!);
+    const panel = within(screen.getByRole("dialog"));
+    // "Explained" alone does not say how the graph explains it.
+    expect(panel.getByText("Explained")).toBeInTheDocument();
+    // Both the verdict chip and the claim sentence name it, from one helper.
+    expect(panel.getByText("· a type reference")).toBeInTheDocument();
+    expect(
+      panel.getByText(/A type reference in the graph already connects them/),
+    ).toBeInTheDocument();
+  });
+
+  it("says nothing about the kind when the index recorded none", () => {
+    const explained = graph(
+      [node("core/a.py"), node("core/b.py")],
+      [{ ...edge("core/a.py", "core/b.py", 5), support: 9, structural: "corroborated" }],
+    );
+    render(<CouplingExplorer data={explained} />);
+    fireEvent.click(inTable().getAllByRole("row")[1]!);
+    const panel = within(screen.getByRole("dialog"));
+    expect(panel.getByText("Explained")).toBeInTheDocument();
+    expect(panel.getByText(/The dependency graph already connects them/i)).toBeInTheDocument();
+  });
+
+  it("gives the coupling total a denominator in files", () => {
+    const scaled: CouplingGraphResponse = {
+      ...graph([node("core/a.py"), node("core/b.py")], [edge("core/a.py", "core/b.py")]),
+      total_edges: 14147,
+      coupled_files: 2038,
+      total_files: 3787,
+    };
+    render(<CouplingExplorer data={scaled} />);
+    expect(screen.getByText(/files with commit history/)).toHaveTextContent(
+      "across 2,038 of 3,787 files with commit history",
+    );
+  });
+
+  it("omits the denominator when the index does not carry one", () => {
+    const older: CouplingGraphResponse = {
+      ...graph([node("core/a.py"), node("core/b.py")], [edge("core/a.py", "core/b.py")]),
+      coupled_files: 0,
+      total_files: 0,
+    };
+    render(<CouplingExplorer data={older} />);
+    expect(screen.queryByText(/files with commit history/)).not.toBeInTheDocument();
+    expect(screen.getByText(/in this repository/)).toBeInTheDocument();
   });
 
   it("treats an unrecognized pipe path as one file, not a pair", () => {

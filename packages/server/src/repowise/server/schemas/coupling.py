@@ -31,6 +31,9 @@ class CouplingEdgeResponse(BaseModel):
     #: Whether the dependency graph explains the pair: ``corroborated``,
     #: ``unexplained``, or ``not_applicable`` when a side is not in the graph.
     structural: Literal["corroborated", "unexplained", "not_applicable"] | None = None
+    #: The graph edge behind a ``corroborated`` verdict (``imports``,
+    #: ``type_use``, ``framework``, ...). ``None`` for every other verdict.
+    dependency_kind: str | None = None
 
 
 class CouplingGraphResponse(BaseModel):
@@ -38,3 +41,7 @@ class CouplingGraphResponse(BaseModel):
     edges: list[CouplingEdgeResponse] = Field(default_factory=list)
     #: Pre-cap edge count, for an honest "showing N of M" line.
     total_edges: int = 0
+    #: Distinct files spanned by those pre-cap pairs, over every file with
+    #: commit history, so the count has a scale.
+    coupled_files: int = 0
+    total_files: int = 0
