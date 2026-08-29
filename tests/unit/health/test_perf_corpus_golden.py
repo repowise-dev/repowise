@@ -1,10 +1,9 @@
 """Golden characterization of the performance opportunity read model.
 
-This suite exists to make Phase 2's grouping, actionability, and ranking changes
-*visible*. It asserts the exact serialized output of today's engine over a
-checked-in corpus, so any later semantic change shows up as a reviewable golden
-diff rather than as a silent count move. Nothing here is a claim that current
-grouping is correct; several cases pin behaviour the plan intends to change.
+Asserts the exact serialized output of the engine over a checked-in corpus, so
+a change to grouping, actionability, or ranking shows up as a reviewable golden
+diff rather than a silent count move. Nothing here claims the current grouping
+is correct; several cases pin behaviour that should improve.
 """
 
 from __future__ import annotations
@@ -118,7 +117,7 @@ def test_linking_stamps_the_id_the_builder_derives() -> None:
     ("case", "expected_groups", "expected_strategies"),
     [
         # A generic infrastructure sink merges unrelated callers into one group
-        # and refuses to claim a plan. Phase 2 is expected to split this.
+        # and refuses to claim a plan.
         ("generic_infra_sink", 1, {None}),
         # A specific shared helper keeps a coherent suffix and does get a plan.
         ("specific_shared_helper", 1, {"batch_or_prefetch_io"}),
@@ -134,8 +133,8 @@ def test_linking_stamps_the_id_the_builder_derives() -> None:
         # Execution context is an identity input: one shape, three contexts.
         # Each context holds a single caller, so its shared suffix is the whole
         # path and a plan is offered, while ``generic_infra_sink`` above, with
-        # three callers on the same sink, gets none. Plan availability currently
-        # falls as caller count rises, which is backwards; Phase 2 owns it.
+        # three callers on the same sink, gets none: plan availability falls
+        # as caller count rises, which is backwards.
         ("context_split", 3, {"batch_or_prefetch_io"}),
         # io_in_loop and nested_loop_with_io share one cross-function identity,
         # and two callers shorten the suffix to the sink alone, so no plan.
@@ -156,8 +155,8 @@ def test_confidence_facets_available_today_are_provenance_only() -> None:
     """Evidence confidence and actionability are not yet separable.
 
     ``confidence`` is derived from call-graph provenance alone; a plan's own
-    confidence comes from ``fix.safety`` in the refactoring layer. Splitting
-    these facets is Phase 2 work, and this test records the current collapse.
+    confidence comes from ``fix.safety`` in the refactoring layer. This records
+    that the two facets are still collapsed into one label.
     """
     by_case = {
         "provenance_mix": {"medium", "low"},

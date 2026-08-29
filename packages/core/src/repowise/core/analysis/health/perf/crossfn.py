@@ -15,7 +15,7 @@ This module is the bridge between three things that already exist:
     (non-loop) sink;
   * the resolved symbol-level ``calls`` graph the engine already has (file +
     symbol nodes, ``calls`` edges between ``path::name`` symbol ids);
-  * the sink-agnostic :mod:`.reachability` walk (Primitive 3).
+  * the sink-agnostic :mod:`.reachability` walk.
 
 It runs **once per analyze()** and is ``O(V + E)`` bounded by ``max_depth``:
 one pass to index symbol nodes, one pass to extract ``calls`` adjacency, one

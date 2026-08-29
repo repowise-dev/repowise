@@ -1,13 +1,11 @@
-"""Evidence to actionability: whether a group supports naming one safe change.
+"""Whether a group's evidence supports naming one safe change.
 
-Proven repetition is not proof that removing it is valid, and this module is
-where that distinction is enforced. Every gate here returns ``None`` rather than
-a weaker plan when it cannot prove its precondition, because a wrong plan costs
-more than a missing one.
+Proven repetition is not proof that removing it is valid. Every gate returns
+``None`` rather than a weaker plan when it cannot prove its precondition,
+because a wrong plan costs more than a missing one.
 
-The confidence produced here is *evidence* confidence: how reliably the call
-path was resolved. It is not a claim that the change is safe; that is carried
-separately by :attr:`PerformanceFix.safety`.
+The confidence here is evidence confidence: how reliably the call path was
+resolved, not whether the change is safe. That is :attr:`PerformanceFix.safety`.
 """
 
 from __future__ import annotations
@@ -57,9 +55,9 @@ def fix_for(
 ) -> PerformanceFix | None:
     """The one strategy this group's evidence supports, or nothing.
 
-    Gate order is load-bearing: the marker-specific proofs run before the
-    generic I/O batching fallback, so a group that qualifies for a proven
-    transformation is never downgraded to an advisory one.
+    Gate order is load-bearing: marker-specific proofs run before the generic
+    batching fallback, so a group that qualifies for a proven transformation is
+    never downgraded to an advisory one.
     """
     if marker == "serial_await_in_loop" and all(d.get("dataflow_verified") for d in details):
         return PerformanceFix(
@@ -84,11 +82,9 @@ def fix_for(
         "network",
     }:
         if cross_function and len(shared_suffix) < 2:
-            # A generic terminal resource/API shared by otherwise unrelated
-            # callers (for example ``get_session``) is evidence of repeated
-            # cost, but not proof that editing that sink is one coherent
-            # intervention. Keep the opportunity visible without claiming a
-            # batch plan.
+            # A generic sink shared by otherwise unrelated callers is evidence
+            # of repeated cost, not proof that editing it is one coherent
+            # intervention. Stay visible without claiming a batch plan.
             return None
         return PerformanceFix(
             "batch_or_prefetch_io",

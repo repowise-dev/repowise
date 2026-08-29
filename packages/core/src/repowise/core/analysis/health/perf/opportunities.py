@@ -7,11 +7,11 @@ agnostic: analyzer dataclasses, ORM rows, and lightweight SQL rows are accepted
 through the same attribute adapter.
 
 This file is the public face of that model. The rules behind it live in four
-modules with one owner each, so a later change to any of them is visible on its
-own: :mod:`.facts` reads a row, :mod:`.causal` decides what shares a cause and
-what that cause is called, :mod:`.actionability` decides whether the evidence
-supports naming a change, and :mod:`.opportunity_rank` decides the order. The
-orchestration below holds no policy of its own.
+modules with one owner each: :mod:`.facts` reads a row, :mod:`.causal` decides
+what shares a cause and what that cause is called, :mod:`.actionability`
+decides whether the evidence supports naming a change, and
+:mod:`.opportunity_rank` decides the order. The orchestration below holds no
+policy of its own.
 """
 
 from __future__ import annotations

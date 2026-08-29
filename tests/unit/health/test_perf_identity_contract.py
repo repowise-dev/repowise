@@ -7,8 +7,8 @@ equality. So the *inputs* to that hash are a contract, not an implementation
 detail. This suite pins them, and pins which fields are deliberately outside the
 kernel so that adding a fact or editing prose cannot churn identity by accident.
 
-Phase 2 will change the kernel. When it does, ``PERFORMANCE_MODEL_VERSION``
-increments and these pinned strings change in one reviewable diff.
+A change to the kernel increments ``PERFORMANCE_MODEL_VERSION`` and moves these
+pinned strings in one reviewable diff.
 """
 
 from __future__ import annotations
@@ -65,9 +65,9 @@ def _local_row(**overrides):
 def test_the_model_version_is_pinned_and_is_not_itself_a_kernel_input() -> None:
     """v1 ids predate the constant, so the constant stays out of the payload.
 
-    Embedding the version in the hash today would rewrite every persisted
-    ``opportunity_id`` and orphan every stored plan link without any semantic
-    change. Version 2 may embed it; version 1 must not.
+    Embedding the version in the hash would rewrite every persisted
+    ``opportunity_id`` and orphan every stored plan link for no semantic
+    change. A later version may embed it; version 1 must not.
     """
     assert PERFORMANCE_MODEL_VERSION == 1
     assert opportunity_id_for_finding(_row()) == CROSS_FUNCTION_ID
@@ -168,8 +168,8 @@ def test_a_cross_function_flag_without_a_usable_path_falls_back_to_the_local_ker
 
     Only path nodes that survive the string filter can name a terminal sink, so
     a truthy ``cross_function`` with nothing usable in ``path`` is keyed by its
-    own location. This branch is unreachable from the corpus, which derives the
-    flag from the path, so it is pinned here instead.
+    own location. The corpus derives the flag from the path and cannot reach
+    this branch, so it is pinned here.
     """
     row = _row(details={"path": path})
     assert opportunity_id_for_finding(row) == LOCAL_ID
@@ -200,9 +200,7 @@ def test_the_plan_id_is_absent_from_plan_evidence_today() -> None:
     route reads ``plan_json`` and links correctly; ``tool_health`` reads
     ``suggestion.evidence`` and therefore never links, so
     ``recommendation_lede.performance_plan_id`` is always ``None`` on a real
-    index. Phase 1 does not change MCP payload semantics; Phase 3 owns the fix.
-    See PLAN.md Backlog, "MCP recommendation_lede plan linkage reads the wrong
-    field".
+    index. Pinned here so the divergence stays visible until it is fixed.
     """
     plan = performance_fix_suggestions(build_performance_opportunities(_shared_helper_rows()))[0]
     assert "opportunity_id" in plan.plan
@@ -213,8 +211,7 @@ def test_a_performance_finding_has_no_content_derived_public_reference() -> None
     """The only stable public key on a performance finding is its group id.
 
     ``evidence[].finding_id`` is the storage row id: empty in memory, a random
-    UUID once persisted. Nothing joins on it across a reindex today. Phase 3
-    adds ``health_findings.public_id``; until then, do not treat this field as
+    UUID once persisted. Nothing joins on it across a reindex, so it is not
     an identity.
     """
     in_memory = _row()

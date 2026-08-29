@@ -1,9 +1,8 @@
 # Performance opportunity corpus
 
-A small, checked-in, hand-authored corpus that pins the *current* behaviour of
-`repowise.core.analysis.health.perf` before Phase 2 changes grouping,
-actionability, and ranking. It is a characterization corpus, not a precision
-corpus: every expectation here records what the analyzer does today, so a later
+A small, checked-in, hand-authored corpus that pins the current behaviour of
+`repowise.core.analysis.health.perf`. It is a characterization corpus, not a
+precision corpus: every expectation records what the analyzer does today, so a
 semantic change shows up as an explicit golden diff rather than a silent one.
 
 ## Files
@@ -41,5 +40,4 @@ REPOWISE_REWRITE_PERF_GOLDEN=1 uv run pytest tests/unit/health/test_perf_corpus_
 - Archetypes with no fixture are listed as `uncovered` in `manifest.json` with
   the reason. They are never faked with a synthetic case that would imply
   coverage the product does not have.
-- Large probe artifacts (index dumps, dogfood exports) stay outside the tracked
-  tree.
+- Large probe artifacts stay outside the tracked tree.

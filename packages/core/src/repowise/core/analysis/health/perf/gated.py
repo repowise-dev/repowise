@@ -1,17 +1,16 @@
-"""Centrality-gated Phase-7b markers (the differentiator).
+"""Centrality-gated markers.
 
 Two passes that run after the walker, over the resolved ``calls`` graph, using
-the :class:`~.ranking.PerfRanker` (Primitive 2) and the sink-agnostic
-reachability engine (Primitive 3):
+the :class:`~.ranking.PerfRanker` and the sink-agnostic reachability engine:
 
   * :func:`collect_centrality_gated` — turns the walker's per-function *facts*
     (``PerfFnFacts.nested_loop_line`` / ``blocking_sink_{kind,line}``) into
     ``nested_loop_quadratic`` and ``hot_path_sync_io`` hits, but ONLY for a
     function the ranker calls *hot* (top-quintile call-graph centrality or a
     churny/hotspot file). The shapes are unambiguous but noisy when flagged
-    everywhere; the gate IS the precision fix the backlog deferred the O(n^2)
-    marker for. Keeping the generation here (not in the walker) leaves the raw
-    walker output the same high-precision same-function set it has always been.
+    everywhere; the gate is what makes the O(n^2) marker precise enough to
+    emit. Keeping the generation here (not in the walker) leaves the raw walker
+    output the same high-precision same-function set it has always been.
 
   * :func:`collect_blocking_io_under_lock` — the cross-function lock→I/O case: a
     function holds a lock around a call to a helper that, within a few hops,

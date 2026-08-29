@@ -1,14 +1,8 @@
 """Typed, language-neutral facts read off one raw performance finding.
 
-Everything downstream of this module works on :class:`ObservationFacts`, never
-on a row. That is what keeps grouping, actionability, and ranking free of the
-shape a finding happens to arrive in: an analyzer dataclass mid-run, an ORM row
-after persistence, or a plain dict in a fixture all reduce here.
-
-The accessors are deliberately literal about the shipped behaviour, including
-two places where the same underlying value is read with different fallbacks
-(see :attr:`ObservationFacts.marker` and :attr:`ObservationFacts.evidence_marker`).
-Normalising those apart would be a silent output change, not a cleanup.
+Everything downstream works on :class:`ObservationFacts`, never on a row, so
+grouping, actionability, and ranking stay free of the shape a finding arrives
+in: analyzer dataclass, ORM row, or plain dict all reduce here.
 """
 
 from __future__ import annotations
@@ -48,10 +42,9 @@ def is_performance(row: Any) -> bool:
 class ObservationFacts:
     """One detector-supported cost shape at one location.
 
-    ``details`` is kept verbatim because the actionability gates read
-    open-ended, marker-specific proof keys off it (``dataflow_verified``,
-    ``resource_invariant``, the raw ``path`` list). Closing that dict into typed
-    fields would drop the keys a future marker adds.
+    ``details`` stays verbatim: the actionability gates read marker-specific
+    proof keys off it, and closing it into typed fields would drop the keys a
+    new marker adds.
     """
 
     finding_id: str
@@ -71,7 +64,7 @@ class ObservationFacts:
 
     @property
     def marker(self) -> str:
-        """The identity/ranking view of the biomarker type."""
+        """The identity and ranking view of the biomarker type."""
         return str(self.raw_marker)
 
     @property
@@ -81,12 +74,10 @@ class ObservationFacts:
 
     @property
     def provenance(self) -> str:
-        """The aggregation view of ``resolution_basis``."""
         return str(self.resolution_basis)
 
     @property
     def site(self) -> tuple[str, Any, Any]:
-        """The call site this observation occupies, for distinct-site counting."""
         return (self.file_path, self.line_start, self.function_name)
 
     @property
@@ -108,8 +99,8 @@ def observation_facts(row: Any) -> ObservationFacts:
         raw_marker=field(row, "biomarker_type", ""),
         boundary_kind=details.get("boundary_kind") or None,
         path=tuple(str(node) for node in raw_path if isinstance(node, str)),
-        # Whether a path was *offered*, which is not the same as whether any of
-        # it survived the string filter above. Both drive real branches.
+        # Whether a path was offered, which is not whether any of it survived
+        # the string filter above. Both drive real branches.
         has_path=bool(raw_path),
         cross_function=bool(details.get("cross_function")),
         resolution_basis=details.get("resolution_basis", "direct"),
@@ -126,8 +117,7 @@ def evidence_row(facts: ObservationFacts) -> dict[str, Any]:
     """One public evidence entry.
 
     ``finding_id`` is the storage row id, not a content hash: empty before
-    persistence and a fresh UUID after it. It is a pointer within one index,
-    never a cross-reindex key.
+    persistence, a fresh UUID after. It points within one index only.
     """
     return {
         "finding_id": facts.finding_id,

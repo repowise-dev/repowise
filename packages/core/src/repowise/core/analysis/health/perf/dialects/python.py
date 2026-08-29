@@ -168,11 +168,11 @@ class PythonPerfDialect(BasePerfDialect):
             "lock_in_loop",
             "serial_await_in_loop",
             "membership_test_against_list_in_loop",
-            # Phase 7b — centrality-gated / nesting-confidence markers.
+            # Centrality-gated / nesting-confidence markers.
             "nested_loop_with_io",
             "nested_loop_quadratic",
             "hot_path_sync_io",
-            # Phase 7d — Python-specific quadratic anti-patterns.
+            # Python-specific quadratic anti-patterns.
             "list_insert_zero_in_loop",
             "pd_concat_in_loop",
             # Header-call marker: the slow iterable IS the loop driver.
@@ -213,7 +213,7 @@ class PythonPerfDialect(BasePerfDialect):
         # yield, never an I/O round-trip — but ``await asyncio.sleep(...)`` would
         # otherwise hit the awaited-network arm below when ``asyncio`` is
         # import-classified as network, FP-ing ``io_in_loop`` / ``serial_await``
-        # on every backoff/poll loop (Phase-7c headroom corpus). No legitimate
+        # on every backoff/poll loop, measured across a Python corpus. No legitimate
         # execution sink is named ``sleep``, so excluding it costs no recall.
         if method == "sleep":
             return None
@@ -327,7 +327,7 @@ class PythonPerfDialect(BasePerfDialect):
 
         ``buf = base[:N]; ... buf += part`` inside a loop builds a fresh, bounded
         string per iteration (not the O(n^2) cross-iteration accumulation the
-        marker targets), so it is a false positive. Phase-7c headroom corpus:
+        marker targets), so it is a false positive. Measured on a Python corpus:
         the reset-per-iteration shape was the dominant FP class (Py 77.8%). When
         the same name is plainly re-assigned inside an enclosing loop body, the
         ``+=`` cannot accumulate across iterations, so do not flag it.
@@ -403,7 +403,7 @@ class PythonPerfDialect(BasePerfDialect):
         # the front-insertion anti-pattern) AND to a list that is not re-created
         # each iteration (a fresh ``buf = [...]; buf.insert(0, x)`` is bounded,
         # not O(n^2) — the same reset-per-iteration FP class as string_concat;
-        # Phase-7d headroom corpus).
+        # measured on a Python corpus).
         # ``collections.deque.insert(0, x)`` is O(1) front-insertion by design (it
         # is the deque's own ``appendleft`` machinery), so exclude a receiver
         # provably constructed via ``deque()`` / ``collections.deque(...)``.

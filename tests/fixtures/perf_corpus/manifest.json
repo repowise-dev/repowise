@@ -11,7 +11,7 @@
       "archetype": "cli_build_indexing_tool",
       "language": "python",
       "cases": ["generic_infra_sink", "specific_shared_helper", "filesystem_fan_out"],
-      "note": "The dogfood archetype. Over-represented on purpose; it is one row, not the tuning target."
+      "note": "Over-represented on purpose; it is one archetype row, not the tuning target."
     },
     {
       "archetype": "orm_database_heavy",
@@ -36,22 +36,22 @@
     {
       "archetype": "web_api_service",
       "reason": "No request-scoped entrypoint or route-context fact exists yet; a fixture would imply exposure evidence the analyzer cannot produce.",
-      "prerequisite": "typed entrypoint context (PLAN Phase 2, item 3)"
+      "prerequisite": "typed entrypoint context"
     },
     {
       "archetype": "data_pipeline_dataframe",
       "reason": "No collection cardinality or dataframe-operation model; the only expressible marker is generic io_in_loop, which the CLI archetype already covers.",
-      "prerequisite": "cardinality/multiplicity propagation (PLAN Backlog)"
+      "prerequisite": "cardinality and multiplicity propagation"
     },
     {
       "archetype": "mobile_application",
       "reason": "No Kotlin/Swift/Dart fixture is exercised through the opportunity layer in this repository; the dialects emit observations but no labelled archetype case exists.",
-      "prerequisite": "per-language corpus rows (PLAN section 12)"
+      "prerequisite": "per-language corpus rows"
     },
     {
       "archetype": "systems_native",
       "reason": "C/C++/Rust observations reach the same generic markers; no distinct native cost shape is modelled.",
-      "prerequisite": "per-language corpus rows (PLAN section 12)"
+      "prerequisite": "per-language corpus rows"
     }
   ],
   "languages_covered": ["python"],

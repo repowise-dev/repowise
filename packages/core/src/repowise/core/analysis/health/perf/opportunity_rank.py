@@ -1,12 +1,8 @@
 """Ordering policy: the weight tables and the total order over opportunities.
 
-Nothing here is a score in the health sense: no value produced by this module
-is blended into ``performance_score`` or any other dimension. It is an ordering
-key, and its weights are frozen product policy rather than fitted parameters.
-
-The same multiplier table answers two questions, which is why it lives in one
-place: how much a cost shape contributes to rank, and which of a group's several
-shapes is the one worth naming.
+Nothing here is a score in the health sense. No value produced by this module
+is blended into ``performance_score`` or any other dimension; it is an ordering
+key whose weights are frozen policy, not fitted parameters.
 """
 
 from __future__ import annotations
@@ -39,8 +35,8 @@ def weakest_provenance(provenances: set[str]) -> str:
     """The least reliable resolution in a group, ties broken by name.
 
     A group is only as trustworthy as its worst edge, so this is a ``min`` on
-    points where :func:`dominant_marker` is a ``min`` on negated points. The two
-    read alike and mean the opposite; that is intentional, not a slip.
+    points where :func:`dominant_marker` is a ``min`` on negated points. They
+    read alike and mean the opposite; that is intentional.
     """
     return min(provenances, key=lambda value: (PROVENANCE_POINTS.get(value, 0), value))
 
@@ -56,8 +52,8 @@ def rank_factors(
 ) -> dict[str, int]:
     """The additive rank terms, published verbatim on every opportunity.
 
-    Call-site count is logarithmic and capped: leverage matters, but a group of
-    sixty callers is not fifteen times the lead a group of four is.
+    Call-site count is logarithmic and capped: leverage matters, but sixty
+    callers is not fifteen times the lead four callers is.
     """
     return {
         "multiplier_shape": MULTIPLIER_POINTS.get(marker, 1),

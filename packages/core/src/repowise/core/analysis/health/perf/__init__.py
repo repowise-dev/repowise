@@ -7,11 +7,11 @@ This package holds:
 * the per-language perf :mod:`.dialects` (callee extraction + execution-sink
   lexicon + loop / string / async predicates + the per-language marker list)
   that the complexity walker drives the perf pass off;
-* the sink-agnostic bounded reachability engine (:mod:`.reachability`,
-  Primitive 3) and the cross-function N+1 bridge (:mod:`.crossfn`) built on it;
+* the sink-agnostic bounded reachability engine (:mod:`.reachability`) and the
+  cross-function N+1 bridge (:mod:`.crossfn`) built on it;
 * the shared call-graph index (:mod:`.callgraph`) + the severity ranker
-  (:mod:`.ranking`, Primitive 2) used as a centrality precision gate, and the
-  centrality-gated Phase-7b markers (:mod:`.gated`);
+  (:mod:`.ranking`) used as a centrality precision gate, and the
+  centrality-gated markers (:mod:`.gated`);
 * the causal read model that folds raw findings into ranked opportunities:
   :mod:`.opportunities` is its public face, over :mod:`.facts` (typed evidence
   read off a row), :mod:`.causal` (grouping and the versioned identity kernel),
