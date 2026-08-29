@@ -88,26 +88,13 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# 2: ``untested_hotspot`` gained a second test signal, and the persisted
-# ``has_test_file`` widened to match it. Both stored values are wrong on an
-# index built before that, and wrong in the direction that accuses a tested
-# file, so they should not wait out the decay timer.
-# 3: that signal moved from the import graph to the call graph, so the same two
-# values are wrong again on an index stamped 2 - this time in both directions.
-# 4: performance now uses reliable execution edges and exact call-site identity,
-# so cross-function findings produced by the calls-only graph must be refreshed.
-# 5: raw performance findings gain stable causal linkage and structured
-# performance-fix plans; incremental execution slices widen to preserve those
-# interprocedural interpretations.
-# 6: five complexity and test-detection inputs changed at once, so the stored
-# metrics disagree with what the current analyzer would compute. Python ``match``
-# arms now count toward cyclomatic complexity and Pascal else-if chains flatten
-# instead of nesting, moving ``max_ccn`` and ``max_nesting``; a comment inside a
-# parameter list is no longer counted as a parameter; and two test-detection
-# fixes (a pairing heuristic the name match could not see, and Delphi's
-# ``Test<Stem>.dpr`` convention) move ``has_test_file`` in the direction that
-# stops accusing a tested file.
-HEALTH_ANALYZER_VERSION = 6
+# Current stamp: the performance identity kernel moved to model version 2. A
+# cross-function cause is now named by the caller that repeats the work as well
+# as the sink that pays for it, so a shared infrastructure helper no longer
+# merges unrelated workflows, and execution context gained ``unknown`` instead of
+# defaulting an unclassifiable file to production. Stored opportunity ids and
+# plan links are restamped by the rescore this forces.
+HEALTH_ANALYZER_VERSION = 7
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.

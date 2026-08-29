@@ -16,7 +16,7 @@ This package holds:
   :mod:`.opportunities` is its public face, over :mod:`.facts` (typed evidence
   read off a row), :mod:`.causal` (grouping and the versioned identity kernel),
   :mod:`.actionability` (whether the evidence supports naming a change), and
-  :mod:`.opportunity_rank` (the ordering policy).
+  :mod:`.opportunity_rank` (how much it costs and in what order it lands).
 
 Nothing here touches persistence or transport. Stored rows arrive through the
 same attribute adapter analyzer dataclasses do.
@@ -30,16 +30,19 @@ from .dialects import PERF_DIALECTS, BasePerfDialect
 from .gated import collect_blocking_io_under_lock, collect_centrality_gated
 from .io_boundaries import collect_io_names
 from .opportunities import (
+    PERFORMANCE_MODEL_VERSION,
     PerformanceFix,
     PerformanceOpportunity,
     build_performance_opportunities,
     link_performance_findings,
+    model_state,
 )
 from .promotion import apply_perf_promotions
 from .ranking import PerfRanker
 from .reachability import ReachInfo, path_to_sink, reachable_to_sink
 
 __all__ = [
+    "PERFORMANCE_MODEL_VERSION",
     "PERF_DIALECTS",
     "BasePerfDialect",
     "CallGraphIndex",
@@ -54,6 +57,7 @@ __all__ = [
     "collect_crossfn_io_in_loop",
     "collect_io_names",
     "link_performance_findings",
+    "model_state",
     "path_to_sink",
     "reachable_to_sink",
 ]

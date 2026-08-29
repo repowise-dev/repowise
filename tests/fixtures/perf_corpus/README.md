@@ -1,9 +1,14 @@
 # Performance opportunity corpus
 
-A small, checked-in, hand-authored corpus that pins the current behaviour of
-`repowise.core.analysis.health.perf`. It is a characterization corpus, not a
-precision corpus: every expectation records what the analyzer does today, so a
-semantic change shows up as an explicit golden diff rather than a silent one.
+A small, checked-in, hand-authored corpus that pins the behaviour of
+`repowise.core.analysis.health.perf`. Every expectation records what the
+analyzer does, so a semantic change shows up as an explicit golden diff rather
+than a silent one.
+
+Two cases are load-bearing and belong together: `generic_infra_sink` puts
+unrelated callers on one infrastructure sink and must split, and
+`shared_dominator_fan_in` puts more callers on one sink behind a shared helper
+and must stay merged. They are the two poles of the grouping rule.
 
 ## Files
 

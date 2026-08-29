@@ -95,7 +95,9 @@ async def list_performance_opportunities(
     contexts = {
         "production_tooling": {"production", "tooling"},
         "test": {"test"},
-        "all": {"production", "tooling", "test"},
+        # An unclassifiable file is reported as unknown rather than assumed to
+        # ship, so it belongs in the unfiltered view and is counted below.
+        "all": {"production", "tooling", "test", "unknown"},
     }[context]
     filtered = [item for item in opportunities if item.execution_context in contexts]
     total = len(filtered)
@@ -119,6 +121,7 @@ async def list_performance_opportunities(
             ),
             "tooling_total": sum(item.execution_context == "tooling" for item in opportunities),
             "test_total": sum(item.execution_context == "test" for item in opportunities),
+            "unknown_total": sum(item.execution_context == "unknown" for item in opportunities),
             "with_plan_total": sum(item.opportunity_id in matches for item in opportunities),
             "without_plan_total": sum(item.opportunity_id not in matches for item in opportunities),
         },

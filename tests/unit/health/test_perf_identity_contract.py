@@ -21,15 +21,16 @@ from repowise.core.analysis.health.perf.opportunities import (
     PERFORMANCE_MODEL_VERSION,
     build_performance_opportunities,
     link_performance_findings,
+    model_state,
     opportunity_id_for_finding,
 )
 from repowise.core.analysis.health.refactoring.performance_fix import (
     performance_fix_suggestions,
 )
 
-# The v1 kernel, pinned. A change to either string is a model-version change.
-CROSS_FUNCTION_ID = "perf_e358397251b660183fdd"
-LOCAL_ID = "perf_f13beed790fd3cb29ac1"
+# The v2 kernel, pinned. A change to either string is a model-version change.
+CROSS_FUNCTION_ID = "perf2_5662c38bc84c9a677164"
+LOCAL_ID = "perf2_f13beed790fd3cb29ac1"
 
 
 def _row(**overrides):
@@ -62,16 +63,42 @@ def _local_row(**overrides):
     )
 
 
-def test_the_model_version_is_pinned_and_is_not_itself_a_kernel_input() -> None:
-    """v1 ids predate the constant, so the constant stays out of the payload.
+def test_the_model_version_is_pinned_and_is_carried_by_the_id_prefix() -> None:
+    """The version is the prefix, not a hash input.
 
-    Embedding the version in the hash would rewrite every persisted
-    ``opportunity_id`` and orphan every stored plan link for no semantic
-    change. A later version may embed it; version 1 must not.
+    Putting it in the prefix costs the hash nothing and buys the one thing an
+    alias table cannot: an id says which model minted it, so a caller holding a
+    stale one is told to refresh instead of being handed the wrong group.
     """
-    assert PERFORMANCE_MODEL_VERSION == 1
+    assert PERFORMANCE_MODEL_VERSION == 2
     assert opportunity_id_for_finding(_row()) == CROSS_FUNCTION_ID
     assert opportunity_id_for_finding(_local_row()) == LOCAL_ID
+    assert CROSS_FUNCTION_ID.startswith(f"perf{PERFORMANCE_MODEL_VERSION}_")
+
+
+@pytest.mark.parametrize(
+    ("opportunity_id", "state", "version"),
+    [
+        (CROSS_FUNCTION_ID, "current", 2),
+        ("perf_e358397251b660183fdd", "stale_model", 1),
+        ("perf9_e358397251b660183fdd", "stale_model", 9),
+        ("not-an-opportunity-id", "unrecognized", None),
+    ],
+)
+def test_an_id_reports_its_own_model_and_whether_it_still_resolves(
+    opportunity_id, state, version
+) -> None:
+    """Ids are never translated across models.
+
+    Grouping decides membership, so one v1 id can name observations v2 splits
+    several ways. An alias would have to guess which split the caller meant, so
+    the mismatch is reported instead.
+    """
+    result = model_state(opportunity_id)
+    assert result["state"] == state
+    assert result["requested_model_version"] == version
+    assert result["performance_model_version"] == PERFORMANCE_MODEL_VERSION
+    assert result["refresh_required"] is (state == "stale_model")
 
 
 @pytest.mark.parametrize(
@@ -117,6 +144,10 @@ def test_derived_and_ranking_details_are_outside_the_opportunity_kernel(field, v
         ({"file_path": "tests/test_a.py"}, "execution context"),
         ({"details": {"boundary_kind": "filesystem"}}, "boundary"),
         ({"details": {"path": ["src/app/a.py::run", "src/app/db.py::other"]}}, "terminal sink"),
+        (
+            {"details": {"path": ["src/app/a.py::other", "src/app/db.py::get_session"]}},
+            "meaningful predecessor",
+        ),
         ({"biomarker_type": "membership_test_against_list_in_loop"}, "cost shape"),
     ],
 )
@@ -124,17 +155,42 @@ def test_cross_function_kernel_inputs_each_move_the_identity(mutate, reason) -> 
     assert opportunity_id_for_finding(_row(**copy.deepcopy(mutate))) != CROSS_FUNCTION_ID, reason
 
 
-def test_a_new_caller_never_changes_the_cross_function_identity() -> None:
-    """The shared cause is the identity; callers are evidence.
+def test_a_new_call_site_behind_the_same_caller_never_changes_the_identity() -> None:
+    """The shared cause is the identity; individual call sites are evidence.
 
     ``file_path``, ``function_name``, and ``line_start`` are kernel inputs for a
-    same-function observation and deliberately are not for a cross-function one.
+    same-function observation and deliberately are not for a cross-function one:
+    a second loop in the same caller adds evidence, not a cause.
     """
     original = _row()
-    other_caller = _row(file_path="src/app/b.py", function_name="other", line_start=77)
-    other_caller["details"]["path"] = ["src/app/b.py::other", "src/app/db.py::get_session"]
-    assert opportunity_id_for_finding(other_caller) == CROSS_FUNCTION_ID
-    assert len(build_performance_opportunities([original, other_caller])) == 1
+    same_caller = _row(line_start=77, line_end=79)
+    assert opportunity_id_for_finding(same_caller) == CROSS_FUNCTION_ID
+    assert len(build_performance_opportunities([original, same_caller])) == 1
+
+
+def test_an_unrelated_caller_on_the_same_sink_is_a_different_cause() -> None:
+    """A shared destination is not a shared cause.
+
+    Naming a group by its sink alone merged every workflow that happened to
+    open a session. Requiring the caller to match splits those, while callers
+    that reach the sink through one helper stay together.
+    """
+    original = _row()
+    unrelated = _row(file_path="src/app/b.py", function_name="other", line_start=77)
+    unrelated["details"]["path"] = ["src/app/b.py::other", "src/app/db.py::get_session"]
+    assert opportunity_id_for_finding(unrelated) != CROSS_FUNCTION_ID
+    assert len(build_performance_opportunities([original, unrelated])) == 2
+
+    through_helper = [_row(), _row(file_path="src/app/b.py", function_name="other")]
+    for row in through_helper:
+        row["details"]["path"] = [
+            f"{row['file_path']}::{row['function_name']}",
+            "src/app/repo.py::fetch",
+            "src/app/db.py::get_session",
+        ]
+    merged = build_performance_opportunities(through_helper)
+    assert len(merged) == 1
+    assert merged[0].intervention_symbol == "src/app/repo.py::fetch"
 
 
 @pytest.mark.parametrize(
@@ -162,14 +218,17 @@ def test_the_cost_shape_merge_applies_to_cross_function_identity_only() -> None:
     assert opportunity_id_for_finding(_local_row(biomarker_type="nested_loop_with_io")) != LOCAL_ID
 
 
-@pytest.mark.parametrize("path", [[], [5], [None]])
-def test_a_cross_function_flag_without_a_usable_path_falls_back_to_the_local_kernel(path) -> None:
+@pytest.mark.parametrize(
+    "path", [[], [5], [None], [""], ["", "src/app/db.py::get_session"], ["src/app/db.py::get_session"]]
+)
+def test_a_cross_function_flag_without_a_named_caller_falls_back_to_the_local_kernel(
+    path,
+) -> None:
     """The flag alone does not make an observation cross-function.
 
-    Only path nodes that survive the string filter can name a terminal sink, so
-    a truthy ``cross_function`` with nothing usable in ``path`` is keyed by its
-    own location. The corpus derives the flag from the path and cannot reach
-    this branch, so it is pinned here.
+    A cause needs both ends: a sink that pays the cost and a caller that
+    repeats it. A path with nothing usable in it, or with only the sink, names
+    one end, so the observation is keyed by its own location instead.
     """
     row = _row(details={"path": path})
     assert opportunity_id_for_finding(row) == LOCAL_ID
@@ -225,3 +284,12 @@ def test_a_performance_finding_has_no_content_derived_public_reference() -> None
     )
     link_performance_findings([persisted])
     assert persisted["details"]["opportunity_id"] == CROSS_FUNCTION_ID
+
+
+def test_a_path_node_that_names_nothing_never_becomes_an_intervention_symbol() -> None:
+    """An empty node is absence, not a symbol called \"\"."""
+    row = _row(details={"path": ["", "src/app/db.py::get_session"]})
+    opportunity = build_performance_opportunities([row])[0]
+    assert opportunity.intervention_symbol is None
+    assert opportunity.terminal_sink is None
+    assert opportunity.opportunity_id == LOCAL_ID

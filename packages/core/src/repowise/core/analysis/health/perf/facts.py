@@ -77,6 +77,42 @@ class ObservationFacts:
         return str(self.resolution_basis)
 
     @property
+    def terminal_sink(self) -> str | None:
+        """The last resolved node on the path, or nothing if none survived.
+
+        ``has_path`` can be true while this is ``None``: a path offered with no
+        string nodes names no sink.
+        """
+        return self.path[-1] if self.path else None
+
+    @property
+    def meaningful_predecessor(self) -> str | None:
+        """The caller that creates the repetition at the sink.
+
+        The sink is where the cost is paid; its immediate caller is where the
+        repetition is introduced, so that caller is the intervention anchor.
+        A path with fewer than two resolved nodes names no caller and carries
+        no cross-function cause.
+        """
+        return self.path[-2] if len(self.path) >= 2 else None
+
+    @property
+    def path_depth(self) -> int:
+        """Resolved hops from the loop-owning function to the sink."""
+        return len(self.path)
+
+    @property
+    def resource_fingerprint(self) -> str | None:
+        """The named API this observation repeats, where a detector recorded one.
+
+        Only the blocking-sync-in-async marker records one today. No detector
+        captures argument, query, or path literals, so this is the whole of the
+        resource identity currently available.
+        """
+        value = self.details.get("api")
+        return value if isinstance(value, str) and value else None
+
+    @property
     def site(self) -> tuple[str, Any, Any]:
         return (self.file_path, self.line_start, self.function_name)
 
@@ -98,7 +134,7 @@ def observation_facts(row: Any) -> ObservationFacts:
         reason=str(field(row, "reason", "") or ""),
         raw_marker=field(row, "biomarker_type", ""),
         boundary_kind=details.get("boundary_kind") or None,
-        path=tuple(str(node) for node in raw_path if isinstance(node, str)),
+        path=tuple(node for node in raw_path if isinstance(node, str) and node),
         # Whether a path was offered, which is not whether any of it survived
         # the string filter above. Both drive real branches.
         has_path=bool(raw_path),

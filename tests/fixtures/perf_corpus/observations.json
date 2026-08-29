@@ -228,6 +228,7 @@
       "line_start": 130,
       "path": [
         "src/app/pool.py::writer",
+        "src/app/store.py::flush_all",
         "src/app/store.py::flush"
       ],
       "reason": "distinct_lock_owners: blocking_io_under_lock at src/app/pool.py:130 repeats work per iteration.",
@@ -246,6 +247,7 @@
       "line_start": 130,
       "path": [
         "src/app/pool.py::reaper",
+        "src/app/store.py::flush_all",
         "src/app/store.py::flush"
       ],
       "reason": "distinct_lock_owners: blocking_io_under_lock at src/app/pool.py:130 repeats work per iteration.",
@@ -382,6 +384,7 @@
       "line_start": 210,
       "path": [
         "src/app/reindex.py::one",
+        "src/app/reindex.py::_write",
         "src/app/db.py::upsert"
       ],
       "reason": "cost_shape_merge: io_in_loop at src/app/reindex.py:210 repeats work per iteration.",
@@ -400,6 +403,7 @@
       "line_start": 215,
       "path": [
         "src/app/reindex.py::many",
+        "src/app/reindex.py::_write",
         "src/app/db.py::upsert"
       ],
       "reason": "cost_shape_merge: nested_loop_with_io at src/app/reindex.py:215 repeats work per iteration.",
@@ -454,6 +458,7 @@
       "line_start": 250,
       "path": [
         "src/app/entry.py::a",
+        "src/app/entry.py::_hit",
         "src/app/db.py::reach_sink"
       ],
       "reason": "reachability_states: io_in_loop at src/app/entry.py:250 repeats work per iteration.",
@@ -472,10 +477,134 @@
       "line_start": 255,
       "path": [
         "src/app/entry.py::b",
+        "src/app/entry.py::_hit",
         "src/app/db.py::reach_sink"
       ],
       "reason": "reachability_states: io_in_loop at src/app/entry.py:255 repeats work per iteration.",
       "reliable_entry_reachability": false,
+      "resolution_basis": "call-site"
+    },
+    {
+      "biomarker_type": "io_in_loop",
+      "boundary_kind": "filesystem",
+      "case": "shared_dominator_fan_in",
+      "extra": {},
+      "file_path": "src/app/lexer.py",
+      "finding_ref": "shared_dominator_fan_in-27",
+      "function_name": "run",
+      "line_end": 22,
+      "line_start": 20,
+      "path": [
+        "src/app/lexer.py::run",
+        "src/app/parse.py::_get_query",
+        "src/app/parse.py::_load_compiled_query"
+      ],
+      "reason": "shared_dominator_fan_in: io_in_loop at src/app/lexer.py:20 repeats work per iteration.",
+      "reliable_entry_reachability": null,
+      "resolution_basis": "call-site"
+    },
+    {
+      "biomarker_type": "io_in_loop",
+      "boundary_kind": "filesystem",
+      "case": "shared_dominator_fan_in",
+      "extra": {},
+      "file_path": "src/app/linter.py",
+      "finding_ref": "shared_dominator_fan_in-28",
+      "function_name": "run",
+      "line_end": 23,
+      "line_start": 21,
+      "path": [
+        "src/app/linter.py::run",
+        "src/app/parse.py::_get_query",
+        "src/app/parse.py::_load_compiled_query"
+      ],
+      "reason": "shared_dominator_fan_in: io_in_loop at src/app/linter.py:21 repeats work per iteration.",
+      "reliable_entry_reachability": null,
+      "resolution_basis": "call-site"
+    },
+    {
+      "biomarker_type": "io_in_loop",
+      "boundary_kind": "filesystem",
+      "case": "shared_dominator_fan_in",
+      "extra": {},
+      "file_path": "src/app/formatter.py",
+      "finding_ref": "shared_dominator_fan_in-29",
+      "function_name": "run",
+      "line_end": 24,
+      "line_start": 22,
+      "path": [
+        "src/app/formatter.py::run",
+        "src/app/parse.py::_get_query",
+        "src/app/parse.py::_load_compiled_query"
+      ],
+      "reason": "shared_dominator_fan_in: io_in_loop at src/app/formatter.py:22 repeats work per iteration.",
+      "reliable_entry_reachability": null,
+      "resolution_basis": "call-site"
+    },
+    {
+      "biomarker_type": "io_in_loop",
+      "boundary_kind": "filesystem",
+      "case": "shared_dominator_fan_in",
+      "extra": {},
+      "file_path": "src/app/resolver.py",
+      "finding_ref": "shared_dominator_fan_in-30",
+      "function_name": "run",
+      "line_end": 25,
+      "line_start": 23,
+      "path": [
+        "src/app/resolver.py::run",
+        "src/app/parse.py::_get_query",
+        "src/app/parse.py::_load_compiled_query"
+      ],
+      "reason": "shared_dominator_fan_in: io_in_loop at src/app/resolver.py:23 repeats work per iteration.",
+      "reliable_entry_reachability": null,
+      "resolution_basis": "call-site"
+    },
+    {
+      "biomarker_type": "io_in_loop",
+      "boundary_kind": "filesystem",
+      "case": "unclassified_context",
+      "extra": {},
+      "file_path": "docs/snippets/walk.py",
+      "finding_ref": "unclassified_context-31",
+      "function_name": "demo",
+      "line_end": 10,
+      "line_start": 8,
+      "path": [],
+      "reason": "unclassified_context: io_in_loop at docs/snippets/walk.py:8 repeats work per iteration.",
+      "reliable_entry_reachability": null,
+      "resolution_basis": "direct"
+    },
+    {
+      "biomarker_type": "io_in_loop",
+      "boundary_kind": "filesystem",
+      "case": "unclassified_context",
+      "extra": {},
+      "file_path": "bootstrap.py",
+      "finding_ref": "unclassified_context-32",
+      "function_name": "main",
+      "line_end": 16,
+      "line_start": 14,
+      "path": [],
+      "reason": "unclassified_context: io_in_loop at bootstrap.py:14 repeats work per iteration.",
+      "reliable_entry_reachability": null,
+      "resolution_basis": "direct"
+    },
+    {
+      "biomarker_type": "io_in_loop",
+      "boundary_kind": "db",
+      "case": "sink_without_caller",
+      "extra": {},
+      "file_path": "src/app/lone.py",
+      "finding_ref": "sink_without_caller-33",
+      "function_name": "run",
+      "line_end": 11,
+      "line_start": 9,
+      "path": [
+        "src/app/db.py::only_sink"
+      ],
+      "reason": "sink_without_caller: io_in_loop at src/app/lone.py:9 repeats work per iteration.",
+      "reliable_entry_reachability": null,
       "resolution_basis": "call-site"
     }
   ]

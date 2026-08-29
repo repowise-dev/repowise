@@ -232,7 +232,7 @@ export interface HealthFinding {
   dimension?: HealthDimension;
 }
 
-export type PerformanceExecutionContext = "production" | "tooling" | "test";
+export type PerformanceExecutionContext = "production" | "tooling" | "test" | "unknown";
 export type PerformanceOpportunityConfidence = "high" | "medium" | "low";
 
 export interface PerformanceOpportunityFix {

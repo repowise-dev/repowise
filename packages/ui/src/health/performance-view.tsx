@@ -47,8 +47,15 @@ const PAGE_SIZE = 20;
 const RAW_PAGE_SIZE = 50;
 type ContextView = "production_tooling" | "test";
 
+const CONTEXT_LABEL: Record<PerformanceOpportunity["execution_context"], string> = {
+  production: "Production",
+  tooling: "Tooling",
+  test: "Test suite",
+  unknown: "Unclassified",
+};
+
 function contextLabel(context: PerformanceOpportunity["execution_context"]): string {
-  return context === "test" ? "Test suite" : context === "tooling" ? "Tooling" : "Production";
+  return CONTEXT_LABEL[context] ?? "Unclassified";
 }
 
 function opportunityTitle(opportunity: PerformanceOpportunity): string {

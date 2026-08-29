@@ -81,6 +81,7 @@ async def test_opportunities_are_grouped_bounded_and_split_by_context(
         "production_total": 1,
         "tooling_total": 0,
         "test_total": 1,
+        "unknown_total": 0,
         "with_plan_total": 1,
         "without_plan_total": 1,
     }
@@ -123,3 +124,30 @@ async def test_raw_evidence_is_paged_and_plan_matching_never_falls_back(
     page = (await client.get(f"/api/repos/{repo_id}/health/performance-opportunities")).json()
     assert page["items"][0]["plan_id"] is None
     assert page["items"][0]["plan_status"] == "not_persisted"
+
+
+async def test_an_unclassifiable_file_is_counted_and_stays_visible(app, client: AsyncClient):
+    """An unknown context must not mean an unlisted opportunity.
+
+    Reporting an unclassifiable file as production was the thing to fix. Losing
+    it from every view instead would be the same mistake pointing the other way.
+    """
+    repo = await create_test_repo(client)
+    findings = [
+        _finding(
+            "docs/snippets/walk.py",
+            10,
+            ["docs/snippets/walk.py::demo", "src/shared.py::load", "src/db.py::fetch"],
+        )
+    ]
+    link_performance_findings(findings)
+    async with app.state.session_factory() as session:
+        await crud.save_health_findings(session, repo["id"], findings)
+        await session.commit()
+
+    response = await client.get(
+        f"/api/repos/{repo['id']}/health/performance-opportunities", params={"context": "all"}
+    )
+    body = response.json()
+    assert body["summary"]["unknown_total"] == 1
+    assert [item["execution_context"] for item in body["items"]] == ["unknown"]

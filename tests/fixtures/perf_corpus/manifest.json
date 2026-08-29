@@ -1,7 +1,7 @@
 {
-  "corpus_version": 1,
-  "performance_model_version": 1,
-  "purpose": "characterization of current grouping, identity, actionability and ranking",
+  "corpus_version": 2,
+  "performance_model_version": 2,
+  "purpose": "characterization of grouping, identity, actionability, confidence facets and ranking",
   "runner": "uv run pytest tests/unit/health/test_perf_corpus_golden.py -v",
   "rewrite_env": "REPOWISE_REWRITE_PERF_GOLDEN=1",
   "downloads_repositories": false,
@@ -10,26 +10,44 @@
     {
       "archetype": "cli_build_indexing_tool",
       "language": "python",
-      "cases": ["generic_infra_sink", "specific_shared_helper", "filesystem_fan_out"],
-      "note": "Over-represented on purpose; it is one archetype row, not the tuning target."
+      "cases": [
+        "generic_infra_sink",
+        "specific_shared_helper",
+        "filesystem_fan_out",
+        "shared_dominator_fan_in"
+      ],
+      "note": "Over-represented on purpose; it is one archetype row, not the tuning target. Holds both grouping poles: a generic sink that must split by caller and a shared helper that must stay merged however many callers reach it."
     },
     {
       "archetype": "orm_database_heavy",
       "language": "python",
-      "cases": ["generic_infra_sink", "same_file_db_helper", "async_serial_awaits"],
+      "cases": [
+        "generic_infra_sink",
+        "same_file_db_helper",
+        "async_serial_awaits"
+      ],
       "note": "Database boundary through a shared session/query helper."
     },
     {
       "archetype": "concurrent_server_worker",
       "language": "python",
-      "cases": ["single_lock_owner", "distinct_lock_owners"],
+      "cases": [
+        "single_lock_owner",
+        "distinct_lock_owners"
+      ],
       "note": "Only the lock-scope shape is expressible today."
     },
     {
       "archetype": "general_library",
       "language": "python",
-      "cases": ["membership_scan", "string_accumulation", "resource_construction"],
-      "note": "Local, same-function cost shapes with no call path."
+      "cases": [
+        "membership_scan",
+        "string_accumulation",
+        "resource_construction",
+        "unclassified_context",
+        "sink_without_caller"
+      ],
+      "note": "Local, same-function cost shapes with no call path. Classification edges: a directory that does not say whether its code ships, and a path that names a sink but no caller."
     }
   ],
   "uncovered": [
@@ -54,9 +72,20 @@
       "prerequisite": "per-language corpus rows"
     }
   ],
-  "languages_covered": ["python"],
+  "languages_covered": [
+    "python"
+  ],
   "languages_uncovered": [
-    "typescript", "java", "kotlin", "go", "rust", "csharp", "ruby", "scala", "dart", "cpp"
+    "typescript",
+    "java",
+    "kotlin",
+    "go",
+    "rust",
+    "csharp",
+    "ruby",
+    "scala",
+    "dart",
+    "cpp"
   ],
   "languages_uncovered_reason": "The opportunity layer is language-neutral: it consumes biomarker findings, not source. Per-language recall lives in tests/unit/health/test_perf_dialects.py. Adding language rows here would duplicate that suite without adding grouping evidence."
 }

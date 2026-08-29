@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import defaultdict
 from typing import Any, Literal
 
@@ -22,31 +23,66 @@ from repowise.core.test_paths import is_test_related_path
 
 from .facts import ObservationFacts, detail_map, is_performance, observation_facts
 
-PERFORMANCE_MODEL_VERSION = 1
+PERFORMANCE_MODEL_VERSION = 2
 """Version of the identity, grouping, actionability, and ranking semantics.
 
-Version 1 predates this constant, so it is deliberately not an input to
-:func:`stable_id`: embedding it would rewrite every persisted ``opportunity_id``
-and orphan every stored plan link for no semantic change. A later version may
-embed it, and must bump ``HEALTH_ANALYZER_VERSION`` with it.
+From version 2 the version is the id prefix rather than a hash input, so a
+stale id is recognisable without a lookup and :func:`model_state` can answer
+from the string alone. Version 1 ids carry no digit and remain readable as
+version 1. Moving this constant means bumping ``HEALTH_ANALYZER_VERSION`` with
+it, which forces the rescore that restamps every stored finding.
 """
 
-ExecutionContext = Literal["production", "tooling", "test"]
+ExecutionContext = Literal["production", "tooling", "test", "unknown"]
 
 CausalKey = tuple[Any, ...]
+
+_ID_PREFIX = "perf"
+_ID_PATTERN = re.compile(rf"^{_ID_PREFIX}(\d*)_[0-9a-f]{{20}}$")
 
 _TOOLING_PARTS = frozenset(
     {".github", "benchmarks", "build", "devtools", "scripts", "tooling", "tools"}
 )
 
+_UNCLASSIFIABLE_PARTS = frozenset(
+    {
+        "demo",
+        "demos",
+        "doc",
+        "docs",
+        "example",
+        "examples",
+        "sample",
+        "samples",
+        "third_party",
+        "thirdparty",
+        "vendor",
+    }
+)
+"""Directories that do not say whether their code ships.
+
+Reporting these as production would assert exposure the tree does not support,
+which is the one thing the fallback must not do.
+"""
+
 
 def execution_context(file_path: str) -> ExecutionContext:
-    """Where this code runs. An identity input, so it is classified once."""
+    """Where this code runs. An identity input, so it is classified once.
+
+    ``unknown`` is a positive answer, not a gap: a path with no directory, or
+    one under a directory whose execution role is genuinely ambiguous, carries
+    no evidence either way.
+    """
+    normalized = file_path.replace("\\", "/")
+    if not normalized:
+        return "unknown"
     if is_test_related_path(file_path):
         return "test"
-    parts = {part.lower() for part in file_path.replace("\\", "/").split("/")}
-    if parts & _TOOLING_PARTS or "/cli/" in f"/{file_path.lower().replace(chr(92), '/')}/":
+    parts = {part.lower() for part in normalized.split("/")}
+    if parts & _TOOLING_PARTS or "/cli/" in f"/{normalized.lower()}/":
         return "tooling"
+    if parts & _UNCLASSIFIABLE_PARTS or "/" not in normalized:
+        return "unknown"
     return "production"
 
 
@@ -58,25 +94,32 @@ def cost_shape(marker: str) -> str:
 
 
 def causal_key(facts: ObservationFacts) -> CausalKey:
-    """The v1 identity kernel.
+    """The v2 identity kernel.
 
-    The two branches are deliberately asymmetric. A cross-function cause is
-    named by its terminal sink, so a new caller adds evidence without renaming
-    the cause; a same-function one has no shared sink and is named by its own
-    location.
+    A cross-function cause is named by the pair the intervention lives in:
+    the sink that pays the cost and the caller that repeats it. Naming it by
+    the sink alone merged every workflow that happened to reach a shared
+    infrastructure helper, so a session opener reached from many unrelated
+    callers read as one cause. Requiring the caller to match splits those, and
+    leaves a genuinely shared helper merged however many callers reach it,
+    because they all reach the sink through that helper.
+
+    A same-function cause has no call path and is named by its own location.
 
     Everything outside these tuples is display or derived data and stays out:
     prose, line ends, storage ids, rank factors, confidence, reachability, and
     provenance.
     """
     context = execution_context(facts.file_path)
-    if facts.cross_function and facts.path:
+    predecessor = facts.meaningful_predecessor
+    if facts.cross_function and predecessor is not None:
         return (
             "cross-function",
             context,
             cost_shape(facts.marker),
             facts.boundary_kind,
-            facts.path[-1],
+            predecessor,
+            facts.terminal_sink,
         )
     return (
         "local",
@@ -91,7 +134,8 @@ def causal_key(facts: ObservationFacts) -> CausalKey:
 
 def stable_id(key: CausalKey) -> str:
     payload = json.dumps(key, separators=(",", ":"), ensure_ascii=True)
-    return "perf_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
+    return f"{_ID_PREFIX}{PERFORMANCE_MODEL_VERSION}_{digest}"
 
 
 def key_context(key: CausalKey) -> ExecutionContext:
@@ -106,6 +150,51 @@ def key_boundary(key: CausalKey) -> str | None:
 
 def key_is_cross_function(key: CausalKey) -> bool:
     return key[0] == "cross-function"
+
+
+def key_intervention_symbol(key: CausalKey) -> str | None:
+    """The caller the whole group shares, and therefore the place to edit."""
+    return key[4] if key_is_cross_function(key) else None
+
+
+def key_terminal_sink(key: CausalKey) -> str | None:
+    """The sink the whole group shares. Read off the key, never off a member."""
+    return key[5] if key_is_cross_function(key) else None
+
+
+def opportunity_id_model_version(opportunity_id: str) -> int | None:
+    """Which model minted this id, or nothing if it was not minted here.
+
+    Version 1 ids carry no digit; from version 2 the prefix names the model.
+    """
+    match = _ID_PATTERN.match(opportunity_id)
+    if match is None:
+        return None
+    return int(match.group(1)) if match.group(1) else 1
+
+
+def model_state(opportunity_id: str) -> dict[str, Any]:
+    """Whether an id can still be resolved, and what to do when it cannot.
+
+    Ids are not translated across models. Grouping decides membership, so a
+    v1 id can name observations that v2 splits several ways, and an alias would
+    have to invent which split the caller meant. Reporting the mismatch and the
+    refresh that fixes it is the only honest answer.
+    """
+    version = opportunity_id_model_version(opportunity_id)
+    if version == PERFORMANCE_MODEL_VERSION:
+        state = "current"
+    elif version is None:
+        state = "unrecognized"
+    else:
+        state = "stale_model"
+    return {
+        "state": state,
+        "opportunity_id": opportunity_id,
+        "requested_model_version": version,
+        "performance_model_version": PERFORMANCE_MODEL_VERSION,
+        "refresh_required": state == "stale_model",
+    }
 
 
 def opportunity_id_for_finding(row: Any) -> str:
@@ -164,9 +253,13 @@ __all__ = [
     "group_observations",
     "key_boundary",
     "key_context",
+    "key_intervention_symbol",
     "key_is_cross_function",
+    "key_terminal_sink",
     "link_performance_findings",
+    "model_state",
     "opportunity_id_for_finding",
+    "opportunity_id_model_version",
     "shared_path_suffix",
     "stable_id",
 ]

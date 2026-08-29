@@ -14,6 +14,7 @@ from repowise.core.analysis.health.perf.opportunities import (
     build_performance_opportunities,
     link_performance_findings,
 )
+from repowise.core.analysis.health.perf.opportunity_rank import ACTIONABILITY_ORDER
 from repowise.core.analysis.health.refactoring.performance_fix import (
     performance_fix_suggestions,
 )
@@ -93,7 +94,12 @@ def test_a_subset_of_the_corpus_reproduces_the_same_identities() -> None:
     subset of observations and must still stamp the ids a full run would.
     """
     whole = {item.opportunity_id: item.execution_context for item in _opportunities()}
-    for case in ("generic_infra_sink", "specific_shared_helper", "context_split"):
+    for case in (
+        "generic_infra_sink",
+        "specific_shared_helper",
+        "shared_dominator_fan_in",
+        "context_split",
+    ):
         subset = build_performance_opportunities(rows_for(case), evidence_limit=EVIDENCE_LIMIT)
         assert subset, case
         for item in subset:
@@ -116,31 +122,33 @@ def test_linking_stamps_the_id_the_builder_derives() -> None:
 @pytest.mark.parametrize(
     ("case", "expected_groups", "expected_strategies"),
     [
-        # A generic infrastructure sink merges unrelated callers into one group
-        # and refuses to claim a plan.
-        ("generic_infra_sink", 1, {None}),
-        # A specific shared helper keeps a coherent suffix and does get a plan.
+        # Three unrelated callers reach one generic session opener. They are
+        # three causes, and each one carries the plan the merged group could
+        # not: plan availability no longer falls as caller count rises.
+        ("generic_infra_sink", 3, {"batch_or_prefetch_io"}),
+        # A specific shared helper is one cause however many callers reach it.
         ("specific_shared_helper", 1, {"batch_or_prefetch_io"}),
+        ("shared_dominator_fan_in", 1, {None}),
         # Filesystem repetition is real but has no batch API to point at.
-        ("filesystem_fan_out", 1, {None}),
+        ("filesystem_fan_out", 2, {None}),
         ("same_file_db_helper", 1, {"batch_or_prefetch_io"}),
         ("async_serial_awaits", 2, {"parallelize_independent_awaits", None}),
         ("single_lock_owner", 1, {"shrink_lock_scope"}),
+        # One helper, two lock owners behind it: still one cause, still no
+        # single critical section to shorten.
         ("distinct_lock_owners", 1, {None}),
         ("membership_scan", 1, {"replace_membership_collection"}),
         ("string_accumulation", 1, {"buffer_string_accumulation"}),
         ("resource_construction", 2, {"hoist_loop_invariant_resource", None}),
         # Execution context is an identity input: one shape, three contexts.
-        # Each context holds a single caller, so its shared suffix is the whole
-        # path and a plan is offered, while ``generic_infra_sink`` above, with
-        # three callers on the same sink, gets none: plan availability falls
-        # as caller count rises, which is backwards.
         ("context_split", 3, {"batch_or_prefetch_io"}),
-        # io_in_loop and nested_loop_with_io share one cross-function identity,
-        # and two callers shorten the suffix to the sink alone, so no plan.
-        ("cost_shape_merge", 1, {None}),
+        # io_in_loop and nested_loop_with_io share one cross-function identity
+        # when they share a caller, and merging no longer costs the plan.
+        ("cost_shape_merge", 1, {"batch_or_prefetch_io"}),
         ("provenance_mix", 2, {"batch_or_prefetch_io"}),
-        ("reachability_states", 1, {None}),
+        ("reachability_states", 1, {"batch_or_prefetch_io"}),
+        ("unclassified_context", 2, {None}),
+        ("sink_without_caller", 1, {"batch_or_prefetch_io"}),
     ],
 )
 def test_case_membership_and_actionability(case, expected_groups, expected_strategies) -> None:
@@ -151,20 +159,83 @@ def test_case_membership_and_actionability(case, expected_groups, expected_strat
     } == expected_strategies
 
 
-def test_confidence_facets_available_today_are_provenance_only() -> None:
-    """Evidence confidence and actionability are not yet separable.
+def test_a_generic_sink_splits_by_caller_and_a_shared_helper_does_not() -> None:
+    """The two poles of the grouping rule, asserted against each other.
 
-    ``confidence`` is derived from call-graph provenance alone; a plan's own
-    confidence comes from ``fix.safety`` in the refactoring layer. This records
-    that the two facets are still collapsed into one label.
+    Both cases put several callers on one sink. The difference is whether a
+    helper stands between them, and that is the whole of what decides a shared
+    cause from a shared destination.
     """
-    by_case = {
-        "provenance_mix": {"medium", "low"},
-        "generic_infra_sink": {"high"},
+    generic = build_performance_opportunities(rows_for("generic_infra_sink"))
+    shared = build_performance_opportunities(rows_for("shared_dominator_fan_in"))
+    assert len(generic) == 3
+    assert {item.observations_total for item in generic} == {1}
+    assert len(shared) == 1
+    assert shared[0].observations_total == 4
+    assert shared[0].intervention_symbol == "src/app/parse.py::_get_query"
+    assert shared[0].facets["leverage"] == "shared"
+
+
+def test_an_unclassifiable_path_is_not_reported_as_production() -> None:
+    contexts = {
+        item.execution_context
+        for item in build_performance_opportunities(rows_for("unclassified_context"))
     }
-    for case, expected in by_case.items():
-        items = build_performance_opportunities(rows_for(case))
-        assert {item.confidence for item in items} == expected
+    assert contexts == {"unknown"}
+
+
+def test_a_path_that_names_no_caller_is_keyed_locally() -> None:
+    """A single-node path is a destination with no journey to it."""
+    item = build_performance_opportunities(rows_for("sink_without_caller"))[0]
+    assert item.intervention_symbol is None
+    assert item.terminal_sink is None
+
+
+def test_every_group_reports_an_actionability_state_and_a_reason() -> None:
+    """Nothing is dropped for being unexplainable; it is labelled instead."""
+    states = {"plan_ready", "advisory", "investigate"}
+    for item in _opportunities():
+        assert item.actionability_state in states
+        assert item.actionability_reason
+        if item.actionability_state == "investigate":
+            assert item.fix is None
+            assert item.prerequisites, item.opportunity_id
+
+
+def test_actionable_groups_sort_above_higher_scoring_evidence() -> None:
+    """Raw magnitude must not bury work somebody could start today."""
+    order = [item.actionability_state for item in _opportunities()]
+    assert order == sorted(order, key=ACTIONABILITY_ORDER.__getitem__)
+
+
+def test_rank_rationale_is_bounded_and_never_pads_with_nothing() -> None:
+    for item in _opportunities():
+        assert len(item.why_ranked) <= 3
+        assert all(entry["points"] > 0 for entry in item.why_ranked)
+
+
+def test_evidence_confidence_and_actionability_move_independently() -> None:
+    """The two are separate readings of one group and must be able to disagree.
+
+    ``provenance_mix`` holds the sharp pair: the same strategy on the same
+    boundary, demoted only because the call path behind it was resolved less
+    reliably.
+    """
+    by_provenance = {
+        item.provenance: item
+        for item in build_performance_opportunities(rows_for("provenance_mix"))
+    }
+    reliable = by_provenance["reliable-edge"]
+    guessed = by_provenance["name-fallback"]
+    assert reliable.fix and guessed.fix
+    assert reliable.fix.strategy == guessed.fix.strategy
+    assert reliable.confidence == "medium"
+    assert guessed.confidence == "low"
+    assert reliable.facets["actionability_confidence"] == "medium"
+    assert guessed.facets["actionability_confidence"] == "low"
+    assert reliable.actionability_reason == "strategy_requires_validation"
+    assert guessed.actionability_reason == "low_evidence_confidence"
+    assert "reliable_call_path" in guessed.prerequisites
 
 
 def test_reachability_aggregates_any_true_over_all_false() -> None:
