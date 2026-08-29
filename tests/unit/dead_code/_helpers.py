@@ -31,7 +31,14 @@ def _build_graph(
     """
     g = nx.DiGraph()
     for name, attrs in nodes.items():
-        attrs.setdefault("language", "python")
+        if "language" not in attrs:
+            name_lower = name.lower()
+            if name_lower.endswith((".tsx", ".ts")):
+                attrs["language"] = "typescript"
+            elif name_lower.endswith((".jsx", ".js")):
+                attrs["language"] = "javascript"
+            else:
+                attrs["language"] = "python"
         # Extract symbols before adding the file node
         sym_list = attrs.pop("symbols", [])
         g.add_node(name, **attrs)

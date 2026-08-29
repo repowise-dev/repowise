@@ -1895,6 +1895,24 @@ class ASTParser:
                 arg_node = arg_nodes[0]
                 arg_count = _count_arguments(arg_node)
 
+            supplied_props: frozenset[str] | None = None
+            if site_node.type in ("jsx_self_closing_element", "jsx_opening_element"):
+                props_set: set[str] = set()
+                has_spread = False
+                for child in site_node.children:
+                    if child.type == "jsx_attribute":
+                        for sub in child.children:
+                            if sub.type in ("property_identifier", "identifier"):
+                                props_set.add(_node_text(sub, src))
+                                break
+                    elif child.type == "jsx_expression":
+                        for sub in child.children:
+                            if sub.type == "spread_element":
+                                has_spread = True
+                                break
+                if not has_spread:
+                    supplied_props = frozenset(props_set)
+
             caller_id = _find_enclosing_symbol(line, symbol_ranges)
 
             calls.append(
@@ -1911,6 +1929,7 @@ class ASTParser:
                         if site_node.type in config.reference_call_node_types
                         else "calls"
                     ),
+                    supplied_props=supplied_props,
                 )
             )
 

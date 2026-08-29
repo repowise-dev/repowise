@@ -572,7 +572,11 @@ class ResolveMixin:
                     continue
                 if not self._graph.has_edge(rc.caller_id, rc.callee_id):
                     attrs = (
-                        {"edge_type": "calls", "call_lines": [rc.line]}
+                        {
+                            "edge_type": "calls",
+                            "call_lines": [rc.line],
+                            "supplied_props": rc.supplied_props,
+                        }
                         if rc.edge_type == "calls"
                         else {"edge_type": "references"}
                     )
@@ -608,6 +612,11 @@ class ResolveMixin:
                 if rc.confidence > existing.get("confidence", 0):
                     existing["confidence"] = rc.confidence
                     existing["resolution_origin"] = rc.origin
+                ex_props = existing.get("supplied_props")
+                if ex_props is None or rc.supplied_props is None:
+                    existing["supplied_props"] = None
+                else:
+                    existing["supplied_props"] = frozenset(ex_props | rc.supplied_props)
             if progress:
                 progress.on_item_done("graph.calls")
 
