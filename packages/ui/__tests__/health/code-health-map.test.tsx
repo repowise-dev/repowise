@@ -168,23 +168,22 @@ describe("CodeHealthMap", () => {
     expect(fillFor("core/leveldb.cc")).toBe("var(--color-border-default)");
   });
 
-  it("rings only the files carrying an open cause, sized by how many", () => {
+  it("carries the burden on the node and the plan on the ring", () => {
     const files: CodeHealthMapFile[] = [
-      { ...f("core/many.py", 120, "core"), performance_opportunities: 9, performance_actionability: "plan_ready", performance_analyzed: true },
+      { ...f("core/planned.py", 120, "core"), performance_opportunities: 9, performance_actionability: "plan_ready", performance_analyzed: true },
       { ...f("core/one.py", 100, "core"), performance_opportunities: 1, performance_actionability: "investigate", performance_analyzed: true },
       { ...f("core/clean.py", 80, "core"), performance_opportunities: 0, performance_analyzed: true },
     ];
     const { container } = render(<CodeHealthMap files={files} overlay="performance" />);
+    const fillOf = (p: string) =>
+      container.querySelector(`circle[data-path="${p}"]`)?.getAttribute("fill");
+    expect(fillOf("core/planned.py")).toBe("var(--color-error)");
+    expect(fillOf("core/one.py")).toContain("--color-caution");
+    expect(fillOf("core/clean.py")).toBe("var(--color-text-tertiary)");
+    // The ring is the rare mark, not one every coloured node carries.
+    expect(container.querySelector('circle[data-ring="core/planned.py"]')).toBeTruthy();
+    expect(container.querySelector('circle[data-ring="core/one.py"]')).toBeNull();
     expect(container.querySelector('circle[data-ring="core/clean.py"]')).toBeNull();
-    const many = container.querySelector('circle[data-ring="core/many.py"]')!;
-    const one = container.querySelector('circle[data-ring="core/one.py"]')!;
-    expect(Number(many.getAttribute("stroke-width"))).toBeGreaterThan(
-      Number(one.getAttribute("stroke-width")),
-    );
-    // Actionability is the non-colour channel: a stored plan is solid, an open
-    // question is dotted, so the two are told apart without reading a hue.
-    expect(many.getAttribute("stroke-dasharray")).toBeNull();
-    expect(one.getAttribute("stroke-dasharray")).toBeTruthy();
   });
 
   it("draws no ring under any other lens", () => {
@@ -280,13 +279,13 @@ describe("map chrome, off canvas", () => {
 
   it("MapLegend renders the active lens's bands and caption", () => {
     const { getByText } = render(<MapLegend overlay="performance" />);
-    expect(getByText("5+ causes")).toBeInTheDocument();
+    expect(getByText("5 or more")).toBeInTheDocument();
     expect(getByText("Not analyzed")).toBeInTheDocument();
-    // The caption refuses the runtime claim the mark could be read as making,
-    // and names the two channels so a flat row of swatches is not the whole key.
+    // The caption refuses the runtime claim the colour could be read as making,
+    // and the rows are grouped so a flat column of swatches is not the whole key.
     expect(getByText(/never a runtime measurement/i)).toBeInTheDocument();
-    expect(getByText("Ring colour, how many")).toBeInTheDocument();
-    expect(getByText("Ring pattern, what you can do")).toBeInTheDocument();
+    expect(getByText("Open causes")).toBeInTheDocument();
+    expect(getByText("Ringed")).toBeInTheDocument();
   });
 
   it("MapLegend says it is loading rather than showing bands for absent data", () => {

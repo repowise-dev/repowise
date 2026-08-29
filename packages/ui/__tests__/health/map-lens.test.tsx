@@ -9,6 +9,8 @@ import {
   SEARCH_MARK_CAP,
   burdenBand,
   performanceBurden,
+  performanceFill,
+  performanceOpacity,
   pressureRing,
   type CodeHealthMapFile,
   type MapScope,
@@ -76,7 +78,61 @@ describe("burden encoding", () => {
       performance_analyzed: true,
     });
     expect(performanceBurden(row).state).toBe("actionable");
-    expect(pressureRing(row)?.dash).toBeUndefined();
+    // The one file shape that earns a second mark.
+    expect(pressureRing(row)).not.toBeNull();
+  });
+
+  it("rings only a cause with a stored plan, so the mark stays rare", () => {
+    const base = { performance_opportunities: 9, performance_analyzed: true } as const;
+    expect(
+      pressureRing(f("a.py", 10, "core", { ...base, performance_actionability: "advisory" })),
+    ).toBeNull();
+    expect(
+      pressureRing(f("b.py", 10, "core", { ...base, performance_actionability: "investigate" })),
+    ).toBeNull();
+  });
+
+  it("colours the node by how many causes it carries", () => {
+    const at = (n: number) =>
+      performanceFill(f("a.py", 10, "core", {
+        performance_opportunities: n,
+        performance_analyzed: true,
+      }));
+    expect(at(1)).toContain("--color-caution");
+    expect(at(3)).toContain("--color-warning");
+    expect(at(9)).toBe("var(--color-error)");
+    // The two quiet steps mix toward the page, never toward transparency.
+    expect(at(1)).toContain("--color-bg-root");
+  });
+
+  it("pushes a file with no cause into the ground", () => {
+    // Most of a repository is this, and the first cut drew every one of them
+    // at nine tenths opacity, which tiled into a sheet the marks sat behind.
+    const clear = f("a.py", 10, "core", {
+      performance_opportunities: 0,
+      performance_analyzed: true,
+    });
+    const loaded = f("b.py", 10, "core", {
+      performance_opportunities: 6,
+      performance_actionability: "advisory",
+      performance_analyzed: true,
+    });
+    const unsupported = f("c.cc", 10, "core", {
+      performance_opportunities: 0,
+      performance_analyzed: false,
+    });
+    expect(performanceOpacity(clear)).toBeLessThan(0.4);
+    expect(performanceOpacity(loaded)).toBeGreaterThan(performanceOpacity(clear));
+    expect(performanceOpacity(unsupported)).toBeLessThan(performanceOpacity(clear));
+
+    // A loaded node is fully present whatever its band: the nodes overlap, so
+    // a translucent ramp composites two light ones into the darker band's tone.
+    const at = (n: number) =>
+      performanceOpacity(f("x.py", 10, "core", {
+        performance_opportunities: n,
+        performance_analyzed: true,
+      }));
+    expect(at(1)).toBe(at(9));
   });
 
   it("gives an unsupported language no ring and no clear verdict", () => {
@@ -178,9 +234,9 @@ describe("what the field costs to draw", () => {
     const nodes = container.querySelectorAll("circle[data-path]").length;
     const rings = container.querySelectorAll("circle[data-ring]").length;
     expect(nodes).toBe(300);
-    // One in five carries a cause here, and the second channel costs elements
-    // only for those. A ring on every node would be a second full layer.
-    expect(rings).toBe(60);
+    // The fixture's causes are all advisory, so none earns a ring: the burden
+    // rides on the node's own colour and costs no extra element at all.
+    expect(rings).toBe(0);
   });
 
   it("keeps the safeguards that make thousands of nodes affordable", () => {

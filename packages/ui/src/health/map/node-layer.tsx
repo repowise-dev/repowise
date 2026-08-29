@@ -16,6 +16,8 @@ export interface NodeLayerProps {
   galaxies: Galaxy[];
   focusModuleKey: string | null;
   fill: (f: CodeHealthMapFile) => string;
+  /** Per-node opacity, so a lens can push most of the field into the ground. */
+  fillOpacity?: ((f: CodeHealthMapFile) => number) | undefined;
   offX: number;
   offY: number;
   /**
@@ -42,6 +44,7 @@ export const FileNodes = memo(function FileNodes({
   galaxies,
   focusModuleKey,
   fill,
+  fillOpacity,
   offX,
   offY,
   strokeWidth,
@@ -71,9 +74,14 @@ export const FileNodes = memo(function FileNodes({
                   cy={nd.y + offY}
                   r={nd.r}
                   fill={fill(f)}
-                  fillOpacity={faded ? 0.18 : 0.9}
+                  fillOpacity={
+                    faded ? 0.18 : ((fillOpacity?.(f) ?? 0.9) as number)
+                  }
                   stroke="var(--color-bg-root)"
-                  strokeWidth={strokeWidth}
+                  // A quiet node keeps no separating stroke: at a tenth of the
+                  // field's opacity the stroke is louder than the node, which
+                  // turns a soft substrate back into a grid of rings.
+                  strokeWidth={(fillOpacity?.(f) ?? 0.9) < 0.4 ? 0 : strokeWidth}
                   className={interactive ? "cursor-pointer" : undefined}
                   onMouseEnter={() => onHoverEnter(f)}
                   onMouseLeave={() => onHoverLeave(f)}
@@ -92,13 +100,11 @@ export const FileNodes = memo(function FileNodes({
 });
 
 /**
- * The performance lens's second channel, as its own layer.
+ * The one extra mark, as its own layer.
  *
- * Only files carrying an open cause get a ring, so this is a fraction of the
- * field rather than a mark on every node: on a repository of two thousand
- * drawn files a few hundred draw one. Width and colour step with the burden,
- * the dash pattern says what could be done about it, and the key spells both
- * out in words. The ring never claims a runtime magnitude.
+ * Only a cause with a stored plan takes a ring, so this draws tens of elements
+ * where the node layer draws thousands. The burden itself is the node's
+ * colour; this says "and there is something written down for this one".
  */
 export const PressureRings = memo(function PressureRings({
   galaxies,
@@ -124,14 +130,6 @@ export const PressureRings = memo(function PressureRings({
               const ring = pressureRing(nd.file);
               if (!ring) return null;
               const width = ring.width / scale;
-              // The pattern is in user units too, so it has to shrink with the
-              // stroke or a zoomed galaxy turns every dashed ring solid.
-              const dash = ring.dash
-                ? ring.dash
-                    .split(" ")
-                    .map((n) => Number(n) / scale)
-                    .join(" ")
-                : undefined;
               return (
                 <circle
                   key={nd.file.file_path}
@@ -145,7 +143,6 @@ export const PressureRings = memo(function PressureRings({
                   fill="none"
                   stroke={ring.stroke}
                   strokeWidth={width}
-                  {...(dash ? { strokeDasharray: dash } : {})}
                 />
               );
             })}

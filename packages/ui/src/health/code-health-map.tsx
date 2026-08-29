@@ -43,6 +43,7 @@ export {
   burdenBand,
   performanceBurden,
   performanceFill,
+  performanceOpacity,
   performanceSentence,
   pressureRing,
 } from "./map/lens";
@@ -429,6 +430,7 @@ export function CodeHealthMap({
             galaxies={galaxies}
             focusModuleKey={focusGalaxy?.module ?? null}
             fill={overlaySpec.fill}
+            fillOpacity={overlaySpec.fillOpacity}
             offX={offX}
             offY={offY}
             strokeWidth={0.5 / k}

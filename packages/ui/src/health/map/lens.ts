@@ -54,6 +54,8 @@ export interface OverlaySpec {
   /** Caption shown under the legend key. */
   caption: string;
   fill: (f: CodeHealthMapFile) => string;
+  /** Per-node opacity, when the lens needs most of the field to sit back. */
+  fillOpacity?: (f: CodeHealthMapFile) => number;
   legend: LegendRow[];
 }
 
@@ -84,18 +86,24 @@ function churnFill(pctile: number | null | undefined): string {
 /* ------------------------------------------------------------------ *
  * Performance lens
  *
- * Two channels, neither of them the node's fill.
+ * One mark on the node, one mark beside it, and a field that gets out of
+ * the way.
  *
- * The fill stays quiet and says only whether anything looked at the file,
- * because the pillar is high precision and low recall: a file a detector
- * cleared is a file with no *supported pattern* in it, which is not a
- * measurement that it is fast. Painting that green would put the strongest
- * reassurance on the surface on the weakest evidence it has.
+ * A file a detector cleared is a file with no *supported pattern* in it, not a
+ * file measured to be fast, so it is never painted the healthy green. But most
+ * of a repository is that, and the first cut of this lens gave every one of
+ * those files a solid mid-grey disc at nine-tenths opacity. Two thousand of
+ * them tiled into an opaque sheet: node boundaries vanished, and an outline
+ * drawn around one large node read as a lasso thrown over a crowd of small
+ * ones. The burden also rode on that outline, in a colour and a dash pattern,
+ * which at four-pixel radius is a handful of disconnected specks.
  *
- * The pressure ring carries the burden: its width and colour step with the
- * number of open causes, and its stroke pattern says what a reader could do
- * about them. Both are named in words in the key, the hover card, and the
- * inspector, so neither colour nor pattern is load-bearing on its own.
+ * So the quiet files recede to a faint substrate, and colour moves onto the
+ * node, where the eye already is: how many open causes, in three steps. The
+ * outline survives for the one thing worth a second mark, a cause with a
+ * stored plan, and is a plain bright ring rather than a fourth hue. Advisory
+ * and investigate are named in words by the hover card, the inspector and the
+ * ranked list, which is where a distinction this fine belongs.
  * ------------------------------------------------------------------ */
 
 export type PerformanceNodeState =
@@ -161,10 +169,27 @@ export function performanceBurden(f: CodeHealthMapFile): PerformanceBurden {
   };
 }
 
-/** Fill: analysis state only, and never the healthy green. */
+/** Fill: how many open causes, or a quiet neutral. Never the healthy green. */
 export function performanceFill(f: CodeHealthMapFile): string {
-  const { state } = performanceBurden(f);
+  const { state, count } = performanceBurden(f);
+  const band = burdenBand(count);
+  if (band !== 0) return BAND_TONE[band];
   return state === "unsupported" || state === "unknown" ? ABSENT_FILL : NEUTRAL_FILL;
+}
+
+/**
+ * How present a node is.
+ *
+ * A few hundred files out of thousands carry a cause, so the rest sit back far
+ * enough for those to read as figure rather than as more of the ground. A
+ * loaded node is fully present, and its band is carried by the tone: a single
+ * cause is by far the commonest of the three, so the ramp has to quieten it
+ * without making it transparent.
+ */
+export function performanceOpacity(f: CodeHealthMapFile): number {
+  const { state, count } = performanceBurden(f);
+  if (burdenBand(count) !== 0) return 1;
+  return state === "unsupported" || state === "unknown" ? 0.14 : 0.26;
 }
 
 /** Burden band, 0 when the file carries none. Bounded so 40 causes is a step. */
@@ -175,42 +200,37 @@ export function burdenBand(count: number): 0 | 1 | 2 | 3 {
   return 3;
 }
 
-const BAND_STROKE: Record<1 | 2 | 3, string> = {
-  1: "var(--color-caution)",
-  2: "var(--color-warning)",
+/**
+ * The three steps, quietened toward the page rather than toward transparency.
+ *
+ * The nodes overlap by construction, so a translucent ramp is read wrong: two
+ * overlapping one-cause files composite into exactly the tone that means two
+ * to four. Mixing into the background instead keeps every node opaque, so a
+ * colour on this field always means one band and never a pile of them.
+ */
+const BAND_TONE: Record<1 | 2 | 3, string> = {
+  1: "color-mix(in srgb, var(--color-caution) 60%, var(--color-bg-root))",
+  2: "color-mix(in srgb, var(--color-warning) 82%, var(--color-bg-root))",
   3: "var(--color-error)",
-};
-
-const BAND_WIDTH: Record<1 | 2 | 3, number> = { 1: 1, 2: 1.8, 3: 2.6 };
-
-/** Dash pattern per state: solid is a stored plan, dotted is an open question. */
-const STATE_DASH: Record<PerformanceNodeState, string | undefined> = {
-  actionable: undefined,
-  advisory: "3 2",
-  investigate: "1 2",
-  clear: undefined,
-  unsupported: undefined,
-  unknown: "1 2",
 };
 
 export interface PressureRing {
   stroke: string;
   /** Stroke width in user units, before the caller divides by the zoom scale. */
   width: number;
-  dash?: string;
 }
 
-/** The ring for one row, or `null` when the file carries no open burden. */
+/**
+ * The ring for one row, or `null`, which is most of them.
+ *
+ * Only a cause with a stored plan takes one: 29 of 768 here. A mark every
+ * coloured node carries is not a mark, and a plain bright ring reads as
+ * "singled out" without competing with the colour underneath it for the same
+ * meaning.
+ */
 export function pressureRing(f: CodeHealthMapFile): PressureRing | null {
-  const { state, count } = performanceBurden(f);
-  const band = burdenBand(count);
-  if (band === 0) return null;
-  const dash = STATE_DASH[state];
-  return {
-    stroke: BAND_STROKE[band],
-    width: BAND_WIDTH[band],
-    ...(dash ? { dash } : {}),
-  };
+  if (performanceBurden(f).state !== "actionable") return null;
+  return { stroke: "var(--color-text-primary)", width: 1.1 };
 }
 
 export const PERFORMANCE_STATE_LABEL: Record<PerformanceNodeState, string> = {
@@ -251,34 +271,16 @@ export const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
   performance: {
     label: "Performance",
     caption:
-      "galaxy = module · dot = file, sized by lines of code · ring = open causes, never a runtime measurement",
+      "galaxy = module · dot = file, sized by lines of code · colour = open causes, never a runtime measurement",
     fill: performanceFill,
+    fillOpacity: performanceOpacity,
     legend: [
-      { group: "Ring colour, how many", fill: BAND_STROKE[3], label: "5+ causes", mark: "ring" },
-      { group: "Ring colour, how many", fill: BAND_STROKE[2], label: "2-4", mark: "ring" },
-      { group: "Ring colour, how many", fill: BAND_STROKE[1], label: "1", mark: "ring" },
-      {
-        group: "Ring pattern, what you can do",
-        fill: NEUTRAL_FILL,
-        label: "Stored plan",
-        mark: "ring",
-      },
-      {
-        group: "Ring pattern, what you can do",
-        fill: NEUTRAL_FILL,
-        label: "Advisory",
-        mark: "ring",
-        dash: "3 2",
-      },
-      {
-        group: "Ring pattern, what you can do",
-        fill: NEUTRAL_FILL,
-        label: "Investigate",
-        mark: "ring",
-        dash: "1 2",
-      },
-      { group: "No ring", fill: NEUTRAL_FILL, label: "Analyzed, nothing surfaced" },
-      { group: "No ring", fill: ABSENT_FILL, label: "Not analyzed" },
+      { group: "Open causes", fill: BAND_TONE[3], label: "5 or more" },
+      { group: "Open causes", fill: BAND_TONE[2], label: "2 to 4" },
+      { group: "Open causes", fill: BAND_TONE[1], label: "1" },
+      { group: "Ringed", fill: "var(--color-text-primary)", label: "Stored plan", mark: "ring" },
+      { group: "No cause", fill: NEUTRAL_FILL, label: "Analyzed, nothing surfaced" },
+      { group: "No cause", fill: ABSENT_FILL, label: "Not analyzed" },
     ],
   },
   coverage: {
