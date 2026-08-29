@@ -1,0 +1,62 @@
+{
+  "corpus_version": 1,
+  "performance_model_version": 1,
+  "purpose": "characterization of current grouping, identity, actionability and ranking",
+  "runner": "uv run pytest tests/unit/health/test_perf_corpus_golden.py -v",
+  "rewrite_env": "REPOWISE_REWRITE_PERF_GOLDEN=1",
+  "downloads_repositories": false,
+  "cases_are_hand_authored": true,
+  "covered": [
+    {
+      "archetype": "cli_build_indexing_tool",
+      "language": "python",
+      "cases": ["generic_infra_sink", "specific_shared_helper", "filesystem_fan_out"],
+      "note": "The dogfood archetype. Over-represented on purpose; it is one row, not the tuning target."
+    },
+    {
+      "archetype": "orm_database_heavy",
+      "language": "python",
+      "cases": ["generic_infra_sink", "same_file_db_helper", "async_serial_awaits"],
+      "note": "Database boundary through a shared session/query helper."
+    },
+    {
+      "archetype": "concurrent_server_worker",
+      "language": "python",
+      "cases": ["single_lock_owner", "distinct_lock_owners"],
+      "note": "Only the lock-scope shape is expressible today."
+    },
+    {
+      "archetype": "general_library",
+      "language": "python",
+      "cases": ["membership_scan", "string_accumulation", "resource_construction"],
+      "note": "Local, same-function cost shapes with no call path."
+    }
+  ],
+  "uncovered": [
+    {
+      "archetype": "web_api_service",
+      "reason": "No request-scoped entrypoint or route-context fact exists yet; a fixture would imply exposure evidence the analyzer cannot produce.",
+      "prerequisite": "typed entrypoint context (PLAN Phase 2, item 3)"
+    },
+    {
+      "archetype": "data_pipeline_dataframe",
+      "reason": "No collection cardinality or dataframe-operation model; the only expressible marker is generic io_in_loop, which the CLI archetype already covers.",
+      "prerequisite": "cardinality/multiplicity propagation (PLAN Backlog)"
+    },
+    {
+      "archetype": "mobile_application",
+      "reason": "No Kotlin/Swift/Dart fixture is exercised through the opportunity layer in this repository; the dialects emit observations but no labelled archetype case exists.",
+      "prerequisite": "per-language corpus rows (PLAN section 12)"
+    },
+    {
+      "archetype": "systems_native",
+      "reason": "C/C++/Rust observations reach the same generic markers; no distinct native cost shape is modelled.",
+      "prerequisite": "per-language corpus rows (PLAN section 12)"
+    }
+  ],
+  "languages_covered": ["python"],
+  "languages_uncovered": [
+    "typescript", "java", "kotlin", "go", "rust", "csharp", "ruby", "scala", "dart", "cpp"
+  ],
+  "languages_uncovered_reason": "The opportunity layer is language-neutral: it consumes biomarker findings, not source. Per-language recall lives in tests/unit/health/test_perf_dialects.py. Adding language rows here would duplicate that suite without adding grouping evidence."
+}

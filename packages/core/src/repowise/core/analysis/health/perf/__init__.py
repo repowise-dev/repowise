@@ -11,7 +11,15 @@ This package holds:
   Primitive 3) and the cross-function N+1 bridge (:mod:`.crossfn`) built on it;
 * the shared call-graph index (:mod:`.callgraph`) + the severity ranker
   (:mod:`.ranking`, Primitive 2) used as a centrality precision gate, and the
-  centrality-gated Phase-7b markers (:mod:`.gated`).
+  centrality-gated Phase-7b markers (:mod:`.gated`);
+* the causal read model that folds raw findings into ranked opportunities:
+  :mod:`.opportunities` is its public face, over :mod:`.facts` (typed evidence
+  read off a row), :mod:`.causal` (grouping and the versioned identity kernel),
+  :mod:`.actionability` (whether the evidence supports naming a change), and
+  :mod:`.opportunity_rank` (the ordering policy).
+
+Nothing here touches persistence or transport. Stored rows arrive through the
+same attribute adapter analyzer dataclasses do.
 """
 
 from __future__ import annotations
