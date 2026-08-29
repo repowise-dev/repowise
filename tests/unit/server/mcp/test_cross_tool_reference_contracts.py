@@ -292,7 +292,7 @@ def _extract_contract_references(
                         entity_family="dead_code" if emitter == "get_dead_code" else "health",
                     )
                 )
-            elif identifier.startswith("plan_"):
+            elif identifier.startswith(("plan_", "refac")):
                 refs.append(
                     Ref(
                         emitter,

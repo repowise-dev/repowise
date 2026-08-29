@@ -106,7 +106,8 @@ async def test_generate_code_disabled(factory, _mcp_globals) -> None:
 
     result = await generate_refactoring_code(sid)
     assert result["resolved"] is True
-    assert result["suggestion_id"].startswith("plan_")
+    # The content-derived plan identity, versioned by its prefix.
+    assert result["suggestion_id"].startswith("refac2_")
     assert result["generation"]["available"] is False
     assert result["generation"]["reason"] == "disabled"
 

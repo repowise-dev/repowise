@@ -25,6 +25,7 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     hydrate_recommendations,
 )
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.analysis.refactoring import ALLOWED_STATUSES
 from repowise.server.deps import get_db_session, verify_api_key
 
 router = APIRouter(
@@ -436,6 +437,41 @@ async def get_refactoring_plan(
         raise HTTPException(status_code=404, detail=f"refactoring plan not found: {suggestion_id}")
     recommendation = (await hydrate_recommendations(session, repo_id, [row]))[0]
     return _to_response(recommendation.as_dict())
+
+
+class RefactoringStatusUpdate(BaseModel):
+    """Same shape and vocabulary as health finding triage — one triage system."""
+
+    status: str = Field(..., description="open | acknowledged | resolved | false_positive")
+
+
+@router.patch("/{repo_id}/refactoring/{suggestion_id}/status")
+async def update_refactoring_plan_status(
+    repo_id: str,
+    suggestion_id: str,
+    payload: RefactoringStatusUpdate,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """Record a decision about one plan.
+
+    ``false_positive`` also suppresses the plan on every later analysis, which
+    is how a wrong suggestion stops coming back instead of being re-emitted.
+    """
+    if payload.status not in ALLOWED_STATUSES:
+        raise HTTPException(status_code=400, detail=f"invalid status: {payload.status}")
+    row = await crud.update_refactoring_suggestion_status(
+        session, repo_id, suggestion_id, payload.status
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"refactoring plan not found: {suggestion_id}")
+    await session.commit()
+    return {
+        "id": row.id,
+        "public_id": row.public_id,
+        "status": row.status,
+        "status_reason": row.status_reason,
+        "status_changed_at": row.status_changed_at.isoformat() if row.status_changed_at else None,
+    }
 
 
 # ---------------------------------------------------------------------------

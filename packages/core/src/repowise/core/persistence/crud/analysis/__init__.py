@@ -67,9 +67,12 @@ from .performance import (
     performance_facet_counts,
 )
 from .refactoring import (
+    count_refactoring_suggestions,
+    finalize_refactoring_suggestions,
     get_refactoring_suggestion,
     get_refactoring_suggestions,
     save_refactoring_suggestions,
+    update_refactoring_suggestion_status,
     upsert_refactoring_suggestions,
 )
 
@@ -79,9 +82,11 @@ __all__ = [
     "HealthSnapshotHeadline",
     "HealthSnapshotScalars",
     "backfill_module_attribution",
+    "count_refactoring_suggestions",
     "covered_source_files",
     "files_covered_by",
     "finalize_performance_opportunities",
+    "finalize_refactoring_suggestions",
     "get_average_health",
     "get_coverage_summary",
     "get_dead_code_findings",
@@ -122,6 +127,7 @@ __all__ = [
     "tests_covering_files",
     "update_dead_code_status",
     "update_health_finding_status",
+    "update_refactoring_suggestion_status",
     "upsert_health_findings",
     "upsert_health_metrics",
     "upsert_refactoring_suggestions",

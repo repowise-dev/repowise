@@ -978,8 +978,9 @@ async def persist_partial_health(session: Any, repo_id: str, report: Any) -> Non
                 dimension="performance",
             )
         # Refactoring suggestions for the changed files only (unchanged files
-        # keep theirs). Scoped delete-then-insert across the full changed-file
-        # set, so a file that became clean has its stale suggestions removed.
+        # keep theirs). Scoped reconciliation across the full changed-file set,
+        # so a file that became clean has its plans resolved rather than left
+        # standing, and a plan that survived the edit keeps its id.
         if changed_paths:
             await upsert_refactoring_suggestions(
                 session,

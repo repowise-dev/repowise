@@ -1543,10 +1543,11 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
             if hr.findings:
                 await save_health_findings(session, repo_id, hr.findings)
             # Structured refactoring suggestions (Extract Class, ...). Repo-wide
-            # delete-then-insert like findings; empty list clears prior rows.
-            # Performance plans are excluded: the finalizer below owns them, so
-            # they are generated once, from the merged stored findings, by the
-            # same writer on the full and the incremental path.
+            # reconciliation: an unchanged plan keeps its id and its triage
+            # state, and one nobody detects any more resolves rather than
+            # disappearing. Performance plans are excluded: the finalizer below
+            # owns them, so they are generated once, from the merged stored
+            # findings, by the same writer on the full and the incremental path.
             await save_refactoring_suggestions(
                 session,
                 repo_id,

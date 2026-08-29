@@ -128,30 +128,20 @@ def stable_entity_id(prefix: str, repository: str, coordinates: Mapping[str, obj
 def refactoring_plan_id(suggestion: Any, repository: str) -> str:
     """Return the public ID for one refactoring plan, ORM row or dataclass.
 
-    Lives here rather than beside one caller because two surfaces address the
-    same plan and must arrive at the same string.
+    Delegates to the refactoring layer's identity kernel, which is the one owner
+    of what makes two plans the same plan and is the id the row is stored under.
+    Deriving a second one here let the emitted id churn whenever an incidental
+    plan detail moved, so an agent that quoted it yesterday could not resolve it.
+
+    *repository* is accepted for call-site compatibility and does not
+    participate: storage scopes uniqueness by repository already, and hashing a
+    local path or alias into the string would make the same plan carry different
+    ids locally and hosted.
     """
 
-    raw_plan = getattr(suggestion, "plan", None)
-    if raw_plan is None:
-        raw_plan = getattr(suggestion, "plan_json", None) or "{}"
-        try:
-            raw_plan = json.loads(raw_plan)
-        except (TypeError, json.JSONDecodeError):
-            raw_plan = str(raw_plan)
-    return stable_entity_id(
-        "plan",
-        repository,
-        {
-            "path": path_identity(suggestion.file_path),
-            "kind": suggestion.refactoring_type,
-            "symbol": suggestion.target_symbol or "",
-            "line_start": suggestion.line_start,
-            "line_end": suggestion.line_end,
-            "source_biomarker": suggestion.source_biomarker or "",
-            "plan": raw_plan,
-        },
-    )
+    from repowise.core.analysis.health.refactoring.identity import refactoring_public_id
+
+    return refactoring_public_id(suggestion)
 
 
 # Compatibility aliases for the get_why-specific module that originally

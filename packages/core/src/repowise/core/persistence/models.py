@@ -1272,7 +1272,22 @@ class RefactoringSuggestion(Base):
     # opportunities to their plans is one indexed batch rather than a scan of
     # every plan's JSON.
     opportunity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Content-derived public identity (``refac<version>_<digest>``) and the model
+    # that minted it. Nullable because a store written before the columns existed
+    # carries rows nothing has restamped yet; the writer resolves those rather
+    # than reusing them.
+    public_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # "open" | "acknowledged" | "resolved" | "false_positive" - the finding
+    # triage vocabulary, one system across Code Health.
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+    # Why the row reached its current status: "no_longer_detected" when the
+    # writer resolved it, "user" when a person did. Distinguishing them is what
+    # lets a re-detected plan reopen without overriding a human decision.
+    status_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    status_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -1286,6 +1301,29 @@ class RefactoringSuggestion(Base):
             "repository_id",
             "refactoring_type",
             "opportunity_id",
+        ),
+        Index("ix_refactoring_suggestions_repo_status", "repository_id", "status"),
+        Index(
+            "ix_refactoring_suggestions_repo_status_type",
+            "repository_id",
+            "status",
+            "refactoring_type",
+        ),
+        Index(
+            "ix_refactoring_suggestions_repo_status_path",
+            "repository_id",
+            "status",
+            "file_path",
+        ),
+        # A unique index rather than a UniqueConstraint: the SQLite reconciler
+        # that upgrades an existing local store replays declared indexes and
+        # cannot add a table constraint without rebuilding the table.
+        Index(
+            "uq_refactoring_suggestions_repo_model_public_id",
+            "repository_id",
+            "model_version",
+            "public_id",
+            unique=True,
         ),
     )
 

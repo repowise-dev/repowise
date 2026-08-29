@@ -22,6 +22,13 @@ from . import (
     split_file,  # noqa: F401  (import-for-side-effect)
 )
 from .graph_signals import build_file_scc_index
+from .identity import (
+    REFACTORING_MODEL_VERSION,
+    assign_public_ids,
+    model_state,
+    refactoring_kernel,
+    refactoring_public_id,
+)
 from .models import (
     CONFIDENCE_LEVELS,
     RefactoringContext,
@@ -39,15 +46,20 @@ from .registry import (
 
 __all__ = [
     "CONFIDENCE_LEVELS",
+    "REFACTORING_MODEL_VERSION",
     "PerformancePlanPolicy",
     "RefactoringContext",
     "RefactoringDetector",
     "RefactoringSuggestion",
+    "assign_public_ids",
     "build_file_scc_index",
     "detect_refactorings",
     "effort_bucket",
+    "model_state",
     "performance_fix_suggestions",
     "rank_suggestions",
+    "refactoring_kernel",
+    "refactoring_public_id",
     "register",
     "registered_detectors",
 ]

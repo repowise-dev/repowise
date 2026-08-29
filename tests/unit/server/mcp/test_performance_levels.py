@@ -232,7 +232,8 @@ async def test_one_id_returns_the_cause_its_plan_and_its_rank_rationale(
     assert result["opportunity_id"] == lead
     assert result["intervention_symbol"] == "src/shared.py::load"
     assert result["plan_status"] == "available"
-    assert result["plan_reference"].startswith("plan_")
+    # The plan address space is the refactoring layer's content identity.
+    assert result["plan_reference"].startswith("refac2_")
     assert result["confidence"] == "high"
     assert result["fix"]["safety"] == "proven"
     assert result["facets"]["leverage"] == "shared"
@@ -364,7 +365,7 @@ async def test_the_lede_links_the_exact_plan_for_the_exact_lead(setup_mcp, mater
     )
     lede = result["recommendation_lede"]
     assert lede["performance_plan_id"] is not None
-    assert lede["performance_plan_id"].startswith("plan_")
+    assert lede["performance_plan_id"].startswith("refac2_")
     plan = await get_health(plan_id=lede["performance_plan_id"])
     assert plan["resolved"] is True
 
