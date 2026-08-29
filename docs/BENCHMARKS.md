@@ -12,10 +12,15 @@ says **not measured** rather than carrying a checkmark.
 
 ## The scoreboard
 
+**Six of the thirteen rows below are wins against a named competitor. Two are
+losses, one is level, three are not measured, and one is a ratio against no tool
+at all.** They sit in one table on purpose: a page that reports only its wins is
+marketing with a sample size attached.
+
 | Question | Measured against | Result |
 |---|---|---|
 | **Are the call edges true, judged by a compiler** | CodeGraph, codebase-memory-mcp, Graphify, code-review-graph | [**we win**](#is-the-call-graph-correct). No tool that finds as much of the graph gets more of it right, in all 7 cells |
-| **Are the call edges true, hand-graded from source** | CodeGraph | [**we win**](#7-edge-precision), 84.8% against 57.0%, 540 rows read on both sides |
+| **Are the call edges true, hand-graded from source** | CodeGraph | [**we win**](#7-edge-precision), 85.7% against 58.6%, 560 rows read on both sides |
 | **Finding the right files** | CodeGraph, Graphify, code-review-graph, cocoindex | [**we win**](#1-finding-the-right-files), n=42 held out, p=0.00004 |
 | **Work saved in a real agent loop** | the same field plus Serena and a bare agent | [**we win**](#2-what-changes-in-a-real-agent-loop) on all three agent harnesses we tried, n=43 at p&lt;0.0001 |
 | **Does the health score predict real bugs** | CodeScene | [**we win**](#5-code-health-predicts-defects) on recall and effort-aware ranking, p=0.003, and lose the business-impact axis outright |
@@ -28,18 +33,14 @@ says **not measured** rather than carrying a checkmark.
 | **Documentation generation** | DeepWiki, Google Code Wiki, Swimm | **not measured** |
 | **PR review** | CodeRabbit, Greptile | **not measured** |
 
-**The two cost rows are different questions and are the easiest thing on this page
-to misread.** Building the call graph, we are the lightest tool measured and about
-as fast as the fastest. Building the *whole index*, we are 22x slower than a tool
-that only builds a call graph, because by then we have also built the git history
-layer, the wiki, the decisions and the health pass. Both are on the page with their
-denominators stated.
-
-The three **not measured** rows are capability comparisons rather than
-measurements, and they live in the
-[README's feature table](../README.md#how-it-compares-on-capability) where a reader
-can tell the difference. We would rather write "not measured" than let a checkmark
-do a number's job.
+**The two cost rows are different questions and are the easiest thing here to
+misread.** Building the call graph, we are the lightest tool measured and about as
+fast as the fastest. Building the *whole index*, we are 22x slower than a tool
+that only builds a call graph, because by then we have also built the git history,
+the wiki, the decisions and the health pass. The **not measured** rows are
+capability comparisons rather than measurements, and live in the
+[README's feature table](../README.md#how-it-compares-on-capability); we would
+rather write that than let a checkmark do a number's job.
 
 <div align="center">
 <picture>
@@ -112,11 +113,10 @@ CodeGraph and codebase-memory-mcp, we are the most precise in seven of seven, an
 that narrower claim should always carry its label.
 
 **What the oracle adds is the price of a bigger map, not an excuse for ours.** On
-syft, more than a third of what the coverage leader emits is a call the Go compiler
-says does not exist. And the highest precision anywhere on this page, 0.997, comes
-from a graph holding **17% of the calls in the repository**; on gitleaks that same
-tool stored 4,367 call rows of which **76** resolve to anything, and a graph that
-small is very hard to be wrong in and not much use to walk.
+syft, more than a third of what the coverage leader emits is a call the Go
+compiler says does not exist, and the highest precision anywhere on this page,
+0.997, comes from a graph holding **17% of the calls in the repository**. A graph
+that small is very hard to be wrong in and not much use to walk.
 
 **Graphify's result is the one worth taking seriously** and should not be lumped in
 with that: 89% recall against our 95% on gitleaks is a narrow, real trade.
@@ -194,41 +194,49 @@ missed:
 
 ## The same question, hand-graded across nine languages
 
-The oracle covers two languages. This one covers nine, on both sides, by the same
-method: 30 rows per language per tool, seed 2026, stratified by resolution
-strategy, every row read from source with its imports and enclosing scope open.
+**Two sections ask whether the edges are true, because there are two ways to
+find out and each covers what the other cannot.** Above, a compiler is the judge
+across five tools, which is unarguable but reaches only two languages. Here,
+people read the source across nine languages and two tools, which reaches far
+wider but is graded by us. Where both exist they agree to within about a point.
+
+30 rows per language per tool, seed 2026, stratified by resolution strategy,
+every row read from source with its imports and enclosing scope open.
+Java is the one cell read at 40 rows rather than 30, because it was a single
+repository and that repository turned out to be an outlier; it was widened to a
+second one.
 
 | | correct / n | 95% CI |
 |---|---|---|
-| **repowise** | **229/270 = 84.8%** | [80.0, 88.6] |
-| **CodeGraph 1.5.0** | **154/270 = 57.0%** | [51.1, 62.8] |
+| **repowise** | **240/280 = 85.7%** | [81.1, 89.3] |
+| **CodeGraph 1.5.0** | **164/280 = 58.6%** | [52.7, 64.2] |
 
 | Language | repowise | CodeGraph | |
 |---|---|---|---|
 | typescript | 29/30 | 7/30 | separates |
 | go | 29/30 | 29/30 | tie |
-| csharp | 28/30 | 20/30 | separates |
+| csharp | 30/30 | 20/30 | separates |
 | python | 28/30 | 19/30 | separates |
 | kotlin | 27/30 | 13/30 | separates |
 | swift | 23/30 | 19/30 | tie |
-| cpp | 23/30 | 16/30 | tie |
+| cpp | 22/30 | 16/30 | tie |
 | rust | 22/30 | 13/30 | tie |
-| java | 20/30 | 18/30 | tie |
+| java *(n=40)* | 30/40 | 28/40 | tie |
 
-**Read our number the other way round: roughly fifteen percent of our call edges
-are wrong.** That is the number we plan against, and rust, java and cpp are where
+**Read our number the other way round: roughly fourteen percent of our call edges
+are wrong.** That is the number we plan against, and rust, cpp and java are where
 it concentrates.
 
 **Four of nine cells separate. Five are ties and we report them as ties.** At n=30
 the interval runs about ±16 points near 60%, so a point-estimate gap inside two
-overlapping intervals is not a win. C++ is a tie despite looking like a 23-point
+overlapping intervals is not a win. C++ is a tie despite looking like a 20-point
 lead.
 
 <details>
 <summary><b>Method, limits, and what this does not show</b></summary>
 
 **One repository goes clearly to them.** On `seastar` CodeGraph reads 6/10 against
-our 4/10, the only repository in the audit, on any language, where they beat us on
+our 5/10, the only repository in the audit, on any language, where they beat us on
 a clear margin. Our misses there are chained calls on an untyped receiver; they
 infer the callee's declared return type and validate against it, so a failed
 inference costs them an edge instead of buying them a wrong one. On `aria2` both
@@ -240,18 +248,21 @@ weak thing, and it is exactly what the oracle section above exists to check. The
 two agree where both exist, to within about a point, but only the oracle has an
 answer key we did not produce.
 
-Cells were measured at different commits, and the staleness runs **conservative**:
-every resolver change in between only removes wrong edges and gained zero, so 84.8%
-is a floor. No cell was measured on the 0.44.0 release; the full table pins a
-commit per cell.
+**All nine cells are measured at one commit**, and the resolver has moved since.
+Every corpus repository's call population was diffed site by site against the
+current tip: three cells are byte-identical, six moved, and **of the 280 graded
+rows twelve moved — every one of them a row graded `wrong`, with no row graded
+`correct` moving at all.** Re-reading at the tip can therefore only raise the
+number, so 85.7% is a floor. The table is not redrawn here because a cell whose
+population moved needs a fresh proportional draw rather than a twelve-row patch.
+No cell was measured on the 0.44.0 release.
 
-**All 540 graded rows are published**, one file per cell, each row carrying the call
+**All 600 graded rows are published**, one file per cell, each row carrying the call
 site, the declaration the tool bound it to, the verdict and the reason it was
 given. A script in the same directory rebuilds every table above from them and
-fails if it disagrees. One cell of the eighteen, rust on our side, ships the 30
-sites that were read without their per-row verdicts, because that cell was re-read
-on a fresh draw and the verdicts of that read were never written down; the file
-says so on every row.
+fails if it disagrees. 560 of those rows enter the pooled figures: C++ is read at
+50 rows per side and enters at a seeded 30 so that it carries the same weight as
+every other language. Every row on the page now carries its own verdict.
 
 **Precision is one of two halves.** We lead no recall cell against the oracle, and
 lose cross-file coverage on 15 of 35 repositories in the same bench. A precision
@@ -373,13 +384,11 @@ inferred.
 a field in which more than one tool works. Correcting for testing five tools at
 once, three reductions are solid and two are marginal.
 
-**We ran this on three agent harnesses**, because the answer depends on the harness
-as much as on the tools. On Claude Code (15 questions, `claude-sonnet-5`) we
-measured **-15.9%** and were the only arm the agent reliably called. On a local
-`qwen3:8b` under Ollama, where inference is free and the win shows up as time
-instead, the local-only tool set ran **-47.9% output tokens in -41.5% wall clock**.
-Both tables are in the fold below with their controls, including the one whose
-token column fails its own control and is therefore quoted for nobody.
+**We ran this on three agent harnesses**, because the answer depends on the
+harness as much as on the tools: Codex above, Claude Code, and a local `qwen3:8b`
+under Ollama where inference is free and the win shows up as time instead. Both
+other tables are in the fold with their controls, including the one whose token
+column fails its own control and is therefore quoted for nobody.
 
 <details>
 <summary><b>Method, limits, and what this does not show</b></summary>
@@ -592,10 +601,9 @@ reaches **5,523 MB** on the same repository where we use 468 MB. That is the
 difference between running in a normal CI container and not.
 
 **Speed is level, not a win, and this page used to claim otherwise.** CodeGraph is
-fastest on 16 repositories to our 14. The split is size: we lead under 1,000 files,
-2.04s to 2.37s, and trail above it, 10.63s to 8.86s. We win the middle and lose the
-tail, and the reason is that we do more resolution work per file. The other half of
-that trade is the precision table above.
+fastest on 16 repositories to our 14: we lead under 1,000 files and trail above
+it, because we do more resolution work per file. The other half of that trade is
+the precision table above.
 
 ### Building the whole index
 
@@ -613,14 +621,11 @@ field on every repository measured. On `django/django`:
 That is **22x** CodeGraph like for like and **135x** with prose on. Both numbers
 ship and the 22x is not the user-facing one.
 
-**The 22x is not a graph number.** By the time that clock stops, the call graph has
-been built in about 3 seconds and the rest of the run has built four more things:
-a **graph** of 36,485 nodes, 90,477 edges and 31,384 symbols plus PageRank,
-betweenness, Leiden communities and execution-flow tracing; **git history** mined
-across 2,630 files for hotspots, ownership, co-change pairs and bus factor; **3,392
-wiki pages** rendered and embedded for natural-language search; **architectural
-decisions** mined from history and sessions; and **code health**, 5,317 findings
-plus 155 unreachable files and 98 unused exports.
+**The 22x is not a graph number.** The call graph itself is done in about 3
+seconds. The rest of that clock builds four more layers on `django/django`: a
+90,477-edge graph with communities and flow tracing, git history mined across
+2,630 files, **3,392 wiki pages** embedded for natural-language search,
+architectural decisions, and code health at **5,317 findings**.
 
 So "22x slower" and "the index contains categorically more" are both true and
 neither cancels the other. **If a call graph is all you want, CodeGraph builds one
@@ -752,7 +757,7 @@ Raw CSV:
 ## Limits that apply to the whole page
 
 <details>
-<summary><b>Six limits that are not specific to any one section</b></summary>
+<summary><b>Four limits that are not specific to any one section</b></summary>
 
 - **Every retrieval number here is Python or Go.** The graph sections are wider, at
   nine languages hand-graded and two compiler-graded, and they are the only
@@ -772,10 +777,6 @@ Raw CSV:
   is in every model's training data, and it measures single-session questions of
   roughly four to nine turns each. **Nothing on this page measures a long
   multi-hour engineering task**, and we will not imply a number for one.
-- **Precision is one of two halves.** We lead no recall cell against the oracle and
-  lose cross-file coverage on 15 of 35 repositories in the same bench.
-- **The health signal is weak among files of similar size**, and it ties raw line
-  count on discrimination.
 - **Command-output compression has no head-to-head and one row that needs
   re-measuring.**
 

@@ -107,9 +107,15 @@ def response_chars(response: Any) -> int:
     return len(json.dumps(response, separators=(",", ":"), default=str))
 
 
-def over_budget(response: Any, *, headroom: int = FIT_HEADROOM_CHARS) -> bool:
+def over_budget(
+    response: Any,
+    *,
+    headroom: int = FIT_HEADROOM_CHARS,
+    char_budget: int | None = None,
+) -> bool:
     """True when *response* would exceed the transport ceiling once markers land."""
-    return response_chars(response) > effective_char_budget() - headroom
+    budget = effective_char_budget() if char_budget is None else char_budget
+    return response_chars(response) > budget - headroom
 
 
 def fit_to_budget(
@@ -118,6 +124,8 @@ def fit_to_budget(
     collector: OmissionCollector,
     *,
     headroom: int = FIT_HEADROOM_CHARS,
+    char_budget: int | None = None,
+    record_counts: bool = False,
 ) -> dict[str, Any]:
     """Shed whole blocks named by *order* until *response* fits the budget.
 
@@ -132,7 +140,7 @@ def fit_to_budget(
     which is what ``headroom`` reserves for.
     """
     for key in order:
-        if not over_budget(response, headroom=headroom):
+        if not over_budget(response, headroom=headroom, char_budget=char_budget):
             break
         container, _, leaf = key.rpartition(".")
         target: Any = response
@@ -141,9 +149,21 @@ def fit_to_budget(
         if not isinstance(target, dict):
             continue
         if leaf.endswith("[]"):
-            _shed_tail(response, target, leaf[:-2], key[:-2], collector, headroom)
+            _shed_tail(
+                response,
+                target,
+                leaf[:-2],
+                key[:-2],
+                collector,
+                headroom,
+                char_budget,
+                record_counts,
+            )
         elif target.get(leaf):
-            collector.add(key, target.pop(leaf))
+            value = target.pop(leaf)
+            collector.add(key, value)
+            if record_counts:
+                _record_reduction(response, target, key, leaf, value, emitted=0)
             response["truncated"] = True
     return response
 
@@ -155,17 +175,90 @@ def _shed_tail(
     label: str,
     collector: OmissionCollector,
     headroom: int,
+    char_budget: int | None,
+    record_counts: bool,
 ) -> None:
     """Drop ranked rows from the tail of ``container[leaf]`` until it fits."""
     rows = container.get(leaf)
-    if not isinstance(rows, list):
+    if not isinstance(rows, (list, dict)):
         return
+    total = len(rows)
     dropped: list[Any] = []
-    while len(rows) > 1 and over_budget(response, headroom=headroom):
-        dropped.append(rows.pop())
+    while len(rows) > 1 and over_budget(
+        response, headroom=headroom, char_budget=char_budget
+    ):
+        if isinstance(rows, list):
+            dropped.append(rows.pop())
+        else:
+            name = next(reversed(rows))
+            dropped.append({name: rows.pop(name)})
     if dropped:
         collector.add(label, list(reversed(dropped)))
+        if record_counts:
+            prior_reason = container.get(f"{leaf}_reduced_reason")
+            collection_total = max(
+                total, int(container.get(f"{leaf}_total") or 0)
+            )
+            container[f"{leaf}_total"] = collection_total
+            container[f"{leaf}_emitted"] = len(rows)
+            container[f"{leaf}_reduced_reason"] = _with_budget_reason(prior_reason)
+            container[f"{leaf}_truncated"] = True
+            # Construction and delivery collectors both advertise their refs
+            # on the final response, so omitted is the complete recoverable
+            # population difference across both passes.
+            container[f"{leaf}_omitted"] = collection_total - len(rows)
         response["truncated"] = True
+
+
+def _record_reduction(
+    response: dict[str, Any],
+    container: dict[str, Any],
+    path: str,
+    field: str,
+    value: Any,
+    *,
+    emitted: int,
+) -> None:
+    """Keep honest counts for a collection removed as one budget block."""
+    if isinstance(value, list):
+        prior_reason = container.get(f"{field}_reduced_reason")
+        total = max(len(value), int(container.get(f"{field}_total") or 0))
+        container[f"{field}_total"] = total
+        container[f"{field}_emitted"] = emitted
+        container[f"{field}_reduced_reason"] = _with_budget_reason(prior_reason)
+        container[f"{field}_truncated"] = True
+        container[f"{field}_omitted"] = total - emitted
+        return
+    if not isinstance(value, dict):
+        return
+
+    reductions = response.setdefault("_meta", {}).setdefault("reductions", [])
+
+    def visit(node: Any, node_path: str) -> None:
+        if isinstance(node, list):
+            reductions.append(
+                {
+                    "field": node_path,
+                    "total": len(node),
+                    "emitted": 0,
+                    "reason": "response_budget",
+                }
+            )
+        elif isinstance(node, dict):
+            for name, child in node.items():
+                visit(child, f"{node_path}.{name}")
+
+    visit(value, path)
+
+
+def _with_budget_reason(prior_reason: Any) -> str:
+    """Append final-delivery budgeting to reduction provenance at most once."""
+    if not prior_reason:
+        return "response_budget"
+    reason = str(prior_reason)
+    if reason == "response_budget" or reason.endswith("_and_response_budget"):
+        return reason
+    return f"{reason}_and_response_budget"
 
 
 # Heavy optional fields we can strip from a target's docs block without losing
@@ -225,6 +318,7 @@ def truncate_to_budget(
     char_budget: int | None = None,
     *,
     collector: OmissionCollector | None = None,
+    record_counts: bool = False,
 ) -> dict[str, Any]:
     """Cap a targets-shaped response at roughly ``TOKEN_BUDGET`` tokens.
 
@@ -254,8 +348,10 @@ def truncate_to_budget(
 
     With a *collector*, every dropped piece of content is also captured and
     persisted, and the response gains ``omission_marker`` + ``_meta.omitted``
-    (see :class:`OmissionCollector`). Without one, behaviour is byte-identical
-    to the original silent-drop implementation.
+    (see :class:`OmissionCollector`). ``record_counts`` adds the shared
+    ``*_total`` / emitted / reason fields for final-delivery accounting. With
+    neither option, behaviour is byte-identical to the original silent-drop
+    implementation.
 
     Edge cases:
       * Empty ``targets`` → returns unchanged with ``truncated=False``.
@@ -268,7 +364,7 @@ def truncate_to_budget(
     if char_budget is None:
         char_budget = effective_char_budget()
     try:
-        result = _run_stages(result, char_budget, collector)
+        result = _run_stages(result, char_budget, collector, record_counts)
     finally:
         if collector is not None:
             collector.attach(result)
@@ -300,12 +396,14 @@ def _run_stages(
     result: dict[str, Any],
     char_budget: int,
     collector: OmissionCollector | None,
+    record_counts: bool,
 ) -> dict[str, Any]:
     result.setdefault("truncated", False)
     result.setdefault("dropped_targets", [])
     result.setdefault("dropped_symbols", {})
 
     targets: dict[str, Any] = result.get("targets") or {}
+    targets_total = len(targets)
     if not targets:
         return result
 
@@ -401,12 +499,14 @@ def _run_stages(
             else:
                 dropped.append(sym.get("name") or "<anonymous>")
                 dropped_syms.append(sym)
+        symbol_content_reduced = False
         if not kept and ordered:
             # Edge case: a single symbol is larger than the budget. Keep one
             # (truncating its docstring) rather than returning zero symbols —
             # the caller at least learns the target resolved.
             head = dict(ordered[0])
             if isinstance(head.get("docstring"), str):
+                symbol_content_reduced = len(head["docstring"]) > 200
                 head["docstring"] = head["docstring"][:200]
             kept = [head]
             dropped = [s.get("name") or "<anonymous>" for s in ordered[1:]]
@@ -414,8 +514,15 @@ def _run_stages(
             # original alongside the genuinely dropped tail.
             dropped_syms = list(ordered)
         docs["symbols"] = kept
-        if dropped:
-            result["dropped_symbols"][tgt_name] = dropped
+        if dropped or symbol_content_reduced:
+            if record_counts:
+                docs["symbols_total"] = max(
+                    len(ordered), int(docs.get("symbols_total") or 0)
+                )
+                docs["symbols_emitted"] = len(kept)
+                docs["symbols_reduced_reason"] = "response_budget"
+            if dropped:
+                result["dropped_symbols"][tgt_name] = dropped
             result["truncated"] = True
             if collector is not None and dropped_syms:
                 collector.add(
@@ -448,6 +555,12 @@ def _run_stages(
             collector.add(f"dropped target {name}", evicted)
         result["dropped_targets"].append(name)
         result["truncated"] = True
+        if record_counts:
+            result["targets_total"] = max(
+                targets_total, int(result.get("targets_total") or 0)
+            )
+            result["targets_emitted"] = len(targets)
+            result["targets_reduced_reason"] = "response_budget"
         if _size() <= char_budget:
             break
 

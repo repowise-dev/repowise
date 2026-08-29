@@ -303,9 +303,10 @@ def test_cross_repo_participates_in_the_response_ceiling(tmp_path: Path):
     from repowise.server.mcp_server.tool_change_risk import _SHED_ORDER
 
     assert "cross_repo" in _SHED_ORDER
-    # Shed after the run-list, before fix_history's numbers.
-    assert _SHED_ORDER.index("impacted_tests") < _SHED_ORDER.index("cross_repo")
-    assert _SHED_ORDER.index("cross_repo") < _SHED_ORDER.index("fix_history.files")
+    # Shed after fix_history's rows, before the run-list: an agent keeps the
+    # tests to run for longer than the list of downstream consumers.
+    assert _SHED_ORDER.index("fix_history.files") < _SHED_ORDER.index("cross_repo")
+    assert _SHED_ORDER.index("cross_repo") < _SHED_ORDER.index("impacted_tests")
 
     payload = {
         "score": 7.0,
@@ -317,5 +318,6 @@ def test_cross_repo_participates_in_the_response_ceiling(tmp_path: Path):
     fit_to_budget(payload, _SHED_ORDER, collector)
     assert "cross_repo" not in payload
     assert payload["truncated"] is True
-    # The score and its drivers are the answer and survive.
-    assert payload["fix_history"]["density"] == 1.0
+    # The tests to run outlive both the consumer list and the fix record.
+    assert payload["impacted_tests"]["tests_to_run"] == ["t.py"]
+    assert "fix_history" not in payload

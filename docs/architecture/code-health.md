@@ -138,7 +138,7 @@ core/alembic/versions/
 
 ```
 core/pipeline/
-├── orchestrator.py                 # _run_health_analysis(): builds module_map, runs analyzer
+├── orchestrator.py                 # _run_health_analysis(): builds community_label_map, runs analyzer
 └── persist.py                      # persist_pipeline_result(): writes findings/metrics/snapshot
 ```
 

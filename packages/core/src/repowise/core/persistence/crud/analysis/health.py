@@ -26,6 +26,55 @@ from ...models import (
 from .._shared import _BATCH_SIZE
 
 
+def _health_finding_row_kwargs(finding: Any, repository_id: str) -> dict:
+    """Normalize an analyzer dataclass or a plain dict into ORM row kwargs.
+
+    All three writers land here, so a column added to the row is written by
+    every path or by none. ``public_id`` is stamped here because this is the
+    one place every persisted finding passes through.
+    """
+    # Deferred: the analysis package imports persistence, so a module-level
+    # import here would close the cycle.
+
+    # Deferred: the analysis package imports persistence, so importing it at
+    # module level here would close the cycle.
+    from ....analysis.health.finding_identity import finding_public_id
+    from ....analysis.health.rows import detail_map
+
+    if hasattr(finding, "biomarker_type"):
+        severity = finding.severity
+        data = {
+            "file_path": finding.file_path,
+            "biomarker_type": finding.biomarker_type,
+            "severity": str(severity.value) if hasattr(severity, "value") else str(severity),
+            "function_name": finding.function_name,
+            "line_start": finding.line_start,
+            "line_end": finding.line_end,
+            "details_json": json.dumps(finding.details or {}),
+            "health_impact": float(finding.health_impact),
+            "reason": finding.reason or "",
+            "dimension": getattr(finding, "dimension", None) or "defect",
+        }
+    else:
+        data = dict(finding)
+        if "details" in data:
+            data["details_json"] = json.dumps(data.pop("details") or {})
+    data.setdefault("public_id", finding_public_id(finding))
+    if data.get("dimension") == "performance":
+        # Present before the finalizer runs because the analyzer stamps it into
+        # ``details``; the finalizer restates it from authoritative stored rows.
+        data.setdefault("opportunity_id", detail_map(finding).get("opportunity_id"))
+    return {
+        "id": _new_uuid(),
+        "repository_id": repository_id,
+        **{
+            k: v
+            for k, v in data.items()
+            if k not in ("id", "repository_id") and hasattr(HealthFinding, k)
+        },
+    }
+
+
 async def save_health_findings(
     session: AsyncSession,
     repository_id: str,
@@ -48,37 +97,7 @@ async def save_health_findings(
     for i in range(0, len(findings), _BATCH_SIZE):
         batch = findings[i : i + _BATCH_SIZE]
         for f in batch:
-            if hasattr(f, "biomarker_type"):
-                severity = f.severity
-                severity_str = str(severity.value) if hasattr(severity, "value") else str(severity)
-                data = {
-                    "file_path": f.file_path,
-                    "biomarker_type": f.biomarker_type,
-                    "severity": severity_str,
-                    "function_name": f.function_name,
-                    "line_start": f.line_start,
-                    "line_end": f.line_end,
-                    "details_json": json.dumps(f.details or {}),
-                    "health_impact": float(f.health_impact),
-                    "reason": f.reason or "",
-                    "dimension": getattr(f, "dimension", None) or "defect",
-                }
-            else:
-                data = dict(f)
-                if "details" in data:
-                    data["details_json"] = json.dumps(data.pop("details") or {})
-
-            session.add(
-                HealthFinding(
-                    id=_new_uuid(),
-                    repository_id=repository_id,
-                    **{
-                        k: v
-                        for k, v in data.items()
-                        if k not in ("id", "repository_id") and hasattr(HealthFinding, k)
-                    },
-                )
-            )
+            session.add(HealthFinding(**_health_finding_row_kwargs(f, repository_id)))
         await session.flush()
 
 
@@ -131,37 +150,7 @@ async def replace_governance_findings(
     for i in range(0, len(findings), _BATCH_SIZE):
         batch = findings[i : i + _BATCH_SIZE]
         for f in batch:
-            if hasattr(f, "biomarker_type"):
-                severity = f.severity
-                severity_str = str(severity.value) if hasattr(severity, "value") else str(severity)
-                data = {
-                    "file_path": f.file_path,
-                    "biomarker_type": f.biomarker_type,
-                    "severity": severity_str,
-                    "function_name": f.function_name,
-                    "line_start": f.line_start,
-                    "line_end": f.line_end,
-                    "details_json": json.dumps(f.details or {}),
-                    "health_impact": float(f.health_impact),
-                    "reason": f.reason or "",
-                    "dimension": getattr(f, "dimension", None) or "defect",
-                }
-            else:
-                data = dict(f)
-                if "details" in data:
-                    data["details_json"] = json.dumps(data.pop("details") or {})
-
-            session.add(
-                HealthFinding(
-                    id=_new_uuid(),
-                    repository_id=repository_id,
-                    **{
-                        k: v
-                        for k, v in data.items()
-                        if k not in ("id", "repository_id") and hasattr(HealthFinding, k)
-                    },
-                )
-            )
+            session.add(HealthFinding(**_health_finding_row_kwargs(f, repository_id)))
         await session.flush()
 
 
@@ -942,37 +931,7 @@ async def upsert_health_findings(
     for i in range(0, len(scoped), _BATCH_SIZE):
         batch = scoped[i : i + _BATCH_SIZE]
         for f in batch:
-            if hasattr(f, "biomarker_type"):
-                severity = f.severity
-                severity_str = str(severity.value) if hasattr(severity, "value") else str(severity)
-                data = {
-                    "file_path": f.file_path,
-                    "biomarker_type": f.biomarker_type,
-                    "severity": severity_str,
-                    "function_name": f.function_name,
-                    "line_start": f.line_start,
-                    "line_end": f.line_end,
-                    "details_json": json.dumps(f.details or {}),
-                    "health_impact": float(f.health_impact),
-                    "reason": f.reason or "",
-                    "dimension": getattr(f, "dimension", None) or "defect",
-                }
-            else:
-                data = dict(f)
-                if "details" in data:
-                    data["details_json"] = json.dumps(data.pop("details") or {})
-
-            session.add(
-                HealthFinding(
-                    id=_new_uuid(),
-                    repository_id=repository_id,
-                    **{
-                        k: v
-                        for k, v in data.items()
-                        if k not in ("id", "repository_id") and hasattr(HealthFinding, k)
-                    },
-                )
-            )
+            session.add(HealthFinding(**_health_finding_row_kwargs(f, repository_id)))
         await session.flush()
 
 

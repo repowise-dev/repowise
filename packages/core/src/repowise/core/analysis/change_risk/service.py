@@ -6,6 +6,7 @@ import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from ..risk_semantics import change_risk_authority, change_risk_scales
 from .baseline import BaselineSample, baseline_samples_cached, densities_excluding, scores_excluding
 from .features import (
     GIT_TIMEOUT_SECONDS,
@@ -228,16 +229,20 @@ def score_live_change(
     )
 
 
-def change_risk_payload(result: ChangeRiskResult) -> dict:
+def change_risk_payload(result: ChangeRiskResult, *, scales: bool = False) -> dict:
     """Render the machine-readable response shared by the CLI and MCP tool.
 
     ``fix_history`` leads: it is the block that distinguishes a surgical edit to
     a file that keeps breaking from a bulk rename of files that never have.
     ``score`` and ``risk_percentile`` describe the *shape* of the diff and are
     kept for continuity, labelled for what they measure — see ``score_measures``.
-    ``fallback_band`` is the absolute calibrated band, non-null only when there
+    ``fallback_band`` is the absolute model-score band, non-null only when there
     was no baseline to rank against. ``score_unit`` names the unit that band
     assumes.
+
+    ``risk_authority`` always ships: it names the field to act on. The
+    per-field ``risk_scales`` dictionary is identical on every call, so it
+    ships only when ``scales`` is set.
     """
     features, risk = result.features, result.risk
     return {
@@ -252,6 +257,7 @@ def change_risk_payload(result: ChangeRiskResult) -> dict:
                 for path, churn, pressure in result.hot_files
             ],
         },
+        "risk_authority": change_risk_authority(),
         "score": risk.score,
         "score_measures": SCORE_MEASURES,
         "score_unit": SCORE_UNIT,
@@ -261,6 +267,7 @@ def change_risk_payload(result: ChangeRiskResult) -> dict:
         "fallback_band": risk.level if result.priority is None else None,
         "baseline_sample_size": result.baseline_sample_size,
         "exclude_patterns": list(result.riskignore_excludes + result.request_excludes),
+        **({"risk_scales": change_risk_scales()} if scales else {}),
         "is_fix": features.is_fix,
         "features": {
             "la": features.la,

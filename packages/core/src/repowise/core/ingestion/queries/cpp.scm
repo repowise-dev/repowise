@@ -31,6 +31,41 @@
   body: (compound_statement)
 ) @symbol.cpp_export_type
 
+; Export-macro forward declarations have the same split-name shape, but the
+; real type name is the declaration's bare declarator and there is no body.
+(declaration
+  type: (class_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (identifier) @symbol.name
+) @symbol.cpp_export_type
+
+(declaration
+  type: (struct_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (identifier) @symbol.name
+) @symbol.cpp_export_type
+
+; The same forward-declaration shape uses field nodes inside a class body.
+(field_declaration
+  type: (class_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (field_identifier) @symbol.name
+) @symbol.cpp_export_type
+
+(field_declaration
+  type: (struct_specifier
+    name: (type_identifier) @symbol.cpp_export_macro
+    !body
+  ) @symbol.def
+  declarator: (field_identifier) @symbol.name
+) @symbol.cpp_export_type
+
 ; Function definition: ReturnType funcName(params) { body }
 ; The name is nested inside function_declarator
 (function_definition
@@ -142,11 +177,73 @@
   parameters: (preproc_params) @symbol.params
 ) @symbol.def
 
+; Generic preprocessor calls cover #undef and pragma-based macro restoration.
+(preproc_call) @symbol.cpp_preproc_call
+
+; Included files can redefine or undef any locally known macro. The one-file
+; parser cannot inspect that state transition, so includes form a conservative
+; recovery barrier until a later local definition establishes a new state.
+(preproc_include) @symbol.cpp_macro_state_barrier
+
 ; Forward declarations: void func(int x);
 (declaration
   declarator: (function_declarator
     declarator: (identifier) @symbol.name
     parameters: (parameter_list) @symbol.params
+  )
+) @symbol.def
+
+; In-class member-function declaration: ``void Seek(const Slice&);``
+; An abstract class has no out-of-line definition, so without these it reaches
+; the method index empty. ``@symbol.def`` is the declarator, not the
+; ``field_declaration``: that node can hold a whole ``struct Inner { ... } m_;``
+; and would become a callable ancestor of the inner type's methods.
+; ``declarator: (field_identifier)`` directly is what keeps out a
+; function-pointer data member (``void (*cb_)(int);``).
+(field_declaration
+  declarator: (function_declarator
+    declarator: (field_identifier) @symbol.name
+    parameters: (parameter_list) @symbol.params
+  ) @symbol.def
+)
+
+; ... returning a pointer: ``virtual Iterator* NewIterator(...) = 0;``
+(field_declaration
+  declarator: (pointer_declarator
+    declarator: (function_declarator
+      declarator: (field_identifier) @symbol.name
+      parameters: (parameter_list) @symbol.params
+    ) @symbol.def
+  )
+)
+
+; ... returning a reference: ``const Slice& value() const;``
+; ``reference_declarator`` does not name its declarator field, so the inner
+; ``function_declarator`` is matched as a bare named child rather than by field.
+(field_declaration
+  declarator: (reference_declarator
+    (function_declarator
+      declarator: (field_identifier) @symbol.name
+      parameters: (parameter_list) @symbol.params
+    ) @symbol.def
+  )
+)
+
+; Pure-virtual member of an EXPORT-MACRO class: ``virtual void Seek(...) = 0;``
+; ``class EXPORT Foo { ... }`` is recovery-parsed into a ``compound_statement``
+; of ``declaration`` nodes, which the patterns above cannot reach, and ``= 0``
+; wraps the declarator in an ``init_declarator`` the one below cannot either.
+; ``value: (number_literal)`` is what excludes the recovered inline definition
+; and member-init constructor, which share the shape. ``@symbol.def`` must be
+; the ``declaration``: it is a callable kind, so anchoring inside it makes it a
+; callable ancestor and the match is dropped.
+(declaration
+  declarator: (init_declarator
+    declarator: (function_declarator
+      declarator: (identifier) @symbol.name
+      parameters: (parameter_list) @symbol.params
+    )
+    value: (number_literal)
   )
 ) @symbol.def
 
@@ -220,6 +317,38 @@
 (call_expression
   function: (qualified_identifier
     name: (identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; The same call again, keeping the qualifier. A tree-sitter field is required
+; once named, so `::free()` (no scope) would stop matching if the capture were
+; added above; both patterns therefore run and the parser's dedup keeps the one
+; that carried a scope. `DB::Open()` was resolving to a test class's `Open`
+; because only the leaf name survived extraction.
+(call_expression
+  function: (qualified_identifier
+    scope: (_) @call.scope
+    name: (identifier) @call.target
+  )
+  arguments: (argument_list) @call.arguments
+) @call.site
+
+; The same call once more, for a three-part qualifier: ns::util::fn(args).
+; The grammar nests qualified_identifier left-recursively (see the two-level
+; qualified function definition above), so the outer node's name field is
+; itself a qualified_identifier rather than an identifier, neither pattern
+; above can match it, and no call site was produced at all for this shape
+; (#1918). Capturing the innermost identifier as the target and its adjacent
+; scope as the qualifier mirrors how a two-part call is already captured;
+; the deeper namespace prefix (ns) is dropped the same way the class-name
+; extractor already drops it for definitions.
+(call_expression
+  function: (qualified_identifier
+    name: (qualified_identifier
+      scope: (namespace_identifier) @call.scope
+      name: (identifier) @call.target
+    )
   )
   arguments: (argument_list) @call.arguments
 ) @call.site

@@ -1,24 +1,12 @@
 """OmissionCollector — reversible drops for MCP tool responses.
 
-When a tool trims its response to fit the transport budget, the dropped
-content is handed to a collector instead of vanishing. The collector persists
-it to the same durable omission store the CLI/hook surfaces use
-(``.repowise/omissions/omissions.db``) and stamps the response with the
-standard ``[repowise#<ref>]`` marker plus a ``_meta.omitted`` block, so any
-truncation an agent sees is recoverable:
+Dropped content is persisted to the same durable omission store used by the
+CLI and advertised through ``_meta.omitted``. Clients recover it with either
+``repowise expand <ref>`` or ``get_symbol("repowise#<ref>")``.
 
-* ``repowise expand <ref>`` from a shell, or
-* ``get_symbol("repowise#<ref>")`` for shell-less MCP clients.
-
-Failure posture mirrors the distill engine: the store is best-effort. If a
-write fails, the tool falls back to the pre-existing silent-drop behaviour —
-a degraded response is always preferred over a failed one. Content is stored
-BEFORE any marker is rendered, so a marker can never dangle.
-
-Lifecycle: the underlying SQLite handle is opened lazily on the first drop
-and closed in :meth:`attach`. The MCP server is long-running, but truncation
-events are rare and writes are small, so open-per-event avoids holding a WAL
-handle that would contend with hook-side writers between events.
+The store is best-effort. A failed write returns the reduced tool response with
+an explicit ``_meta.recovery_unavailable`` warning and never advertises a dead
+reference. The SQLite handle opens lazily and closes in :meth:`attach`.
 """
 
 from __future__ import annotations
@@ -32,6 +20,7 @@ from typing import Any
 from repowise.core.distill.budget import estimate_tokens
 from repowise.core.distill.markers import render_marker
 from repowise.core.distill.store import OmissionStore, default_store_path
+from repowise.server.mcp_server._references import omission_reference
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +32,6 @@ _RESTORE_HINT = (
 )
 
 _DOC_SECTION_RULE = "==== {label} ===="
-
-
 def render_chunk(label: str, value: Any) -> str:
     """Render one dropped value as line-oriented text for the omission doc.
 
@@ -54,6 +41,55 @@ def render_chunk(label: str, value: Any) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(value, indent=1, default=str)
+
+
+def cap_collection(
+    container: dict[str, Any],
+    key: str,
+    population: list[Any],
+    limit: int,
+    collector: OmissionCollector | None = None,
+    *,
+    emitted: list[Any] | None = None,
+    label: str | None = None,
+    reason: str = "construction_cap",
+    preserve_counts: bool = False,
+) -> list[Any]:
+    """Keep a deterministic head while making every real reduction recoverable.
+
+    ``population`` is the complete post-policy population.  ``emitted`` may
+    supply a deliberately diversified projection (for example, retaining one
+    transitive dependent beside direct ones); omitted rows are then computed as
+    a stable multiset difference instead of assuming a simple tail.
+
+    Small collections stay compact unless ``preserve_counts`` keeps an existing
+    public count family.  A reduced collection always receives the shared
+    total/emitted/reason fields plus compatibility truncation counts, and its
+    exact omitted rows are queued on the caller's :class:`OmissionCollector`.
+    """
+    full = list(population)
+    visible = list(emitted) if emitted is not None else full[:limit]
+    container[key] = visible
+    total = len(full)
+    emitted_count = len(visible)
+    reduced = emitted_count < total
+
+    if preserve_counts or reduced:
+        container[f"{key}_total"] = total
+        container[f"{key}_emitted"] = emitted_count
+        container[f"{key}_truncated"] = reduced
+    if not reduced:
+        return visible
+
+    remaining = list(full)
+    for row in visible:
+        with contextlib.suppress(ValueError):
+            remaining.remove(row)
+    container[f"{key}_reduced_reason"] = reason
+    container[f"{key}_omitted"] = len(remaining)
+    if collector is not None and remaining:
+        collector.add(label or f"{key} beyond cap={limit}", remaining)
+    return visible
 
 
 class OmissionCollector:
@@ -84,7 +120,10 @@ class OmissionCollector:
             self._store_path = Path(store_path)
         else:
             self._store_path = default_store_path(Path(repo_root) if repo_root else None)
-        self._chunks: list[tuple[str, str]] = []
+        # Keep values live until attach. Why-mode evidence annotation happens
+        # after ranking but before delivery; eagerly rendering here would freeze
+        # omitted rows before they receive provenance and evidence refs.
+        self._chunks: list[tuple[str, Any]] = []
         self._refs: list[str] = []
         self._omitted_tokens = 0
         self._store: OmissionStore | None = None
@@ -94,9 +133,8 @@ class OmissionCollector:
 
     def add(self, label: str, value: Any) -> None:
         """Queue a dropped chunk for the combined omission document."""
-        text = render_chunk(label, value)
-        if text:
-            self._chunks.append((label, text))
+        if value is not None:
+            self._chunks.append((label, value))
 
     def add_inline(self, label: str, content: str) -> str | None:
         """Store *content* as its own row and return its marker.
@@ -137,14 +175,31 @@ class OmissionCollector:
                 doc = self._render_doc()
                 ref = self._put(doc)
                 if ref is not None:
-                    tokens = sum(estimate_tokens(text) for _, text in self._chunks)
+                    tokens = estimate_tokens(doc)
                     self._omitted_tokens += tokens
-                    response["omission_marker"] = render_marker(ref, doc.count("\n") + 1, tokens)
+                    response["omission_marker"] = render_marker(
+                        ref, doc.count("\n") + 1, tokens
+                    )
+                elif self._chunks:
+                    response.setdefault("_meta", {})["recovery_unavailable"] = (
+                        "Omission storage failed; dropped evidence could not be persisted."
+                    )
             if self._refs:
                 meta = response.setdefault("_meta", {})
+                existing = meta.get("omitted")
+                existing_refs = (
+                    list(existing.get("refs") or []) if isinstance(existing, dict) else []
+                )
+                existing_tokens = (
+                    int(existing.get("tokens") or 0) if isinstance(existing, dict) else 0
+                )
                 meta["omitted"] = {
-                    "refs": list(self._refs),
-                    "tokens": self._omitted_tokens,
+                    "refs": [
+                        normalized
+                        for value in [*existing_refs, *self._refs]
+                        if (normalized := omission_reference(value)) is not None
+                    ],
+                    "tokens": existing_tokens + self._omitted_tokens,
                     "restore": _RESTORE_HINT,
                 }
         except Exception:  # pragma: no cover - defensive
@@ -167,7 +222,10 @@ class OmissionCollector:
             "transport budget; sections are verbatim.\n"
         )
         parts = [head]
-        for label, text in self._chunks:
+        for label, value in self._chunks:
+            text = render_chunk(label, value)
+            if not text:
+                continue
             parts.append(_DOC_SECTION_RULE.format(label=label))
             parts.append(text)
         return "\n".join(parts)

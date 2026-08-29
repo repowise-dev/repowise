@@ -3,6 +3,7 @@
 import { ArrowLeftRight } from "lucide-react";
 import { PERF_BOUNDARY_LABEL } from "@repowise-dev/types/health";
 import type { C4IoKind } from "@repowise-dev/types/external-systems";
+import { formatTopPercentile } from "../lib/format";
 
 export type BiomarkerDetailsRecord = Record<string, unknown>;
 
@@ -451,7 +452,7 @@ export function BiomarkerDetails({
     case "change_entropy": {
       const p = num(details.change_entropy_pct);
       line = joinStats(
-        p != null ? `top ${Math.max(0, Math.round((1 - p) * 100))}% entropy` : null,
+        p != null ? `${formatTopPercentile(p)} entropy` : null,
         num(details.commit_count_90d) != null
           ? `${num(details.commit_count_90d)} commits/90d`
           : null,

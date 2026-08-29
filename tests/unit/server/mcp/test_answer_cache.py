@@ -125,19 +125,23 @@ async def test_cached_empty_answer_row_is_bypassed(setup_mcp, factory, session, 
     repo = res.scalars().first()
     # Legacy row: current schema version (so the schema gate passes) but the
     # old empty-answer gated shape.
-    session.add(AnswerCache(
-        repository_id=repo.id,
-        question_hash=_hash_question(QUESTION),
-        question=QUESTION,
-        payload_json=_json.dumps({
-            "answer": "",
-            "confidence": "low",
-            "fallback_targets": ["src/auth/service.py"],
-            "_schema_version": _ANSWER_SCHEMA_VERSION,
-        }),
-        provider_name="mock",
-        model_name="mock-1",
-    ))
+    session.add(
+        AnswerCache(
+            repository_id=repo.id,
+            question_hash=_hash_question(QUESTION),
+            question=QUESTION,
+            payload_json=_json.dumps(
+                {
+                    "answer": "",
+                    "confidence": "low",
+                    "fallback_targets": ["src/auth/service.py"],
+                    "_schema_version": _ANSWER_SCHEMA_VERSION,
+                }
+            ),
+            provider_name="mock",
+            model_name="mock-1",
+        )
+    )
     await session.commit()
 
     direct = _Provider("Auth flows through src/auth/service.py via AuthService.check().")
@@ -233,3 +237,141 @@ async def test_cache_write_failure_logs_instead_of_silencing(setup_mcp, monkeypa
 
     assert result["answer"], "response must survive a cache-write failure"
     assert any("cache write failed" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("first_scope", "second_scope"),
+    [(None, "src/auth"), ("src/auth", None)],
+)
+async def test_scoped_and_unscoped_answers_never_cross_contaminate(
+    setup_mcp, factory, monkeypatch, first_scope, second_scope
+):
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_retrieval(monkeypatch, answer_mod)
+    provider = _Provider("Scoped cache identity answer (src/auth/service.py).")
+    _patch_provider(monkeypatch, answer_mod, provider)
+
+    await get_answer(QUESTION, scope=first_scope)
+    await get_answer(QUESTION, scope=second_scope)
+
+    assert provider.calls == 2
+    assert len(await _cache_rows(factory)) == 2
+
+
+@pytest.mark.asyncio
+async def test_distinct_scopes_never_cross_contaminate(setup_mcp, factory, monkeypatch):
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_retrieval(monkeypatch, answer_mod)
+    provider = _Provider("Scoped answer (src/auth/service.py).")
+    _patch_provider(monkeypatch, answer_mod, provider)
+
+    await get_answer(QUESTION, scope="src/auth")
+    await get_answer(QUESTION, scope="src/billing")
+
+    assert provider.calls == 2
+    assert len(await _cache_rows(factory)) == 2
+
+
+def test_literal_unscoped_scope_cannot_collide_with_absent_scope() -> None:
+    from repowise.server.mcp_server.tool_answer.synthesis import _hash_answer_identity
+
+    assert _hash_answer_identity(QUESTION, None) != _hash_answer_identity(QUESTION, "<unscoped>")
+
+
+@pytest.mark.asyncio
+async def test_equivalent_normalized_scopes_share_one_row(setup_mcp, factory, monkeypatch):
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    seen_scopes: list[str | None] = []
+
+    async def _fake_hydrate(hits, ctx, *, scope=None):
+        seen_scopes.append(scope)
+        for hit in hits:
+            hit.update(
+                target_path=hit["page_id"].removeprefix("file_page:"),
+                title="auth",
+                summary="",
+                snippet="",
+                page_type="file_page",
+            )
+        return hits
+
+    _patch_retrieval(monkeypatch, answer_mod)
+    monkeypatch.setattr(answer_mod, "_hydrate_hits", _fake_hydrate)
+    provider = _Provider("Normalized scope answer (src/auth/service.py).")
+    _patch_provider(monkeypatch, answer_mod, provider)
+
+    await get_answer(QUESTION, scope="./src\\auth//")
+    cached = await get_answer(QUESTION, scope="src/auth")
+
+    assert provider.calls == 1
+    assert seen_scopes == ["src/auth"]
+    assert cached["_meta"]["cached"] is True
+    assert len(await _cache_rows(factory)) == 1
+
+
+@pytest.mark.asyncio
+async def test_cached_answer_preserves_retrieval_degradation_metadata(
+    setup_mcp, factory, monkeypatch
+):
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_retrieval(monkeypatch, answer_mod)
+    monkeypatch.setattr(answer_mod, "_retrieval_legs", lambda: {"vector": "timeout"})
+    monkeypatch.setattr(answer_mod, "_degraded_legs", lambda _legs: ["vector"])
+    provider = _Provider("Degraded retrieval answer (src/auth/service.py).")
+    _patch_provider(monkeypatch, answer_mod, provider)
+
+    fresh = await get_answer(QUESTION)
+    cached = await get_answer(QUESTION)
+
+    assert provider.calls == 1
+    assert fresh["_meta"]["retrieval_degraded"] == ["vector"]
+    assert cached["_meta"]["retrieval_degraded"] == ["vector"]
+    assert cached["_meta"]["cached"] is True
+
+
+@pytest.mark.asyncio
+async def test_legacy_question_only_row_is_bypassed(setup_mcp, factory, session, monkeypatch):
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+    from repowise.server.mcp_server.tool_answer.answer import _hash_question
+    from repowise.server.mcp_server.tool_answer.config import _ANSWER_SCHEMA_VERSION
+
+    _patch_retrieval(monkeypatch, answer_mod)
+    repo = (await session.execute(select(Repository))).scalars().first()
+    session.add(
+        AnswerCache(
+            repository_id=repo.id,
+            question_hash=_hash_question(QUESTION),
+            question=QUESTION,
+            payload_json=_json.dumps(
+                {
+                    "answer": "Legacy answer must not be served.",
+                    "confidence": "high",
+                    "citations": ["src/legacy.py"],
+                    "_schema_version": _ANSWER_SCHEMA_VERSION,
+                }
+            ),
+            provider_name="mock",
+            model_name="mock-1",
+        )
+    )
+    await session.commit()
+
+    provider = _Provider("Fresh scoped identity answer (src/auth/service.py).")
+    _patch_provider(monkeypatch, answer_mod, provider)
+    result = await get_answer(QUESTION)
+
+    assert provider.calls == 1
+    assert "Fresh scoped identity" in result["answer"]
+    rows = await _cache_rows(factory)
+    assert len(rows) == 1
+    assert rows[0].question_hash != _hash_question(QUESTION)

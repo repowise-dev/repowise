@@ -271,7 +271,11 @@ def _path_score(target_path: str, qnorm: str) -> float:
 
 async def search_paths_single(ctx: Any, query: str, limit: int) -> list[dict]:
     """Path search against one repo context. Returns ranked file result dicts."""
-    qnorm = query.strip().lower().replace("\\", "/")
+    # Path mode is substring matching, so boundary ``*?`` markers carry no
+    # information and are stripped. Mid-string globs (``src/*/main.py``) are
+    # left alone: a substring match cannot honour them, so stripping there
+    # would change the query.
+    qnorm = query.strip().lower().replace("\\", "/").strip("*?")
     if not qnorm:
         return []
 

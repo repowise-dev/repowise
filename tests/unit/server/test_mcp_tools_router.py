@@ -10,7 +10,10 @@ from repowise.server.mcp_server._tool_selection import (
 )
 
 
-def test_describe_tool_surface_single_repo(tmp_path):
+def test_describe_tool_surface_single_repo(tmp_path, monkeypatch):
+    from repowise.server.mcp_server import _tool_selection
+
+    monkeypatch.setattr(_tool_selection, "_is_workspace", lambda _path: False)
     (tmp_path / ".repowise").mkdir()
     surface = describe_tool_surface(str(tmp_path))
 
@@ -21,6 +24,14 @@ def test_describe_tool_surface_single_repo(tmp_path):
     assert {"get_answer", "get_context", "get_blast_radius"} <= names
     by_name = {t["name"]: t for t in surface["tools"]}
     assert by_name["get_answer"]["enabled"] is True
+    assert by_name["get_answer"]["tier"] == "canonical"
+    assert by_name["get_answer"]["artifact_type"] == "answer"
+    assert by_name["get_answer"]["presentation"] == "answer"
+    assert by_name["get_answer"]["safety"] == "read_only"
+    assert by_name["get_risk"]["evidence_basis"] == "measured"
+    assert by_name["list_repos"]["tier"] == "utility"
+    assert by_name["list_repos"]["eligible"] is False
+    assert by_name["list_repos"]["enabled"] is False
     assert by_name["get_blast_radius"]["requires_workspace"] is True
     assert by_name["get_blast_radius"]["enabled"] is False
     # Opt-in tools registered but off by default.
@@ -77,6 +88,10 @@ async def test_router_get_and_patch(tmp_path, monkeypatch):
     got = await mcp_router.get_tool_surface(request=None, repo_id="r1")
     assert got.repo_id == "r1"
     assert any(t.name == "get_answer" and t.enabled for t in got.tools)
+    answer = next(t for t in got.tools if t.name == "get_answer")
+    assert answer.artifact_type == "answer"
+    assert answer.presentation == "answer"
+    assert answer.safety == "read_only"
 
     from repowise.server.schemas import UpdateMcpToolsRequest
 

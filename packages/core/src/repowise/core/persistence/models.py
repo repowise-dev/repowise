@@ -1040,6 +1040,8 @@ class Conversation(Base):
         String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
     )
     title: Mapped[str] = mapped_column(Text, nullable=False, default="New conversation")
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -1197,6 +1199,15 @@ class HealthFinding(Base):
     # performance). Nullable + no backfill: old rows stay NULL until the next
     # index recomputes them; new writes always set it (defaults to "defect").
     dimension: Mapped[str | None] = mapped_column(String(16), nullable=True, default="defect")
+    # The finding's stable public identity, from
+    # ``analysis.health.finding_identity``. Stored so a quoted id resolves by
+    # index instead of by hashing every open row. Nullable while stores written
+    # before the column existed still carry NULL.
+    public_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The causal performance opportunity this observation belongs to, on
+    # performance rows only. Also inside ``details_json``; the column is what
+    # makes "the evidence for this opportunity" an indexed seek.
+    opportunity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
@@ -1205,15 +1216,24 @@ class HealthFinding(Base):
         DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
     )
 
-    # The table had no index at all, so every read full-scanned it. Two shapes
+    # The table had no index at all, so every read full-scanned it. Four shapes
     # are served: a file-scoped lookup (``get_health`` with targets, the call an
-    # agent makes to self-check a file before and after an edit) and a
-    # repo-wide top-N ordered by impact. The first index turns the scan into a
-    # seek; the second lets the ranked read stop early instead of sorting the
-    # whole table into a temp B-tree.
+    # agent makes to self-check a file before and after an edit), a repo-wide
+    # top-N ordered by impact, a quoted public id, and the evidence for one
+    # causal opportunity. The first turns the scan into a seek; the second lets
+    # the ranked read stop early instead of sorting the whole table into a temp
+    # B-tree; the last two keep drill-down proportional to the page.
     __table_args__ = (
         Index("ix_health_findings_repo_status_path", "repository_id", "status", "file_path"),
         Index("ix_health_findings_repo_status_impact", "repository_id", "status", "health_impact"),
+        Index("ix_health_findings_repo_public_id", "repository_id", "public_id"),
+        Index(
+            "ix_health_findings_repo_status_dimension_opportunity",
+            "repository_id",
+            "status",
+            "dimension",
+            "opportunity_id",
+        ),
     )
 
 
@@ -1246,10 +1266,143 @@ class RefactoringSuggestion(Base):
     blast_radius_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     confidence: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
     source_biomarker: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    # The performance opportunity this plan addresses, on ``performance_fix``
+    # rows only. The id also sits inside ``plan_json``; the column is the
+    # repository-scoped link the queue joins on, so linking a page of
+    # opportunities to their plans is one indexed batch rather than a scan of
+    # every plan's JSON.
+    opportunity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_refactoring_suggestions_repo_type_opportunity",
+            "repository_id",
+            "refactoring_type",
+            "opportunity_id",
+        ),
+    )
+
+
+class PerformanceOpportunity(Base):
+    """One causal performance opportunity, materialized for serving.
+
+    The queue used to be rebuilt from every open performance finding on every
+    request, so a page of twenty cost the whole repository. Grouping happens
+    once, when findings are persisted, and lands here; a page is then an
+    indexed range scan.
+
+    Filter, order, and identity live in columns because SQLite and PostgreSQL
+    both index those and neither indexes a JSON predicate portably. Everything
+    explanatory - facets, rank factors, why-ranked, prerequisites, path suffix -
+    stays in ``details_json``, where a new fact costs no migration.
+    """
+
+    __tablename__ = "performance_opportunities"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    # Public causal id, ``perf<model>_<digest>``. Unique per repository *and*
+    # model version, never globally: the same cause in two repositories is two
+    # rows, and two model versions disagree about membership by construction.
+    opportunity_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    performance_model_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # ``open`` or ``resolved``. A cause that stops being observed is resolved,
+    # not deleted, so a quoted id keeps answering after the code was fixed.
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+    # Position in the deterministic total order, so the queue reads in rank
+    # order from an index rather than sorting the repository per request.
+    rank_position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rank_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    execution_context: Mapped[str] = mapped_column(String(16), nullable=False, default="unknown")
+    boundary_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    biomarker_type: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    actionability_state: Mapped[str] = mapped_column(String(16), nullable=False, default="investigate")
+    evidence_confidence: Mapped[str] = mapped_column(String(16), nullable=False, default="low")
+    # ``available`` | ``no_safe_plan`` | ``not_persisted``, decided once by the
+    # writer that also decides whether a plan row exists.
+    plan_state: Mapped[str] = mapped_column(String(16), nullable=False, default="no_safe_plan")
+    fix_strategy: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    fix_safety: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # The file holding the symbol worth editing, so target scoping is a column.
+    file_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    intervention_symbol: Mapped[str | None] = mapped_column(Text, nullable=True)
+    terminal_sink: Mapped[str | None] = mapped_column(Text, nullable=True)
+    observations_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    affected_call_sites_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    affected_files_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    details_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    analyzed_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "repository_id",
+            "performance_model_version",
+            "opportunity_id",
+            name="uq_performance_opportunities_repo_model_id",
+        ),
+        Index("ix_performance_opportunities_repo_id", "repository_id", "opportunity_id"),
+        Index(
+            "ix_performance_opportunities_repo_status_rank",
+            "repository_id",
+            "status",
+            "rank_position",
+        ),
+        Index(
+            "ix_performance_opportunities_repo_status_context_rank",
+            "repository_id",
+            "status",
+            "execution_context",
+            "rank_position",
+        ),
+        Index(
+            "ix_performance_opportunities_repo_status_action_rank",
+            "repository_id",
+            "status",
+            "actionability_state",
+            "rank_position",
+        ),
+        Index("ix_performance_opportunities_repo_status_path", "repository_id", "status", "file_path"),
+    )
+
+
+class PerformanceSummary(Base):
+    """The current performance headline for one repository, in one row.
+
+    A bare dashboard call must be able to lead with something actionable
+    without touching the queue, so the lead and the counts are written by the
+    same transaction that materializes the opportunities and read back by
+    primary key. One row per repository: this is the *current* state, not
+    history, and must never be served from a trend snapshot.
+    """
+
+    __tablename__ = "performance_summaries"
+
+    repository_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("repositories.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    performance_model_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    opportunities_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Counts, context split, and the single lead. Read whole or not at all, so
+    # there is nothing to filter on and no reason to spend columns.
+    summary_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    analyzed_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
     )
@@ -1402,8 +1555,8 @@ class TestCoverageEntry(Base):
 class AnswerCache(Base):
     """Cached LLM-synthesized answers from get_answer.
 
-    Keyed by (repo_id, question_hash). The hash is computed from the
-    normalized question text only — answer cache invalidation on index
+    Keyed by (repo_id, question_hash). The hash is a versioned digest of the
+    normalized question and normalized scope. Answer cache invalidation on index
     change is handled by deleting rows for a repository when its alembic
     head advances (cheap to rebuild).
 
@@ -1417,7 +1570,7 @@ class AnswerCache(Base):
     repository_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
     )
-    # SHA-256 hex of the normalized (lowercased + stripped) question.
+    # SHA-256 hex of the versioned normalized question + scope identity.
     question_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     # Original (un-normalized) question, kept for human inspection.
     question: Mapped[str] = mapped_column(Text, nullable=False)

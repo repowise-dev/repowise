@@ -41,7 +41,6 @@ from repowise.core.generation.layers import (
     ADJACENT_LAYERS,
     compute_layer_order,
     infer_layer,
-    is_support_path,
     layer_order_basis,
 )
 from repowise.core.generation.tour import (
@@ -53,6 +52,7 @@ from repowise.core.generation.tour import (
 from repowise.core.generation.well_known_files import well_known_role
 from repowise.core.ids import is_external
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from repowise.core.support_paths import is_support_path
 
 # Closing-stop anchors (conftest, spec_helper, test_helper, …) and
 # declaration descriptors (module-info.java) — both registry-declared.

@@ -5,15 +5,22 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import threading
 import time
+from collections import OrderedDict
 from datetime import UTC, datetime
 from functools import partial
 from typing import Any
 
 import pathspec
+import structlog
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
+from repowise.core.analysis.change_health.service import (
+    ChangeHealthDeltaService,
+    DeltaRequest,
+)
 from repowise.core.analysis.change_risk import (
     change_risk_payload,
     normalize_extensions,
@@ -21,14 +28,28 @@ from repowise.core.analysis.change_risk import (
 )
 from repowise.core.analysis.pr_blast import rank_tests_by_reach
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.mcp_server._budget import OmissionCollector, fit_to_budget
+from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._budget.contracts import response_budget_shed_order
+from repowise.server.mcp_server._change_health import (
+    directive as _directive,
+)
+from repowise.server.mcp_server._change_health import (
+    finding_detail as _finding_detail,
+)
+from repowise.server.mcp_server._change_health import (
+    health_delta_block as _health_delta_block,
+)
 from repowise.server.mcp_server._helpers import (
     _get_repo,
     _is_workspace_mode,
     _resolve_repo_context,
     _unsupported_repo_all,
+    attach_ignored_arguments,
+    resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+
+log = structlog.get_logger(__name__)
 
 #: Cap on the line-precise impacted-test list, matching the get_risk directive's
 #: ``tests_to_run`` cap so both surfaces stay glanceable. The tail goes to the
@@ -45,56 +66,77 @@ _PRIOR_FIXES_LIMIT = 10
 _CROSS_REPO_BREAKING_LIMIT = 5
 _CROSS_REPO_CONSUMER_LIMIT = 10
 
-# Cheapest loss first; the score, its drivers and fix_history's numbers are the
-# answer and never shed. cross_repo outlives the run-list: a test list is
-# recoverable by running the suite, a broken consumer in another repo is not.
-_SHED_ORDER: tuple[str, ...] = (
-    "exclude_patterns",
-    "prior_fixes",
-    "impacted_tests",
-    "cross_repo",
-    "fix_history.files",
+# Compatibility projection for direct callers and older tests. The shared
+# response contract remains the single source of truth for this order.
+_SHED_ORDER = response_budget_shed_order("get_change_risk")
+
+#: Per-field units and calibration. Identical on every call, so it is opt-in.
+#: ``diagnostics`` carries the raw model mechanics; ``findings`` lifts the
+#: top-findings cap. Both are projections, recoverable by an exact call.
+_INCLUDE_BLOCKS = frozenset({"scales", "diagnostics", "findings"})
+
+#: Score mechanics that are identical or near-identical on every call. Moved
+#: behind ``include=["diagnostics"]`` so the action-first blocks lead.
+_DIAGNOSTIC_FIELDS = (
+    "risk_authority",
+    "score_measures",
+    "score_unit",
+    "baseline_sample_size",
+    "features",
+    "drivers",
 )
 
+#: Compact supporting context: the ranked reading, not the model's workings.
+_CHANGE_SHAPE_FIELDS = (
+    "score",
+    "risk_percentile",
+    "review_priority",
+    "classification",
+    "fallback_band",
+    "is_fix",
+)
 
-@mcp.tool()
+@mcp.tool(
+    surface_order=60,
+    artifact_type="change_risk",
+    presentation="change_risk",
+    evidence_basis="measured",
+)
 async def get_change_risk(
     revspec: str | None = None,
     repo: str | None = None,
     extensions: list[str] | None = None,
     exclude_patterns: list[str] | None = None,
     baseline: int = 200,
+    include: list[str] | None = None,
+    finding_id: str | None = None,
 ) -> dict:
-    """Score a live commit, ``base..head`` range, or uncommitted work.
+    """Review a commit, ``base..head`` range, or uncommitted work.
 
-    For a pre-merge read on a commit or PR range; ``get_risk`` scores indexed
-    files instead. The filters also apply to the percentile baseline.
+    Leads with ``directive`` (what to do) and ``health_delta`` (what this
+    change newly made worse across defect, maintainability, and performance).
+    Both sides are analysed from their own content, so a finding present at
+    head is only reported when the diff explains it; every finding names its
+    ``attribution`` basis and confidence.
 
-    Lead with ``fix_history``: the recency-weighted bug-fix record of the
-    touched files, ``files`` naming where the pressure sits. It separates a
-    surgical edit to a bug magnet from a bulk rename. ``score`` measures diff
-    size and spread, not where the change lands (see ``score_measures``),
-    calibrated per commit; ``risk_percentile`` ranks that shape against recent
-    commits.
+    Trust ``health_delta.status``: ``partial`` means files were skipped and the
+    change is not cleared. ``scope`` counts what was actually compared.
 
-    ``impacted_tests.tests_to_run`` names the tests to run; ``line_coverage``
-    the uncovered lines. ``basis``: ``measured`` = a coverage map proves those
-    tests run the changed *lines*; ``inferred`` = test files the graph shows
-    reaching it (file-level candidates). No map is never "untested":
-    ``no_map`` means run the suite. On ``truncated``, expand
-    ``omission_marker`` for the tail. ``prior_fixes``
-    counts past fixes whose lines overlap this diff.
-
-    ``cross_repo`` (workspace mode) names other repos' consumers of the changed
-    files and what broke, as of the last workspace update.
+    ``impacted_tests`` keeps measured coverage and inferred candidates distinct.
+    ``prior_fixes`` counts past fixes overlapping this diff. ``change_shape``
+    ranks the diff's size and spread against recent commits.
 
     Args:
-        revspec: Commit or ``base..head`` range to score. Omit it to score the
-            uncommitted change, or ``HEAD`` when the working tree is clean.
+        revspec: Commit or ``base..head`` range. Omit to review uncommitted
+            work, or ``HEAD`` when the tree is clean.
         repo: Repository alias in workspace mode; omit for the default.
         extensions: File suffixes to count, e.g. ``[".py", ".ts"]``.
         exclude_patterns: Gitignore-style paths to omit, e.g. ``["tests/"]``.
-        baseline: Recent commits to sample for percentile ranking; 0 disables it.
+        baseline: Recent commits sampled for percentile ranking; 0 disables it.
+        include: ``"findings"`` for every change finding, ``"diagnostics"`` for
+            raw score mechanics, ``"scales"`` for units. All identical on
+            repeat, so ask once.
+        finding_id: Expand one ``health_delta`` finding by its id.
     """
     if repo == "all":
         return _unsupported_repo_all("get_change_risk")
@@ -116,7 +158,17 @@ async def get_change_risk(
         return {"error": f"Could not read change {revspec or 'HEAD'!r}: {detail}"}
     except subprocess.TimeoutExpired:
         return {"error": f"git timed out reading change {revspec or 'HEAD'!r}."}
-    payload = change_risk_payload(result)
+    ignored: list[dict] = []
+    include_set = {
+        block
+        for block in (include or [])
+        if resolve_enum_argument(block, _INCLUDE_BLOCKS, argument="include", ignored=ignored)
+    }
+    payload = change_risk_payload(result, scales="scales" in include_set)
+    if "diagnostics" not in include_set:
+        diagnostics = {f: payload.pop(f) for f in _DIAGNOSTIC_FIELDS if f in payload}
+    else:
+        diagnostics = {}
     if result.features.nf == 0:
         payload["warning"] = (
             f"No counted file changes in {payload['ref']!r} "
@@ -140,15 +192,37 @@ async def get_change_risk(
             working_tree=result.working_tree,
         )
     collector = OmissionCollector("get_change_risk", repo_root=ctx.path)
-    payload["impacted_tests"] = await _impacted_tests_block(
-        ctx, changed, changed_error, collector
+    # The delta is the expensive half and needs nothing the enrichments need,
+    # so it runs alongside them rather than after.
+    delta_task = asyncio.create_task(
+        asyncio.to_thread(
+            _compare_health,
+            str(ctx.path),
+            revspec,
+            tuple(extensions or ()),
+            tuple(result.riskignore_excludes + result.request_excludes),
+        )
     )
-    prior_fixes = await _prior_fixes_block(ctx, changed)
-    if prior_fixes is not None:
-        payload["prior_fixes"] = prior_fixes
-    cross_repo = _cross_repo_block(getattr(ctx, "alias", ""), sorted(changed))
-    if cross_repo is not None:
-        payload["cross_repo"] = cross_repo
+    try:
+        payload["impacted_tests"] = await _impacted_tests_block(
+            ctx, changed, changed_error, collector
+        )
+        prior_fixes = await _prior_fixes_block(ctx, changed)
+        if prior_fixes is not None:
+            payload["prior_fixes"] = prior_fixes
+        cross_repo = _cross_repo_block(getattr(ctx, "alias", ""), sorted(changed))
+        if cross_repo is not None:
+            payload["cross_repo"] = cross_repo
+    except BaseException:
+        # Never leave the comparison running for a request that is already over.
+        delta_task.cancel()
+        raise
+    delta = await delta_task
+    await _attach_health_references(ctx, delta)
+    if finding_id is not None:
+        return _drill_down(payload, delta, finding_id, revspec)
+    _attach_health(payload, delta, revspec, expand="findings" in include_set)
+    payload["change_shape"] = _change_shape(payload, diagnostics)
     # source: live_git marks that the *score* is computed from the working
     # checkout's git. The two blocks above are index-backed, so the freshness
     # fields do apply to them, scoped to the change's files. None (not []) when
@@ -160,9 +234,175 @@ async def get_change_risk(
         targets=sorted(changed) or None,
         extra={"source": "live_git"},
     )
-    fit_to_budget(payload, _SHED_ORDER, collector)
+    attach_ignored_arguments(payload, ignored)
     collector.attach(payload)
     return payload
+
+
+#: One service per repository, so its comparison cache and stampede guard
+#: outlive a single call. LRU-bounded: a long-lived server can see many
+#: worktrees and workspace members over its lifetime.
+_DELTA_SERVICES: OrderedDict[str, ChangeHealthDeltaService] = OrderedDict()
+_DELTA_SERVICE_CAPACITY = 8
+_DELTA_SERVICES_LOCK = threading.Lock()
+
+
+def _delta_service(repo_path: str) -> ChangeHealthDeltaService:
+    with _DELTA_SERVICES_LOCK:
+        service = _DELTA_SERVICES.get(repo_path)
+        if service is not None:
+            _DELTA_SERVICES.move_to_end(repo_path)
+            return service
+    # Built outside the lock: the fingerprint reads config off disk.
+    service = ChangeHealthDeltaService(
+        repo_path=repo_path, rules_fingerprint=_rules_fingerprint(repo_path)
+    )
+    with _DELTA_SERVICES_LOCK:
+        existing = _DELTA_SERVICES.get(repo_path)
+        if existing is not None:
+            _DELTA_SERVICES.move_to_end(repo_path)
+            return existing
+        _DELTA_SERVICES[repo_path] = service
+        while len(_DELTA_SERVICES) > _DELTA_SERVICE_CAPACITY:
+            _DELTA_SERVICES.popitem(last=False)
+    return service
+
+
+def _rules_fingerprint(repo_path: str) -> str:
+    """Identity of the effective health rules; empty when they cannot be read."""
+    try:
+        from repowise.core.repo_config import config_fingerprint
+
+        return config_fingerprint(repo_path)
+    except Exception:
+        return ""
+
+
+def _compare_health(
+    repo_path: str,
+    revspec: str | None,
+    extensions: tuple[str, ...],
+    exclude_patterns: tuple[str, ...],
+) -> Any:
+    """Run the comparison, degrading to an explicit unavailable state."""
+    from repowise.core.analysis.change_health.models import ChangeHealthDelta
+
+    try:
+        return _delta_service(repo_path).compare(
+            DeltaRequest(repo_path, revspec, extensions, exclude_patterns)
+        )
+    except Exception as exc:
+        log.warning("change_health_comparison_failed", revspec=revspec, error=str(exc))
+        return ChangeHealthDelta(
+            status="unavailable",
+            explanation=f"Health comparison failed: {exc}",
+            base=None,
+            head=None,
+            comparison_basis="not_compared",
+            fingerprint=None,
+        )
+
+
+async def _attach_health_references(ctx: Any, delta: Any) -> None:
+    """Point a change finding at its stored twin, when it has one exactly.
+
+    Only an exact match earns the canonical reference: same file, marker,
+    symbol, and span. Anything looser would hand an agent a pointer to a
+    different finding, and most change findings have no stored twin at all
+    because uncommitted and historical work is never persisted.
+    """
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import HealthFinding
+
+    session_factory = getattr(ctx, "session_factory", None)
+    if session_factory is None or not delta.findings:
+        return
+    paths = sorted({f.path for f in delta.findings})
+    try:
+        async with get_session(session_factory) as session:
+            repository = await _get_repo(session)
+            rows = (
+                await session.execute(
+                    select(HealthFinding).where(
+                        HealthFinding.repository_id == repository.id,
+                        HealthFinding.file_path.in_(paths),
+                    )
+                )
+            ).scalars().all()
+    except SQLAlchemyError:
+        return
+    if not rows:
+        return
+    from repowise.server.mcp_server.tool_health import _health_finding_id
+
+    alias = getattr(ctx, "alias", None) or repository.name
+    stored = {
+        (r.file_path, r.biomarker_type, r.function_name or "", r.line_start, r.line_end): r
+        for r in rows
+    }
+    for finding in delta.findings:
+        row = stored.get(
+            (
+                finding.path,
+                finding.biomarker_type,
+                finding.symbol or "",
+                finding.line_start,
+                finding.line_end,
+            )
+        )
+        if row is None:
+            continue
+        finding.health_reference = {
+            "tool": "get_health",
+            "arguments": {"finding_id": _health_finding_id(row, alias)},
+        }
+
+
+def _attach_health(payload: dict, delta: Any, revspec: str | None, *, expand: bool) -> None:
+    """Put the directive first and the compact delta second."""
+    block = _health_delta_block(delta, revspec=revspec)
+    if expand:
+        from repowise.server.mcp_server._change_health import finding_row
+
+        block["top_findings"] = [finding_row(f, revspec) for f in delta.findings]
+        block["findings_emitted"] = len(delta.findings)
+        block.pop("findings_reduced_reason", None)
+        block.pop("all_findings_via", None)
+    ordered = {
+        "directive": _directive(delta, payload.get("impacted_tests")),
+        "health_delta": block,
+    }
+    for key, value in payload.items():
+        ordered[key] = value
+    payload.clear()
+    payload.update(ordered)
+
+
+def _change_shape(payload: dict, diagnostics: dict) -> dict[str, Any]:
+    """The ranked diff-shape reading, kept compact and clearly supporting."""
+    shape = {f: payload[f] for f in _CHANGE_SHAPE_FIELDS if f in payload}
+    shape["measures"] = "diff size and spread, not danger"
+    if diagnostics:
+        shape["diagnostics_via"] = "get_change_risk(include=['diagnostics'])"
+    return shape
+
+
+def _drill_down(payload: dict, delta: Any, finding_id: str, revspec: str | None) -> dict:
+    """Expand one ephemeral change finding, or say why it is not there."""
+    match = next(
+        (f for f in delta.findings if f.change_finding_id == finding_id), None
+    )
+    if match is None:
+        return {
+            "error": f"No change finding {finding_id!r} in {payload.get('ref', 'this change')}.",
+            "hint": "Ids are scoped to one comparison; re-run without finding_id to list them.",
+            "available": [f.change_finding_id for f in delta.findings[:10]],
+        }
+    return {
+        "finding": _finding_detail(match, revspec),
+        "ref": payload.get("ref"),
+        "health_delta_status": delta.status,
+    }
 
 
 async def _repository(ctx: Any) -> Any | None:
@@ -282,11 +522,7 @@ def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | 
                             if (psid := link.get("provider_symbol_id"))
                             else {}
                         ),
-                        **(
-                            {"symbol_id": sid}
-                            if (sid := link.get("consumer_symbol_id"))
-                            else {}
-                        ),
+                        **({"symbol_id": sid} if (sid := link.get("consumer_symbol_id")) else {}),
                     }
                 )
 
@@ -297,9 +533,7 @@ def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | 
             for change in enricher.get_breaking_changes_for_repo(alias):
                 if change.get("provider_file") not in touched:
                     continue
-                cross = [
-                    c for c in change.get("impacted_consumers", []) if c.get("repo") != alias
-                ]
+                cross = [c for c in change.get("impacted_consumers", []) if c.get("repo") != alias]
                 if not cross:
                     continue
                 breaking_total += 1
@@ -697,6 +931,8 @@ async def _impacted_tests_block(
                     by_file[source_file] = ids
     except LookupError:
         return _empty_impacted("no_index", "No indexed repository; run `repowise init`.")
+    except SQLAlchemyError:
+        return _empty_impacted("unknown", "Could not read the coverage map.")
 
     tests = rank_tests_by_reach(by_file)
     total = len(tests)

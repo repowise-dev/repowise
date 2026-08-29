@@ -103,13 +103,12 @@ async def replace_external_systems(
 async def link_graph_nodes_to_external_systems(
     session: AsyncSession,
     repository_id: str,
-    name_to_id: dict[str, int],
+    name_to_id: dict[str, int | None],
 ) -> int:
     """Resolve ``external:{name}`` graph nodes to their ExternalSystem row.
 
-    ``name_to_id`` should be a flat map of dep name → ExternalSystem id
-    (collapse multi-manifest entries by picking any id — the C4 renderer
-    only needs ``name``/``category`` which are the same across rows).
+    Bare names shared by multiple ecosystems map to ``None`` so ambiguous
+    targets remain unlinked; ecosystem-qualified keys remain resolvable.
 
     Returns the number of graph_nodes updated.
     """
@@ -125,18 +124,59 @@ async def link_graph_nodes_to_external_systems(
     updated = 0
     for node in result.scalars():
         suffix = node.node_id[len(prefix) :]
-        # Try the full suffix first, then the first segment (handles e.g.
-        # ``external:fastapi.responses`` → ``fastapi``).
-        sys_id = name_to_id.get(suffix)
-        if sys_id is None and "." in suffix:
-            sys_id = name_to_id.get(suffix.split(".", 1)[0])
-        if sys_id is None and "/" in suffix:
-            sys_id = name_to_id.get(suffix.split("/", 1)[0])
-        if sys_id is not None and node.external_system_id != sys_id:
+        # Try exact and ecosystem-shaped package candidates in priority order.
+        sys_id = next(
+            (name_to_id[name] for name in _external_name_candidates(suffix) if name in name_to_id),
+            None,
+        )
+        if node.external_system_id != sys_id:
             node.external_system_id = sys_id
             updated += 1
     await session.flush()
     return updated
+
+
+def _external_name_candidates(external_name: str) -> tuple[str, ...]:
+    """Return declaration names to try, ordered from precise to broad.
+
+    Resolver output is ecosystem-shaped (npm subpaths, Rust ``::`` paths,
+    Python dotted modules). Keeping normalization in this small pure function
+    makes another ecosystem a local extension without another graph traversal.
+    """
+    candidates = [external_name]
+    if external_name.startswith("@"):
+        parts = external_name.split("/")
+        if len(parts) >= 2:
+            candidates.append("/".join(parts[:2]))
+    for separator in ("::", ".", "/"):
+        if separator in external_name:
+            candidates.append(external_name.split(separator, 1)[0])
+    return tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
+
+
+def build_external_system_link_map(
+    systems: list[dict],
+    id_map: dict[tuple[str, str], int],
+) -> dict[str, int | None]:
+    """Build exact/prefixed link keys while preserving name ambiguity."""
+    links: dict[str, int | None] = {}
+    name_ecosystems: dict[str, str] = {}
+    for system in systems:
+        name = system.get("name", "")
+        declared_in = system.get("declared_in", "")
+        ecosystem = system.get("ecosystem", "")
+        system_id = id_map.get((name, declared_in))
+        if not name or system_id is None:
+            continue
+        if ecosystem:
+            links.setdefault(f"{ecosystem}:{name}", system_id)
+        previous_ecosystem = name_ecosystems.get(name)
+        if previous_ecosystem is None:
+            name_ecosystems[name] = ecosystem
+            links[name] = system_id
+        elif previous_ecosystem != ecosystem:
+            links[name] = None
+    return links
 
 
 async def list_external_systems(session: AsyncSession, repository_id: str) -> list[ExternalSystem]:

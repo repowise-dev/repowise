@@ -1380,11 +1380,9 @@ async def persist_ingestion(result: Any, session: Any, repo_id: str) -> int:
     external_systems = getattr(result, "external_systems", None) or []
     if external_systems:
         id_map = await bulk_upsert_external_systems(session, repo_id, external_systems)
-        # Collapse multi-manifest duplicates: any id for a given name is fine
-        # (renderer only needs name/category/ecosystem which are stable).
-        name_to_id: dict[str, int] = {}
-        for (name, _declared_in), sys_id in id_map.items():
-            name_to_id.setdefault(name, sys_id)
+        from repowise.core.persistence.crud import build_external_system_link_map
+
+        name_to_id = build_external_system_link_map(external_systems, id_map)
         await link_graph_nodes_to_external_systems(session, repo_id, name_to_id)
 
     # ---- Symbols -------------------------------------------------------------
@@ -1514,6 +1512,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     from repowise.core.analysis.health.trends import snapshot_file_maps
     from repowise.core.persistence.crud import (
         bulk_upsert_decisions,
+        finalize_performance_opportunities,
         recompute_decision_staleness,
         save_coverage_files,
         save_dead_code_findings,
@@ -1536,8 +1535,35 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
         # index instead of assuming the two moved together.
         head_sha = getattr(result, "head_commit", None) or getattr(result, "commit_sha", None)
         await save_health_metrics(session, repo_id, hr.metrics or [], analyzed_commit=head_sha)
-        if hr.findings:
-            await save_health_findings(session, repo_id, hr.findings)
+        # One savepoint over the findings and everything derived from them, so
+        # a rebuild that failed halfway cannot leave the queue describing
+        # findings that were never stored. It runs on an empty finding set too:
+        # the queue has to be reconciled to nothing just the same.
+        async with session.begin_nested():
+            if hr.findings:
+                await save_health_findings(session, repo_id, hr.findings)
+            # Structured refactoring suggestions (Extract Class, ...). Repo-wide
+            # delete-then-insert like findings; empty list clears prior rows.
+            # Performance plans are excluded: the finalizer below owns them, so
+            # they are generated once, from the merged stored findings, by the
+            # same writer on the full and the incremental path.
+            await save_refactoring_suggestions(
+                session,
+                repo_id,
+                [
+                    suggestion
+                    for suggestion in (getattr(hr, "refactoring_suggestions", None) or [])
+                    if getattr(suggestion, "refactoring_type", None) != "performance_fix"
+                ],
+            )
+            # Group the stored performance findings into the materialized causal
+            # read model, then reconcile lifecycle and plans.
+            await finalize_performance_opportunities(
+                session,
+                repo_id,
+                analyzed_commit=head_sha,
+                plan_policy=getattr(hr, "performance_plan_policy", None),
+            )
         # Resolved coverage rows, when a report was ingested this run.
         coverage_files = getattr(hr, "coverage_files", None)
         if coverage_files:
@@ -1548,11 +1574,6 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
                 source_format=getattr(hr, "coverage_format", None) or "lcov",
                 ingested_commit_sha=head_sha,
             )
-        # Structured refactoring suggestions (Extract Class, ...). Repo-wide
-        # delete-then-insert like findings; empty list clears prior rows.
-        await save_refactoring_suggestions(
-            session, repo_id, getattr(hr, "refactoring_suggestions", None) or []
-        )
         # Per-function blame rollup (FULL tier only; empty otherwise).
         fn_blame_rows = getattr(hr, "function_blame_rows", None)
         if fn_blame_rows:

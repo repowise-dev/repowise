@@ -386,7 +386,10 @@ def test_change_entropy_silent_without_signal():
 
 
 def _partners(*pairs: tuple[str, float]) -> str:
-    return json.dumps([{"file_path": p, "co_change_count": c} for p, c in pairs])
+    # The scatter count reads shared commits, so the record needs one.
+    return json.dumps(
+        [{"file_path": p, "co_change_count": c, "frequency": int(c)} for p, c in pairs]
+    )
 
 
 def test_co_change_scatter_fires_on_broad_coupling():
@@ -410,13 +413,15 @@ def test_co_change_scatter_high_severity_on_heavy_coupling():
     assert out[0].severity == "high"  # scatter >= 15
 
 
-def test_co_change_scatter_ignores_weak_partners():
-    # Many partners, but all below the 2.0 weight floor → scatter == 0.
+def test_co_change_scatter_counts_every_recorded_partner():
+    """The indexer already dropped pairs sharing too few commits, so a second
+    cutoff here would only disagree with it."""
     meta = {
-        "co_change_partners_json": _partners(*[(f"m{i}.py", 1.0) for i in range(12)]),
+        "co_change_partners_json": _partners(*[(f"m{i}.py", 0.04) for i in range(12)]),
         "commit_count_90d": 5,
     }
-    assert CoChangeScatterDetector().detect(_ctx(meta)) == []
+    (finding,) = CoChangeScatterDetector().detect(_ctx(meta))
+    assert finding.details["scatter"] == 12
 
 
 def test_co_change_scatter_skips_low_activity():

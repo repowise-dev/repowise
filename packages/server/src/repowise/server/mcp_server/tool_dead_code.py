@@ -34,6 +34,7 @@ from repowise.server.mcp_server._helpers import (
     resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._references import path_identity, stable_entity_id
 
 
 @dataclass
@@ -122,7 +123,7 @@ async def _get_dead_code_all_repos(
         repo_filtered = _apply_finding_filters(repo_findings, filters)
 
         for f in repo_filtered:
-            serialized = _serialize_finding(f, git_meta_map)
+            serialized = _serialize_finding(f, git_meta_map, repository=ctx.alias)
             serialized["repo"] = ctx.alias
             merged_findings.append(serialized)
 
@@ -261,7 +262,7 @@ def _resolve_min_confidence(value: float | str, ignored: list[dict[str, Any]]) -
         return RISK_CAP_CONFIDENCE
 
 
-@mcp.tool()
+@mcp.tool(surface_order=100, artifact_type="dead_code", presentation="dead_code", evidence_basis="inferred")
 async def get_dead_code(
     repo: str | None = None,
     kind: str | None = None,
@@ -276,6 +277,7 @@ async def get_dead_code(
     include_zombie_packages: bool = True,
     no_unreachable: bool = False,
     no_unused_exports: bool = False,
+    finding_id: str | None = None,
 ) -> dict:
     """Unused exports, unreachable files, zombie packages — tiered by confidence.
 
@@ -300,6 +302,7 @@ async def get_dead_code(
         include_zombie_packages: monorepo package findings (default true).
         no_unreachable: skip file-level reachability findings.
         no_unused_exports: skip public-export findings.
+        finding_id: stable ``id`` emitted by a dead-code finding.
     """
     # MCP transport rejects payloads above ~25k tokens. A single serialized
     # finding is ~400 chars, so 3 tiers x ~25 findings keeps us under budget
@@ -341,6 +344,24 @@ async def get_dead_code(
 
     # --- repo="all": aggregate dead code across all repos ---
     if repo == "all":
+        if finding_id:
+            for candidate_ctx in await _resolve_all_contexts():
+                resolved = await get_dead_code(
+                    repo=candidate_ctx.alias,
+                    min_confidence="low",
+                    finding_id=finding_id,
+                )
+                if resolved.get("resolved"):
+                    resolved["workspace"] = True
+                    return resolved
+            return {
+                "mode": "finding",
+                "finding_id": finding_id,
+                "finding": None,
+                "resolved": False,
+                "workspace": True,
+                "_meta": _build_meta(),
+            }
         result_ws = await _get_dead_code_all_repos(filters, limit, tier, _maybe_limit_note)
         attach_ignored_arguments(result_ws, ignored)
         return result_ws
@@ -364,11 +385,48 @@ async def get_dead_code(
         # Phase 4: load git metadata for "last meaningful change" enrichment
         git_meta_map = await _load_git_meta_map(session, repository.id, all_findings)
 
+    reference_repository = ctx.alias or repository.name
+    if finding_id:
+        match = next(
+            (
+                row
+                for row in all_findings
+                if finding_id
+                in {row.id, _dead_code_finding_id(row, reference_repository)}
+            ),
+            None,
+        )
+        return {
+            "mode": "finding",
+            "finding_id": finding_id,
+            "finding": (
+                _serialize_finding(
+                    match,
+                    git_meta_map,
+                    repository=reference_repository,
+                )
+                if match
+                else None
+            ),
+            "resolved": match is not None,
+            "_meta": _build_meta(
+                repository=repository,
+                targets=[match.file_path] if match else None,
+            ),
+        }
+
     # --- Apply filters ---
     filtered = _apply_finding_filters(all_findings, filters)
 
     # --- Build tiered structure ---
-    tiers = _build_tiers(filtered, limit, tier, git_meta_map, collector)
+    tiers = _build_tiers(
+        filtered,
+        limit,
+        tier,
+        git_meta_map,
+        collector,
+        repository=reference_repository,
+    )
 
     # --- Summary across ALL open findings (unfiltered) ---
     by_kind: dict[str, int] = {}
@@ -471,12 +529,37 @@ def _effective_safe(f: Any) -> bool:
     return effective_safe_to_delete(f.confidence, f.file_path, f.safe_to_delete)
 
 
-def _serialize_finding(f: Any, git_meta_map: dict | None = None) -> dict:
+def _dead_code_finding_id(f: Any, repository: str) -> str:
+    return stable_entity_id(
+        "finding",
+        repository,
+        {
+            "family": "dead_code",
+            "path": path_identity(f.file_path),
+            "kind": f.kind,
+            "symbol": f.symbol_name or "",
+            "line_start": f.start_line,
+            "line_end": f.end_line,
+        },
+    )
+
+
+def _serialize_finding(
+    f: Any,
+    git_meta_map: dict | None = None,
+    *,
+    repository: str = "default",
+) -> dict:
     """Serialize a single DeadCodeFinding to dict."""
     result = {
+        "id": _dead_code_finding_id(f, repository),
+        "repository": repository,
         "kind": f.kind,
         "file_path": f.file_path,
         "symbol_name": f.symbol_name,
+        "symbol_kind": f.symbol_kind,
+        "start_line": f.start_line,
+        "end_line": f.end_line,
         "confidence": f.confidence,
         "reason": f.reason,
         "safe_to_delete": _effective_safe(f),
@@ -507,6 +590,8 @@ def _build_tiers(
     tier_filter: str | None,
     git_meta_map: dict | None = None,
     collector: OmissionCollector | None = None,
+    *,
+    repository: str = "default",
 ) -> dict:
     """Split findings into high/medium/low confidence tiers.
 
@@ -533,7 +618,10 @@ def _build_tiers(
             collector.add(
                 f"{name}-tier findings beyond limit={limit} ({len(beyond_limit)} dropped)",
                 "\n".join(
-                    json.dumps(_serialize_finding(f, git_meta_map), separators=(",", ":"))
+                    json.dumps(
+                        _serialize_finding(f, git_meta_map, repository=repository),
+                        separators=(",", ":"),
+                    )
                     for f in beyond_limit
                 ),
             )
@@ -542,7 +630,10 @@ def _build_tiers(
             "count": len(items),
             "lines": sum(f.lines for f in items),
             "safe_count": sum(1 for f in items if _effective_safe(f)),
-            "findings": [_serialize_finding(f, git_meta_map) for f in items[:limit]],
+            "findings": [
+                _serialize_finding(f, git_meta_map, repository=repository)
+                for f in items[:limit]
+            ],
             "truncated": len(items) > limit,
         }
 

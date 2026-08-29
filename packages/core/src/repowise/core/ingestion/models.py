@@ -282,6 +282,10 @@ class CallSite:
     line: int  # 1-indexed line number of the call
     argument_count: int | None  # number of arguments (None if unknown)
     receiver_call: CallReceiver | None = None  # set only for a captured chained call
+    # C++ `Ns::f()` / `Class::m()`: the qualifier as written. Kept apart from
+    # ``receiver_name`` because that field routes to the member strategies,
+    # and cpp has none -- a scoped call must stay on the free-call path.
+    scope_name: str | None = None
     edge_type: CallSiteEdgeType = "calls"  # see ``CallSiteEdgeType``
 
 
@@ -401,6 +405,11 @@ ResolutionOrigin = Literal[
     "crate_root",  # 0.88 — Rust crate-scoped reference
     "receiver_import",  # 0.88 — receiver class found in an imported file
     "import_merged",  # 0.85 — in *some* imported file; which one is unattributed
+    # 0.93 — C/C++ `Qualifier::name()`. The class is written at the call
+    # site and declares the method, so nothing is inferred; it ranks with
+    # `receiver_same_file` because both rest on a class NAME matching, and
+    # two namespaces may spell one class name.
+    "scoped_name",
     "same_target",  # 0.85 — C/C++ sibling TU of the same build target
     # 0.75 — the (class, method) pair exists somewhere in the repo. The member
     # analogue of `global_unique`, and no more than that: the strategy is

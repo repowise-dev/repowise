@@ -3,24 +3,32 @@
 import { ModelSelector as ModelSelectorShell } from "@repowise-dev/ui/chat/model-selector";
 import { useProviders } from "@/lib/hooks/use-providers";
 
-export function ModelSelector({ repoId }: { repoId?: string }) {
+export function ModelSelector({
+  repoId,
+  activeProvider: controlledProvider,
+  activeModel: controlledModel,
+  onSelect,
+}: {
+  repoId?: string;
+  activeProvider?: string | null;
+  activeModel?: string | null;
+  onSelect?: (provider: string, model: string) => void;
+}) {
   const {
     providers,
     activeProvider,
     activeModel,
     isLoading,
-    activate,
-    saveKey,
   } = useProviders(repoId);
 
   return (
     <ModelSelectorShell
       providers={providers}
-      activeProvider={activeProvider}
-      activeModel={activeModel}
+      activeProvider={controlledProvider ?? activeProvider}
+      activeModel={controlledModel ?? activeModel}
       isLoading={isLoading}
-      onActivate={(id, model) => activate(id, model)}
-      onSaveKey={saveKey}
+      onActivate={(id, model) => onSelect?.(id, model)}
+      settingsHref="/settings"
     />
   );
 }

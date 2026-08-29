@@ -7,7 +7,9 @@ import type {
   HealthOverviewResponse,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
+  PerformanceOpportunityDetail,
   PerformanceOpportunityPage,
+  PerformanceOpportunityQuery,
   TestsReachingFile,
 } from "@repowise-dev/types/health";
 import type { Paginated } from "@repowise-dev/types";
@@ -50,11 +52,18 @@ export interface CodeHealthAdapter {
 
   getOverview(limit: number): Promise<HealthOverviewResponse>;
   listFindings(opts?: CodeHealthFindingsQuery): Promise<HealthFinding[]>;
-  getPerformanceOpportunities?(opts?: {
-    context?: "production_tooling" | "test" | "all";
-    limit?: number;
-    offset?: number;
-  }): Promise<PerformanceOpportunityPage>;
+  getPerformanceOpportunities?(
+    opts?: PerformanceOpportunityQuery,
+  ): Promise<PerformanceOpportunityPage>;
+  /**
+   * One opportunity by its stable id. Optional: a host that has not wired it
+   * renders the row it already holds and says so, rather than claiming a
+   * lifecycle and analyzed commit it never read.
+   */
+  getPerformanceOpportunity?(
+    opportunityId: string,
+    opts?: { evidenceLimit?: number; evidenceOffset?: number },
+  ): Promise<PerformanceOpportunityDetail>;
   getPerformanceOpportunityFindings?(
     opportunityId: string,
     opts?: { limit?: number; offset?: number },

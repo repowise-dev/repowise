@@ -31,7 +31,7 @@ async def _insert_git_metadata(session_factory, repo_id: str) -> None:
             top_authors_json=json.dumps([{"name": "Alice", "commits": 30}]),
             significant_commits_json=json.dumps([{"sha": "abc", "message": "init"}]),
             co_change_partners_json=json.dumps(
-                [{"file_path": "src/utils.py", "co_change_count": 5}]
+                [{"file_path": "src/utils.py", "co_change_count": 5, "frequency": 5}]
             ),
             is_hotspot=True,
             is_stable=False,

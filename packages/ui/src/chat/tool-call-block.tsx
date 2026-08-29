@@ -13,8 +13,9 @@
  */
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Loader2, ArrowUpRight } from "lucide-react";
+import { ChevronDown, ChevronRight, ArrowUpRight } from "lucide-react";
 import { cn } from "../lib/cn";
+import { WorkingOrb } from "./working-orb";
 import type { ChatUIToolCall } from "@repowise-dev/types/chat";
 
 const TOOL_LABELS: Record<string, string> = {
@@ -45,6 +46,7 @@ export function ToolCallBlock({
   const [expanded, setExpanded] = useState(false);
   const label = TOOL_LABELS[toolCall.name] ?? toolCall.name;
   const isRunning = toolCall.status === "running";
+  const isError = toolCall.status === "error";
 
   return (
     <div
@@ -61,9 +63,7 @@ export function ToolCallBlock({
           disabled={isRunning}
           aria-expanded={expanded}
         >
-          {isRunning && (
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--color-accent-primary)] shrink-0" />
-          )}
+          {isRunning && <WorkingOrb />}
           <span className="font-medium text-[var(--color-text-secondary)]">
             {label}
           </span>
@@ -71,6 +71,9 @@ export function ToolCallBlock({
             <span className="text-[var(--color-text-tertiary)] truncate ml-1">
               — {toolCall.summary}
             </span>
+          )}
+          {isError && (
+            <span className="text-[var(--color-error)]">— Failed</span>
           )}
         </button>
         <span className="ml-auto flex items-center gap-2 shrink-0">

@@ -20,7 +20,6 @@ size.
 
 from __future__ import annotations
 
-import json
 import time
 from collections import defaultdict
 from collections.abc import Iterable
@@ -31,6 +30,7 @@ from typing import Any
 import structlog
 
 from repowise.core.cancellation import check_cancelled
+from repowise.core.co_change import parse_partners
 
 from .limits import DuplicationDiagnostics, DuplicationLimits, looks_minified
 from .rabin_karp import WindowHash, index_by_hash, rolling_hashes
@@ -56,7 +56,7 @@ class ClonePair:
     b_start_line: int
     b_end_line: int
     token_count: int
-    co_change_count: int = 0  # 0 when files don't share co-change history
+    co_change_count: int = 0  # shared commits; 0 when the files have no history together
 
     @property
     def is_intra_file(self) -> bool:
@@ -86,34 +86,25 @@ class DuplicationReport:
     diagnostics: dict[str, int | bool] = field(default_factory=dict)
 
 
-def _read_source(abs_path: str) -> bytes | None:
+def _read_source(abs_path: str, read_source: Any | None = None) -> bytes | None:
+    if read_source is not None:
+        return read_source(abs_path)
     try:
         return Path(abs_path).read_bytes()
     except OSError:
         return None
 
 
-def _parse_co_change_partners(meta: dict[str, Any]) -> dict[str, int]:
-    raw = meta.get("co_change_partners_json")
-    if not raw:
-        return {}
-    try:
-        partners = json.loads(raw)
-    except (TypeError, ValueError):
-        return {}
-    out: dict[str, int] = {}
-    for p in partners:
-        if not isinstance(p, dict):
-            continue
-        path = p.get("file_path") or p.get("path")
-        count = p.get("co_change_count") or p.get("count") or 0
-        if not path:
-            continue
-        try:
-            out[str(path)] = int(count)
-        except (TypeError, ValueError):
-            continue
-    return out
+def _partner_support(meta: dict[str, Any], partner_path: str) -> int:
+    """Commits *meta*'s file shares with *partner_path*.
+
+    The plain count, not the decayed weight: consumers render it as "co-changed
+    N times" and compare it to a whole number.
+    """
+    for p in parse_partners(meta.get("co_change_partners_json")):
+        if p.file_path == partner_path:
+            return p.support
+    return 0
 
 
 def _co_change_score(
@@ -122,13 +113,11 @@ def _co_change_score(
     git_meta_map: dict[str, dict[str, Any]],
 ) -> int:
     """Bidirectional max — co-change matrices are stored per file, but
-    the same pair shows up from both sides, sometimes with slightly
-    different counts depending on the window. Take the max."""
+    the same pair shows up from both sides, and a per-file cap can drop it from
+    one of them. Take the max."""
     a_meta = git_meta_map.get(file_a, {}) or {}
     b_meta = git_meta_map.get(file_b, {}) or {}
-    from_a = _parse_co_change_partners(a_meta).get(file_b, 0)
-    from_b = _parse_co_change_partners(b_meta).get(file_a, 0)
-    return max(from_a, from_b)
+    return max(_partner_support(a_meta, file_b), _partner_support(b_meta, file_a))
 
 
 def _tokens_equal(
@@ -199,6 +188,7 @@ def detect_clones(
     limits: DuplicationLimits | None = None,
     cache_dir: Path | None = None,
     changed_files: set[str] | None = None,
+    source_reader: Any | None = None,
 ) -> DuplicationReport:
     """Run the duplication pipeline over the supplied parsed files.
 
@@ -251,6 +241,7 @@ def detect_clones(
                 cache,
                 index,
                 cache_dir,
+                source_reader,
             )
             if report is not None:
                 return report
@@ -258,7 +249,7 @@ def detect_clones(
         diag = DuplicationDiagnostics()
 
     per_file_kinds, per_file_nloc, all_windows, per_file_hash = _collect_windows(
-        parsed_list, window_tokens, lim, diag, cache
+        parsed_list, window_tokens, lim, diag, cache, source_reader
     )
     if cache is not None:
         cache.save()
@@ -308,6 +299,7 @@ def _collect_windows(
     limits: DuplicationLimits,
     diag: DuplicationDiagnostics,
     cache: Any | None = None,
+    read_source: Any | None = None,
 ) -> tuple[dict[str, list[str]], dict[str, int], list[WindowHash], dict[str, str]]:
     """Tokenize each file once and emit its rolling-hash windows.
 
@@ -336,7 +328,7 @@ def _collect_windows(
         path = pf.file_info.path
         language = pf.file_info.language
 
-        source = _read_source(pf.file_info.abs_path)
+        source = _read_source(pf.file_info.abs_path, read_source)
         if source is None:
             diag.skipped_unreadable += 1
             continue
@@ -511,6 +503,7 @@ def _detect_clones_incremental(
     cache: Any,
     index: Any,
     cache_dir: Path,
+    read_source: Any | None = None,
 ) -> DuplicationReport | None:
     """Splice the persisted raw-pair multiset instead of recomputing it.
 
@@ -554,7 +547,7 @@ def _detect_clones_incremental(
     #    Sorted for deterministic window-budget behaviour.
     changed_pfs = [current[p] for p in sorted(changed)]
     new_kinds, new_nloc, new_windows, new_hash = _collect_windows(
-        changed_pfs, window_tokens, lim, diag, cache
+        changed_pfs, window_tokens, lim, diag, cache, read_source
     )
     if diag.window_budget_hit:
         return None

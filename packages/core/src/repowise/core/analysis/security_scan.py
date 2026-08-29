@@ -18,6 +18,7 @@ constraint (migration 0041) makes re-runs idempotent.
 
 from __future__ import annotations
 
+import ast
 import logging
 import re
 from datetime import UTC, datetime
@@ -31,16 +32,56 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Pattern registry: (compiled_pattern, kind_label, severity)
 # ---------------------------------------------------------------------------
+_CALL_PATTERNS: list[tuple[re.Pattern, str, str]] = [
+    (
+        re.compile(r"(?<![\w$])(?:[A-Za-z_$][\w$]*\s*\.\s*)*eval\s*\("),
+        "eval_call",
+        "high",
+    ),
+    (
+        re.compile(r"(?<![\w$])(?:[A-Za-z_$][\w$]*\s*\.\s*)*exec\s*\("),
+        "exec_call",
+        "high",
+    ),
+]
+_CALL_KINDS = frozenset(kind for _, kind, _ in _CALL_PATTERNS)
+
+# ``exec`` is not a global in JavaScript; the name belongs to
+# ``RegExp.prototype.exec``. The receiver-chain prefix above therefore matches
+# ``re.exec(str)``, ``/x/.exec(s)`` and ``pattern.exec(xml)`` — idiomatic parsing
+# code, reported at ``high``. Measured on a 17-repo TypeScript corpus, every
+# ``exec_call`` hit outside Python was a regex match and none was a process
+# spawn, so the kind was pure noise on those languages.
+#
+# The dangerous call in JavaScript comes from ``child_process``, so that is what
+# gates it: a file that never names the module cannot spawn one. ``eval`` needs
+# no such gate — it is a genuine global there.
+_CHILD_PROCESS_IMPORT = re.compile(r"child_process|node:child_process")
+_JS_EXEC_CALL = re.compile(r"(?<![\w$])(?:[A-Za-z_$][\w$]*\s*\.\s*)*exec(?:File)?(?:Sync)?\s*\(")
+
 _PATTERNS: list[tuple[re.Pattern, str, str]] = [
-    (re.compile(r"eval\s*\("), "eval_call", "high"),
-    (re.compile(r"exec\s*\("), "exec_call", "high"),
+    *_CALL_PATTERNS,
     (re.compile(r"pickle\.loads"), "pickle_loads", "high"),
     (re.compile(r"subprocess\..*shell\s*=\s*True"), "subprocess_shell_true", "high"),
     (re.compile(r"os\.system"), "os_system", "high"),
-    (re.compile(r"password\s*=\s*['\"]"), "hardcoded_password", "high"),
-    (re.compile(r"(?:api_?key|secret)\s*=\s*['\"]"), "hardcoded_secret", "high"),
+    # Case-insensitive: a credential pinned in source is usually written as a
+    # SCREAMING_CASE constant assigned a quoted literal, and the lowercase-only
+    # patterns walked straight past that form. Found by scanning a corpus in
+    # which a live n8n key sat unreported under exactly that spelling.
+    #
+    # The wording above avoids spelling the matched form out literally: this
+    # loop runs on raw source, comments included, so an example written out here
+    # would make the file report itself.
+    #
+    # Case-insensitivity is written as a scoped inline group rather than the
+    # ``re.IGNORECASE`` flag on purpose: ``_ANY_PATTERN`` below is built by
+    # concatenating these patterns' *source text*, which drops per-pattern
+    # flags. A flag here would leave the prefilter case-sensitive and it would
+    # reject the line before the pattern ever ran.
+    (re.compile(r"(?i:password)\s*=\s*['\"]"), "hardcoded_password", "high"),
+    (re.compile(r"(?i:api_?key|secret)\s*=\s*['\"]"), "hardcoded_secret", "high"),
     (re.compile(r'f[\'"].*SELECT.*\{.*\}'), "fstring_sql", "med"),
-    (re.compile(r'\.execute\(\s*[\'\"]\s*SELECT.*\+'), "concat_sql", "med"),
+    (re.compile(r"\.execute\(\s*[\'\"]\s*SELECT.*\+"), "concat_sql", "med"),
     (re.compile(r"verify\s*=\s*False"), "tls_verify_false", "med"),
     (re.compile(r"\bmd5\b|\bsha1\b"), "weak_hash", "low"),
 ]
@@ -61,18 +102,14 @@ _ANY_PATTERN = re.compile("|".join(f"(?:{p.pattern})" for p, _, _ in _PATTERNS))
 # on a column-0 line. The span is also capped (~200 chars) as a second bound.
 _SPANNING_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     (
-        re.compile(
-            r"subprocess\.[A-Za-z]+\((?:[^\n]|\n(?=[ \t])){0,200}?shell\s*=\s*True"
-        ),
+        re.compile(r"subprocess\.[A-Za-z]+\((?:[^\n]|\n(?=[ \t])){0,200}?shell\s*=\s*True"),
         "subprocess_shell_true",
         "high",
     ),
 ]
 
 # Symbol names that are informational security hotspots
-_SYMBOL_KEYWORDS = re.compile(
-    r"\b(auth|token|password|jwt|session|crypto)\b", re.IGNORECASE
-)
+_SYMBOL_KEYWORDS = re.compile(r"\b(auth|token|password|jwt|session|crypto)\b", re.IGNORECASE)
 
 # Patterns whose matches are genuine leaked credentials (as opposed to the
 # broader "code smell" patterns like os.system/eval). Full-history scans
@@ -88,6 +125,165 @@ SECRET_KINDS: frozenset[str] = frozenset({"hardcoded_password", "hardcoded_secre
 # a file, so relocating on it lands somewhere arbitrary and failing to find it
 # does not mean the code is gone.
 SYMBOL_NAME_KINDS: frozenset[str] = frozenset({"security_sensitive_symbol"})
+
+
+def _mask_comments_and_strings(source: str) -> str:
+    """Blank common comments/strings while preserving offsets and newlines."""
+    chars = list(source)
+    i = 0
+    state = "code"
+    quote = ""
+    triple = False
+    template_depth = 0
+    while i < len(source):
+        if state == "line_comment":
+            if source[i] == "\n":
+                state = "code"
+            else:
+                chars[i] = " "
+            i += 1
+            continue
+        if state == "block_comment":
+            if source.startswith("*/", i):
+                chars[i : i + 2] = [" ", " "]
+                i += 2
+                state = "code"
+            else:
+                if source[i] != "\n":
+                    chars[i] = " "
+                i += 1
+            continue
+        if state == "string":
+            marker = quote * (3 if triple else 1)
+            if source.startswith(marker, i):
+                chars[i : i + len(marker)] = [" "] * len(marker)
+                i += len(marker)
+                state = "code"
+            elif source[i] == "\\":
+                chars[i] = " "
+                if i + 1 < len(source):
+                    if source[i + 1] != "\n":
+                        chars[i + 1] = " "
+                    i += 2
+                else:
+                    i += 1
+            else:
+                if source[i] != "\n":
+                    chars[i] = " "
+                i += 1
+            continue
+        if state == "template":
+            if source.startswith("${", i):
+                chars[i : i + 2] = [" ", " "]
+                i += 2
+                template_depth = 1
+                state = "code"
+            elif source[i] == "`":
+                chars[i] = " "
+                i += 1
+                state = "code"
+            elif source[i] == "\\":
+                chars[i] = " "
+                if i + 1 < len(source):
+                    if source[i + 1] != "\n":
+                        chars[i + 1] = " "
+                    i += 2
+                else:
+                    i += 1
+            else:
+                if source[i] != "\n":
+                    chars[i] = " "
+                i += 1
+            continue
+
+        if template_depth and source[i] == "{":
+            template_depth += 1
+            i += 1
+        elif template_depth and source[i] == "}":
+            chars[i] = " "
+            template_depth -= 1
+            i += 1
+            if template_depth == 0:
+                state = "template"
+        elif source.startswith("//", i) or source[i] == "#":
+            width = 2 if source.startswith("//", i) else 1
+            chars[i : i + width] = [" "] * width
+            i += width
+            state = "line_comment"
+        elif source.startswith("/*", i):
+            chars[i : i + 2] = [" ", " "]
+            i += 2
+            state = "block_comment"
+        elif source[i] == "`":
+            chars[i] = " "
+            i += 1
+            state = "template"
+        elif source[i] in {"'", '"'}:
+            quote = source[i]
+            triple = source.startswith(quote * 3, i)
+            width = 3 if triple else 1
+            chars[i : i + width] = [" "] * width
+            i += width
+            state = "string"
+        else:
+            i += 1
+    return "".join(chars)
+
+
+def _call_findings(file_path: str, source: str) -> list[dict]:
+    """Find executable eval/exec calls with AST or bounded lexical fallback."""
+    if file_path.lower().endswith((".py", ".pyi")):
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            pass
+        else:
+            findings = []
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                if isinstance(node.func, ast.Name):
+                    call_name = node.func.id
+                elif isinstance(node.func, ast.Attribute):
+                    call_name = node.func.attr
+                else:
+                    continue
+                if call_name not in {"eval", "exec"}:
+                    continue
+                line = source.splitlines()[node.lineno - 1].strip()[:120]
+                findings.append(
+                    {
+                        "kind": f"{call_name}_call",
+                        "severity": "high",
+                        "snippet": line,
+                        "line": node.lineno,
+                    }
+                )
+            return findings
+
+    masked = _mask_comments_and_strings(source)
+    lines = source.splitlines()
+    findings = []
+
+    def add(kind: str, severity: str, offset: int) -> None:
+        lineno = source.count("\n", 0, offset) + 1
+        snippet = lines[lineno - 1].strip()[:120] if lineno <= len(lines) else ""
+        findings.append({"kind": kind, "severity": severity, "snippet": snippet, "line": lineno})
+
+    is_python = file_path.lower().endswith((".py", ".pyi"))
+    for pattern, kind, severity in _CALL_PATTERNS:
+        if kind == "exec_call" and not is_python:
+            continue  # handled below, gated on child_process
+        for match in pattern.finditer(masked):
+            add(kind, severity, match.start())
+
+    # The module name is searched in raw source on purpose: it arrives as a
+    # string literal (``require("child_process")``), which masking blanks.
+    if not is_python and _CHILD_PROCESS_IMPORT.search(source):
+        for match in _JS_EXEC_CALL.finditer(masked):
+            add("exec_call", "high", match.start())
+
+    return findings
 
 
 def _is_missing_table_error(exc: Exception) -> bool:
@@ -128,11 +324,15 @@ class SecurityScanner:
         findings: list[dict] = []
         lines = source.splitlines()
 
+        findings.extend(_call_findings(file_path, source))
+
         # Line-by-line pattern scan
         for lineno, line in enumerate(lines, start=1):
             if not _ANY_PATTERN.search(line):
                 continue
             for pattern, kind, severity in _PATTERNS:
+                if kind in _CALL_KINDS:
+                    continue
                 if pattern.search(line):
                     # Trim snippet to keep it concise
                     snippet = line.strip()[:120]
@@ -231,10 +431,7 @@ class SecurityScanner:
             conflict_suffix = ""
         else:
             insert_prefix = "INSERT INTO security_findings "
-            conflict_suffix = (
-                " ON CONFLICT ON CONSTRAINT uq_security_finding_provenance "
-                "DO NOTHING"
-            )
+            conflict_suffix = " ON CONFLICT ON CONSTRAINT uq_security_finding_provenance DO NOTHING"
 
         inserted = 0
         for finding in findings:
@@ -245,8 +442,7 @@ class SecurityScanner:
                         + "(repository_id, file_path, kind, severity, snippet, line_number, "
                         "commit_sha, commit_at, detected_at) "
                         "VALUES (:repo_id, :file_path, :kind, :severity, :snippet, :line, "
-                        ":commit_sha, :commit_at, :detected_at)"
-                        + conflict_suffix
+                        ":commit_sha, :commit_at, :detected_at)" + conflict_suffix
                     ),
                     {
                         "repo_id": self._repo_id,

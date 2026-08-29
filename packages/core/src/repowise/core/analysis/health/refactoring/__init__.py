@@ -27,7 +27,7 @@ from .models import (
     RefactoringContext,
     RefactoringSuggestion,
 )
-from .performance_fix import performance_fix_suggestions
+from .performance_fix import PerformancePlanPolicy, performance_fix_suggestions
 from .rank import rank_suggestions
 from .registry import (
     RefactoringDetector,
@@ -39,6 +39,7 @@ from .registry import (
 
 __all__ = [
     "CONFIDENCE_LEVELS",
+    "PerformancePlanPolicy",
     "RefactoringContext",
     "RefactoringDetector",
     "RefactoringSuggestion",

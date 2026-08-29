@@ -49,7 +49,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._budget import OmissionCollector, fit_to_budget
+from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -61,6 +61,7 @@ from repowise.server.mcp_server._helpers import (
     is_excluded,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._tool_selection import registry_tool_rows, selected_tool_names
 
 # Orientation, not a directory listing — the top few modules are enough to
 # point a fresh agent at the interesting subsystems. The rest are persisted
@@ -69,6 +70,63 @@ _MODULE_CAP = 8
 
 # Split point between markdown H2 sections ("\n## ...").
 _H2_SPLIT_RE = re.compile(r"\n(?=#{1,2}\s)")
+
+
+def _tool_surface_guide(
+    *,
+    is_workspace: bool,
+    rows: list[dict[str, Any]] | None = None,
+    enabled_names: set[str] | None = None,
+) -> dict[str, Any]:
+    """The selected surface and valid recipes, projected from registry metadata."""
+    rows = registry_tool_rows() if rows is None else rows
+    enabled = (
+        selected_tool_names(is_workspace=is_workspace)
+        if enabled_names is None
+        else enabled_names
+    )
+    default_key = "default_workspace" if is_workspace else "default_single_repo"
+    eligible_key = "eligible_workspace" if is_workspace else "eligible_single_repo"
+    selected = [row for row in rows if row["name"] in enabled]
+    recipes: list[dict[str, str]] = []
+    seen_recipes: set[str] = set()
+    for row in selected:
+        for recipe in row["recipes"]:
+            if recipe["name"] in seen_recipes or not set(recipe["requires"]) <= enabled:
+                continue
+            seen_recipes.add(recipe["name"])
+            recipes.append({"name": recipe["name"], "call": recipe["call"]})
+    opt_in = [
+        {
+            "name": row["name"],
+            "description": row["description"],
+            "enabled": row["name"] in enabled,
+        }
+        for row in rows
+        if row["tier"] == "specialist" and row[eligible_key]
+    ]
+    return {
+        "mode": "workspace" if is_workspace else "single_repo",
+        "counts": {
+            "enabled": len(selected),
+            "default": sum(row[default_key] for row in rows),
+            "eligible": sum(row[eligible_key] for row in rows),
+            "opt_in_available": len(opt_in),
+            "tiers": dict(Counter(row["tier"] for row in selected)),
+        },
+        "enabled": [row["name"] for row in selected],
+        "tools": [
+            {
+                "name": row["name"],
+                "tier": row["tier"],
+                "description": row["description"],
+                "default": row[default_key],
+            }
+            for row in selected
+        ],
+        "opt_in": opt_in,
+        "recipes": recipes,
+    }
 
 
 def _compact_overview_content(content: str) -> str:
@@ -176,12 +234,15 @@ async def _workspace_overview() -> dict:
         "total_symbols": total_symbols,
         "repos": repos_info,
         "hint": ("Use repo='<alias>' to query a specific repo. Omit repo to use the default."),
+        "tool_surface": _tool_surface_guide(is_workspace=True),
+        "_meta": _build_meta(),
     }
     if cross_repo_topology:
         result["cross_repo_topology"] = cross_repo_topology
 
-    collector = OmissionCollector("get_overview", repo_root=registry.workspace_root if registry else None)
-    fit_to_budget(result, _WORKSPACE_SHED_ORDER, collector)
+    collector = OmissionCollector(
+        "get_overview", repo_root=registry.workspace_root if registry else None
+    )
     collector.attach(result)
     return result
 
@@ -882,26 +943,7 @@ def _build_guided_tour(
         result.setdefault("architecture", {})["layer_order"] = layer_order
 
 
-# Cheapest loss first. Everything not listed answers a question that changes an
-# agent's next action, so it is never shed.
-_WORKSPACE_SHED_ORDER: tuple[str, ...] = ("cross_repo_topology", "repos[]")
-
-_SHED_ORDER: tuple[str, ...] = (
-    "tool_guide",
-    "guided_tour_hint",
-    "guided_tour",
-    "reading_order_hint",
-    "reading_order",
-    "community_summary",
-    "knowledge_map",
-    "key_decisions",
-    "outline_hint",
-    "outline",
-    "key_modules[]",
-)
-
-
-@mcp.tool()
+@mcp.tool(surface_order=80, artifact_type="overview", presentation="overview")
 async def get_overview(repo: str | None = None, include: list[str] | None = None) -> dict:
     """Architecture map for an unfamiliar repo — first call when you don't know your way around.
 
@@ -914,6 +956,10 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     Compact by default: ``content_md`` carries only the overview essay's summary
     section, and the outline, onboarding, ownership and graph blocks ship only
     on request. The response's ``more`` field names them.
+
+    Defaults fit 24,000 chars; nonempty ``include`` uses 32,000. Reductions
+    carry counts and recovery status in ``_meta``.
+    Include-gated blocks are projections, not omissions.
 
     In workspace mode:
     - Omit ``repo`` for the default repo's overview plus a workspace footer.
@@ -1053,35 +1099,9 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
         if ws_footer:
             result["workspace"] = ws_footer
 
-        # Composition recipes live HERE (one overview call per session) so
-        # the per-tool docstrings — paid on every fresh agent — stay terse.
-        result["tool_guide"] = {
-            "first_call": "get_answer for any how/where/why question; trust "
-            "confidence=high directly (it is content-grounded).",
-            # NOT "get_context skeleton -> get_symbol for bodies". That routed
-            # the agent into a per-signature walk, which is where three
-            # quarters of every measured session's retrieval calls went, on the
-            # one tool whose payload cannot be trimmed. get_context serves no
-            # source by default now, so this names the two whole-file routes.
-            "reading_code": 'get_context(include=["skeleton"]) for a whole file '
-            "verified, or just Read it. get_symbol only for an id a response "
-            "already gave you — never file-by-signature.",
-            "recipes": [
-                "get_answer low confidence → Read best_guesses[0].file",
-                "get_context hotspot: true → get_risk before editing",
-                "get_context decision_records → get_why(targets=[...]) for rationale",
-                "PR review → get_risk(targets, changed_files) and read directive first",
-                "search_codebase(query) auto-routes: identifier → symbol hits "
-                "(pipe symbol_id into get_symbol), path → files (get_context), "
-                "prose → wiki search. Force with mode=symbol|path|concept|hybrid.",
-            ],
-            "reread_triggers": "Only re-read source on bounds: approximate, "
-            "stale_warning in _meta, or a search hit whose sources are [fts] "
-            "only (keyword match, no semantic agreement).",
-        }
+        result["tool_surface"] = _tool_surface_guide(is_workspace=_state._registry is not None)
 
         result["_meta"] = _build_meta(repository=repository)
-        fit_to_budget(result, _SHED_ORDER, collector)
         collector.attach(result)
         return result
 

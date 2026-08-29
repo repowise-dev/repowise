@@ -2,7 +2,7 @@
 
 repowise exposes a curated set of tools via the [Model Context Protocol](https://modelcontextprotocol.io) (MCP). These tools give AI coding assistants (Claude Code, Codex, Cursor, Cline, Windsurf) structured access to your codebase intelligence: dependency graph, git history, documentation, and architectural decisions.
 
-17 tools are registered in total. A single-repo server advertises 11 by default: the ten flagship tools below plus `list_repos`. Workspace mode adds 2 more automatically (`get_architecture`, `get_blast_radius`), for 13. Four further tools are off by default everywhere and must be opted in. The surface is configurable; see [Configuring the tool surface](#configuring-the-tool-surface).
+17 tools are registered in total. A single-repo server advertises 10 by default: exactly the canonical tools. Workspace mode adds the `list_repos` discovery utility, for 11. 6 specialist tools are opt-in where eligible. The surface is configurable; see [Configuring the tool surface](#configuring-the-tool-surface).
 
 **Start the MCP server:**
 
@@ -20,7 +20,7 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 
 ## Contents
 
-**Default tools (single-repo, 11)**
+**Canonical tools (default in both modes, 10)**
 [get_overview](#get_overview) &middot;
 [get_answer](#get_answer) &middot;
 [get_context](#get_context) &middot;
@@ -30,14 +30,14 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 [get_change_risk](#get_change_risk) &middot;
 [get_why](#get_why) &middot;
 [get_dead_code](#get_dead_code) &middot;
-[get_health](#get_health) &middot;
+[get_health](#get_health)
+
+**Workspace discovery utility (default in workspace mode, 1)**
 [list_repos](#list_repos)
 
-**Workspace-only tools (added automatically, 2)**
+**Opt-in specialists (6; workspace eligibility still applies)**
 [get_architecture](#get_architecture) &middot;
-[get_blast_radius](#get_blast_radius)
-
-**Opt-in tools (off by default everywhere, 4)**
+[get_blast_radius](#get_blast_radius) &middot;
 [get_dependency_path](#get_dependency_path) &middot;
 [get_execution_flows](#get_execution_flows) &middot;
 [generate_refactoring_code](#generate_refactoring_code) &middot;
@@ -57,12 +57,12 @@ Also see [Configuring the tool surface](#configuring-the-tool-surface), [Reversi
 | `get_symbol` | Raw source bytes for one symbol | When you need one function/class body |
 | `search_codebase` | Hybrid symbol / path / concept search | Finding a symbol or file, or discovering code by topic |
 | `get_risk` | Modification risk | Before changing hotspot files |
-| `get_change_risk` | Live commit or range risk | Before merging a commit or PR range |
+| `get_change_risk` | What a commit or range newly made worse | Before merging a commit or PR range |
 | `get_why` | Architectural decisions | Before structural changes |
 | `get_dead_code` | Unreachable code | Cleanup tasks |
 | `get_health` | Code-health marker scores | Before refactoring, find the worst files |
 
-Also always on by default: `list_repos` (repo aliases). See [Supplementary tools](#supplementary-tools).
+In workspace mode, `list_repos` is also on by default so repository aliases are discoverable. It is unavailable in single-repo mode because the server is already bound to the only repository. See [Supplementary tools](#supplementary-tools).
 
 ---
 
@@ -70,9 +70,9 @@ Also always on by default: `list_repos` (repo aliases). See [Supplementary tools
 
 The default surface is deliberately small: fewer, richer tools mean fewer round-trips and less schema overhead per task. What a server advertises is resolved from three things: each tool's `default`/`requires_workspace` metadata, whether the server is in workspace mode, and an optional override.
 
-- **Default (single-repo):** 11 tools, the ten flagship tools plus `list_repos`.
-- **Default (workspace):** those 11 plus `get_architecture` and `get_blast_radius`, added automatically when the server starts inside a workspace. They are never advertised outside one.
-- **Opt-in tools:** `get_dependency_path`, `get_execution_flows`, `generate_refactoring_code`, and `get_conformance` are registered but off by default. Turn them on per repo; `get_conformance` only does useful work in workspace mode (name it there).
+- **Default (single-repo):** 10 tools, exactly the canonical intelligence set.
+- **Default (workspace):** those 10 plus `list_repos`, the workspace discovery utility.
+- **Opt-in tools:** `get_dependency_path`, `get_execution_flows`, and `generate_refactoring_code` are eligible in either mode. `get_architecture`, `get_blast_radius`, and `get_conformance` are workspace-only. All six are off by default.
 
 **Configure it in `.repowise/config.yaml`** under an `mcp.tools` key. Four shapes are supported:
 
@@ -323,6 +323,7 @@ Also resolves **omission refs** (`repowise#<12-hex>`) from truncated responses.
 | `context_lines` | int | No | Extra source lines before/after the symbol (0-50, default 0) |
 | `depth` | int | No | Follow the call graph outward from this symbol and include what it calls, with bodies (1-3, default 1 = this symbol only). Out-of-range values clamp. |
 | `repo` | string | No | *(workspace only)* Usually omitted; `"all"` is not supported |
+| `reference` | object | No | A structured `continuation_reference` or `fetch_reference` emitted by this tool; pass it unchanged to retain both id and repository scope. |
 
 **Returns:** For a symbol id or range: the source (bounded at ~600 lines,
 each line prefixed with its file line number in the same format as a `Read`
@@ -444,18 +445,32 @@ Modification risk assessment for files or a set of changed files.
 |-----------|------|----------|-------------|
 | `targets` | list[string] | No | File paths to assess |
 | `changed_files` | list[string] | No | Files in a PR/changeset for blast radius analysis; passing this switches the response into PR-directive mode |
-| `include` | list[string] | No | Opt-in blocks: `graph` (`impact_surface`, `direct_risks`), `churn` (`change_magnitude`, `risk_type`, `change_pattern`) |
+| `include` | list[string] | No | Opt-in blocks: `graph` (typed `dependents`, `consumers`, `cross_repo_links`, structural `impact_surface`, `direct_risks`), `churn` (`change_magnitude`, `risk_type`, `change_pattern`) |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 
-**Returns:** Per-file `hotspot_score` (0-1 churn percentile), `health_score` (0-10), hotspot status, dependent count, co-change partners (each with a recency-decayed `weight`, not an integer count), blast radius, recommended reviewers, test gap analysis, security signals. In workspace mode, enriched with cross-repo co-change partners and contract dependencies.
+**Returns:** Per-file `hotspot_score` (0-1 churn percentile), `health_score` (0-10), hotspot status, direct directed `dependents_count`, historical `co_change_partners` (each with a recency-decayed `weight`, not an integer count), blast radius, recommended reviewers, test gap analysis, and security signals. With `include=["graph"]`, `dependents` preserves direct versus transitive structural reach, `consumers` contains typed contract consumers only, and `cross_repo_links` retains both repository identities, direction, relationship type, evidence kind, and file- or repository-level granularity. Package-manifest links are repository-level and never invent a target file. Every typed relationship collection carries matching total/emitted/truncated fields. `relationship_analysis` distinguishes available-empty analysis from unavailable, degraded, partial, and source-truncated artifacts and retains artifact generation/provenance fields. Structural reach is not proof of runtime breakage.
 
 > **Opt-in blocks.** `impact_surface` and `direct_risks` are pagerank floats an agent cannot rank; `change_magnitude`, `risk_type` and `change_pattern` restate numbers printed beside them. All five are computed regardless and feed `risk_summary`; `include` only decides whether they ship. `global_hotspots` accompanies a multi-target call only, being ambient orientation that a single named file does not need; it ranks by fix history the same way `defect_profile` does.
 
-> **Scales.** `overall_risk_score` (in `pr_blast_radius`, with an `overall_risk_score_measures` note beside it) reads where the change lands. It is not comparable to `get_change_risk.score`, which is also 0-10 and reads the shape of the diff. Ratios derived from ownership or percentile columns are 0-1 (`hotspot_score`, `owner_pct`, `recent_owner_pct`); coverage and gap fields are 0-100 (`coverage_pct`, `branch_coverage_pct`, `share_of_repo_gap_pct`, `change_entropy_pct`, `churn_percentile`). The `_pct` suffix alone does not tell you which — check this table. Every emitted float is rounded to 4 significant digits.
+> **Scales.** Every response carries the facts that stop a misreading: unit,
+> range, calibration status, and whether the value is authoritative. The
+> per-field dictionary behind them never varies between calls, so it ships only
+> with `include=["scales"]` - ask for it once per session, not per call. That
+> dictionary describes indexed file values: `hotspot_score`, `owner_pct`, and
+> `recent_owner_pct` are 0-1 ratios, while `risk_type` is an
+> uncalibrated category. In PR mode, `structural_impact_score` is a deterministic,
+> uncalibrated 0-10 structural-exposure heuristic; `localized` is below 4,
+> `moderate` is 4 to below 7, and `broad` is 7 or above. It is not a runtime-
+> breakage probability and is not authoritative for live change review.
+> Deprecated `overall_risk_score` remains an exact alias, with migration metadata.
+> Direct rows expose raw, unbounded `structural_score` values in
+> pagerank-weighted-hotspot units. These are not comparable to
+> `get_change_risk.score`. Coverage and gap fields are percentages from 0-100.
+> Every emitted float is rounded to 4 significant digits.
 
-When `changed_files` is passed, the response leads with a `directive` block. Its core lists are the local blast radius: `may_break` (production files that reach the diff through the import graph and so may break), `may_break_tests` (test files impacted the same way, kept separate so a burst of broken tests doesn't crowd production impact out of the capped list), `missing_cochanges` (historical co-changers absent from the diff), `missing_tests` (changed files without test coverage), and `tests_to_run` (the positive complement of `missing_tests`: the tests that exercise the changed files, as pytest-runnable arguments). Read `tests_to_run_basis` beside it, because the ids alone do not say where they came from: `measured` means the per-test coverage map proves those tests execute the changed files; `inferred` means the import graph shows those test *files* reaching the change, which is a candidate list rather than proof and needs no coverage ingest; `none` means neither source knows of a test, which is unknown and not "untested". The two are never mixed in one list. In workspace mode that directive also carries the cross-repo fallout of the changed repo:
+When `changed_files` is passed, the exact serialized response starts with a `directive` block. Its core lists are the local blast radius: `may_break` (production files in structural reverse-import reach of the diff, candidates for review rather than proven breakage), `may_break_tests` (test files reached the same way, kept separate so a burst of tests doesn't crowd production impact out of the capped list), `missing_cochanges` (historical co-changers absent from the diff), compatibility `missing_tests`, and additive typed `test_recommendations`. Every recommendation retains `basis`, all retained `bases`, repository identity, source files, and evidence: `measured` means the per-test coverage map found the test; `inferred` means structural reachability found a candidate and is not coverage proof. `tests_to_run` preserves the older measured-first/fallback id projection and `tests_to_run_basis` remains `measured`, `inferred`, or `none`; `files_without_measured_tests` carries the narrower typed coverage claim. Matching total/emitted/truncated/omitted fields describe each exact pre-cap population. `coverage_analysis`, `test_inference_analysis`, and `test_analysis` distinguish available-empty evidence from unavailable, stale, partial, or degraded analysis; unavailable coverage with `tests_to_run: []` never means that no tests are needed. The full typed population is shared with the REST blast-radius response, while any budget-omitted directive rows are recoverable through the response omission marker. In workspace mode the directive also carries the cross-repo fallout of the changed repo:
 
-- `will_break_consumers`: services in *other* repos that depend on this one (structural impact), each with `repo`, `service`, `distance`, `score`, and the edge kinds carrying the impact.
+- `will_break_consumers`: deprecated compatibility name for services in *other* repos that structurally depend on this one. Rows carry `claim: structural_reach`, `runtime_breakage_claim: false`, both repository roles, direction, distance, and aggregated edge kinds; the sibling `will_break_consumers_semantics` is `structural_reach_only`. Matching total/emitted/truncated fields describe the exact pre-cap structural population, while `cross_repo_relationship_analysis` labels unavailable or partial edge provenance.
 - `missing_cross_repo_cochanges`: services in other repos that historically co-change with this one but aren't in the diff.
 - `breaking_changes`: provider contracts in this repo that changed *incompatibly* since the last index (a removed route or field, a type or field-number change, a newly-required field), each with the changed `contract_id`, the change `kind`/`severity`, and the `impacted_consumers` (repo, service, file) it endangers across repos. Schema-level truth, distinct from the topology-level `will_break_consumers`; non-breaking changes (added optional field, new endpoint) never appear. See [Breaking-Change Guard](../scale/WORKSPACES.md#breaking-change-guard).
 - `conformance_violations`: declared dependency-rule breaches the diff's repo participates in, each with the offending `source`/`target` services, the `rule` (e.g. `frontend !-> db`), and `edge_kind`. See [Architecture Conformance](../scale/WORKSPACES.md#architecture-conformance).
@@ -466,8 +481,9 @@ When `changed_files` is passed, the response leads with a `directive` block. Its
 > a reverse-import reachability walk: `get_risk` is given a file list, never a
 > diff, so it cannot know whether the symbol an importer actually uses changed.
 > The old name promised a precision the analyzer does not have.
-> `will_break_consumers` and `breaking_changes` keep "will" — those come from
-> real contract diffing.
+> `will_break_consumers` temporarily keeps its old key for compatibility, but
+> it is structural reach only and is explicitly marked deprecated. Only
+> `breaking_changes` comes from incompatible contract diffing.
 
 **When to use:** Before modifying files, especially hotspots. Understand what could break, who to involve in review, and whether tests cover the affected area.
 
@@ -483,9 +499,9 @@ get_risk(targets=["src/auth/middleware.ts"], include=["graph", "churn"])
 
 ## `get_change_risk`
 
-Live risk scoring for one commit or a `base..head` range. Unlike `get_risk`,
-which evaluates indexed files and can report blast radius, this scores the
-shape of the live diff and needs no index refresh.
+Review one commit, a `base..head` range, or uncommitted work. Unlike
+`get_risk`, which evaluates indexed files and can report blast radius, this
+compares the two revisions directly and needs no index refresh.
 
 **Parameters:**
 
@@ -496,23 +512,52 @@ shape of the live diff and needs no index refresh.
 | `extensions` | list[string] | No | File suffixes to count, such as `[".py", ".ts"]` |
 | `exclude_patterns` | list[string] | No | Gitignore-style paths to omit; combined with root `.riskignore` rules |
 | `baseline` | int | No | Recent commits to sample for percentile ranking (default `200`; `0` disables every percentile, `risk_percentile` and `fix_history.percentile` alike) |
+| `include` | list[string] | No | `"findings"` for every change finding, `"diagnostics"` for the raw score mechanics, `"scales"` for units and calibration |
+| `finding_id` | string | No | Expand one `health_delta` finding by its id |
 
-**Returns:** `fix_history` first — the recency-weighted bug-fix record of the
-files the change touches, with `files` naming where the pressure sits and
-`percentile` ranking it against the same measure over the repo's own recent
-commits. Triage on
-this: it is the part that separates a small edit to a fragile file from a large
-edit to a safe one. `available` is false when the history walk could not run.
+**Returns:** `directive` leads with a `status`
+(`review_required`, `review_recommended`, `clear_in_analyzed_scope`, `unknown`),
+a headline, bounded reasons, and concrete next actions.
 
-`score` measures diff size and spread, not where the change lands — see
-`score_measures` — and `score_unit` names the unit it is calibrated on (a single
-commit, so a PR-sized range reads high by construction). `risk_percentile`,
-`review_priority` and `classification` rank that same diff shape against recent
-commits. `fallback_band` carries the absolute band and appears only when no
-baseline was available. `working_tree` says whether uncommitted work was the
-subject. `baseline_sample_size` reports how many filtered commits informed the
-percentile; `features`, `drivers`, and combined `exclude_patterns` make the
-result auditable.
+`health_delta` is what the change newly made worse, across defect,
+maintainability and performance. Both revisions are analysed from their own
+content, so a finding present at head is reported only when the diff explains
+it. `scope` counts changed, eligible, analysed, skipped and failed files, and
+`status` distinguishes `available` from `partial` and `unavailable` — a
+`partial` comparison is never a clean bill, and `skipped` says why each file
+was left out. `introduced`, `worsened` and `resolved` are totals;
+`top_findings` carries the three most actionable, with `findings_total` and a
+recovery call for the rest.
+
+Each finding names its `dimension`, `biomarker`, `severity`, `path`, `symbol`
+and head-side `lines`, a `reason`, and an `attribution` — `basis`
+(`added_lines`, `changed_symbol`, `changed_call_edge`, `new_file`,
+`file_change`, `context_change`, `unknown`) with a `confidence`. Identity
+ignores line numbers, so moving code introduces nothing and a rename carries
+its findings across. Performance findings carry `opportunity_id` and
+`opportunity_rank` and are ordered by opportunity rank and actionability, never
+by defect impact, which is zero for them by construction. `inspect` gives the
+exact `finding_id` call that expands one; ids are bound to the two revisions
+that produced them. A finding that exactly matches a stored one also carries a
+`health_reference` for `get_health(finding_id=...)`.
+
+`fix_history` reports the recency-weighted bug-fix record of the files the
+change touches, with `files` naming where the pressure sits and `percentile`
+ranking it against the same measure over the repo's own recent commits. It is
+the part that separates a small edit to a fragile file from a large edit to a
+safe one. `available` is false when the history walk could not run.
+
+`change_shape` carries the supporting diff-shape reading: `score`,
+`risk_percentile`, `review_priority`, `classification`, `fallback_band` and
+`is_fix`, which also stay at the top level. `score` is an offline-calibrated
+0-10 output measuring diff size and spread — not a probability, and not where
+the change lands. `fallback_band` appears only when no baseline was available.
+`working_tree` says whether uncommitted work was the subject.
+
+`include=["diagnostics"]` adds the raw mechanics: `risk_authority`,
+`score_measures`, `score_unit`, `baseline_sample_size`, `features` and
+`drivers`. `include=["scales"]` adds each field's kind, unit, range,
+calibration and thresholds. Both are identical on every call, so ask once.
 
 It also returns `impacted_tests`, whose `tests_to_run` names the tests the
 per-test coverage map proves execute the change's changed *lines* (line-precise,
@@ -567,13 +612,15 @@ not enough to accuse one commit of causing them. The block is absent entirely
 on an index with no fix history.
 
 **When to use:** Before merging a commit or PR range, especially when you need
-to assess the diff itself rather than the risk of an already-indexed file.
+to assess the change itself rather than the risk of an already-indexed file.
 
 **Example calls:**
 
 ```
 get_change_risk()
 get_change_risk(revspec="main..HEAD", extensions=[".py"], exclude_patterns=["tests/"])
+get_change_risk(revspec="main..HEAD", include=["findings"])
+get_change_risk(revspec="main..HEAD", finding_id="chf_27a13be11e7ee33f")
 ```
 
 ---
@@ -589,14 +636,19 @@ Architectural decision intelligence. Falls back to git archaeology when no decis
 | `query` | string | No | Natural language question about decisions, OR a file/module path |
 | `targets` | list[string] | No | File paths to anchor an NL `query` search to |
 | `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` (only when `query` is given) |
+| `id` | string | No | A decision id or `ev_...` evidence id previously emitted by `get_why`; resolves it directly without relevance search |
+| `reference` | object | No | An emitted evidence reference object; pass it unchanged to retain both id and repository scope. |
 
 **Modes:**
 
 1. **NL search**: pass a question, optionally anchored to `targets`: `get_why(query="why JWT over sessions?")` -> searches decision records.
 2. **Path-based**: pass a file path as `query`: `get_why(query="src/auth/service.ts")` -> returns decisions governing that file plus its origin story.
 3. **Health dashboard**: no `query`: `get_why()` -> stale decisions, conflicts, ungoverned hotspots.
+4. **Reference lookup**: pass `id`: `get_why(id="ev_...")` -> the exact evidence and supporting decision in one call.
 
 **Returns:** Matching decision records with title, rationale, alternatives considered, affected files, staleness score. Health mode returns stale decisions, conflicts, and ungoverned hotspots.
+
+`answer_basis` names the strongest lane the response rests on: `decision`, `episode`, `rationale`, `archaeology`, or `documentation`. Only `decision` is a ruling; the rest are evidence to weigh. Absent when no lane was served, and on the health dashboard.
 
 **When to use:** Before architectural changes, understand existing intent and constraints. After changes, record new decisions.
 
@@ -632,6 +684,7 @@ Unreachable code, unused exports, unused internals, and zombie packages, sorted 
 | `include_zombie_packages` | boolean | No | Include zombie-package findings (default `true`) |
 | `no_unreachable` | boolean | No | Exclude `unreachable_file` findings (default `false`) |
 | `no_unused_exports` | boolean | No | Exclude `unused_export` findings (default `false`) |
+| `finding_id` | string | No | Resolve an emitted stable finding `id` directly in one call |
 
 **Returns:** Dead code findings grouped by confidence tier (high >= 0.8, medium, low). Each finding includes: file path, kind, confidence score, line count, and cleanup impact estimate. In workspace mode, confidence is lowered on findings other repos still import.
 
@@ -652,8 +705,21 @@ get_dead_code(kind="unused_export", group_by="owner")
 Code-health marker scores: the same deterministic markers the
 `repowise health` CLI computes, across three signals (defect risk,
 maintainability, performance), exposed for agentic workflows. Zero LLM calls.
-Use it to **self-check a change before opening a PR**: the same signals a
-code-health merge-gate judges it on.
+Use it to inspect stored health analysis before a change and after committing
+health-relevant changes and running `repowise update`: neither re-calling
+`get_health` nor updating an uncommitted working tree recomputes those metrics.
+
+**Safe recipes:**
+
+```text
+get_health(only=["directive"])
+get_health(targets=["path"], include=["refactoring"])
+get_health(targets=["module:path"], only=["modules","metrics"])
+get_health(include=["trend"], only=["trend"])
+get_health(include=["accuracy"], only=["accuracy"])
+get_health(include=["coverage"], only=["coverage"])
+get_health(include=["performance","refactoring"], only=["performance_opportunities","refactoring_plans"])
+```
 
 **Parameters:**
 
@@ -664,6 +730,14 @@ code-health merge-gate judges it on.
 | `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode`, `_meta`, `unresolved`, `known_modules` and each kept list's `*_total` sibling always survive. The three `include` **block** names work as aliases: `biomarkers`→`findings`, `accuracy`→`defect_accuracy`, `refactoring`→`refactoring_plans`. The `include` **dimension** names (`performance`, `defect`, `maintainability`) do not — they filter rows inside several blocks and have no single key to resolve to, so they land in `unknown_only_keys`. Nor does `signals`, which merges into `metrics[].signals` — in targeted mode, where `signals` applies, name `metrics` instead. |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 | `limit` | int | No | Max rows in **every** ranked list (default 20, capped at 50). `0` means no rows; the `*_total` siblings still report the true counts. |
+| `finding_id` | string | No | Resolve an emitted stable health-finding `id` directly in one call. |
+| `plan_id` | string | No | Resolve an emitted stable refactoring-plan `id` directly in one call. |
+| `opportunity_id` | string | No | Resolve a performance opportunity `id` directly. Mutually exclusive with the two above; passing more than one returns `mode: "conflict"` naming them rather than answering about whichever was checked first. |
+| `performance_view` | string | No | `detail` (default) or `summary`. `summary` keeps identity, counts and plan state and drops the explanatory fields. |
+| `performance_context` | string | No | `production` / `tooling` / `test` / `unknown` / `all`. |
+| `performance_boundary` | string | No | `db` / `network` / `filesystem` / `subprocess` / `lock` / `none`. |
+| `performance_confidence` | string | No | Evidence confidence: `high` / `medium` / `low`. Fix safety and actionability are separate facets. |
+| `performance_sort` | string | No | `rank` (default) / `leverage` / `observations`. |
 
 **Returns:** Dashboard mode (no `targets`) returns a `directive`, repo-level KPIs
 (hotspot health, average health, worst performer, maintainability / performance
@@ -673,7 +747,8 @@ per-dimension scores, and the score breakdown. Each finding carries a `dimension
 (`defect` / `maintainability` / `performance`).
 
 **Lead with `directive`.** Dashboard mode opens with the single file to fix
-first, its dominant finding, `recovers_points` / `share_of_repo_gap_pct` (what
+first, its dominant finding, `recovers_weighted_deficit_points` /
+`share_of_repo_gap_pct` (what
 fixing it buys the headline; the share is bounded by 100% and sums to 100%
 across `high_leverage_files` — the gross deficit of below-target files is the
 denominator, not the net gap, so a single file cannot read as closing more than
@@ -681,10 +756,14 @@ the whole remaining gap), and `then`, the next two by leverage. Every other
 block ranks and describes; this one recommends. Same role as `get_risk`'s
 `directive`. Rank by `weighted_deficit`, not `score` — the score floors at 1.0.
 
+`recovers_points` remains an exact deprecated alias during the compatibility
+window; `recovers_points_compatibility` names its replacement.
+
 **Nothing is dropped silently.** Any `targets` entry that matched nothing is
 named in `unresolved` with a reason (`not_indexed` → run `repowise update`,
 `no_such_path`, `excluded`, `no_such_module`; a missed module name also returns
-`known_modules`), so an empty `findings` list means healthy and nothing else. A
+`known_modules`). Missing stored analysis is explicitly unavailable rather than
+fabricated as a healthy score. A
 target set that resolves to nothing still answers in targeted mode rather than
 falling back to the repo dashboard. Every capped list carries a `*_total`
 sibling — including under `only`, which retains it automatically. `unresolved`
@@ -692,7 +771,10 @@ and `known_modules` survive any `only` projection too, for the same reason
 `mode` does: a caller who has to ask for the error report in order to see it
 does not have an error report.
 
-`_meta.health_analyzed_at` dates the health pass, which is separate from
+`_meta.health_analysis` explicitly labels the result as stored analysis,
+states that the call did not recompute it, distinguishes index/live-Git facts
+from source-byte verification, and gives the exact commit-then-update refresh
+precondition. `_meta.health_analyzed_at` dates the health pass, which is separate from
 indexing and can lag it, and `_meta.health_analyzed_commit` says which commit
 those scores were computed against. The incremental update path rescores only
 the files that changed, so the metrics table can hold rows from several passes
@@ -738,7 +820,7 @@ make that actionable rather than a mystery:
   (dashboard mode) is the top-N ranked by it, distinct from `worst_files`, which
   sorts by raw score and ranks a 30-line file at 1.0 equal to a 1,200-line file at
   1.0 that moves the average ~40x more.
-- `weighted_deficit`, `directive.recovers_points` and
+- `weighted_deficit`, `directive.recovers_weighted_deficit_points` and
   `gap_analysis.weighted_gap_points` share one unit — *score-points x NLOC* —
   which compares against itself and nothing else. Every `high_leverage_files`
   row and the `directive` also carry `share_of_repo_gap_pct`, the same quantity
@@ -746,6 +828,10 @@ make that actionable rather than a mystery:
   (`gap_analysis.weighted_gross_gap_points`), so the shares are bounded by 100%
   and sum to 100% by construction; that plus
   `gap_analysis.files_to_reach_target` is what answers "is this worth doing".
+- `_meta.health_semantics` gives the numerator, gross-deficit denominator,
+  nonnegative unbounded scale and direction. These are deterministic heuristic
+  triage points, not probabilities, normalized score points, percentages or
+  guaranteed improvement.
 - `kpis.non_code_files` and `kpis.average_health_code_only` say how much of the
   headline is markdown/JSON/YAML. No biomarker walks those files, so they score
   a mechanical 10.0 meaning "nothing looked at this" — on this repo, 233 of
@@ -790,6 +876,14 @@ The opt-in enrichments:
   plans on the files that move the headline surface first; `refactoring_plans_total`
   reports the full count behind the cap. Each plan echoes its
   `file_weighted_deficit`. Full shapes in [`docs/layers/REFACTORING.md`](../layers/REFACTORING.md).
+- A requested empty plan list includes `refactoring_plans_status.reason`:
+  `no_applicable_findings`, `plan_analysis_indeterminate`,
+  `no_eligible_targets`, or `analysis_unavailable`. The structured-analysis
+  fallback includes a concrete `get_symbol` or `get_context` source call and
+  explicitly names the two facts the stored data cannot distinguish: no
+  supported transformation vs a disabled or failed detector.
+  Projection exclusion emits no plan warning; a zero-row cursor window is
+  reported separately as `request_window_empty`.
 - **dimension filter** narrows the returned findings to one pillar, e.g.
   `include=["biomarkers", "performance"]`.
 
@@ -806,9 +900,14 @@ payload:
 
 | signal | reads | why |
 |---|---|---|
-| the marker | `biomarker_type` | superlinear (`nested_loop_quadratic` 5) > N×M or lock-serialized (4) > one crossing per iteration, or one crossing proven on a hot path (3) > in-loop CPU/allocation (2) > cheap in-loop idioms (1) |
-| the boundary | `details.boundary_kind` | `subprocess` 4 > `network` 3 > `db`/`lock` 2 > `filesystem` 1 — a process spawn in a loop is not a stat in a loop |
+| the marker | `biomarker_type` | superlinear (`nested_loop_quadratic`, `nested_loop_with_io`, `sql_cartesian_join` 6) > lock-serialized (5) > one crossing per iteration, or one proven on a hot path (4) > in-loop CPU/allocation (3) > repeated acquisition with no boundary (2); an unweighted marker takes the floor (1) |
+| the boundary | `details.boundary_kind` | `subprocess` 5 > `network`/`db` 4 > `lock` 3 > `filesystem` 2. A process spawn in a loop is not a stat in a loop |
 | the call shape | `details.cross_function` | +1. An intra-function loop is usually visibly bounded at the call site; a cross-function N+1 is the one nobody sees by reading the loop |
+
+These are the same weights the causal opportunity ranking reads. Two tables
+used to answer "which marker costs more" and had drifted apart on markers both
+named, so a finding and the opportunity built from it could disagree about the
+same evidence.
 
 Request-reachability is read off the marker rather than a column:
 `hot_path_sync_io` and `nested_loop_quadratic` are only ever emitted for a
@@ -846,6 +945,33 @@ get_health(only=["top_findings"])                     # + top_findings_total, au
 get_health(only=["kpis"], limit=0)                    # headline numbers, no rows at all
 ```
 
+### Performance: one lead, then drill down
+
+A bare `get_health()` carries `performance_directive`: one bounded lead with
+its status (`plan_ready` / `advisory` / `investigate` / `clear` / `unavailable`),
+up to three `why_ranked` facets, the exact plan state, and a structured
+`next_action`. Performance findings carry `health_impact: 0` by construction, so
+they never competed for the main `directive` and the dashboard used to report
+counts and nothing to act on. `clear` means no supported pattern surfaced, which
+is not a claim about how the code runs; `unavailable` means this index has not
+materialized the analysis yet, or did so under an older model.
+
+```
+get_health()                                                  # the lead
+get_health(include=["performance"], only=["performance_summary"])
+get_health(include=["performance"], only=["performance_opportunities"], performance_context="production")
+get_health(opportunity_id="perf2_...")                        # the cause, its plan, its evidence
+get_health(opportunity_id="perf2_...", only=["performance_evidence"], cursor=3)
+```
+
+Ids are stable within a performance model version and are never translated
+across one, because grouping decides membership and two models disagree about
+it. An id from an older model resolves to `model_state.state: "stale_model"`
+with `refresh_required`, rather than failing to match and reading as "no plan".
+Evidence rows carry the finding's public `finding_id`, which round-trips through
+the `finding_id` selector; storage row ids are republished on every analysis and
+are never emitted.
+
 ---
 
 ## Supplementary tools
@@ -857,7 +983,7 @@ of the ten-tool headline set.
 
 Lists the repos this server is serving. No parameters.
 
-**Returns:** In workspace mode, `workspace: true`, the workspace root, the default repo alias, and every configured repo alias (`repos`). In single-repo mode, `workspace: false` and a single `"default"` alias.
+**Returns:** In workspace mode, `workspace: true`, the workspace root, the default repo alias, and every configured repo's `alias`, config-relative `path`, and `absolute_path`. Any of those emitted identities can be passed unchanged as `repo` to workspace-aware tools. In single-repo mode, `workspace: false` and a single `"default"` alias.
 
 **When to use:** Discovering the `repo` aliases to pass to other tools, especially in workspace mode.
 
@@ -871,7 +997,7 @@ list_repos()
 
 #### `get_blast_radius`
 
-Cross-repo downstream impact: if you change this service, what breaks across the other repos?
+Cross-repo structural and historical reach from a changed service.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -879,9 +1005,16 @@ Cross-repo downstream impact: if you change this service, what breaks across the
 | `max_depth` | int | No | Reachability depth (1-8, default 3) |
 | `include_behavioral` | bool | No | Include co-change (behavioral) edges (default `true`) |
 
-**Returns:** The impacted services ranked by impact `score`, each with `distance` (hops), `structural` (a real dependency vs co-change only), and the edge kinds that carried the impact; plus `impacted_repos`, `structural_count` / `behavioral_count`, `total_impacted`, and any `unresolved_targets`.
+**Returns:** The impacted services ranked by uncalibrated `score` (0-1 relative
+path weight, not a breakage probability), each with `distance` (hops),
+`structural` (a real dependency vs co-change only), and the edge kinds that
+carried the impact; plus `impact_score_semantics`, `impacted_repos`,
+`structural_count` / `behavioral_count`, `total_impacted`, and unresolved targets.
 
-**When to use:** Before changing a high-fan-out provider, see who consumes it across repo boundaries. Structural impact ("will break") outweighs behavioral co-change ("may drift"). Reads the same system graph the [Live System Map](../scale/WORKSPACES.md#live-system-map) renders.
+**When to use:** Before changing a high-fan-out provider, see who structurally
+consumes it across repo boundaries. Structural reach outweighs historical
+co-change in ranking, but neither is a runtime-breakage claim. Reads the same
+system graph the [Live System Map](../scale/WORKSPACES.md#live-system-map) renders.
 
 ```
 get_blast_radius(targets=["backend"])
@@ -965,7 +1098,7 @@ get_execution_flows(entry_point="src/cli/main.py::main", max_depth=4)
 
 Turns one structured refactoring plan from `get_health(include=["refactoring"])` into actual generated code and a unified diff, grounded on the plan plus the real source spans it references. For Extract Class, the result includes an LCOM4 before/after self-check.
 
-**Off by default twice over:** it must be opted into the tool surface (`mcp.tools: ["+generate_refactoring_code"]`), and even then returns `{"error": "disabled", ...}` unless `refactoring.llm.enabled: true` is set in the repo's `.repowise/config.yaml`. When enabled, it uses the repo's configured LLM provider/model (bring your own key) and caches results by a content hash, so an unchanged plan never regenerates.
+**Off by default twice over:** it must be opted into the tool surface (`mcp.tools: ["+generate_refactoring_code"]`), and generation remains unavailable unless `refactoring.llm.enabled: true` is set in the repo's `.repowise/config.yaml`. A valid plan id still resolves while generation is disabled, returning the canonical plan plus `generation.available: false`. When enabled, it uses the repo's configured LLM provider/model (bring your own key) and caches results by a content hash, so an unchanged plan never regenerates.
 
 **Parameters:**
 
@@ -987,7 +1120,7 @@ generate_refactoring_code(suggestion_id="a1b2c3d4")
 In workspace mode (initialized with `repowise init .`), all tools accept an optional `repo` parameter:
 
 - **Omit `repo`**: queries the default (primary) repo
-- **`repo="backend"`**: targets a specific repo by alias
+- **`repo="backend"`**: targets a specific repo by any `alias`, `path`, or `absolute_path` emitted by `list_repos`
 - **`repo="all"`**: queries across all workspace repos (fully supported by `search_codebase`; `get_context` and `get_overview` also accept it; not supported by `get_symbol`, `get_dependency_path`, or `get_execution_flows`)
 
 The MCP server automatically enriches responses with cross-repo intelligence:

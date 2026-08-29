@@ -119,6 +119,11 @@ async def test_changing_provider_impacts_consumer(workspace_state):
     assert "frontend" in result["impacted_repos"]
     assert "backend" in result["targets"]
     assert "downstream service" in result["summary"]
+    semantics = result["impact_score_semantics"]
+    assert semantics["field"] == "impacted[].score"
+    assert semantics["unit"] == "relative_weight"
+    assert semantics["calibration"]["status"] == "uncalibrated"
+    assert semantics["runtime_breakage_probability"] is False
 
 
 @pytest.mark.asyncio
@@ -145,8 +150,23 @@ def test_cross_repo_directive_splits_structural_and_behavioral(workspace_state):
     # frontend consumes backend (http) and package-depends on it → structural.
     assert any(e["repo"] == "frontend" for e in will_break)
     assert all("service" in e and "score" in e for e in will_break)
+    assert all(e["relationship_type"] == "structural_dependency" for e in will_break)
+    assert all(e["direction"] == "consumer_to_dependency" for e in will_break)
+    assert all(e["claim"] == "structural_reach" for e in will_break)
+    assert all(e["runtime_breakage_claim"] is False for e in will_break)
+    assert all(e["consumer_repository"] != e["dependency_repository"] for e in will_break)
     # No cross-repo co-change edges in this fixture.
     assert missing_cochanges == []
+
+    from repowise.server.mcp_server.tool_risk.directives import _cross_repo_relationships
+
+    relationships = _cross_repo_relationships("backend")
+    assert relationships["structural_total"] == len(will_break)
+    assert len(relationships["structural"]) <= relationships["structural_total"]
+    assert relationships["analysis"]["status"] == "partial"
+    assert relationships["analysis"]["evidence_resolution"] == "aggregated_path_edge_kinds"
+    assert relationships["analysis"]["generated_at"] == "t"
+    assert relationships["analysis"]["freshness"]["status"] == "unavailable"
 
 
 def test_cross_repo_directive_empty_outside_workspace():

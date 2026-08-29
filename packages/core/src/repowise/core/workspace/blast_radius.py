@@ -3,9 +3,9 @@
 Answers "if I change this service, what downstream services and repos are
 affected?" by traversing the Phase 1 :class:`SystemGraph` *against* its edge
 direction: an edge ``source → target`` means *source depends on / calls
-target*, so changing ``target`` puts ``source`` at risk. We follow those
-reverse links outward from the changed node(s) to find everything that could
-break.
+target*, so changing ``target`` makes ``source`` structurally reachable. We
+follow those reverse links outward from the changed node(s); reachability is not
+proof that runtime behavior will break.
 
 Two edge classes are weighted and labeled distinctly (the D5 honesty rule):
 
@@ -50,8 +50,8 @@ MAX_DEPTH_LIMIT = 8
 #: the reachability ranking — keep it the only place that distinction is tuned.
 BEHAVIORAL_EDGE_WEIGHT = 0.5
 
-#: Each additional hop attenuates the propagated impact: a service two calls away
-#: is less likely to actually break than a direct consumer. Applied once per hop,
+#: Each additional hop attenuates the propagated ranking weight: a service two
+#: calls away is weaker structural evidence than a direct consumer. Applied per hop,
 #: so a node at distance *d* carries roughly ``DISTANCE_DECAY ** d`` of the base.
 DISTANCE_DECAY = 0.6
 

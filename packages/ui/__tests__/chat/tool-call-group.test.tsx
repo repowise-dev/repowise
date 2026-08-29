@@ -15,9 +15,7 @@ function call(id: string, status: ChatUIToolCall["status"]): ChatUIToolCall {
 
 /** Every element carrying the group shell's ground. */
 function shells(container: HTMLElement) {
-  return container.querySelectorAll(
-    '[class*="rounded-lg"][class*="border"][class*="bg-[var(--color-bg-surface)]"]',
-  );
+  return container.querySelectorAll('[data-activity-trail="true"]');
 }
 
 describe("ToolCallGroup", () => {
@@ -34,11 +32,11 @@ describe("ToolCallGroup", () => {
         toolCalls={[call("a", "done"), call("b", "done"), call("c", "done")]}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /Thinking/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Activity/ }));
     expect(shells(container)).toHaveLength(1);
   });
 
-  it("marks a running step but not a finished one", () => {
+  it("uses one calm working orb rather than orange spinners", () => {
     // Rule 10: a badge every row carries says nothing. Success is the default,
     // so only work in flight gets a marker.
     const { container: done } = render(
@@ -50,7 +48,9 @@ describe("ToolCallGroup", () => {
     const { container: running } = render(
       <ToolCallGroup toolCalls={[call("b", "running")]} />,
     );
-    expect(running.querySelector(".animate-spin")).not.toBeNull();
+    expect(running.querySelector(".animate-spin")).toBeNull();
+    expect(running.querySelector('[data-working-orb="true"]')).not.toBeNull();
+    expect(running.innerHTML).not.toContain("color-accent-primary");
   });
 
   it("auto-expands while a step is running and reports the step count", () => {

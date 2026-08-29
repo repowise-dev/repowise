@@ -32,6 +32,7 @@ from repowise.core.persistence.models import (
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.routers.git import _hotspot_from_row
 from repowise.server.services.knowledge_map import compute_knowledge_map
+from repowise.server.services.module_health import top_level_module
 
 router = APIRouter(
     prefix="/api/repos",
@@ -345,8 +346,7 @@ async def overview_summary(
     module_owner_files: dict[str, dict[str, int]] = {}
     module_file_totals: dict[str, int] = {}
     for fp, owner in owner_rows:
-        parts = fp.split("/")
-        module = parts[0] if len(parts) > 1 else "root"
+        module = top_level_module(fp)
         module_file_totals[module] = module_file_totals.get(module, 0) + 1
         if owner:
             bucket = module_owner_files.setdefault(module, {})

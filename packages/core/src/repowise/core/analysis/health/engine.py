@@ -37,9 +37,9 @@ from ...ingestion.git_indexer.function_blame import (
 from ...ingestion.package_roots import module_for as _module_for
 from ...ingestion.package_roots import package_roots_from_paths as _package_roots
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
+from ..graph_view import HasEdge, ImportEdgeView
 from ..test_reachability import files_reached_by_tests
 from .biomarkers import FileContext, detect_all
-from .biomarkers.base import HasEdge
 from .complexity import FileComplexity, FunctionComplexity, walk_file
 from .coverage import is_test_file as _coverage_is_test_file
 from .dataflow import FileDataflowCache
@@ -56,6 +56,7 @@ from .perf import (
     link_performance_findings,
 )
 from .refactoring import (
+    PerformancePlanPolicy,
     RefactoringContext,
     RefactoringSuggestion,
     detect_refactorings,
@@ -64,6 +65,7 @@ from .refactoring import (
 )
 from .refactoring.graph_signals import build_file_scc_index, build_methods_by_file
 from .scoring import attach_impacts, compute_kpis, remap_severities, score_file
+from .source_reader import SourceReader, disk_source_reader
 
 log = structlog.get_logger(__name__)
 
@@ -88,18 +90,13 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# 2: ``untested_hotspot`` gained a second test signal, and the persisted
-# ``has_test_file`` widened to match it. Both stored values are wrong on an
-# index built before that, and wrong in the direction that accuses a tested
-# file, so they should not wait out the decay timer.
-# 3: that signal moved from the import graph to the call graph, so the same two
-# values are wrong again on an index stamped 2 - this time in both directions.
-# 4: performance now uses reliable execution edges and exact call-site identity,
-# so cross-function findings produced by the calls-only graph must be refreshed.
-# 5: raw performance findings gain stable causal linkage and structured
-# performance-fix plans; incremental execution slices widen to preserve those
-# interprocedural interpretations.
-HEALTH_ANALYZER_VERSION = 5
+# Current stamp: the performance identity kernel moved to model version 2. A
+# cross-function cause is now named by the caller that repeats the work as well
+# as the sink that pays for it, so a shared infrastructure helper no longer
+# merges unrelated workflows, and execution context gained ``unknown`` instead of
+# defaulting an unclassifiable file to production. Stored opportunity ids and
+# plan links are restamped by the rescore this forces.
+HEALTH_ANALYZER_VERSION = 7
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.
@@ -129,7 +126,7 @@ def _log_duplication_diagnostics(report: DuplicationReport) -> None:
         log.debug("health_duplication_limits", **diag)
 
 
-def _read_source_lines(abs_path: str) -> list[str] | None:
+def _read_source_lines(abs_path: str, read_source: SourceReader) -> list[str] | None:
     """Read a file's source as 1-indexed lines for the Extract Helper snippet.
 
     Failure-isolated: a read or decode error yields ``None`` (the detector then
@@ -137,37 +134,14 @@ def _read_source_lines(abs_path: str) -> list[str] | None:
     health pass. Decodes UTF-8 leniently since the snippet is for display, not
     re-parsing.
     """
+    raw = read_source(abs_path)
+    if raw is None:
+        return None
     try:
-        text = Path(abs_path).read_bytes().decode("utf-8", errors="replace")
-    except OSError:
+        text = raw.decode("utf-8", errors="replace")
+    except (UnicodeError, AttributeError):
         return None
     return text.splitlines()
-
-
-class _ImportEdgeView:
-    """Thin ``HasEdge`` adapter over a NetworkX DiGraph.
-
-    The graph stores ``edge_type`` as an attribute on each (single)
-    edge between two file nodes. We look it up directly rather than
-    pulling NetworkX into the biomarker test surface.
-    """
-
-    __slots__ = ("_graph",)
-
-    def __init__(self, graph: Any) -> None:
-        self._graph = graph
-
-    def has_edge(self, src: str, dst: str, key: str = "imports") -> bool:
-        g = self._graph
-        if g is None:
-            return False
-        try:
-            if not g.has_edge(src, dst):
-                return False
-            data = g.get_edge_data(src, dst) or {}
-        except Exception:
-            return False
-        return data.get("edge_type") == key
 
 
 def _percentile_p80(counts: list[int]) -> int | None:
@@ -252,18 +226,6 @@ def _compute_repo_active_contributors(git_meta_map: dict[str, dict]) -> int | No
         return None
 
 
-def _build_repo_commit_counts(git_meta_map: dict[str, dict]) -> dict[str, int]:
-    out: dict[str, int] = {}
-    for path, meta in git_meta_map.items():
-        if not isinstance(meta, dict):
-            continue
-        try:
-            out[path] = int(meta.get("commit_count_total") or 0)
-        except (TypeError, ValueError):
-            continue
-    return out
-
-
 def _path_basenames(all_paths: set[str]) -> set[str]:
     """Final path components of *all_paths*, split on ``/`` only.
 
@@ -329,9 +291,10 @@ class HealthAnalyzer:
         performance_git_meta_map: dict[str, dict] | None = None,
         parsed_files: list[Any] | None = None,
         coverage_map: dict[str, dict[str, Any]] | None = None,
-        module_map: dict[str, str] | None = None,
+        community_label_map: dict[str, str] | None = None,
         duplication_cache_dir: Any | None = None,
         repo_root: Any | None = None,
+        source_reader: SourceReader | None = None,
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
@@ -342,12 +305,11 @@ class HealthAnalyzer:
         # total_coverable_lines}``. ``None``-equivalent files are simply
         # absent from the map.
         self.coverage_map = coverage_map or {}
-        # Per-file module label keyed by repo-relative POSIX path.
-        # Populated from graph community labels by the orchestrator. When
-        # missing, the engine falls back to the top-level directory so
-        # module rollups still group sensibly on small repos that didn't
-        # produce community labels.
-        self.module_map = module_map or {}
+        # Per-file community label keyed by repo-relative POSIX path,
+        # populated from graph community detection by the orchestrator and
+        # consumed only by the refactoring detectors. Distinct from the
+        # ``module`` column, which is a path derived from package boundaries.
+        self.community_label_map = community_label_map or {}
         # Directory for the duplication token/window cache (typically the
         # repo's ``.repowise``). None disables caching — the duplication
         # pass then re-tokenizes everything, exactly as before.
@@ -356,6 +318,9 @@ class HealthAnalyzer:
         # falls back to inferring them from the analyzed file list, which sees
         # only the manifests the traverser emitted.
         self.repo_root = repo_root
+        # Every source read in the pass. Defaults to the working tree; a
+        # revision comparison supplies bytes instead.
+        self.read_source: SourceReader = source_reader or disk_source_reader
         self._package_roots_cache: set[str] | None = None
         self._tests_reach_cache: set[str] | None = None
         self._execution_graph_cache: CallGraphIndex | None = None
@@ -454,8 +419,7 @@ class HealthAnalyzer:
         analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
         path_basenames = _path_basenames(analyzed_paths)
         package_roots = self._package_boundaries(analyzed_paths)
-        repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
-        graph_view: HasEdge | None = _ImportEdgeView(self.graph) if self.graph is not None else None
+        graph_view: HasEdge | None = ImportEdgeView(self.graph) if self.graph is not None else None
 
         # Duplication runs once, up-front, so each file biomarker can see
         # its clone list. Cheap when the repo is small; when disabled
@@ -471,6 +435,7 @@ class HealthAnalyzer:
                     self.parsed_files,
                     self.git_meta_map,
                     cache_dir=self.duplication_cache_dir,
+                    source_reader=self.read_source,
                     changed_files=changed_set,
                 )
                 _log_duplication_diagnostics(dup_report)
@@ -520,7 +485,7 @@ class HealthAnalyzer:
         # One shared dataflow service for the whole pass: the promotion pass
         # and the Extract Method detector below read the same lazily parsed
         # per-file object, so no file is parsed twice for dataflow.
-        dataflow_cache = FileDataflowCache()
+        dataflow_cache = FileDataflowCache(self.read_source)
         # Dataflow promotion: mark advisory perf hits whose loop is provably
         # iteration-independent (runs after the graph passes so the
         # centrality-gated nested-loop hits are present to promote).
@@ -548,7 +513,6 @@ class HealthAnalyzer:
                 disabled=file_disabled,
                 dup_report=dup_report,
                 graph_view=graph_view,
-                repo_commit_counts=repo_commit_counts,
                 repo_function_mod_p80=repo_fn_mod_p80,
                 repo_dependents_p80=repo_dependents_p80,
                 repo_active_contributors_90d=repo_active_contributors,
@@ -598,6 +562,10 @@ class HealthAnalyzer:
             kpis=kpis,
             function_blame_rows=self._function_blame_rows(walked),
             refactoring_suggestions=suggestions,
+            performance_plan_policy=PerformancePlanPolicy(
+                enabled=refactoring_enabled and "performance_fix" not in disabled_refactorings,
+                min_confidence=refactoring_min_confidence,
+            ),
         )
 
     async def analyze_async(
@@ -638,8 +606,7 @@ class HealthAnalyzer:
         analyzed_paths = {pf.file_info.path for pf in self.parsed_files}
         path_basenames = _path_basenames(analyzed_paths)
         package_roots = self._package_boundaries(analyzed_paths)
-        repo_commit_counts = _build_repo_commit_counts(self.git_meta_map)
-        graph_view: HasEdge | None = _ImportEdgeView(self.graph) if self.graph is not None else None
+        graph_view: HasEdge | None = ImportEdgeView(self.graph) if self.graph is not None else None
 
         # Duplication is only consumed by the biomarker stage, so it can
         # overlap with the pre-walk instead of blocking it — on large
@@ -653,6 +620,7 @@ class HealthAnalyzer:
                     self.parsed_files,
                     self.git_meta_map,
                     cache_dir=self.duplication_cache_dir,
+                    source_reader=self.read_source,
                     changed_files=changed_set,
                 )
             )
@@ -715,7 +683,7 @@ class HealthAnalyzer:
         walked = list(walked)
         self._apply_crossfn_perf(walked)
         # One shared dataflow service per pass (see the sync path above).
-        dataflow_cache = FileDataflowCache()
+        dataflow_cache = FileDataflowCache(self.read_source)
         # Dataflow promotion: mark advisory perf hits whose loop is provably
         # iteration-independent (after the graph passes populate the hits).
         apply_perf_promotions(walked, dataflow=dataflow_cache)
@@ -746,7 +714,6 @@ class HealthAnalyzer:
                 disabled=file_disabled,
                 dup_report=dup_report,
                 graph_view=graph_view,
-                repo_commit_counts=repo_commit_counts,
                 repo_function_mod_p80=repo_fn_mod_p80,
                 repo_dependents_p80=repo_dependents_p80,
                 repo_active_contributors_90d=repo_active_contributors,
@@ -792,6 +759,10 @@ class HealthAnalyzer:
             kpis=kpis,
             function_blame_rows=self._function_blame_rows(walked),
             refactoring_suggestions=suggestions,
+            performance_plan_policy=PerformancePlanPolicy(
+                enabled=refactoring_enabled and "performance_fix" not in disabled_refactorings,
+                min_confidence=refactoring_min_confidence,
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -901,9 +872,8 @@ class HealthAnalyzer:
     def _walk(self, pf: Any) -> FileComplexity:
         path = pf.file_info.abs_path
         language = pf.file_info.language
-        try:
-            source = Path(path).read_bytes()
-        except OSError:
+        source = self.read_source(path)
+        if source is None:
             return FileComplexity(functions=[], classes=[])
         if language == "sql":
             # SQL has no tree-sitter grammar here; the sqlglot-backed walker
@@ -932,7 +902,7 @@ class HealthAnalyzer:
         """
         if not any(getattr(f, "biomarker_type", "") in _EXTRACT_METHOD_SOURCES for f in findings):
             return []
-        cache = dataflow_cache if dataflow_cache is not None else FileDataflowCache()
+        cache = dataflow_cache if dataflow_cache is not None else FileDataflowCache(self.read_source)
         return cache.get(pf.file_info.abs_path, pf.file_info.language).flagged_analyses()
 
     def _populate_symbol_complexity(self, pf: Any, fc_list: list[FunctionComplexity]) -> None:
@@ -958,7 +928,6 @@ class HealthAnalyzer:
         disabled: list[str],
         dup_report: DuplicationReport,
         graph_view: HasEdge | None = None,
-        repo_commit_counts: dict[str, int] | None = None,
         repo_function_mod_p80: int | None = None,
         repo_dependents_p80: int | None = None,
         repo_active_contributors_90d: int | None = None,
@@ -1002,6 +971,8 @@ class HealthAnalyzer:
         clones = dup_report.pairs_by_file.get(file_path, [])
         dup_pct = dup_report.duplication_pct.get(file_path)
 
+        # The enclosing package root, falling back to the top-level directory
+        # when the repo has no nested packages.
         module = _module_for(file_path, package_roots)
 
         file_git_meta = self.git_meta_map.get(file_path, {}) or {}
@@ -1041,7 +1012,6 @@ class HealthAnalyzer:
             clones=list(clones),
             duplication_pct=dup_pct,
             graph_view=graph_view,
-            repo_commit_counts=repo_commit_counts or {},
             blame_index=blame_index,
             repo_function_mod_p80=repo_function_mod_p80,
             repo_active_contributors_90d=repo_active_contributors_90d,
@@ -1101,7 +1071,7 @@ class HealthAnalyzer:
             findings=findings,
             dependents_count=dependents_count,
             clones=list(clones),
-            module_map=self.module_map,
+            community_label_map=self.community_label_map,
             graph=self.graph,
             file_scc=(file_scc_index or {}).get(file_path),
             file_methods=(
@@ -1113,7 +1083,9 @@ class HealthAnalyzer:
             # detector's snippet). Reading it unconditionally would put a
             # repo-sized read back into the per-file path; gating on clones keeps
             # it proportional to the small set of files that actually carry one.
-            source_lines=_read_source_lines(pf.file_info.abs_path) if clones else None,
+            source_lines=(
+                _read_source_lines(pf.file_info.abs_path, self.read_source) if clones else None
+            ),
         )
         suggestions = detect_refactorings(
             rctx,

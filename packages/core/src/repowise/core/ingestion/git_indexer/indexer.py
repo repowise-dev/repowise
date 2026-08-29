@@ -24,11 +24,11 @@ from ._constants import (
     _DEEP_WALK_COMMIT_LIMIT,
     _DEEP_WALK_MIN_FALLBACK,
     _DEFAULT_CO_CHANGE_COMMIT_LIMIT,
-    _DEFAULT_CO_CHANGE_MIN_COUNT,
     _DEFAULT_COMMIT_LIMIT,
     _FILE_INDEX_TIMEOUT_SECS,
+    _MAX_PARTNERS_PER_FILE,
 )
-from .co_change import compute_co_changes, compute_co_changes_and_entropy
+from .co_change import compute_co_changes_and_entropy
 from .enrich import compute_percentiles
 from .file_history import DECAY_REFRESH_KEYS, index_file
 from .prior_defects import FixWalk, PriorDefects, collect_fix_commits, compute_prior_defects
@@ -255,7 +255,7 @@ class GitIndexer:
                 repo,
                 set(tracked_files),
                 max(self.commit_limit, _DEFAULT_CO_CHANGE_COMMIT_LIMIT),
-                _DEFAULT_CO_CHANGE_MIN_COUNT,
+                _MAX_PARTNERS_PER_FILE,
                 on_commit_done,
                 on_co_change_start,
                 as_of_ts,
@@ -540,7 +540,7 @@ class GitIndexer:
                     repo,
                     set(all_files),
                     max(self.commit_limit, _DEFAULT_CO_CHANGE_COMMIT_LIMIT),
-                    _DEFAULT_CO_CHANGE_MIN_COUNT,
+                    _MAX_PARTNERS_PER_FILE,
                     None,
                     None,
                     as_of_ts,
@@ -1051,19 +1051,6 @@ class GitIndexer:
         from .enrich import is_significant_commit
 
         return is_significant_commit(message, author)
-
-    def _compute_co_changes(
-        self,
-        repo: Any,
-        all_files: set[str],
-        commit_limit: int = _DEFAULT_CO_CHANGE_COMMIT_LIMIT,
-        min_count: int = _DEFAULT_CO_CHANGE_MIN_COUNT,
-        on_commit_done: Callable[[], None] | None = None,
-        on_co_change_start: Callable[[int], None] | None = None,
-    ) -> dict[str, list[dict]]:
-        return compute_co_changes(
-            repo, all_files, commit_limit, min_count, on_commit_done, on_co_change_start
-        )
 
     @staticmethod
     def _compute_percentiles(metadata_list: list[dict]) -> None:

@@ -81,6 +81,56 @@ async def _seed_page(page_id, target_path, page_type="file_page"):
         await session.commit()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("glob", ["*", "?"])
+async def test_path_search_accepts_trailing_glob(setup_mcp, glob):
+    """A trailing glob narrows a path search without becoming a literal."""
+    import types
+
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server.tool_search_symbols import search_paths_single
+
+    await _seed_page("file_page:tool_overview.py", "packages/server/tool_overview.py")
+    await _seed_page("file_page:tool_answer.py", "packages/server/tool_answer.py")
+
+    ctx = types.SimpleNamespace(
+        session_factory=mcp_mod._session_factory,
+        path="/tmp/test-repo",
+    )
+    result = await search_paths_single(ctx, f"tool_overview{glob}", limit=10)
+
+    assert [item["file"] for item in result] == ["packages/server/tool_overview.py"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("tool_overview.py", ["packages/server/tool_overview.py"]),
+        ("  *tool_overview?  ", ["packages/server/tool_overview.py"]),
+        ("*", []),
+        ("?", []),
+        ("tool_*_overview", []),
+    ],
+)
+async def test_path_search_preserves_non_trailing_glob_behavior(setup_mcp, query, expected):
+    """Only boundary glob markers are supported by path-mode substring search."""
+    import types
+
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server.tool_search_symbols import search_paths_single
+
+    await _seed_page("file_page:tool_overview.py", "packages/server/tool_overview.py")
+
+    ctx = types.SimpleNamespace(
+        session_factory=mcp_mod._session_factory,
+        path="/tmp/test-repo",
+    )
+    result = await search_paths_single(ctx, query, limit=10)
+
+    assert [item["file"] for item in result] == expected
+
+
 class TestDecisionDownweight:
     """Decision records must not crowd file pages out of the top ranks."""
 
@@ -788,6 +838,44 @@ class TestHybridInterleave:
         assert out == symbols
 
 
+class TestProtectedExactMatches:
+    def test_canonical_symbol_id_routes_to_symbol_search(self):
+        from repowise.server.mcp_server.tool_search import _resolve_mode
+
+        query = "packages/server/src/repowise/server/mcp_server/tool_search.py::search_codebase"
+        assert _resolve_mode(query, "auto") == "symbol"
+
+    def test_canonical_symbol_id_is_stably_protected(self):
+        from repowise.server.mcp_server.tool_search import _protect_exact_symbols
+
+        exact_id = "src/auth/service.py::AuthService.run"
+        symbols = [
+            {"symbol_id": "src/jobs/runner.py::run", "name": "run", "score": 999.0},
+            {"symbol_id": exact_id, "name": "run", "score": 1.0},
+            {"symbol_id": "src/cli/main.py::main", "name": "main", "score": 500.0},
+        ]
+
+        out = _protect_exact_symbols(exact_id, symbols)
+
+        assert out[0]["symbol_id"] == exact_id
+        assert out[1:] == [symbols[0], symbols[2]]
+
+    def test_exact_path_is_stably_protected(self):
+        from repowise.server.mcp_server.tool_search import _protect_exact_paths
+
+        exact_path = "src/auth/middleware.py"
+        files = [
+            {"file": "tests/auth/middleware.py", "score": 999.0},
+            {"file": exact_path, "score": 1.0},
+            {"file": "src/legacy/middleware.py", "score": 500.0},
+        ]
+
+        out = _protect_exact_paths(exact_path, files)
+
+        assert out[0]["file"] == exact_path
+        assert out[1:] == [files[0], files[2]]
+
+
 class TestConceptModeUnchanged:
     """Forcing mode="concept" preserves the original semantic behavior."""
 
@@ -809,6 +897,13 @@ class TestConceptModeUnchanged:
         # Concept mode does not set the structural "mode" routing key.
         assert "results" in result
         assert all(r.get("type") != "symbol" for r in result["results"])
+        assert all(
+            "_coverage" not in r
+            and "_coverage_multiplier" not in r
+            and "_confidence_score_factor" not in r
+            and "_raw_score" not in r
+            for r in result["results"]
+        )
 
 
 class TestIdentifierGrepHint:
@@ -861,7 +956,30 @@ class TestExactMatchSignal:
 
         assert _identifier_candidates("AuthService", "symbol") == ["AuthService"]
         assert _identifier_candidates("where is AuthService defined", "hybrid") == ["AuthService"]
+        assert _identifier_candidates(
+            "where does OmissionStore.get expand a reference", "hybrid"
+        ) == ["OmissionStore.get"]
+        assert _identifier_candidates("for example, e.g. retrieval flow", "hybrid") == []
         assert _identifier_candidates("rate limiting", "concept") == []
+
+    def test_qualified_member_embedded_in_prose_is_protected(self):
+        from repowise.server.mcp_server.tool_search import _protect_named_symbols
+
+        exact = {
+            "name": "get",
+            "qualified_name": "repowise.core.distill.store.OmissionStore.get",
+            "score": 1.0,
+        }
+        symbols = [
+            {"name": "get_record", "qualified_name": "OmissionStore::get_record", "score": 99.0},
+            exact,
+            {"name": "get", "qualified_name": "LanguageRegistry::get", "score": 50.0},
+        ]
+
+        out = _protect_named_symbols(["OmissionStore.get"], symbols)
+
+        assert out[0] is exact
+        assert out[1:] == [symbols[0], symbols[2]]
 
     @pytest.mark.asyncio
     async def test_hybrid_scores_symbols_on_the_identifier_not_the_prose(
@@ -1105,7 +1223,9 @@ class TestSearchCandidates:
         result = await search_codebase("how are requests issued", limit=10)
 
         hit = result["results"][0]
-        assert hit["target_path"] == "api/client.go::HTTP"
+        assert hit["target_path"] == "api/client.go"
+        assert hit["file"] == "api/client.go"
+        assert hit["symbol_id"] == "api/client.go::HTTP"
         assert hit["file"] == "api/client.go"
         assert result["candidates"] == [{"path": "api/client.go"}]
 

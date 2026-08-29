@@ -20,6 +20,7 @@ from repowise.core.analysis.health.refactoring import (
 from repowise.core.analysis.health.refactoring.extract_helper import (
     _MAX_SNIPPET_LINES,
     _common_directory,
+    _is_declaration_only,
     _merge_ranges_per_file,
     _suggested_name,
 )
@@ -65,7 +66,7 @@ def _ctx(
     clones: list[ClonePair],
     *,
     findings: list | None = None,
-    module_map: dict[str, str] | None = None,
+    community_label_map: dict[str, str] | None = None,
     source_lines: list[str] | None = None,
 ) -> RefactoringContext:
     return RefactoringContext(
@@ -76,7 +77,7 @@ def _ctx(
         findings=findings or [],
         dependents_count=0,
         clones=clones,
-        module_map=module_map or {},
+        community_label_map=community_label_map or {},
         source_lines=source_lines,
     )
 
@@ -336,8 +337,8 @@ def test_confidence_medium_when_dormant():
 # ---- suggested site ------------------------------------------------------
 
 
-def _site_for(module_map: dict[str, str] | None) -> dict:
-    """The suggested site for one fixed cross-package clone, under *module_map*.
+def _site_for(community_label_map: dict[str, str] | None) -> dict:
+    """The suggested site for one fixed cross-package clone, under *community_label_map*.
 
     The occurrences deliberately live in different top-level packages, so the
     only honest shared directory is the shallow ``pkg`` -- the case where a
@@ -346,23 +347,28 @@ def _site_for(module_map: dict[str, str] | None) -> dict:
     pair = _pair("pkg/api/a.py", "pkg/core/b.py", 10, 25, 40, 55)
     s = next(
         s
-        for s in detect_refactorings(_ctx("pkg/api/a.py", [pair], module_map=module_map))
+        for s in detect_refactorings(
+            _ctx("pkg/api/a.py", [pair], community_label_map=community_label_map)
+        )
         if s.refactoring_type == "extract_helper"
     )
     return s.plan
 
 
-def test_suggested_site_is_the_shared_directory_only():
+def test_a_container_directory_is_not_a_site():
+    """``pkg`` holds no occurrence, only other packages: naming it as the
+    helper's home names a place nothing can go. This is the small-scale twin
+    of ``suggested_site: "packages"`` on the real index."""
     plan = _site_for(None)
-    assert plan["suggested_site"] == {"directory": "pkg"}
-    assert plan["suggested_name"] == "pkg_helper"
+    assert plan["suggested_site"] == {"directory": None}
+    assert plan["suggested_name"] is None
 
 
 def test_suggested_site_ignores_a_hostile_community_label():
     """The load-bearing property: the plan no longer depends on which write
     path produced it.
 
-    ``module_map`` is populated by the full-index path alone -- the incremental,
+    ``community_label_map`` is populated by the full-index path alone -- the incremental,
     re-score and ``repowise health`` paths leave it empty -- so a label-derived
     site made the payload's namespace a function of the last writer. Here the
     label ``ui`` is on *neither* occurrence's path, which is the shape measured
@@ -372,7 +378,7 @@ def test_suggested_site_ignores_a_hostile_community_label():
     hostile = {"pkg/api/a.py": "ui", "pkg/core/b.py": "ui"}
     assert _site_for(hostile) == _site_for(None)
     assert "module" not in _site_for(hostile)["suggested_site"]
-    assert _site_for(hostile)["suggested_name"] == "pkg_helper"
+    assert _site_for(hostile)["suggested_name"] is None
 
 
 def test_suggested_site_prefers_the_deepest_shared_directory():
@@ -387,7 +393,10 @@ def test_suggested_site_prefers_the_deepest_shared_directory():
 
 def test_common_directory_helper():
     assert _common_directory(["a/b/x.py", "a/b/y.py"]) == "a/b"
-    assert _common_directory(["a/b/x.py", "a/c/y.py"]) == "a"
+    # Shared prefix only: no occurrence lives directly in "a".
+    assert _common_directory(["a/b/x.py", "a/c/y.py"]) is None
+    # One does, so the directory is a real home for the helper.
+    assert _common_directory(["a/x.py", "a/c/y.py"]) == "a"
     assert _common_directory(["a/x.py", "b/y.py"]) is None
     assert _common_directory(["x.py", "a/y.py"]) is None
 
@@ -465,20 +474,16 @@ def test_suggested_name_from_directory():
         for s in detect_refactorings(_ctx("pkg/sub/a.py", [pair]))
         if s.refactoring_type == "extract_helper"
     )
-    # directory site "pkg/sub" -> leaf "sub"
-    assert s.plan["suggested_name"] == "sub_helper"
+    assert s.plan["suggested_name"] is None
 
 
-def test_suggested_name_helper_unit():
-    assert _suggested_name({"directory": "api"}) == "api_helper"
-    # path leaf, hyphens normalised
-    assert _suggested_name({"directory": "web/api-client"}) == "api_client_helper"
-    # leading digit made identifier-safe
-    assert _suggested_name({"directory": "3d"}) == "_3d_helper"
-    # already ends in helper -> no double suffix
-    assert _suggested_name({"directory": "render_helper"}) == "render_helper"
-    # no usable label -> stable fallback
-    assert _suggested_name({"directory": None}) == "shared_helper"
+def test_suggested_name_is_absent_rather_than_invented():
+    """Where a block lives says nothing about what it does, and every block
+    under one directory got the same name -- six plans on this repo's index
+    were all ``persistence_helper``. Absent is the honest answer."""
+    assert _suggested_name({"directory": "api"}) is None
+    assert _suggested_name({"directory": "web/api-client"}) is None
+    assert _suggested_name({"directory": None}) is None
 
 
 def test_suggested_name_ignores_a_legacy_community_label():
@@ -486,9 +491,9 @@ def test_suggested_name_ignores_a_legacy_community_label():
     ``module``. It is the key that produced names like ``repowise_helper`` --
     the repo naming its own helper -- so it must not be revived as a fallback;
     ``directory`` was the correct value on those rows and is what wins."""
-    assert _suggested_name({"module": "core", "directory": "pkg/sub"}) == "sub_helper"
+    assert _suggested_name({"module": "core", "directory": "pkg/sub"}) is None
     # Even with no directory at all, the label is not consulted.
-    assert _suggested_name({"module": "repowise", "directory": None}) == "shared_helper"
+    assert _suggested_name({"module": "repowise", "directory": None}) is None
 
 
 # ---- determinism ---------------------------------------------------------
@@ -677,3 +682,196 @@ def test_declaration_only_unit_cases():
     assert not _is_declaration_only(["    continue", "    continue"])
     assert not _is_declaration_only(["    break", "    break"])
     assert not _is_declaration_only(["    defer f.Close()", "    defer g.Close()"])
+
+
+# ---- symbol-boundary gating ----------------------------------------------
+
+
+def _graph_with_symbols(spans: dict[str, list[tuple[str, int, int]]]):
+    """A minimal repo graph: files defining symbols with declaration spans."""
+    import networkx as nx
+
+    graph = nx.DiGraph()
+    for file_path, symbols in spans.items():
+        graph.add_node(file_path, node_type="file")
+        for name, start, end in symbols:
+            sid = f"{file_path}::{name}"
+            graph.add_node(
+                sid,
+                node_type="symbol",
+                kind="class",
+                name=name,
+                file_path=file_path,
+                start_line=start,
+                end_line=end,
+            )
+            graph.add_edge(file_path, sid, edge_type="defines")
+    return graph
+
+
+def _ctx_with_graph(file_path, clones, graph, source_lines=None):
+    return RefactoringContext(
+        file_path=file_path,
+        language="python",
+        nloc=200,
+        classes=[],
+        findings=[],
+        dependents_count=0,
+        clones=clones,
+        graph=graph,
+        community_label_map={},
+        source_lines=source_lines,
+    )
+
+
+def _helper_plans(ctx):
+    return [s for s in detect_refactorings(ctx) if s.refactoring_type == "extract_helper"]
+
+
+def test_clone_inside_one_declaration_still_emits():
+    graph = _graph_with_symbols(
+        {"pkg/a.py": [("Alpha", 1, 40)], "pkg/b.py": [("Beta", 30, 70)]}
+    )
+    pair = _pair("pkg/a.py", "pkg/b.py", 10, 25, 40, 55)
+    assert len(_helper_plans(_ctx_with_graph("pkg/a.py", [pair], graph))) == 1
+
+
+def test_clone_crossing_a_declaration_boundary_is_dropped():
+    # The a.py occurrence ends inside the next class, exactly the shape the
+    # repo's own top-ranked plan had over SQLAlchemy models.
+    graph = _graph_with_symbols(
+        {"pkg/a.py": [("Alpha", 1, 20), ("Beta", 21, 60)], "pkg/b.py": [("Gamma", 30, 70)]}
+    )
+    pair = _pair("pkg/a.py", "pkg/b.py", 10, 25, 40, 55)
+    assert _helper_plans(_ctx_with_graph("pkg/a.py", [pair], graph)) == []
+
+
+def test_clone_swallowing_whole_declarations_is_dropped():
+    graph = _graph_with_symbols(
+        {"pkg/a.py": [("Alpha", 12, 18)], "pkg/b.py": [("Gamma", 30, 70)]}
+    )
+    pair = _pair("pkg/a.py", "pkg/b.py", 10, 25, 40, 55)
+    assert _helper_plans(_ctx_with_graph("pkg/a.py", [pair], graph)) == []
+
+
+def test_gate_abstains_without_symbol_facts():
+    # A language whose symbols the graph does not carry keeps its plans.
+    graph = _graph_with_symbols({"pkg/b.py": [("Gamma", 30, 70)]})
+    pair = _pair("pkg/a.py", "pkg/b.py", 10, 25, 40, 55)
+    assert len(_helper_plans(_ctx_with_graph("pkg/a.py", [pair], graph))) == 1
+
+
+# ---- ORM / dataclass boilerplate: the correct answer is no suggestion -----
+
+
+_ORM_COLUMNS = [
+    "    id: Mapped[str] = mapped_column(",
+    "        String(32), primary_key=True, default=new_uuid",
+    "    )",
+    "    created_at: Mapped[datetime] = mapped_column(",
+    "        DateTime, nullable=False, default=utcnow",
+    "    )",
+    "    updated_at: Mapped[datetime] = mapped_column(",
+    "        DateTime, nullable=False, default=utcnow",
+    "    )",
+    "    repository_id: Mapped[str] = mapped_column(",
+    '        ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False',
+    "    )",
+]
+
+_DATACLASS_FIELDS = [
+    "    names: list[str] = field(",
+    "        default_factory=list",
+    "    )",
+    "    counts: dict[str, int] = field(",
+    "        default_factory=dict",
+    "    )",
+    "    label: str = field(",
+    '        default=""',
+    "    )",
+    "    tags: set[str] = field(",
+    "        default_factory=set",
+    "    )",
+]
+
+
+def _boilerplate_plans(block: list[str]) -> list:
+    source = ["" for _ in range(9)] + block
+    pair = _pair("pkg/a.py", "pkg/b.py", 10, 9 + len(block), 40, 39 + len(block))
+    return _helper_plans(
+        _ctx_with_graph(
+            "pkg/a.py",
+            [pair],
+            _graph_with_symbols({"pkg/a.py": [("Model", 1, 400)], "pkg/b.py": [("Other", 1, 400)]}),
+            source_lines=source,
+        )
+    )
+
+
+def test_multiline_orm_columns_emit_no_plan():
+    assert _boilerplate_plans(_ORM_COLUMNS) == []
+
+
+def test_multiline_dataclass_fields_emit_no_plan():
+    assert _boilerplate_plans(_DATACLASS_FIELDS) == []
+
+
+_TABLE_BODY = [
+    '    __tablename__ = "wiki_symbols"',
+    "",
+    "    id: Mapped[str] = mapped_column(String(32), primary_key=True)",
+    "    repository_id: Mapped[str] = mapped_column(",
+    '        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False',
+    "    )",
+    "    file_path: Mapped[str] = mapped_column(Text, nullable=False)",
+    "",
+    "    __table_args__ = (",
+    '        UniqueConstraint("repository_id", "file_path", name="uq_wiki_symbol"),',
+    '        Index("ix_wiki_symbols_repo", "repository_id"),',
+    "    )",
+]
+
+
+def test_declarative_table_body_emits_no_plan():
+    assert _boilerplate_plans(_TABLE_BODY) == []
+
+
+# ---- logical-line joining must not swallow real behaviour ----------------
+
+
+def test_brace_language_bodies_are_not_declarations():
+    """``{`` opens a body, not a continuation. Joining on it welded a whole
+    function body into one line that then read as a bare signature."""
+    go_body = ["func setup() {", "    x := compute(a, b)", "    cache.Store(x)", "}"]
+    ts_body = ["function setup() {", "  const x = compute(a, b);", "  cache.store(x);", "}"]
+    assert not _is_declaration_only(go_body)
+    assert not _is_declaration_only(ts_body)
+
+
+def test_a_bracket_inside_a_string_does_not_absorb_the_next_statement():
+    block = [
+        "handler: Any = mapped_column(",
+        '    String(32), doc="see note (ref"',
+        ")",
+        "do_side_effect(handler)",
+    ]
+    assert not _is_declaration_only(block)
+
+
+def test_a_one_line_body_is_not_a_signature():
+    block = ["def compute(a, b): total = a + b; log(total)", "def other(c): v = c * 2; log(v)"]
+    assert not _is_declaration_only(block)
+
+
+def test_a_signature_joined_back_whole_is_still_a_declaration():
+    block = [
+        "def update_command(",
+        "    path: str | None,",
+        "    dry_run: bool,",
+        ") -> None:",
+        "def run_update(",
+        "    path: str | None,",
+        "    dry_run: bool,",
+        ") -> None:",
+    ]
+    assert _is_declaration_only(block)

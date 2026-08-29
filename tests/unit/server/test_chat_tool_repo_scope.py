@@ -14,6 +14,7 @@ workspace:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -46,12 +47,19 @@ def captured_call(monkeypatch):
     """Replace get_overview with a recorder and return the recorded kwargs."""
     seen: dict[str, Any] = {}
 
-    async def _fake_get_overview(**kwargs):
-        seen.update(kwargs)
+    async def _fake_get_overview(repo: str | None = None):
+        seen["repo"] = repo
         return {"ok": True}
 
-    tool_def = chat_tools.get_tool_registry()["get_overview"]
-    monkeypatch.setattr(tool_def, "function", _fake_get_overview)
+    original = next(
+        tool for tool in chat_tools.get_tool_catalog(None) if tool.entry.name == "get_overview"
+    )
+    replacement = chat_tools.ChatToolContract(
+        entry=replace(original.entry, fn=_fake_get_overview),
+        description=original.description,
+        parameters=original.parameters,
+    )
+    monkeypatch.setattr(chat_tools, "get_tool_catalog", lambda _repo_path: [replacement])
     return seen
 
 

@@ -16,24 +16,35 @@ def _fn(name):
     return f
 
 
-# A representative catalog: 3 plain defaults, 1 workspace-only, 1 opt-in.
+# A representative catalog: canonical defaults, one workspace utility, and specialists.
 CATALOG = [
     ToolEntry(_fn("get_answer"), "get_answer"),
     ToolEntry(_fn("get_context"), "get_context"),
-    ToolEntry(_fn("list_repos"), "list_repos"),
-    ToolEntry(_fn("get_blast_radius"), "get_blast_radius", requires_workspace=True),
+    ToolEntry(
+        _fn("list_repos"),
+        "list_repos",
+        requires_workspace=True,
+        tier="utility",
+    ),
+    ToolEntry(
+        _fn("get_blast_radius"),
+        "get_blast_radius",
+        default=False,
+        requires_workspace=True,
+        tier="specialist",
+    ),
     ToolEntry(_fn("get_dependency_path"), "get_dependency_path", default=False),
 ]
 
 
 def test_default_single_repo_surface():
     enabled = resolve_enabled_tools(CATALOG, is_workspace=False)
-    assert enabled == {"get_answer", "get_context", "list_repos"}
+    assert enabled == {"get_answer", "get_context"}
 
 
 def test_default_workspace_adds_workspace_only():
     enabled = resolve_enabled_tools(CATALOG, is_workspace=True)
-    assert enabled == {"get_answer", "get_context", "list_repos", "get_blast_radius"}
+    assert enabled == {"get_answer", "get_context", "list_repos"}
 
 
 def test_opt_in_tool_off_by_default():
@@ -44,13 +55,13 @@ def test_delta_add_and_remove():
     enabled = resolve_enabled_tools(
         CATALOG, is_workspace=False, override="+get_dependency_path,-get_context"
     )
-    assert enabled == {"get_answer", "list_repos", "get_dependency_path"}
+    assert enabled == {"get_answer", "get_dependency_path"}
 
 
 def test_delta_string_or_list_equivalent():
     a = resolve_enabled_tools(CATALOG, is_workspace=False, override="+get_dependency_path")
     b = resolve_enabled_tools(CATALOG, is_workspace=False, override=["+get_dependency_path"])
-    assert a == b == {"get_answer", "get_context", "list_repos", "get_dependency_path"}
+    assert a == b == {"get_answer", "get_context", "get_dependency_path"}
 
 
 def test_explicit_allowlist_replaces_default():
@@ -68,7 +79,6 @@ def test_all_enables_everything_usable():
     assert resolve_enabled_tools(CATALOG, is_workspace=False, override="all") == {
         "get_answer",
         "get_context",
-        "list_repos",
         "get_dependency_path",
     }
 
@@ -151,7 +161,7 @@ def test_workspace_only_named_explicitly_kept_in_workspace():
 
 def test_unknown_tool_ignored():
     enabled = resolve_enabled_tools(CATALOG, is_workspace=False, override="+does_not_exist")
-    assert enabled == {"get_answer", "get_context", "list_repos"}
+    assert enabled == {"get_answer", "get_context"}
 
 
 def test_empty_override_falls_back_to_default():
@@ -160,11 +170,56 @@ def test_empty_override_falls_back_to_default():
     )
 
 
+def test_real_registry_phase_one_surfaces_are_exact():
+    from repowise.core.registry import mcp_tool_registry
+    from repowise.server.mcp_server import ensure_full_surface
+
+    canonical = {
+        "get_answer",
+        "get_context",
+        "get_symbol",
+        "search_codebase",
+        "get_risk",
+        "get_change_risk",
+        "get_why",
+        "get_overview",
+        "get_health",
+        "get_dead_code",
+    }
+    ensure_full_surface()
+    entries = mcp_tool_registry.entries()
+    assert {entry.name for entry in entries if entry.tier == "canonical"} == canonical
+    assert resolve_enabled_tools(entries, is_workspace=False) == canonical
+    assert resolve_enabled_tools(entries, is_workspace=True) == canonical | {"list_repos"}
+
+
+def test_real_registry_specialist_eligibility_is_mode_specific():
+    from repowise.core.registry import mcp_tool_registry
+    from repowise.server.mcp_server import ensure_full_surface
+
+    ensure_full_surface()
+    entries = mcp_tool_registry.entries()
+    single_all = resolve_enabled_tools(entries, is_workspace=False, override="all")
+    workspace_all = resolve_enabled_tools(entries, is_workspace=True, override="all")
+    assert {
+        "get_dependency_path",
+        "get_execution_flows",
+        "generate_refactoring_code",
+    } <= single_all
+    assert {
+        "get_architecture",
+        "get_blast_radius",
+        "get_conformance",
+        "list_repos",
+    }.isdisjoint(single_all)
+    assert {entry.name for entry in entries} == workspace_all
+
+
 # --- live FastMCP trimming -------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_apply_trims_and_restores_live_server(tmp_path):
+async def test_apply_trims_and_restores_live_server(tmp_path, monkeypatch):
     """apply_tool_selection trims the real server and can rebuild the full set."""
     import repowise.server.mcp_server as mcp_mod
     from repowise.server.mcp_server import _tool_selection
@@ -172,6 +227,7 @@ async def test_apply_trims_and_restores_live_server(tmp_path):
 
     mcp = mcp_mod.mcp
     (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr(_tool_selection, "_is_workspace", lambda _path: False)
 
     async def names() -> set[str]:
         return {t.name for t in await mcp.list_tools()}
@@ -187,8 +243,14 @@ async def test_apply_trims_and_restores_live_server(tmp_path):
         # Opt in to one tool; it reappears.
         apply_tool_selection(mcp, repo_path=str(tmp_path), override="+get_dependency_path")
         assert "get_dependency_path" in await names()
+        from repowise.server.mcp_server.tool_overview import _tool_surface_guide
+
+        guide = _tool_surface_guide(is_workspace=False)
+        assert set(guide["enabled"]) == await names()
+        assert "get_dependency_path" in guide["enabled"]
     finally:
         # Restore the full surface so other tests see every tool, including the
         # workspace-only ones an "all" override on a non-workspace path omits.
         if _tool_selection._full_surface is not None:
             mcp._tool_manager._tools = dict(_tool_selection._full_surface)
+        _tool_selection._selected_surface = None

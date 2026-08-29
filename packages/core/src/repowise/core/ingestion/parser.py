@@ -25,7 +25,12 @@ Capture-name conventions (shared across ALL .scm files):
 from __future__ import annotations
 
 import re
+import unicodedata
+from bisect import bisect_left
+from collections import deque
 from collections.abc import Iterable
+from dataclasses import dataclass
+from enum import Enum, auto
 from functools import cache
 from pathlib import Path
 
@@ -42,6 +47,7 @@ from .extractors import (
     node_text,
     refine_go_type_kind,
     refine_kotlin_class_kind,
+    refine_pascal_type_kind,
 )
 from .extractors.bindings.python import expand_bare_relative_imports
 from .extractors.bindings.ts_js import (
@@ -171,6 +177,502 @@ def _call_receiver_from_node(node: Node, src: str) -> CallReceiver | None:
 # as a symbol today. If a union capture is ever added, add it here too, or a
 # bodiless ``union U;`` goes back to reading as a definition.
 _CPP_TYPE_SPECIFIER_NODES = frozenset({"class_specifier", "struct_specifier", "enum_specifier"})
+_CPP_EXPORT_FORWARD_DECLARATION_NODES = frozenset({"declaration", "field_declaration"})
+
+_CPP_PREPROC_CONDITIONAL_NODES = frozenset(
+    {"preproc_if", "preproc_ifdef", "preproc_ifndef", "preproc_elif", "preproc_else"}
+)
+_CPP_PREPROC_ALTERNATIVE_NODES = frozenset({"preproc_elif", "preproc_else"})
+_CPP_LINE_SPLICE_RE = re.compile(r"\\(?:\r\n?|\n)")
+_CPP_PREPROC_COMMENT_RE = re.compile(r"/\*.*?\*/|//[^\r\n]*", re.DOTALL)
+_CPP_MACRO_STACK_RE = re.compile(r'\b(push_macro|pop_macro)\s*\(\s*"([^"]+)"\s*\)')
+_CPP_UNIVERSAL_CHARACTER_NAME_RE = re.compile(r"\\(?:u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8}))")
+_CPP_IDENTIFIER_TOKEN_RE = re.compile(r"(?:[^\W\d]|\$)[\w$]*")
+_CPP_INCLUDE_LIKE_DIRECTIVES = frozenset({"include_next", "import"})
+
+
+class _CppMacroState(Enum):
+    EMPTY_OBJECT = auto()
+    NOT_EMPTY_OBJECT = auto()
+    UNDEFINED = auto()
+    UNKNOWN = auto()
+
+
+class _CppMacroAction(Enum):
+    DEFINE_EMPTY = auto()
+    DEFINE_OTHER = auto()
+    UNDEFINE = auto()
+    PUSH = auto()
+    POP = auto()
+    UNKNOWN = auto()
+
+
+@dataclass(frozen=True)
+class _CppMacroEvent:
+    position: int
+    state: _CppMacroState
+    definition: Node | None = None
+    branch_path: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class _CppMacroOperation:
+    position: int
+    action: _CppMacroAction
+    name: str
+    node: Node
+    definition: Node | None = None
+
+
+@dataclass(frozen=True)
+class _CppMacroStackEntry:
+    event: _CppMacroEvent | None
+    branch_path: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _CppMacroFacts:
+    events: dict[str, tuple[_CppMacroEvent, ...]]
+    barriers: tuple[int, ...]
+
+    def empty_definition_at(self, name: str, declaration: Node) -> Node | None:
+        """Prove that *name* is an empty object macro at *declaration*."""
+        events = self.events.get(name, ())
+        event_index = (
+            bisect_left(events, declaration.start_byte, key=lambda event: event.position) - 1
+        )
+        active_event = events[event_index] if event_index >= 0 else None
+        if (
+            active_event is None
+            or active_event.state is not _CppMacroState.EMPTY_OBJECT
+            or active_event.definition is None
+        ):
+            return None
+
+        declaration_branch = _cpp_preproc_branch_path(declaration)
+        event_branch = active_event.branch_path
+        definition_branch = _cpp_preproc_branch_path(active_event.definition)
+        if declaration_branch[: len(event_branch)] != event_branch:
+            return None
+        if declaration_branch[: len(definition_branch)] != definition_branch:
+            return None
+
+        barrier_index = bisect_left(self.barriers, declaration.start_byte) - 1
+        latest_barrier = self.barriers[barrier_index] if barrier_index >= 0 else None
+        if latest_barrier is not None and latest_barrier > active_event.position:
+            return None
+        return active_event.definition
+
+
+@dataclass(frozen=True)
+class _CppExportType:
+    range_node: Node
+    name: str
+    is_forward_declaration: bool
+
+
+def _cpp_normalize_preproc_text(text: str) -> str:
+    """Apply the preprocessing transforms needed for directive arguments."""
+    without_splices = _CPP_LINE_SPLICE_RE.sub("", text)
+    return _CPP_PREPROC_COMMENT_RE.sub(" ", without_splices)
+
+
+def _cpp_preproc_call_parts(text: str) -> tuple[str | None, str]:
+    """Return a generic preprocessing call's directive and normalized argument."""
+    normalized = _cpp_normalize_preproc_text(text).strip()
+    match = re.match(r"(?:#|%:)[^\S\r\n]*([A-Za-z_]\w*)", normalized)
+    if match is None:
+        return None, ""
+    return match.group(1), normalized[match.end() :].lstrip()
+
+
+def _cpp_identifier_continues(char: str) -> bool:
+    """Whether *char* can continue a C++ identifier in supported grammars."""
+    return char in {"_", "$", "\\"} or f"a{char}".isidentifier()
+
+
+def _cpp_normalize_identifier(text: str) -> str:
+    """Normalize literal and universal-character-name identifier spellings."""
+
+    def replace_ucn(match: re.Match[str]) -> str:
+        digits = match.group(1) or match.group(2)
+        try:
+            codepoint = int(digits, 16)
+            if 0xD800 <= codepoint <= 0xDFFF:
+                return match.group()
+            return chr(codepoint)
+        except ValueError:
+            return match.group()
+
+    decoded = _CPP_UNIVERSAL_CHARACTER_NAME_RE.sub(replace_ucn, text)
+    return unicodedata.normalize("NFC", decoded)
+
+
+def _cpp_known_macro_from_argument(
+    argument: str, known_names_by_length: tuple[str, ...]
+) -> str | None:
+    """Match the first preprocessing token against locally known macro names."""
+    normalized = _cpp_normalize_identifier(_cpp_normalize_preproc_text(argument)).lstrip()
+    for name in known_names_by_length:
+        if not normalized.startswith(name):
+            continue
+        remainder = normalized[len(name) :]
+        if not remainder or not _cpp_identifier_continues(remainder[0]):
+            return name
+    return None
+
+
+def _cpp_known_macros_in_text(text: str, known_names: set[str]) -> set[str]:
+    """Return locally defined macro identifiers referenced anywhere in *text*."""
+    normalized = _cpp_normalize_identifier(_cpp_normalize_preproc_text(text))
+    return {
+        match.group()
+        for match in _CPP_IDENTIFIER_TOKEN_RE.finditer(normalized)
+        if match.group() in known_names
+    }
+
+
+def _cpp_macro_stack_operation(text: str) -> tuple[str | None, str | None]:
+    """Return a push/pop operation and normalized target from pragma text."""
+    normalized = _cpp_normalize_preproc_text(text).replace(r"\"", '"')
+    operation_match = re.search(r"\b(push_macro|pop_macro)\b", normalized)
+    if operation_match is None:
+        return None, None
+    match = _CPP_MACRO_STACK_RE.search(normalized)
+    if match is None:
+        return operation_match.group(1), None
+    return match.group(1), _cpp_normalize_identifier(match.group(2))
+
+
+def _cpp_preproc_branch_path(node: Node) -> tuple[int, ...]:
+    """Return the effective C/C++ preprocessor branches around *node*."""
+    branch_ids: list[int] = []
+    covered_conditionals: set[int] = set()
+    ancestor = node.parent
+    while ancestor is not None:
+        if ancestor.type in _CPP_PREPROC_ALTERNATIVE_NODES:
+            # An ``else``/``elif`` is its own branch; do not also label its
+            # contents as belonging to the parent conditional's main branch.
+            if ancestor.id not in covered_conditionals:
+                branch_ids.append(ancestor.id)
+            parent = ancestor.parent
+            if parent is not None and parent.type in _CPP_PREPROC_CONDITIONAL_NODES:
+                covered_conditionals.add(parent.id)
+        elif (
+            ancestor.type in _CPP_PREPROC_CONDITIONAL_NODES
+            and ancestor.id not in covered_conditionals
+        ):
+            branch_ids.append(ancestor.id)
+        ancestor = ancestor.parent
+    branch_ids.reverse()
+    return tuple(branch_ids)
+
+
+def _build_cpp_macro_facts(matches: list[dict], src: str) -> _CppMacroFacts:
+    """Build the conservative, source-ordered macro facts used by C++ recovery."""
+    macro_definitions: dict[int, tuple[Node, str]] = {}
+    preproc_calls: dict[int, Node] = {}
+    include_nodes: dict[int, Node] = {}
+    call_sites: dict[int, tuple[Node, str]] = {}
+
+    for capture_dict in matches:
+        def_nodes = capture_dict.get("symbol.def", [])
+        name_nodes = capture_dict.get("symbol.name", [])
+        if (
+            def_nodes
+            and def_nodes[0].type in ("preproc_def", "preproc_function_def")
+            and name_nodes
+        ):
+            macro_node = def_nodes[0]
+            macro_name = _cpp_normalize_identifier(_node_text(name_nodes[0], src))
+            if macro_name:
+                macro_definitions[macro_node.id] = (macro_node, macro_name)
+
+        for node in capture_dict.get("symbol.cpp_preproc_call", []):
+            preproc_calls[node.id] = node
+        for node in capture_dict.get("symbol.cpp_macro_state_barrier", []):
+            include_nodes[node.id] = node
+
+        site_nodes = capture_dict.get("call.site", [])
+        target_nodes = capture_dict.get("call.target", [])
+        if site_nodes and target_nodes:
+            call_sites[site_nodes[0].id] = (site_nodes[0], _node_text(target_nodes[0], src))
+
+    known_names = {name for _, name in macro_definitions.values()}
+    known_names_by_length = tuple(sorted(known_names, key=len, reverse=True))
+
+    # A macro whose replacement contains a pragma stack operation is itself a
+    # state hazard when invoked. Resolve simple wrapper aliases transitively;
+    # anything more dynamic remains conservative at the invocation site.
+    hazard_targets: dict[str, set[str]] = {name: set() for name in known_names}
+    hazard_unknown: set[str] = set()
+    replacement_references: dict[str, set[str]] = {name: set() for name in known_names}
+    for macro_node, macro_name in macro_definitions.values():
+        value_node = macro_node.child_by_field_name("value")
+        replacement = _node_text(value_node, src) if value_node is not None else ""
+        replacement_operation, target = _cpp_macro_stack_operation(replacement)
+        if replacement_operation is not None:
+            if target in known_names:
+                hazard_targets[macro_name].add(target)
+            elif target is None:
+                hazard_unknown.add(macro_name)
+        replacement_references[macro_name].update(
+            _cpp_known_macros_in_text(replacement, known_names) - {macro_name}
+        )
+
+    alias_dependents: dict[str, set[str]] = {name: set() for name in known_names}
+    for macro_name, references in replacement_references.items():
+        for referenced_name in references:
+            alias_dependents[referenced_name].add(macro_name)
+
+    pending = deque(name for name in known_names if hazard_targets[name] or name in hazard_unknown)
+    queued = set(pending)
+    while pending:
+        referenced_name = pending.popleft()
+        queued.remove(referenced_name)
+        for macro_name in alias_dependents[referenced_name]:
+            inherited_targets = hazard_targets[referenced_name] - hazard_targets[macro_name]
+            inherited_unknown = (
+                referenced_name in hazard_unknown and macro_name not in hazard_unknown
+            )
+            if not inherited_targets and not inherited_unknown:
+                continue
+            hazard_targets[macro_name].update(inherited_targets)
+            if inherited_unknown:
+                hazard_unknown.add(macro_name)
+            if macro_name not in queued:
+                pending.append(macro_name)
+                queued.add(macro_name)
+
+    object_hazard_names = {
+        macro_name
+        for macro_node, macro_name in macro_definitions.values()
+        if macro_node.type == "preproc_def"
+        and (hazard_targets[macro_name] or macro_name in hazard_unknown)
+    }
+
+    # Object-like macros expand wherever their identifier token appears, not
+    # only as a standalone expression. Walk the existing tree only when a
+    # local definition proves that the name wraps a stack operation. An include
+    # is a barrier at its own position, but without preprocessing context it is
+    # not evidence that every later identifier is an imported wrapper.
+    possible_invocations: dict[int, Node] = {}
+    if object_hazard_names:
+        root = next(iter(macro_definitions.values()))[0]
+        while root.parent is not None:
+            root = root.parent
+        pending_nodes = [root]
+        while pending_nodes:
+            node = pending_nodes.pop()
+            if node.type in {"preproc_def", "preproc_function_def"}:
+                continue
+            if node.type == "identifier":
+                name = _cpp_normalize_identifier(_node_text(node, src))
+                if name in object_hazard_names:
+                    possible_invocations[node.id] = node
+            pending_nodes.extend(node.children)
+
+    operations: list[_CppMacroOperation] = []
+    operation_keys: set[tuple[int, _CppMacroAction, str]] = set()
+    barriers = {node.start_byte for node in include_nodes.values()}
+
+    def add_operation(
+        node: Node,
+        action: _CppMacroAction,
+        name: str,
+        *,
+        definition: Node | None = None,
+    ) -> None:
+        key = (node.start_byte, action, name)
+        if key in operation_keys:
+            return
+        operation_keys.add(key)
+        operations.append(
+            _CppMacroOperation(
+                position=node.start_byte,
+                action=action,
+                name=name,
+                node=node,
+                definition=definition,
+            )
+        )
+
+    def add_stack_operation(node: Node, text: str, *, direct: bool) -> bool:
+        operation, target = _cpp_macro_stack_operation(text)
+        if operation is None:
+            return False
+        if target in known_names:
+            action = (
+                _CppMacroAction.PUSH
+                if direct and operation == "push_macro"
+                else _CppMacroAction.POP
+                if direct and operation == "pop_macro"
+                else _CppMacroAction.UNKNOWN
+            )
+            add_operation(node, action, target)
+        elif target is None:
+            barriers.add(node.start_byte)
+        return True
+
+    for macro_node, macro_name in macro_definitions.values():
+        is_empty_object = (
+            macro_node.type == "preproc_def" and macro_node.child_by_field_name("value") is None
+        )
+        add_operation(
+            macro_node,
+            (_CppMacroAction.DEFINE_EMPTY if is_empty_object else _CppMacroAction.DEFINE_OTHER),
+            macro_name,
+            definition=macro_node if is_empty_object else None,
+        )
+
+    for node in preproc_calls.values():
+        directive, argument = _cpp_preproc_call_parts(_node_text(node, src))
+        if directive in _CPP_INCLUDE_LIKE_DIRECTIVES:
+            barriers.add(node.start_byte)
+        elif directive == "undef":
+            target = _cpp_known_macro_from_argument(argument, known_names_by_length)
+            if target is not None:
+                add_operation(node, _CppMacroAction.UNDEFINE, target)
+        elif directive == "pragma":
+            add_stack_operation(node, argument, direct=True)
+
+    direct_pragma_call_ids: set[int] = set()
+    for node, target_text in call_sites.values():
+        normalized_target = _cpp_normalize_identifier(target_text)
+        if normalized_target in {"_Pragma", "__pragma"}:
+            direct_pragma_call_ids.add(node.id)
+            add_stack_operation(node, _node_text(node, src), direct=True)
+
+    def add_indirect_hazards(node: Node, text: str, target_text: str = "") -> None:
+        if add_stack_operation(node, text, direct=False):
+            return
+        target_name = _cpp_normalize_identifier(target_text)
+        if not target_name:
+            target_name = _cpp_known_macro_from_argument(text, known_names_by_length) or ""
+        referenced_names = _cpp_known_macros_in_text(text, known_names)
+        if target_name:
+            referenced_names.add(target_name)
+        affected_names = set().union(
+            *(hazard_targets.get(name, set()) for name in referenced_names)
+        )
+        for affected_name in affected_names:
+            add_operation(node, _CppMacroAction.UNKNOWN, affected_name)
+        if affected_names or referenced_names & hazard_unknown:
+            # The wrapper may push or pop even when its final macro value is
+            # conservatively represented as UNKNOWN. Taint the stack too, so
+            # a later direct pop cannot restore a stale local snapshot.
+            barriers.add(node.start_byte)
+
+    for node, target_text in call_sites.values():
+        if node.id not in direct_pragma_call_ids:
+            add_indirect_hazards(node, _node_text(node, src), target_text)
+
+    for node in possible_invocations.values():
+        add_indirect_hazards(node, _node_text(node, src))
+
+    operations.sort(key=lambda operation: operation.position)
+    sorted_barriers = sorted(barriers)
+    events: dict[str, list[_CppMacroEvent]] = {}
+    current: dict[str, _CppMacroEvent] = {}
+    stacks: dict[str, list[_CppMacroStackEntry]] = {}
+    barrier_index = 0
+
+    def append_event(operation: _CppMacroOperation, event: _CppMacroEvent) -> None:
+        events.setdefault(operation.name, []).append(event)
+        current[operation.name] = event
+
+    for operation in operations:
+        crossed_barrier = False
+        while (
+            barrier_index < len(sorted_barriers)
+            and sorted_barriers[barrier_index] < operation.position
+        ):
+            barrier_index += 1
+            crossed_barrier = True
+        if crossed_barrier:
+            # Includes and opaque pragma wrappers may mutate both the macro
+            # and its push/pop stack. A later local definition can establish
+            # the current value again, but only a later local push can
+            # establish a stack entry that is safe to restore.
+            current.clear()
+            stacks.clear()
+
+        branch_path = _cpp_preproc_branch_path(operation.node)
+        if operation.action in {
+            _CppMacroAction.DEFINE_EMPTY,
+            _CppMacroAction.DEFINE_OTHER,
+            _CppMacroAction.UNDEFINE,
+            _CppMacroAction.UNKNOWN,
+        }:
+            state = {
+                _CppMacroAction.DEFINE_EMPTY: _CppMacroState.EMPTY_OBJECT,
+                _CppMacroAction.DEFINE_OTHER: _CppMacroState.NOT_EMPTY_OBJECT,
+                _CppMacroAction.UNDEFINE: _CppMacroState.UNDEFINED,
+                _CppMacroAction.UNKNOWN: _CppMacroState.UNKNOWN,
+            }[operation.action]
+            append_event(
+                operation,
+                _CppMacroEvent(
+                    position=operation.position,
+                    state=state,
+                    definition=operation.definition,
+                    branch_path=branch_path,
+                ),
+            )
+            continue
+
+        if operation.action is _CppMacroAction.PUSH:
+            snapshot = current.get(operation.name)
+            if (
+                snapshot is not None
+                and branch_path[: len(snapshot.branch_path)] != snapshot.branch_path
+            ):
+                snapshot = None
+            stacks.setdefault(operation.name, []).append(
+                _CppMacroStackEntry(event=snapshot, branch_path=branch_path)
+            )
+            continue
+
+        stack = stacks.get(operation.name, [])
+        entry = stack.pop() if stack else None
+        current_event = current.get(operation.name)
+        if (
+            entry is None
+            and current_event is not None
+            and bisect_left(sorted_barriers, operation.position) == 0
+            and branch_path[: len(current_event.branch_path)] == current_event.branch_path
+        ):
+            restored = _CppMacroEvent(
+                position=operation.position,
+                state=current_event.state,
+                definition=current_event.definition,
+                branch_path=branch_path,
+            )
+        elif (
+            entry is None
+            or branch_path[: len(entry.branch_path)] != entry.branch_path
+            or entry.event is None
+        ):
+            restored = _CppMacroEvent(
+                position=operation.position,
+                state=_CppMacroState.UNKNOWN,
+                branch_path=branch_path,
+            )
+            if entry is not None:
+                stack.clear()
+        else:
+            restored = _CppMacroEvent(
+                position=operation.position,
+                state=entry.event.state,
+                definition=entry.event.definition,
+                branch_path=branch_path,
+            )
+        append_event(operation, restored)
+
+    return _CppMacroFacts(
+        events={name: tuple(name_events) for name, name_events in events.items()},
+        barriers=tuple(sorted(barriers)),
+    )
 
 
 def _is_bodiless_cpp_type(language: str, node_type: str, def_node: Node) -> bool:
@@ -628,16 +1130,32 @@ class ASTParser:
         if file_info.language in _TS_JS_LANGUAGES:
             ts_deferred_exports = ts_deferred_export_names(src)
 
-        # tree-sitter-cpp parses ``struct EXPORT Name { ... }`` as a
-        # function_definition whose return type is ``struct EXPORT`` and whose
-        # bare declarator is the real type name. cpp.scm marks those matches so
+        # tree-sitter-cpp parses ``struct EXPORT Name { ... }`` and
+        # ``struct EXPORT Name;`` with ``EXPORT`` as the specifier name and the
+        # real type name as a bare declarator. cpp.scm marks those matches so
         # the specifier can keep its class/struct kind while the outer recovery
-        # node acts as the type body for nested members.
-        cpp_export_type_defs: dict[int, tuple[Node, str]] = {}
+        # node supplies the real range and nested-member context when present.
+        cpp_export_type_defs: dict[int, _CppExportType] = {}
         cpp_export_type_parents: dict[int, str] = {}
+        cpp_export_type_capture_ids: set[int] = set()
         cpp_export_macro_names: set[str] = set()
+        cpp_export_macro_def_ids: set[int] = set()
         if file_info.language == "cpp":
-            for capture_dict in matches:
+            cpp_export_matches = [
+                capture_dict
+                for capture_dict in matches
+                if capture_dict.get("symbol.cpp_export_type", [])
+            ]
+            has_forward_candidate = any(
+                capture_dict["symbol.cpp_export_type"][0].type
+                in _CPP_EXPORT_FORWARD_DECLARATION_NODES
+                for capture_dict in cpp_export_matches
+            )
+            cpp_macro_facts = (
+                _build_cpp_macro_facts(matches, src) if has_forward_candidate else None
+            )
+
+            for capture_dict in cpp_export_matches:
                 type_nodes = capture_dict.get("symbol.cpp_export_type", [])
                 def_nodes = capture_dict.get("symbol.def", [])
                 name_nodes = capture_dict.get("symbol.name", [])
@@ -647,10 +1165,46 @@ class ASTParser:
                 type_name = _node_text(name_nodes[0], src)
                 if not type_name:
                     continue
-                outer_node = type_nodes[0]
-                cpp_export_type_defs[def_nodes[0].id] = (outer_node, type_name)
-                cpp_export_type_parents[outer_node.id] = type_name
-                cpp_export_macro_names.update(_node_text(node, src) for node in macro_nodes)
+                capture_node = type_nodes[0]
+                is_forward_declaration = capture_node.type in _CPP_EXPORT_FORWARD_DECLARATION_NODES
+                range_node = capture_node
+                if (
+                    is_forward_declaration
+                    and capture_node.parent is not None
+                    and capture_node.parent.type == "template_declaration"
+                ):
+                    range_node = capture_node.parent
+                active_macro_def: Node | None = None
+                if is_forward_declaration:
+                    if cpp_macro_facts is None:
+                        continue
+                    macro_names = {
+                        _cpp_normalize_identifier(_node_text(node, src)) for node in macro_nodes
+                    } - {""}
+                    if len(macro_names) != 1:
+                        continue
+                    macro_name = next(iter(macro_names))
+                    # A bodiless decorated type is syntactically identical to
+                    # an ordinary ``struct Tag variable;`` declaration.
+                    active_macro_def = cpp_macro_facts.empty_definition_at(macro_name, capture_node)
+                    if active_macro_def is None:
+                        continue
+                else:
+                    # Body-form matches are unambiguous. Preserve #1896's
+                    # name-based suppression across conditional definitions.
+                    cpp_export_macro_names.update(
+                        _cpp_normalize_identifier(_node_text(node, src)) for node in macro_nodes
+                    )
+                cpp_export_type_defs[def_nodes[0].id] = _CppExportType(
+                    range_node=range_node,
+                    name=type_name,
+                    is_forward_declaration=is_forward_declaration,
+                )
+                cpp_export_type_capture_ids.add(capture_node.id)
+                cpp_export_type_parents[capture_node.id] = type_name
+                cpp_export_type_parents[range_node.id] = type_name
+                if active_macro_def is not None:
+                    cpp_export_macro_def_ids.add(active_macro_def.id)
 
         cpp_export_type_parent_ids = frozenset(cpp_export_type_parents)
 
@@ -660,6 +1214,15 @@ class ASTParser:
             params_nodes = capture_dict.get("symbol.params", [])
             modifier_nodes = capture_dict.get("symbol.modifiers", [])
             receiver_nodes = capture_dict.get("symbol.receiver", [])
+            captured_export_type_nodes = capture_dict.get("symbol.cpp_export_type", [])
+
+            if (
+                captured_export_type_nodes
+                and captured_export_type_nodes[0].id not in cpp_export_type_capture_ids
+            ):
+                # The query also sees ordinary ``struct Tag variable;`` forms;
+                # discard only the unsupported recovery match.
+                continue
 
             if not def_nodes or not name_nodes:
                 continue
@@ -670,18 +1233,24 @@ class ASTParser:
                 continue
 
             export_type = cpp_export_type_defs.get(def_node.id)
-            if export_type is not None and name != export_type[1]:
+            if export_type is not None and name != export_type.name:
                 # The ordinary struct/class query sees the same specifier, but
                 # tree-sitter calls the export macro its name. Keep only the
                 # dedicated match whose name is the outer declarator.
                 continue
 
-            if def_node.type == "preproc_def" and name in cpp_export_macro_names:
-                # A locally stubbed empty export macro is declaration
-                # scaffolding, not a runtime variable in the symbol graph.
+            if def_node.type == "preproc_def" and (
+                _cpp_normalize_identifier(name) in cpp_export_macro_names
+                or def_node.id in cpp_export_macro_def_ids
+            ):
+                # Body-form macros are suppressed by name as before #1901;
+                # ambiguous forward declarations suppress only the exact
+                # active definition that made recovery safe.
                 continue
 
             start_line = def_node.start_point[0] + 1
+            if export_type is not None:
+                start_line = export_type.range_node.start_point[0] + 1
             dedup_key = (start_line, name)
             if dedup_key in seen:
                 continue
@@ -721,6 +1290,13 @@ class ASTParser:
             ):
                 kind = refine_kotlin_class_kind(def_node)
 
+            # Refine "class" kind for Pascal (declType wraps class / record /
+            # object / interface / class-helper / enum / set / array / alias
+            # in one node shape -- see the spec docstring and
+            # refine_pascal_type_kind's own docstring for the disambiguation).
+            if kind == "class" and file_info.language == "pascal" and def_node.type == "declType":
+                kind = refine_pascal_type_kind(def_node)
+
             # Dart: a function is a ``function_signature`` whose BODY is a
             # sibling ``function_body`` node (members wrap the signature in
             # ``method_signature``). Two consequences the generic path can't
@@ -731,7 +1307,7 @@ class ASTParser:
             # signature line.
             end_line = def_node.end_point[0] + 1
             if export_type is not None:
-                end_line = export_type[0].end_point[0] + 1
+                end_line = export_type.range_node.end_point[0] + 1
             if file_info.language == "dart" and node_type in (
                 "function_signature",
                 "getter_signature",
@@ -891,6 +1467,12 @@ class ASTParser:
             if parent_name is None and file_info.language == "pascal" and name_nodes:
                 parent_name = _qualified_pascal_parent(name_nodes[0], src)
 
+            # A ``field_declaration`` cannot occur outside a class body, so a
+            # missing parent means the class did not parse. Grammar recovery,
+            # not a member function.
+            if node_type == "function_declarator" and parent_name is None:
+                continue
+
             # Upgrade function → method when a parent class is detected
             if parent_name and kind == "function":
                 kind = "method"
@@ -934,6 +1516,7 @@ class ASTParser:
                     is_exported_symbol=is_exported_symbol,
                     is_declaration=(
                         node_type in config.declaration_node_types
+                        or (export_type is not None and export_type.is_forward_declaration)
                         or (
                             export_type is None
                             and _is_bodiless_cpp_type(file_info.language, node_type, def_node)
@@ -1037,7 +1620,25 @@ class ASTParser:
                         Import(
                             raw_statement=raw,
                             module_path=unit_name,
-                            imported_names=[],
+                            # ``uses UnitA;`` exposes UnitA's ENTIRE public
+                            # interface section, unlike Python/JS's
+                            # name-scoped `from x import y` -- Pascal has no
+                            # per-symbol import syntax to name a specific
+                            # one. ``imported_names=[]`` (empty, not
+                            # wildcard) meant dead_code/analyzer.py's
+                            # `sym_name in imported_names` / `"*" in
+                            # imported_names` file-level unused-export
+                            # rescue could structurally never fire for
+                            # Pascal -- every public symbol fell straight
+                            # through to the (now Phase-1-fixed, but still
+                            # best-effort) symbol-level call/type_use
+                            # rescue instead. ``["*"]`` is this codebase's
+                            # existing wildcard-import sentinel (see the
+                            # Python `import *` and CJS re-export branches
+                            # of this function) and is the semantically
+                            # correct value here, not a workaround: it says
+                            # exactly what a Pascal `uses` clause does.
+                            imported_names=["*"],
                             is_relative=False,
                             resolved_file=None,
                             bindings=[],
@@ -1265,6 +1866,7 @@ class ASTParser:
             arg_nodes = capture_dict.get("call.arguments", [])
             receiver_nodes = capture_dict.get("call.receiver", [])
             receiver_call_nodes = capture_dict.get("call.receiver_call", [])
+            scope_nodes = capture_dict.get("call.scope", [])
 
             if not site_nodes or not target_nodes:
                 continue
@@ -1286,6 +1888,7 @@ class ASTParser:
                 if receiver_call_nodes
                 else None
             )
+            scope_name = _node_text(scope_nodes[0], src).strip() if scope_nodes else None
 
             arg_count: int | None = None
             if arg_nodes:
@@ -1302,6 +1905,7 @@ class ASTParser:
                     line=line,
                     argument_count=arg_count,
                     receiver_call=receiver_call,
+                    scope_name=scope_name,
                     edge_type=(
                         "references"
                         if site_node.type in config.reference_call_node_types
@@ -1314,9 +1918,16 @@ class ASTParser:
         for call in calls:
             key = (call.line, call.target_name, call.receiver_name)
             existing = deduplicated.get(key)
-            if existing is None or (
-                existing.receiver_call is None
-                and call.receiver_call is not None
+            # Two of the three scoped-call patterns can match the same two-part call
+            # (one keeps the qualifier, one does not) and both dedup to this key, so
+            # the richer record has to win whichever order they arrive in. The
+            # three-part pattern (ns::util::fn()) never collides here, it's the
+            # only pattern that can match a nested qualified_identifier, so it
+            # always lands as a fresh key.
+            if (
+                existing is None
+                or (existing.receiver_call is None and call.receiver_call is not None)
+                or (existing.scope_name is None and call.scope_name is not None)
             ):
                 deduplicated[key] = call
         return list(deduplicated.values())

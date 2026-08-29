@@ -14,7 +14,9 @@ import type {
   HealthFileBreakdownResponse,
   HealthOverviewResponse,
   HealthTrendResponse,
+  PerformanceOpportunityDetail,
   PerformanceOpportunityPage,
+  PerformanceOpportunityQuery,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
 } from "@repowise-dev/types/health";
@@ -45,6 +47,16 @@ export type {
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
   ModuleCoverageRow,
+  PerformanceActionabilityState,
+  PerformanceExecutionContext,
+  PerformanceFacets,
+  PerformanceOpportunity,
+  PerformanceOpportunityConfidence,
+  PerformanceOpportunityDetail,
+  PerformanceOpportunityEvidence,
+  PerformanceOpportunityPage,
+  PerformanceOpportunityQuery,
+  PerformanceOpportunitySummary,
   RefactoringQuery,
   RefactoringTarget,
   RefactoringTargetsResponse,
@@ -73,19 +85,37 @@ export async function listHealthFindings(
   return apiGet<HealthFinding[]>(`/api/repos/${repoId}/health/findings`, opts);
 }
 
-export interface PerformanceOpportunityPageParams {
-  context?: "production_tooling" | "test" | "all";
-  limit?: number;
-  offset?: number;
-}
+/** The canonical query shape lives with the wire types. */
+export type PerformanceOpportunityPageParams = PerformanceOpportunityQuery;
 
 export async function getPerformanceOpportunities(
   repoId: string,
-  opts: PerformanceOpportunityPageParams = {},
+  opts: PerformanceOpportunityQuery = {},
 ): Promise<PerformanceOpportunityPage> {
   return apiGet<PerformanceOpportunityPage>(
     `/api/repos/${repoId}/health/performance-opportunities`,
-    { context: opts.context, limit: opts.limit, offset: opts.offset },
+    {
+      context: opts.context,
+      boundary: opts.boundary,
+      confidence: opts.confidence,
+      actionability: opts.actionability,
+      view: opts.view,
+      sort: opts.sort,
+      limit: opts.limit,
+      offset: opts.offset,
+    },
+  );
+}
+
+/** One opportunity by its stable id, with bounded evidence. */
+export async function getPerformanceOpportunity(
+  repoId: string,
+  opportunityId: string,
+  opts: { evidenceLimit?: number; evidenceOffset?: number } = {},
+): Promise<PerformanceOpportunityDetail> {
+  return apiGet<PerformanceOpportunityDetail>(
+    `/api/repos/${repoId}/health/performance-opportunities/${encodeURIComponent(opportunityId)}`,
+    { evidence_limit: opts.evidenceLimit, evidence_offset: opts.evidenceOffset },
   );
 }
 

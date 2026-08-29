@@ -7,6 +7,7 @@ detection that decides whether picking a provider asks for an API key.
 
 from __future__ import annotations
 
+import os
 from io import StringIO
 from typing import Any
 
@@ -276,7 +277,7 @@ def test_selecting_an_unreachable_ollama_never_prompts_for_a_key(monkeypatch: An
 
     monkeypatch.setattr(provider_selection, "_detect_provider_status", detect)
 
-    providers = list(provider_selection._PROVIDER_ENV)
+    providers = list(provider_selection._PROVIDER_CHOICES)
     answers = iter([str(providers.index("ollama") + 1), str(providers.index("openai") + 1)])
     monkeypatch.setattr(provider_selection.Prompt, "ask", lambda *a, **kw: next(answers))
 
@@ -288,3 +289,221 @@ def test_selecting_an_unreachable_ollama_never_prompts_for_a_key(monkeypatch: An
     assert chosen == "openai"
     assert "runs on your machine" in out
     assert "ollama serve" in out
+
+
+def test_explicit_openai_setup_prompts_for_key_and_gateway_url(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    """``init --provider openai`` can onboard a local gateway inline.
+
+    The generic OpenAI adapter is how 9router and other compatible gateways
+    are configured. A user should not have to discover and export two env vars
+    before the command can even start.
+    """
+    # Use tracked empty values rather than delenv: when the variables are
+    # initially absent, MonkeyPatch cannot restore direct os.environ writes
+    # made by the production prompt, which would leak into later tests.
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("OPENAI_BASE_URL", "")
+    answers = iter(["router-secret", "http://localhost:20128/v1"])
+    monkeypatch.setattr(provider_selection.click, "prompt", lambda *_a, **_k: next(answers))
+    monkeypatch.setattr(provider_selection.click, "confirm", lambda *_a, **_k: True)
+    console, buf = _console()
+
+    configured = provider_selection.interactive_provider_credentials(
+        console,
+        "openai",
+        repo_path=tmp_path,
+    )
+
+    assert configured is True
+    assert os.environ["OPENAI_API_KEY"] == "router-secret"
+    assert os.environ["OPENAI_BASE_URL"] == "http://localhost:20128/v1"
+    env_text = (tmp_path / ".repowise" / ".env").read_text(encoding="utf-8")
+    assert "OPENAI_API_KEY=router-secret" in env_text
+    assert "OPENAI_BASE_URL=http://localhost:20128/v1" in env_text
+    assert "router-secret" not in buf.getvalue()
+
+
+def test_explicit_openai_setup_prompts_for_url_when_key_is_already_set(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    """A pre-exported key must not hide the local-gateway URL question."""
+    monkeypatch.setenv("OPENAI_API_KEY", "router-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "")
+    monkeypatch.setattr(
+        provider_selection.click,
+        "prompt",
+        lambda *_a, **_k: "http://localhost:20128/v1",
+    )
+    console, _ = _console()
+
+    configured = provider_selection.interactive_provider_credentials(
+        console,
+        "openai",
+        repo_path=tmp_path,
+    )
+
+    assert configured is True
+    assert os.environ["OPENAI_BASE_URL"] == "http://localhost:20128/v1"
+
+
+def test_provider_status_separates_official_and_custom_openai(monkeypatch: Any) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "router-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:20128/v1")
+    monkeypatch.setattr(provider_selection, "_detect_codex_cli_status", lambda: (False, False))
+    monkeypatch.setattr(provider_selection, "_detect_opencode_status", lambda: False)
+    monkeypatch.setattr(provider_selection, "_detect_ollama_status", lambda: False)
+
+    custom_status = provider_selection._detect_provider_status()
+    assert provider_selection._OPENAI_COMPATIBLE_CHOICE in custom_status
+    assert "openai" not in custom_status
+
+    monkeypatch.setenv("OPENAI_BASE_URL", provider_selection._OPENAI_DEFAULT_BASE_URL)
+    official_status = provider_selection._detect_provider_status()
+    assert "openai" in official_status
+    assert provider_selection._OPENAI_COMPATIBLE_CHOICE not in official_status
+
+
+def test_official_openai_reuses_key_from_previous_custom_setup(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "existing-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:20128/v1")
+    monkeypatch.setattr(provider_selection, "_detect_codex_cli_status", lambda: (False, False))
+    monkeypatch.setattr(provider_selection, "_detect_opencode_status", lambda: False)
+    monkeypatch.setattr(provider_selection, "_detect_ollama_status", lambda: False)
+    openai_idx = str(provider_selection._PROVIDER_CHOICES.index("openai") + 1)
+    monkeypatch.setattr(provider_selection.Prompt, "ask", lambda *_a, **_k: openai_idx)
+    monkeypatch.setattr(
+        provider_selection,
+        "_prompt_api_key",
+        lambda *_a, **_k: pytest.fail("an existing OpenAI key should be reused"),
+    )
+    console, _ = _console()
+
+    chosen = provider_selection._interactive_provider_name(
+        console,
+        None,
+        repo_path=tmp_path,
+    )
+
+    assert chosen == "openai"
+    assert os.environ["OPENAI_BASE_URL"] == provider_selection._OPENAI_DEFAULT_BASE_URL
+    env_text = (tmp_path / ".repowise" / ".env").read_text(encoding="utf-8")
+    assert f"OPENAI_BASE_URL={provider_selection._OPENAI_DEFAULT_BASE_URL}" in env_text
+    assert "existing-secret" not in env_text
+
+
+def test_custom_gateway_picker_discovers_model_and_persists_setup(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("OPENAI_BASE_URL", "")
+    monkeypatch.setattr(provider_selection, "_detect_provider_status", lambda: {})
+    monkeypatch.setattr(
+        provider_selection,
+        "_discover_openai_compatible_models",
+        lambda _repo, **_kwargs: (
+            provider_selection.ProviderModelOption(
+                model="ag/gemini-3.7-flash-medium",
+                reasoning_modes=("auto",),
+                recommended=True,
+                source="api",
+            ),
+            provider_selection.ProviderModelOption(
+                model="ds/deepseek-v4-flash",
+                reasoning_modes=("auto",),
+                source="api",
+            ),
+        ),
+    )
+    provider_idx = str(
+        provider_selection._PROVIDER_CHOICES.index(provider_selection._OPENAI_COMPATIBLE_CHOICE) + 1
+    )
+    menu_answers = iter([provider_idx, "1"])
+    prompt_answers = iter(["localhost:20128/v1", "router-secret"])
+    monkeypatch.setattr(provider_selection.Prompt, "ask", lambda *_a, **_k: next(menu_answers))
+    monkeypatch.setattr(provider_selection.click, "prompt", lambda *_a, **_k: next(prompt_answers))
+    monkeypatch.setattr(provider_selection.click, "confirm", lambda *_a, **_k: True)
+    console, buf = _console()
+
+    result = provider_selection.interactive_provider_config_select(
+        console,
+        None,
+        repo_path=tmp_path,
+    )
+
+    assert result.provider_name == "openai"
+    assert result.model == "ag/gemini-3.7-flash-medium"
+    assert os.environ["OPENAI_BASE_URL"] == "http://localhost:20128/v1"
+    env_text = (tmp_path / ".repowise" / ".env").read_text(encoding="utf-8")
+    assert "OPENAI_BASE_URL=http://localhost:20128/v1" in env_text
+    assert "OPENAI_API_KEY=router-secret" in env_text
+    assert "router-secret" not in buf.getvalue()
+    assert "discovered 2 model(s)" in buf.getvalue()
+    assert "OpenAI-compatible" in buf.getvalue()
+
+
+def test_custom_gateway_picker_allows_manual_model_when_discovery_fails(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    monkeypatch.setenv("REPOWISE_NO_SAVE_KEY", "")
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("OPENAI_BASE_URL", "")
+    monkeypatch.setattr(provider_selection, "_detect_provider_status", lambda: {})
+    monkeypatch.setattr(
+        provider_selection,
+        "_discover_openai_compatible_models",
+        lambda _repo, **_kwargs: (_ for _ in ()).throw(RuntimeError("401 Unauthorized")),
+    )
+    provider_idx = str(
+        provider_selection._PROVIDER_CHOICES.index(provider_selection._OPENAI_COMPATIBLE_CHOICE) + 1
+    )
+    menu_answers = iter([provider_idx, "2", "ag/manual-model"])
+    prompt_answers = iter(["http://localhost:20128/v1", "router-secret"])
+    monkeypatch.setattr(provider_selection.Prompt, "ask", lambda *_a, **_k: next(menu_answers))
+    monkeypatch.setattr(provider_selection.click, "prompt", lambda *_a, **_k: next(prompt_answers))
+    monkeypatch.setattr(provider_selection.click, "confirm", lambda *_a, **_k: False)
+    console, buf = _console()
+
+    result = provider_selection.interactive_provider_config_select(
+        console,
+        None,
+        repo_path=tmp_path,
+    )
+
+    assert result == provider_selection.ProviderSelection("openai", "ag/manual-model", "auto")
+    assert "401 Unauthorized" in buf.getvalue()
+    env_text = (tmp_path / ".repowise" / ".env").read_text(encoding="utf-8")
+    assert "OPENAI_BASE_URL=http://localhost:20128/v1" in env_text
+    assert "router-secret" not in env_text
+
+
+def test_custom_gateway_no_save_key_still_persists_endpoint(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    monkeypatch.setenv("REPOWISE_NO_SAVE_KEY", "")
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("OPENAI_BASE_URL", "")
+    monkeypatch.setattr(provider_selection, "_detect_provider_status", lambda: {})
+    provider_idx = str(
+        provider_selection._PROVIDER_CHOICES.index(provider_selection._OPENAI_COMPATIBLE_CHOICE) + 1
+    )
+    menu_answers = iter([provider_idx])
+    prompt_answers = iter(["http://localhost:20128/v1", "router-secret"])
+    monkeypatch.setattr(provider_selection.Prompt, "ask", lambda *_a, **_k: next(menu_answers))
+    monkeypatch.setattr(provider_selection.click, "prompt", lambda *_a, **_k: next(prompt_answers))
+    console, _ = _console()
+
+    result = provider_selection.interactive_provider_config_select(
+        console,
+        "ag/gemini-3.7-flash-medium",
+        repo_path=tmp_path,
+        save_key=False,
+    )
+
+    assert result.model == "ag/gemini-3.7-flash-medium"
+    env_text = (tmp_path / ".repowise" / ".env").read_text(encoding="utf-8")
+    assert "OPENAI_BASE_URL=http://localhost:20128/v1" in env_text
+    assert "OPENAI_API_KEY" not in env_text

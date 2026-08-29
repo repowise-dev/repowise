@@ -17,6 +17,15 @@ from rich.table import Table
 
 from repowise.cli.ui.brand import BRAND, BRAND_STYLE, OK, VALUE, WARN
 from repowise.cli.ui.env_persistence import _save_key_to_dotenv
+from repowise.cli.ui.openai_compatible import (
+    discover_models as _discover_openai_compatible_models,
+)
+from repowise.cli.ui.openai_compatible import (
+    persist_setup as _persist_openai_compatible_setup,
+)
+from repowise.cli.ui.openai_compatible import (
+    prompt_setup as _prompt_openai_compatible_setup_values,
+)
 from repowise.core.providers.llm.base import ProviderModelOption
 from repowise.core.reasoning import ReasoningMode, normalize_reasoning
 
@@ -86,6 +95,16 @@ _PROVIDER_NOTES: dict[str, str] = {
 }
 
 _OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
+# The OpenAI adapter is also the generic adapter for local gateways. Keep the
+# official endpoint as the prompt default, while letting a user replace it
+# inline with a vLLM/SGLang/9router URL without exporting another env var first.
+_OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+_OPENAI_COMPATIBLE_CHOICE = "openai_compatible"
+_PROVIDER_CHOICES = tuple(
+    choice
+    for provider in _PROVIDER_ENV
+    for choice in ((provider, _OPENAI_COMPATIBLE_CHOICE) if provider == "openai" else (provider,))
+)
 # Enough for a loopback connect; the table renders before any prompt, so a slow
 # or firewalled endpoint must not hold the whole screen.
 _OLLAMA_PROBE_TIMEOUT_S = 0.3
@@ -187,6 +206,8 @@ def _detect_provider_status() -> dict[str, str]:
     truthiness is load-bearing; the value is for debugging.
     """
     status: dict[str, str] = {}
+    openai_base_url = (os.environ.get("OPENAI_BASE_URL") or "").rstrip("/")
+    openai_has_key = bool((os.environ.get("OPENAI_API_KEY") or "").strip())
     for prov, env_var in _PROVIDER_ENV.items():
         if prov == "gemini":
             if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
@@ -204,6 +225,11 @@ def _detect_provider_status() -> dict[str, str]:
         elif prov == "ollama":
             if _detect_ollama_status():
                 status[prov] = ollama_base_url()
+        elif prov == "openai":
+            if openai_has_key and openai_base_url in ("", _OPENAI_DEFAULT_BASE_URL):
+                status[prov] = env_var
+            elif openai_has_key and openai_base_url:
+                status[_OPENAI_COMPATIBLE_CHOICE] = env_var
         elif os.environ.get(env_var):
             status[prov] = env_var
     return status
@@ -300,12 +326,13 @@ def _interactive_provider_name(
     model_flag: str | None,
     *,
     repo_path: Path | None = None,
+    save_key: bool = True,
 ) -> str:
     """Show provider table, handle selection + inline key entry + save.
 
     Returns the chosen provider name.
     """
-    providers = list(_PROVIDER_ENV.keys())  # gemini first
+    providers = list(_PROVIDER_CHOICES)  # gemini first
     detected = _detect_provider_status()
 
     # --- provider table ---
@@ -325,11 +352,17 @@ def _interactive_provider_name(
     # dim note beside the name, so the Status column can be read at a glance
     # instead of decoded from three phrasings and two colours.
     for idx, prov in enumerate(providers, 1):
+        runtime_provider = "openai" if prov == _OPENAI_COMPATIBLE_CHOICE else prov
         ready = prov in detected
         status_text = f"[{OK}]✓ ready[/]" if ready else "[dim]✗ not set up[/dim]"
-        note = _PROVIDER_NOTES.get(prov, "")
-        label = f"{prov} [dim]({note})[/dim]" if note else prov
-        table.add_row(f"[{idx}]", label, status_text, _PROVIDER_DEFAULTS.get(prov, ""))
+        if prov == _OPENAI_COMPATIBLE_CHOICE:
+            label = "OpenAI-compatible [dim](Custom / local gateway)[/dim]"
+            default_model = "discover from /models"
+        else:
+            note = _PROVIDER_NOTES.get(prov, "")
+            label = f"{prov} [dim]({note})[/dim]" if note else prov
+            default_model = _PROVIDER_DEFAULTS.get(runtime_provider, "")
+        table.add_row(f"[{idx}]", label, status_text, default_model)
 
     console.print()
     console.print(table)
@@ -355,8 +388,19 @@ def _interactive_provider_name(
     )
     chosen = providers[int(chosen_idx) - 1]
 
+    if chosen == _OPENAI_COMPATIBLE_CHOICE:
+        return chosen
+    if chosen == "openai":
+        # The official and custom rows intentionally share the core adapter.
+        # Pin the official row so a previously saved custom endpoint cannot
+        # silently redirect an OpenAI selection back to the local gateway.
+        os.environ["OPENAI_BASE_URL"] = _OPENAI_DEFAULT_BASE_URL
+
     # --- inline API key entry if missing ---
-    if chosen not in detected:
+    has_official_openai_key = chosen == "openai" and bool(
+        (os.environ.get("OPENAI_API_KEY") or "").strip()
+    )
+    if chosen not in detected and not has_official_openai_key:
         setup_lines = _LOCAL_PROVIDER_SETUP.get(chosen)
         if setup_lines is not None:
             # Nothing to paste: these authenticate out of band or run locally,
@@ -364,7 +408,12 @@ def _interactive_provider_name(
             console.print()
             for line in setup_lines():
                 console.print(line)
-            return _interactive_provider_name(console, model_flag, repo_path=repo_path)
+            return _interactive_provider_name(
+                console,
+                model_flag,
+                repo_path=repo_path,
+                save_key=save_key,
+            )
         env_var = _PROVIDER_ENV[chosen]
         signup_url = _PROVIDER_SIGNUP.get(chosen, "")
         console.print()
@@ -372,11 +421,24 @@ def _interactive_provider_name(
         if signup_url:
             console.print(f"  Get your API key here: [{BRAND}]{signup_url}[/]")
         console.print()
-        key = _prompt_api_key(console, chosen, env_var, repo_path=repo_path)
+        key = _prompt_api_key(
+            console,
+            chosen,
+            env_var,
+            repo_path=repo_path,
+            save_key=save_key,
+        )
         if not key:
             console.print(f"  [{WARN}]Skipped. Please select another provider.[/]")
-            return _interactive_provider_name(console, model_flag, repo_path=repo_path)
+            return _interactive_provider_name(
+                console,
+                model_flag,
+                repo_path=repo_path,
+                save_key=save_key,
+            )
 
+    if chosen == "openai" and repo_path is not None:
+        _save_key_to_dotenv(repo_path, "OPENAI_BASE_URL", _OPENAI_DEFAULT_BASE_URL)
     return chosen
 
 
@@ -620,13 +682,27 @@ def interactive_provider_config_select(
     reasoning_flag: str | None = None,
     *,
     repo_path: Path | None = None,
+    save_key: bool = True,
 ) -> ProviderSelection:
     """Show provider/model/reasoning selection for interactive init.
 
     Returns a :class:`ProviderSelection` carrying the chosen provider name,
     model, and reasoning mode.
     """
-    chosen = _interactive_provider_name(console, model_flag, repo_path=repo_path)
+    chosen = _interactive_provider_name(
+        console,
+        model_flag,
+        repo_path=repo_path,
+        save_key=save_key,
+    )
+    if chosen == _OPENAI_COMPATIBLE_CHOICE:
+        return _interactive_openai_compatible_select(
+            console,
+            model_flag,
+            reasoning_flag,
+            repo_path=repo_path,
+            save_key=save_key,
+        )
     default_model = _PROVIDER_DEFAULTS.get(chosen, "")
 
     if model_flag:
@@ -740,6 +816,7 @@ def _prompt_api_key(
     env_var: str,
     *,
     repo_path: Path | None = None,
+    save_key: bool = True,
 ) -> str | None:
     """Prompt for an API key, set env var, and optionally save to .repowise/.env.
 
@@ -759,7 +836,7 @@ def _prompt_api_key(
     console.print(f"  [{OK}]✓ Key set for this session[/]")
 
     # Offer to save for future runs
-    if repo_path is not None:
+    if repo_path is not None and save_key:
         save = click.confirm(
             "  Save this key to .repowise/.env so future runs find it? "
             "(the file is git-ignored, so it will not be committed)",
@@ -777,6 +854,192 @@ def _prompt_api_key(
             from repowise.cli.helpers import NO_SAVE_KEY_ENV
 
             os.environ[NO_SAVE_KEY_ENV] = "1"
+    elif repo_path is not None:
+        # Keep --no-save-key visible to the endpoint prompt below too. The
+        # final init persistence pass already honors this flag, but the
+        # interactive prompt writes values immediately.
+        from repowise.cli.helpers import NO_SAVE_KEY_ENV
+
+        os.environ[NO_SAVE_KEY_ENV] = "1"
     console.print()
 
     return key
+
+
+def _prompt_openai_base_url(
+    console: Console,
+    *,
+    repo_path: Path | None = None,
+) -> str | None:
+    """Prompt for an optional OpenAI-compatible endpoint and persist it.
+
+    This is deliberately a separate question from the API key: the same
+    ``openai`` provider can target api.openai.com, a local gateway, or a
+    self-hosted server. An existing env value wins, so re-running init never
+    asks a question the user already answered.
+    """
+    env_var = "OPENAI_BASE_URL"
+    current = (os.environ.get(env_var) or "").strip()
+    if current:
+        return current
+
+    label = "  Base URL (OpenAI-compatible endpoint)"
+    value = click.prompt(label, default=_OPENAI_DEFAULT_BASE_URL, show_default=True)
+    value = value.strip()
+    if not value:
+        return None
+
+    os.environ[env_var] = value
+    if repo_path is not None:
+        # --no-save-key governs secrets, not the endpoint needed to recreate
+        # this provider. Base URLs are non-secret and remain repo-local.
+        _save_key_to_dotenv(repo_path, env_var, value)
+        console.print(f"  [{OK}]✓ Saved {env_var} to .repowise/.env[/]")
+    console.print()
+    return value
+
+
+def _prompt_exact_model(console: Console, *, default: str = "") -> ProviderModelOption:
+    while True:
+        model = Prompt.ask(
+            "  Exact model id",
+            default=default,
+            show_default=bool(default),
+            console=console,
+        ).strip()
+        if model:
+            return ProviderModelOption(
+                model=model,
+                label=model,
+                reasoning_modes=("auto",),
+                source="fallback",
+            )
+        console.print(f"  [{WARN}]Model id cannot be empty.[/]")
+
+
+def _interactive_openai_compatible_select(
+    console: Console,
+    model_flag: str | None,
+    reasoning_flag: str | None,
+    *,
+    repo_path: Path | None,
+    save_key: bool,
+) -> ProviderSelection:
+    """Configure, verify, and select a model from a custom OpenAI gateway."""
+    console.print()
+    console.print("  [bold]OpenAI-compatible custom gateway[/bold]")
+    console.print("  [dim]Works with 9router, vLLM, SGLang, and compatible /v1 APIs.[/dim]")
+
+    while True:
+        base_url, api_key = _prompt_openai_compatible_setup_values(
+            console,
+            official_base_url=_OPENAI_DEFAULT_BASE_URL,
+        )
+        if model_flag:
+            selected = ProviderModelOption(
+                model=model_flag,
+                label=model_flag,
+                reasoning_modes=("auto",),
+                source="fallback",
+            )
+            break
+        try:
+            options = _discover_openai_compatible_models(
+                repo_path,
+                fallback_model=_PROVIDER_DEFAULTS["openai"],
+            )
+        except Exception as exc:
+            console.print(f"  [{WARN}]Could not read {base_url}/models:[/] {exc}")
+            console.print("  [1] Retry endpoint or key")
+            console.print("  [2] Enter an exact model id anyway")
+            console.print("  [3] Back to provider selection")
+            action = Prompt.ask(
+                "  Continue",
+                choices=["1", "2", "3"],
+                default="1",
+                console=console,
+            )
+            if action == "1":
+                continue
+            if action == "3":
+                return interactive_provider_config_select(
+                    console,
+                    model_flag,
+                    reasoning_flag,
+                    repo_path=repo_path,
+                    save_key=save_key,
+                )
+            selected = _prompt_exact_model(console)
+            break
+
+        console.print(f"  [{OK}]✓ Connected[/] — discovered {len(options):,} model(s).")
+        selected = _select_model_option(
+            console,
+            "openai",
+            options,
+            default_model=options[0].model,
+            repo_path=repo_path,
+        )
+        break
+
+    _persist_openai_compatible_setup(
+        console,
+        repo_path,
+        base_url=base_url,
+        api_key=api_key,
+        save_key=save_key,
+    )
+    reasoning = _select_reasoning_mode(console, selected, reasoning_flag)
+    return ProviderSelection("openai", selected.model, reasoning)
+
+
+def interactive_provider_credentials(
+    console: Console,
+    provider: str,
+    *,
+    repo_path: Path | None = None,
+    save_key: bool = True,
+) -> bool:
+    """Onboard an explicitly selected provider from a terminal.
+
+    Returns ``True`` when a missing credential was supplied, ``False`` when
+    there was nothing this prompt could configure or the user skipped it.
+    The OpenAI provider additionally asks for a base URL, which is the small
+    piece that makes the generic adapter useful for local gateways such as
+    9router.
+    """
+    from repowise.core.providers.llm.registry import PROVIDER_API_KEY_ENVS
+
+    env_vars = PROVIDER_API_KEY_ENVS.get(provider, ())
+    if not env_vars:
+        return False
+
+    configured = False
+    key_present = any((os.environ.get(name) or "").strip() for name in env_vars)
+    if not key_present:
+        env_var = env_vars[0]
+        console.print()
+        console.print(f"  [bold]{provider}[/bold] setup")
+        console.print(f"  API key goes in [{VALUE}]{env_var}[/]. It will be hidden while typing.")
+        key = _prompt_api_key(
+            console,
+            provider,
+            env_var,
+            repo_path=repo_path,
+            save_key=save_key,
+        )
+        if not key:
+            return False
+        configured = True
+
+    # The generic OpenAI adapter is the supported path for all compatible
+    # gateways. Hosted OpenAI users can simply press Enter; local users paste
+    # their gateway's /v1 URL here. Ask this when an explicit OpenAI provider
+    # has a key but no endpoint too, so an existing OPENAI_API_KEY does not
+    # force a local-gateway user back to shell configuration.
+    if provider == "openai" and _prompt_openai_base_url(
+        console,
+        repo_path=repo_path,
+    ):
+        configured = True
+    return configured

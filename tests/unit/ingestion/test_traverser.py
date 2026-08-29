@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,7 @@ from repowise.core.ingestion.traverser import (
     _compile_gitignore,
     _detect_language,
     _is_generated,
+    _scan_package_dir,
 )
 
 
@@ -1109,3 +1112,138 @@ class TestIsGenerated:
         p = tmp_path / "api_pb2.py"
         p.write_text("x = 1\n")
         assert _is_generated(p) is True
+
+
+class TestConcurrentLazyInit:
+    """The lazy scans behind ``_build_file_info`` run once, not once per worker.
+
+    ``build_repo_graph`` maps ``_build_file_info`` over every path with ~2x
+    cpu_count workers, so an unsynchronised ``is None`` check is not a wasted
+    branch — it is one full repo walk per worker that wins the race.
+    """
+
+    def test_console_script_tables_is_collected_once(self, tmp_path: Path) -> None:
+        calls = 0
+        real = traverser_mod._collect_console_scripts
+
+        def counting(repo_root, **kwargs):
+            nonlocal calls
+            calls += 1
+            # Widen the window a real walk would occupy, so an unsynchronised
+            # implementation reliably loses the race instead of flaking.
+            time.sleep(0.05)
+            return real(repo_root, **kwargs)
+
+        traverser_mod._collect_console_scripts = counting
+        try:
+            tv = FileTraverser(tmp_path)
+            with ThreadPoolExecutor(max_workers=16) as pool:
+                results = list(pool.map(lambda _: tv._console_script_tables(), range(16)))
+        finally:
+            traverser_mod._collect_console_scripts = real
+
+        assert calls == 1
+        # Every caller sees the one published object, not a private copy.
+        assert all(r is results[0] for r in results)
+
+    def test_dir_ignore_cache_publishes_one_spec_per_directory(self, tmp_path: Path) -> None:
+        (tmp_path / "pkg").mkdir()
+        (tmp_path / "pkg" / ".gitignore").write_text("build/\n", encoding="utf-8")
+        tv = FileTraverser(tmp_path)
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            specs = list(pool.map(lambda _: tv._get_dir_ignore(tmp_path / "pkg"), range(16)))
+
+        assert all(s is specs[0] for s in specs)
+
+    def test_pre_seeded_root_entry_survives_concurrent_readers(self, tmp_path: Path) -> None:
+        tv = FileTraverser(tmp_path)
+        seeded = tv._dir_ignore_cache[str(tmp_path)]
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda _: tv._get_dir_ignore(tmp_path), range(8)))
+
+        assert tv._dir_ignore_cache[str(tmp_path)] is seeded
+
+
+def _never_pruned(_rel_dir: Path) -> bool:
+    """The old helpers applied no ignore layer; this is that, spelled out."""
+    return False
+
+
+class TestPackageScanPruning:
+    """The package scan answers from the files traversal actually indexes.
+
+    ``_scan_package_dir`` reads a package's primary language and its entry
+    points off one walk. Without the traverser's own boundary test it reads
+    them off directories that are never indexed, so a package could be
+    described entirely by files absent from the index.
+    """
+
+    def _pkg(self, tmp_path: Path, gitignore: str) -> Path:
+        (tmp_path / ".gitignore").write_text(gitignore, encoding="utf-8")
+        pkg = tmp_path / "pkg"
+        (pkg / "src").mkdir(parents=True)
+        (pkg / "package.json").write_text('{"name": "p"}', encoding="utf-8")
+        (pkg / "src" / "index.ts").write_text("export const a = 1;\n", encoding="utf-8")
+        return pkg
+
+    def test_gitignored_output_no_longer_decides_the_language(self, tmp_path: Path) -> None:
+        pkg = self._pkg(tmp_path, "pkg/out/\n")
+        out = pkg / "out"
+        out.mkdir()
+        # Enough generated JS to outvote the single real source.
+        for i in range(5):
+            (out / f"chunk{i}.js").write_text("var a=1;\n", encoding="utf-8")
+
+        tv = FileTraverser(tmp_path)
+        assert not any("/out/" in fi.path for fi in tv.traverse())
+
+        unpruned, _ = _scan_package_dir(pkg, tmp_path, is_pruned=_never_pruned)
+        pruned, _ = _scan_package_dir(pkg, tmp_path, is_pruned=tv.dir_chain_skipped)
+        assert unpruned == "javascript"
+        assert pruned == "typescript"
+
+    def test_entry_points_come_only_from_indexed_directories(self, tmp_path: Path) -> None:
+        pkg = self._pkg(tmp_path, "pkg/out/\n")
+        out = pkg / "out"
+        out.mkdir()
+        (out / "index.html").write_text("<html></html>\n", encoding="utf-8")
+        (pkg / "index.html").write_text("<html></html>\n", encoding="utf-8")
+
+        tv = FileTraverser(tmp_path)
+        _, unpruned = _scan_package_dir(pkg, tmp_path, is_pruned=_never_pruned)
+        _, pruned = _scan_package_dir(pkg, tmp_path, is_pruned=tv.dir_chain_skipped)
+
+        assert "pkg/out/index.html" in unpruned
+        assert "pkg/out/index.html" not in pruned
+        assert "pkg/index.html" in pruned
+
+    def test_a_committed_build_dir_is_excluded_too(self, tmp_path: Path) -> None:
+        """Not just gitignored trees. ``dist`` is in ``_BLOCKED_DIRS``, so the
+        traverser never indexes it even when it is committed — and a directory
+        nothing indexes must not name the package's language."""
+        pkg = self._pkg(tmp_path, "node_modules/\n")  # dist/ deliberately tracked
+        dist = pkg / "dist"
+        dist.mkdir()
+        # Outnumber the one real source rather than tie with it: `walk_repo`
+        # does not sort dirnames, so on a tie `max(counts, key=...)` returns
+        # whichever language the filesystem happened to yield first. That made
+        # this pass locally and fail on CI.
+        for i in range(5):
+            (dist / f"chunk{i}.js").write_text("var a=1;\n", encoding="utf-8")
+
+        tv = FileTraverser(tmp_path)
+        assert not any("/dist/" in fi.path for fi in tv.traverse())
+
+        unpruned, _ = _scan_package_dir(pkg, tmp_path, is_pruned=_never_pruned)
+        pruned, _ = _scan_package_dir(pkg, tmp_path, is_pruned=tv.dir_chain_skipped)
+        assert unpruned == "javascript"
+        assert pruned == "typescript"
+
+    def test_a_package_with_nothing_indexed_reports_unknown(self, tmp_path: Path) -> None:
+        """The one shape where the answer gets smaller rather than sharper."""
+        pkg = self._pkg(tmp_path, "pkg/src/\n")
+        tv = FileTraverser(tmp_path)
+        language, _ = _scan_package_dir(pkg, tmp_path, is_pruned=tv.dir_chain_skipped)
+        assert language == "unknown"

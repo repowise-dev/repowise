@@ -92,32 +92,35 @@ async def test_co_change_edges_in_graph() -> None:
     edges_before = graph.number_of_edges()
 
     # -- Mock git metadata with co-change partners -------------------------
+    # ``frequency`` is the shared-commit support the gate reads; the decayed
+    # ``co_change_count`` becomes the edge weight. A record carrying only the
+    # weight has no support and is filtered out, which is the point of the gate.
     git_meta_map = {
         "pkg/alpha.py": {
             "co_change_partners_json": json.dumps(
                 [
-                    {"file_path": "pkg/beta.py", "co_change_count": 5},
+                    {"file_path": "pkg/beta.py", "co_change_count": 5, "frequency": 5},
                 ]
             ),
         },
         "pkg/beta.py": {
             "co_change_partners_json": json.dumps(
                 [
-                    {"file_path": "pkg/alpha.py", "co_change_count": 5},
-                    {"file_path": "pkg/gamma.py", "co_change_count": 4},
+                    {"file_path": "pkg/alpha.py", "co_change_count": 5, "frequency": 5},
+                    {"file_path": "pkg/gamma.py", "co_change_count": 4, "frequency": 4},
                 ]
             ),
         },
         "pkg/gamma.py": {
             "co_change_partners_json": json.dumps(
                 [
-                    {"file_path": "pkg/beta.py", "co_change_count": 4},
+                    {"file_path": "pkg/beta.py", "co_change_count": 4, "frequency": 4},
                 ]
             ),
         },
     }
 
-    added = builder.add_co_change_edges(git_meta_map, min_count=3)
+    added = builder.add_co_change_edges(git_meta_map, min_support=3)
 
     # Two unique pairs above threshold: (alpha, beta) and (beta, gamma)
     assert added == 2

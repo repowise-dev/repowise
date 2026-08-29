@@ -273,6 +273,7 @@ async def rebuild_graph_and_git(
     try:
         from repowise.core.ingestion.git_indexer import GitIndexer
         from repowise.core.ingestion.git_indexer.tiers import GitIndexTier
+        from repowise.core.pipeline.phases.git import label_co_change_structure
 
         try:
             tier = GitIndexTier(git_tier) if git_tier else GitIndexTier.FULL
@@ -303,6 +304,11 @@ async def rebuild_graph_and_git(
             on_warning=log,
         )
         git_meta_map = {m["file_path"]: m for m in updated_meta}
+        label_co_change_structure(graph_builder, git_meta_map)
+        if idle_decay_sink:
+            # Idle rows carry the same column and are persisted on their own
+            # path, having been serialized before the graph existed.
+            label_co_change_structure(graph_builder, idle_decay_sink)
         if co_change_full:
             graph_builder.update_co_change_edges(
                 {
@@ -932,6 +938,7 @@ async def persist_partial_health(session: Any, repo_id: str, report: Any) -> Non
     and metrics across an incremental ``repowise update``.
     """
     from repowise.core.persistence.crud import (
+        finalize_performance_opportunities,
         upsert_health_findings,
         upsert_health_metrics,
         upsert_refactoring_suggestions,
@@ -946,54 +953,55 @@ async def persist_partial_health(session: Any, repo_id: str, report: Any) -> Non
     )
     if not changed_paths and not performance_paths:
         return
-    if changed_paths:
-        await upsert_health_metrics(
+    analyzed_commit = await _analyzed_commit(session, repo_id)
+    # One savepoint over the findings and everything derived from them. This
+    # writer's caller logs a failed step and carries on to commit the rest of
+    # the run, so without the savepoint a rebuild that failed halfway would
+    # leave the queue describing findings that were never stored.
+    async with session.begin_nested():
+        if changed_paths:
+            await upsert_health_metrics(
+                session,
+                repo_id,
+                report.metrics or [],
+                analyzed_commit=analyzed_commit,
+            )
+            await upsert_health_findings(
+                session, repo_id, list(report.findings or []), file_paths=changed_paths
+            )
+        if performance_paths:
+            await upsert_health_findings(
+                session,
+                repo_id,
+                list(report.findings or []),
+                file_paths=performance_paths,
+                dimension="performance",
+            )
+        # Refactoring suggestions for the changed files only (unchanged files
+        # keep theirs). Scoped delete-then-insert across the full changed-file
+        # set, so a file that became clean has its stale suggestions removed.
+        if changed_paths:
+            await upsert_refactoring_suggestions(
+                session,
+                repo_id,
+                [
+                    suggestion
+                    for suggestion in (getattr(report, "refactoring_suggestions", None) or [])
+                    if suggestion.refactoring_type != "performance_fix"
+                ],
+                file_paths=changed_paths,
+            )
+        # A partial run sees a subset of the findings, so the plans and the
+        # queue it would derive are a subset too. Both are rebuilt here instead,
+        # from the merged stored rows, by the same writer the full path uses.
+        # That is what makes the two paths agree, and it retires the file-scoped
+        # plan bookkeeping that used to try to reach a shared intervention from
+        # its callers.
+        await finalize_performance_opportunities(
             session,
             repo_id,
-            report.metrics or [],
-            analyzed_commit=await _analyzed_commit(session, repo_id),
-        )
-        await upsert_health_findings(
-            session, repo_id, list(report.findings or []), file_paths=changed_paths
-        )
-    if performance_paths:
-        await upsert_health_findings(
-            session,
-            repo_id,
-            list(report.findings or []),
-            file_paths=performance_paths,
-            dimension="performance",
-        )
-    # Refactoring suggestions for the changed files only (unchanged files keep
-    # theirs). Scoped delete-then-insert across the full changed-file set, so a
-    # file that became clean has its stale suggestions removed.
-    if changed_paths:
-        await upsert_refactoring_suggestions(
-            session,
-            repo_id,
-            list(getattr(report, "refactoring_suggestions", None) or []),
-            file_paths=changed_paths,
-        )
-    if performance_paths:
-        performance_suggestions = [
-            suggestion
-            for suggestion in list(getattr(report, "refactoring_suggestions", None) or [])
-            if suggestion.refactoring_type == "performance_fix"
-        ]
-        # A causal plan is stored at its shared intervention, which can sit
-        # downstream of every caller file in the performance invalidation
-        # closure. Include those targets in the scoped replacement or the
-        # findings refresh while their matching plans are silently discarded.
-        performance_plan_paths = sorted(
-            set(performance_paths)
-            | {suggestion.file_path for suggestion in performance_suggestions}
-        )
-        await upsert_refactoring_suggestions(
-            session,
-            repo_id,
-            performance_suggestions,
-            file_paths=performance_plan_paths,
-            refactoring_type="performance_fix",
+            analyzed_commit=analyzed_commit,
+            plan_policy=getattr(report, "performance_plan_policy", None),
         )
     # Per-function blame rollup for the changed files (keeps git_function_blame
     # current between full indexes; FULL git tier only — empty otherwise).
@@ -1367,16 +1375,13 @@ async def refresh_external_systems(
     ]
 
     from repowise.core.persistence.crud import (
+        build_external_system_link_map,
         link_graph_nodes_to_external_systems,
         replace_external_systems,
     )
 
     id_map = await replace_external_systems(session, repo_id, systems)
-    # Collapse multi-manifest duplicates: any id for a given name works (the
-    # C4 renderer only needs name/category/ecosystem, stable across rows).
-    name_to_id: dict[str, int] = {}
-    for (name, _declared_in), sys_id in id_map.items():
-        name_to_id.setdefault(name, sys_id)
+    name_to_id = build_external_system_link_map(systems, id_map)
     await link_graph_nodes_to_external_systems(session, repo_id, name_to_id)
     log(f"External systems refreshed: [cyan]{len(systems)}[/cyan] deps")
     return True

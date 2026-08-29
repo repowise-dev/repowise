@@ -440,7 +440,7 @@ async def test_value_question_uses_extraction_fast_path(setup_mcp, monkeypatch):
     assert "MIN_COUNT = 2" in result["answer"]
     assert "pkg/alpha/one.py:10" in result["answer"]
     assert result["citations"] == ["pkg/alpha/one.py"]
-    assert result["retrieval"] == []
+    assert "retrieval" not in result
 
 
 @pytest.mark.asyncio
@@ -1138,11 +1138,10 @@ async def test_non_dominant_best_guesses_carry_candidate_excerpts(setup_mcp, mon
     top = result["best_guesses"][0]
     assert top["file"] == "pkg/alpha/one.py"
     assert top["why_relevant"]
-    # The content is in the response exactly once: dropped from the guess
-    # because retrieval carries the identical slab for the same file.
-    assert "excerpt" not in top
-    carried = [r.get("excerpt", "") for r in result["retrieval"]]
-    assert any(e.startswith("Page content for pkg/alpha/one.py") for e in carried)
+    # The content is in the response exactly once. The medium projection keeps
+    # the actionable best_guess and drops the duplicate retrieval row.
+    assert top["excerpt"].startswith("Page content for pkg/alpha/one.py")
+    assert "retrieval" not in result
     # The reply names the ambiguity and points at best_guesses to verify.
     assert "best_guesses" in result["note"]
     assert "ambiguous" in result["note"]

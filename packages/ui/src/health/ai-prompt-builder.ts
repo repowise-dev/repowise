@@ -421,7 +421,7 @@ export function buildCoverageAiPrompt({
         : null,
       row.nloc ? `File size: ${row.nloc} NLOC` : null,
       row.health_score != null
-        ? `Current health score: ${row.health_score.toFixed(1)}/10 — risky changes here are likely to break things, so tests pay off.`
+        ? `Current health score: ${row.health_score.toFixed(1)}/10 — stronger defect indicators make focused tests especially valuable.`
         : null,
       row.module ? `Module: \`${row.module}\`` : null,
       row.source_format ? `Coverage source: ${row.source_format.toUpperCase()}` : null,
@@ -698,23 +698,70 @@ export interface CouplingPromptEdge {
   target: string;
   strength?: number | null;
   last_co_change?: string | null;
+  /** Commits that touched both files, undecayed. */
+  support?: number | null;
+  /** Share of `source`'s own commits that also touched `target`. */
+  confidence_ab?: number | null;
+  /** The same share from `target`'s side. */
+  confidence_ba?: number | null;
+  /** `corroborated` / `unexplained` / `not_applicable`, or absent on an older index. */
+  structural?: string | null;
+}
+
+/** What the page already knows about one end of the pair. */
+export interface CouplingPromptNode {
+  module?: string | null;
+  score?: number | null;
+  nloc?: number | null;
 }
 
 export interface BuildCouplingPromptOptions {
   edge: CouplingPromptEdge;
   flavor?: AiPromptFlavor;
   repoName?: string;
+  /** Per-file facts keyed by path; either end may be missing. */
+  nodes?: Record<string, CouplingPromptNode>;
+}
+
+/** The dependency-graph verdict, spelled out. `null` when the index has none. */
+function structuralLine(structural: string | null | undefined): string | null {
+  switch (structural) {
+    case "unexplained":
+      return "Dependency graph: **nothing connects them** — no import, type use, framework wiring, or read. This is the finding: they move together with no structural reason to.";
+    case "corroborated":
+      return "Dependency graph: a dependency already connects them, so the co-change is at least partly explained. Judge whether the dependency is the *right* one before treating this as accidental.";
+    case "not_applicable":
+      return "Dependency graph: at least one side was never parsed (a lockfile, changelog, config, or doc), so there was no edge to look for. The coupling is real but is probably release plumbing, not a code-structure problem.";
+    default:
+      return null;
+  }
+}
+
+/** One end's module / health / size, as a bullet, when anything is known. */
+function fileFacts(path: string, label: string, node: CouplingPromptNode | undefined): string {
+  const facts: string[] = [];
+  if (node?.module) facts.push(`module \`${node.module}\``);
+  if (typeof node?.score === "number") facts.push(`health ${node.score.toFixed(1)}/10`);
+  if (typeof node?.nloc === "number" && node.nloc > 0) facts.push(`${node.nloc} lines`);
+  return facts.length
+    ? `File ${label}: \`${path}\` (${facts.join(", ")})`
+    : `File ${label}: \`${path}\``;
 }
 
 export function buildCouplingAiPrompt({
   edge,
   flavor = "generic",
   repoName,
+  nodes,
 }: BuildCouplingPromptOptions): string {
   const repoLine = repoName ? ` (\`${repoName}\`)` : "";
   const last = edge.last_co_change
     ? new Date(edge.last_co_change).toISOString().slice(0, 10)
     : null;
+  const pctOf = (v: number | null | undefined) =>
+    typeof v === "number" ? `${Math.round(v * 100)}%` : null;
+  const abPct = pctOf(edge.confidence_ab);
+  const baPct = pctOf(edge.confidence_ba);
 
   const constraintList = [
     "**Diagnose before decoupling.** Read both files and the commits that touched them together. The coupling may be legitimate (two halves of one feature) or accidental (a leaky abstraction, a shared constant, copy-paste). Name which it is before acting.",
@@ -742,10 +789,21 @@ export function buildCouplingAiPrompt({
     `## Hidden coupling to untangle${repoLine}`,
     "",
     bulletList([
-      `File A: \`${edge.source}\``,
-      `File B: \`${edge.target}\``,
+      fileFacts(edge.source, "A", nodes?.[edge.source]),
+      fileFacts(edge.target, "B", nodes?.[edge.target]),
+      edge.support
+        ? `Shared commits: **${edge.support}** (undecayed count of commits that touched both)`
+        : null,
+      // The asymmetry is the content: a file that never changes alone is a
+      // different finding from two that both change often.
+      abPct && baPct
+        ? `Directional confidence: ${abPct} of A's own commits also touched B; ${baPct} of B's also touched A. The larger share is the stronger claim; the smaller one says how independent that side still is.`
+        : (abPct ?? baPct)
+          ? `Directional confidence: ${abPct ? `${abPct} of A's own commits also touched B` : `${baPct} of B's own commits also touched A`} (the other side's commit total is unknown).`
+          : null,
+      structuralLine(edge.structural),
       edge.strength != null
-        ? `Coupling strength: **${edge.strength}** (recency-weighted count of commits that changed both — not a verified dependency)`
+        ? `Coupling strength: ${edge.strength} (recency-weighted, not a percentage and not a verified dependency)`
         : null,
       last ? `Last changed together: ${last}` : null,
       "Source: repowise co-change analysis (git history — treat as a lead).",
@@ -1245,7 +1303,7 @@ export function buildCommitAiPrompt({
   const short = c.sha.slice(0, 10);
 
   const constraintList = [
-    "Read the diff first. The risk score is a prior, not a verdict — a high score on a mechanical rename is fine; a low score hiding a logic change is not.",
+    "Read the diff first. The calibrated diff-size score is supporting evidence, not a verdict — a high score on a mechanical rename is fine; a low score hiding a logic change is not.",
     "Focus on what the change-risk drivers flag: scattered edits, missing tests, a hotspot touch, a new-to-the-area author. Confirm each against the actual diff.",
     "Check the blast radius: what depends on the changed files, and is anything that usually changes with them missing from this commit?",
     "Call out missing or weak test coverage for the behavior this commit changes.",
@@ -1274,8 +1332,8 @@ export function buildCommitAiPrompt({
       c.author_name ? `Author: ${c.author_name}` : null,
       c.is_fix ? "Tagged as a bug-fix commit." : null,
       c.review_priority ? `Review priority (repo-relative): **${c.review_priority}**` : null,
-      c.risk_percentile != null ? `Risk percentile in this repo: ${Math.round(c.risk_percentile)}th` : null,
-      c.change_risk_score != null ? `Raw change-risk score: ${c.change_risk_score.toFixed(1)}/10` : null,
+      c.risk_percentile != null ? `Diff-shape percentile in this repo: ${Math.round(c.risk_percentile)}th` : null,
+      c.change_risk_score != null ? `Supporting diff-size score: ${c.change_risk_score.toFixed(1)}/10 (calibrated per commit)` : null,
       c.files_changed != null ? `Files changed: ${c.files_changed}` : null,
       c.lines_added != null || c.lines_deleted != null
         ? `Lines: +${c.lines_added ?? 0} / −${c.lines_deleted ?? 0}`

@@ -36,9 +36,10 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from repowise.core.entry_candidacy import non_code_entry_languages, not_an_execution_start
-from repowise.core.generation.layers import ADJACENT_LAYERS, infer_layer, is_support_path
+from repowise.core.generation.layers import ADJACENT_LAYERS, infer_layer
 from repowise.core.ids import is_external
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from repowise.core.support_paths import is_support_path
 
 # Filenames that conventionally mark an executable / wiring entry point.
 # Derived from the language registry (generic stems + per-language stems);

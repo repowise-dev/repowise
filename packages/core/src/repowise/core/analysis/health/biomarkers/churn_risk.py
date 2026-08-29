@@ -25,6 +25,7 @@ absent/zero and the detector emits nothing.
 from __future__ import annotations
 
 from ..models import Severity
+from ..semantics import format_top_percentile
 from .base import BiomarkerResult, FileContext
 
 _MIN_COMMITS_90D = 5
@@ -105,7 +106,7 @@ class ChurnRiskDetector:
                 reason=(
                     f"90-day churn rewrote {churn_text} "
                     f"({added + deleted} lines over {ctx.nloc} NLOC, "
-                    f"top {(1 - churn_pct):.0%} of repo churn)"
+                    f"{format_top_percentile(churn_pct, 'repository files eligible for churn ranking')})"
                 ),
             )
         ]

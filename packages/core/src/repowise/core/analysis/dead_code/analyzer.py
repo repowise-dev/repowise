@@ -1420,6 +1420,24 @@ class DeadCodeAnalyzer:
                 if risk_factors:
                     confidence = min(confidence, RISK_CAP_CONFIDENCE)
 
+                # Unresolved dynamic-use clamp — the same package-level question
+                # the unreachable-files pass asks (see ``_make_unreachable_finding``).
+                # A public symbol in a package whose source uses runtime-dispatch
+                # machinery (``importlib``, entry points, reflection, ``getattr``
+                # keyed by a configured string) can be wired up without any static
+                # edge: a registry value, a callback, a plugin looked up by a name
+                # the graph never sees. ``file_dynamically_loaded`` above only
+                # rescues the *resolved* case — a ``dynamic_uses``/``framework``
+                # edge the extractors actually minted. This clamp covers the
+                # unresolved case, where the mechanism is present but the target
+                # is not pinned: it may lower confidence and must clear
+                # ``safe_to_delete``, and it must never raise either. The finding
+                # stays in the report as a review candidate (the cap lands exactly
+                # on the default ``min_confidence``), exactly like the sibling
+                # clamp on unreachable files.
+                if self._dynamic_import_dirs and str(Path(node).parent) in self._dynamic_import_dirs:
+                    confidence = min(confidence, RISK_CAP_CONFIDENCE)
+
                 safe = confidence >= SAFE_CONFIDENCE_THRESHOLD
 
                 git_meta = self.git_meta_map.get(str(node), {})
@@ -1428,6 +1446,11 @@ class DeadCodeAnalyzer:
                 risk_line = risk_evidence(risk_factors)
                 if risk_line:
                     evidence.append(risk_line)
+                if self._dynamic_import_files and confidence <= RISK_CAP_CONFIDENCE:
+                    evidence.append(
+                        "Package uses dynamic imports or runtime-resolved edges, "
+                        "so the absence of a static reference does not establish disuse"
+                    )
 
                 findings.append(
                     DeadCodeFindingData(

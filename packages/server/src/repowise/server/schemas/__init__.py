@@ -35,9 +35,12 @@ from .c4 import (
     C4SystemResponse,
 )
 from .chat import (
+    ArtifactUpdateRequest,
     ChatMessageResponse,
     ChatRequest,
+    ConversationForkRequest,
     ConversationResponse,
+    ConversationUpdateRequest,
 )
 from .code_quality import (
     DeadCodeFindingResponse,
@@ -45,6 +48,11 @@ from .code_quality import (
     DeadCodeSummaryResponse,
     RepoStatsResponse,
     SecurityFindingResponse,
+)
+from .coupling import (
+    CouplingEdgeResponse,
+    CouplingGraphResponse,
+    CouplingNodeResponse,
 )
 from .decisions import (
     DecisionCodeEdge,
@@ -235,6 +243,7 @@ __all__ = [
     "ArchitectureGraphResponse",
     "ArchitectureNodeResponse",
     "ArchitectureViewResponse",
+    "ArtifactUpdateRequest",
     "BlastRadiusRequest",
     "BlastRadiusResponse",
     "C4ComponentResponse",
@@ -265,10 +274,15 @@ __all__ = [
     "CommunitySliceNodeResponse",
     "CommunitySliceResponse",
     "CommunitySummaryItem",
+    "ConversationForkRequest",
     "ConversationResponse",
+    "ConversationUpdateRequest",
     "CoordinatorHealthResponse",
     "CostGroupResponse",
     "CostSummaryResponse",
+    "CouplingEdgeResponse",
+    "CouplingGraphResponse",
+    "CouplingNodeResponse",
     "DeadCodeFindingResponse",
     "DeadCodeGraphNodeResponse",
     "DeadCodeGraphResponse",

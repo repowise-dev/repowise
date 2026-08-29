@@ -15,7 +15,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { StatGrid, StatTile } from "../shared/stat-grid";
 import { scoreBadgeClass } from "../health/tokens";
-import { formatRelativeTimeOrNull, truncatePath } from "../lib/format";
+import { formatRelativeTimeOrNull, formatTopPercentile, truncatePath } from "../lib/format";
 import { cn } from "../lib/cn";
 import { SymbolCallGraph } from "./symbol-call-graph";
 
@@ -280,7 +280,7 @@ export function SymbolDetailBody({
             {git.contributor_count != null && <span>{git.contributor_count} contributors</span>}
             {git.commit_count_90d != null && <span>{git.commit_count_90d} commits / 90d</span>}
             {git.churn_percentile != null && (
-              <span>churn top {100 - Math.round(git.churn_percentile)}%</span>
+              <span>churn {formatTopPercentile(git.churn_percentile)}</span>
             )}
             {git.is_hotspot && (
               <span className="inline-flex items-center gap-0.5 rounded bg-[var(--color-error)]/15 px-1.5 py-0.5 text-[var(--color-error)]">

@@ -6,7 +6,7 @@
     "url": "https://repowise.dev"
   },
   "metadata": {
-    "description": "The codebase intelligence layer for AI coding agents — graph, git, docs, decisions, and a defect-validated code-health score, exposed to Claude through eleven task-shaped MCP tools.",
+    "description": "The codebase intelligence layer for AI coding agents — graph, git, docs, decisions, and a defect-validated code-health score, exposed to Claude through ten task-shaped MCP tools.",
     "homepage": "https://repowise.dev"
   },
   "plugins": [
@@ -14,7 +14,7 @@
       "name": "repowise",
       "source": "./plugins/claude-code",
       "description": "Codebase intelligence for Claude Code. Indexes your repo into five layers (Graph, Git, Docs, Decisions, Code Health) and gives Claude deep understanding of architecture, ownership, hotspots, decisions, and defect risk — fewer greps, fewer file reads, lower cost per query.",
-      "version": "0.45.0",
+      "version": "0.46.0",
       "category": "productivity",
       "keywords": [
         "codebase",

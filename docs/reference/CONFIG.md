@@ -528,6 +528,42 @@ export OPENAI_BASE_URL="http://localhost:8000/v1"
 repowise init --provider openai --model qwen3 --reasoning off
 ```
 
+The same adapter works with local gateways such as 9router and with any
+OpenAI-compatible custom provider. Set the gateway's API key under
+`OPENAI_API_KEY`, point `OPENAI_BASE_URL` at its `/v1` endpoint, and use the
+model id returned by that endpoint's `/models` response:
+
+```bash
+export OPENAI_API_KEY="your-9router-dashboard-key"
+export OPENAI_BASE_URL="http://localhost:20128/v1"
+repowise init --provider openai --model ag/gemini-3.7-flash-medium
+```
+
+Repowise discovers namespaced model ids from compatible gateways as-is, so
+the model does not need to start with `gpt-`. For another local provider,
+replace the key, URL, and model with that provider's values.
+
+In an interactive `repowise init`, choose **OpenAI-compatible (Custom / local
+gateway)**. Repowise then validates the endpoint, collects the key without
+echoing it, verifies the gateway through `/models`, and lets you search the
+discovered models or enter an exact model id. If `/models` is unavailable, you
+can retry the endpoint/key, continue with a manual model id, or return to the
+provider menu:
+
+```text
+Base URL [http://localhost:20128/v1]:
+API key (hidden): <paste the gateway key>
+✓ Connected — discovered 47 model(s).
+Select model: ag/gemini-3.7-flash-medium
+```
+
+The endpoint is placed in the repo's gitignored `.repowise/.env`; the key is
+saved there only after confirmation, and `--no-save-key` always keeps it
+process-local. The selected runtime provider (`openai`) and exact model id are
+written to `config.yaml`. Choose the separate **openai** row for the official
+OpenAI endpoint. Scripted runs (`--yes`, CI, or non-TTY) remain non-interactive
+and should continue to use environment variables and `--provider openai`.
+
 ### OpenRouter
 
 ```bash
@@ -702,7 +738,7 @@ The `.repowise/.env` file is gitignored automatically.
 | Variable | Description |
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key |
-| `OPENAI_API_KEY` | OpenAI API key |
+| `OPENAI_API_KEY` | OpenAI or OpenAI-compatible gateway API key |
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | Google Gemini API key |
 | `OPENROUTER_API_KEY` | OpenRouter API key |
 | `DEEPSEEK_API_KEY` | DeepSeek API key |
@@ -715,7 +751,7 @@ The `.repowise/.env` file is gitignored automatically.
 | Variable | Description |
 |----------|-------------|
 | `ANTHROPIC_BASE_URL` | Override the Anthropic API base URL |
-| `OPENAI_BASE_URL` | Override the OpenAI API base URL (used for vLLM/SGLang-compatible endpoints) |
+| `OPENAI_BASE_URL` | Override the OpenAI API base URL (used for vLLM/SGLang, 9router, and other compatible endpoints) |
 | `GEMINI_BASE_URL` | Override the Gemini API base URL |
 | `OLLAMA_BASE_URL` | Ollama server URL (default: `http://localhost:11434`) |
 | `DEEPSEEK_BASE_URL` | Override the DeepSeek API base URL |

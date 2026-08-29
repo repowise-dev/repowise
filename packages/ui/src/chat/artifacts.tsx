@@ -22,6 +22,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import type {
+  ChangeFindingRow,
   ContextArtifactData,
   DeadCodeArtifactData,
   DecisionsArtifactData,
@@ -31,6 +32,8 @@ import type {
   RiskReportArtifactData,
   SearchResultsArtifactData,
 } from "@repowise-dev/types/chat";
+import { SeverityMark } from "../health/severity-mark";
+import type { Severity } from "../health/tokens";
 import { Markdown } from "../shared/markdown";
 import { MermaidDiagram } from "../wiki/mermaid-diagram";
 import { getPageTypeLabel } from "../lib/page-types";
@@ -155,7 +158,7 @@ export function ContextRenderer({ data }: { data: ContextArtifactData }) {
         const md = info.docs?.content_md ?? "";
         return (
           <div key={target}>
-            <h3 className="text-xs font-mono text-[var(--color-accent-primary)] mb-2 break-all">
+            <h3 className="text-xs font-mono text-[var(--color-text-secondary)] mb-2 break-all">
               {target}
             </h3>
             {md ? (
@@ -255,38 +258,255 @@ function normalizeGlobalHotspots(data: RiskReportArtifactData): Array<{
     .filter((h): h is { path: string; score: number } => h !== null);
 }
 
-export function RiskReportRenderer({ data }: { data: RiskReportArtifactData }) {
-  // get_change_risk returns a live-git score card, not per-file targets.
-  if (data.error || data.ref || data.review_priority || data.risk_percentile != null) {
-    const pct =
-      typeof data.risk_percentile === "number"
-        ? Math.round(data.risk_percentile)
-        : null;
-    return (
-      <div className="space-y-3">
-        {data.error && (
-          <p className="text-xs text-[var(--color-warning)]">{String(data.error)}</p>
-        )}
-        {data.ref && (
-          <StatRow label="Change" value={String(data.ref)} />
-        )}
-        {data.review_priority && (
-          <StatRow label="Review priority" value={String(data.review_priority)} />
-        )}
-        {pct !== null && <StatRow label="Risk percentile" value={`p${pct}`} />}
-        {typeof data.score === "number" && (
-          <StatRow label="Score" value={data.score.toFixed(1)} />
-        )}
-        {data.classification && (
-          <p className="text-xs text-[var(--color-text-secondary)]">
-            {String(data.classification)}
-          </p>
-        )}
-        {data.warning && (
-          <p className="text-xs text-[var(--color-text-tertiary)]">{String(data.warning)}</p>
-        )}
+const DIRECTIVE_TONE: Record<string, { label: string; className: string }> = {
+  review_required: {
+    label: "Review required",
+    className: "text-[var(--color-error)]",
+  },
+  review_recommended: {
+    label: "Review recommended",
+    className: "text-[var(--color-warning)]",
+  },
+  clear_in_analyzed_scope: {
+    label: "Clear in analyzed scope",
+    className: "text-[var(--color-success)]",
+  },
+  unknown: {
+    label: "Not established",
+    className: "text-[var(--color-text-secondary)]",
+  },
+};
+
+function ContextItem({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex items-baseline gap-1">
+      <dt className="text-[var(--color-text-tertiary)]">{label}</dt>
+      <dd className="font-mono tabular-nums text-[var(--color-text-secondary)]">
+        {value}
+      </dd>
+    </div>
+  );
+}
+
+function ChangeFindingCard({ finding }: { finding: ChangeFindingRow }) {
+  const lines = finding.lines ? `:${finding.lines[0]}` : "";
+  return (
+    <li className="rounded-lg border border-[var(--color-border-default)] p-2.5">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <SeverityMark severity={finding.severity as Severity} />
+        <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+          {finding.change} · {finding.dimension}
+        </span>
       </div>
-    );
+      <p className="mt-1 text-xs text-[var(--color-text-primary)]">
+        {finding.reason}
+      </p>
+      <p className="mt-0.5 truncate font-mono text-[10px] text-[var(--color-text-secondary)]">
+        {finding.symbol ? `${finding.symbol} — ` : ""}
+        <span title={finding.path}>
+          {finding.path}
+          {lines}
+        </span>
+      </p>
+      <p className="mt-1 text-[10px] text-[var(--color-text-secondary)]">
+        <span className="text-[var(--color-text-tertiary)]">Why this change: </span>
+        {finding.attribution.why}{" "}
+        <span className="uppercase tracking-wider">
+          ({finding.attribution.confidence} confidence)
+        </span>
+      </p>
+      {finding.inspect && (
+        <p
+          className="mt-1 truncate font-mono text-[10px] text-[var(--color-text-secondary)]"
+          title={finding.inspect}
+        >
+          {finding.inspect}
+        </p>
+      )}
+    </li>
+  );
+}
+
+function ChangeRiskCard({ data }: { data: RiskReportArtifactData }) {
+  const directive = data.directive;
+  const delta = data.health_delta;
+  const tone: { label: string; className: string } =
+    DIRECTIVE_TONE[directive?.status ?? "unknown"] ?? {
+      label: "Not established",
+      className: "text-[var(--color-text-secondary)]",
+    };
+  const pct =
+    typeof data.risk_percentile === "number"
+      ? Math.round(data.risk_percentile)
+      : null;
+  const findings = delta?.top_findings ?? [];
+  const tests = data.impacted_tests?.tests_to_run ?? [];
+  const fragile = data.fix_history?.files ?? [];
+  const partial = delta ? delta.status !== "available" : false;
+
+  return (
+    <div className="space-y-3">
+      {data.error && (
+        <p role="alert" className="text-xs text-[var(--color-error)]">
+          {String(data.error)}
+        </p>
+      )}
+
+      {/* One verdict, named in words as well as colour. */}
+      {directive && (
+        <div>
+          <p
+            className={`text-[10px] font-medium uppercase tracking-wider ${tone.className}`}
+          >
+            {tone.label}
+          </p>
+          <p className="mt-0.5 text-xs text-[var(--color-text-primary)]">
+            {directive.headline}
+          </p>
+        </div>
+      )}
+
+      {partial && delta && (
+        <p role="status" className="text-[10px] text-[var(--color-warning)]">
+          {delta.explanation}
+        </p>
+      )}
+
+      {findings.length > 0 && (
+        <div>
+          <SectionTitle icon={ShieldAlert}>
+            What this change made worse
+          </SectionTitle>
+          <ul className="space-y-1.5">
+            {findings.slice(0, 3).map((finding) => (
+              <ChangeFindingCard key={finding.id} finding={finding} />
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* One compact context row, not a second dashboard. */}
+      <dl className="flex flex-wrap gap-x-4 gap-y-1 border-t border-[var(--color-border-default)] pt-2 text-[10px]">
+        {data.ref && <ContextItem label="Change" value={String(data.ref)} />}
+        {pct !== null && <ContextItem label="Diff shape" value={`p${pct}`} />}
+        {data.review_priority && (
+          <ContextItem label="Priority" value={String(data.review_priority)} />
+        )}
+        {delta?.scope && (
+          <ContextItem
+            label="Compared"
+            value={`${delta.scope.analyzed}/${delta.scope.changed} files`}
+          />
+        )}
+        {fragile.length > 0 && (
+          <ContextItem label="Fragile" value={`${fragile.length} files`} />
+        )}
+        {tests.length > 0 && (
+          <ContextItem label="Tests" value={`${tests.length} to run`} />
+        )}
+      </dl>
+
+      {(directive?.next_actions?.length ||
+        delta ||
+        tests.length > 0 ||
+        fragile.length > 0 ||
+        data.classification) && (
+        <details>
+          <summary className="cursor-pointer text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
+            More detail
+          </summary>
+          <div className="mt-2 space-y-2">
+            {directive?.next_actions?.length ? (
+              <div>
+                <SectionTitle icon={ArrowRight}>Next actions</SectionTitle>
+                <ul className="space-y-0.5 text-[10px] text-[var(--color-text-secondary)]">
+                  {directive.next_actions.map((action) => (
+                    <li key={action}>{action}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {tests.length > 0 && (
+              <div>
+                <SectionTitle icon={CheckCircle2}>Tests to run</SectionTitle>
+                <ul className="space-y-0.5 font-mono text-[10px] text-[var(--color-text-secondary)]">
+                  {tests.slice(0, 10).map((test) => (
+                    <li key={test} className="truncate" title={test}>
+                      {test}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {fragile.length > 0 && (
+              <div>
+                <SectionTitle icon={GitBranch}>
+                  Historically fragile files
+                </SectionTitle>
+                <ul className="space-y-0.5 text-[10px] text-[var(--color-text-secondary)]">
+                  {fragile.slice(0, 5).map((file) => (
+                    <li key={file.path} className="flex justify-between gap-2">
+                      <span className="truncate font-mono" title={file.path}>
+                        {file.path}
+                      </span>
+                      <span className="shrink-0 tabular-nums text-[var(--color-text-tertiary)]">
+                        {file.churn} changes
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {delta && (
+              <div className="space-y-1">
+                <StatRow
+                  label="Introduced / worsened / resolved"
+                  value={`${delta.introduced} / ${delta.worsened} / ${delta.resolved}`}
+                />
+                {delta.findings_total > delta.findings_emitted && (
+                  <StatRow
+                    label="Findings shown"
+                    value={`${delta.findings_emitted} of ${delta.findings_total}`}
+                  />
+                )}
+                {delta.skipped && (
+                  <StatRow
+                    label="Files not analysed"
+                    value={delta.skipped.total}
+                  />
+                )}
+              </div>
+            )}
+            {typeof data.score === "number" && (
+              <StatRow label="Diff-shape score" value={data.score.toFixed(1)} />
+            )}
+            {data.classification && (
+              <p className="text-[10px] text-[var(--color-text-tertiary)]">
+                {String(data.classification)}
+              </p>
+            )}
+            {data.warning && (
+              <p className="text-[10px] text-[var(--color-text-tertiary)]">
+                {String(data.warning)}
+              </p>
+            )}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+export function RiskReportRenderer({ data }: { data: RiskReportArtifactData }) {
+  // get_change_risk returns a live-git review card, not per-file targets.
+  if (
+    data.error ||
+    data.directive ||
+    data.ref ||
+    data.review_priority ||
+    data.risk_percentile != null
+  ) {
+    return <ChangeRiskCard data={data} />;
   }
 
   const targets = normalizeRiskTargets(data);
@@ -765,6 +985,71 @@ export function DiagramRenderer({ data }: { data: DiagramArtifactData }) {
       <MermaidDiagram chart={data.mermaid_syntax} />
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Source, health, and selective path views
+// ---------------------------------------------------------------------------
+
+export function SourceRenderer({ data }: { data: Record<string, unknown> }) {
+  const source = typeof data.source === "string" ? data.source : typeof data.content === "string" ? data.content : "";
+  const path = typeof data.file === "string" ? data.file : typeof data.path === "string" ? data.path : typeof data.file_path === "string" ? data.file_path : typeof data.target === "string" ? data.target : "Source";
+  const fallback = Array.isArray(data.fallback_lines) ? data.fallback_lines : [];
+  if (!source && fallback.length === 0) return <p className="text-xs text-[var(--color-text-tertiary)]">No source content was returned.</p>;
+  return (
+    <div className="space-y-3">
+      <p className="truncate font-mono text-xs text-[var(--color-text-secondary)]" title={path}>{path}</p>
+      <pre className="max-h-[60vh] overflow-auto border-l border-[var(--color-border-default)] pl-3 font-mono text-[11px] leading-relaxed text-[var(--color-text-secondary)] whitespace-pre-wrap break-words">{source || fallback.map((line) => typeof line === "string" ? line : JSON.stringify(line)).join("\n")}</pre>
+    </div>
+  );
+}
+
+export function HealthRenderer({ data }: { data: Record<string, unknown> }) {
+  const findings = Array.isArray(data.findings) ? data.findings : Array.isArray(data.top_findings) ? data.top_findings : [];
+  const files = Array.isArray(data.ranked_files) ? data.ranked_files : Array.isArray(data.worst_files) ? data.worst_files : [];
+  const kpis = data.kpis && typeof data.kpis === "object" ? data.kpis as Record<string, unknown> : {};
+  const scores = data.scores && typeof data.scores === "object" ? data.scores as Record<string, unknown> : {};
+  const dimensions = ["defect", "maintainability", "performance"]
+    .map((key) => [key, data[key] ?? scores[key]] as const)
+    .filter((entry) => entry[1] !== undefined);
+  const headlineKpis = [
+    ["average health", kpis.average_health ?? data.average_health],
+    ["hotspot health", kpis.hotspot_health ?? data.hotspot_health],
+    ["maintainability", kpis.maintainability_average ?? data.maintainability_average],
+    ["performance", kpis.performance_average ?? data.performance_average],
+    ["code-only health", kpis.average_health_code_only ?? data.average_health_code_only],
+    ["worst performer", kpis.worst_performer_score ?? data.worst_performer_score],
+  ].filter((entry): entry is [string, unknown] => entry[1] !== undefined && entry[1] !== null);
+  const rows = findings.length > 0 ? findings : files;
+  if (rows.length === 0 && dimensions.length === 0 && headlineKpis.length === 0) return <p className="text-xs text-[var(--color-text-tertiary)]">No health findings were returned for these targets.</p>;
+  return (
+    <div className="space-y-4">
+      {(headlineKpis.length > 0 || dimensions.length > 0) && <div className="space-y-1">{[...headlineKpis, ...dimensions].map(([label, value]) => <StatRow key={label} label={label} value={typeof value === "object" ? JSON.stringify(value) : String(value)} />)}</div>}
+      {rows.length > 0 && <div><SectionTitle icon={Activity}>{findings.length > 0 ? "Findings" : "Worst files"}</SectionTitle><ol className="border-t border-[var(--color-border-default)]">{rows.slice(0, 50).map((finding, index) => { const row = finding as Record<string, unknown>; const title = String(row.title ?? row.file_path ?? row.path ?? row.kind ?? `Finding ${index + 1}`); return <li key={`${title}:${index}`} className="border-b border-[var(--color-border-default)] py-2"><p className="font-mono text-xs text-[var(--color-text-primary)] break-all">{title}</p>{row.reason || row.summary || row.message ? <p className="mt-1 text-xs text-[var(--color-text-secondary)]">{String(row.reason ?? row.summary ?? row.message)}</p> : null}</li>; })}</ol></div>}
+    </div>
+  );
+}
+
+function extractPath(data: Record<string, unknown>): Array<{ node: string; relationship?: string }> {
+  if (Array.isArray(data.path)) return data.path.map((item) => typeof item === "string" ? { node: item } : { node: String((item as Record<string, unknown>).node ?? (item as Record<string, unknown>).name ?? (item as Record<string, unknown>).id ?? "Unknown node"), ...(typeof (item as Record<string, unknown>).relationship === "string" ? { relationship: String((item as Record<string, unknown>).relationship) } : {}) });
+  if (Array.isArray(data.nodes)) return data.nodes.map((item) => typeof item === "string" ? { node: item } : { node: String((item as Record<string, unknown>).node ?? (item as Record<string, unknown>).name ?? (item as Record<string, unknown>).id ?? "Unknown node") });
+  const paths = Array.isArray(data.paths) ? data.paths : [];
+  const first = paths[0];
+  return Array.isArray(first) ? first.map((item) => ({ node: String(item) })) : [];
+}
+
+export function DependencyPathRenderer({ data }: { data: Record<string, unknown> }) {
+  const path = extractPath(data);
+  if (path.length === 0) return <p className="text-xs text-[var(--color-text-tertiary)]">No dependency path was found. This does not prove that no runtime relationship exists.</p>;
+  return <div><SectionTitle icon={GitBranch}>Selected dependency path</SectionTitle><ol className="space-y-1">{path.slice(0, 100).map((item, index) => <li key={`${item.node}:${index}`} className="flex items-center gap-2 font-mono text-xs text-[var(--color-text-secondary)]"><span className="w-5 shrink-0 tabular-nums text-[var(--color-text-tertiary)]">{index + 1}</span><span className="break-all">{item.node}</span>{item.relationship && <span className="text-[10px] text-[var(--color-text-tertiary)]">{item.relationship}</span>}</li>)}</ol></div>;
+}
+
+export function CallPathRenderer({ data }: { data: Record<string, unknown> }) {
+  const flows = Array.isArray(data.flows) ? data.flows : Array.isArray(data.execution_flows) ? data.execution_flows : [];
+  const path = extractPath(data);
+  if (flows.length === 0 && path.length === 0) return <p className="text-xs text-[var(--color-text-tertiary)]">No indexed call path was returned. Dynamic calls may be outside structural coverage.</p>;
+  if (path.length > 0) return <DependencyPathRenderer data={{ path }} />;
+  return <div><SectionTitle icon={ArrowRight}>Selected execution flows</SectionTitle><ol className="border-t border-[var(--color-border-default)]">{flows.slice(0, 25).map((flow, index) => { const row = flow as Record<string, unknown>; const trace = Array.isArray(row.trace) ? row.trace.map(String) : []; return <li key={index} className="border-b border-[var(--color-border-default)] py-2 text-xs text-[var(--color-text-secondary)]"><span className="font-mono break-all">{String(row.entry_point_name ?? row.name ?? row.title ?? row.entry_point ?? `Flow ${index + 1}`)}</span>{trace.length > 0 && <ol className="mt-2 space-y-1 border-l border-[var(--color-border-default)] pl-3">{trace.slice(0, 50).map((node, traceIndex) => <li key={`${node}:${traceIndex}`} className="font-mono text-[11px] break-all">{node}</li>)}</ol>}{typeof row.termination === "string" && row.termination.length > 0 && <p className="mt-2 text-[10px] text-[var(--color-text-tertiary)]">Stopped: {row.termination}</p>}</li>; })}</ol></div>;
 }
 
 // ---------------------------------------------------------------------------

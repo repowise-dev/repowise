@@ -26,7 +26,18 @@
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useMemo, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
-import { HeartPulse, RotateCw } from "lucide-react";
+import {
+  Bug,
+  FlaskConical,
+  Gauge,
+  HeartPulse,
+  LayoutDashboard,
+  RotateCw,
+  Scissors,
+  Shield,
+  Waypoints,
+  type LucideIcon,
+} from "lucide-react";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
 import { OverviewSection } from "@repowise-dev/ui/overview";
@@ -76,6 +87,22 @@ const TAB_LABELS: Record<TabId, string> = {
   "dead-code": "Dead code",
   security: "Security",
   impact: "Blast radius",
+};
+
+/**
+ * One mark per tab, to make the row scannable without reading every word.
+ * They are identity, not status: monochrome, inheriting the tab's own color, so
+ * no icon can imply a health band. The label still carries the accessible name,
+ * which is why `ViewTabs` renders them `aria-hidden`.
+ */
+const TAB_ICONS: Record<TabId, LucideIcon> = {
+  triage: LayoutDashboard,
+  performance: Gauge,
+  findings: Bug,
+  coverage: FlaskConical,
+  "dead-code": Scissors,
+  security: Shield,
+  impact: Waypoints,
 };
 
 /**
@@ -292,11 +319,15 @@ export default function CodeHealthPage() {
       ) : null}
 
       <ViewTabs
-        tabs={TABS.map((id) => ({
-          id,
-          label: TAB_LABELS[id],
-          ...(badges[id] !== undefined ? { badge: badges[id] } : {}),
-        }))}
+        tabs={TABS.map((id) => {
+          const Icon = TAB_ICONS[id];
+          return {
+            id,
+            label: TAB_LABELS[id],
+            icon: <Icon className="h-3.5 w-3.5" />,
+            ...(badges[id] !== undefined ? { badge: badges[id] } : {}),
+          };
+        })}
         value={activeTab}
         onValueChange={setTab}
       >

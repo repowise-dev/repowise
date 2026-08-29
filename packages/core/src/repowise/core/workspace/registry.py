@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -86,6 +87,45 @@ class RepoRegistry:
         self._contexts: dict[str, RepoContext] = {}
         self._access_order: dict[str, float] = {}
         self._vs_tasks: dict[str, asyncio.Task[None]] = {}
+        self._validate_public_identities()
+
+    def _identity_key(self, value: str | Path) -> str:
+        return os.path.normcase(Path(value).as_posix().rstrip("/") or ".").replace(
+            "\\", "/"
+        )
+
+    @staticmethod
+    def _alias_key(value: str) -> str:
+        return value.strip().casefold()
+
+    def _validate_public_identities(self) -> None:
+        owners: dict[str, str] = {}
+        alias_owners = {
+            self._alias_key(entry.alias): entry.alias for entry in self._ws_config.repos
+        }
+        for entry in self._ws_config.repos:
+            if self._alias_key(entry.alias) == "all" or self._identity_key(entry.path) == "all":
+                raise ValueError("Workspace repository identity 'all' is reserved")
+            identities = {
+                self._alias_key(entry.alias),
+                self._identity_key(entry.path),
+                self._identity_key((self._workspace_root / entry.path).resolve()),
+            }
+            for path_identity in identities - {self._alias_key(entry.alias)}:
+                alias_owner = alias_owners.get(self._alias_key(path_identity))
+                if alias_owner is not None and alias_owner != entry.alias:
+                    raise ValueError(
+                        "Workspace repository identities collide: "
+                        f"alias {alias_owner!r} shadows path {path_identity!r} "
+                        f"from {entry.alias!r}"
+                    )
+            for identity in identities:
+                owner = owners.setdefault(identity, entry.alias)
+                if owner != entry.alias:
+                    raise ValueError(
+                        "Workspace repository identities collide: "
+                        f"{owner!r} and {entry.alias!r} both expose {identity!r}"
+                    )
 
     # -- Public API --------------------------------------------------------
 
@@ -125,11 +165,24 @@ class RepoRegistry:
             return self.get_default_alias()
         if repo == "all":
             return self.get_all_aliases()
-        # Validate alias exists
-        if self._ws_config.get_repo(repo) is None:
-            available = self.get_all_aliases()
-            raise ValueError(f"Unknown repo '{repo}'. Available: {available}")
-        return repo
+        # Alias is canonical, but ``list_repos`` also emits each repository's
+        # config-relative and absolute path. Accept those identities directly
+        # so a discovery result never needs caller-side translation.
+        aliases = {self._alias_key(entry.alias): entry.alias for entry in self._ws_config.repos}
+        alias = aliases.get(self._alias_key(repo))
+        if alias is not None:
+            return alias
+        candidate = Path(repo)
+        candidate_text = self._identity_key(candidate)
+        for entry in self._ws_config.repos:
+            relative = self._identity_key(entry.path)
+            absolute = (self._workspace_root / entry.path).resolve()
+            if candidate_text == relative:
+                return entry.alias
+            if candidate.is_absolute() and candidate.resolve() == absolute:
+                return entry.alias
+        available = self.get_all_aliases()
+        raise ValueError(f"Unknown repo '{repo}'. Available: {available}")
 
     async def get(self, alias: str) -> RepoContext:
         """Get the ``RepoContext`` for *alias*, loading lazily if needed."""

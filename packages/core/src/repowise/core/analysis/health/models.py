@@ -91,3 +91,9 @@ class HealthReport:
     # closure whose performance rows/plans were recomputed for full parity.
     authoritative_paths: set[str] = field(default_factory=set)
     performance_authoritative_paths: set[str] = field(default_factory=set)
+    # Plan policy for the writer that persists these findings. The performance
+    # plans in ``refactoring_suggestions`` above are a report-level convenience
+    # built from one run's findings; the authoritative ones are generated once,
+    # against the merged stored set, and need this configuration to get there.
+    # Typed ``Any`` for the same reason as ``refactoring_suggestions``.
+    performance_plan_policy: Any | None = None

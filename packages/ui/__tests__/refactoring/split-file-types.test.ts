@@ -116,3 +116,23 @@ describe("split_file meta + self-check verdict", () => {
     expect(verdict?.detail).toContain("1 symbol duplicated");
   });
 });
+
+describe("unnamed groups", () => {
+  it("keeps an absent suggested_file absent rather than coercing it to a string", () => {
+    const plan = {
+      id: "r1",
+      refactoring_type: "split_file",
+      file_path: "pkg/big.py",
+      target_symbol: "big.py",
+      plan: {
+        groups: [{ name: null, symbols: ["a", "b"], suggested_file: null }],
+        residual: null,
+        shim_required: true,
+      },
+    } as unknown as RefactoringPlan;
+
+    const groups = splitGroups(plan);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({ name: null, suggested_file: null });
+  });
+});

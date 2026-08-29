@@ -1,8 +1,8 @@
-"""Primitive 2 — the severity ranker, reusable as a precision GATE.
+"""The severity ranker, reusable as a precision GATE.
 
 The performance pillar already ranks findings by *blast radius*: a hit in a
 widely-called, churny function matters more than the same hit in a cold leaf.
-Phase 7b promotes that ranker from a sort key to a **precision gate**. Some
+The ranker is also used as a **precision gate**, not only a sort key. Some
 patterns are noisy when flagged everywhere (a bare O(n^2) nested loop; a
 blocking I/O call outside any loop) but become high-signal the moment they sit
 in a hot, request-reachable function. The gate fires those markers *only there*.

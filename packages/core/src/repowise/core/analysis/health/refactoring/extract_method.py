@@ -16,12 +16,11 @@ no suggestion.
 Plan shape (open dict, no migration):
 
 - ``plan`` = ``{"span": {"start": int, "end": int}, "params": [str, ...],
-  "returns": [str, ...], "suggested_name": str}`` -- the lines to lift, the
-  inferred signature, and a deterministic starting name (see
-  ``_suggested_name``). Always a string: the field used to be a hardcoded
-  ``None`` here while Extract Helper computed one, so its meaning depended on
-  which detector wrote the plan and every surface fell through to a generic
-  "helper".
+  "returns": [str, ...], "suggested_name": str | None}`` -- the lines to lift,
+  the inferred signature, and a deterministic starting name (see
+  ``_suggested_name``). ``None`` when the span has no single informative OUT
+  value: a name derived from the enclosing function described the context
+  rather than the span, and collided with every sibling plan in the file.
 - ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` -- the size and
   complexity the residual method sheds.
 - ``blast_radius`` = ``{"scope": "local"}`` -- extraction is local (a new
@@ -45,6 +44,12 @@ from .registry import RefactoringDetector, effort_bucket, register
 
 if TYPE_CHECKING:
     from ..dataflow import Extraction, FunctionAnalysis
+
+# OUT values whose name describes the variable's role, not the block's
+# product: ``compute_result`` names nothing the reader did not know.
+_UNINFORMATIVE_OUT = frozenset(
+    {"out", "result", "results", "value", "values", "ret", "tmp", "temp", "data", "item"}
+)
 
 # The function-level structural biomarkers this detector answers. A function is
 # only offered an extraction when one of these flagged it, so the suggestion
@@ -125,7 +130,7 @@ class ExtractMethodDetector(RefactoringDetector):
         return best_impact, best_source
 
     @staticmethod
-    def _suggested_name(analysis: FunctionAnalysis, extraction: Extraction) -> str:
+    def _suggested_name(analysis: FunctionAnalysis, extraction: Extraction) -> str | None:
         """A deterministic starting name for the lifted helper.
 
         Same posture as Extract Helper (see ``naming``): anchor the name to
@@ -150,10 +155,9 @@ class ExtractMethodDetector(RefactoringDetector):
         """
         if len(extraction.returns) == 1:
             slug = identifier_slug(extraction.returns[0])
-            if slug:
+            if slug and slug not in _UNINFORMATIVE_OUT:
                 return f"compute_{slug}"
-        slug = identifier_slug(analysis.name)
-        return f"{slug}_helper" if slug else "extracted_helper"
+        return None
 
     @staticmethod
     def _confidence(extraction: Extraction) -> str:

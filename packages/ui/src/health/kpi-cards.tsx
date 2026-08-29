@@ -356,7 +356,7 @@ function PerformanceTile({
             </span>
           </div>
           <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)] tabular-nums">
-            Risk score {score.toFixed(1)}/10
+            Performance health {score.toFixed(1)}/10 (higher is healthier)
           </p>
         </>
       ) : (
@@ -370,7 +370,7 @@ function PerformanceTile({
             </span>
           </div>
           <p className="mt-1.5 inline-flex items-center gap-1.5 text-xs tabular-nums text-[var(--color-text-tertiary)]">
-            Risk score {score.toFixed(1)}/10
+            Performance health {score.toFixed(1)}/10 (higher is healthier)
             {band ? (
               <span className={`font-semibold uppercase tracking-wide ${healthBandTextColor(band)}`}>
                 {HEALTH_BAND_LABEL[band]}

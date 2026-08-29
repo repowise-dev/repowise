@@ -32,6 +32,8 @@ import re
 import sqlite3
 from pathlib import Path
 
+from repowise.core.co_change import parse_partners
+
 # --- SessionStart tunables -------------------------------------------------
 
 #: Hard budget for the whole injected block, in estimated tokens (chars/4).
@@ -275,16 +277,9 @@ def _expand_one_hop(conn: sqlite3.Connection, seeds: list[str]) -> set[str]:
             tuple(seeds),
         ).fetchall()
         for (raw,) in rows:
-            try:
-                partners = json.loads(raw or "[]")
-            except (TypeError, ValueError):
-                continue
-            if not isinstance(partners, list):
-                continue
-            for p in partners:
-                path = p.get("file_path") if isinstance(p, dict) else None
-                if isinstance(path, str) and path and path not in seeds:
-                    hop.add(path)
+            for partner in parse_partners(raw):
+                if partner.file_path not in seeds:
+                    hop.add(partner.file_path)
                     if len(hop) >= _MAX_HOP:
                         return hop
     return hop

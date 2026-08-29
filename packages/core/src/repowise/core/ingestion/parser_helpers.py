@@ -18,6 +18,7 @@ import structlog
 from tree_sitter import Node
 
 from .extractors import node_text
+from .language_data import get_builtin_types
 from .type_names import is_resolvable_type_name
 
 if TYPE_CHECKING:
@@ -378,6 +379,12 @@ _PARAM_ORIGIN_BY_ANCESTOR: dict[str, str] = {
     "class_parameter": "ctor_param",  # Kotlin primary-ctor parameter
     "variable_declaration": "field_type",  # Kotlin property declaration
     "delegation_specifier": "extends",  # Kotlin class : Bar()
+    # Pascal type positions — node types are Pascal-only, no collision risk.
+    "declField": "field_type",
+    "declArg": "param_type",
+    "declVar": "local_var_type",
+    "declProc": "return_type",
+    "exprArgs": "framework_ctor",  # Application.CreateForm(TClass, Var)
 }
 
 
@@ -889,6 +896,56 @@ def _rust_head_type_identifier(type_node: Node, src: str) -> str | None:
     return text if is_resolvable_type_name(text, "rust") else None
 
 
+def _pascal_head_type_identifier(type_node: Node, src: str) -> str | None:
+    """Return the head identifier of a Pascal ``typeref`` type expression.
+
+    Examples:
+        ``TFoo``                  → "TFoo"
+        ``TList<TBar>``           → "TList" (generic head only; the arg
+                                     isn't captured separately -- no
+                                     ``typerefArgs``-scoped query pattern
+                                     exists yet)
+        ``Ns.TQualified``         → "TQualified" (rightmost segment;
+                                     Pascal's unit-qualification puts the
+                                     type name last, same convention as
+                                     C#'s ``qualified_name`` handling)
+        ``Integer`` / ``TObject`` → None (builtin / VCL root type, never
+                                     has an in-repo declaration)
+
+    ``type_node`` is the ``typeref`` node pascal.scm captures directly (a
+    ``declProc`` return type) or via the intermediate ``type`` wrapper
+    (field/parameter/local-variable positions) -- the wrapper itself is
+    never captured, only the ``typeref`` inside it, so this always starts
+    from ``typeref`` regardless of which position it came from. A
+    ``typeref`` wraps exactly one of: a bare ``identifier``, a generic
+    ``typerefTpl`` (``entity`` field holds the head), or a qualified
+    ``typerefDot`` (``rhs`` field holds the type name -- ``lhs`` is the
+    unit qualifier).
+    """
+    head = type_node
+    if head.type == "typeref":
+        head = next(iter(head.named_children), None)
+        if head is None:
+            return None
+    if head.type == "typerefTpl":
+        entity = head.child_by_field_name("entity")
+        if entity is None:
+            return None
+        head = entity
+    elif head.type == "typerefDot":
+        rhs = head.child_by_field_name("rhs")
+        if rhs is None:
+            return None
+        head = rhs
+
+    if head.type != "identifier":
+        return None
+    text = node_text(head, src).strip()
+    if not text or text in get_builtin_types("pascal"):
+        return None
+    return text
+
+
 # Per-language head-identifier extractor for ``@param.type`` captures.
 # Defaults to the C#-shaped extractor; languages with a differently-shaped
 # type grammar register their own here.
@@ -901,6 +958,7 @@ TYPE_HEAD_EXTRACTORS: dict[str, Callable[[Node, str], str | None]] = {
     "java": _java_head_type_identifier,
     "kotlin": _kotlin_head_type_identifier,
     "rust": _rust_head_type_identifier,
+    "pascal": _pascal_head_type_identifier,
 }
 
 

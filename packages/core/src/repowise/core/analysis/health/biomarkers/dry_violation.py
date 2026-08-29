@@ -68,12 +68,16 @@ class DryViolationDetector:
                     "clone_pair_count": len(ctx.clones),
                     "worst_clone_lines": worst_lines,
                     "worst_clone_partner": partner,
-                    "worst_clone_co_change": worst.co_change_count,
+                    "worst_clone_co_change": round(worst.co_change_count, 2),
                 },
                 reason=(
                     f"{dup_pct:.0f}% of file duplicated; worst clone shares "
                     f"{worst_lines} lines with {partner}"
-                    + (f" (co-changed {worst.co_change_count}x)" if worst.co_change_count else "")
+                    + (
+                        f" (co-changed {round(worst.co_change_count, 2)}x)"
+                        if worst.co_change_count
+                        else ""
+                    )
                 ),
             )
         ]

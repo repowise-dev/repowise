@@ -234,6 +234,7 @@ def mine_rationale(
     near_lines: dict[str, int] | None = None,
     max_files: int = _MAX_FILES,
     max_results: int = _MAX_RESULTS,
+    truncate_blocks: bool = True,
 ) -> list[dict]:
     """Mine in-code rationale comments from ``file_paths``.
 
@@ -305,7 +306,7 @@ def mine_rationale(
                     {
                         "path": path,
                         "lines": [start, end],
-                        "comment": _truncate_block(comment),
+                        "comment": _truncate_block(comment) if truncate_blocks else comment,
                         "matched_terms": matched + matched_nums,
                     },
                 )

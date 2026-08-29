@@ -7,6 +7,9 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from repowise.core.co_change import parse_partners
+from repowise.server.schemas.risk_semantics import RiskAuthority
+
 
 class GitMetadataResponse(BaseModel):
     file_path: str
@@ -76,7 +79,10 @@ class GitMetadataResponse(BaseModel):
             recent_owner_commit_pct=obj.recent_owner_commit_pct,  # type: ignore[attr-defined]
             top_authors=json.loads(obj.top_authors_json),  # type: ignore[attr-defined]
             significant_commits=json.loads(obj.significant_commits_json),  # type: ignore[attr-defined]
-            co_change_partners=json.loads(obj.co_change_partners_json),  # type: ignore[attr-defined]
+            co_change_partners=[
+                p.record
+                for p in parse_partners(obj.co_change_partners_json)  # type: ignore[attr-defined]
+            ],
             is_hotspot=obj.is_hotspot,  # type: ignore[attr-defined]
             is_stable=obj.is_stable,  # type: ignore[attr-defined]
             # Normalize 0-1 -> 0-100 to match the rest of the HTTP API.
@@ -181,10 +187,14 @@ class CommitResponse(BaseModel):
     subsystems_changed: int
     entropy: float
     is_fix: bool
+    #: Supporting 0-10 calibrated diff-size/spread score; not a probability.
     change_risk_score: float | None
+    #: Absolute per-commit compatibility band; prefer ``review_priority``.
     change_risk_level: str | None
     # Repo-relative normalization (the portable signal).
+    #: Repo-relative percentile rank, 0-100.
     risk_percentile: float
+    #: Authoritative repo-relative review-priority tercile.
     review_priority: str
     # The dominant risk driver, surfaced on rows so reviewers don't have to
     # open every detail sheet. Recomputed deterministically from the stored
@@ -323,9 +333,10 @@ class RiskRangeResponse(BaseModel):
 
     base: str
     head: str
-    #: Where the change lands. Read this before ``score``: it is the part that
-    #: distinguishes a small edit to a fragile file from a large boring one.
+    #: Separate historical evidence about where the change lands; it is not
+    #: folded into the authoritative percentile/classification.
     fix_history: FixHistoryResponse
+    risk_authority: RiskAuthority
     score: float
     #: What ``score`` measures. It tracks diff size and spread, not danger.
     score_measures: str
@@ -335,7 +346,7 @@ class RiskRangeResponse(BaseModel):
     risk_percentile: float | None
     review_priority: str | None
     classification: str | None
-    #: Absolute calibrated band, present only when there was no baseline to
+    #: Absolute model-score band, present only when there was no baseline to
     #: rank against — so it is not a peer of ``review_priority``.
     fallback_band: str | None
     is_fix: bool
@@ -344,7 +355,7 @@ class RiskRangeResponse(BaseModel):
 
 
 class RiskHistogramBucket(BaseModel):
-    """One bin of the repo's raw change-risk score distribution."""
+    """One bin of the repo's supporting 0-10 diff-shape score distribution."""
 
     start: float  # bin lower bound on the 0-10 raw score axis (inclusive)
     end: float  # bin upper bound (exclusive, except the final bin)

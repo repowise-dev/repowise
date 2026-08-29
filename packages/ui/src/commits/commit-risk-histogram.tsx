@@ -6,7 +6,7 @@ import { cn } from "../lib/cn";
 
 /**
  * The distribution behind the review-priority terciles: how this repo's raw
- * change-risk scores are actually spread, with the low/typical and
+ * supporting diff-shape scores are actually spread, with the low/typical and
  * typical/elevated cut lines drawn on top.
  *
  * Binned on the **raw 0-10 score**, never the percentile — percentile ranks
@@ -90,7 +90,7 @@ export function CommitRiskHistogram({
           preserveAspectRatio="xMidYMid meet"
           className="h-auto w-full"
           role="img"
-          aria-label="Histogram of commit change-risk scores across the repository"
+          aria-label="Histogram of supporting commit diff-shape scores across the repository"
         >
           {/* Baseline + y axis, both recessive */}
           <line
@@ -204,7 +204,7 @@ export function CommitRiskHistogram({
             fontSize="10"
             fill="var(--color-text-tertiary)"
           >
-            Change-risk score →
+            Supporting diff-shape score →
           </text>
         </svg>
 

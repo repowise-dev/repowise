@@ -70,6 +70,26 @@ def test_edges_sorted_by_strength_and_capped_with_total() -> None:
     assert g.total_edges == 3  # pre-cap count preserved for the "showing N of M" line
 
 
+def test_coupled_files_counts_the_pre_cap_span_not_the_kept_nodes() -> None:
+    """The denominator scales ``total_edges``, so it must be counted before the
+    cap: keeping one of two disjoint pairs leaves two nodes, but four files
+    are coupled."""
+    metrics = [_Metric(p) for p in ("a.py", "b.py", "c.py", "d.py")]
+    git = {
+        "a.py": _git(("b.py", 5.0, None)),
+        "b.py": _git(("a.py", 5.0, None)),
+        "c.py": _git(("d.py", 1.0, None)),
+        "d.py": _git(("c.py", 1.0, None)),
+    }
+    g = coupling_graph(metrics, git, limit=1)
+    assert g.coupled_files == 4
+    assert len(g.nodes) == 2
+
+
+def test_coupled_files_is_zero_with_no_couplings() -> None:
+    assert coupling_graph([], {}).coupled_files == 0
+
+
 def test_nodes_only_for_files_in_kept_edges_and_enriched() -> None:
     metrics = [
         _Metric("a.py", score=3.0, nloc=200, module="api"),
@@ -131,3 +151,125 @@ def test_empty_inputs() -> None:
     assert g.nodes == []
     assert g.edges == []
     assert g.total_edges == 0
+
+
+def test_a_bare_string_partner_does_not_crash_the_join() -> None:
+    """A non-record element must not reach ``.get`` and raise out of the route."""
+    metrics = [_Metric("a.py"), _Metric("b.py")]
+    git = {
+        "a.py": _Git(
+            co_change_partners_json=json.dumps(
+                ["b.py", {"file_path": "b.py", "co_change_count": 4.0, "last_co_change": None}]
+            )
+        )
+    }
+    g = coupling_graph(metrics, git)
+    assert g.edges == [CouplingEdge("a.py", "b.py", 4.0, None)]
+
+
+def _rich(*records: dict) -> _Git:
+    return _Git(co_change_partners_json=json.dumps(list(records)))
+
+
+class TestDirectionalConfidence:
+    """The two ends of a pair need not agree, and that asymmetry is the point."""
+
+    def test_each_side_confidence_reads_its_own_commit_total(self) -> None:
+        # README changes constantly; the benchmark doc only ever moves with it.
+        git = {
+            "README.md": _rich(
+                {
+                    "file_path": "docs/BENCHMARKS.md",
+                    "co_change_count": 5.0,
+                    "frequency": 11,
+                    "self_commits": 104,
+                    "partner_commits": 12,
+                }
+            )
+        }
+        (edge,) = coupling_graph([], git).edges
+        assert (edge.source, edge.target) == ("README.md", "docs/BENCHMARKS.md")
+        assert edge.support == 11
+        assert edge.confidence_ab == 0.106
+        assert edge.confidence_ba == 0.917
+
+    def test_confidence_follows_the_canonical_orientation_not_the_record(self) -> None:
+        """Only the larger-sorting side holds the record, so the two commit
+        totals have to be swapped onto the canonical pair or the ratios invert.
+        """
+        git = {
+            "z.py": _rich(
+                {
+                    "file_path": "a.py",
+                    "co_change_count": 5.0,
+                    "frequency": 9,
+                    "self_commits": 90,
+                    "partner_commits": 10,
+                }
+            )
+        }
+        (edge,) = coupling_graph([], git).edges
+        assert (edge.source, edge.target) == ("a.py", "z.py")
+        # a.py is the source and has 10 commits, so its confidence is the high one.
+        assert edge.confidence_ab == 0.9
+        assert edge.confidence_ba == 0.1
+
+    def test_the_structural_label_reaches_the_edge(self) -> None:
+        git = {
+            "a.py": _rich(
+                {
+                    "file_path": "b.py",
+                    "co_change_count": 5.0,
+                    "frequency": 9,
+                    "structural": "not_applicable",
+                }
+            )
+        }
+        (edge,) = coupling_graph([], git).edges
+        assert edge.structural == "not_applicable"
+
+    def test_an_older_index_yields_an_edge_with_no_confidence(self) -> None:
+        git = {"a.py": _rich({"file_path": "b.py", "co_change_count": 5.0})}
+        (edge,) = coupling_graph([], git).edges
+        assert edge.support == 0
+        assert edge.confidence_ab is None
+        assert edge.confidence_ba is None
+        assert edge.structural is None
+
+    def test_the_two_directions_of_a_pair_merge_without_losing_either_side(self) -> None:
+        """A per-file cap can leave one side holding a weaker view of the pair.
+
+        Each side is authoritative about its own commit total, so the merge has
+        to keep both rather than take whichever record it saw last.
+        """
+        git = {
+            "a.py": _rich(
+                {
+                    "file_path": "z.py",
+                    "co_change_count": 2.0,
+                    "frequency": 7,
+                    "self_commits": 10,
+                    "partner_commits": 0,
+                    "last_co_change": "2026-05-01",
+                }
+            ),
+            "z.py": _rich(
+                {
+                    "file_path": "a.py",
+                    "co_change_count": 5.0,
+                    "frequency": 9,
+                    "self_commits": 40,
+                    "partner_commits": 10,
+                    "structural": "unexplained",
+                    "last_co_change": "2026-06-01",
+                }
+            ),
+        }
+        (edge,) = coupling_graph([], git).edges
+        assert edge.strength == 5.0
+        assert edge.support == 9
+        assert edge.last_co_change == "2026-06-01"
+        assert edge.structural == "unexplained"
+        # a.py: 9/10 from its own record; z.py: 9/40 from the other side's.
+        assert edge.confidence_ab == 0.9
+        assert edge.confidence_ba == 0.225

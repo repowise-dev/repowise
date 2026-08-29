@@ -10,6 +10,11 @@ import contextlib
 import re
 from typing import Any
 
+from ...co_change import (
+    CO_CHANGE_DECAY_TAU,
+    MAX_PARTNERS_PER_FILE,
+    MIN_CO_CHANGE_SUPPORT,
+)
 from ..languages.registry import REGISTRY as _LANG_REGISTRY
 
 # Silence GitPython's _CatFileContentStream.__del__ ValueError spam.
@@ -131,19 +136,18 @@ _PR_BODY_MARKERS: tuple[str, ...] = (
 )
 
 # Co-change pair extraction widens the window because individual files
-# may only co-change a handful of times in 500 commits — well below the
-# ``min_count`` threshold. On low-churn repos the 500-commit window
-# produced 0 co-change pairs every run; 2000 commits captures enough
-# history for the decay-weighted score to clear the bar without
-# meaningfully blowing up wall-clock time (single `git log` call).
+# may only co-change a handful of times in 500 commits. On low-churn repos
+# the 500-commit window produced 0 co-change pairs every run; 2000 commits
+# captures enough history without meaningfully blowing up wall-clock time
+# (single `git log` call).
 _DEFAULT_CO_CHANGE_COMMIT_LIMIT: int = 2000
 
-# Minimum decay-weighted co-occurrence weight for a pair to be recorded.
-# Was 3 historically; on repos with sparse change history (libraries,
-# stable services) that produced empty co-change tables. Two recent
-# co-changes is enough signal to surface in the UI, and the dashboard
-# already sorts partners by weight so the ranking is unaffected.
-_DEFAULT_CO_CHANGE_MIN_COUNT: int = 2
+# What a pair must clear to be recorded, and how many survive per file. Both
+# are counts rather than weights: a cutoff on the weight has to be re-tuned
+# whenever the weighting changes, and the value that keeps a monorepo honest
+# empties a library's table entirely.
+_MIN_CO_CHANGE_SUPPORT: int = MIN_CO_CHANGE_SUPPORT
+_MAX_PARTNERS_PER_FILE: int = MAX_PARTNERS_PER_FILE
 
 # Commits that touch a very large number of files (mass renames,
 # copyright header sweeps, code-mod runs) produce O(N^2) pairs and
@@ -336,7 +340,7 @@ def classify_commit_category(subject: str) -> str:
 
 
 # Co-change temporal decay: half-life ~125 days (lambda for exp(-t/tau)).
-_CO_CHANGE_DECAY_TAU: float = 180.0
+_CO_CHANGE_DECAY_TAU: float = CO_CHANGE_DECAY_TAU
 
 # Hotspot temporal decay: half-life for exponentially weighted churn score.
 HOTSPOT_HALFLIFE_DAYS: float = 180.0

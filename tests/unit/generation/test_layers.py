@@ -421,7 +421,7 @@ def test_infer_layer_c_cpp_include_is_api():
 
 
 def test_is_support_path_covers_doc_dirs():
-    from repowise.core.generation.layers import is_support_path
+    from repowise.core.support_paths import is_support_path
 
     # Doc sites and runnable doc snippets are support material (libuv's
     # docs/code/*/main.c, docfx templates, vitepress sites).

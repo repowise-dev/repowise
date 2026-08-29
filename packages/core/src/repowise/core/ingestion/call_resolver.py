@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import structlog
@@ -47,6 +47,7 @@ from .languages.receiver_types import (
     scan_declarations,
     types_by_class,
     types_in_span,
+    unwrapped_names_in_span,
 )
 from .models import (
     CallReceiver,
@@ -58,6 +59,7 @@ from .models import (
     symbol_id_language,
 )
 from .return_types import declared_return_type, normalize_return_type, signature_parameter_count
+from .type_names import POINTER_LIKE_MEMBERS
 
 log = structlog.get_logger(__name__)
 
@@ -116,7 +118,7 @@ _TYPE_KINDS = frozenset({"class", "struct", "interface", "enum", "trait", "impl"
 _FUNCTION_KINDS = frozenset({"function", "method"})
 
 # Kinds that can never be the callee of a call, used to keep the bare-name
-# Tier 3 index from offering a data member as a function (bug 90).
+# Tier 3 index from offering a data member as a function.
 #
 # This is deliberately NOT the complement of ``_FUNCTION_KINDS``. Measured over
 # the corpus, plenty of non-function kinds are legitimately called: ``class``
@@ -133,12 +135,33 @@ _FUNCTION_KINDS = frozenset({"function", "method"})
 # field is indistinguishable from a callable value by kind alone.
 _NON_CALLABLE_KINDS = frozenset({"property"})
 
+# A getter and its setter are two declarations under one id, which reads as an
+# overload set and is not one: the name is an attribute, not a callable.
+_PROPERTY_DECORATORS = frozenset({"property", "cached_property"})
+_PROPERTY_ACCESSOR_SUFFIXES = (".setter", ".getter", ".deleter")
+
+
+def _is_property_accessor(sym: Any) -> bool:
+    for decorator in getattr(sym, "decorators", ()) or ():
+        tail = decorator.lstrip("@").strip()
+        if tail in _PROPERTY_DECORATORS or tail.endswith(_PROPERTY_ACCESSOR_SUFFIXES):
+            return True
+    return False
+
 _JVM_STRATEGIES = _LanguageCallStrategies(
     free=("_resolve_jvm_same_package",),
     member=("_resolve_jvm_receiver_same_package",),
 )
 
-_CPP_STRATEGIES = _LanguageCallStrategies(free=("_resolve_cpp_same_target",))
+# C++ reaches the typed fallback and registers no `member` strategy, so an
+# `obj->m()` is looked for in the caller's own file, in what it includes, and
+# then in the global pair index. `c` shares this object and is excluded a layer
+# up instead: it is absent from `_LANGUAGE_PATTERNS`, and a struct declares no
+# method for the pair index to hold.
+_CPP_STRATEGIES = _LanguageCallStrategies(
+    free=("_resolve_cpp_scoped_call", "_resolve_cpp_same_target"),
+    member_fallback=_TYPED_RECEIVER,
+)
 
 # Rust's crate-root strategy is deliberately absent: it runs for every language
 # today, and gating it here would drop crate-name receivers in mixed repos.
@@ -192,6 +215,20 @@ class ResolvedCall:
     line: int  # call site line number (for diagnostics)
     origin: ResolutionOrigin  # which strategy below produced it
     edge_type: CallSiteEdgeType = "calls"  # carried through from the CallSite
+
+
+def _same_translation_unit(decl_file: str, def_file: str) -> bool:
+    """Are these two paths the same C++ translation unit?
+
+    Compared on the base name, because a public header rarely sits beside its
+    implementation (``include/pkg/thing.h`` against ``src/thing.cc``). The
+    include relation would be the better test, but a C++ include binds to the
+    path as written and usually is not a file key.
+    """
+    return (
+        decl_file == def_file
+        or PurePosixPath(decl_file).stem == PurePosixPath(def_file).stem
+    )
 
 
 class CallResolver:
@@ -270,9 +307,10 @@ class CallResolver:
         )
 
         # Symbols in the index above that are data members, not callables
-        # (bug 90). Held as an id set rather than a full id→kind map because
-        # it is the only kind question asked of it and the set is small.
+        # Held as an id set rather than a full id->kind map: it is the only
+        # kind question asked of it and the set is small.
         self._non_callable_ids: set[str] = set()
+        self._property_accessor_ids: set[str] = set()
 
         # C/C++ forward declaration → the definition it declares. Populated by
         # ``_build_indices``; applied to every resolved call so the edge lands
@@ -536,6 +574,56 @@ class CallResolver:
         self._cpp_index = build_cpp_workspace_index(_Ctx(self._repo_path, self._parsed_files))
         return self._cpp_index
 
+    def _collapse_declarations(self, sym_ids: list[str]) -> set[str]:
+        """Fold each declaration onto the definition it was paired with.
+
+        Two ids naming one symbol must not read as an ambiguity.
+        """
+        return {self._decl_to_def.get(sym_id, sym_id) for sym_id in sym_ids}
+
+    def _resolve_cpp_scoped_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Resolve ``Qualifier::name()`` against the class the qualifier names.
+
+        The qualifier is written at the call site, so this infers nothing: the
+        repository either declares ``Qualifier::name`` or it does not. Before
+        it existed only the leaf name survived extraction, and `DB::Open()`
+        bound to a test class's `Open`.
+
+        It declines rather than refusing when the pair is unknown, because a
+        qualifier may equally name a NAMESPACE and C++ namespaces are recorded
+        on no symbol -- so absence here is not evidence of anything.
+        """
+        scope = call.scope_name
+        if not scope:
+            return None
+        candidates = self._global_methods.get((scope, call.target_name))
+        if not candidates:
+            return None
+        # A class name is not repository-unique. Prefer a declaration this file
+        # actually includes; failing that accept a repo-wide unique one, and
+        # otherwise leave it, because the qualifier has not settled which.
+        imported = self._import_targets.get(file_path, ())
+        preferred = [
+            sym_id for f, sym_id in candidates if f == file_path or f in imported
+        ]
+        # A header's declaration and the .cc's definition are ONE symbol, and a
+        # translation unit routinely sees both, so count them after the pairing
+        # redirect or every paired method reads as ambiguous.
+        if len(self._collapse_declarations(preferred)) == 1:
+            sym_id = preferred[0]
+        elif len(self._collapse_declarations([c[1] for c in candidates])) == 1:
+            sym_id = candidates[0][1]
+        else:
+            return None
+        if sym_id == caller_id:
+            return None
+        return ResolvedCall(caller_id, sym_id, 0.93, call.line, "scoped_name")
+
     def _resolve_cpp_same_target(
         self,
         file_path: str,
@@ -742,7 +830,13 @@ class CallResolver:
                     # A declaration must never displace a definition already
                     # indexed under this name — a .cpp that forward-declares a
                     # helper above its own body holds both.
-                    file_syms.setdefault(sym.name, sym.id)
+                    #
+                    # A method declaration stays out: this index answers
+                    # unqualified lookups from importing files, and no bare name
+                    # can legally reach a method. The (class, method) index
+                    # below still takes it.
+                    if sym.parent_name is None:
+                        file_syms.setdefault(sym.name, sym.id)
                 else:
                     definitions[decl_key].append((path, sym.id))
                     # File-level symbol index (top-level symbols and methods)
@@ -757,7 +851,12 @@ class CallResolver:
                 # Global indices
                 if sym.kind in _NON_CALLABLE_KINDS:
                     self._non_callable_ids.add(sym.id)
-                self._global_symbols[sym.name].append(sym.id)
+                if _is_property_accessor(sym):
+                    self._property_accessor_ids.add(sym.id)
+                # Same rule as the per-file index above, for the global-unique
+                # tier.
+                if not (sym.is_declaration and sym.parent_name is not None):
+                    self._global_symbols[sym.name].append(sym.id)
 
             self._file_symbols[path] = file_syms
             self._file_methods[path] = file_methods
@@ -785,21 +884,33 @@ class CallResolver:
         that, a repo-wide unique definition is unambiguous enough to use. An
         overload set spanning several files matches neither test, and stays
         unlinked rather than guessed at.
+
+        For a METHOD that fallback additionally requires the same translation
+        unit: the key is ``(class, method)``, so a repo-wide unique definition
+        proves the method name unique and says nothing about the class, and two
+        unrelated classes of one name would pair across. A free function has no
+        class identity to get wrong and is unchanged.
         """
         redirects: dict[str, str] = {}
         for decl_file, decl_id, key in declarations:
             candidates = definitions.get(key, ())
             if not candidates:
                 continue
-            including = [
+            # Deduped by symbol id, not by row: an overload set defined in one
+            # file is several definitions sharing one id, and counting rows
+            # reads that as an ambiguity that does not exist.
+            including = {
                 sym_id
                 for def_file, sym_id in candidates
                 if decl_file in self._import_targets.get(def_file, ())
-            ]
+            }
+            distinct = {sym_id for _def_file, sym_id in candidates}
             if len(including) == 1:
-                redirects[decl_id] = including[0]
-            elif len(candidates) == 1:
-                redirects[decl_id] = candidates[0][1]
+                redirects[decl_id] = next(iter(including))
+            elif len(distinct) == 1:
+                def_file = candidates[0][0]
+                if key[0] is None or _same_translation_unit(decl_file, def_file):
+                    redirects[decl_id] = next(iter(distinct))
         return redirects
 
     @property
@@ -1193,14 +1304,20 @@ class CallResolver:
 
         # 2b: Check all imported files for the symbol (pre-merged lookup)
         merged_syms = self._merged_symbols_for(file_path)
-        if target_name in merged_syms:
+        # A data member is not callable. Tier 3 already refuses one, but this
+        # rung answered first and at 0.85, above the tier that declines it, so
+        # the refusal only reached whichever sites tier 3 happened to see.
+        if (
+            target_name in merged_syms
+            and merged_syms[target_name] not in self._non_callable_ids
+        ):
             return ResolvedCall(
                 caller_id, merged_syms[target_name], 0.85, call.line, "import_merged"
             )
 
         # Tier 3: global unique match — only within the same language.
         # A data member is not callable, so it must not be the unique answer
-        # that mints an edge (bug 90). Filtered here rather than at index build
+        # that mints an edge. Filtered here rather than at index build
         # so the `declared` gate above and the member gate in
         # ``_resolve_member_call`` keep seeing the whole repo.
         # Uniqueness is judged on the unfiltered list on purpose. Filtering the
@@ -1215,28 +1332,9 @@ class CallResolver:
         # site named. `Ok(())` and a chained `.unwrap()` are the shape.
         candidates = self._global_symbols.get(target_name, [])
         if len(candidates) == 1 and candidates[0] != caller_id:
-            if target_name in get_builtin_methods(self._language_of(file_path) or ""):
-                return None
-            if candidates[0] in self._non_callable_ids:
-                # Refused here rather than by falling through, so "this tier
-                # can lose an edge but never gain one" is true of the control
-                # flow and not only of the corpus. Falling through would reach
-                # the implicit-receiver tier below, which the old code could
-                # not reach on this input.
-                #
-                # That tier is provably empty here anyway: it ends in
-                # ``_inherited_method``, which reads ``_file_methods`` — filled
-                # by the same loop that unconditionally fills
-                # ``_global_symbols``. So any method it could return would be a
-                # second entry under this name, and ``len(candidates)`` would
-                # not be 1. Returning is what stops that argument having to be
-                # re-derived if either index changes.
-                return None
-            caller_lang = symbol_id_language(self._parsed_files, caller_id)
-            callee_lang = symbol_id_language(self._parsed_files, candidates[0])
-            if caller_lang and callee_lang and caller_lang != callee_lang:
-                return None  # reject cross-language Tier 3 match
-            return ResolvedCall(caller_id, candidates[0], 0.50, call.line, "global_unique")
+            return self._global_unique_match(
+                file_path, call, caller_id, target_name, candidates[0]
+            )
 
         # Last, so it can only add an edge. The member-shaped refusal is the
         # one ``_enclosing_class_method`` already applies: several grammars
@@ -1252,7 +1350,42 @@ class CallResolver:
             if sym_id is not None:
                 return ResolvedCall(caller_id, sym_id, 0.90, call.line, "enclosing_inherited")
 
+        # An overload set is several declarations under one id, which the row
+        # count reads as an ambiguity that is not there. Not the filtering
+        # refused above: a field and a method sharing a name stay two ids.
+        # Last on purpose - ahead of the tier above it restated 1,027 edges
+        # the caller's own hierarchy already answered, at half the confidence.
+        collapsed = self._collapse_declarations(candidates)
+        if len(candidates) > 1 and len(collapsed) == 1:
+            only = next(iter(collapsed))
+            if only != caller_id and only not in self._property_accessor_ids:
+                return self._global_unique_match(
+                    file_path, call, caller_id, target_name, only
+                )
+
         return None
+
+    def _global_unique_match(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+        target_name: str,
+        candidate: str,
+    ) -> ResolvedCall | None:
+        """Tier 3's gates, applied to the one symbol the name resolves to."""
+        if target_name in get_builtin_methods(self._language_of(file_path) or ""):
+            return None
+        if candidate in self._non_callable_ids:
+            # Refused here rather than by falling through, so "this tier can
+            # lose an edge but never gain one" is true of the control flow and
+            # not only of the corpus.
+            return None
+        caller_lang = symbol_id_language(self._parsed_files, caller_id)
+        callee_lang = symbol_id_language(self._parsed_files, candidate)
+        if caller_lang and callee_lang and caller_lang != callee_lang:
+            return None  # reject cross-language Tier 3 match
+        return ResolvedCall(caller_id, candidate, 0.50, call.line, "global_unique")
 
     def _resolve_member_call(
         self,
@@ -1608,6 +1741,8 @@ class CallResolver:
                 return None
         if type_name is None:
             return None
+        if self._means_the_wrapper(file_path, caller_id, language, call, receiver_name):
+            return None
 
         found = self._typed_receiver_target(file_path, call, caller_id, type_name)
         if found is None:
@@ -1618,6 +1753,32 @@ class CallResolver:
         if from_field:
             return self._field_typed_call(caller_id, sym_id, tier, call.line)
         return self._body_typed_call(caller_id, sym_id, tier, call.line)
+
+    def _means_the_wrapper(
+        self,
+        file_path: str,
+        caller_id: str,
+        language: str,
+        call: CallSite,
+        receiver_name: str,
+    ) -> bool:
+        """Is this call on the smart pointer itself rather than on what it holds?
+
+        ``shared_ptr<Foo> p`` gives ``p->m()`` a ``Foo`` and ``p.m()`` a
+        ``shared_ptr``, and the grammar query captures no operator to tell them
+        apart. The names a dot call can reach are closed by the language, so
+        refusing exactly those is what keeps ``p.get()`` off a repo's own
+        ``Foo::get`` -- at the cost of an arrow call that really did mean one.
+        Asked only of C++, and only of a type that was unwrapped.
+        """
+        if language != "cpp" or call.target_name not in POINTER_LIKE_MEMBERS:
+            return False
+        span = self._spans_for(file_path).get(caller_id)
+        if span is None:
+            return False
+        return receiver_name in unwrapped_names_in_span(
+            self._declarations_for(file_path, language), *span
+        )
 
     def _body_typed_call(self, caller_id: str, sym_id: str, tier: str, line: int) -> ResolvedCall:
         """Stamp an edge whose receiver was typed from the calling body."""

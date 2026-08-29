@@ -1,12 +1,12 @@
-﻿"""MCP Tool 6: get_dependency_path — dependency graph path finding."""
+"""MCP Tool 6: get_dependency_path — dependency graph path finding."""
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.co_change import parse_partners
 from repowise.core.ingestion.models import TEMPORAL_EDGE_TYPES
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -25,7 +25,14 @@ from repowise.server.mcp_server._helpers import (
 )
 
 
-@mcp.tool(default=False)
+@mcp.tool(
+    default=False,
+    surface_order=220,
+    trust_kind="structural",
+    artifact_type="dependency_path",
+    presentation="dependency_path",
+    evidence_basis="inferred",
+)
 async def get_dependency_path(source: str, target: str, repo: str | None = None) -> dict:
     """Find how two files/modules are connected in the dependency graph.
 
@@ -135,14 +142,12 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
                 )
             )
             src_meta = src_res.scalar_one_or_none()
-            if src_meta and src_meta.co_change_partners_json:
-                partners = json.loads(src_meta.co_change_partners_json)
-                for p in partners:
-                    partner_path = p.get("file_path", "")
-                    if partner_path == target:
+            if src_meta:
+                for p in parse_partners(src_meta.co_change_partners_json):
+                    if p.file_path == target:
                         result_data["co_change_signal"] = {
-                            "co_change_count": p.get("co_change_count", 0),
-                            "last_co_change": p.get("last_co_change"),
+                            "co_change_count": p.weight,
+                            "last_co_change": p.last_co_change,
                             "note": (
                                 "No import dependency, but these files co-change "
                                 "frequently — likely logical coupling."

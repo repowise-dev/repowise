@@ -16,8 +16,14 @@ export.
 Honesty rules:
 
 * Co-change is a *temporal* hint (files committed together), not a verified
-  code dependency -- the strength is the decay-weighted count the indexer
-  already thresholds (``>= 0.5``); we surface it verbatim and never invent one.
+  code dependency. ``strength`` is the indexer's decay-weighted score, surfaced
+  verbatim; ``support`` is the plain number of shared commits behind it.
+* ``confidence_ab`` and ``confidence_ba`` are read off the two files' own commit
+  totals, so they can disagree: a file that never changes without its partner
+  is a different finding from two files that merely change often. Both come
+  from the same walk as ``support``, so the ratio is not mixing populations.
+* ``structural`` says whether the dependency graph explains the pair. Absent
+  for a file the parser never ingested, where there is no edge to look for.
 * We do **not** fabricate a "strengthening / weakening" trend: co-change history
   is not snapshotted, so a trend is not derivable. ``strength`` (magnitude) and
   ``last_co_change`` (recency) are the only honest encodings.
@@ -28,9 +34,10 @@ Honesty rules:
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Protocol
+
+from ...co_change import canonical_pair, parse_partners
 
 
 class MetricLike(Protocol):
@@ -80,14 +87,55 @@ class CouplingEdge:
 
     ``source``/``target`` are sorted lexicographically so the pair is stable and
     deduplicated. ``strength`` is the decay-weighted co-change count (verbatim
-    from the indexer; not a percentage). ``last_co_change`` is the ISO date of
-    the most recent shared commit, or ``None`` if unknown.
+    from the indexer; not a percentage). ``support`` is how many commits touched
+    both. ``confidence_ab`` is the share of ``source``'s commits that also
+    touched ``target``, and ``confidence_ba`` the reverse; either is ``None``
+    when the commit total is unknown. ``last_co_change`` is the ISO date of the
+    most recent shared commit, or ``None`` if unknown. ``dependency_kind`` is
+    the graph edge behind a ``corroborated`` verdict, and ``None`` otherwise.
     """
 
     source: str
     target: str
     strength: float
     last_co_change: str | None
+    support: int = 0
+    confidence_ab: float | None = None
+    confidence_ba: float | None = None
+    structural: str | None = None
+    dependency_kind: str | None = None
+
+
+@dataclass(frozen=True)
+class _Pair:
+    """One pair mid-merge, before it becomes an edge."""
+
+    strength: float
+    last: str | None
+    support: int
+    commits_a: int
+    commits_b: int
+    structural: str | None
+    dependency_kind: str | None
+
+    def merge(self, other: _Pair) -> _Pair:
+        """Combine the two directions of the same pair, keeping the best of each."""
+        return _Pair(
+            strength=max(self.strength, other.strength),
+            last=max((d for d in (self.last, other.last) if d), default=None),
+            support=max(self.support, other.support),
+            commits_a=max(self.commits_a, other.commits_a),
+            commits_b=max(self.commits_b, other.commits_b),
+            structural=self.structural or other.structural,
+            dependency_kind=self.dependency_kind or other.dependency_kind,
+        )
+
+
+def _ratio(support: int, commits: int) -> float | None:
+    """Share of *commits* that also touched the partner, or ``None`` if unknown."""
+    if support <= 0 or commits <= 0:
+        return None
+    return round(min(support / commits, 1.0), 3)
 
 
 @dataclass
@@ -97,21 +145,12 @@ class CouplingGraph:
     nodes: list[CouplingNode]
     edges: list[CouplingEdge]
     total_edges: int
-
-
-def _parse_partners(raw: str | None) -> list[dict]:
-    """Parse a ``co_change_partners_json`` cell, tolerating absent/bad JSON.
-
-    Mirrors the defensive parsing in :mod:`analysis.health.trends`: a malformed
-    cell yields no partners rather than raising.
-    """
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(raw)
-    except (ValueError, TypeError):
-        return []
-    return parsed if isinstance(parsed, list) else []
+    #: Distinct files appearing in at least one pre-cap pair, over the files
+    #: with any commit history. Gives ``total_edges`` a scale: 14,115
+    #: couplings across 300 files and across 3,000 files describe different
+    #: repositories.
+    coupled_files: int = 0
+    total_files: int = 0
 
 
 def coupling_graph(
@@ -133,39 +172,52 @@ def coupling_graph(
     observed strength and the most recent date. Edges are sorted by strength
     descending and capped at *limit* so a caller keeps the most consequential
     couplings; ``total_edges`` reports the pre-cap count for an honest "showing
-    N of M" line. Only files referenced by a kept edge become nodes.
+    N of M" line, ``coupled_files`` the distinct files those pairs span, and ``total_files``
+    how many files were considered at all. Only files referenced by a kept edge become nodes.
     """
-    # Deduplicate symmetric partner records into undirected edges.
-    best: dict[tuple[str, str], tuple[float, str | None]] = {}
+    # Deduplicate symmetric partner records into undirected edges. Each side
+    # records the pair from its own vantage point, so keep whichever is
+    # strongest and carry both files' commit totals off it.
+    best: dict[tuple[str, str], _Pair] = {}
     for src, meta in git_meta_by_path.items():
-        for partner in _parse_partners(meta.co_change_partners_json):
-            dst = partner.get("file_path")
-            if not dst or dst == src:
+        for partner in parse_partners(meta.co_change_partners_json):
+            dst = partner.file_path
+            if dst == src or partner.weight <= 0:
                 continue
-            try:
-                strength = float(partner.get("co_change_count") or 0.0)
-            except (ValueError, TypeError):
-                continue
-            if strength <= 0:
-                continue
-            last = partner.get("last_co_change")
-            key = (src, dst) if src < dst else (dst, src)
+            key = canonical_pair(src, dst)
+            # Orient the record's two commit totals onto the canonical pair.
+            forward = src == key[0]
+            seen = _Pair(
+                strength=partner.weight,
+                last=partner.last_co_change,
+                support=partner.support,
+                commits_a=partner.self_commits if forward else partner.partner_commits,
+                commits_b=partner.partner_commits if forward else partner.self_commits,
+                structural=partner.structural,
+                dependency_kind=partner.dependency_kind,
+            )
             prev = best.get(key)
-            if prev is None:
-                best[key] = (strength, last)
-            else:
-                prev_strength, prev_last = prev
-                best[key] = (
-                    max(prev_strength, strength),
-                    max((d for d in (prev_last, last) if d), default=None),
-                )
+            best[key] = seen if prev is None else prev.merge(seen)
 
     edges = [
-        CouplingEdge(source=a, target=b, strength=round(strength, 2), last_co_change=last)
-        for (a, b), (strength, last) in best.items()
+        CouplingEdge(
+            source=a,
+            target=b,
+            strength=round(pair.strength, 4),
+            last_co_change=pair.last,
+            support=pair.support,
+            confidence_ab=_ratio(pair.support, pair.commits_a),
+            confidence_ba=_ratio(pair.support, pair.commits_b),
+            structural=pair.structural,
+            dependency_kind=pair.dependency_kind,
+        )
+        for (a, b), pair in best.items()
     ]
     edges.sort(key=lambda e: e.strength, reverse=True)
     total = len(edges)
+    # Counted over the keys of the pre-cap dict, so it scales `total_edges`
+    # rather than the capped slice below it.
+    coupled_files = len({path for key in best for path in key})
     edges = edges[:limit]
 
     # Build nodes only for files referenced by a kept edge.
@@ -185,4 +237,12 @@ def coupling_graph(
         for path in sorted(referenced)
     ]
 
-    return CouplingGraph(nodes=nodes, edges=edges, total_edges=total)
+    return CouplingGraph(
+        nodes=nodes,
+        edges=edges,
+        total_edges=total,
+        coupled_files=coupled_files,
+        # Every file the git walk recorded, coupled or not -- the denominator
+        # the coupled count is a share of.
+        total_files=len(git_meta_by_path),
+    )

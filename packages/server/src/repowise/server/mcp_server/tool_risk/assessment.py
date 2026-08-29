@@ -11,13 +11,16 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.engine import _has_paired_test_file, _path_basenames
+from repowise.core.co_change import parse_partners
 from repowise.core.persistence.models import (
     GitMetadata,
     GraphNode,
     Repository,
 )
+from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._helpers import (
     filter_dicts_by_key,
+    is_excluded,
 )
 
 #: A file carrying this many counted bug fixes reads as bug-prone. Same trigger
@@ -27,6 +30,10 @@ _BUG_PRONE_FIXES = 3
 #: How many attributed symbols the defect profile names. Enough to say "mostly
 #: these", short enough to keep the block inside the per-file token budget.
 _TOP_FIX_SYMBOLS = 3
+
+# Relationship rows are deliberately bounded independently.  Their totals are
+# computed after repository exclusions and before this presentation cap.
+_RELATIONSHIP_LIMIT = 5
 
 
 def _derive_change_pattern(categories: dict[str, int]) -> str:
@@ -133,39 +140,90 @@ async def _get_active_contributor_count(session: AsyncSession, repo_id: str) -> 
         return None
 
 
-def _compute_impact_surface(
+def _reverse_neighbors(reverse_deps: dict[str, Any], node: str) -> dict[str, set[str]]:
+    """Normalize one reverse-adjacency entry to ``dependent -> edge types``.
+
+    The set-shaped fallback keeps the small pure helper tests and older callers
+    compatible. Production passes the typed mapping built by ``get_risk``.
+    """
+    raw = reverse_deps.get(node, {})
+    if isinstance(raw, dict):
+        return {
+            str(dependent): {str(edge_type) for edge_type in edge_types}
+            for dependent, edge_types in raw.items()
+        }
+    return {str(dependent): {"dependency"} for dependent in raw}
+
+
+def _dependency_population(
     target: str,
-    reverse_deps: dict[str, set[str]],
+    reverse_deps: dict[str, Any],
     node_meta: dict[str, Any],
     exclude_spec: Any = None,
 ) -> list[dict]:
-    """Find the top 3 most critical modules that depend on this file."""
-    # BFS up to 2 hops through reverse dependencies
-    visited: set[str] = set()
+    """Directed structural dependents within two hops, one row per node.
+
+    Graph edges are stored ``source depends on target``. Walking the reverse
+    adjacency therefore discovers only nodes that depend on *target*. Each row
+    retains direct/transitive distance and the typed structural path; it makes
+    no runtime-breakage claim.
+    """
+    discovered: dict[str, dict] = {}
     frontier = {target}
-    for _ in range(2):
+    paths: dict[str, list[dict]] = {target: []}
+    for distance in (1, 2):
         next_frontier: set[str] = set()
-        for node in frontier:
-            for dep in reverse_deps.get(node, set()):
-                if dep != target and dep not in visited:
-                    visited.add(dep)
-                    next_frontier.add(dep)
+        for node in sorted(frontier):
+            for dependent, edge_types in sorted(_reverse_neighbors(reverse_deps, node).items()):
+                if (
+                    dependent == target
+                    or dependent in discovered
+                    or is_excluded(dependent, exclude_spec)
+                ):
+                    continue
+                edge = {
+                    "source": dependent,
+                    "target": node,
+                    "relationship_types": sorted(edge_types),
+                }
+                path = [edge, *paths.get(node, [])]
+                meta = node_meta.get(dependent)
+                row = {
+                    "node_id": dependent,
+                    "file_path": dependent,
+                    "target": target,
+                    "direction": "dependent_to_dependency",
+                    "evidence_kind": "structural",
+                    "claim": "structural_reach",
+                    "distance": distance,
+                    "direct": distance == 1,
+                    "relationship_types": sorted(edge_types)
+                    if distance == 1
+                    else ["transitive_dependency"],
+                    "path": path,
+                    "pagerank": meta.pagerank if meta else 0.0,
+                    "is_entry_point": meta.is_entry_point if meta else False,
+                }
+                if distance > 1:
+                    row["via"] = node
+                discovered[dependent] = row
+                paths[dependent] = path
+                next_frontier.add(dependent)
         frontier = next_frontier
 
-    if not visited:
-        return []
+    population = filter_dicts_by_key(list(discovered.values()), "file_path", exclude_spec)
+    population.sort(key=lambda row: (row["distance"], row["file_path"]))
+    return population
 
-    # Rank by pagerank (most critical first)
-    ranked = []
-    for dep in visited:
-        meta = node_meta.get(dep)
-        ranked.append(
-            {
-                "file_path": dep,
-                "pagerank": meta.pagerank if meta else 0.0,
-                "is_entry_point": meta.is_entry_point if meta else False,
-            }
-        )
+
+def _compute_impact_surface(
+    target: str,
+    reverse_deps: dict[str, Any],
+    node_meta: dict[str, Any],
+    exclude_spec: Any = None,
+) -> list[dict]:
+    """Legacy top-three structural reach view, derived from typed dependents."""
+    ranked = _dependency_population(target, reverse_deps, node_meta, exclude_spec)
     # Path breaks the tie, or the answer is not the same twice. ``visited`` is
     # a set, so ``ranked`` starts in hash order, and a stable sort keeps that
     # order wherever pagerank ties — which it does constantly, since most
@@ -173,7 +231,6 @@ def _compute_impact_surface(
     # different "top 3 most critical modules" (measured: tests/test_progress.py
     # vs examples/fullscreen.py in the same slot, same tree, minutes apart).
     ranked.sort(key=lambda x: (-x["pagerank"], x["file_path"]))
-    ranked = filter_dicts_by_key(ranked, "file_path", exclude_spec)
     return ranked[:3]
 
 
@@ -250,8 +307,10 @@ async def _get_security_signals(session: AsyncSession, repo_id: str, target: str
         return []
 
 
-def _build_co_changes(meta: Any, import_related: set[str], exclude_spec: Any) -> list[dict]:
-    """Top-5 co-change partners for *meta*, by frequency, with import-link flags.
+def _build_co_changes(
+    meta: Any, structural_related: Any, exclude_spec: Any
+) -> tuple[list[dict], int]:
+    """Historical co-change partners and their exact post-filter population.
 
     Larger lists make MCP responses verbose without adding signal: top-5 captures
     the bulk of the temporal-coupling mass and keeps tool output tight for agents.
@@ -260,25 +319,33 @@ def _build_co_changes(meta: Any, import_related: set[str], exclude_spec: Any) ->
     is a recency-decayed sum (``exp(-age_days / tau)`` per shared commit), so it
     is fractional. Named ``count`` it read as "5.52 co-changes" to every agent.
     """
-    partners = json.loads(meta.co_change_partners_json)
-    partners_sorted = sorted(
-        partners,
-        key=lambda p: p.get("co_change_count", p.get("count", 0)) or 0,
-        reverse=True,
-    )[:5]
-    return filter_dicts_by_key(
-        [
-            {
-                "file_path": p.get("file_path", p.get("path", "")),
-                "weight": p.get("co_change_count", p.get("count", 0)),
-                "last_co_change": p.get("last_co_change"),
-                "has_import_link": p.get("file_path", p.get("path", "")) in import_related,
-            }
-            for p in partners_sorted
-        ],
-        "file_path",
-        exclude_spec,
-    )
+    partners_sorted = parse_partners(meta.co_change_partners_json)
+    relation_types = structural_related if isinstance(structural_related, dict) else {}
+    related_paths = set(structural_related)
+    rows = []
+    for partner in partners_sorted:
+        path = partner.file_path
+        types = sorted(relation_types.get(path, ()))
+        row = {
+            "file_path": path,
+            "weight": partner.weight,
+            "last_co_change": partner.last_co_change,
+            "relationship_type": "co_change",
+            "direction": "undirected",
+            "evidence_kind": "historical",
+            "provenance": "git_history",
+            "has_structural_link": path in related_paths,
+            # Compatibility field: unlike the broader structural flag, this is
+            # true only for an actual imports edge.
+            "has_import_link": "imports" in types if types else path in related_paths,
+        }
+        if types:
+            row["structural_relationship_types"] = types
+        if partner.support:
+            row["support"] = partner.support
+        rows.append(row)
+    population = filter_dicts_by_key(rows, "file_path", exclude_spec)
+    return population, len(population)
 
 
 def fix_annotation(meta: Any) -> dict | None:
@@ -385,11 +452,13 @@ async def _assess_one_target(
     repository: Repository,
     target: str,
     all_edge_map: dict[str, int],
-    import_links: dict[str, set[str]],
-    reverse_deps: dict[str, set[str]],
+    import_links: dict[str, dict[str, set[str]]],
+    reverse_deps: dict[str, dict[str, set[str]]],
     node_meta: dict[str, Any],
     exclude_spec: Any = None,
     team_size: int | None = None,
+    collector: OmissionCollector | None = None,
+    include_graph: bool = False,
 ) -> dict:
     """Assess risk for a single target file.
 
@@ -400,7 +469,95 @@ async def _assess_one_target(
     repo_id = repository.id
     result_data: dict[str, Any] = {"target": target}
 
-    dep_count = all_edge_map.get(target, 0)
+    dependency_population = _dependency_population(target, reverse_deps, node_meta, exclude_spec)
+    dependents = dependency_population[:_RELATIONSHIP_LIMIT]
+    # If both distances exist, protect one transitive row from a large direct
+    # fan-in. Otherwise the totals would say transitive reach exists while the
+    # bounded typed field silently showed only direct rows.
+    first_transitive = next((row for row in dependency_population if not row["direct"]), None)
+    if (
+        first_transitive is not None
+        and dependents
+        and all(row["direct"] for row in dependents)
+        and len(dependency_population) > len(dependents)
+    ):
+        dependents[-1] = first_transitive
+    impact_surface = sorted(
+        dependency_population,
+        key=lambda row: (-row["pagerank"], row["file_path"]),
+    )[:3]
+    direct_dependents_total = sum(row["direct"] for row in dependency_population)
+    transitive_dependents_total = len(dependency_population) - direct_dependents_total
+    # The compatibility count uses the same post-exclusion population as the
+    # typed rows. ``all_edge_map`` remains in the signature for callers that
+    # predate the typed adjacency, but no longer drives the public total.
+    dep_count = direct_dependents_total
+
+    result_data.update(
+        {
+            # ``dependents_count`` is the compatibility field: direct, directed
+            # graph dependents only. It no longer absorbs co-change or contract
+            # rows. The typed collection includes both direct and two-hop rows.
+            "dependents_count": dep_count,
+            "dependents": dependents,
+            "dependents_total": len(dependency_population),
+            "dependents_emitted": len(dependents),
+            "dependents_truncated": len(dependents) < len(dependency_population),
+            "direct_dependents_total": direct_dependents_total,
+            "transitive_dependents_total": transitive_dependents_total,
+            "impact_surface": impact_surface,
+            "impact_surface_total": len(dependency_population),
+            "impact_surface_emitted": len(impact_surface),
+            "impact_surface_truncated": len(impact_surface) < len(dependency_population),
+            "consumers": [],
+            "consumers_total": 0,
+            "consumers_emitted": 0,
+            "consumers_truncated": False,
+            "cross_repo_links": [],
+            "cross_repo_links_total": 0,
+            "cross_repo_links_emitted": 0,
+            "cross_repo_links_truncated": False,
+            "relationship_analysis": {
+                "dependencies": {
+                    "status": "available",
+                    "scope": "repository_graph",
+                    "evidence_kind": "structural",
+                    "max_depth": 2,
+                    "runtime_breakage_claim": False,
+                },
+                "consumers": {
+                    "status": "unavailable",
+                    "scope": "workspace_contract_links",
+                    "reason": "workspace contract analysis is unavailable",
+                },
+                "cross_repo": {
+                    "status": "unavailable",
+                    "scope": "workspace_file_relationships",
+                    "reason": "workspace relationship analysis is unavailable",
+                },
+            },
+        }
+    )
+    cap_collection(
+        result_data,
+        "dependents",
+        dependency_population,
+        _RELATIONSHIP_LIMIT,
+        collector if include_graph else None,
+        emitted=dependents,
+        label=f"{target} :: dependents beyond cap={_RELATIONSHIP_LIMIT}",
+        preserve_counts=True,
+    )
+    cap_collection(
+        result_data,
+        "impact_surface",
+        sorted(dependency_population, key=lambda row: (-row["pagerank"], row["file_path"])),
+        3,
+        collector if include_graph else None,
+        emitted=impact_surface,
+        label=f"{target} :: impact_surface beyond cap=3",
+        preserve_counts=True,
+    )
 
     # Git metadata
     res = await session.execute(
@@ -414,18 +571,19 @@ async def _assess_one_target(
     if meta is None:
         result_data["hotspot_score"] = 0.0
         result_data["is_hotspot"] = False
-        result_data["dependents_count"] = dep_count
         result_data["co_change_partners"] = []
+        result_data["co_change_partners_total"] = 0
+        result_data["co_change_partners_emitted"] = 0
+        result_data["co_change_partners_truncated"] = False
+        result_data["relationship_analysis"]["co_change"] = {
+            "status": "unavailable",
+            "scope": "git_history",
+            "reason": "no git metadata is available for the target",
+        }
         result_data["primary_owner"] = None
         result_data["owner_pct"] = None
         result_data["trend"] = "unknown"
         result_data["risk_type"] = "high-coupling" if dep_count >= 5 else "unknown"
-        result_data["impact_surface"] = _compute_impact_surface(
-            target,
-            reverse_deps,
-            node_meta,
-            exclude_spec,
-        )
         result_data["test_gap"] = await _check_test_gap(session, repo_id, target)
         result_data["security_signals"] = await _get_security_signals(session, repo_id, target)
         result_data["risk_summary"] = f"{target} — no git metadata available"
@@ -433,7 +591,10 @@ async def _assess_one_target(
 
     hotspot_score = meta.churn_percentile or 0.0
 
-    co_changes = _build_co_changes(meta, import_links.get(target, set()), exclude_spec)
+    co_change_population, co_changes_total = _build_co_changes(
+        meta, import_links.get(target, {}), exclude_spec
+    )
+    co_changes = co_change_population[:_RELATIONSHIP_LIMIT]
 
     owner = meta.primary_owner_name or "unknown"
     pct = meta.primary_owner_commit_pct or 0.0
@@ -443,9 +604,6 @@ async def _assess_one_target(
 
     # --- Risk type classification ---
     risk_type = _classify_risk_type(meta, dep_count, team_size)
-
-    # --- Impact surface ---
-    impact_surface = _compute_impact_surface(target, reverse_deps, node_meta, exclude_spec)
 
     # Phase 2: commit classification → change_pattern
     change_pattern = _derive_change_pattern(_load_commit_categories(meta))
@@ -460,8 +618,24 @@ async def _assess_one_target(
     # score alone can reproduce the churn half but not the floors, so on a
     # quiet repo it would badge files the backend does not consider hotspots.
     result_data["is_hotspot"] = bool(getattr(meta, "is_hotspot", False))
-    result_data["dependents_count"] = dep_count
     result_data["co_change_partners"] = co_changes
+    result_data["co_change_partners_total"] = co_changes_total
+    result_data["co_change_partners_emitted"] = len(co_changes)
+    result_data["co_change_partners_truncated"] = len(co_changes) < co_changes_total
+    cap_collection(
+        result_data,
+        "co_change_partners",
+        co_change_population,
+        _RELATIONSHIP_LIMIT,
+        collector,
+        label=f"{target} :: co_change_partners beyond cap={_RELATIONSHIP_LIMIT}",
+        preserve_counts=True,
+    )
+    result_data["relationship_analysis"]["co_change"] = {
+        "status": "available",
+        "scope": "git_history",
+        "evidence_kind": "historical",
+    }
     result_data["primary_owner"] = owner
     result_data["owner_pct"] = pct
     result_data["recent_owner"] = getattr(meta, "recent_owner_name", None)
@@ -476,7 +650,6 @@ async def _assess_one_target(
         "lines_deleted_90d": getattr(meta, "lines_deleted_90d", 0) or 0,
         "avg_commit_size": round(getattr(meta, "avg_commit_size", 0.0) or 0.0, 1),
     }
-    result_data["impact_surface"] = impact_surface
     # Phase 3: rename tracking & merge commit proxy
     original_path = getattr(meta, "original_path", None)
     if original_path:
@@ -501,10 +674,6 @@ async def _assess_one_target(
     if bus_factor == 1 and (meta.commit_count_total or 0) > 20:
         bus_note = f", bus factor risk (sole maintainer: {owner})"
 
-    # NOTE: risk_summary is built here but dependents_count may be updated
-    # later by cross-repo enrichment. We store dep_count now and let the
-    # outer function rebuild the summary after enrichment if needed.
-    result_data["_base_dep_count"] = dep_count
     # Lead with the bug-fix history when there is any. The summary used to open
     # on a churn percentile even where risk_type said "bug-prone", so the first
     # thing an agent read disagreed with the classification beside it. Counted
@@ -513,8 +682,8 @@ async def _assess_one_target(
     result_data["risk_summary"] = (
         f"{target} — {_fix_clause(defect_profile)}"
         f"hotspot score {hotspot_score:.0%} ({trend}), "
-        f"{dep_count} dependents, {risk_type}, {change_pattern}, "
-        f"{len(co_changes)} co-change partners, owned {pct:.0%} by {owner}"
+        f"{dep_count} direct dependents, {risk_type}, {change_pattern}, "
+        f"{co_changes_total} co-change partners, owned {pct:.0%} by {owner}"
         f"{bus_note}{capped_note}"
     )
 

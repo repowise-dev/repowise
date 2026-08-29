@@ -19,7 +19,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from repowise.core.fs_walk import iter_glob
+from repowise.core.fs_walk import WalkSnapshot, glob_via
 
 if TYPE_CHECKING:
     from .context import ResolverContext
@@ -64,7 +64,10 @@ def parse_package_swift(path: Path) -> dict[str, str]:
 
 
 def build_swift_targets(
-    repo_path: Path | None, *, prune_nested_git: bool = True
+    repo_path: Path | None,
+    *,
+    prune_nested_git: bool = True,
+    snapshot: WalkSnapshot | None = None,
 ) -> dict[str, str]:
     """Walk the repo for every ``Package.swift``, merge their target maps.
 
@@ -75,7 +78,9 @@ def build_swift_targets(
     if repo_path is None or not repo_path.is_dir():
         return {}
     merged: dict[str, str] = {}
-    for pkg_swift in iter_glob(repo_path, "Package.swift", prune_nested_git=prune_nested_git):
+    for pkg_swift in glob_via(
+        snapshot, repo_path, "Package.swift", prune_nested_git=prune_nested_git
+    ):
         try:
             pkg_dir = pkg_swift.parent.relative_to(repo_path).as_posix()
         except ValueError:
@@ -90,7 +95,9 @@ def get_or_build_swift_targets(ctx: ResolverContext) -> dict[str, str]:
     cached = getattr(ctx, "_swift_targets", None)
     if cached is not None:
         return cached
-    mapping = build_swift_targets(ctx.repo_path, prune_nested_git=ctx.prune_nested_git)
+    mapping = build_swift_targets(
+        ctx.repo_path, prune_nested_git=ctx.prune_nested_git, snapshot=ctx.walk_snapshot
+    )
     ctx._swift_targets = mapping  # type: ignore[attr-defined]
     return mapping
 

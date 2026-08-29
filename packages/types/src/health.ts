@@ -232,7 +232,7 @@ export interface HealthFinding {
   dimension?: HealthDimension;
 }
 
-export type PerformanceExecutionContext = "production" | "tooling" | "test";
+export type PerformanceExecutionContext = "production" | "tooling" | "test" | "unknown";
 export type PerformanceOpportunityConfidence = "high" | "medium" | "low";
 
 export interface PerformanceOpportunityFix {
@@ -253,8 +253,33 @@ export interface PerformanceOpportunityEvidence {
   provenance: string;
 }
 
+export type PerformanceActionabilityState = "plan_ready" | "advisory" | "investigate";
+export type PerformancePlanStatus = "available" | "no_safe_plan" | "not_persisted";
+
+/** One rank term, the input it read, and the points it contributed. */
+export interface PerformanceWhyRanked {
+  factor: string;
+  value: string | number | boolean | null;
+  points: number;
+}
+
+/**
+ * The facets that are not published anywhere else on the row.
+ * `confidence` stays evidence confidence and `fix.safety` stays fix safety,
+ * so no value appears twice.
+ */
+export interface PerformanceOpportunityFacets {
+  actionability_confidence: PerformanceOpportunityConfidence;
+  exposure: string;
+  amplification: string;
+  leverage: string;
+  change_risk: string;
+}
+
 export interface PerformanceOpportunity {
   opportunity_id: string;
+  /** Ids are stable within a model version and never translated across one. */
+  performance_model_version: number;
   biomarker_type: string;
   biomarker_types: string[];
   boundary_kind: C4IoKind | null;
@@ -262,34 +287,140 @@ export interface PerformanceOpportunity {
   terminal_sink: string | null;
   shared_path_suffix: string[];
   intervention_symbol: string | null;
+  /** The file holding the symbol worth editing. */
+  file_path: string;
+  resource_fingerprints: string[];
   affected_call_sites_total: number;
   affected_files_total: number;
   observations_total: number;
   evidence: PerformanceOpportunityEvidence[];
   evidence_truncated: boolean;
+  evidence_total: number;
+  evidence_emitted: number;
+  /** Offset for the next evidence page, absent once the last one is emitted. */
+  evidence_next_cursor?: number;
   reliable_entry_reachability: boolean | null;
   provenance: string;
+  /** Evidence confidence: how reliably the call path resolved. */
   confidence: PerformanceOpportunityConfidence;
+  facets: PerformanceOpportunityFacets;
+  actionability_state: PerformanceActionabilityState;
+  actionability_reason: string;
+  prerequisites: string[];
   rank_score: number;
+  rank_position: number;
   rank_factors: Record<string, number>;
+  why_ranked: PerformanceWhyRanked[];
   fix: PerformanceOpportunityFix | null;
   /** Exact stored match. Never inferred from file, marker, or rank. */
   plan_id: string | null;
-  plan_status: "available" | "no_safe_plan" | "not_persisted";
+  plan_status: PerformancePlanStatus;
   plan_reason: string;
 }
 
-export interface PerformanceOpportunitySummary {
+/** Whether a quoted id still names something this index can resolve. */
+export interface PerformanceModelState {
+  state: "current" | "stale_model" | "unrecognized";
+  opportunity_id: string;
+  requested_model_version: number | null;
+  performance_model_version: number;
+  refresh_required: boolean;
+}
+
+/**
+ * One opportunity by id. An unresolved id still answers, with the model state
+ * and what to do about it, rather than reading as "nothing to fix here".
+ */
+export type PerformanceOpportunityDetail =
+  | ({
+      resolved: true;
+      lifecycle_status: "open" | "resolved";
+      analyzed_commit: string | null;
+      model_state: PerformanceModelState;
+      evidence_total: number;
+      evidence_emitted: number;
+      evidence_next_cursor?: number;
+    } & PerformanceOpportunity)
+  | {
+      resolved: false;
+      opportunity_id: string;
+      model_state: PerformanceModelState;
+      detail: string;
+    };
+
+/**
+ * Counts per value for one filter, computed from the base result rather than
+ * the filtered one, so selecting a value never erases its own alternatives.
+ * A value with no rows is absent rather than reported as zero.
+ */
+export interface PerformanceFacetCount {
+  value: string;
   total: number;
-  production_total: number;
-  tooling_total: number;
-  test_total: number;
+}
+
+/**
+ * The filters the server owns. Every key except `plan_state` is also a query
+ * parameter; plan state is counted per value but is not something the queue
+ * narrows by.
+ */
+export type PerformanceFacetKey =
+  | "context"
+  | "boundary"
+  | "confidence"
+  | "actionability"
+  | "plan_state";
+
+export type PerformanceFacets = Partial<Record<PerformanceFacetKey, PerformanceFacetCount[]>>;
+
+/** `all` widens the context filter; the four contexts stay separate under it. */
+export type PerformanceContextFilter = PerformanceExecutionContext | "all";
+
+/**
+ * The query the server answers, shared by the REST client and the views.
+ * An alias rather than an interface so a client can hand it to a generic
+ * query-parameter helper without restating every field.
+ */
+export type PerformanceOpportunityQuery = {
+  /**
+   * Canonical contexts. `production_tooling` is a retired spelling an older
+   * server still answers as Production+Tooling. It is never returned as a
+   * context, so only a legacy-compatibility path should send it.
+   */
+  context?: PerformanceContextFilter | "production_tooling";
+  boundary?: string;
+  /** Evidence confidence, requested apart from fix safety and actionability. */
+  confidence?: PerformanceOpportunityConfidence;
+  actionability?: PerformanceActionabilityState;
+  /** `summary` drops the explanatory fields and keeps identity and counts. */
+  view?: "detail" | "summary";
+  sort?: "rank" | "leverage" | "observations";
+  limit?: number;
+  offset?: number;
+};
+
+export interface PerformanceOpportunitySummary {
+  /** `current` once materialized, `stale_model` after a model bump, or
+   * `unavailable` when this index has not been analyzed yet. */
+  status: "current" | "stale_model" | "unavailable";
+  total: number;
+  performance_model_version?: number;
+  /** The model the stored rows were written by, when it trails the current one. */
+  materialized_model_version?: number;
+  analyzed_commit?: string | null;
+  actionability?: Partial<Record<PerformanceActionabilityState, number>>;
+  context?: Partial<Record<PerformanceExecutionContext, number>>;
+  boundary?: Record<string, number>;
   with_plan_total: number;
-  without_plan_total: number;
+  /** Why the queue is not current, when it is not. */
+  reason?: string;
+  detail?: string;
 }
 
 export interface PerformanceOpportunityPage extends Paginated<PerformanceOpportunity> {
   summary: PerformanceOpportunitySummary;
+  facets: PerformanceFacets;
+  /** Filter values the server did not recognize, named rather than dropped. */
+  ignored_arguments?: Record<string, string>;
 }
 
 export interface HealthModuleRow {
@@ -653,6 +784,13 @@ export interface InferredTestMap {
   files_reached: number;
   files_not_reached: number;
   test_file_count: number;
+  /**
+   * Present only when `basis` is `measured` (the hybrid shape): how many files
+   * carry a measured coverage row. On that shape `inferred` is scoped to the
+   * files *without* a measured row, so this lets the UI state the split
+   * (measured vs graph-answered) honestly. Absent on the pure-inferred shape.
+   */
+  measured_file_count?: number;
 }
 
 /** Which tests reach one file, and which tier found them. */
@@ -694,9 +832,13 @@ export interface HealthCoverageResponse {
    */
   basis?: CoverageBasis;
   /**
-   * Present only when `basis` is `inferred`. `summary`, `files` and `modules`
-   * are then empty: measured rows and inferred rows never share an array, so no
-   * consumer can render one through the other's code path by accident.
+   * Present only when `basis` is `inferred` (pure-inferred shape: `summary`,
+   * `files` and `modules` are empty so no consumer renders one through the
+   * other's code path) OR when `basis` is `measured` and the repo has files
+   * with no measured row (hybrid shape: the measured fields are populated, and
+   * `inferred` holds the graph answer for exactly the non-measured files).
+   * On the hybrid shape `measured_file_count` states the split. In both shapes
+   * the inferred map carries counts only — never a percentage.
    */
   inferred?: InferredTestMap;
 }

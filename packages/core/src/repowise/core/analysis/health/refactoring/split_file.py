@@ -472,7 +472,7 @@ class SplitFileDetector(RefactoringDetector):
                     cdata = graph.nodes.get(callee, {})
                     fpath = cdata.get("file_path")
                     if fpath and fpath != ctx.file_path:
-                        label = ctx.module_map.get(fpath) or fpath
+                        label = ctx.community_label_map.get(fpath) or fpath
                         foreign_of[owner].add(label)
                         # The imported names this file pulls from the callee's
                         # file approximate the dependency surface this symbol
@@ -633,11 +633,15 @@ class SplitFileDetector(RefactoringDetector):
         groups: list[dict] = []
         self_segments = {seg.lower() for seg in ctx.file_path.replace("\\", "/").split("/")}
         self_segments.add(stem.lower())
-        for idx, members in enumerate(substantive, 1):
+        for members in substantive:
             label = self._group_label(defined, foreign_of, members, self_segments)
-            file_stem = label or f"{stem}_part{idx}"
-            filename = self._unique_filename(file_stem, ext, used)
-            suggested = f"{directory}/{filename}" if directory else filename
+            # A group whose symbols share no name token has no honest filename.
+            # ``{stem}_part{idx}`` looked like one and named nothing, so the
+            # field is absent instead and the surfaces prompt for a name.
+            suggested = None
+            if label:
+                filename = self._unique_filename(label, ext, used)
+                suggested = f"{directory}/{filename}" if directory else filename
             groups.append(
                 {
                     "name": label or None,
