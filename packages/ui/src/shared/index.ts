@@ -31,9 +31,13 @@ export {
   TableSkeleton,
   CardSkeleton,
   PageSkeleton,
+  StatGridSkeleton,
+  ChartSkeleton,
   type TableSkeletonProps,
   type CardSkeletonProps,
   type PageSkeletonProps,
+  type StatGridSkeletonProps,
+  type ChartSkeletonProps,
 } from "./loading-skeletons";
 export { PageShell, type PageShellProps } from "./page-shell";
 export { ViewTabs, type ViewTab, type ViewTabsProps } from "./view-tabs";

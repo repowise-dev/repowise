@@ -1,6 +1,7 @@
 "use client";
 
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+import { CHART_HEIGHT } from "./chart-height";
 import { formatCost } from "../lib/format";
 
 export interface DailySpendChartProps {
@@ -13,7 +14,7 @@ export interface DailySpendChartProps {
  * Daily generation-spend bars. A peer of OperationBreakdown / ProviderComparison
  * so the Costs page composes all charts from `ui` and they restyle on a bump.
  */
-export function DailySpendChart({ groups, height = 220 }: DailySpendChartProps) {
+export function DailySpendChart({ groups, height = CHART_HEIGHT }: DailySpendChartProps) {
   if (groups.length === 0) {
     return (
       <p className="text-sm text-[var(--color-text-secondary)] py-8 text-center">

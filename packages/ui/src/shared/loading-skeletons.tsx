@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import { Skeleton, SkeletonRegion } from "../ui/skeleton";
+import { MetricCard } from "./metric-card";
 import { cn } from "../lib/cn";
 import {
   PAGE_SHELL_CONTAINER,
@@ -100,6 +101,77 @@ export function PageSkeleton({
         {actions && <Skeleton className="h-8 w-24 shrink-0" />}
       </header>
       {children}
+    </SkeletonRegion>
+  );
+}
+
+export interface StatGridSkeletonProps {
+  /** Number of tiles. Match the count the loaded grid will render. */
+  count?: number;
+  /**
+   * Tailwind grid-column classes. Must match the real grid's, or the tiles
+   * reflow into a different number of rows when data lands.
+   */
+  columns?: string;
+  /** Set true where the real tiles carry a one-line description. */
+  description?: boolean;
+  className?: string;
+}
+
+/**
+ * A row of stat tiles, waiting. Each tile is a real `MetricCard` with bars in
+ * place of its label and value, so the height is the card's own height rather
+ * than a guess. The hand-rolled version of this was `h-24` (96px) against a
+ * card that measures 80-88px, so the grid snapped upward on arrival.
+ */
+export function StatGridSkeleton({
+  count = 3,
+  columns = "grid-cols-1 sm:grid-cols-3",
+  description = false,
+  className,
+}: StatGridSkeletonProps) {
+  return (
+    <SkeletonRegion
+      className={cn("grid gap-3", columns, className)}
+      label="Loading metrics"
+    >
+      {Array.from({ length: count }).map((_, i) => (
+        <MetricCard
+          key={i}
+          label={<Skeleton className="block h-[1lh] w-24" />}
+          value={<Skeleton className="block h-[1lh] w-16" />}
+          {...(description
+            ? { description: <Skeleton className="block h-[1lh] w-32" /> }
+            : {})}
+        />
+      ))}
+    </SkeletonRegion>
+  );
+}
+
+export interface ChartSkeletonProps {
+  /**
+   * Pass the SAME height the chart is given. Import the chart's own constant
+   * rather than retyping a number, so the two cannot drift apart.
+   */
+  height: number;
+  className?: string;
+  label?: string;
+}
+
+/**
+ * A plot area, waiting, at exactly the height the chart will occupy. Takes
+ * `height` as a required prop for that reason: a default would invite call
+ * sites to omit it and silently reserve the wrong box.
+ */
+export function ChartSkeleton({
+  height,
+  className,
+  label = "Loading chart",
+}: ChartSkeletonProps) {
+  return (
+    <SkeletonRegion className={className} label={label}>
+      <Skeleton className="w-full" style={{ height }} />
     </SkeletonRegion>
   );
 }

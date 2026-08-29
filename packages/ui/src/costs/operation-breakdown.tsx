@@ -1,6 +1,7 @@
 "use client";
 
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
+import { operationBreakdownHeight } from "./chart-height";
 import { formatCost } from "../lib/format";
 
 export interface OperationBreakdownProps {
@@ -39,7 +40,7 @@ export function OperationBreakdown({ groups, metric = "cost_usd" }: OperationBre
   }
 
   return (
-    <ResponsiveContainer width="100%" height={Math.max(180, sorted.length * 24 + 40)}>
+    <ResponsiveContainer width="100%" height={operationBreakdownHeight(sorted.length)}>
       <BarChart
         data={sorted}
         layout="vertical"

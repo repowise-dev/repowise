@@ -8,6 +8,7 @@ import { TooltipProvider } from "@repowise-dev/ui/ui/tooltip";
 import { ThemeProvider } from "@/components/layout/theme-provider";
 import { ThemedToaster } from "@/components/layout/themed-toaster";
 import { Sidebar } from "@/components/layout/sidebar";
+import { AppShellSkeleton } from "@/components/layout/app-shell-skeleton";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import { CommandPalette } from "@/components/search/command-palette";
 import { ContextDrawerShell } from "@/components/layout/context-drawer-provider";
@@ -66,7 +67,7 @@ export default async function RootLayout({
         <NuqsAdapter>
         <SWRProvider>
         <TooltipProvider delayDuration={300}>
-          <Suspense fallback={null}>
+          <Suspense fallback={<AppShellSkeleton />}>
             <ContextDrawerShell>
               <div className="flex h-screen flex-col overflow-hidden">
                 <UpgradeBanner />

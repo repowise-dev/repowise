@@ -1,6 +1,7 @@
 "use client";
 
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+import { CHART_HEIGHT } from "./chart-height";
 import { formatTokens } from "../lib/format";
 
 export interface SavingsTrendChartProps {
@@ -16,7 +17,7 @@ export interface SavingsTrendChartProps {
  * Costs page can show savings accruing over time, not just a lifetime total.
  * Renders the `per_day` array that the page already fetches.
  */
-export function SavingsTrendChart({ groups, height = 220 }: SavingsTrendChartProps) {
+export function SavingsTrendChart({ groups, height = CHART_HEIGHT }: SavingsTrendChartProps) {
   const data = [...groups]
     .filter((g) => g.saved_tokens > 0)
     .sort((a, b) => a.group.localeCompare(b.group));
