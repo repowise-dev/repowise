@@ -422,6 +422,7 @@ async def test_rest_and_the_agent_surface_project_the_same_rows(
             actionability=None,
             view="detail",
             sort="rank",
+            file_paths=None,
             limit=6,
             offset=0,
             session=session,

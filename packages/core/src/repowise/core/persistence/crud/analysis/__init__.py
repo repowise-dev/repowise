@@ -65,6 +65,7 @@ from .performance import (
     list_performance_opportunities,
     opportunity_details,
     performance_facet_counts,
+    performance_file_rollups,
 )
 from .refactoring import (
     count_refactoring_suggestions,
@@ -113,6 +114,7 @@ __all__ = [
     "load_coverage_for_repo",
     "opportunity_details",
     "performance_facet_counts",
+    "performance_file_rollups",
     "replace_dead_code_findings",
     "replace_governance_findings",
     "save_coverage_files",

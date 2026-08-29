@@ -519,7 +519,14 @@ async def test_canonical_emitter_reference_inventory(reference_repo, health_data
         "get_change_risk": (get_change_risk, ("HEAD",), {"baseline": 0}),
         "get_context": (get_context, (["src/auth/service.py"],), {"include": ["decisions"]}),
         "get_dead_code": (get_dead_code, (), {"min_confidence": "low"}),
-        "get_health": (get_health, (), {"include": ["biomarkers", "refactoring"]}),
+        # Every block this emitter can produce, so the inventory sees every
+        # reference kind it can mint. The only fixture finding whose function
+        # resolves to a symbol is the performance one.
+        "get_health": (
+            get_health,
+            (),
+            {"include": ["biomarkers", "refactoring", "performance"]},
+        ),
         "get_overview": (get_overview, (), {"include": ["decisions"]}),
         "get_risk": (get_risk, (["src/auth/service.py"],), {}),
         "get_symbol": (get_symbol, ("src/auth/service.py:1-750",), {}),

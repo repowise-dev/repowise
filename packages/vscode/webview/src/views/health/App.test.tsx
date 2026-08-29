@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import type {
   ChurnComplexityResponse,
-  HealthFilesResponse,
+  HealthMapFeed,
   HealthOverviewResponse,
   HealthTrendResponse,
 } from "@repowise-dev/types/health";
@@ -45,10 +45,24 @@ const overview: HealthOverviewResponse = {
   top_findings: [],
 };
 
-const files: HealthFilesResponse = {
-  total: 128,
-  offset: 0,
-  limit: 2000,
+const files: HealthMapFeed = {
+  cap: 2000,
+  shown: 2,
+  eligible_total: 128,
+  repository_total: 130,
+  selection: {
+    basis: "active_then_performance_then_nloc",
+    active_requested: [],
+    active_shown: [],
+    active_missing: [],
+    performance_shown: 0,
+    performance_eligible: 0,
+    nloc_shown: 2,
+  },
+  omitted: { files: 126, performance_files: 0, opportunities: 0, observations: 0 },
+  recovery: {},
+  modules: [],
+  performance: null,
   files: [
     {
       file_path: "src/worst.py",
@@ -124,7 +138,7 @@ function makeHost(): { host: WebviewHost; openFile: ReturnType<typeof vi.fn> } {
   const host = {
     api: {
       healthOverview: () => Promise.resolve(overview),
-      healthFiles: () => Promise.resolve(files),
+      healthMap: () => Promise.resolve(files),
       healthTrend: () => Promise.resolve(trend),
       churnComplexity: () => Promise.resolve(churn),
     },
@@ -188,7 +202,7 @@ describe("Health dashboard", () => {
     const host = {
       api: {
         healthOverview: () => Promise.reject(new Error("server down")),
-        healthFiles: () => Promise.resolve(files),
+        healthMap: () => Promise.resolve(files),
         healthTrend: () => Promise.resolve(trend),
         churnComplexity: () => Promise.resolve(churn),
       },

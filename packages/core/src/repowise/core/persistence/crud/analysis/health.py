@@ -312,12 +312,26 @@ async def get_health_findings(
     min_severity: str | None = None,
     file_path: str | None = None,
     dimension: str | None = None,
+    exclude_dimensions: tuple[str, ...] | None = None,
     status: str = "open",
 ) -> list[HealthFinding]:
+    """Open findings for one repository, ordered by health impact.
+
+    ``exclude_dimensions`` is how a general queue keeps a dimension out of a
+    ranking it does not share units with. It is ignored when ``dimension``
+    names one explicitly, so asking for a dimension always returns it.
+    """
     q = select(HealthFinding).where(
         HealthFinding.repository_id == repository_id,
         HealthFinding.status == status,
     )
+    if dimension is None and exclude_dimensions:
+        q = q.where(
+            or_(
+                HealthFinding.dimension.is_(None),
+                HealthFinding.dimension.not_in(list(exclude_dimensions)),
+            )
+        )
     if biomarker_type is not None:
         # Accept a comma-separated list so a caller can pull several biomarker
         # types in one request (e.g. the function-level + coupling panels).

@@ -6,6 +6,7 @@ import { InfoTip } from "../shared/info-tip";
 import { biomarkerInfo, biomarkerLabel } from "./biomarker-glossary";
 import type { BiomarkerDetailsRecord } from "./biomarker-details";
 import { type Severity } from "./tokens";
+import { ImpactFigure } from "./impact-figure";
 import { SeverityMark } from "./severity-mark";
 
 export type EffortBucket = "S" | "M" | "L" | "XL";
@@ -224,9 +225,7 @@ export function HealthWorkItemCard({
                     {f.function_name ? (
                       <span className="text-xs font-mono text-[var(--color-text-tertiary)]">{f.function_name}</span>
                     ) : null}
-                    <span className="ml-auto text-xs tabular-nums text-[var(--color-error)]">
-                      −{f.health_impact.toFixed(2)}
-                    </span>
+                    <ImpactFigure impact={f.health_impact} className="ml-auto text-xs" />
                   </div>
                   <p className="text-xs text-[var(--color-text-tertiary)] line-clamp-2">{f.reason}</p>
                   {onStatusChange ? (

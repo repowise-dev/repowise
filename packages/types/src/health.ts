@@ -195,6 +195,24 @@ export interface HealthFileMetric {
    */
   performance_analyzed?: boolean | null;
   /**
+   * Open causal opportunities on this file, and the observations behind them.
+   * The map's performance lens sizes its pressure ring by the opportunity
+   * count, because an opportunity is one thing a reader could go and do while
+   * an observation is one place a detector looked. Absent on payloads from a
+   * server that serves no materialized read model, which the lens renders as
+   * an unknown state rather than as zero.
+   */
+  performance_opportunities?: number | null;
+  performance_observations?: number | null;
+  /**
+   * Best available next step on this file: a stored plan outranks an advisory
+   * intervention, which outranks an investigation. `null` when the file
+   * carries no open opportunity. Never a claim about runtime magnitude.
+   */
+  performance_actionability?: PerformanceActionabilityState | null;
+  /** Best (lowest) queue rank position among this file's opportunities. */
+  performance_rank?: number | null;
+  /**
    * Dominant-cause lead: the biomarker + reason of this file's worst finding, so
    * a low file can headline "the one reason" instead of a wall of markers. Null
    * when the row carries no findings or the payload predates this field.
@@ -394,6 +412,12 @@ export type PerformanceOpportunityQuery = {
   /** `summary` drops the explanatory fields and keeps identity and counts. */
   view?: "detail" | "summary";
   sort?: "rank" | "leverage" | "observations";
+  /**
+   * Scope to the opportunities whose intervention lives in these files. This
+   * is how a file-scoped surface asks the queue about one file instead of
+   * filtering a page it already narrowed.
+   */
+  file_paths?: string[];
   limit?: number;
   offset?: number;
 };
@@ -533,6 +557,93 @@ export interface HealthFilesQuery {
    * row parses as one; ask for `"full"` (the default) if you print any of them.
    */
   fields?: "full" | "summary";
+}
+
+/* ------------------------------------------------------------------ *
+ * Map feed
+ * ------------------------------------------------------------------ */
+
+/**
+ * How the server chose the drawn field.
+ *
+ * `active_then_performance_then_nloc`: the caller's guaranteed paths first,
+ * then the files carrying open performance opportunities in rank order, then
+ * lines-of-code descending for whatever capacity is left. Ranking the whole
+ * repository by size alone is a defensible sample for the health lens and the
+ * wrong one for performance, because a small file can hold the worst cause.
+ */
+export type HealthMapSelectionBasis = "active_then_performance_then_nloc";
+
+export interface HealthMapSelection {
+  basis: HealthMapSelectionBasis;
+  /** Paths the caller asked to pin, in the order they were asked for. */
+  active_requested: string[];
+  active_shown: string[];
+  /** Requested paths with no drawable metric row, so nothing pretends they are there. */
+  active_missing: string[];
+  performance_shown: number;
+  performance_eligible: number;
+  nloc_shown: number;
+}
+
+/** What the cap pushed out, in the units a reader would ask about. */
+export interface HealthMapOmissions {
+  files: number;
+  performance_files: number;
+  opportunities: number;
+  observations: number;
+}
+
+export interface HealthMapModuleRollup {
+  module: string;
+  files_shown: number;
+  opportunities: number;
+  observations: number;
+  plan_ready: number;
+  /** Best queue rank in the module, or `null` when it carries no opportunity. */
+  best_rank: number | null;
+}
+
+/** Repository-wide performance state the lens needs to describe itself. */
+export interface HealthMapPerformance {
+  files_with_opportunities: number;
+  files_with_opportunities_eligible: number;
+  opportunities_total: number;
+  observations_total: number;
+  actionability: {
+    plan_ready: number;
+    advisory: number;
+    investigate: number;
+  };
+  model_version: number | null;
+  analyzed_commit: string | null;
+}
+
+/**
+ * The bounded field the map draws, plus the exact scope of what it leaves out.
+ *
+ * The rendered set and the counts describing it come from one response, so a
+ * caption can never disagree with the field beside it.
+ */
+export interface HealthMapFeed {
+  files: HealthFileMetric[];
+  cap: number;
+  shown: number;
+  /** Files that could be drawn at all: a zero-NLOC file cannot be sized. */
+  eligible_total: number;
+  repository_total: number;
+  selection: HealthMapSelection;
+  omitted: HealthMapOmissions;
+  recovery: Record<string, string>;
+  modules: HealthMapModuleRollup[];
+  /** `null` when this index has never materialized the performance read model. */
+  performance: HealthMapPerformance | null;
+}
+
+export interface HealthMapQuery {
+  cap?: number;
+  /** Paths guaranteed a node, admitted before any other band. */
+  active?: string[];
 }
 
 /* ------------------------------------------------------------------ *

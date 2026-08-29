@@ -24,6 +24,14 @@ async def list_health_findings(
     limit: int = Query(100, ge=1, le=1000),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[dict]:
+    """Open findings, ranked by health impact.
+
+    Performance is out of the unfiltered list by default. Its findings carry a
+    health impact of zero by construction, so ranking them here sorts them
+    below every defect row and reads as "nothing here" rather than as a
+    different unit; the performance surfaces rank the same evidence by cause.
+    Asking for ``dimension=performance`` still returns it.
+    """
     findings = await crud.get_health_findings(
         session,
         repo_id,
@@ -31,6 +39,7 @@ async def list_health_findings(
         file_path=file_path,
         min_severity=min_severity,
         dimension=dimension,
+        exclude_dimensions=("performance",),
     )
     return await _attach_symbol_ids(
         session, repo_id, [_finding_to_dict(f) for f in findings[:limit]]

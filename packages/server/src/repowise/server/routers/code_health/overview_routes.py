@@ -106,8 +106,14 @@ async def health_overview(
         [_finding_to_dict(f) for f in findings if f.biomarker_type == "prior_defect"],
     )
 
+    # Ranked by health impact, so performance is out: its findings score zero
+    # impact by construction and would fill the tail of a defect ranking with
+    # rows the reader cannot compare against the ones above them. The counts
+    # and breakdowns above still see every dimension; only this queue is
+    # defect-and-maintainability work.
+    ranked = [f for f in findings if (getattr(f, "dimension", None) or "defect") != "performance"]
     top_findings = await _attach_symbol_ids(
-        session, repo_id, [_finding_to_dict(f) for f in findings[:limit]]
+        session, repo_id, [_finding_to_dict(f) for f in ranked[:limit]]
     )
 
     return {

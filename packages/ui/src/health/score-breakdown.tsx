@@ -5,6 +5,7 @@ import {
   type BiomarkerCategory,
 } from "./biomarker-glossary";
 import { scoreBadgeClass, type Severity } from "./tokens";
+import { ImpactFigure } from "./impact-figure";
 import { SeverityMark } from "./severity-mark";
 
 export interface ScoreBreakdownCategoryFinding {
@@ -133,9 +134,7 @@ export function ScoreBreakdown({
                           {f.function_name}
                         </span>
                       ) : null}
-                      <span className="ml-auto tabular-nums text-[var(--color-error)]">
-                        −{f.applied_impact.toFixed(2)}
-                      </span>
+                      <ImpactFigure impact={f.applied_impact} className="ml-auto" />
                     </li>
                   ))}
                   {c.findings.length > 6 ? (

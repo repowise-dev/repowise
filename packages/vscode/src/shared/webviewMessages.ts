@@ -12,6 +12,8 @@ import type {
   ChurnComplexityResponse,
   HealthFilesQuery,
   HealthFilesResponse,
+  HealthMapFeed,
+  HealthMapQuery,
   HealthOverviewResponse,
   HealthTrendResponse,
 } from "@repowise-dev/types/health";
@@ -124,6 +126,8 @@ export interface HostApi {
   // Health dashboard
   healthOverview(limit?: number): Promise<HealthOverviewResponse>;
   healthFiles(query?: HealthFilesQuery): Promise<HealthFilesResponse>;
+  /** The bounded field the map draws, chosen by the server. */
+  healthMap(query?: HealthMapQuery): Promise<HealthMapFeed>;
   healthTrend(limit?: number): Promise<HealthTrendResponse>;
   churnComplexity(limit?: number): Promise<ChurnComplexityResponse>;
   // Architecture map

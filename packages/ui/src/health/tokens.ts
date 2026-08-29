@@ -222,6 +222,26 @@ export function deltaColor(delta: number | null | undefined): string {
 
 export function formatDelta(delta: number | null | undefined): string {
   if (delta == null) return "—";
-  const sign = delta > 0 ? "+" : "";
-  return `${sign}${delta.toFixed(2)}`;
+  // Rounding decides the sign here, not the raw value: a delta of -0.001 is
+  // "0.00", and printing it as "-0.00" claims a direction the figure on screen
+  // does not have.
+  const rounded = Number(delta.toFixed(2));
+  if (rounded === 0) return "0.00";
+  return `${rounded > 0 ? "+" : ""}${rounded.toFixed(2)}`;
+}
+
+/**
+ * A finding's deduction as a signed string, or `null` when it has none.
+ *
+ * Two different zeros, kept apart. Performance findings carry an impact of
+ * exactly zero by construction, so there is no deduction to print and `null`
+ * tells the caller to print a word instead. A real deduction too small to show
+ * at two places is still a measured cost, so it prints as a bound rather than
+ * as "−0.00", which would claim the finding costs nothing.
+ */
+export function formatHealthImpact(impact: number | null | undefined): string | null {
+  if (impact == null || impact === 0) return null;
+  const rounded = Number(Math.abs(impact).toFixed(2));
+  if (rounded === 0) return "−<0.01";
+  return `−${rounded.toFixed(2)}`;
 }

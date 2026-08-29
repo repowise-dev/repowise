@@ -495,6 +495,9 @@ def _stamp_nested_collections(value: Any) -> None:
         _stamp_nested_collections(child)
 
 
+_RANKED_DIMENSIONS_DEFAULT = {"defect", "maintainability"}
+"""Dimensions the impact-ranked findings list carries when none is asked for."""
+
 def _in_dimensions(row: Any, dimensions: set[str]) -> bool:
     """True when *row* belongs to one of *dimensions* (empty set -> everything).
 
@@ -1314,6 +1317,12 @@ async def get_health(
     # to nothing while the total still reported the whole repo. The filter now
     # decides which rows are eligible for the cap in the first place.
     dimension_filter = include_set & {"performance", "defect", "maintainability"}
+    # The ranked findings list is ordered by health impact, and every
+    # performance finding carries zero impact by construction, so leaving it
+    # in an unfiltered list appends rows that can never rank and cannot be
+    # compared against the ones above them. Asking for the dimension still
+    # returns it, and the performance blocks rank the same evidence by cause.
+    ranked_dimensions = dimension_filter or _RANKED_DIMENSIONS_DEFAULT
     # The serialized-rows read is the expensive optional one; skip it when no
     # block that carries findings survives the projection.
     wants_findings = wants("findings") or wants("top_findings")
@@ -1582,7 +1591,7 @@ async def get_health(
             )
             lead_rows: list[Any] = finding_rows
             emitted = _rank_emitted(
-                [f for f in finding_rows if _in_dimensions(f, dimension_filter)]
+                [f for f in finding_rows if _in_dimensions(f, ranked_dimensions)]
             )
             finding_rows = emitted
             legend_rows: list[Any] = finding_rows
@@ -1632,7 +1641,9 @@ async def get_health(
             # leads and the performance KPI, neither of which should change
             # because the caller asked to *see* one dimension.
             lead_rows = filter_rows_by_attr(lite_rows, "file_path", exclude_spec)
-            emitted = _rank_emitted([r for r in lead_rows if _in_dimensions(r, dimension_filter)])
+            emitted = _rank_emitted(
+                [r for r in lead_rows if _in_dimensions(r, ranked_dimensions)]
+            )
             # Test material goes in its own bucket rather than competing for
             # the repo's headline finding list. Measured on this repo, **2 of
             # the top 5** open findings by impact sit on test files, and 4-5 of

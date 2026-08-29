@@ -311,3 +311,29 @@ async def test_a_page_costs_the_page_not_the_repository(app, client: AsyncClient
     assert page["total"] == 2
     assert len(page["items"]) == 1
     assert page["summary"]["total"] == 2
+
+
+async def test_the_queue_scopes_to_one_file_on_the_server(app, client):
+    """A file surface asks about one file rather than filtering a page.
+
+    The drawer that opens from the map's performance lens needs this file's
+    causes and no others. Narrowing a page it already received would show
+    whatever survived the cap, which is not the same question.
+    """
+    repo_id, _ = await _seed(app, client)
+    whole = await _page(client, repo_id, context="all")
+    # Scope to whichever file the grouping named as the place to intervene: the
+    # column is the intervention site, not every file the evidence touches.
+    target = whole["items"][0]["file_path"]
+    scoped = await _page(client, repo_id, context="all", file_paths=target)
+    assert scoped["total"] >= 1
+    assert {item["file_path"] for item in scoped["items"]} == {target}
+    # The whole queue is larger, so the scope is doing the work and not the cap.
+    assert whole["total"] > scoped["total"]
+
+
+async def test_a_file_with_no_cause_scopes_to_an_empty_queue(app, client):
+    repo_id, _ = await _seed(app, client)
+    page = await _page(client, repo_id, context="all", file_paths="src/nothing-here.py")
+    assert page["total"] == 0
+    assert page["items"] == []

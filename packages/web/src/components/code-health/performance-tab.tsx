@@ -33,6 +33,11 @@ export function PerformanceTab({ repoId }: { repoId: string }) {
       getRefactoringPlan: (planId) => getRefactoringPlan(repoId, planId),
       refactoringPlanHref: (planId) =>
         `/repos/${repoId}/refactoring?type=performance_fix&plan=${encodeURIComponent(planId)}`,
+      // Onto the one galaxy, on the performance lens, with the cause's files
+      // pinned. The map guarantees them a node rather than hoping the size
+      // ranking happened to include them.
+      mapHref: (opportunityId, filePath) =>
+        `/repos/${repoId}/code-health?lens=performance&opportunity=${encodeURIComponent(opportunityId)}&file=${encodeURIComponent(filePath)}`,
       fileHref: (path) => fileEntityPath(prefix, path),
       symbolHref: (symbolId) => symbolEntityPath(prefix, symbolId),
       navigate: (href) => router.push(href),

@@ -36,6 +36,18 @@ _EVIDENCE_PER_ITEM = 8
 """Evidence rows carried inline on a queue row, so the tab can show the paths."""
 
 
+_MAX_SCOPED_PATHS = 50
+"""Files one scoped request may name. A file surface asks about one or a few."""
+
+
+def _paths(raw: str | None) -> tuple[str, ...] | None:
+    """Split the file scope, or nothing when the caller did not scope."""
+    if not raw:
+        return None
+    parts = tuple(dict.fromkeys(p.strip() for p in raw.split(",") if p.strip()))
+    return parts[:_MAX_SCOPED_PATHS] or None
+
+
 def _item(item: dict[str, Any]) -> dict[str, Any]:
     """Drop the reference minted for the other address space."""
     return {key: value for key, value in item.items() if key != "plan_reference"}
@@ -50,6 +62,13 @@ async def list_performance_opportunities(
     actionability: str | None = Query(None),
     view: str = Query("detail"),
     sort: str = Query("rank"),
+    file_paths: str | None = Query(
+        None,
+        description=(
+            "Comma-separated files to scope to, matched against the file "
+            "holding each opportunity's intervention."
+        ),
+    ),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_db_session),
@@ -66,6 +85,7 @@ async def list_performance_opportunities(
         actionability=actionability,
         view=view,
         sort=sort,
+        file_paths=_paths(file_paths),
         limit=limit,
         offset=offset,
     )

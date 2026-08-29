@@ -3,6 +3,7 @@ import {
   getChurnComplexity,
   getHealthOverview,
   getHealthTrend,
+  getHealthMap,
   listHealthFiles,
 } from "@repowise-dev/api-client/code-health";
 import { getArchitectureView } from "@repowise-dev/api-client/c4";
@@ -252,6 +253,8 @@ export function createHostApi(ctx: RepowiseContext, epoch: () => number): HostAp
     healthOverview: (limit) => cached(`health:overview:${limit ?? ""}`, (id) => getHealthOverview(id, limit)),
     healthFiles: (query) =>
       cached(`health:files:${JSON.stringify(query ?? {})}`, (id) => listHealthFiles(id, query)),
+    healthMap: (query) =>
+      cached(`health:map:${JSON.stringify(query ?? {})}`, (id) => getHealthMap(id, query)),
     healthTrend: (limit) => cached(`health:trend:${limit ?? ""}`, (id) => getHealthTrend(id, limit)),
     churnComplexity: (limit) =>
       cached(`health:churn:${limit ?? ""}`, (id) => getChurnComplexity(id, limit != null ? { limit } : undefined)),

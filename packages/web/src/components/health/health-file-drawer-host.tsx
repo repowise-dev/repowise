@@ -1,23 +1,48 @@
 "use client";
 
+import useSWR from "swr";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { HealthFileDrawer } from "@repowise-dev/ui/health";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
-import { updateFindingStatus } from "@/lib/api/code-health";
+import {
+  getPerformanceOpportunities,
+  updateFindingStatus,
+} from "@/lib/api/code-health";
 import { useFileBreakdown } from "./use-file-breakdown";
+
+/** Causes listed for one file. A file with more than this is its own queue. */
+const FILE_CAUSE_LIMIT = 10;
 
 export function HealthFileDrawerHost({
   repoId,
   filePath,
   onClose,
+  lens,
 }: {
   repoId: string;
   filePath: string | null;
   onClose: () => void;
+  /** The surface the file was opened from; drives what the drawer leads with. */
+  lens?: string;
 }) {
+  const router = useRouter();
   const { data, isLoading } = useFileBreakdown(repoId, filePath);
   const prefix = `/repos/${repoId}`;
   const filePageHref = filePath ? fileEntityPath(prefix, filePath) : undefined;
+
+  // Scoped to the one file, by the server. Fetched only from the performance
+  // lens, so opening a file from anywhere else costs the request it always did.
+  const wantsCauses = lens === "performance" && filePath !== null;
+  const { data: causes, isLoading: causesLoading } = useSWR(
+    wantsCauses ? `file-performance-causes:${repoId}:${filePath}` : null,
+    () =>
+      getPerformanceOpportunities(repoId, {
+        file_paths: [filePath as string],
+        limit: FILE_CAUSE_LIMIT,
+      }),
+    { revalidateOnFocus: false },
+  );
 
   return (
     <HealthFileDrawer
@@ -38,6 +63,14 @@ export function HealthFileDrawerHost({
       suggestions={data?.suggestions ?? {}}
       trend={data?.trend ?? null}
       signals={data?.signals ?? null}
+      lens={lens}
+      performance={
+        wantsCauses && causes ? { items: causes.items, total: causes.total } : null
+      }
+      performanceLoading={causesLoading}
+      onOpportunitySelect={(opportunityId) =>
+        router.push(`/repos/${repoId}/code-health?tab=performance&opportunity=${encodeURIComponent(opportunityId)}`)
+      }
       permalinkHref={filePageHref ? `${filePageHref}?tab=health` : undefined}
       fileViewHref={filePageHref}
       fileViewHrefFor={
