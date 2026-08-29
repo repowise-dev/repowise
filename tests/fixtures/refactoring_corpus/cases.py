@@ -193,3 +193,78 @@ def try_except_assigned(rows, limit):
         record(limit)
         record(row)
     return rate
+
+
+def calls_a_sibling_closure(rows, prefix):
+    """A span that calls a closure declared beside it must pass it in.
+
+    The nested ``def`` is a scope whose reads are its own, and at the same time
+    a plain local binding right here. Losing the binding let a span be offered
+    whose lifted body called ``emit`` without receiving it, which is how the
+    ranked head came to carry a plan that does not run.
+    """
+    seen = []
+
+    def emit(value):
+        seen.append(f"{prefix}:{value}")
+
+    # Pinned by name in test_refactoring_corpus_golden rather than by a
+    # sound: marker - the comment attaches to the span it precedes here, so
+    # the marker's line arithmetic would not line up.
+    for row in rows:
+        if isinstance(row, str):
+            emit(row.strip())
+        elif isinstance(row, (int, float)):
+            emit(round(float(row), 2))
+        else:
+            emit(str(row))
+        record(row)
+    return seen
+
+
+def read_then_write_in_span(block, limit):
+    """A loop variable read above its write, both inside one candidate span.
+
+    Nothing after the span reads ``expect``, so it is not an OUT; the read at
+    the top of the span takes the previous iteration's value. Lifting the pair
+    into a helper drops the write and breaks the state machine.
+    """
+    names = []
+    expect = True
+    depth = 0
+    i = 0
+    while i < limit:
+        ch = block[i]
+        if ch == "(":
+            depth += 1
+            expect = True
+        elif ch == ")":
+            depth -= 1
+        else:
+            # unsound: the write below is read again on the next iteration
+            symbol = str(ch)
+            if expect and depth >= 1:
+                names.append(symbol)
+                record(symbol)
+            expect = depth == 1
+        i += 1
+    return names
+
+
+def holds_a_nested_helper(rows, limit):
+    """A span containing a named nested function may not be lifted.
+
+    Def/use never descends into a nested scope, so a sibling closure calling
+    ``scale`` is invisible here. Moving the declaration out of this scope would
+    move the binding away from those callers with nothing in the facts to show
+    it, so the span is refused rather than guessed at.
+    """
+    total = 0
+    # unsound: the span below holds a named nested function
+    def scale(value):
+        return value * limit
+
+    for row in rows:
+        total += scale(row)
+        record(row)
+    return total

@@ -26,8 +26,10 @@ ValidationBasis = Literal["measured", "inferred", "mixed", "unknown"]
 ValidationVia = Literal["coverage", "call-graph", "import-graph", "mixed"]
 
 DEFAULT_TEST_LIMIT = 12
-_EFFORT_COST = {"S": 1.0, "M": 2.0, "L": 3.0, "XL": 5.0}
-_CONFIDENCE_RISK = {"high": 0.0, "medium": 0.5, "low": 1.25}
+# Public because the opportunity rank charges the same work and the same
+# uncertainty over a whole step set. Two tables would be two policies.
+EFFORT_COST = {"S": 1.0, "M": 2.0, "L": 3.0, "XL": 5.0}
+CONFIDENCE_RISK = {"high": 0.0, "medium": 0.5, "low": 1.25}
 _WEAK_PROVENANCE = {"name-fallback", "global_unique", "unknown"}
 
 
@@ -164,6 +166,28 @@ def enrich_blast_radius(suggestion: RefactoringSuggestion, centrality: Mapping[s
         if files:
             blast["callers"] = sum(int(centrality.get(path, 0.0) or 0.0) for path in files)
     suggestion.blast_radius = blast
+
+
+def surface_confidence_risk(surface: int, confidence: str) -> float:
+    """Risk from change surface and detector certainty, charged once.
+
+    Both the plan rank and the opportunity rank ask this, over their own
+    surface: one plan's blast radius, or the union across a step set. Two
+    copies would be two policies about the same two inputs.
+    """
+    return math.log1p(max(0, surface)) + CONFIDENCE_RISK.get(confidence, 0.75)
+
+
+def priority_score(*, benefit: float, uplift: float, cost: float, risk: float) -> float:
+    """Benefit scaled by what makes it attractive, over what it costs.
+
+    Benefit multiplies rather than offsets, so something with no evidence of a
+    gain scores zero and cannot be lifted above something that recovers health
+    by being popular, cheap or easy. What counts as benefit and what counts as
+    uplift differ between a plan and a composed opportunity, and are decided by
+    their own owners; this shape is the part they share.
+    """
+    return benefit * (1.0 + uplift) / (1.0 + cost + risk)
 
 
 def _performance_benefit(evidence: Mapping[str, Any]) -> float:
@@ -476,7 +500,7 @@ def _priority_components(
     leverage = 0.5 * math.log1p(weighted_deficit) + math.log1p(max(0, dependents)) + entry_bonus
     surface = max(blast_size(suggestion), max(0, len(affected_files(suggestion)) - 1))
     # Blast radius is charged once, in ``risk``. Cost is the work itself.
-    cost = _EFFORT_COST.get(suggestion.effort_bucket, 3.0)
+    cost = EFFORT_COST.get(suggestion.effort_bucket, 3.0)
     provenance = str((suggestion.evidence or {}).get("provenance") or "")
     weak_graph = 1.0 if provenance in _WEAK_PROVENANCE else 0.0
     validation_risk = {
@@ -485,17 +509,12 @@ def _priority_components(
         "inferred": 0.75,
         "unknown": 1.5,
     }[validation.basis]
-    risk = (
-        math.log1p(surface)
-        + _CONFIDENCE_RISK.get(suggestion.confidence, 0.75)
-        + weak_graph
-        + validation_risk
-    )
+    risk = surface_confidence_risk(surface, suggestion.confidence) + weak_graph + validation_risk
     # Benefit multiplies rather than offsets: leverage (the host file's
     # deficit and dependents) scales a real gain, and scales nothing when
     # there is none. A plan with no evidence of benefit scores 0 and cannot
     # outrank one that recovers health, however popular its file.
-    priority = benefit * (1.0 + leverage) / (1.0 + cost + risk)
+    priority = priority_score(benefit=benefit, uplift=leverage, cost=cost, risk=risk)
     return (
         round(benefit, 4),
         round(leverage, 4),
@@ -653,7 +672,9 @@ def serialize_recommendations(
 
 
 __all__ = [
+    "CONFIDENCE_RISK",
     "DEFAULT_TEST_LIMIT",
+    "EFFORT_COST",
     "Recommendation",
     "RecommendationView",
     "ValidationPlan",
@@ -668,6 +689,8 @@ __all__ = [
     "detector_native_benefit",
     "enrich_blast_radius",
     "hydrate_recommendations",
+    "priority_score",
     "rehydrate_suggestion",
     "serialize_recommendations",
+    "surface_confidence_risk",
 ]

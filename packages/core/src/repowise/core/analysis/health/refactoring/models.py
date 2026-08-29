@@ -102,8 +102,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-# Confidence buckets a detector may assign. Ordered low -> high; the surface
-# layers may filter on a ``min_confidence`` config (default: medium).
+# Confidence buckets, ordered low -> high; the surface layers filter on a
+# ``min_confidence`` config (default: medium).
+#
+# ``low`` is a floor value, not an emitted label. Censused over this repo's own
+# plan set: 835 high, 1,175 medium, **0 low** - no detector has ever produced
+# one, because a detector that cannot justify ``medium`` suppresses the plan
+# instead ("no suggestion, never a wrong one"). Both obvious fixes were
+# rejected on that evidence: emitting a real ``low`` tier would resurrect
+# exactly the spans the R1 gates suppress, and deleting the level would break
+# ``min_confidence: low``, which is the documented way to ask for no filtering
+# at all. So the level stays, and it means "no floor" rather than "a weak
+# plan". Read a detector's confidence as medium-or-high.
 CONFIDENCE_LEVELS = ("low", "medium", "high")
 
 

@@ -11,7 +11,6 @@ from typing import Any
 
 from sqlalchemy import select
 
-from repowise.core.analysis.health.biomarkers import continuous_biomarkers
 from repowise.core.analysis.health.churn_complexity import churn_complexity_points
 from repowise.core.analysis.health.complexity.languages import LANGUAGE_MAPS
 from repowise.core.analysis.health.coverage import decay_since, measurement_ref
@@ -19,6 +18,7 @@ from repowise.core.analysis.health.defect_accuracy import compute_defect_accurac
 from repowise.core.analysis.health.finding_identity import finding_public_id
 from repowise.core.analysis.health.grading import HEALTHY_MIN, band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
+from repowise.core.analysis.health.models import primary_finding
 from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
 from repowise.core.analysis.health.perf.opportunity_rank import observation_rank
 from repowise.core.analysis.health.refactoring.recommendations import (
@@ -527,16 +527,18 @@ def _leads_by_file(findings: list[Any]) -> dict[str, dict[str, Any]]:
     "N% of lines uncovered", which is true and tells a reader nothing about why
     this file rather than any other. The gradient still counts in
     ``total_deduction`` and still leads when it is a file's only finding — it
-    just stops crowding out a nameable cause.
+    just stops crowding out a nameable cause. That selection rule now lives in
+    ``analysis.health.models.primary_finding``, so this and the composition
+    layer cannot drift about which finding a file leads with.
     """
-    continuous = continuous_biomarkers()
     by_file: dict[str, list[Any]] = {}
     for f in findings:
         by_file.setdefault(f.file_path, []).append(f)
     leads: dict[str, dict[str, Any]] = {}
     for path, fs in by_file.items():
-        discrete = [f for f in fs if f.biomarker_type not in continuous]
-        primary = max(discrete or fs, key=lambda x: x.health_impact)
+        primary = primary_finding(fs)
+        if primary is None:
+            continue
         leads[path] = {
             "primary_biomarker": primary.biomarker_type,
             "primary_reason": primary.reason,

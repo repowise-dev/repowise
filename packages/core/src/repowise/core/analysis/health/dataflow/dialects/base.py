@@ -157,6 +157,37 @@ class BaseDefUseDialect:
         override for their function/lambda node kinds."""
         return False
 
+    # Boundary kinds that additionally bind their own name in the ENCLOSING
+    # scope. Empty by default, and deliberately not inferred from "the node has
+    # a name field": in JS a named function *expression* has one and binds it
+    # only inside itself, so inferring would inject a definition of a name the
+    # enclosing scope never gets, which is worse than the omission this exists
+    # to fix. Each dialect names its own binders.
+    enclosing_binder_kinds: frozenset[str] = frozenset()
+
+    def boundary_def(self, node: Node, defs: list[Occurrence]) -> None:
+        """Record the name a nested scope binds in the *enclosing* scope.
+
+        A nested function is two things at once: a scope whose reads belong to
+        it and not to us, and, in some languages, a plain local binding of its
+        own name right here. Skipping the whole node handles the first and used
+        to lose the second, so a span calling a sibling closure saw no
+        definition of it, the name never entered the extraction's IN set, and
+        the lifted helper called something that was not passed to it. Measured
+        on this repo's own ranked head: the Python function
+        ``ingestion/dynamic_hints/cpp.py::extract`` offered a span calling a
+        local ``_emit`` with ``_emit`` absent from its parameters.
+
+        An anonymous scope - a lambda, a closure literal - binds nothing here,
+        and neither does a construct whose name is scoped to itself; both are
+        left alone via :data:`enclosing_binder_kinds`.
+        """
+        if node.type not in self.enclosing_binder_kinds:
+            return
+        name = node.child_by_field_name("name")
+        if name is not None and name.type in self.identifier_kinds:
+            defs.append(self._occ(name))
+
     # -- defaults a subclass may override -------------------------------------
 
     def parameter_defs(self, fn_node: Node) -> tuple[Occurrence, ...]:

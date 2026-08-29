@@ -1,5 +1,51 @@
 {
   "python": {
+    "calls_a_sibling_closure": [
+      {
+        "ccn_removed": 3,
+        "end_line": 221,
+        "params": [
+          "emit",
+          "rows"
+        ],
+        "returns": [],
+        "slice_nloc": 11,
+        "start_line": 211
+      },
+      {
+        "ccn_removed": 3,
+        "end_line": 221,
+        "params": [
+          "emit",
+          "rows"
+        ],
+        "returns": [],
+        "slice_nloc": 10,
+        "start_line": 212
+      },
+      {
+        "ccn_removed": 3,
+        "end_line": 221,
+        "params": [
+          "emit",
+          "rows"
+        ],
+        "returns": [],
+        "slice_nloc": 9,
+        "start_line": 213
+      },
+      {
+        "ccn_removed": 2,
+        "end_line": 221,
+        "params": [
+          "emit",
+          "row"
+        ],
+        "returns": [],
+        "slice_nloc": 7,
+        "start_line": 215
+      }
+    ],
     "changed_accumulator": [
       {
         "ccn_removed": 2,
@@ -472,6 +518,7 @@
         "start_line": 166
       }
     ],
+    "holds_a_nested_helper": [],
     "if_without_else": [
       {
         "ccn_removed": 2,
@@ -628,51 +675,74 @@
         ],
         "slice_nloc": 12,
         "start_line": 94
-      },
-      {
-        "ccn_removed": 1,
-        "end_line": 105,
-        "params": [
-          "carry",
-          "limit",
-          "row"
-        ],
-        "returns": [
-          "carry"
-        ],
-        "slice_nloc": 10,
-        "start_line": 96
-      },
-      {
-        "ccn_removed": 1,
-        "end_line": 104,
-        "params": [
-          "carry",
-          "limit",
-          "row"
-        ],
-        "returns": [
-          "carry"
-        ],
-        "slice_nloc": 9,
-        "start_line": 96
-      },
-      {
-        "ccn_removed": 1,
-        "end_line": 103,
-        "params": [
-          "carry",
-          "limit",
-          "row"
-        ],
-        "returns": [
-          "carry"
-        ],
-        "slice_nloc": 8,
-        "start_line": 96
       }
     ],
     "loop_rebinds_iterable": [],
+    "read_then_write_in_span": [
+      {
+        "ccn_removed": 5,
+        "end_line": 250,
+        "params": [
+          "block",
+          "limit"
+        ],
+        "returns": [
+          "names"
+        ],
+        "slice_nloc": 25,
+        "start_line": 226
+      },
+      {
+        "ccn_removed": 5,
+        "end_line": 250,
+        "params": [
+          "block",
+          "limit"
+        ],
+        "returns": [
+          "names"
+        ],
+        "slice_nloc": 19,
+        "start_line": 232
+      },
+      {
+        "ccn_removed": 5,
+        "end_line": 250,
+        "params": [
+          "block",
+          "limit",
+          "names"
+        ],
+        "returns": [],
+        "slice_nloc": 18,
+        "start_line": 233
+      },
+      {
+        "ccn_removed": 5,
+        "end_line": 250,
+        "params": [
+          "block",
+          "limit",
+          "names"
+        ],
+        "returns": [],
+        "slice_nloc": 17,
+        "start_line": 234
+      },
+      {
+        "ccn_removed": 5,
+        "end_line": 250,
+        "params": [
+          "block",
+          "depth",
+          "limit",
+          "names"
+        ],
+        "returns": [],
+        "slice_nloc": 16,
+        "start_line": 235
+      }
+    ],
     "record": [],
     "try_except_assigned": [
       {

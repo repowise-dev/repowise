@@ -56,8 +56,10 @@ _MIN_HELPER_LINES = 8
 
 # Co-change count at/above which duplication counts as actively maintained
 # (mirrors ``dry_violation._ACTIVE_CO_CHANGE``) — the strong, high-confidence
-# smell rather than a dormant clone.
-_ACTIVE_CO_CHANGE = 3
+# smell rather than a dormant clone. Public because the opportunity composer
+# gates the same threshold when it decides whether a clone instructs a change
+# or only evidences one.
+ACTIVE_CO_CHANGE = 3
 
 # Slack (lines) for treating two clone regions on this file's side as the
 # same block — matches the duplication merger's one-line window slack.
@@ -511,7 +513,7 @@ class ExtractHelperDetector(RefactoringDetector):
             impact_delta=round(float(impact), 3),
             effort_bucket=effort_bucket(duplicated_lines),
             blast_radius=blast_radius,
-            confidence="high" if block.co_change >= _ACTIVE_CO_CHANGE else "medium",
+            confidence="high" if block.co_change >= ACTIVE_CO_CHANGE else "medium",
             source_biomarker=_SOURCE_BIOMARKER,
         )
 

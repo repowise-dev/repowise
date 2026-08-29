@@ -58,3 +58,19 @@ def test_sound_regions_are_still_offered(language: str, filename: str) -> None:
     assert marked, "corpus lost its sound markers"
     offered = offered_start_lines(language, filename)
     assert set(marked) <= offered, f"gate suppressed sound regions {sorted(set(marked) - offered)}"
+
+
+def test_a_span_calling_a_sibling_closure_receives_it() -> None:
+    """A nested ``def`` binds a local name, and a span reading it takes it in.
+
+    Measured on this repo's own ranked head before the fix:
+    ``ingestion/dynamic_hints/cpp.py::extract`` offered a span that called a
+    local ``_emit`` and did not list it, so the lifted helper would not run.
+    """
+    if get_defuse_dialect("python") is None:
+        pytest.skip("no python dataflow dialect here")
+    spans = extractions_for("python", "cases.py")["calls_a_sibling_closure"]
+    calling = [span for span in spans if span["start_line"] >= 211]
+    assert calling, "the archetype stopped offering a span after its closure"
+    for span in calling:
+        assert "emit" in span["params"], span
