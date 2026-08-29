@@ -746,8 +746,8 @@ async def _load_stale_structural_file_paths_async(repo_path: Any) -> list[str]:
                 return []
             return await get_stale_structural_file_paths(session, repo.id)
     except Exception as exc:
-        logger.debug("load_stale_structural_file_paths_failed", error=str(exc))
-        return []
+        logger.warning("load_stale_structural_file_paths_failed", error=str(exc))
+        raise
     finally:
         await engine.dispose()
 
