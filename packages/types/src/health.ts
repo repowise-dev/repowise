@@ -348,13 +348,55 @@ export type PerformanceOpportunityDetail =
       detail: string;
     };
 
-/** Counts per value for one filter, cross-filtered by the other filters. */
+/**
+ * Counts per value for one filter, computed from the base result rather than
+ * the filtered one, so selecting a value never erases its own alternatives.
+ * A value with no rows is absent rather than reported as zero.
+ */
 export interface PerformanceFacetCount {
   value: string;
   total: number;
 }
 
-export type PerformanceFacets = Record<string, PerformanceFacetCount[]>;
+/**
+ * The filters the server owns. Every key except `plan_state` is also a query
+ * parameter; plan state is counted per value but is not something the queue
+ * narrows by.
+ */
+export type PerformanceFacetKey =
+  | "context"
+  | "boundary"
+  | "confidence"
+  | "actionability"
+  | "plan_state";
+
+export type PerformanceFacets = Partial<Record<PerformanceFacetKey, PerformanceFacetCount[]>>;
+
+/** `all` widens the context filter; the four contexts stay separate under it. */
+export type PerformanceContextFilter = PerformanceExecutionContext | "all";
+
+/**
+ * The query the server answers, shared by the REST client and the views.
+ * An alias rather than an interface so a client can hand it to a generic
+ * query-parameter helper without restating every field.
+ */
+export type PerformanceOpportunityQuery = {
+  /**
+   * Canonical contexts. `production_tooling` is a retired spelling an older
+   * server still answers as Production+Tooling. It is never returned as a
+   * context, so only a legacy-compatibility path should send it.
+   */
+  context?: PerformanceContextFilter | "production_tooling";
+  boundary?: string;
+  /** Evidence confidence, requested apart from fix safety and actionability. */
+  confidence?: PerformanceOpportunityConfidence;
+  actionability?: PerformanceActionabilityState;
+  /** `summary` drops the explanatory fields and keeps identity and counts. */
+  view?: "detail" | "summary";
+  sort?: "rank" | "leverage" | "observations";
+  limit?: number;
+  offset?: number;
+};
 
 export interface PerformanceOpportunitySummary {
   /** `current` once materialized, `stale_model` after a model bump, or
@@ -362,17 +404,16 @@ export interface PerformanceOpportunitySummary {
   status: "current" | "stale_model" | "unavailable";
   total: number;
   performance_model_version?: number;
+  /** The model the stored rows were written by, when it trails the current one. */
+  materialized_model_version?: number;
   analyzed_commit?: string | null;
   actionability?: Partial<Record<PerformanceActionabilityState, number>>;
   context?: Partial<Record<PerformanceExecutionContext, number>>;
   boundary?: Record<string, number>;
   with_plan_total: number;
-  /** Flat counters the current tab reads, projected from `context` above. */
-  production_total: number;
-  tooling_total: number;
-  test_total: number;
-  unknown_total: number;
-  without_plan_total: number;
+  /** Why the queue is not current, when it is not. */
+  reason?: string;
+  detail?: string;
 }
 
 export interface PerformanceOpportunityPage extends Paginated<PerformanceOpportunity> {

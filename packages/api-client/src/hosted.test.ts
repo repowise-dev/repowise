@@ -333,14 +333,7 @@ describe("request wiring", () => {
         "/health/performance-opportunities",
         {
           ...envelope,
-          summary: {
-            total: 0,
-            production_total: 0,
-            tooling_total: 0,
-            test_total: 0,
-            with_plan_total: 0,
-            without_plan_total: 0,
-          },
+          summary: { status: "current", total: 0, with_plan_total: 0 },
         },
       ],
     ]);

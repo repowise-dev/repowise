@@ -31,7 +31,10 @@ import type {
   HealthWorkQueueResponse,
 } from "@repowise-dev/types/health";
 import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
-import type { PerformanceOpportunityPage } from "@repowise-dev/types/health";
+import type {
+  PerformanceOpportunityPage,
+  PerformanceOpportunityQuery,
+} from "@repowise-dev/types/health";
 import type {
   RefactoringPlan,
   RefactoringPlanPage,
@@ -410,11 +413,7 @@ export interface HostedProvider {
   getRefactoringPlan(repoId: string, planId: string): Promise<RefactoringPlan>;
   getPerformanceOpportunities(
     repoId: string,
-    opts?: {
-      context?: "production_tooling" | "test" | "all";
-      limit?: number;
-      offset?: number;
-    },
+    opts?: PerformanceOpportunityQuery,
   ): Promise<PerformanceOpportunityPage>;
   getPerformanceOpportunityFindings(
     repoId: string,

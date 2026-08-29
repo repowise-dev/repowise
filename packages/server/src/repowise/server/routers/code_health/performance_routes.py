@@ -41,26 +41,6 @@ def _item(item: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in item.items() if key != "plan_reference"}
 
 
-def _summary(summary: dict[str, Any]) -> dict[str, Any]:
-    """Add the flat counter names the current tab reads.
-
-    A projection of the canonical rollup, not a second count: every value is
-    read off the fields above it. The flat names retire with the tab.
-    """
-    context = summary.get("context", {})
-    total = summary.get("total", 0)
-    with_plan = summary.get("with_plan_total", 0)
-    return {
-        **summary,
-        "production_total": context.get("production", 0),
-        "tooling_total": context.get("tooling", 0),
-        "test_total": context.get("test", 0),
-        "unknown_total": context.get("unknown", 0),
-        "with_plan_total": with_plan,
-        "without_plan_total": total - with_plan,
-    }
-
-
 @router.get("/api/repos/{repo_id}/health/performance-opportunities")
 async def list_performance_opportunities(
     repo_id: str,
@@ -98,7 +78,7 @@ async def list_performance_opportunities(
         "has_more": page.next_offset is not None,
         "next_offset": page.next_offset,
         "facets": page.facets,
-        "summary": _summary(page.summary),
+        "summary": page.summary,
         **({"ignored_arguments": ignored} if ignored else {}),
     }
 

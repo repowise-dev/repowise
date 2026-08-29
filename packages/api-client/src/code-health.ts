@@ -14,11 +14,9 @@ import type {
   HealthFileBreakdownResponse,
   HealthOverviewResponse,
   HealthTrendResponse,
-  PerformanceActionabilityState,
-  PerformanceExecutionContext,
-  PerformanceOpportunityConfidence,
   PerformanceOpportunityDetail,
   PerformanceOpportunityPage,
+  PerformanceOpportunityQuery,
   HealthWorkQueueQuery,
   HealthWorkQueueResponse,
 } from "@repowise-dev/types/health";
@@ -57,6 +55,7 @@ export type {
   PerformanceOpportunityDetail,
   PerformanceOpportunityEvidence,
   PerformanceOpportunityPage,
+  PerformanceOpportunityQuery,
   PerformanceOpportunitySummary,
   RefactoringQuery,
   RefactoringTarget,
@@ -86,26 +85,12 @@ export async function listHealthFindings(
   return apiGet<HealthFinding[]>(`/api/repos/${repoId}/health/findings`, opts);
 }
 
-export interface PerformanceOpportunityPageParams {
-  /**
-   * Canonical contexts. `production_tooling` is a retired spelling the server
-   * still answers as Production+Tooling; it is never returned as a context.
-   */
-  context?: PerformanceExecutionContext | "all" | "production_tooling";
-  boundary?: string;
-  /** Evidence confidence, reported apart from fix safety and actionability. */
-  confidence?: PerformanceOpportunityConfidence;
-  actionability?: PerformanceActionabilityState;
-  /** `summary` drops the explanatory fields and keeps identity and counts. */
-  view?: "detail" | "summary";
-  sort?: "rank" | "leverage" | "observations";
-  limit?: number;
-  offset?: number;
-}
+/** The canonical query shape lives with the wire types. */
+export type PerformanceOpportunityPageParams = PerformanceOpportunityQuery;
 
 export async function getPerformanceOpportunities(
   repoId: string,
-  opts: PerformanceOpportunityPageParams = {},
+  opts: PerformanceOpportunityQuery = {},
 ): Promise<PerformanceOpportunityPage> {
   return apiGet<PerformanceOpportunityPage>(
     `/api/repos/${repoId}/health/performance-opportunities`,
