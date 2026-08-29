@@ -126,6 +126,30 @@
   --color-info: #3f6ea5; /* muted blue — distinct from the plum accent-secondary */
   --color-caution: #a8821f; /* between warning and success; medium severity / fair score band */
 
+  /* Canvas node ramp — the severity ramp as FILL, for the health galaxy's
+     thousands of overlapping discs.
+
+     The semantic vars above are ink: tuned to stay readable as small coloured
+     type against the page. That is a different job, and used as fill they fail
+     differently in each theme. Against the dark root the ink has to be high
+     luminance, so a field of it is emissive rather than printed. Against this
+     cream root `warning` and `caution` land at nearly the same hue and
+     lightness: harmless when the two are never adjacent as type, fatal as
+     neighbouring bands, where it erased the middle of the ramp.
+
+     Same red / amber / gold / green family, chroma and value pulled back
+     together, and the amber and gold steps separated by hue as well as
+     lightness. Fill only: pills, badges and text keep the ink vars, so the
+     map's red is deliberately not byte-identical to the pill's. */
+  --color-node-critical: #9e3226;
+  --color-node-poor: #ad5a19;
+  --color-node-fair: #b3872a;
+  --color-node-good: #2a7a54;
+  /* No signal under the active lens. This was mixed a third of the way toward
+     the root, which recedes correctly against near-black and washes out to a
+     ghost against cream. One value cannot serve both directions. */
+  --color-node-neutral: #d2cac4;
+
   /* Refactoring type accents — a qualitative palette (NOT semantic). Five
      well-separated hues so the types stay distinguishable as dots / rails /
      chips across the Refactoring surface. Don't fold these back into the
@@ -425,6 +449,15 @@
   --color-error: #e06a5a;
   --color-info: #7da7d9; /* muted blue — distinct from the plum accent-secondary */
   --color-caution: #d9b04a;
+
+  /* Canvas node ramp (dark) — see the light block for why this is not the ink.
+     Deeper and less saturated than the semantic vars so a field of thousands
+     reads as pigment rather than as light. */
+  --color-node-critical: #b0544b;
+  --color-node-poor: #bd7c42;
+  --color-node-fair: #a89453;
+  --color-node-good: #42906f;
+  --color-node-neutral: #333336;
 
   /* Refactoring type accents — qualitative palette (dark theme, brighter). */
   --color-refactor-extract-class: #f59520; /* amber */

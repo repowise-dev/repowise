@@ -6,12 +6,12 @@ import { describe, it, expect, vi, beforeAll } from "vitest";
 import { render, fireEvent } from "@testing-library/react";
 import {
   CodeHealthMap,
+  OVERLAY_SPECS,
   SEARCH_MARK_CAP,
   burdenBand,
   performanceBurden,
   performanceFill,
-  performanceOpacity,
-  pressureRing,
+  performanceSentence,
   type CodeHealthMapFile,
   type MapScope,
 } from "../../src/health/code-health-map.js";
@@ -62,9 +62,9 @@ const scope: MapScope = {
 
 describe("burden encoding", () => {
   it("bands the count rather than scaling with it", () => {
-    // Forty causes and five are the same instruction to the reader. A ring that
-    // grew with the raw count would claim a magnitude the analysis has not
-    // measured.
+    // Forty causes and five are the same instruction to the reader. An
+    // encoding that grew with the raw count would claim a magnitude the
+    // analysis has not measured.
     expect(burdenBand(0)).toBe(0);
     expect(burdenBand(1)).toBe(1);
     expect([burdenBand(2), burdenBand(4)]).toEqual([2, 2]);
@@ -78,70 +78,74 @@ describe("burden encoding", () => {
       performance_analyzed: true,
     });
     expect(performanceBurden(row).state).toBe("actionable");
-    // The one file shape that earns a second mark.
-    expect(pressureRing(row)).not.toBeNull();
+    // Named in words, because the field has no channel left to say it in.
+    expect(performanceSentence(row)).toContain("stored plan");
   });
 
-  it("rings only a cause with a stored plan, so the mark stays rare", () => {
-    const base = { performance_opportunities: 9, performance_analyzed: true } as const;
-    expect(
-      pressureRing(f("a.py", 10, "core", { ...base, performance_actionability: "advisory" })),
-    ).toBeNull();
-    expect(
-      pressureRing(f("b.py", 10, "core", { ...base, performance_actionability: "investigate" })),
-    ).toBeNull();
-  });
-
-  it("colours the node by how many causes it carries", () => {
+  it("colours the node on the health ramp, with no palette of its own", () => {
     const at = (n: number) =>
       performanceFill(f("a.py", 10, "core", {
         performance_opportunities: n,
         performance_analyzed: true,
       }));
-    expect(at(1)).toContain("--color-caution");
-    expect(at(3)).toContain("--color-warning");
-    expect(at(9)).toBe("var(--color-error)");
-    // The two quiet steps mix toward the page, never toward transparency.
-    expect(at(1)).toContain("--color-bg-root");
+    // The same tokens the health lens paints with. An earlier cut mixed its
+    // own tones toward the page, putting colours on this field that exist
+    // nowhere else in the product and going muddy against a dark root.
+    const health = (score: number) => OVERLAY_SPECS.health.fill({ ...f("s.py", 1, null), score });
+    expect(at(1)).toBe(health(7)); // the ramp's fair step
+    expect(at(3)).toBe(health(5)); // poor
+    expect(at(9)).toBe(health(1)); // critical
   });
 
-  it("pushes a file with no cause into the ground", () => {
-    // Most of a repository is this, and the first cut drew every one of them
-    // at nine tenths opacity, which tiled into a sheet the marks sat behind.
+  it("never paints a file the healthy green, whatever its state", () => {
+    // Green means healthy on this map and no performance verdict is that: a
+    // cleared file is one with no supported pattern in it, not one measured to
+    // be fast. So the lens uses three of the ramp's four bands.
+    const green = OVERLAY_SPECS.health.fill({ ...f("s.py", 1, null), score: 9 });
+    const fills = [0, 1, 3, 9, 40].map((n) =>
+      performanceFill(f("a.py", 10, "core", { performance_opportunities: n })),
+    );
+    expect(fills).not.toContain(green);
+  });
+
+  it("gives every file with no open cause the one neutral", () => {
+    // Analyzed-clear and no-detector-for-this-language is a real distinction
+    // and an undecodable one as a second shade of grey. The field says only
+    // "nothing surfaced"; the words carry the rest.
     const clear = f("a.py", 10, "core", {
       performance_opportunities: 0,
-      performance_analyzed: true,
-    });
-    const loaded = f("b.py", 10, "core", {
-      performance_opportunities: 6,
-      performance_actionability: "advisory",
       performance_analyzed: true,
     });
     const unsupported = f("c.cc", 10, "core", {
       performance_opportunities: 0,
       performance_analyzed: false,
     });
-    expect(performanceOpacity(clear)).toBeLessThan(0.4);
-    expect(performanceOpacity(loaded)).toBeGreaterThan(performanceOpacity(clear));
-    expect(performanceOpacity(unsupported)).toBeLessThan(performanceOpacity(clear));
-
-    // A loaded node is fully present whatever its band: the nodes overlap, so
-    // a translucent ramp composites two light ones into the darker band's tone.
-    const at = (n: number) =>
-      performanceOpacity(f("x.py", 10, "core", {
-        performance_opportunities: n,
-        performance_analyzed: true,
-      }));
-    expect(at(1)).toBe(at(9));
+    expect(performanceFill(clear)).toBe(performanceFill(unsupported));
+    expect(performanceSentence(clear)).not.toBe(performanceSentence(unsupported));
   });
 
-  it("gives an unsupported language no ring and no clear verdict", () => {
+  it("spends opacity on focus alone, never on data", () => {
+    const files = [
+      f("core/a.py", 100, "core", { performance_opportunities: 0, performance_analyzed: true }),
+      f("core/b.py", 90, "core", { performance_opportunities: 6, performance_analyzed: true }),
+    ];
+    const { container } = render(<CodeHealthMap files={files} overlay="performance" />);
+    // A lens that also dimmed by burden left a reader unable to tell a quiet
+    // file from one sitting in an unfocused galaxy, and dissolved the field
+    // into a wash by dropping the separating stroke under it.
+    for (const node of container.querySelectorAll("circle[data-path]")) {
+      expect(node.getAttribute("fill-opacity")).toBe("0.9");
+      expect(Number(node.getAttribute("stroke-width"))).toBeGreaterThan(0);
+    }
+  });
+
+  it("gives an unsupported language no clear verdict", () => {
     const row = f("a.cc", 10, "core", {
       performance_opportunities: 0,
       performance_analyzed: false,
     });
-    expect(pressureRing(row)).toBeNull();
     expect(performanceBurden(row).state).toBe("unsupported");
+    expect(performanceSentence(row)).not.toMatch(/nothing surfaced/i);
   });
 });
 
@@ -229,14 +233,23 @@ describe("what the field costs to draw", () => {
     }),
   );
 
-  it("rings a fraction of the field, not a mark on every node", () => {
-    const { container } = render(<CodeHealthMap files={files} overlay="performance" />);
-    const nodes = container.querySelectorAll("circle[data-path]").length;
-    const rings = container.querySelectorAll("circle[data-ring]").length;
-    expect(nodes).toBe(300);
-    // The fixture's causes are all advisory, so none earns a ring: the burden
-    // rides on the node's own colour and costs no extra element at all.
-    expect(rings).toBe(0);
+  it("draws one circle per file and no second mark on top of it", () => {
+    // A rare per-file annotation was tried as a ring outside the node and as a
+    // core inside it. Neither read as belonging to one file on a body this
+    // dense, so the lens spends one channel and the words carry the rest.
+    const planned = files.map((row, i) =>
+      i % 7 === 0 ? { ...row, performance_actionability: "plan_ready" as const } : row,
+    );
+    const { container } = render(<CodeHealthMap files={planned} overlay="performance" />);
+    const nodes = container.querySelectorAll("circle[data-path]");
+    expect(nodes).toHaveLength(300);
+    // Nothing is drawn concentric with a node but smaller or larger than it,
+    // which is the shape both rejected marks had.
+    const centres = new Set([...nodes].map((n) => `${n.getAttribute("cx")},${n.getAttribute("cy")}`));
+    const overlaid = [...container.querySelectorAll("circle:not([data-path])")].filter((c) =>
+      centres.has(`${c.getAttribute("cx")},${c.getAttribute("cy")}`),
+    );
+    expect(overlaid).toHaveLength(0);
   });
 
   it("keeps the safeguards that make thousands of nodes affordable", () => {
@@ -246,7 +259,34 @@ describe("what the field costs to draw", () => {
     expect(container.querySelectorAll("title")).toHaveLength(0);
     expect(container.querySelectorAll("filter")).toHaveLength(0);
     expect(container.querySelectorAll("circle[data-path][vector-effect]")).toHaveLength(0);
-    expect(container.querySelectorAll("circle[data-ring][vector-effect]")).toHaveLength(0);
+  });
+});
+
+describe("the hover card", () => {
+  const files = [f("core/deep/nested/alpha.py", 120, "core"), f("ui/beta.py", 60, "ui")];
+
+  it("opens at the pointer rather than in a corner of the canvas", () => {
+    // A card pinned to one corner makes every identification a round trip
+    // across the field, and the pointer has usually left the node by the time
+    // the eye gets back.
+    const { container, getByTestId } = render(<CodeHealthMap files={files} />);
+    const node = container.querySelector('circle[data-path="core/deep/nested/alpha.py"]')!;
+    fireEvent.mouseEnter(node, { clientX: 120, clientY: 90 });
+    const card = getByTestId("map-hover-card");
+    expect(card.textContent).toContain("alpha.py");
+    // The directory is present but subordinate: the filename is what is being
+    // pointed at, and it is the last thing a truncated path would show.
+    expect(card.textContent).toContain("core/deep/nested/");
+    expect(card.getAttribute("style")).toMatch(/left:/);
+  });
+
+  it("closes when the pointer leaves the node", () => {
+    const { container, queryByTestId } = render(<CodeHealthMap files={files} />);
+    const node = container.querySelector('circle[data-path="ui/beta.py"]')!;
+    fireEvent.mouseEnter(node, { clientX: 10, clientY: 10 });
+    expect(queryByTestId("map-hover-card")).toBeInTheDocument();
+    fireEvent.mouseLeave(node);
+    expect(queryByTestId("map-hover-card")).not.toBeInTheDocument();
   });
 });
 

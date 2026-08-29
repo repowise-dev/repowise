@@ -1,23 +1,28 @@
 "use client";
 
 /**
- * The base field: one circle per file, and the performance lens's rings.
+ * The base field: one circle per file, and nothing else.
  *
- * Both layers are memoized and fed only stable props, so hover, selection and
- * search - which all re-render the facade - never reconcile these elements.
+ * Memoized and fed only stable props, so hover, selection and search - which
+ * all re-render the facade - never reconcile these thousands of elements.
  * Everything that moves with the pointer lives in the overlay layer instead.
+ *
+ * There is deliberately no second mark layer here. A rare per-file annotation
+ * was tried both ways, as a ring outside the node and as a core inside it, and
+ * neither survived contact with the field: at this density an outline lands on
+ * the neighbours and reads as a mark on the group, and a core in the one
+ * colour with enough contrast to be seen is louder than the severity ramp it
+ * is annotating. Anything that fine belongs in the words beside the map.
  */
 
 import { memo } from "react";
-import { pressureRing } from "./lens";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import type { CodeHealthMapFile, Galaxy } from "./types";
 
 export interface NodeLayerProps {
   galaxies: Galaxy[];
   focusModuleKey: string | null;
   fill: (f: CodeHealthMapFile) => string;
-  /** Per-node opacity, so a lens can push most of the field into the ground. */
-  fillOpacity?: ((f: CodeHealthMapFile) => number) | undefined;
   offX: number;
   offY: number;
   /**
@@ -36,7 +41,8 @@ export interface NodeLayerProps {
   strokeWidth: number;
   interactive: boolean;
   onSelect: (path: string) => void;
-  onHoverEnter: (f: CodeHealthMapFile) => void;
+  /** The event comes along so the hover card can open at the pointer. */
+  onHoverEnter: (f: CodeHealthMapFile, e: ReactMouseEvent) => void;
   onHoverLeave: (f: CodeHealthMapFile) => void;
 }
 
@@ -44,7 +50,6 @@ export const FileNodes = memo(function FileNodes({
   galaxies,
   focusModuleKey,
   fill,
-  fillOpacity,
   offX,
   offY,
   strokeWidth,
@@ -74,16 +79,18 @@ export const FileNodes = memo(function FileNodes({
                   cy={nd.y + offY}
                   r={nd.r}
                   fill={fill(f)}
-                  fillOpacity={
-                    faded ? 0.18 : ((fillOpacity?.(f) ?? 0.9) as number)
-                  }
+                  // One opacity for every lens. Opacity here means "this galaxy
+                  // is not the focused one" and nothing else; a lens that also
+                  // spent it on data left the reader unable to tell a quiet
+                  // file from a dimmed one.
+                  fillOpacity={faded ? 0.18 : 0.9}
+                  // The separating stroke is what makes this a field of files
+                  // rather than a wash. Every node keeps it, whatever it is
+                  // filled with.
                   stroke="var(--color-bg-root)"
-                  // A quiet node keeps no separating stroke: at a tenth of the
-                  // field's opacity the stroke is louder than the node, which
-                  // turns a soft substrate back into a grid of rings.
-                  strokeWidth={(fillOpacity?.(f) ?? 0.9) < 0.4 ? 0 : strokeWidth}
+                  strokeWidth={strokeWidth}
                   className={interactive ? "cursor-pointer" : undefined}
-                  onMouseEnter={() => onHoverEnter(f)}
+                  onMouseEnter={(e) => onHoverEnter(f, e)}
                   onMouseLeave={() => onHoverLeave(f)}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -96,59 +103,5 @@ export const FileNodes = memo(function FileNodes({
         );
       })}
     </>
-  );
-});
-
-/**
- * The one extra mark, as its own layer.
- *
- * Only a cause with a stored plan takes a ring, so this draws tens of elements
- * where the node layer draws thousands. The burden itself is the node's
- * colour; this says "and there is something written down for this one".
- */
-export const PressureRings = memo(function PressureRings({
-  galaxies,
-  focusModuleKey,
-  offX,
-  offY,
-  scale,
-}: {
-  galaxies: Galaxy[];
-  focusModuleKey: string | null;
-  offX: number;
-  offY: number;
-  /** Zoom scale, so stroke widths land where they were designed. */
-  scale: number;
-}) {
-  return (
-    <g className="pointer-events-none">
-      {galaxies.map((g) => {
-        const faded = focusModuleKey != null && g.module !== focusModuleKey;
-        return (
-          <g key={`rings-${g.module}`} opacity={faded ? 0.2 : 1}>
-            {g.nodes.map((nd) => {
-              const ring = pressureRing(nd.file);
-              if (!ring) return null;
-              const width = ring.width / scale;
-              return (
-                <circle
-                  key={nd.file.file_path}
-                  data-ring={nd.file.file_path}
-                  cx={nd.x + offX}
-                  cy={nd.y + offY}
-                  // Outside the node, by half the stroke plus a hairline, so
-                  // the ring reads as pressure around the file rather than as
-                  // a border on it.
-                  r={nd.r + width}
-                  fill="none"
-                  stroke={ring.stroke}
-                  strokeWidth={width}
-                />
-              );
-            })}
-          </g>
-        );
-      })}
-    </g>
   );
 });

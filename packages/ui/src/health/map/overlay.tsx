@@ -108,31 +108,75 @@ export function SearchMatches({
 }
 
 /**
- * Pointer-bound decoding, in the active lens's terms.
+ * Card box, for the edge flip.
+ *
+ * Approximate on purpose: the card sizes to its content, and this only has to
+ * decide which side of the pointer it opens on.
+ */
+const CARD_W = 300;
+const CARD_H = 84;
+/** Gap between the pointer and the card, so the cursor never sits on it. */
+const CARD_GAP = 16;
+
+/**
+ * Pointer-bound decoding, in the active lens's terms, at the pointer.
  *
  * Hover answers "what is this and what does the current lens say about it".
  * The lens's own sentence leads, so the card and the inspector describe the
  * same object the same way.
+ *
+ * It follows the cursor rather than sitting in a corner. On a field of
+ * thousands of nodes a fixed card makes every identification a round trip
+ * across the canvas and back, and by the time the eye returns the pointer has
+ * usually left the node it was asking about. The card flips to the other side
+ * of the pointer near an edge so it is never clipped by the container.
  */
 export function HoverCard({
   file,
   overlay,
+  x,
+  y,
+  width,
+  height,
 }: {
   file: CodeHealthMapFile;
   overlay: CodeHealthOverlay;
+  /** Pointer position, in container-relative px. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }) {
   const cov = file.line_coverage_pct;
+  const slash = file.file_path.lastIndexOf("/");
+  const dir = slash < 0 ? "" : file.file_path.slice(0, slash + 1);
+  const name = slash < 0 ? file.file_path : file.file_path.slice(slash + 1);
+  const left = x + CARD_GAP + CARD_W > width ? x - CARD_GAP - CARD_W : x + CARD_GAP;
+  const top = y + CARD_GAP + CARD_H > height ? y - CARD_GAP - CARD_H : y + CARD_GAP;
   return (
-    <div className="pointer-events-none absolute bottom-3 left-3 max-w-[75%] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2.5 py-1.5 text-xs shadow-md">
-      <div className="truncate font-mono text-[var(--color-text-primary)]">
-        {file.file_path}
+    <div
+      data-testid="map-hover-card"
+      // Sized to its content up to a ceiling, so a short name gets a small
+      // card. The name is the answer to "what am I pointing at" and is never
+      // truncated: it wraps instead, and the directory above it is the part
+      // that gives way when the path is long.
+      className="pointer-events-none absolute z-20 w-max max-w-[300px] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-2.5 py-1.5 shadow-md"
+      style={{ left: Math.max(0, left), top: Math.max(0, top) }}
+    >
+      {dir ? (
+        <div className="truncate font-mono text-[10px] leading-tight text-[var(--color-text-tertiary)]">
+          {dir}
+        </div>
+      ) : null}
+      <div className="break-all font-mono text-[11px] font-medium leading-snug text-[var(--color-text-primary)]">
+        {name}
       </div>
       {overlay === "performance" ? (
-        <div className="text-[var(--color-text-secondary)]">
+        <div className="mt-0.5 text-[11px] leading-tight text-[var(--color-text-secondary)]">
           {performanceSentence(file)}
         </div>
       ) : null}
-      <div className="text-[var(--color-text-tertiary)] tabular-nums">
+      <div className="mt-0.5 text-[10px] leading-tight text-[var(--color-text-tertiary)] tabular-nums">
         score {file.score.toFixed(1)} · {file.nloc.toLocaleString()} NLOC
         {cov != null ? ` · ${Math.round(cov)}% cov` : ""}
         {file.has_test_file ? "" : " · untested"}

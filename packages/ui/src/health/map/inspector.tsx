@@ -17,19 +17,11 @@ import { cn } from "../../lib/cn";
 import { scoreBadgeClass } from "../tokens";
 import {
   PERFORMANCE_STATE_LABEL,
-  burdenBand,
   performanceBurden,
+  performanceFill,
   performanceSentence,
 } from "./lens";
 import type { CodeHealthMapFile, CodeHealthOverlay, MapScope } from "./types";
-
-/** The ring's colour per band, so the inspector's mark matches the canvas. */
-const RING_TONE: Record<0 | 1 | 2 | 3, string> = {
-  0: "var(--color-border-default)",
-  1: "var(--color-caution)",
-  2: "var(--color-warning)",
-  3: "var(--color-error)",
-};
 
 /** Rows the ranked list draws. Past this it is an inventory, not a lead. */
 export const FIELD_LIST_CAP = 50;
@@ -201,16 +193,16 @@ export function MapInspector({
       <div className="flex items-center gap-2">
         {/* The lens decides what leads. Under performance the defect score is
             not the subject, and putting its coloured badge first told the
-            reader the file was fine while the ring beside it said otherwise. */}
+            reader the file was fine while the mark beside it said otherwise.
+
+            The mark is the node as the canvas draws it, from the same
+            function, so the selection and the field it was picked out of can
+            never describe the file differently. */}
         {overlay === "performance" ? (
           <span
             aria-hidden
             className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
-            style={{
-              border: `2px ${burden.state === "actionable" ? "solid" : "dashed"} ${
-                burden.count > 0 ? RING_TONE[burdenBand(burden.count)] : "var(--color-border-default)"
-              }`,
-            }}
+            style={{ backgroundColor: performanceFill(file) }}
           />
         ) : (
           <span

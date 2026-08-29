@@ -3,6 +3,7 @@ import { render, fireEvent } from "@testing-library/react";
 import {
   CodeHealthMap,
   MapLegend,
+  NEUTRAL_FILL,
   MapLensSwitcher,
   groupByModule,
   performanceBurden,
@@ -161,14 +162,15 @@ describe("CodeHealthMap", () => {
     const fillFor = (path: string) =>
       container.querySelector(`circle[data-path="${path}"]`)?.getAttribute("fill");
     for (const path of ["core/hot.py", "core/clean.py", "core/leveldb.cc"]) {
-      expect(fillFor(path)).not.toBe("var(--color-success)");
+      expect(fillFor(path)).not.toBe("var(--color-node-good)");
     }
-    // Analysed and unanalysed differ, and neither differs by hue.
-    expect(fillFor("core/clean.py")).toBe("var(--color-text-tertiary)");
-    expect(fillFor("core/leveldb.cc")).toBe("var(--color-border-default)");
+    // Both take the one neutral. Which of the two a file is cannot be read off
+    // a shade of grey, so the field stops trying and the words carry it.
+    expect(fillFor("core/clean.py")).toBe(NEUTRAL_FILL);
+    expect(fillFor("core/leveldb.cc")).toBe(NEUTRAL_FILL);
   });
 
-  it("carries the burden on the node and the plan on the ring", () => {
+  it("carries the burden on the node's own colour, with no second mark", () => {
     const files: CodeHealthMapFile[] = [
       { ...f("core/planned.py", 120, "core"), performance_opportunities: 9, performance_actionability: "plan_ready", performance_analyzed: true },
       { ...f("core/one.py", 100, "core"), performance_opportunities: 1, performance_actionability: "investigate", performance_analyzed: true },
@@ -177,21 +179,11 @@ describe("CodeHealthMap", () => {
     const { container } = render(<CodeHealthMap files={files} overlay="performance" />);
     const fillOf = (p: string) =>
       container.querySelector(`circle[data-path="${p}"]`)?.getAttribute("fill");
-    expect(fillOf("core/planned.py")).toBe("var(--color-error)");
-    expect(fillOf("core/one.py")).toContain("--color-caution");
-    expect(fillOf("core/clean.py")).toBe("var(--color-text-tertiary)");
-    // The ring is the rare mark, not one every coloured node carries.
-    expect(container.querySelector('circle[data-ring="core/planned.py"]')).toBeTruthy();
-    expect(container.querySelector('circle[data-ring="core/one.py"]')).toBeNull();
-    expect(container.querySelector('circle[data-ring="core/clean.py"]')).toBeNull();
-  });
-
-  it("draws no ring under any other lens", () => {
-    const files: CodeHealthMapFile[] = [
-      { ...f("core/many.py", 120, "core"), performance_opportunities: 9, performance_analyzed: true },
-    ];
-    const { container } = render(<CodeHealthMap files={files} overlay="health" />);
-    expect(container.querySelectorAll("circle[data-ring]")).toHaveLength(0);
+    expect(fillOf("core/planned.py")).toBe("var(--color-node-critical)");
+    expect(fillOf("core/one.py")).toBe("var(--color-node-fair)");
+    expect(fillOf("core/clean.py")).toBe(NEUTRAL_FILL);
+    // Stored plan earns no mark of its own. It is said in words instead.
+    expect(container.querySelectorAll("circle[data-plan]")).toHaveLength(0);
   });
 
   it("counts observations and says so when the host serves no causal model", () => {
@@ -212,7 +204,7 @@ describe("CodeHealthMap", () => {
   it("reports an unknown state when nothing on the row says either way", () => {
     const row = f("core/x.py", 10, "core");
     expect(performanceBurden(row).state).toBe("unknown");
-    expect(performanceFill(row)).toBe("var(--color-border-default)");
+    expect(performanceFill(row)).toBe(NEUTRAL_FILL);
   });
 
   it("fires onOverlayChange when a lens-switch button is clicked", () => {
@@ -280,12 +272,14 @@ describe("map chrome, off canvas", () => {
   it("MapLegend renders the active lens's bands and caption", () => {
     const { getByText } = render(<MapLegend overlay="performance" />);
     expect(getByText("5 or more")).toBeInTheDocument();
-    expect(getByText("Not analyzed")).toBeInTheDocument();
+    expect(getByText("Nothing surfaced")).toBeInTheDocument();
     // The caption refuses the runtime claim the colour could be read as making,
     // and the rows are grouped so a flat column of swatches is not the whole key.
     expect(getByText(/never a runtime measurement/i)).toBeInTheDocument();
     expect(getByText("Open causes")).toBeInTheDocument();
-    expect(getByText("Ringed")).toBeInTheDocument();
+    expect(getByText("No open cause")).toBeInTheDocument();
+    // Radius is a channel under every lens and was captioned in prose only.
+    expect(getByText("lines of code")).toBeInTheDocument();
   });
 
   it("MapLegend says it is loading rather than showing bands for absent data", () => {

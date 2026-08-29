@@ -14,27 +14,33 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { OVERLAY_ORDER, OVERLAY_SPECS, type LegendRow, type OverlaySpec } from "./lens";
 import type { CodeHealthOverlay } from "./types";
 
-/** One key swatch: a disc for a fill, an outline for a ring. */
+/** One key swatch: a disc in the row's fill. */
 function Swatch({ row, size }: { row: LegendRow; size: number }) {
-  if (row.mark === "ring") {
-    return (
-      <span
-        aria-hidden
-        className="inline-block shrink-0 rounded-full"
-        style={{
-          width: size,
-          height: size,
-          border: `1.5px ${row.dash ? "dashed" : "solid"} ${row.fill}`,
-        }}
-      />
-    );
-  }
   return (
     <span
       aria-hidden
       className="inline-block shrink-0 rounded-full"
       style={{ width: size, height: size, backgroundColor: row.fill }}
     />
+  );
+}
+
+/**
+ * The one channel every lens shares, keyed once.
+ *
+ * A node's radius is its line count under all of them, and until now that was
+ * stated only in prose in a caption. Two discs and a label is what a reader
+ * can actually match against the field.
+ */
+function SizeKey({ className }: { className?: string }) {
+  return (
+    <span className={`flex items-center gap-1.5 ${className ?? ""}`}>
+      <span aria-hidden className="flex items-end gap-0.5">
+        <span className="inline-block h-1 w-1 rounded-full bg-[var(--color-text-tertiary)]" />
+        <span className="inline-block h-2.5 w-2.5 rounded-full bg-[var(--color-text-tertiary)]" />
+      </span>
+      lines of code
+    </span>
   );
 }
 
@@ -63,6 +69,10 @@ export function MapLegendRows({ spec, loading }: { spec: OverlaySpec; loading: b
           </span>
         </Fragment>
       ))}
+      <span className="mt-1 font-mono text-[9px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
+        Size
+      </span>
+      <SizeKey className="text-[var(--color-text-tertiary)]" />
     </div>
   );
 }
@@ -169,6 +179,7 @@ export function MapLegend({
           </Fragment>
         ))
       )}
+      {loading ? null : <SizeKey />}
       <span className="font-mono text-[10px] uppercase tracking-[0.12em]">{spec.caption}</span>
     </div>
   );

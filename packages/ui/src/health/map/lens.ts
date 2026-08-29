@@ -8,12 +8,20 @@
 import { scoreBand, type ScoreBand } from "../tokens";
 import type { CodeHealthMapFile, CodeHealthOverlay, PerformanceActionability } from "./types";
 
-/* Band -> SVG fill var(). The same ramp as every score pill on the surface. */
+/**
+ * Band -> SVG fill var().
+ *
+ * The canvas ramp, not the semantic ink the score pills use. Those are tuned
+ * to be read as small coloured type against the page; this field is thousands
+ * of overlapping filled discs, which is a different job in both themes. The
+ * two ramps are the same four severity steps in the same hue family and are
+ * deliberately not the same values. See `--color-node-*` in globals.css.
+ */
 const BAND_FILL: Record<ScoreBand, string> = {
-  critical: "var(--color-error)",
-  poor: "var(--color-warning)",
-  fair: "var(--color-caution)",
-  good: "var(--color-success)",
+  critical: "var(--color-node-critical)",
+  poor: "var(--color-node-poor)",
+  fair: "var(--color-node-fair)",
+  good: "var(--color-node-good)",
 };
 
 const BAND_LABEL: { band: ScoreBand; label: string }[] = [
@@ -23,27 +31,23 @@ const BAND_LABEL: { band: ScoreBand; label: string }[] = [
   { band: "good", label: "Healthy" },
 ];
 
-/** Neutral fill for nodes a non-health lens has no signal for. */
-export const NEUTRAL_FILL = "var(--color-text-tertiary)";
-
-/** Quieter still: the file was never looked at, which is not "no signal". */
-export const ABSENT_FILL = "var(--color-border-default)";
+/**
+ * Neutral fill for nodes a lens has no signal for.
+ *
+ * On a field of thousands this is most of what a reader sees, so it has to sit
+ * close enough to the background to read as ground. It is a token rather than
+ * a mix of one, because how far toward the page it has to sit is not the same
+ * against near-black as against cream.
+ */
+export const NEUTRAL_FILL = "var(--color-node-neutral)";
 
 export interface LegendRow {
   fill: string;
   label: string;
   /**
-   * How the swatch is drawn. `ring` is an outline rather than a disc, so the
-   * performance key reads as the mark it describes; `dash` mirrors the ring's
-   * stroke pattern, which is the lens's non-colour channel.
-   */
-  mark?: "dot" | "ring";
-  dash?: string;
-  /**
-   * Which channel this row belongs to. The performance lens marks a node on
-   * two independent axes, and a flat list of swatches gives a reader no way to
-   * see that the first three are one axis and the next three another. The key
-   * prints the group once, where it changes.
+   * Which channel this row belongs to. The key prints the group once, where it
+   * changes, so a column of swatches reads as the axes it describes rather
+   * than as one flat list.
    */
   group?: string;
 }
@@ -54,8 +58,6 @@ export interface OverlaySpec {
   /** Caption shown under the legend key. */
   caption: string;
   fill: (f: CodeHealthMapFile) => string;
-  /** Per-node opacity, when the lens needs most of the field to sit back. */
-  fillOpacity?: (f: CodeHealthMapFile) => number;
   legend: LegendRow[];
 }
 
@@ -86,24 +88,27 @@ function churnFill(pctile: number | null | undefined): string {
 /* ------------------------------------------------------------------ *
  * Performance lens
  *
- * One mark on the node, one mark beside it, and a field that gets out of
- * the way.
+ * The health ramp with its top step removed.
  *
- * A file a detector cleared is a file with no *supported pattern* in it, not a
- * file measured to be fast, so it is never painted the healthy green. But most
- * of a repository is that, and the first cut of this lens gave every one of
- * those files a solid mid-grey disc at nine-tenths opacity. Two thousand of
- * them tiled into an opaque sheet: node boundaries vanished, and an outline
- * drawn around one large node read as a lasso thrown over a crowd of small
- * ones. The burden also rode on that outline, in a colour and a dash pattern,
- * which at four-pixel radius is a handful of disconnected specks.
+ * This lens is a sibling of the health lens, not a different chart, so it
+ * paints with the same four-band ramp, at the same flat opacity, over the same
+ * geometry. It uses three of the four bands. A file a detector cleared is a
+ * file with no supported pattern in it, not a file measured to be fast, and on
+ * this map green means healthy; so performance has no green, and that single
+ * rule is the whole difference between the two lenses.
  *
- * So the quiet files recede to a faint substrate, and colour moves onto the
- * node, where the eye already is: how many open causes, in three steps. The
- * outline survives for the one thing worth a second mark, a cause with a
- * stored plan, and is a plain bright ring rather than a fourth hue. Advisory
- * and investigate are named in words by the hover card, the inspector and the
- * ranked list, which is where a distinction this fine belongs.
+ * An earlier cut said the same thing with its own palette and its own opacity
+ * ramp: bands mixed toward the page, quiet files at a fraction of an alpha,
+ * and no separating stroke under them. Three channels carrying one variable
+ * produced tones that exist nowhere else in the product, went muddy against a
+ * dark root, and dissolved the arrangement into a haze in which a ring around
+ * one node read as a lasso thrown over its neighbours.
+ *
+ * The node's colour is the lens's only channel. Actionability - advisory,
+ * investigate, or a cause with a stored plan - is named in words by the hover
+ * card, the inspector and the ranked list. It had a mark of its own on the
+ * field, and on a body of thousands of small packed discs no second mark reads
+ * as belonging to one file rather than to the cluster around it.
  * ------------------------------------------------------------------ */
 
 export type PerformanceNodeState =
@@ -114,7 +119,7 @@ export type PerformanceNodeState =
   | "unsupported"
   | "unknown";
 
-/** Which unit the ring is counting, so the copy can say so. */
+/** Which unit the burden is counted in, so the copy can say so. */
 export type PerformanceBurdenUnit = "opportunities" | "observations";
 
 export interface PerformanceBurden {
@@ -169,27 +174,18 @@ export function performanceBurden(f: CodeHealthMapFile): PerformanceBurden {
   };
 }
 
-/** Fill: how many open causes, or a quiet neutral. Never the healthy green. */
-export function performanceFill(f: CodeHealthMapFile): string {
-  const { state, count } = performanceBurden(f);
-  const band = burdenBand(count);
-  if (band !== 0) return BAND_TONE[band];
-  return state === "unsupported" || state === "unknown" ? ABSENT_FILL : NEUTRAL_FILL;
-}
-
 /**
- * How present a node is.
+ * Fill: how many open causes, on the health ramp, or the quiet neutral.
  *
- * A few hundred files out of thousands carry a cause, so the rest sit back far
- * enough for those to read as figure rather than as more of the ground. A
- * loaded node is fully present, and its band is carried by the tone: a single
- * cause is by far the commonest of the three, so the ramp has to quieten it
- * without making it transparent.
+ * Files with no open cause all take one fill. Whether a detector cleared the
+ * file or has no support for its language is a real distinction, but it is one
+ * no reader can decode from a second shade of grey, so it is carried by
+ * {@link performanceSentence} instead. Coverage and dead code already collapse
+ * their own version of it the same way.
  */
-export function performanceOpacity(f: CodeHealthMapFile): number {
-  const { state, count } = performanceBurden(f);
-  if (burdenBand(count) !== 0) return 1;
-  return state === "unsupported" || state === "unknown" ? 0.14 : 0.26;
+export function performanceFill(f: CodeHealthMapFile): string {
+  const band = burdenBand(performanceBurden(f).count);
+  return band === 0 ? NEUTRAL_FILL : BURDEN_FILL[band];
 }
 
 /** Burden band, 0 when the file carries none. Bounded so 40 causes is a step. */
@@ -201,37 +197,17 @@ export function burdenBand(count: number): 0 | 1 | 2 | 3 {
 }
 
 /**
- * The three steps, quietened toward the page rather than toward transparency.
+ * The three steps, borrowed whole from the health ramp.
  *
- * The nodes overlap by construction, so a translucent ramp is read wrong: two
- * overlapping one-cause files composite into exactly the tone that means two
- * to four. Mixing into the background instead keeps every node opaque, so a
- * colour on this field always means one band and never a pile of them.
+ * Same tokens the score pills and the health lens use, so a colour means the
+ * same severity wherever it appears on this surface. `BAND_FILL.good` is
+ * deliberately absent: it is the only band that would claim a file is fine.
  */
-const BAND_TONE: Record<1 | 2 | 3, string> = {
-  1: "color-mix(in srgb, var(--color-caution) 60%, var(--color-bg-root))",
-  2: "color-mix(in srgb, var(--color-warning) 82%, var(--color-bg-root))",
-  3: "var(--color-error)",
+const BURDEN_FILL: Record<1 | 2 | 3, string> = {
+  1: BAND_FILL.fair,
+  2: BAND_FILL.poor,
+  3: BAND_FILL.critical,
 };
-
-export interface PressureRing {
-  stroke: string;
-  /** Stroke width in user units, before the caller divides by the zoom scale. */
-  width: number;
-}
-
-/**
- * The ring for one row, or `null`, which is most of them.
- *
- * Only a cause with a stored plan takes one: 29 of 768 here. A mark every
- * coloured node carries is not a mark, and a plain bright ring reads as
- * "singled out" without competing with the colour underneath it for the same
- * meaning.
- */
-export function pressureRing(f: CodeHealthMapFile): PressureRing | null {
-  if (performanceBurden(f).state !== "actionable") return null;
-  return { stroke: "var(--color-text-primary)", width: 1.1 };
-}
 
 export const PERFORMANCE_STATE_LABEL: Record<PerformanceNodeState, string> = {
   actionable: "Stored plan",
@@ -270,17 +246,13 @@ export const OVERLAY_SPECS: Record<CodeHealthOverlay, OverlaySpec> = {
   },
   performance: {
     label: "Performance",
-    caption:
-      "galaxy = module · dot = file, sized by lines of code · colour = open causes, never a runtime measurement",
+    caption: "colour = open causes, never a runtime measurement · no green: nothing here is proven fast",
     fill: performanceFill,
-    fillOpacity: performanceOpacity,
     legend: [
-      { group: "Open causes", fill: BAND_TONE[3], label: "5 or more" },
-      { group: "Open causes", fill: BAND_TONE[2], label: "2 to 4" },
-      { group: "Open causes", fill: BAND_TONE[1], label: "1" },
-      { group: "Ringed", fill: "var(--color-text-primary)", label: "Stored plan", mark: "ring" },
-      { group: "No cause", fill: NEUTRAL_FILL, label: "Analyzed, nothing surfaced" },
-      { group: "No cause", fill: ABSENT_FILL, label: "Not analyzed" },
+      { group: "Open causes", fill: BURDEN_FILL[3], label: "5 or more" },
+      { group: "Open causes", fill: BURDEN_FILL[2], label: "2 to 4" },
+      { group: "Open causes", fill: BURDEN_FILL[1], label: "1" },
+      { group: "No open cause", fill: NEUTRAL_FILL, label: "Nothing surfaced" },
     ],
   },
   coverage: {

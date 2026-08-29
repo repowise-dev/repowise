@@ -15,12 +15,15 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+} from "react";
 
 import { useCommunityFamilies } from "../shared/use-theme-tokens";
 import { OVERLAY_ORDER, OVERLAY_SPECS } from "./map/lens";
 import { packGalaxies, rand } from "./map/layout";
-import { FileNodes, PressureRings } from "./map/node-layer";
+import { FileNodes } from "./map/node-layer";
 import { HoverCard, NodeHighlight, SearchMatches } from "./map/overlay";
 import { MapLegendRows, MapLensSwitcher } from "./map/legend";
 import type { CodeHealthMapFile, CodeHealthOverlay, FileNode, MapScope } from "./map/types";
@@ -35,7 +38,6 @@ export type {
   PerformanceActionability,
 } from "./map/types";
 export {
-  ABSENT_FILL,
   NEUTRAL_FILL,
   OVERLAY_ORDER,
   OVERLAY_SPECS,
@@ -43,9 +45,7 @@ export {
   burdenBand,
   performanceBurden,
   performanceFill,
-  performanceOpacity,
   performanceSentence,
-  pressureRing,
 } from "./map/lens";
 export type {
   LegendRow,
@@ -53,7 +53,6 @@ export type {
   PerformanceBurden,
   PerformanceBurdenUnit,
   PerformanceNodeState,
-  PressureRing,
 } from "./map/lens";
 export { groupByModule, moduleColorId, packGalaxies } from "./map/layout";
 export { MapLegend, MapLensSwitcher } from "./map/legend";
@@ -129,6 +128,14 @@ export function CodeHealthMap({
   const [dims, setDims] = useState({ width: 0, height: 0 });
   const [focusModule, setFocusModule] = useState<string | null>(null);
   const [hovered, setHovered] = useState<CodeHealthMapFile | null>(null);
+  // Where the hover card sits, in container-relative px. Tracked only while a
+  // node is hovered: a card that follows the pointer needs the position, and
+  // paying for it across the whole canvas would re-render the facade on every
+  // frame of every sweep that identifies nothing.
+  const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
+  const hoveredRef = useRef<CodeHealthMapFile | null>(null);
+  hoveredRef.current = hovered;
+  const moveRaf = useRef<number | null>(null);
   // Keyboard cursor. One tab stop reaches the whole field: arrows move over
   // modules, Enter descends into one, arrows then move over its files. The
   // alternative is a tab stop per node, which is thousands of them.
@@ -152,13 +159,44 @@ export function CodeHealthMap({
     keyboardRef.current?.focus();
     onSelectRef.current?.(path);
   }, []);
-  const handleHoverEnter = useCallback((f: CodeHealthMapFile) => {
-    setHovered(f);
-    onHoverRef.current?.(f);
+  /** Pointer position relative to the container, or null if it has no box. */
+  const localPoint = useCallback((clientX: number, clientY: number) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    return rect ? { x: clientX - rect.left, y: clientY - rect.top } : null;
   }, []);
+  const handleHoverEnter = useCallback(
+    (f: CodeHealthMapFile, e: ReactMouseEvent) => {
+      // Seed the position from the entering event rather than waiting for the
+      // next move, so the card opens where the pointer is instead of wherever
+      // it last was.
+      setPointer(localPoint(e.clientX, e.clientY));
+      setHovered(f);
+      onHoverRef.current?.(f);
+    },
+    [localPoint],
+  );
   const handleHoverLeave = useCallback((f: CodeHealthMapFile) => {
     setHovered((h) => (h === f ? null : h));
   }, []);
+  const handleCanvasMove = useCallback(
+    (e: ReactMouseEvent) => {
+      if (!hoveredRef.current || moveRaf.current != null) return;
+      const { clientX, clientY } = e;
+      // One position per frame. A raw mousemove fires far more often than the
+      // card can be repainted, and each one would be a facade render.
+      moveRaf.current = requestAnimationFrame(() => {
+        moveRaf.current = null;
+        setPointer(localPoint(clientX, clientY));
+      });
+    },
+    [localPoint],
+  );
+  useEffect(
+    () => () => {
+      if (moveRaf.current != null) cancelAnimationFrame(moveRaf.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -316,6 +354,7 @@ export function CodeHealthMap({
   return (
     <div
       ref={containerRef}
+      onMouseMove={handleCanvasMove}
       className="relative w-full overflow-hidden rounded-xl border border-[var(--color-border-default)] focus-within:ring-2 focus-within:ring-[var(--color-accent-primary)]"
       style={{ minHeight }}
     >
@@ -354,10 +393,15 @@ export function CodeHealthMap({
               re-rastered every frame of the transition. A gradient is painted
               directly and costs nothing to animate. `currentColor` resolves per
               blob, so one def serves every galaxy family. */}
+          {/* The falloff starts early and runs the whole way out. Holding full
+              opacity to seven tenths of the radius and dropping over the last
+              three gave every galaxy a visible disc edge, so the field read as
+              a page of hard circles with files inside them rather than as
+              clouds the files sit in. */}
           <radialGradient id="ch-nebula">
             <stop offset="0%" stopColor="currentColor" stopOpacity="1" />
-            <stop offset="70%" stopColor="currentColor" stopOpacity="1" />
-            <stop offset="88%" stopColor="currentColor" stopOpacity="0.55" />
+            <stop offset="40%" stopColor="currentColor" stopOpacity="0.72" />
+            <stop offset="72%" stopColor="currentColor" stopOpacity="0.3" />
             <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
           </radialGradient>
         </defs>
@@ -390,12 +434,13 @@ export function CodeHealthMap({
                 key={`blob-${g.module}`}
                 cx={g.cx + offX}
                 cy={g.cy + offY}
-                // Was 0.96 with a blur that spread past the edge; the gradient
-                // stops inside its own radius, so the blob grows to compensate.
-                r={g.R * 1.02}
+                // The gradient stops inside its own radius, so the blob grows
+                // to compensate; the softer the falloff, the more reach it
+                // needs to end in the page rather than at a rim.
+                r={g.R * 1.1}
                 style={{ color: fam.hub }}
                 fill="url(#ch-nebula)"
-                fillOpacity={faded ? 0.05 : 0.16}
+                fillOpacity={faded ? 0.04 : 0.13}
                 data-galaxy={g.module}
                 className="cursor-zoom-in"
                 onClick={(e) => {
@@ -430,7 +475,6 @@ export function CodeHealthMap({
             galaxies={galaxies}
             focusModuleKey={focusGalaxy?.module ?? null}
             fill={overlaySpec.fill}
-            fillOpacity={overlaySpec.fillOpacity}
             offX={offX}
             offY={offY}
             strokeWidth={0.5 / k}
@@ -439,16 +483,6 @@ export function CodeHealthMap({
             onHoverEnter={handleHoverEnter}
             onHoverLeave={handleHoverLeave}
           />
-
-          {overlay === "performance" ? (
-            <PressureRings
-              galaxies={galaxies}
-              focusModuleKey={focusGalaxy?.module ?? null}
-              offX={offX}
-              offY={offY}
-              scale={k}
-            />
-          ) : null}
 
           <SearchMatches paths={marked} nodeIndex={nodeIndex} offX={offX} offY={offY} />
 
@@ -588,7 +622,16 @@ export function CodeHealthMap({
 
       {scope ? <MapScopeNote scope={scope} matches={matches.length} query={q} /> : null}
 
-      {hovered ? <HoverCard file={hovered} overlay={overlay} /> : null}
+      {hovered && pointer ? (
+        <HoverCard
+          file={hovered}
+          overlay={overlay}
+          x={pointer.x}
+          y={pointer.y}
+          width={dims.width}
+          height={dims.height}
+        />
+      ) : null}
     </div>
   );
 }
