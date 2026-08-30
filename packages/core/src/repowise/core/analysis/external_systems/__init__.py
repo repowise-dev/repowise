@@ -12,6 +12,14 @@ The server layer keeps the queries; it fetches rows and hands them here.
 
 from __future__ import annotations
 
+from .links import (
+    EXTERNAL_NODE_PREFIX,
+    ExternalSystemLink,
+    build_declaration_index,
+    build_declaration_links,
+    declaration_name_candidates,
+    resolve_declaration,
+)
 from .records import (
     AUXILIARY_PREFIXES,
     Scope,
@@ -55,8 +63,10 @@ __all__ = [
     "DEFAULT_RELATIONSHIP_NODE_LIMIT",
     "DEFAULT_SUMMARY_LIMIT",
     "EVIDENCE_TARGET_LIMIT",
+    "EXTERNAL_NODE_PREFIX",
     "EXTERNAL_TARGET_LIMIT",
     "SUMMARY_VERSION_LIMIT",
+    "ExternalSystemLink",
     "GraphTarget",
     "ImportingFile",
     "ImportingFiles",
@@ -68,14 +78,18 @@ __all__ = [
     "RelationshipGraph",
     "RelationshipNode",
     "Scope",
+    "build_declaration_index",
+    "build_declaration_links",
     "build_importing_files",
     "build_package_summary",
     "build_registry",
     "build_relationship_graph",
     "community_key",
+    "declaration_name_candidates",
     "in_scope",
     "is_primary_path",
     "package_key",
+    "resolve_declaration",
     "resolve_targets",
     "split_community_key",
     "split_package_key",

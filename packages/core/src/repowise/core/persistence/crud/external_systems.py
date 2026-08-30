@@ -112,9 +112,17 @@ async def link_graph_nodes_to_external_systems(
 
     Returns the number of graph_nodes updated.
     """
+    # Imported here, not at module scope: the matcher's package reaches this
+    # module back through ``analysis.health``, which loads the analyzer engine
+    # on import. One shared matcher is worth the deferred lookup.
+    from repowise.core.analysis.external_systems.links import (
+        EXTERNAL_NODE_PREFIX,
+        declaration_name_candidates,
+    )
+
     if not name_to_id:
         return 0
-    prefix = "external:"
+    prefix = EXTERNAL_NODE_PREFIX
     result = await session.execute(
         select(GraphNode).where(
             GraphNode.repository_id == repository_id,
@@ -126,7 +134,11 @@ async def link_graph_nodes_to_external_systems(
         suffix = node.node_id[len(prefix) :]
         # Try exact and ecosystem-shaped package candidates in priority order.
         sys_id = next(
-            (name_to_id[name] for name in _external_name_candidates(suffix) if name in name_to_id),
+            (
+                name_to_id[name]
+                for name in declaration_name_candidates(suffix)
+                if name in name_to_id
+            ),
             None,
         )
         if node.external_system_id != sys_id:
@@ -134,24 +146,6 @@ async def link_graph_nodes_to_external_systems(
             updated += 1
     await session.flush()
     return updated
-
-
-def _external_name_candidates(external_name: str) -> tuple[str, ...]:
-    """Return declaration names to try, ordered from precise to broad.
-
-    Resolver output is ecosystem-shaped (npm subpaths, Rust ``::`` paths,
-    Python dotted modules). Keeping normalization in this small pure function
-    makes another ecosystem a local extension without another graph traversal.
-    """
-    candidates = [external_name]
-    if external_name.startswith("@"):
-        parts = external_name.split("/")
-        if len(parts) >= 2:
-            candidates.append("/".join(parts[:2]))
-    for separator in ("::", ".", "/"):
-        if separator in external_name:
-            candidates.append(external_name.split(separator, 1)[0])
-    return tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
 
 
 def build_external_system_link_map(
