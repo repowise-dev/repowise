@@ -16,16 +16,10 @@ request-reachable function. The gate fires those markers *only there*.
     is a deterministic, ``O(E)`` proxy for request-reachability; transitive
     fan-in would be stronger but is quadratic to compute per function.
 
-Churn used to be a second, independently sufficient arm: a git hotspot, or a
-file in the repo's top commit-volume quintile, was hot whatever the call graph
-said. Measured over a 17-repository corpus, 115 of the 144 gated findings
-qualified on churn alone with no centrality at all, and every hand-labelled
-false positive was in that group: flask's config loader, cobra's shell
-completion writers, fastapi's docs-build scripts, and fourteen hits inside
-leveldb's POSIX environment shim. How often code is edited is not how often it
-runs, so churn could not support the claim these markers make in their own
-finding text, that the code "runs on a hot, request-reachable path". Churn
-still earns rank in ``opportunity_rank``; it no longer conjures a finding.
+Churn is deliberately not a second arm. How often a file is edited is not how
+often it runs, so it cannot support the request-reachability these markers
+assert in their own reason text. Churn still earns rank in
+``opportunity_rank``; it does not decide whether a finding exists.
 
 Without a graph the gate degrades to "nothing is hot" - the markers behind it
 simply do not fire, never a false positive.
@@ -71,10 +65,8 @@ class PerfRanker:
         self._index = index
 
         # Centrality bar: the top-quintile direct-caller count over functions
-        # that have at least one caller. ``max(2, ...)`` keeps a tiny graph from
-        # calling a function with a single caller "central". Measured inert on
-        # the 17-repository corpus, where every repository's own p80 was already
-        # 3 or more; it is kept for the shallower graphs where it would not be.
+        # that have at least one caller. ``max(2, ...)`` keeps a shallow graph
+        # from calling a function with a single caller "central".
         in_degrees = [d for d in (index.in_degree.values() if index else ()) if d >= 1]
         self._hot_in_degree = max(2, _percentile_threshold(in_degrees, centrality_pct))
 

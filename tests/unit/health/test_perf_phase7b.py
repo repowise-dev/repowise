@@ -219,14 +219,10 @@ _HOT_SRC = (
 
 
 def test_centrality_gate_is_silent_on_churn_alone():
-    """Churn is not reachability, so it can no longer carry these markers.
+    """Churn is not reachability, so it cannot carry these markers alone.
 
-    A git hotspot with no callers used to be hot on its own. Measured over the
-    corpus, 115 of 144 gated findings qualified that way with no centrality at
-    all, and every hand-labelled false positive was among them: flask's config
-    loader, cobra's completion writers, leveldb's POSIX shim. How often a file
-    is edited is not how often it runs, and these markers claim in their own
-    reason text that the code runs on a request-reachable path.
+    A git hotspot with no callers was hot on its own until the gate required
+    centrality. How often a file is edited is not how often it runs.
     """
     walked = _walked("svc.py", _HOT_SRC)
     ranker = PerfRanker(None)
