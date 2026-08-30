@@ -177,13 +177,14 @@ def coverage_add(
                 )
                 return False
 
-            # Stamp the *live* HEAD, not ``repo_row.head_commit``. An incremental
-            # ``repowise update`` advances the index and the working tree but
-            # never refreshes that stored column, so a coverage report produced
-            # from the current tree would otherwise be labelled with a stale
-            # initialisation-time commit (issue #1747). The row has the repo
-            # path, so resolve the current commit from disk — the same source
-            # the health pass uses.
+            # Stamp the *live* HEAD, not ``repo_row.head_commit``. The stored
+            # column names the last *indexed* commit; coverage describes the
+            # working tree. They diverge when you commit, run your tests, then
+            # ``coverage add`` without an intervening ``repowise update`` — the
+            # report would be labelled with the older indexed commit (issue
+            # #1747). Live HEAD is the right answer for a provenance field:
+            # it is the tree the coverage was measured against. Resolve it
+            # from disk — the same source the health pass uses.
             head_sha = (
                 get_head_commit(Path(repo_path))
                 or getattr(repo_row, "head_commit", None)

@@ -1179,9 +1179,11 @@ async def _rescore_health_from_db(
             )
             if coverage_files:
                 # Stamp the live HEAD from disk, not the stored
-                # ``repo.head_commit`` column — an incremental update advances
-                # the tree without refreshing that field (issue #1747), so the
-                # stored value labels coverage with a stale commit.
+                # ``repo.head_commit`` column. The column names the last
+                # *indexed* commit; the coverage just scored describes the
+                # working tree, and the two diverge when the tree moved after
+                # the last index (issue #1747). Live HEAD is the provenance
+                # answer: it is the tree the coverage was measured against.
                 live_head = get_head_commit(Path(repo_path)) or getattr(
                     repo, "head_commit", None
                 )
