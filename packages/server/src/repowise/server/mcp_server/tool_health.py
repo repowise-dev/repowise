@@ -162,6 +162,7 @@ async def _performance_blocks(
     one of the three does not pay for the other two.
     """
     page = None
+    query = None
     ignored: dict[str, str] = {}
     if included:
         # The lede quotes only the first row and no evidence, so a projection
@@ -186,7 +187,13 @@ async def _performance_blocks(
         )
     return _PerformanceBlocks(
         page=page,
-        summary=await service.summary() if included and wants("performance_summary") else None,
+        summary=(
+            # Scoped to the same context as the queue beside it, so two blocks
+            # in one answer cannot state totals that contradict each other.
+            await service.summary(query.contexts if query else None)
+            if included and wants("performance_summary")
+            else None
+        ),
         # The bare dashboard lead: one primary-key read of the current summary
         # row, so it does not grow with the repository and never touches the
         # queue.

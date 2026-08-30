@@ -25,8 +25,14 @@ export interface PerformanceFilterState {
   offset: number;
 }
 
+/**
+ * Production is the default view. Most of what the analysis finds sits in
+ * tests, benchmarks and CI scripts, and "this benchmark repeats work" is a
+ * fact about a benchmark rather than work to schedule. Every other context
+ * stays one tab away and keeps its count in the tab row.
+ */
 export const INITIAL_FILTERS: PerformanceFilterState = {
-  context: "all",
+  context: "production",
   boundary: null,
   confidence: null,
   actionability: null,
@@ -82,11 +88,16 @@ export function toQuery(
 /**
  * A stable string for the state. Keys are written in a fixed order and
  * defaults are omitted, so an unchanged filter set always produces the same
- * cache key and the same shareable link.
+ * cache key and the same shareable link. Context is the exception and is
+ * always written, because it is the one default that decides which rows exist
+ * rather than how they are shown.
  */
 export function serializeFilters(state: PerformanceFilterState): string {
   const params = new URLSearchParams();
-  if (state.context !== INITIAL_FILTERS.context) params.set("context", state.context);
+  // Always written, unlike the other defaults: a link that omits it would be
+  // read under whatever the default is when it is opened, so a shared link
+  // would change meaning if that default ever moved again.
+  params.set("context", state.context);
   if (state.boundary) params.set("boundary", state.boundary);
   if (state.confidence) params.set("confidence", state.confidence);
   if (state.actionability) params.set("actionability", state.actionability);

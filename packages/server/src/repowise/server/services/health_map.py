@@ -178,8 +178,9 @@ class HealthMapService:
                     "file into the drawn field."
                 ),
                 "opportunity_queue": (
-                    f"/api/repos/{repo_id}/health/performance-opportunities lists every "
-                    "open opportunity, drawn or not."
+                    f"/api/repos/{repo_id}/health/performance-opportunities lists open "
+                    "opportunities, drawn or not, in production code; pass "
+                    "context=all for every execution context."
                 ),
                 "raise_cap": f"cap accepts up to {MAX_MAP_CAP}.",
             },

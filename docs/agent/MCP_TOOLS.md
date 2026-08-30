@@ -742,7 +742,7 @@ representations of the same work in one response. The `include` **dimension** na
 | `refactoring_view` | string | No | Named ordering for `refactoring_opportunities`. `diversified` (default) round-robins the rank order over cause, refactoring type and area, because the ranked head is a genuine run of ties; `canonical` is the published rank order verbatim, ties and all; `file_spread` asked for one row per file, which a composed opportunity satisfies by construction, so it resolves onto the diversified order. Both older values keep working. It also selects the legacy `refactoring_plans` list's view, where `diversified` resolves to that list's historical `canonical` default. |
 | `cursor` | int | No | Zero-based offset into a ranked collection; the `recovery` block names the exact next call. |
 | `performance_view` | string | No | `detail` (default) or `summary`. `summary` keeps identity, counts and plan state and drops the explanatory fields. |
-| `performance_context` | string | No | `production` / `tooling` / `test` / `unknown` / `all`. |
+| `performance_context` | string | No | `production` (default) / `tooling` / `test` / `unknown` / `all`. The summary block is scoped to the same context as the queue; `repository_total` stays the count over every context. |
 | `performance_boundary` | string | No | `db` / `network` / `filesystem` / `subprocess` / `lock` / `none`. |
 | `performance_confidence` | string | No | Evidence confidence: `high` / `medium` / `low`. Fix safety and actionability are separate facets. |
 | `performance_sort` | string | No | `rank` (default) / `leverage` / `observations`. |
@@ -986,7 +986,7 @@ materialized the analysis yet, or did so under an older model.
 ```
 get_health()                                                  # the lead
 get_health(include=["performance"], only=["performance_summary"])
-get_health(include=["performance"], only=["performance_opportunities"], performance_context="production")
+get_health(include=["performance"], only=["performance_opportunities"], performance_context="all")
 get_health(opportunity_id="perf2_...")                        # the cause, its plan, its evidence
 get_health(opportunity_id="perf2_...", only=["performance_evidence"], cursor=3)
 ```

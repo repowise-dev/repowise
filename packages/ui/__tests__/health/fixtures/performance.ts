@@ -159,6 +159,7 @@ export function page(overrides: Partial<PerformanceOpportunityPage> = {}): Perfo
     summary: {
       status: "current",
       total: 7,
+      repository_total: 7,
       performance_model_version: 2,
       analyzed_commit: "848a8f180abc",
       actionability: { plan_ready: 1, advisory: 2, investigate: 4 },

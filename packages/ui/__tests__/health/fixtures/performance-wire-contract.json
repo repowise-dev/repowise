@@ -14,6 +14,7 @@
     "context",
     "materialized_model_version",
     "performance_model_version",
+    "repository_total",
     "status",
     "total",
     "with_plan_total"

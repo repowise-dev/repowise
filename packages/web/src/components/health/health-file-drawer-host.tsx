@@ -44,6 +44,9 @@ export function HealthFileDrawerHost({
       getPerformanceOpportunities(repoId, {
         file_paths: [filePath as string],
         limit: FILE_CAUSE_LIMIT,
+        // Every context. The reader opened this one file, so the question is
+        // what was found in it, not whether it is production code.
+        context: "all",
       }),
     { revalidateOnFocus: false },
   );

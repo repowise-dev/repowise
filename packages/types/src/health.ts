@@ -426,7 +426,12 @@ export interface PerformanceOpportunitySummary {
   /** `current` once materialized, `stale_model` after a model bump, or
    * `unavailable` when this index has not been analyzed yet. */
   status: "current" | "stale_model" | "unavailable";
+  /** Causes in the selected context. Equal to `repository_total` under `all`. */
   total: number;
+  /** Causes in every context, so a scoped headline never hides the census.
+   * Absent from a server that predates context scoping, whose `total` is
+   * already the repository-wide count. */
+  repository_total?: number;
   performance_model_version?: number;
   /** The model the stored rows were written by, when it trails the current one. */
   materialized_model_version?: number;
