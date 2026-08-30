@@ -3,3 +3,8 @@
 # "#!/bin/bash\r" shebang that Linux cannot resolve, causing:
 #   exec /app/entrypoint.sh: no such file or directory
 *.sh text eol=lf
+
+# Generated TypeScript is written with LF and diffed byte-for-byte by CI.
+# Without this, a Windows checkout rewrites it to CRLF and every local
+# regeneration reads as drift against what CI produces on Linux.
+packages/types/src/generated/*.ts text eol=lf

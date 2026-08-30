@@ -32,7 +32,8 @@
     "./health": "./src/health.ts",
     "./coupling": "./src/coupling.ts",
     "./stats": "./src/stats.ts",
-    "./refactoring": "./src/refactoring.ts"
+    "./refactoring": "./src/refactoring.ts",
+    "./generated/http": "./src/generated/http.ts"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",
