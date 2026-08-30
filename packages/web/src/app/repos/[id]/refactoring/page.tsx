@@ -81,6 +81,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const [order, setOrder] = useState<RefactoringOrder>("queue");
+  const [status, setStatus] = useState<OpportunityStatus>("open");
   const [effort, setEffort] = useState<EffortBucket | null>(null);
   const [confidence, setConfidence] = useState<Confidence | null>(null);
   const [mechanicalOnly, setMechanicalOnly] = useState(false);
@@ -93,6 +94,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
       type,
       deferredQuery,
       order,
+      status,
       effort,
       confidence,
       mechanicalOnly,
@@ -101,6 +103,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
     () =>
       getRefactoringOpportunities(repoId, {
         refactoringType: leadTypeFor(type),
+        status,
         search: deferredQuery || undefined,
         effort: effort ?? undefined,
         confidence: confidence ?? undefined,
@@ -196,13 +199,17 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
   );
 
   const facetCounts = data?.facets?.lead_type ?? {};
-  const summary = data?.summary?.status === "available" ? data.summary : null;
+  const summary = data?.summary ?? null;
+  const facetTotal = Object.values(facetCounts).reduce((n, c) => n + c, 0);
   const structuralCount = (STRUCTURAL_TYPES as readonly string[]).reduce(
     (n, t) => n + (facetCounts[t] ?? 0),
     0,
   );
   const tabs = [
-    { id: "all" as const, label: "All", badge: summary?.opportunities_total },
+    // Summed from the facets, not from the rollup: the facets follow the status
+    // filter and the rollup does not, so under "Resolved" the rollup would put
+    // the open total on a tab that lists resolved rows.
+    { id: "all" as const, label: "All", badge: facetTotal },
     { id: "structural" as const, label: "Structural", badge: structuralCount },
     ...TYPE_ORDER.filter((t) => t !== "performance_fix").map((t) => ({
       id: t,
@@ -214,6 +221,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
   const serverState: RefactoringBoardServerState = {
     query,
     order,
+    status,
     effort,
     confidence,
     mechanicalOnly,
@@ -267,11 +275,13 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
         ) : (
           <RefactoringBoard
             opportunities={opportunities}
+            summary={summary}
             structuralOpportunities={structural?.items}
             serverState={serverState}
             onServerStateChange={(change) => {
               if (change.query !== undefined) setQuery(change.query);
               if (change.order !== undefined) setOrder(change.order);
+              if (change.status !== undefined) setStatus(change.status);
               if (change.effort !== undefined) setEffort(change.effort);
               if (change.confidence !== undefined) setConfidence(change.confidence);
               if (change.mechanicalOnly !== undefined) setMechanicalOnly(change.mechanicalOnly);

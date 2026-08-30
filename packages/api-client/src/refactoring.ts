@@ -125,6 +125,8 @@ export async function updateRefactoringSettings(
 export interface RefactoringOpportunityParams {
   /** Lead refactoring type, not the type of any member step. */
   refactoringType?: string;
+  /** Triage state. Defaults to `open` server-side. */
+  status?: RefactoringTriageStatus;
   confidence?: string;
   effort?: string;
   /** One repo-relative path. This is how a file surface asks for its own work. */
@@ -149,6 +151,7 @@ export async function getRefactoringOpportunities(
     `/api/repos/${repoId}/refactoring/opportunities`,
     {
       refactoring_type: params.refactoringType,
+      status: params.status,
       confidence: params.confidence,
       effort: params.effort,
       file_path: params.filePath,

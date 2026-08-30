@@ -93,6 +93,7 @@ describe("Phase 4 structured plan contract", () => {
         serverState={{
           query: "",
           order: "queue",
+          status: "open",
           effort: null,
           confidence: null,
           mechanicalOnly: false,
@@ -104,7 +105,9 @@ describe("Phase 4 structured plan contract", () => {
       />,
     );
     expect(screen.getByText("Split File")).toBeTruthy();
-    expect(screen.getByText("1 opportunity")).toBeTruthy();
+    // The count names the status it is counting, so a filtered list cannot
+    // read as the repository total.
+    expect(screen.getByText(/1 open\s+opportunity/)).toBeTruthy();
     expect(screen.getByText("src/shared.py")).toBeTruthy();
   });
 

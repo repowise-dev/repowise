@@ -398,6 +398,9 @@ async def get_refactoring_opportunities(
     refactoring_type: str | None = Query(
         None, description="Lead refactoring type, or several comma-separated"
     ),
+    status: str = Query(
+        "open", description="open | acknowledged | resolved | false_positive"
+    ),
     confidence: str | None = Query(None, description="low | medium | high"),
     effort: str | None = Query(None, description="S | M | L | XL"),
     file_path: str | None = Query(None, description="One repo-relative file path"),
@@ -424,6 +427,7 @@ async def get_refactoring_opportunities(
     """
     query, ignored = parse_query(
         lead_type=refactoring_type,
+        status=status,
         confidence=confidence,
         effort=effort,
         mechanical=mechanical,

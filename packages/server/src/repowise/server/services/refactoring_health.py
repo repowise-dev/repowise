@@ -53,6 +53,9 @@ DEFAULT_VIEW = "diversified"
 # default resolves to the value that list has always defaulted to.
 _PLAN_VIEWS = {"canonical": "canonical", "file_spread": "file_spread", "diversified": "canonical"}
 
+# The triage vocabulary, shared with health findings.
+_STATUSES = ("open", "acknowledged", "resolved", "false_positive")
+
 CANONICAL_ORDERS = ("queue", "rank", "health", "effort", "file")
 _CONFIDENCES = ("low", "medium", "high")
 _EFFORTS = ("S", "M", "L", "XL")
@@ -77,6 +80,7 @@ class RefactoringQuery:
     """A normalized queue request. The only shape either adapter passes down."""
 
     lead_types: tuple[str, ...] | None = None
+    status: str = "open"
     confidence: str | None = None
     effort: str | None = None
     mechanical_only: bool = False
@@ -110,6 +114,7 @@ class RefactoringPage:
 def parse_query(
     *,
     lead_type: str | Sequence[str] | None = None,
+    status: str | None = None,
     confidence: str | None = None,
     effort: str | None = None,
     mechanical: bool | None = None,
@@ -161,6 +166,7 @@ def parse_query(
     return (
         RefactoringQuery(
             lead_types=admit_many("refactoring_type", lead_type, _TYPES),
+            status=admit("status", status, _STATUSES) or "open",
             confidence=admit("confidence", confidence, _CONFIDENCES),
             effort=admit("effort", effort, _EFFORTS),
             mechanical_only=bool(mechanical),
@@ -229,6 +235,7 @@ class RefactoringHealthService:
         rows, total = await list_refactoring_opportunities(
             self._session,
             self._repository_id,
+            status=query.status,
             lead_types=list(query.lead_types) if query.lead_types else None,
             confidence=query.confidence,
             effort=query.effort,
@@ -251,7 +258,12 @@ class RefactoringHealthService:
             offset=query.offset,
             next_offset=next_offset if next_offset < total else None,
             facets=(
-                await refactoring_facet_counts(self._session, self._repository_id)
+                # Scoped to the status being listed. Facets counting the open
+                # set while the list shows the resolved one would put a badge on
+                # a tab that returns nothing.
+                await refactoring_facet_counts(
+                    self._session, self._repository_id, status=query.status
+                )
                 if with_facets
                 else {}
             ),

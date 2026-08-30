@@ -31,19 +31,20 @@ import * as React from "react";
 import { Search } from "lucide-react";
 
 import { Input } from "../ui/input";
+import { FilterSelect } from "../health/code-health-controls";
 import { PaginationControls } from "../shared/pagination-controls";
 import { OpportunityRows } from "./opportunity-rows";
 import { RefactoringLede } from "./refactoring-lede";
 import { StartHere } from "./start-here";
 import { CONFIDENCE_LABEL } from "./meta";
+import { STATUS_LABEL, TRIAGE_STATUSES } from "./opportunity";
 import type {
   Confidence,
   EffortBucket,
   OpportunityStatus,
   RefactoringOpportunity,
+  RefactoringOpportunityRollup,
   RefactoringOrder,
-  RefactoringPlan,
-  RefactoringSummary,
 } from "@repowise-dev/types/refactoring";
 
 const PAGE_SIZE = 60;
@@ -68,6 +69,8 @@ const SORT_OPTIONS: { value: RefactoringOrder; label: string }[] = [
 export interface RefactoringBoardServerState {
   query: string;
   order: RefactoringOrder;
+  /** Which triage state the list is showing. The server defaults to `open`. */
+  status: OpportunityStatus;
   effort: EffortBucket | null;
   confidence: Confidence | null;
   mechanicalOnly: boolean;
@@ -79,12 +82,10 @@ export interface RefactoringBoardServerState {
 export interface RefactoringBoardProps {
   /** Opportunities for the active type filter, in the server's order. */
   opportunities: RefactoringOpportunity[];
-  /** Repo-wide totals supplied by the bounded endpoint. */
-  summary?: RefactoringSummary | undefined;
+  /** The repository rollup the endpoint returns. Feeds the lede. */
+  summary?: RefactoringOpportunityRollup | null | undefined;
   /** Bounded structural head for Start here, already filtered to lead types. */
   structuralOpportunities?: RefactoringOpportunity[] | undefined;
-  /** Every plan, for the lede's distribution prose. */
-  allPlans?: RefactoringPlan[] | undefined;
   serverState: RefactoringBoardServerState;
   onServerStateChange: (change: Partial<RefactoringBoardServerState>) => void;
   indexedFileCount?: number | undefined;
@@ -110,7 +111,6 @@ export function RefactoringBoard({
   opportunities,
   summary,
   structuralOpportunities,
-  allPlans,
   serverState,
   onServerStateChange,
   indexedFileCount,
@@ -134,7 +134,9 @@ export function RefactoringBoard({
     return CONFIDENCE_ORDER.filter((c) => present.has(c) || c === active);
   }, [opportunities, serverState.confidence]);
 
-  if ((summary?.total ?? opportunities.length) === 0) {
+  const rollupTotal =
+    summary && summary.status === "available" ? summary.opportunities_total : null;
+  if ((rollupTotal ?? opportunities.length) === 0 && serverState.status === "open") {
     return (
       <div className="border-t border-[var(--color-border-default)] pt-10 text-center">
         <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">{emptyTitle}</h3>
@@ -149,17 +151,14 @@ export function RefactoringBoard({
     serverState.query.trim() !== "" ||
     serverState.effort !== null ||
     serverState.confidence !== null ||
-    serverState.mechanicalOnly;
+    serverState.mechanicalOnly ||
+    serverState.status !== "open";
   const resultTotal = serverState.total;
 
   return (
     <div className="space-y-10">
       {showLede ? (
-        <RefactoringLede
-          plans={allPlans ?? []}
-          summary={summary}
-          indexedFileCount={indexedFileCount}
-        />
+        <RefactoringLede summary={summary} indexedFileCount={indexedFileCount} />
       ) : null}
 
       {showLede && (structuralOpportunities?.length ?? 0) > 0 ? (
@@ -217,44 +216,44 @@ export function RefactoringBoard({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-          <div className="flex items-center gap-2">
-            <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-              Effort
-            </span>
-            {EFFORTS.map((e) => (
-              <FilterChip
-                key={e}
-                active={serverState.effort === e}
-                onClick={() =>
-                  onServerStateChange({
-                    effort: serverState.effort === e ? null : e,
-                    offset: 0,
-                  })
-                }
-                label={EFFORT_LABEL_LONG[e]}
-              />
-            ))}
-          </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          {/* Selects, not chip rows. Status, effort and confidence are each a
+              single choice over a closed set, which is what a select is for -
+              three rows of chips spent a third of the page saying so, and a
+              chip row implies multi-select to anyone who has used one. The
+              mechanical filter stays a chip because it is a boolean, not a
+              choice among values. */}
+          <FilterSelect
+            label="Status"
+            value={serverState.status}
+            onChange={(v) =>
+              onServerStateChange({ status: v as OpportunityStatus, offset: 0 })
+            }
+            options={TRIAGE_STATUSES.map((o) => ({ value: o.value, label: o.label }))}
+          />
+          <FilterSelect
+            label="Effort"
+            value={serverState.effort ?? ""}
+            onChange={(v) =>
+              onServerStateChange({ effort: (v || null) as EffortBucket | null, offset: 0 })
+            }
+            options={[
+              { value: "", label: "Any" },
+              ...EFFORTS.map((e) => ({ value: e, label: EFFORT_LABEL_LONG[e] })),
+            ]}
+          />
           {confidencesPresent.length > 1 ? (
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-                Confidence
-              </span>
-              {confidencesPresent.map((c) => (
-                <FilterChip
-                  key={c}
-                  active={serverState.confidence === c}
-                  onClick={() =>
-                    onServerStateChange({
-                      confidence: serverState.confidence === c ? null : c,
-                      offset: 0,
-                    })
-                  }
-                  label={CONFIDENCE_LABEL[c]}
-                />
-              ))}
-            </div>
+            <FilterSelect
+              label="Confidence"
+              value={serverState.confidence ?? ""}
+              onChange={(v) =>
+                onServerStateChange({ confidence: (v || null) as Confidence | null, offset: 0 })
+              }
+              options={[
+                { value: "", label: "Any" },
+                ...confidencesPresent.map((c) => ({ value: c, label: CONFIDENCE_LABEL[c] })),
+              ]}
+            />
           ) : null}
           <FilterChip
             active={serverState.mechanicalOnly}
@@ -267,7 +266,8 @@ export function RefactoringBoard({
 
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold tabular-nums text-[var(--color-text-primary)]">
-            {resultTotal.toLocaleString()} opportunit{resultTotal === 1 ? "y" : "ies"}
+            {resultTotal.toLocaleString()} {STATUS_LABEL[serverState.status].toLowerCase()}{" "}
+            opportunit{resultTotal === 1 ? "y" : "ies"}
             {filtersActive ? (
               <span className="font-normal text-[var(--color-text-tertiary)]"> matching</span>
             ) : null}
@@ -278,6 +278,7 @@ export function RefactoringBoard({
               onClick={() =>
                 onServerStateChange({
                   query: "",
+                  status: "open",
                   effort: null,
                   confidence: null,
                   mechanicalOnly: false,
@@ -293,7 +294,9 @@ export function RefactoringBoard({
 
         {opportunities.length === 0 ? (
           <p className="border-t border-[var(--color-border-default)] py-10 text-center text-sm text-[var(--color-text-tertiary)]">
-            No opportunities match these filters.
+            {serverState.status === "open"
+              ? "No opportunities match these filters."
+              : `Nothing has been marked ${STATUS_LABEL[serverState.status].toLowerCase()} yet.`}
           </p>
         ) : (
           <>

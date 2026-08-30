@@ -65,6 +65,18 @@ const EFFORT_WORD: Record<string, string> = {
   XL: "Extra large",
 };
 
+/**
+ * One grid, named once.
+ *
+ * The header and the rows have to share a template or they drift the first time
+ * a column is resized, and a header that does not line up with its column is
+ * worse than no header. The file column is the flexible one because it is the
+ * only cell whose content has no natural width.
+ */
+const GRID =
+  "grid grid-cols-[minmax(0,1fr)_auto] gap-x-5 gap-y-2 px-3 " +
+  "lg:grid-cols-[116px_minmax(0,1fr)_150px_104px_96px_32px]";
+
 export function OpportunityRows({
   opportunities,
   onOpen,
@@ -76,6 +88,19 @@ export function OpportunityRows({
 }: OpportunityRowsProps) {
   return (
     <div className="flex flex-col">
+      {/* Hidden below `lg`, where the row stacks and the labels would outnumber
+          the values they label. */}
+      <div
+        aria-hidden
+        className={`${GRID} hidden border-b border-[var(--color-border-default)] pb-2 pt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] lg:grid`}
+      >
+        <span>Type</span>
+        <span>File</span>
+        <span>Work</span>
+        <span>Health</span>
+        <span>Status</span>
+        <span className="sr-only">Actions</span>
+      </div>
       {opportunities.map((opportunity) => (
         <OpportunityRow
           key={opportunity.opportunity_id}
@@ -153,11 +178,11 @@ function OpportunityRow({
       data-refactoring-opportunity={opportunity.opportunity_id}
       onMouseEnter={() => onHighlight?.(opportunity.opportunity_id)}
       onMouseLeave={() => onHighlight?.(null)}
-      className={`grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-5 gap-y-2 border-t border-[var(--color-border-default)] px-3 py-3 lg:grid-cols-[128px_minmax(0,1fr)_190px_120px_32px] lg:items-center ${
+      className={`${GRID} items-start border-t border-[var(--color-border-default)] py-3 ${
         lit ? "bg-[var(--color-accent-muted)]" : "hover:bg-[var(--color-bg-elevated)]"
       }`}
     >
-      <div className="order-2 text-xs text-[var(--color-text-secondary)] lg:order-none">
+      <div className="order-2 text-xs text-[var(--color-text-secondary)] lg:order-none lg:pt-px">
         {meta.label}
       </div>
 
@@ -182,7 +207,7 @@ function OpportunityRow({
         </span>
       </button>
 
-      <div className="order-3 text-[12.5px] text-[var(--color-text-secondary)] lg:order-none">
+      <div className="order-3 text-[12.5px] text-[var(--color-text-secondary)] lg:order-none lg:pt-px">
         {stepSummary(opportunity)}
         <br />
         <span className="text-[11.5px] text-[var(--color-text-tertiary)]">
@@ -199,7 +224,7 @@ function OpportunityRow({
         ) : null}
       </div>
 
-      <div className="order-4 space-y-1 text-[12.5px] tabular-nums lg:order-none">
+      <div className="order-4 space-y-1 text-[12.5px] tabular-nums lg:order-none lg:pt-px">
         {gain > 0 ? (
           <span className="block font-medium text-[var(--color-success)]">
             +{gain.toFixed(1)} health
@@ -219,27 +244,36 @@ function OpportunityRow({
         >
           {addressesPrimaryShort(opportunity.addresses_primary_problem)}
         </span>
-        {status !== "open" ? (
-          <span className="block text-[11.5px] font-medium text-[var(--color-accent-primary)]">
-            {STATUS_LABEL[status]}
-          </span>
-        ) : null}
+      </div>
+
+      {/* Its own column. Triage was a line that appeared inside the health cell
+          only once a row left `open`, so the list had no column a reader could
+          scan down to see what they had already dealt with - and the row's
+          height changed when they marked one. */}
+      <div className="order-5 text-[12.5px] lg:order-none lg:pt-px">
+        <span
+          className={
+            status === "open"
+              ? "text-[var(--color-text-tertiary)]"
+              : "font-medium text-[var(--color-accent-primary)]"
+          }
+        >
+          {STATUS_LABEL[status]}
+        </span>
         {/* Rendered whether or not it has anything to say: several screen
             readers announce a text change inside a live region but not the
             arrival of the region itself. */}
         <span
           role="status"
           className={
-            failed
-              ? "block text-[11.5px] text-[var(--color-error)]"
-              : "sr-only"
+            failed ? "mt-0.5 block text-[11.5px] text-[var(--color-error)]" : "sr-only"
           }
         >
           {failed ? "Could not save" : ""}
         </span>
       </div>
 
-      <div className="order-5 justify-self-end lg:order-none">
+      <div className="order-6 justify-self-end lg:order-none lg:-mt-1">
         <RowOverflow
           opportunity={opportunity}
           status={status}

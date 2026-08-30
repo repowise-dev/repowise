@@ -121,9 +121,20 @@ describe("OpportunityRows", () => {
     expect(screen.getByText("False positive")).toBeTruthy();
   });
 
-  it("stays silent about lifecycle while a row is simply open", () => {
+  it("states the status on every row, including an untouched one", () => {
+    // It used to appear only once a row left `open`, so the list had no column
+    // to scan for what had already been dealt with, and marking a row changed
+    // its height. An always-present value is quieter, not louder: `open` is
+    // rendered in the tertiary ink and only a decision takes the accent.
     render(<OpportunityRows opportunities={[opportunity()]} onOpen={() => {}} />);
-    expect(screen.queryByText("Open")).toBeNull();
+    expect(screen.getByText("Open")).toBeTruthy();
+  });
+
+  it("labels its columns, because six unlabelled values is a jumble", () => {
+    render(<OpportunityRows opportunities={[opportunity()]} onOpen={() => {}} />);
+    for (const heading of ["Type", "File", "Work", "Health", "Status"]) {
+      expect(screen.getByText(heading)).toBeTruthy();
+    }
   });
 
   it("hides the triage group entirely when the host cannot write", async () => {
