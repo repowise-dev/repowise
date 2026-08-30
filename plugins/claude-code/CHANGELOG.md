@@ -2,6 +2,18 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.47.0
+
+### Changed
+- The `change-review` skill leads with `get_change_risk`'s `directive` and
+  `health_delta` — what the change made worse — before the percentile and the
+  diff-shape drivers, matching the reordered response (#1980). It also names
+  `directive.status: unknown` alongside `warning` as the "matched no files"
+  signal, and distinguishes the per-change directive from `get_risk`'s per-file
+  one.
+- No hook change this cycle: `hooks.json` still mirrors `claude_config.py`, and
+  every tool named in a command or skill is one the server lists.
+
 ## 0.46.0
 
 ### Changed

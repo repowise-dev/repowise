@@ -9,6 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.47.0] — 2026-08-30
+
+The headline this cycle is that Code Health stops handing you observations and starts handing you work. Performance findings compose into per-file opportunities with a real lifecycle, served from a materialized read model so the web page, the CLI and the agent surface cannot disagree about what one opportunity is. Alongside it, a contextual chat dock that can read the indexed repository and keep its artifacts, coupling that says whether two files *should* change together rather than just that they did, and an architecture view that finally does something useful with external dependencies.
+
+### Added
+
+- **Contextual repository chat.** Ask a question about the repo from a persistent dock that follows you across pages, with a conversation lifecycle and a durable artifact workspace so the things a conversation produces outlive it (#1949, #1951, #1960, #1964). The dock can be dismissed and brought back from settings (#2017).
+- **Refactoring opportunities are composed, not listed.** The Refactoring board showed detector outputs, so a file with fifteen of them filled the screen fifteen times and the reader reassembled "this file needs work". Board rows, the structural field, the drawer, the CLI and the VS Code list now read one composed opportunity per file: its steps in dependency-safe order, how many are mechanical, and whether they address what is actually costing the file most (#1988, #1998). Plans gained a versioned identity and a lifecycle, and triage is one request (#1986).
+- **The Performance tab is a queue of causes**, not a list of observations: what to change, why it ranks there, and the evidence behind it, projected from a materialized read model with server-side filters, counts, ordering and paging (#1981, #1985). Production, Tooling, Test and Unclassified stay separate, each with its own count including zero, and the performance lens joined the one Galaxy view (#1987).
+- **Coupling says whether files *should* change together.** A co-change pair is now graded by whether the graph can explain it, filterable by that verdict, and openable as a pair with the matching `edge_type` shown, so "explained" says whether an import or a framework binding accounts for it (#1972, #1973, #1975).
+- **External dependencies are a real view.** Bounded per-package summaries, a dependency explorer, and focused package relationships in the architecture view (#1942, #1943, #1946).
+- **Local OpenAI-compatible gateways** are supported as a provider, for LM Studio, vLLM and friends (#1822).
+
+### Changed
+
+- **`get_change_risk` leads with what the change made worse.** The response now opens with a `directive` (status, headline, reasons, next actions) and a `health_delta` of the findings the change introduced or resolved, ahead of the percentile and the diff-shape drivers (#1980). Every previous field is still there; the ordering and the lede changed. The Claude Code plugin's `change-review` skill is updated to match.
+- **A repeated-cost cause is named by the caller that repeats the work**, not only the sink that pays for it, so a shared infrastructure helper no longer merges unrelated workflows, and execution context gained `unknown` instead of defaulting an unclassifiable file to production (#1978). The opportunity queue defaults to production context (#2003).
+- **`HEALTH_ANALYZER_VERSION` is 7.** An existing index re-scores health on its next update rather than waiting out the decay timer; it does not force a re-index. `STORE_FORMAT_VERSION` and `PARSER_SCHEMA_VERSION` are unchanged.
+- **`repowise` starts faster.** The per-call CLI startup floor is cut (#1833), and an update walks the repo once rather than once per worker (#1926).
+- **A refactoring plan the gates cannot prove behaviour-preserving is suppressed** rather than offered (#1984).
+- Loading motion moved from the box to the region, the sidebar's scale and rhythm were reworked, the AI prompt modal uses hairlines instead of a filled well, and model work has its own accent instead of borrowing orange and green (#1993, #1994, #1995, #2015, #2016).
+
+### Fixed
+
+- **Performance analysis**: the loop-carried must-def analysis is solved to a fixpoint rather than to one pass (#2009), and the hot-path gate requires centrality before it fires (#2007).
+- **Dead code**: JSX prop-guard dead code is detected (#1570), and unused-export confidence is clamped when a dynamic use cannot be resolved (#1959).
+- **Ingestion**: three-part qualified calls resolve (#1920), C++ export-macro forward declarations parse (#1913), and Pascal dead-code false positives are resolved with type kinds disambiguated (#1675).
+- **MCP**: `get_why` trims its lanes before dropping them and names what the answer rests on (#1954, #1963), guided tour steps are renumbered after dedup (#1889), path search supports trailing globs (#1881), and a workspace query prefers the most-specific repo (#1865).
+- **Security scanning** no longer reports `RegExp.exec`, and catches the constant secret form it was missing (#1947).
+- **Coverage**: the Tests tab answers for files a partial report never named (#1805), and severe path-mapping loss is flagged instead of being treated as success (#1955).
+- **Health persistence**: a full index is stamped with its commit and composed after governance (#2001), and the derived queues are rebuilt whenever the findings are replaced (#2000).
+- **Config and workspace**: broken repo config is surfaced instead of silently falling back to defaults (#1958), workspace updates are single-flight (#1834), DB identity resolves on delegated worktree updates (#841), and `codex_cli` is in the server's provider catalog (#1953).
+- **Chat**: GPT-5.6 function tools work against OpenAI (#1950).
+- The coupling tab no longer crashes the page and names files unambiguously (#1965), the workspace health score is banded on the same ladder the repo pages use (#2012), the chat dock lifts only where the graph controls are actually under it (#2013), the dark overlay plane and its nested wells settle (#2014), the opportunity row columns align below the `lg` breakpoint (#2010), a refactoring step whose plan falls outside the limit renders (#2004), and the coverage migration has its own revision id (#2019).
+
+### Documentation
+
+- The security scan is documented, floor and all (#1948).
+
+---
+
 ## [0.46.0] — 2026-08-27
 
 The headline this cycle is cross-repo contracts becoming a surface you can use rather than a graph the indexer knew about. A workspace now recognises routes once and serves them to both producers and consumers, binds each contract to a real symbol id, reads request schemas off handler signatures, and gives the whole thing a front door in the UI and over REST. Alongside it the MCP tool surface got a shared response ceiling with recoverable pagination, so no tool can silently truncate an answer with no way back, and the C++, Rust, Java and TypeScript call graphs each lost a class of wrong edge.
