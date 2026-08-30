@@ -288,7 +288,6 @@ class HealthAnalyzer:
         self,
         graph: Any,  # networkx.DiGraph
         git_meta_map: dict[str, dict] | None = None,
-        performance_git_meta_map: dict[str, dict] | None = None,
         parsed_files: list[Any] | None = None,
         coverage_map: dict[str, dict[str, Any]] | None = None,
         community_label_map: dict[str, str] | None = None,
@@ -298,7 +297,6 @@ class HealthAnalyzer:
     ) -> None:
         self.graph = graph
         self.git_meta_map = git_meta_map or {}
-        self.performance_git_meta_map = performance_git_meta_map or self.git_meta_map
         self.parsed_files = list(parsed_files or [])
         # Per-file coverage keyed by repo-relative POSIX path. Each value
         # is ``{line_coverage_pct, branch_coverage_pct, covered_lines,
@@ -803,9 +801,9 @@ class HealthAnalyzer:
         Each is appended onto the matching file's ``perf_hits`` in place so the
         biomarkers handle every case through one path. Failure-isolated and never
         blocks the report. The cross-function passes are a no-op without a graph;
-        the centrality-gated pass ALWAYS runs — when no graph/git signal is
-        available nothing is hot, so it emits nothing (precision-first: we never
-        ship a centrality-gated marker we cannot establish centrality for).
+        the centrality-gated pass ALWAYS runs — without a graph nothing is
+        hot, so it emits nothing (precision-first: we never ship a
+        centrality-gated marker we cannot establish centrality for).
         """
         try:
             index = self._execution_graph()
@@ -817,7 +815,7 @@ class HealthAnalyzer:
                 ):
                     for path, hits in src.items():
                         by_file.setdefault(path, []).extend(hits)
-            ranker = PerfRanker(index, self.performance_git_meta_map)
+            ranker = PerfRanker(index)
             for path, hits in collect_centrality_gated(walked, ranker).items():
                 by_file.setdefault(path, []).extend(hits)
             for _pf, fcx in walked:

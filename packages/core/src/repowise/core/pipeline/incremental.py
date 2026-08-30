@@ -645,9 +645,6 @@ def run_partial_analysis(
         _health_analyzer = HealthAnalyzer(
             graph_builder.graph(),
             git_meta_map=git_meta_map,
-            # Only centrality-gated performance reads this merged map. Other
-            # health signals keep the established change-scoped git semantics.
-            performance_git_meta_map={**(stored_git_meta or {}), **git_meta_map},
             parsed_files=parsed_files,
             duplication_cache_dir=Path(repo_path) / ".repowise",
             repo_root=repo_path,
