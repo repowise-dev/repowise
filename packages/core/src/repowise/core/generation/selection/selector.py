@@ -274,27 +274,26 @@ def count_documentable_files(parsed_files: list[Any]) -> int:
     to do before generation starts, in the same terms the policy uses.
     """
     return sum(
-        1 for p in parsed_files if _is_code_file(p) and _passes_importance_floor(p.file_info.path)
+        1
+        for p in parsed_files
+        if _is_code_file(p)
+        and _passes_importance_floor(p.file_info.path, getattr(p.file_info, "language", None))
     )
 
 
-def _passes_importance_floor(path: str) -> bool:
+def _passes_importance_floor(path: str, language: str | None = None) -> bool:
     """Whether *path* is worth a file page at all.
 
-    Two exclusions, both measured rather than assumed: test files and pure
-    ``__init__.py`` re-export files. Pages for either only dilute retrieval
-    (test-file pages pushed real answers below rank 5 in dogfood), and neither
-    says anything a reader cannot get from the file it re-exports or tests.
-
-    This used to gate only the coverage tail, back when the budget picked a
-    fraction of the repo and the tail backfilled the rest. There is no tail any
-    more because every file that clears this floor gets a page, so the floor is
-    now simply what file-page selection means. The rule is unchanged; only the
-    set it applies to grew from the remainder to the whole.
+    Two exclusions, both measured rather than assumed: actual test spec files
+    (is_test_path) and pure ``__init__.py`` re-export files. Test support/fixture
+    modules (conftest.py, helpers/, fixtures/) pass the floor because they
+    contain key architectural and harness conventions needed for retrieval.
     """
-    norm = path.replace("\\", "/")
-    if norm.startswith("tests/") or "/tests/" in norm:
+    from repowise.core.test_paths import is_test_path
+
+    if is_test_path(path, language):
         return False
+    norm = path.replace("\\", "/")
     return norm.rsplit("/", 1)[-1] != "__init__.py"
 
 
@@ -317,7 +316,7 @@ def _build_file_candidates(
         if not _is_code_file(p):
             continue
         path = p.file_info.path
-        if not _passes_importance_floor(path):
+        if not _passes_importance_floor(path, getattr(p.file_info, "language", None)):
             continue
         is_hotspot = bool(git.get(path, {}).get("is_hotspot", False))
         s = score_file(
