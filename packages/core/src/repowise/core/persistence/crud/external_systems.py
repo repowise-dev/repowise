@@ -112,16 +112,17 @@ async def link_graph_nodes_to_external_systems(
 
     Returns the number of graph_nodes updated.
     """
-    # Imported here, not at module scope: the matcher's package reaches this
-    # module back through ``analysis.health``, which loads the analyzer engine
-    # on import. One shared matcher is worth the deferred lookup.
+    if not name_to_id:
+        return 0
+
+    # Imported inside the function, not at module scope: the matcher's package
+    # reaches this module back through ``analysis.health``, which loads the
+    # analyzer engine on import.
     from repowise.core.analysis.external_systems.links import (
         EXTERNAL_NODE_PREFIX,
         declaration_name_candidates,
     )
 
-    if not name_to_id:
-        return 0
     prefix = EXTERNAL_NODE_PREFIX
     result = await session.execute(
         select(GraphNode).where(
@@ -132,7 +133,6 @@ async def link_graph_nodes_to_external_systems(
     updated = 0
     for node in result.scalars():
         suffix = node.node_id[len(prefix) :]
-        # Try exact and ecosystem-shaped package candidates in priority order.
         sys_id = next(
             (
                 name_to_id[name]
@@ -152,25 +152,34 @@ def build_external_system_link_map(
     systems: list[dict],
     id_map: dict[tuple[str, str], int],
 ) -> dict[str, int | None]:
-    """Build exact/prefixed link keys while preserving name ambiguity."""
-    links: dict[str, int | None] = {}
-    name_ecosystems: dict[str, str] = {}
-    for system in systems:
-        name = system.get("name", "")
-        declared_in = system.get("declared_in", "")
-        ecosystem = system.get("ecosystem", "")
-        system_id = id_map.get((name, declared_in))
-        if not name or system_id is None:
-            continue
-        if ecosystem:
-            links.setdefault(f"{ecosystem}:{name}", system_id)
-        previous_ecosystem = name_ecosystems.get(name)
-        if previous_ecosystem is None:
-            name_ecosystems[name] = ecosystem
-            links[name] = system_id
-        elif previous_ecosystem != ecosystem:
-            links[name] = None
-    return links
+    """Build exact/prefixed link keys while preserving name ambiguity.
+
+    The ambiguity rule itself lives in ``analysis.external_systems.links`` and
+    is shared with the plain-record path, so the stored ``external_system_id``
+    and a link built without a database cannot disagree about what resolves.
+    Declarations whose row was not persisted are dropped before indexing: they
+    have no id to resolve to, and letting one poison a bare name would refuse a
+    target the old map linked.
+    """
+    from repowise.core.analysis.external_systems.links import build_declaration_index
+
+    persisted = [
+        system
+        for system in systems
+        if system.get("name")
+        and id_map.get((system.get("name", ""), system.get("declared_in", ""))) is not None
+    ]
+    # First row wins per identity, matching the insertion order the map is built in.
+    first_id: dict[tuple[str, str], int] = {}
+    for system in persisted:
+        identity = (system.get("ecosystem", ""), system.get("name", ""))
+        first_id.setdefault(
+            identity, id_map[(system.get("name", ""), system.get("declared_in", ""))]
+        )
+    return {
+        key: (None if identity is None else first_id.get(identity))
+        for key, identity in build_declaration_index(persisted).items()
+    }
 
 
 async def list_external_systems(session: AsyncSession, repository_id: str) -> list[ExternalSystem]:

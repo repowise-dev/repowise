@@ -21,6 +21,7 @@ from repowise.core.analysis.external_systems import (
     DEFAULT_RELATIONSHIP_EDGE_LIMIT,
     DEFAULT_RELATIONSHIP_NODE_LIMIT,
     EVIDENCE_TARGET_LIMIT,
+    IMPORT_EDGE_TYPE,
     Scope,
     build_importing_files,
     build_relationship_graph,
@@ -107,7 +108,7 @@ async def _import_edges(session: AsyncSession, repository_id: str, target_nodes:
             )
             .where(
                 GraphEdge.repository_id == repository_id,
-                GraphEdge.edge_type == "imports",
+                GraphEdge.edge_type == IMPORT_EDGE_TYPE,
                 GraphEdge.target_node_id.in_(target_nodes),
             )
         )

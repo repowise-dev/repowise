@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from .records import field
+from .records import field, package_key
 
 #: Graph nodes standing for a third-party package carry this ``node_id`` prefix.
 EXTERNAL_NODE_PREFIX = "external:"
@@ -59,6 +59,11 @@ def build_declaration_index(
     ambiguous target stays unlinked rather than resolving to whichever
     manifest was read first. Ecosystem-qualified keys stay resolvable either
     way.
+
+    An absent ecosystem counts as one: the test is ``previous is None``, not
+    ``if not previous``, so a name declared once without an ecosystem and once
+    with one is ambiguous. The CRUD writer builds its id map from this index,
+    so relaxing that here changes what gets stored.
     """
     index: dict[str, tuple[str, str] | None] = {}
     ecosystem_of: dict[str, str] = {}
@@ -69,7 +74,7 @@ def build_declaration_index(
             continue
         identity = (ecosystem, name)
         if ecosystem:
-            index.setdefault(f"{ecosystem}:{name}", identity)
+            index.setdefault(package_key(ecosystem, name), identity)
         previous = ecosystem_of.get(name)
         if previous is None:
             ecosystem_of[name] = ecosystem
@@ -105,8 +110,11 @@ def build_declaration_links(
     """Link every external graph node that resolves to a declared package.
 
     Unresolved and ambiguous nodes are omitted rather than carried as holes,
-    which is the same set the stored ``external_system_id`` leaves null. Node
-    order is preserved so callers keep a stable fold input.
+    which is the same set the stored ``external_system_id`` leaves null.
+
+    The folds this feeds also take import edges, and expect them already
+    narrowed to :data:`~.records.IMPORT_EDGE_TYPE` — an unfiltered edge list
+    counts calls as package usage.
     """
     index = build_declaration_index(declarations)
     links: list[ExternalSystemLink] = []

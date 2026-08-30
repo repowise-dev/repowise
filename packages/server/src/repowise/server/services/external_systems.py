@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.external_systems import (
     DEFAULT_SUMMARY_LIMIT,
+    IMPORT_EDGE_TYPE,
     Scope,
     build_package_summary,
 )
@@ -78,7 +79,7 @@ def _import_edge_query(repository_id: str):
         )
         .where(
             GraphEdge.repository_id == repository_id,
-            GraphEdge.edge_type == "imports",
+            GraphEdge.edge_type == IMPORT_EDGE_TYPE,
         )
     )
 

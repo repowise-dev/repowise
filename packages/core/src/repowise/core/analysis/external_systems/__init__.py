@@ -22,6 +22,7 @@ from .links import (
 )
 from .records import (
     AUXILIARY_PREFIXES,
+    IMPORT_EDGE_TYPE,
     Scope,
     in_scope,
     is_primary_path,
@@ -65,6 +66,7 @@ __all__ = [
     "EVIDENCE_TARGET_LIMIT",
     "EXTERNAL_NODE_PREFIX",
     "EXTERNAL_TARGET_LIMIT",
+    "IMPORT_EDGE_TYPE",
     "SUMMARY_VERSION_LIMIT",
     "ExternalSystemLink",
     "GraphTarget",

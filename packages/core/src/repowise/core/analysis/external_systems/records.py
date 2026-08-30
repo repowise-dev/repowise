@@ -25,6 +25,12 @@ Scope = Literal["primary", "all"]
 AUXILIARY_PREFIXES = (".claude/worktrees/", "local-stash/")
 
 
+#: The only edge type that counts as declared-package usage. The relationship
+#: folds additionally expect file sources; both rules are applied by whoever
+#: fetches the edges, not by the folds.
+IMPORT_EDGE_TYPE = "imports"
+
+
 def is_primary_path(path: str | None) -> bool:
     """Whether a declaration or importing file belongs to the repository proper."""
     return not (path or "").startswith(AUXILIARY_PREFIXES)
@@ -61,6 +67,7 @@ def target_basis(node_id: str, package_name: str) -> Literal["exact", "subpath",
 
 __all__ = [
     "AUXILIARY_PREFIXES",
+    "IMPORT_EDGE_TYPE",
     "Scope",
     "field",
     "in_scope",

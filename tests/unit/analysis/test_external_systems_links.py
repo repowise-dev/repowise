@@ -9,12 +9,15 @@ folds the server does.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 from repowise.core.analysis.external_systems import (
     ExternalSystemLink,
     build_declaration_index,
     build_declaration_links,
+    build_importing_files,
     build_package_summary,
+    build_relationship_graph,
     declaration_name_candidates,
     resolve_declaration,
 )
@@ -37,7 +40,8 @@ class _Node:
 
 
 def _links(declarations, nodes) -> list[tuple[str, str, str]]:
-    return [(link.node_id, link.ecosystem, link.name) for link in build_declaration_links(declarations, nodes)]
+    built = build_declaration_links(declarations, nodes)
+    return [(link.node_id, link.ecosystem, link.name) for link in built]
 
 
 # --- candidate precedence -------------------------------------------------
@@ -48,7 +52,11 @@ def test_candidates_lead_with_the_whole_name() -> None:
 
 
 def test_scoped_npm_subpath_falls_back_to_the_package() -> None:
-    assert declaration_name_candidates("@scope/pkg/sub") == ("@scope/pkg/sub", "@scope/pkg", "@scope")
+    assert declaration_name_candidates("@scope/pkg/sub") == (
+        "@scope/pkg/sub",
+        "@scope/pkg",
+        "@scope",
+    )
 
 
 def test_rust_and_python_paths_fall_back_to_their_root() -> None:
@@ -56,8 +64,9 @@ def test_rust_and_python_paths_fall_back_to_their_root() -> None:
     assert declaration_name_candidates("pkg.sub.mod") == ("pkg.sub.mod", "pkg")
 
 
-def test_candidates_are_deduplicated_and_ordered() -> None:
-    assert declaration_name_candidates("a/b") == ("a/b", "a")
+def test_candidates_are_deduplicated() -> None:
+    # The scoped rule and the whole name both yield "@scope/pkg"; it appears once.
+    assert declaration_name_candidates("@scope/pkg") == ("@scope/pkg", "@scope")
 
 
 # --- resolution -----------------------------------------------------------
@@ -65,7 +74,11 @@ def test_candidates_are_deduplicated_and_ordered() -> None:
 
 def test_exact_and_prefix_nodes_resolve_to_the_declaration() -> None:
     declarations = [_Declaration("react"), _Declaration("serde", ecosystem="cargo")]
-    nodes = [_Node("external:react"), _Node("external:react/jsx-runtime"), _Node("external:serde::de")]
+    nodes = [
+        _Node("external:react"),
+        _Node("external:react/jsx-runtime"),
+        _Node("external:serde::de"),
+    ]
 
     assert _links(declarations, nodes) == [
         ("external:react", "npm", "react"),
@@ -143,7 +156,8 @@ def test_plain_dicts_link_the_same_as_objects() -> None:
     declarations = [_Declaration("react"), _Declaration("serde", ecosystem="cargo")]
     nodes = [_Node("external:react/jsx-runtime"), _Node("external:serde::de")]
     as_dicts = [
-        {"name": d.name, "ecosystem": d.ecosystem, "declared_in": d.declared_in} for d in declarations
+        {"name": d.name, "ecosystem": d.ecosystem, "declared_in": d.declared_in}
+        for d in declarations
     ]
 
     assert build_declaration_links(as_dicts, [{"node_id": n.node_id} for n in nodes]) == (
@@ -166,8 +180,105 @@ def test_a_consumer_folds_a_summary_from_declarations_and_nodes_alone() -> None:
         {"source_path": "src/ui.tsx", "target_node_id": "external:react/jsx-runtime"},
     ]
 
-    summary = build_package_summary(declarations, build_declaration_links(declarations, nodes), edges)
+    links = build_declaration_links(declarations, nodes)
+    summary = build_package_summary(declarations, links, edges)
 
     assert summary.total_packages == 2
     react = next(entry for entry in summary.items if entry.name == "react")
     assert react.importing_file_count == 2
+
+
+def test_one_package_declared_twice_in_one_ecosystem_stays_resolvable() -> None:
+    """The ambiguity rule must not fire on a monorepo's repeated manifest."""
+    declarations = [
+        _Declaration("react", declared_in="a/package.json"),
+        _Declaration("react", declared_in="b/package.json"),
+    ]
+
+    assert _links(declarations, [_Node("external:react")]) == [("external:react", "npm", "react")]
+
+
+def test_a_declaration_without_an_ecosystem_still_collides() -> None:
+    declarations = [_Declaration("http", ecosystem=""), _Declaration("http", ecosystem="pub")]
+
+    assert _links(declarations, [_Node("external:http")]) == []
+
+
+def test_attribute_rows_link_the_same_as_dataclasses() -> None:
+    """The third record shape the fold adapter claims: a plain attribute row."""
+    declarations = [_Declaration("react")]
+    nodes = [_Node("external:react")]
+    rows = [SimpleNamespace(name="react", ecosystem="npm", declared_in="package.json")]
+
+    assert build_declaration_links(rows, [SimpleNamespace(node_id="external:react")]) == (
+        build_declaration_links(declarations, nodes)
+    )
+
+
+def test_the_relationship_folds_run_on_links_built_without_a_database() -> None:
+    declarations = [_Declaration("react")]
+    nodes = [_Node("external:react")]
+    edges = [
+        {"source_path": "src/app.tsx", "target_node_id": "external:react", "community_id": 1},
+        {"source_path": "src/ui.tsx", "target_node_id": "external:react", "community_id": 1},
+    ]
+    links = build_declaration_links(declarations, nodes)
+
+    graph = build_relationship_graph(declarations, links, edges, "npm:react")
+    assert graph is not None
+    assert graph.nodes
+
+    files = build_importing_files(declarations, links, edges, "npm:react", "community:1")
+    assert files is not None
+    assert files.total == 2
+
+
+def test_the_sql_link_map_resolves_the_same_nodes_as_the_plain_record_path() -> None:
+    """The two paths share the index; this pins that they still agree.
+
+    The CRUD writer resolves a node to a row id and this module resolves it to
+    an identity, so only equality of the *linked set* is comparable — which is
+    exactly what would diverge if one copy of the rule drifted.
+    """
+    from repowise.core.persistence.crud.external_systems import build_external_system_link_map
+
+    systems = [
+        {"name": "react", "ecosystem": "npm", "declared_in": "package.json"},
+        {"name": "serde", "ecosystem": "cargo", "declared_in": "Cargo.toml"},
+        {"name": "dup", "ecosystem": "npm", "declared_in": "package.json"},
+        {"name": "dup", "ecosystem": "pypi", "declared_in": "pyproject.toml"},
+        {"name": "@scope/pkg", "ecosystem": "npm", "declared_in": "package.json"},
+    ]
+    id_map = {(s["name"], s["declared_in"]): index for index, s in enumerate(systems, start=1)}
+    node_ids = [
+        "external:react",
+        "external:react/jsx-runtime",
+        "external:serde::de",
+        "external:dup",
+        "external:npm:dup",
+        "external:@scope/pkg/sub",
+        "external:unknown",
+    ]
+
+    name_to_id = build_external_system_link_map(systems, id_map)
+    sql_linked = {
+        node_id
+        for node_id in node_ids
+        if next(
+            (
+                name_to_id[name]
+                for name in declaration_name_candidates(node_id.removeprefix("external:"))
+                if name in name_to_id
+            ),
+            None,
+        )
+        is not None
+    }
+    plain_linked = {
+        link.node_id
+        for link in build_declaration_links(
+            systems, [{"node_id": node_id} for node_id in node_ids]
+        )
+    }
+
+    assert sql_linked == plain_linked
