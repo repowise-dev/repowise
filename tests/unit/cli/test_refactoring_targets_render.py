@@ -148,3 +148,33 @@ def test_helper_site_falls_back_when_a_legacy_row_has_no_directory(capsys):
     legacy = _extract_helper({"module": "ui", "directory": None})
     _render_refactoring_targets([], [], [legacy], fmt="md")
     assert "near `ui`" in capsys.readouterr().out
+
+
+def _extract_method(i: int) -> RefactoringSuggestion:
+    """One plan per file, so composition yields one step per file."""
+    return RefactoringSuggestion(
+        refactoring_type="extract_method",
+        file_path=f"m{i}.py",
+        target_symbol=f"f{i}",
+        line_start=10,
+        line_end=30,
+        plan={"span": {"start": 10, "end": 30}, "suggested_name": f"_f{i}_part"},
+        evidence={"ccn_removed": 6, "slice_nloc": 20},
+        impact_delta=float(i),
+        effort_bucket="S",
+        blast_radius={"scope": "local"},
+        confidence="high",
+    )
+
+
+def test_a_step_whose_plan_falls_outside_the_limit_still_renders(capsys):
+    """Composition runs over every suggestion; the plan list is truncated.
+
+    So a step can outrank its own plan's detail, and the detail lookup hands
+    the renderer an empty dict. It used to dereference that and raise
+    ``KeyError: 'refactoring_type'``, taking the whole command down.
+    """
+    suggestions = [_extract_method(i) for i in range(25)]
+    for fmt in ("console", "md"):
+        _render_refactoring_targets([], [], suggestions, fmt=fmt, limit=3)
+        assert capsys.readouterr().out

@@ -377,7 +377,13 @@ def _plan_detail_console(p: dict) -> list[str]:
     extractions appeared three times in three places and the reader had to
     reassemble it. The detail itself was the good part and is unchanged; it is
     the grouping that went.
+
+    Empty when the step's plan is not in the rendered set: composition runs over
+    every suggestion while the plan list is truncated to ``limit``, so a step can
+    outrank its own plan's detail.
     """
+    if not p:
+        return []
     kind = p["refactoring_type"]
     pl = p.get("plan") or {}
     ev = p.get("evidence") or {}
@@ -449,7 +455,9 @@ def _plan_detail_console(p: dict) -> list[str]:
 
 
 def _plan_detail_md(p: dict) -> list[str]:
-    """The same detail, as Markdown lines."""
+    """The same detail, as Markdown lines. Empty for a plan outside the limit."""
+    if not p:
+        return []
     kind = p["refactoring_type"]
     pl = p.get("plan") or {}
     ev = p.get("evidence") or {}
