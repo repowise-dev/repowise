@@ -74,7 +74,11 @@ const EFFORT_WORD: Record<string, string> = {
  * only cell whose content has no natural width.
  */
 const GRID =
-  "grid grid-cols-[minmax(0,1fr)_auto] gap-x-5 gap-y-2 px-3 " +
+  // Below `lg` the first track is fixed rather than `1fr` against an `auto`
+  // sibling: each row is its own grid, so an `auto` second track sized to its
+  // own row and left the labels on a ragged edge, wrapping the type mid-phrase
+  // on the wider rows only.
+  "grid grid-cols-[8.5rem_minmax(0,1fr)] gap-x-5 gap-y-2 px-3 " +
   "lg:grid-cols-[116px_minmax(0,1fr)_150px_104px_96px_32px]";
 
 export function OpportunityRows({
