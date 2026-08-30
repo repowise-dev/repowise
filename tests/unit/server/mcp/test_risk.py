@@ -124,6 +124,9 @@ async def test_get_risk_no_git_metadata(setup_mcp):
         ("./src/auth/service.py", None, "src/auth/service.py"),
         ("src/auth/service.py/", None, "src/auth/service.py"),
         ("src//auth//service.py", None, "src/auth/service.py"),
+        (".github/workflows/ci.yml", None, ".github/workflows/ci.yml"),
+        ("./.github/workflows/ci.yml", None, ".github/workflows/ci.yml"),
+        (".claude/TRIAGE.md", None, ".claude/TRIAGE.md"),
         ("/tmp/test-repo/src/auth/service.py", "/tmp/test-repo", "src/auth/service.py"),
     ],
 )

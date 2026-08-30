@@ -56,13 +56,21 @@ def normalize_target_path(target: str, repo_root: str | None = None) -> str:
     if repo_root:
         root_norm = str(Path(repo_root).resolve()).replace("\\", "/")
         try:
-            resolved = Path(normalized).resolve()
+            # Resolve against the repo root, not the process cwd: the MCP
+            # server's cwd is not the repo, so a relative path that happens
+            # to exist there could resolve somewhere unrelated.
+            resolved = Path(repo_root, normalized).resolve()
             if str(resolved).startswith(root_norm.rstrip("/") + "/"):
                 normalized = str(resolved).replace("\\", "/")[len(root_norm.rstrip("/")) + 1 :]
-        except OSError:
+        except (OSError, ValueError):
+            # resolve() can raise ValueError on a malformed Windows path.
             pass
     # Strip a leading cwd-relative prefix and any leading slash left over.
-    normalized = normalized.lstrip("/").lstrip(".")
+    # A prefix strip, not lstrip: lstrip takes a character set, so it would
+    # eat every leading dot (``.github/...`` -> ``github/...``).
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    normalized = normalized.lstrip("/")
     # Collapse duplicate slashes and any trailing separator.
     parts = [p for p in normalized.split("/") if p]
     return "/".join(parts)
