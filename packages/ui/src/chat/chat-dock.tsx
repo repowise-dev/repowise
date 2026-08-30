@@ -126,6 +126,11 @@ export interface ChatDockProps {
   onSend: (text: string, context?: ChatContext) => void | Promise<void>;
   onCancel: () => void;
   suppressed?: boolean;
+  /** Hide the dock entirely. The host owns the preference and where it is
+   *  stored: this component's own persisted state is keyed per conversation,
+   *  so a visibility choice kept there would reset on the next new chat.
+   *  Omit to render no dismiss control at all. */
+  onDismiss?: () => void;
   modelSelectorSlot?: ReactNode;
   historySlot?: ReactNode;
   sendDisabled?: boolean;
@@ -159,6 +164,7 @@ export function ChatDock({
   onSend,
   onCancel,
   suppressed = false,
+  onDismiss,
   modelSelectorSlot,
   historySlot,
   sendDisabled = false,
@@ -248,7 +254,7 @@ export function ChatDock({
     return (
       <div
         style={dockOffsetStyle}
-        className="fixed bottom-[max(var(--chat-dock-bottom-offset),env(safe-area-inset-bottom))] right-[max(1rem,env(safe-area-inset-right))] z-[calc(var(--z-toast)-1)]"
+        className="group/dock fixed bottom-[max(var(--chat-dock-bottom-offset),env(safe-area-inset-bottom))] right-[max(1rem,env(safe-area-inset-right))] z-[calc(var(--z-toast)-1)]"
       >
         <button
           ref={minimizedButtonRef}
@@ -284,6 +290,22 @@ export function ChatDock({
             </span>
           )}
         </button>
+        {onDismiss && (
+          /* Quiet until wanted: the dismiss is the kind of control you look
+             for only once you are already annoyed, and a permanent second
+             button on the pill would make the thing louder to solve the
+             complaint that it is too loud. Focusable while transparent, so
+             the keyboard path is not gated on hover. */
+          <button
+            type="button"
+            onClick={onDismiss}
+            aria-label="Hide Ask Repowise"
+            title="Hide Ask Repowise. Bring it back in Settings."
+            className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] text-[var(--color-text-tertiary)] opacity-0 shadow-[var(--shadow-md)] transition-opacity hover:text-[var(--color-text-primary)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] group-hover/dock:opacity-100 motion-reduce:transition-none"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
         <span className="sr-only" role="status" aria-live="polite">
           {statusText ?? ""}
         </span>
@@ -327,6 +349,18 @@ export function ChatDock({
           >
             <Minus className="h-4 w-4" />
           </Button>
+          {onDismiss && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={onDismiss}
+              aria-label="Hide Ask Repowise"
+              title="Hide Ask Repowise. Bring it back in Settings."
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          )}
         </div>
         {activeContext && activeContext.kind !== "repository" && (
           <ChatContextIndicator

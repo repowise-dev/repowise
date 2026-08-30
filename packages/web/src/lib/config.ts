@@ -11,6 +11,7 @@ const KEYS = {
   model: "repowise_default_model",
   embedder: "repowise_embedder",
   weekend: "repowise_weekend",
+  chatDockHidden: "repowise_chat_dock_hidden",
 } as const;
 
 function read(key: string): string {
@@ -46,4 +47,23 @@ export const config = {
   /** Weekend-days preset id; "" means unset, which resolves to Sat/Sun. */
   getWeekend: () => read(KEYS.weekend),
   setWeekend: (v: string) => write(KEYS.weekend, v),
+
+  /** Whether the "Ask Repowise" dock is hidden. Lives here rather than in the
+   *  dock's own persisted state, which is keyed per repo AND per conversation
+   *  and would therefore forget the choice on the next new chat. Default is
+   *  shown, so an unset value reads as false. */
+  getChatDockHidden: () => read(KEYS.chatDockHidden) === "1",
+  setChatDockHidden: (v: boolean) => write(KEYS.chatDockHidden, v ? "1" : ""),
 };
+
+/** Fires when the dock's visibility changes in this tab. `localStorage` only
+ *  notifies OTHER tabs via `storage`, so without this the dock and the settings
+ *  toggle would not agree until a reload. */
+export const CHAT_DOCK_VISIBILITY_EVENT = "repowise:chat-dock-visibility";
+
+export function setChatDockHidden(hidden: boolean): void {
+  config.setChatDockHidden(hidden);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(CHAT_DOCK_VISIBILITY_EVENT));
+  }
+}

@@ -10,6 +10,8 @@ import { pageHref } from "@/lib/utils/page-href";
 import { ModelSelector } from "./model-selector";
 import { ConversationHistory } from "./conversation-history";
 import { useRepositoryChat } from "./repository-chat-provider";
+import { useChatDockHidden } from "./use-chat-dock-hidden";
+import { setChatDockHidden } from "@/lib/config";
 
 // Sigma's worst-case bottom-right stack is ~197px tall (layout status plus
 // five controls and spacing). Keep a small measured clearance above it.
@@ -23,10 +25,16 @@ export function getRepositoryDockCollisionInset(kind: string) {
 
 export function RepositoryChatDock() {
   const chat = useRepositoryChat();
+  const hidden = useChatDockHidden();
 
   // The full chat page already renders this controller's complete transcript.
   // Keep the dock out of both the visual and accessibility trees there.
   if (chat.pageContext.kind === "chat") return null;
+
+  // Bail before the connected component rather than passing `suppressed`: that
+  // prop returns null from inside ChatDock, which means the provider fetch and
+  // the dock's own state still run for something nobody can see.
+  if (hidden) return null;
 
   return <ConnectedRepositoryChatDock chat={chat} />;
 }
@@ -76,6 +84,7 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
           : `/repos/${chat.repoId}/chat`,
       )}
       {...(collisionInset ? { collisionInset } : {})}
+      onDismiss={() => setChatDockHidden(true)}
       sendDisabled={!anyConfigured}
       sendDisabledReason={
         <span>
