@@ -1654,6 +1654,7 @@ async def persist_incremental_index(
             except Exception as exc:
                 _skip("Decision purge", exc)
 
+            pruned = 0
             # Drop file-scoped rows for files that have actually been deleted.
             # Without this an incremental update tombstones the deleted file's
             # page and leaves everything else: graph nodes, edges, metrics,
@@ -1708,6 +1709,34 @@ async def persist_incremental_index(
                         degraded.append(refusal)
             except Exception as exc:
                 _skip("Deleted-file prune", exc)
+
+            # The prune deletes the health findings of files that are gone, and
+            # the performance and refactoring queues are materialized from those
+            # findings. Without this they keep serving a cause whose evidence was
+            # removed a moment ago, on a file the store no longer claims exists.
+            # After the prune for the same reason the prune runs last: only now
+            # is the surviving finding set final.
+            if pruned:
+                try:
+                    from repowise.core.persistence.crud import (
+                        finalize_performance_opportunities,
+                        finalize_refactoring_opportunities,
+                    )
+
+                    analyzed_commit = await _analyzed_commit(session, repo_id)
+                    await finalize_performance_opportunities(
+                        session,
+                        repo_id,
+                        analyzed_commit=analyzed_commit,
+                        plan_policy=getattr(
+                            partial_health_report, "performance_plan_policy", None
+                        ),
+                    )
+                    await finalize_refactoring_opportunities(
+                        session, repo_id, analyzed_commit=analyzed_commit
+                    )
+                except Exception as exc:
+                    _skip("Queue rebuild after prune", exc)
 
         # After the session closes: on SQLite the full-text index shares the
         # database file, so writing to it while the session holds a write lock

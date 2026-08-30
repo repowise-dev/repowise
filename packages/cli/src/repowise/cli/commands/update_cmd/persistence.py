@@ -1098,13 +1098,13 @@ async def _rescore_health_from_db(
             init_db,
             upsert_repository,
         )
-        from repowise.core.persistence.crud import (
-            save_coverage_files,
-            save_health_findings,
-            save_health_metrics,
-        )
+        from repowise.core.persistence.crud import save_coverage_files
         from repowise.core.persistence.models import GitMetadata
-        from repowise.core.pipeline.persist import persist_graph_nodes
+        from repowise.core.pipeline.persist import (
+            persist_graph_nodes,
+            save_full_health_report,
+        )
+        from repowise.core.workspace.update import get_head_commit
 
         url = get_db_url_for_repo(repo_path)
         engine = create_engine(url)
@@ -1169,8 +1169,14 @@ async def _rescore_health_from_db(
                 f"[yellow]{len(report.findings)} findings[/yellow]"
             )
 
-            await save_health_metrics(session, repo_id, report.metrics or [])
-            await save_health_findings(session, repo_id, list(report.findings or []))
+            # Same writer the index's analysis phase uses, so a re-score leaves
+            # the derived queues agreeing with the findings it just replaced
+            # rather than describing the set it deleted. Read HEAD off disk:
+            # this pass just scored the working tree, and the stored column is
+            # written by a different step whose ordering is not guaranteed.
+            await save_full_health_report(
+                session, repo_id, report, analyzed_commit=get_head_commit(Path(repo_path))
+            )
             if coverage_files:
                 await save_coverage_files(
                     session,
