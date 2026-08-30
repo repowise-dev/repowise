@@ -16,8 +16,13 @@ export const CONFIG_SECTION = "repowise";
  * 0.43.0: the risk panel leads with `fix_history`, which no earlier server
  * sends. `RiskRangeResponse.fix_history` is a required field and the panel
  * dereferences it, so an older server would throw rather than degrade.
+ *
+ * 0.47.0: the health dashboard reads `/health/map` and the refactoring view
+ * reads `/refactoring/opportunities`, neither of which exists earlier. The
+ * dashboard awaits the map alongside the overview and trend in one `Promise.all`,
+ * so a 404 there fails the whole view rather than dropping one panel.
  */
-export const MIN_SERVER_VERSION = "0.45.0";
+export const MIN_SERVER_VERSION = "0.47.0";
 
 /** Command ids contributed by the extension, mirrored from package.json. */
 export const Commands = {
