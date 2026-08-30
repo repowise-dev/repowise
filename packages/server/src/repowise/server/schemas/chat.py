@@ -140,7 +140,9 @@ class ChatArtifactEnvelope(BaseModel):
     data: dict[str, Any] = {}
     evidence: dict[str, Any] = {}
     pinned: bool = False
-    created_at: str
+    #: Absent on rows written before the envelope carried one; the legacy
+    #: normalizer backfills every other key but not this.
+    created_at: str | None = None
 
 
 class ConversationDetailResponse(BaseModel):

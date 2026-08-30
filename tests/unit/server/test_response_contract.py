@@ -41,8 +41,6 @@ WAIVED: dict[tuple[str, str], str] = {
 #: Routes still serving an anonymous object. Delete a line when you model one.
 UNMODELLED: frozenset[tuple[str, str]] = frozenset(
     {
-        ("GET", "/api/graph/{repo_id}/path"),
-        ("GET", "/api/repos/{repo_id}/co-changes"),
         ("GET", "/api/repos/{repo_id}/files"),
         ("GET", "/api/repos/{repo_id}/files/{file_path}"),
         ("POST", "/api/repos/{repo_id}/generate/estimate"),

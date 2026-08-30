@@ -47,6 +47,7 @@ from repowise.server.schemas import (
     AgentTrendBucket,
     AgentTrendResponse,
     ChangeFeaturesResponse,
+    CoChangeResponse,
     CommitDetailResponse,
     CommitEvolutionBucket,
     CommitEvolutionResponse,
@@ -597,7 +598,7 @@ async def get_ownership(
     )
 
 
-@router.get("/{repo_id}/co-changes")
+@router.get("/{repo_id}/co-changes", response_model=CoChangeResponse)
 async def get_co_changes(
     repo_id: str,
     file_path: str = Query(..., description="Relative file path"),

@@ -3,6 +3,8 @@ dead-code graph, hot-files graph and the community super-node graph)."""
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
 
 from .git import GitMetadataResponse
@@ -156,3 +158,17 @@ class ModuleEdgeResponse(BaseModel):
 class ModuleGraphResponse(BaseModel):
     nodes: list[ModuleNodeResponse]
     edges: list[ModuleEdgeResponse]
+
+
+class DependencyPathResponse(BaseModel):
+    """The shortest dependency path between two nodes.
+
+    ``distance`` is ``-1`` and ``path`` empty when none exists; only then is
+    ``visual_context`` present, carrying the nearest common ancestors and
+    bridge suggestions the UI falls back to.
+    """
+
+    path: list[str] = []
+    distance: int
+    explanation: str
+    visual_context: dict[str, Any] | None = None

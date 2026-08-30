@@ -5,6 +5,9 @@
 //
 // Scope: the HTTP boundary only. Artifact, UI and other non-wire domain types
 // stay hand-written in the sibling modules.
+//
+// `?` mirrors the schema's `required` list, which states what a request may
+// omit. A response field with a server-side default is still always sent.
 
 /** The provider/model this scope resolves to; ``None`` when unset. */
 export interface ActiveProviderSelection {
@@ -298,7 +301,7 @@ export interface ChatArtifactEnvelope {
   data?: Record<string, unknown>;
   evidence?: Record<string, unknown>;
   pinned?: boolean;
-  created_at: string;
+  created_at?: string | null;
 }
 
 export interface ChatMessageResponse {
@@ -325,13 +328,19 @@ export interface ChatRequest {
   context?: ChatPageContext | null;
 }
 
+/**
+ * One file on the churn-vs-complexity scatter.
+ *
+ * Every figure is coerced by the producer, so none is nullable here: a zero
+ * means zero, not "no signal".
+ */
 export interface ChurnComplexityPoint {
   file_path: string;
   commit_count_90d: number;
-  max_ccn?: number | null;
-  nloc?: number | null;
-  score?: number | null;
-  churn_percentile?: number | null;
+  max_ccn: number;
+  nloc: number;
+  score: number;
+  churn_percentile: number;
 }
 
 export interface ChurnComplexityResponse {
@@ -352,6 +361,19 @@ export interface ClaudeMdResponse {
   generated_at: string;
   repo_name: string;
   sections?: string[];
+}
+
+/**
+ * Files that historically change together with one file.
+ *
+ * Partners are the verbatim persisted records, not a projection: the
+ * indexer writes fields this layer does not model, and a closed row model
+ * would drop them.
+ */
+export interface CoChangeResponse {
+  file_path: string;
+  co_change_partners?: Record<string, unknown>[];
+  total?: number;
 }
 
 export interface CochangeWarning {
@@ -816,6 +838,20 @@ export interface DecisionStatusUpdate {
   superseded_by?: string | null;
   affected_modules?: string[] | null;
   affected_files?: string[] | null;
+}
+
+/**
+ * The shortest dependency path between two nodes.
+ *
+ * ``distance`` is ``-1`` and ``path`` empty when none exists; only then is
+ * ``visual_context`` present, carrying the nearest common ancestors and
+ * bridge suggestions the UI falls back to.
+ */
+export interface DependencyPathResponse {
+  path?: string[];
+  distance: number;
+  explanation: string;
+  visual_context?: Record<string, unknown> | null;
 }
 
 export interface DirectRiskEntry {
@@ -1328,8 +1364,15 @@ export interface HTTPValidationError {
   detail?: ValidationError[];
 }
 
-/** Shields-compatible badge fields for the JSON endpoint. */
+/**
+ * Shields-compatible badge fields for the JSON endpoint.
+ *
+ * ``schemaVersion`` is camelCase because the Shields endpoint protocol
+ * requires that exact key; without it every embedded badge renders as
+ * "invalid response" instead of the score.
+ */
 export interface HealthBadgeResponse {
+  schemaVersion?: number;
   label: string;
   message: string;
   color: string;
@@ -1428,7 +1471,7 @@ export interface HealthTrendSummary {
 export interface HealthWorkItem {
   file_path: string;
   score: number;
-  nloc?: number | null;
+  nloc: number;
   module?: string | null;
   primary_biomarker: string;
   primary_severity: string;

@@ -1,8 +1,8 @@
 """Code-health wire models: findings, trends, churn, badge and the work queue.
 
-These mirror the dicts ``routers/code_health/serializers.py`` builds. Fields the
-serializer emits as ``None`` mean "no signal", never zero, so they are declared
-nullable rather than defaulted.
+These mirror the dicts ``routers/code_health/serializers.py`` builds. Where a
+serializer emits ``None`` it means "no signal", never zero, so those fields are
+nullable; where it coerces to a number they are not.
 """
 
 from __future__ import annotations
@@ -43,12 +43,18 @@ class HealthFindingWithSymbolResponse(HealthFindingResponse):
 
 
 class ChurnComplexityPoint(BaseModel):
+    """One file on the churn-vs-complexity scatter.
+
+    Every figure is coerced by the producer, so none is nullable here: a zero
+    means zero, not "no signal".
+    """
+
     file_path: str
     commit_count_90d: int
-    max_ccn: int | None = None
-    nloc: int | None = None
-    score: float | None = None
-    churn_percentile: float | None = None
+    max_ccn: int
+    nloc: int
+    score: float
+    churn_percentile: float
 
 
 class ChurnComplexityResponse(BaseModel):
@@ -126,8 +132,14 @@ class HealthTrendResponse(BaseModel):
 
 
 class HealthBadgeResponse(BaseModel):
-    """Shields-compatible badge fields for the JSON endpoint."""
+    """Shields-compatible badge fields for the JSON endpoint.
 
+    ``schemaVersion`` is camelCase because the Shields endpoint protocol
+    requires that exact key; without it every embedded badge renders as
+    "invalid response" instead of the score.
+    """
+
+    schemaVersion: int = 1  # noqa: N815
     label: str
     message: str
     color: str
@@ -139,7 +151,7 @@ class HealthWorkItem(BaseModel):
 
     file_path: str
     score: float
-    nloc: int | None = None
+    nloc: int
     module: str | None = None
     primary_biomarker: str
     primary_severity: str
