@@ -27,6 +27,13 @@ from repowise.core.analysis.health.refactoring.recommendations import (
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.refactoring import ALLOWED_STATUSES
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.schemas import (
+    RefactoringOpportunitiesResponse,
+    RefactoringOpportunityDetailResponse,
+    RefactoringOpportunityStatusResponse,
+    RefactoringPlanStatusResponse,
+    RefactoringRollupResponse,
+)
 from repowise.server.services.refactoring_health import (
     CANONICAL_ORDERS,
     CANONICAL_VIEWS,
@@ -392,7 +399,13 @@ def _service(session: AsyncSession, repo_id: str) -> RefactoringHealthService:
     return RefactoringHealthService(session, repo_id, repo_id)
 
 
-@router.get("/{repo_id}/refactoring/opportunities")
+@router.get(
+    "/{repo_id}/refactoring/opportunities",
+    response_model=RefactoringOpportunitiesResponse,
+    # ``ignored_arguments`` is only present when the query dropped something;
+    # a default would put an empty object on every response.
+    response_model_exclude_unset=True,
+)
 async def get_refactoring_opportunities(
     repo_id: str,
     refactoring_type: str | None = Query(
@@ -458,7 +471,7 @@ async def get_refactoring_opportunities(
     return body
 
 
-@router.get("/{repo_id}/refactoring/summary")
+@router.get("/{repo_id}/refactoring/summary", response_model=RefactoringRollupResponse)
 async def get_refactoring_rollup(
     repo_id: str,
     session: AsyncSession = Depends(get_db_session),
@@ -468,7 +481,11 @@ async def get_refactoring_rollup(
     return {"summary": await service.summary(), "directive": await service.directive()}
 
 
-@router.get("/{repo_id}/refactoring/opportunities/{opportunity_id}")
+@router.get(
+    "/{repo_id}/refactoring/opportunities/{opportunity_id}",
+    response_model=RefactoringOpportunityDetailResponse,
+    response_model_exclude_unset=True,
+)
 async def get_refactoring_opportunity_detail(
     repo_id: str,
     opportunity_id: str,
@@ -497,7 +514,10 @@ class RefactoringOpportunityStatusUpdate(BaseModel):
     status: str = Field(..., description="open | acknowledged | resolved | false_positive")
 
 
-@router.patch("/{repo_id}/refactoring/opportunities/{opportunity_id}/status")
+@router.patch(
+    "/{repo_id}/refactoring/opportunities/{opportunity_id}/status",
+    response_model=RefactoringOpportunityStatusResponse,
+)
 async def update_refactoring_opportunity_state(
     repo_id: str,
     opportunity_id: str,
@@ -614,7 +634,10 @@ class RefactoringStatusUpdate(BaseModel):
     status: str = Field(..., description="open | acknowledged | resolved | false_positive")
 
 
-@router.patch("/{repo_id}/refactoring/{suggestion_id}/status")
+@router.patch(
+    "/{repo_id}/refactoring/{suggestion_id}/status",
+    response_model=RefactoringPlanStatusResponse,
+)
 async def update_refactoring_plan_status(
     repo_id: str,
     suggestion_id: str,

@@ -39,6 +39,7 @@ from repowise.server.schemas import (
     WorkspaceGraphResponse,
     WorkspaceRepoEntry,
     WorkspaceResponse,
+    WorkspaceSyncResponse,
     WorkspaceSystemGraphResponse,
 )
 from repowise.server.services.module_health import read_repo_health_score
@@ -848,7 +849,7 @@ async def get_architecture(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/sync", status_code=202)
+@router.post("/sync", response_model=WorkspaceSyncResponse, status_code=202)
 async def sync_workspace(
     request: Request,
     repo_alias: str | None = Query(
@@ -868,10 +869,7 @@ async def sync_workspace(
     scheduler, cost ledger, and live-progress hooks all work without
     special cases.
     """
-    from repowise.server.schemas import (
-        WorkspaceSyncResponse,
-        WorkspaceSyncResult,
-    )
+    from repowise.server.schemas import WorkspaceSyncResult
 
     _require_workspace(ws_config)
 

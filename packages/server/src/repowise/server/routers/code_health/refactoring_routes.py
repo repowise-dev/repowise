@@ -15,6 +15,7 @@ from repowise.core.analysis.health.models import primary_finding
 from repowise.core.analysis.health.suggestions import suggestion_for as _suggestion_for
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
+from repowise.server.schemas import HealthWorkQueueResponse
 
 from ._router import router
 
@@ -50,7 +51,10 @@ def _effort_for_nloc(nloc: int) -> str:
     return "XL"
 
 
-@router.get("/api/repos/{repo_id}/health/refactoring-targets")
+@router.get(
+    "/api/repos/{repo_id}/health/refactoring-targets",
+    response_model=HealthWorkQueueResponse,
+)
 async def health_work_queue(
     repo_id: str,
     limit: int = Query(200, ge=1, le=500),

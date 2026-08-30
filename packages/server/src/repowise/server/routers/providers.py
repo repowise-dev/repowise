@@ -12,7 +12,12 @@ from repowise.server.provider_config import (
     set_active_provider,
     set_api_key,
 )
-from repowise.server.schemas import SetActiveProviderRequest, SetApiKeyRequest
+from repowise.server.schemas import (
+    ProviderStatusResponse,
+    ProviderValidationResponse,
+    SetActiveProviderRequest,
+    SetApiKeyRequest,
+)
 
 router = APIRouter(
     prefix="/api/providers",
@@ -45,7 +50,7 @@ async def _repo_path_for(request: Request, repo_id: str | None) -> str | None:
         return None
 
 
-@router.get("")
+@router.get("", response_model=ProviderStatusResponse)
 async def get_providers(request: Request, repo_id: str | None = None):
     """List all providers with their status and active selection.
 
@@ -57,7 +62,7 @@ async def get_providers(request: Request, repo_id: str | None = None):
     return list_provider_status(repo_id=repo_id, repo_path=repo_path)
 
 
-@router.patch("/active")
+@router.patch("/active", response_model=ProviderStatusResponse)
 async def set_active(body: SetActiveProviderRequest, request: Request):
     """Set the active provider and model (per-repo when ``repo_id`` is given)."""
     try:
@@ -100,7 +105,7 @@ async def remove_provider_key(
         raise HTTPException(400, str(exc)) from exc
 
 
-@router.post("/{provider_id}/validate")
+@router.post("/{provider_id}/validate", response_model=ProviderValidationResponse)
 async def validate_provider(
     provider_id: str,
     request: Request,

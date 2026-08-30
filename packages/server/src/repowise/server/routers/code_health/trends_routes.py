@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.health.trends import diff_snapshots, file_trend, recent_kpis
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
+from repowise.server.schemas import FileHealthTrendResponse, HealthTrendResponse
 
 from ._router import router
 from .serializers import _file_trend_to_dict
@@ -19,7 +20,10 @@ from .serializers import _file_trend_to_dict
 FILE_DELTA_LIMIT: int = 50
 
 
-@router.get("/api/repos/{repo_id}/health/files/trend")
+@router.get(
+    "/api/repos/{repo_id}/health/files/trend",
+    response_model=FileHealthTrendResponse,
+)
 async def file_health_trend(
     repo_id: str,
     file_path: str = Query(..., description="File path to chart over time"),
@@ -36,7 +40,7 @@ async def file_health_trend(
     return _file_trend_to_dict(file_trend(snapshots, file_path))
 
 
-@router.get("/api/repos/{repo_id}/health/trend")
+@router.get("/api/repos/{repo_id}/health/trend", response_model=HealthTrendResponse)
 async def health_trend(
     repo_id: str,
     limit: int = Query(20, ge=1, le=50),

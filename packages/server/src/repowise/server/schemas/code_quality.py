@@ -121,3 +121,11 @@ class RepoStatsResponse(BaseModel):
     doc_coverage_pct: float
     freshness_score: float
     dead_export_count: int
+
+
+class DeadCodeAnalyzeResponse(BaseModel):
+    """202 launch payload for a re-analysis (an index-only job, no LLM work)."""
+
+    job_id: str
+    status: str = "accepted"
+    repository_id: str

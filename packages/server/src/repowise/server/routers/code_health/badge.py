@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.health.grading import band_for
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
+from repowise.server.schemas import HealthBadgeResponse
 
 from ._router import router
 
@@ -94,7 +95,7 @@ async def _badge_average_health(session: AsyncSession, repo_id: str) -> float | 
     return 10.0 if avg is None else avg
 
 
-@router.get("/api/repos/{repo_id}/health/badge.json")
+@router.get("/api/repos/{repo_id}/health/badge.json", response_model=HealthBadgeResponse)
 async def health_badge_json(
     repo_id: str,
     session: AsyncSession = Depends(get_db_session),

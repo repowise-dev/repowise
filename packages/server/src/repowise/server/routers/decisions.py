@@ -13,11 +13,14 @@ from repowise.server.schemas import (
     DecisionCodeEdge,
     DecisionCountsResponse,
     DecisionCreate,
+    DecisionEvidenceListResponse,
     DecisionEvidenceResponse,
     DecisionGraphEdge,
     DecisionGraphNode,
     DecisionGraphResponse,
+    DecisionHealthResponse,
     DecisionLineageEntry,
+    DecisionLineageResponse,
     DecisionRecordResponse,
     DecisionStatusUpdate,
 )
@@ -107,6 +110,7 @@ async def list_decisions(
 
 @router.get(
     "/api/repos/{repo_id}/decisions/health",
+    response_model=DecisionHealthResponse,
 )
 async def decision_health(
     repo_id: str,
@@ -230,6 +234,7 @@ async def get_decision(
 
 @router.get(
     "/api/repos/{repo_id}/decisions/{decision_id}/evidence",
+    response_model=DecisionEvidenceListResponse,
 )
 async def list_decision_evidence(
     repo_id: str,
@@ -252,6 +257,7 @@ async def list_decision_evidence(
 
 @router.get(
     "/api/repos/{repo_id}/decisions/{decision_id}/lineage",
+    response_model=DecisionLineageResponse,
 )
 async def get_decision_lineage(
     repo_id: str,

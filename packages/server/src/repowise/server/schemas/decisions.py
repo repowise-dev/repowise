@@ -226,3 +226,24 @@ class DecisionGraphResponse(BaseModel):
     nodes: list[DecisionGraphNode]
     decision_edges: list[DecisionGraphEdge]
     code_edges: list[DecisionCodeEdge]
+
+
+class DecisionHealthResponse(BaseModel):
+    """Governance rollup: what is stale, awaiting review, and ungoverned."""
+
+    #: Record counts by status, plus ``stale``, ``unscoped`` and ``conflicts``.
+    summary: dict[str, int] = {}
+    stale_decisions: list[DecisionRecordResponse] = []
+    proposed_awaiting_review: list[DecisionRecordResponse] = []
+    #: Hotspot paths no active decision names, worst-ranked first.
+    ungoverned_hotspots: list[str] = []
+
+
+class DecisionEvidenceListResponse(BaseModel):
+    evidence: list[DecisionEvidenceResponse] = []
+
+
+class DecisionLineageResponse(BaseModel):
+    """The supersedes/refines chain, root first."""
+
+    lineage: list[DecisionLineageEntry] = []

@@ -36,11 +36,14 @@ from repowise.server.deps import (
 from repowise.server.provider_config import get_chat_provider_instance
 from repowise.server.schemas import (
     ArtifactUpdateRequest,
+    ChatArtifactEnvelope,
     ChatMessageResponse,
     ChatRequest,
+    ConversationDetailResponse,
     ConversationForkRequest,
     ConversationResponse,
     ConversationUpdateRequest,
+    OkResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -483,7 +486,7 @@ async def chat_messages(repo_id: str, body: ChatRequest, request: Request):
 # ---------------------------------------------------------------------------
 
 
-@router.get("/api/repos/{repo_id}/chat/conversations")
+@router.get("/api/repos/{repo_id}/chat/conversations", response_model=list[ConversationResponse])
 async def list_conversations(
     repo_id: str,
     session=Depends(get_db_session),
@@ -496,7 +499,7 @@ async def list_conversations(
     return result
 
 
-@router.get("/api/repos/{repo_id}/chat/conversations/{conversation_id}")
+@router.get("/api/repos/{repo_id}/chat/conversations/{conversation_id}", response_model=ConversationDetailResponse)
 async def get_conversation(
     repo_id: str,
     conversation_id: str,
@@ -513,7 +516,10 @@ async def get_conversation(
     }
 
 
-@router.get("/api/repos/{repo_id}/chat/conversations/{conversation_id}/artifacts/{artifact_id}")
+@router.get(
+    "/api/repos/{repo_id}/chat/conversations/{conversation_id}/artifacts/{artifact_id}",
+    response_model=ChatArtifactEnvelope,
+)
 async def get_conversation_artifact(
     repo_id: str,
     conversation_id: str,
@@ -541,7 +547,10 @@ async def get_conversation_artifact(
     raise HTTPException(404, "Artifact not found")
 
 
-@router.patch("/api/repos/{repo_id}/chat/conversations/{conversation_id}/artifacts/{artifact_id}")
+@router.patch(
+    "/api/repos/{repo_id}/chat/conversations/{conversation_id}/artifacts/{artifact_id}",
+    response_model=ChatArtifactEnvelope,
+)
 async def update_conversation_artifact(
     repo_id: str,
     conversation_id: str,
@@ -579,7 +588,7 @@ async def update_conversation_artifact(
     raise HTTPException(404, "Artifact not found")
 
 
-@router.delete("/api/repos/{repo_id}/chat/conversations/{conversation_id}")
+@router.delete("/api/repos/{repo_id}/chat/conversations/{conversation_id}", response_model=OkResponse)
 async def delete_conversation(
     repo_id: str,
     conversation_id: str,
@@ -592,7 +601,7 @@ async def delete_conversation(
     return {"ok": True}
 
 
-@router.post("/api/repos/{repo_id}/chat/conversations/{conversation_id}/restore")
+@router.post("/api/repos/{repo_id}/chat/conversations/{conversation_id}/restore", response_model=ConversationResponse)
 async def restore_conversation(repo_id: str, conversation_id: str, session=Depends(get_db_session)):
     conv = await crud.get_conversation(session, conversation_id)
     if not conv or conv.repository_id != repo_id:
@@ -601,7 +610,7 @@ async def restore_conversation(repo_id: str, conversation_id: str, session=Depen
     return ConversationResponse.from_orm(restored)
 
 
-@router.patch("/api/repos/{repo_id}/chat/conversations/{conversation_id}")
+@router.patch("/api/repos/{repo_id}/chat/conversations/{conversation_id}", response_model=ConversationResponse)
 async def update_conversation(
     repo_id: str,
     conversation_id: str,
@@ -621,7 +630,7 @@ async def update_conversation(
     return ConversationResponse.from_orm(conv)
 
 
-@router.post("/api/repos/{repo_id}/chat/conversations/{conversation_id}/fork")
+@router.post("/api/repos/{repo_id}/chat/conversations/{conversation_id}/fork", response_model=ConversationResponse)
 async def fork_conversation(
     repo_id: str,
     conversation_id: str,

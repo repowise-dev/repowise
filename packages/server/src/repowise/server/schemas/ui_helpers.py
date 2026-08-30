@@ -10,6 +10,12 @@ class WebhookResponse(BaseModel):
     status: str = "accepted"
 
 
+class OkResponse(BaseModel):
+    """Acknowledgement for a mutation with nothing else to report."""
+
+    ok: bool = True
+
+
 class SetActiveProviderRequest(BaseModel):
     provider: str
     model: str | None = None
@@ -23,6 +29,44 @@ class SetApiKeyRequest(BaseModel):
     # When set, the key is also mirrored into this repo's ``.repowise/.env`` so
     # a later CLI run in the repo picks it up. Omit for a server-global-only key.
     repo_id: str | None = None
+
+
+class ProviderEntry(BaseModel):
+    """One provider in the catalog, as the settings picker renders it."""
+
+    id: str
+    name: str
+    #: Catalog models, plus the active model when it is configured but
+    #: uncataloged (a local LiteLLM alias), so the picker can display it.
+    models: list[str] = []
+    default_model: str | None = None
+    #: Has a key, or needs none.
+    configured: bool = False
+
+
+class ActiveProviderSelection(BaseModel):
+    """The provider/model this scope resolves to; ``None`` when unset."""
+
+    provider: str | None = None
+    model: str | None = None
+
+
+class ProviderStatusResponse(BaseModel):
+    active: ActiveProviderSelection
+    providers: list[ProviderEntry] = []
+
+
+class ProviderValidationResponse(BaseModel):
+    """Outcome of the live single-provider smoke test.
+
+    A failed probe reports ``ok=False`` with ``error`` set rather than raising,
+    so the settings UI renders a clean error state.
+    """
+
+    ok: bool
+    provider: str | None = None
+    model: str | None = None
+    error: str | None = None
 
 
 class CostGroupResponse(BaseModel):
