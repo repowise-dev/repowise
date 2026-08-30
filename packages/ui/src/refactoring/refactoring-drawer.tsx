@@ -302,7 +302,7 @@ function DrawerBody({
           <button
             type="button"
             onClick={() => onAiPrompt(plan)}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--color-accent-fill)] px-3.5 py-2 text-sm font-semibold text-[var(--color-text-on-accent)] transition-opacity hover:opacity-90"
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--color-model)] px-3.5 py-2 text-sm font-semibold text-[var(--color-text-on-model)] transition-opacity hover:opacity-90"
           >
             <Sparkles className="h-4 w-4" />
             Copy prompt for an agent

@@ -216,7 +216,7 @@ export function HealthWorkItemCard({
                 e.stopPropagation();
                 onGeneratePrompt(target);
               }}
-              className="group/ai inline-flex items-center gap-1.5 rounded-md border border-[var(--color-success)]/40 bg-[var(--color-success)]/10 px-2.5 py-1 text-xs font-semibold text-[var(--color-success)] hover:bg-[var(--color-success)]/20 hover:border-[var(--color-success)]/60 transition-colors"
+              className="group/ai inline-flex items-center gap-1.5 rounded-md border border-[var(--color-model)]/40 bg-[var(--color-model-muted)] px-2.5 py-1 text-xs font-semibold text-[var(--color-model)] hover:bg-[var(--color-model)]/20 hover:border-[var(--color-model)]/60 transition-colors"
               title="Generate a ready-to-paste prompt for an AI coding agent"
             >
               <Sparkles className="h-3.5 w-3.5 transition-transform group-hover/ai:rotate-12" />

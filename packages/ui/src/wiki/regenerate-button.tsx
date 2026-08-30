@@ -60,7 +60,7 @@ export function RegenerateButton({
           type="button"
           onClick={onRegenerate}
           disabled={isLoading || isInProgress}
-          className="inline-flex items-center gap-1 rounded-full border border-[var(--color-accent-primary)]/40 bg-[var(--color-accent-muted)] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-accent-primary)] transition-colors hover:bg-[var(--color-accent-muted)] hover:text-[var(--color-accent-hover)] disabled:opacity-60"
+          className="inline-flex items-center gap-1 rounded-full border border-[var(--color-model)]/40 bg-[var(--color-model-muted)] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-model)] transition-colors hover:bg-[var(--color-model-muted)] hover:text-[var(--color-model-hover)] disabled:opacity-60"
           aria-label={isWrite ? "Write this page with AI" : "Regenerate this page"}
         >
           {isLoading ? (
@@ -79,7 +79,7 @@ export function RegenerateButton({
           className={cn(
             "h-7 gap-1.5 text-xs",
             isWrite &&
-              "border-[var(--color-accent-primary)]/40 bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)] hover:bg-[var(--color-accent-muted)] hover:text-[var(--color-accent-hover)]",
+              "border-[var(--color-model)]/40 bg-[var(--color-model-muted)] text-[var(--color-model)] hover:bg-[var(--color-model-muted)] hover:text-[var(--color-model-hover)]",
           )}
           aria-label={isWrite ? "Write this page with AI" : "Regenerate this page"}
         >
@@ -89,7 +89,7 @@ export function RegenerateButton({
             <Icon
               className={cn(
                 "h-3.5 w-3.5",
-                isWrite && "text-[var(--color-accent-primary)]",
+                isWrite && "text-[var(--color-model)]",
               )}
             />
           )}
@@ -220,7 +220,7 @@ export function GenerateConfirmDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             {isWrite && (
-              <Sparkles className="h-4 w-4 text-[var(--color-accent-primary)]" />
+              <Sparkles className="h-4 w-4 text-[var(--color-model)]" />
             )}
             {heading}
           </DialogTitle>
@@ -271,7 +271,7 @@ export function GenerateConfirmDialog({
                   className={cn(
                     "flex cursor-pointer items-start gap-2.5 rounded-md border p-2.5 transition-colors",
                     cascade === opt.value
-                      ? "border-[var(--color-border-active)] bg-[var(--color-accent-muted)]"
+                      ? "border-[var(--color-model)]/70 bg-[var(--color-model-muted)]"
                       : "border-[var(--color-border-default)] hover:bg-[var(--color-bg-inset)]",
                   )}
                 >
@@ -281,7 +281,7 @@ export function GenerateConfirmDialog({
                     value={opt.value}
                     checked={cascade === opt.value}
                     onChange={() => onCascadeChange(opt.value)}
-                    className="mt-0.5 accent-[var(--color-accent-fill)]"
+                    className="mt-0.5 accent-[var(--color-model)]"
                   />
                   <span className="min-w-0">
                     <span className="block text-sm text-[var(--color-text-primary)]">

@@ -29,7 +29,7 @@ export function AiPromptButton({
   className,
 }: AiPromptButtonProps) {
   const base =
-    "group/ai inline-flex items-center gap-1.5 rounded-md border border-[var(--color-success)]/40 bg-[var(--color-success)]/10 font-semibold text-[var(--color-success)] transition-colors hover:bg-[var(--color-success)]/20 hover:border-[var(--color-success)]/60";
+    "group/ai inline-flex items-center gap-1.5 rounded-md border border-[var(--color-model)]/40 bg-[var(--color-model-muted)] font-semibold text-[var(--color-model)] transition-colors hover:bg-[var(--color-model)]/20 hover:border-[var(--color-model)]/60";
   if (variant === "icon") {
     return (
       <button

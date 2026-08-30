@@ -98,7 +98,7 @@ export function AiPromptModal({
       <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-[var(--color-accent-primary)]" />
+            <Sparkles className="h-4 w-4 text-[var(--color-model)]" />
             {title}
             {filePath ? (
               <span className="ml-2 text-xs font-mono font-normal text-[var(--color-text-tertiary)] truncate max-w-[260px]">
@@ -145,7 +145,7 @@ export function AiPromptModal({
                 "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors " +
                 (copied
                   ? "bg-[var(--color-success)] text-[var(--color-text-inverse)]"
-                  : "bg-[var(--color-accent-primary)] text-[var(--color-bg-surface)] hover:opacity-90")
+                  : "bg-[var(--color-model)] text-[var(--color-text-on-model)] hover:bg-[var(--color-model-hover)]")
               }
             >
               {copied ? (

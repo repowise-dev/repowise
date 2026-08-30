@@ -94,6 +94,22 @@
   --color-accent-muted: rgba(245, 149, 32, 0.12);
   --color-accent-secondary: #58436c;
 
+  /* Model work — the plum accent doing one named job.
+     `--color-accent-secondary` is also a qualitative chart slot (donut wedges,
+     sigma edge kinds, the category ramp), so it is aliased here rather than
+     used directly: a Generate button and a donut wedge should not be the same
+     token even while they are the same hue, and this is the seam to split them
+     at if the two ever need to diverge.
+
+     Foreground is `--color-text-inverse`, NOT `--color-text-on-accent`. The
+     latter is dark in both themes because it was tuned for the orange fill;
+     on light-mode plum it lands at 1.92:1, a hard AA failure. `text-inverse`
+     flips with the theme and clears AA on both (8.63:1 light, 6.81:1 dark). */
+  --color-model: var(--color-accent-secondary);
+  --color-text-on-model: var(--color-text-inverse);
+  --color-model-hover: var(--color-plum-600);
+  --color-model-muted: color-mix(in srgb, var(--color-accent-secondary) 14%, transparent);
+
   /* Accent ramp — the one sanctioned way to colour a proportion: ordered
      shares of a whole (a stacked bar, a histogram, an area chart), stepped
      from the accent toward the page ground. Sequential, so position in the
@@ -428,6 +444,10 @@
   --color-accent-hover: #f7a94d;
   --color-accent-muted: rgba(245, 149, 32, 0.16);
   --color-accent-secondary: #a98fc4;
+  /* Plum is dark in light mode and light in dark mode, so its hover step has
+     to move the opposite way. `model` and `model-muted` derive through var()
+     and need no override; see the light block for the family. */
+  --color-model-hover: var(--color-plum-200);
 
   /* Accent ramp — see the light block. Steeper here: mixing toward #0a0a0b
      loses luminance fast, so the same percentages would bottom out invisible. */

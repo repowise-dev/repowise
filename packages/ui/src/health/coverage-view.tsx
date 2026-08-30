@@ -365,7 +365,7 @@ function CoverageBody({
             });
           }}
           title="Generate AI test prompt for this file"
-          className="inline-flex items-center justify-center rounded-md p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-success)] hover:bg-[var(--color-success)]/10 transition-colors"
+          className="inline-flex items-center justify-center rounded-md p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-model)] hover:bg-[var(--color-model-muted)] transition-colors"
         >
           <Sparkles className="h-3.5 w-3.5" />
         </button>
