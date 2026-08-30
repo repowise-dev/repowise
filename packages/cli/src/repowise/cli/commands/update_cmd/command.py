@@ -12,6 +12,7 @@ from __future__ import annotations
 import sys
 import time
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 import click
@@ -408,6 +409,35 @@ class UpdateOutcome(StrEnum):
     DRY_RUN = "dry_run"  # dry run, nothing written
 
 
+def _render_full_upgrade_dry_run(
+    repo_path: Path,
+    *,
+    provider_name: str | None,
+    model: str | None,
+) -> None:
+    """Describe a full upgrade without resolving providers or touching the store."""
+    state = load_state(repo_path)
+    config = load_config(repo_path)
+
+    planned_provider = (
+        provider_name or config.get("provider") or state.get("provider") or "auto-detect"
+    )
+    planned_model = model or config.get("model") or state.get("model") or "provider default"
+    current_git_tier = str(state.get("git_tier") or "essential").upper()
+    recorded_pages = state.get("total_pages")
+    page_label = f"{recorded_pages:,}" if isinstance(recorded_pages, int) else "unknown"
+
+    console.print("[yellow]Dry run — full upgrade plan:[/yellow]")
+    console.print(
+        f"  Provider: [cyan]{planned_provider}[/cyan] / [cyan]{planned_model}[/cyan]"
+    )
+    console.print(
+        f"  Git tier: [cyan]{current_git_tier}[/cyan] -> [cyan]FULL[/cyan]"
+    )
+    console.print(f"  Pages currently recorded: [cyan]{page_label}[/cyan]")
+    console.print("  The whole-repository wiki would be generated. No changes made.")
+
+
 def _renderer_inputs(repo_path):
     """The (language, style fingerprint, style template dir) a file page uses.
 
@@ -666,6 +696,22 @@ def run_update(
     # incremental change-detection so the normal `repowise update` flow below
     # is byte-for-byte unchanged. ---
     if full:
+        if dry_run:
+            _render_full_upgrade_dry_run(
+                repo_path,
+                provider_name=provider_name,
+                model=model,
+            )
+            if emitter is not None:
+                emitter.done(
+                    ok=True,
+                    pages_generated=0,
+                    cost_usd=0.0,
+                    duration_s=time.monotonic() - start,
+                    outcome=UpdateOutcome.DRY_RUN.value,
+                )
+            return UpdateOutcome.DRY_RUN
+
         from repowise.cli.commands.upgrade_flow import upgrade_to_full
 
         if emitter is not None:
