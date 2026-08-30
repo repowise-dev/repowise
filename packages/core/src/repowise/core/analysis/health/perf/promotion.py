@@ -239,36 +239,81 @@ def _must_defined_before_block(
     """Variables guaranteed written before each loop block, within one iteration.
 
     A forward *must* (intersection) analysis over the loop's blocks, treating the
-    header as the iteration start (nothing defined yet) and ignoring the back-edge
-    - so it measures what a single pass from the header definitely writes before a
-    given block. With back-edges removed the loop subgraph is a DAG whose block-id
-    order is a valid topological order, so one pass in id order reaches the
-    fixpoint. A use whose variable is in this set was redefined this iteration and
-    cannot read a previous one.
+    header as the iteration start (nothing defined yet) and ignoring the
+    back-edge, so it measures what a single pass from the header definitely
+    writes before a given block. A use whose variable is in this set was
+    redefined this iteration and cannot read a previous one.
+
+    Solved as a worklist fixpoint rather than one sweep in block-id order. Id
+    order is *not* a topological order of the loop DAG: ``_build_if`` allocates
+    the join block before either arm, so a join's id is lower than the ids of
+    the predecessors flowing into it. A single ordered pass therefore reached
+    joins before their arms and, with the arms' results still missing, collapsed
+    every join to "nothing is definitely defined". Any ``if`` or ``try`` that
+    assigned before the awaited call made the whole loop unprovable, which is a
+    false refusal rather than an unsafe promotion, but it refused a large share
+    of ordinary loops.
+
+    Direction matters for soundness. The lattice descends from "everything" to
+    the fixpoint, so a partially solved state is *larger* than the answer, and a
+    larger must-set promotes more. The iteration therefore runs to convergence
+    or, if it somehow does not converge inside the bound, reports nothing as
+    definitely defined, which can only refuse.
     """
     defs_in_block: dict[int, frozenset[str]] = {}
     for bid in loop_blocks:
         bdu = def_use.block(bid)
         defs_in_block[bid] = frozenset(d.var for d in bdu.defs) if bdu is not None else frozenset()
 
-    defined_in: dict[int, frozenset[str]] = {}
-    defined_out: dict[int, frozenset[str]] = {}
-    for block in cfg.blocks:  # emission (id) order
-        bid = block.id
-        if bid not in loop_blocks:
-            continue
-        if bid == header_id:
-            din: frozenset[str] = frozenset()
-        else:
-            pred_outs = [
-                defined_out[p]
-                for p in block.predecessors
-                if p in loop_blocks and p in defined_out and not _is_back_edge(cfg, p, bid)
-            ]
-            din = frozenset.intersection(*pred_outs) if pred_outs else frozenset()
-        defined_in[bid] = din
-        defined_out[bid] = din | defs_in_block[bid]
-    return defined_in
+    # Only a variable the loop writes can ever be must-defined, since the header
+    # starts empty and the transfer only ever adds this block's own defs.
+    universe: frozenset[str] = frozenset().union(*defs_in_block.values())
+    if not universe:
+        return dict.fromkeys(loop_blocks, frozenset())
+
+    preds: dict[int, tuple[int, ...]] = {
+        bid: tuple(
+            p
+            for p in cfg.block(bid).predecessors
+            if p in loop_blocks and not _is_back_edge(cfg, p, bid)
+        )
+        for bid in loop_blocks
+    }
+
+    defined_in: dict[int, frozenset[str]] = dict.fromkeys(loop_blocks, frozenset())
+    defined_out: dict[int, frozenset[str]] = dict.fromkeys(loop_blocks, universe)
+    defined_out[header_id] = defs_in_block[header_id]
+
+    ordered = sorted(loop_blocks)
+    # Descending a lattice of height |universe| over |blocks| cells, so this is
+    # a generous ceiling on a monotone iteration, not a tuning parameter.
+    for _round in range((len(universe) + 1) * len(ordered) + 1):
+        changed = False
+        for bid in ordered:
+            if bid == header_id:
+                din: frozenset[str] = frozenset()
+            else:
+                # A handler is entered by an exception that may have escaped any
+                # statement of the protected region, including its first, so it
+                # inherits what was defined *before* that region rather than
+                # after it. The CFG draws one edge from the region's entry block
+                # and the whole ``try`` body usually sits in that block, so
+                # reading the predecessor's exit state here would count
+                # assignments the exception may have skipped.
+                entry_state = cfg.block(bid).kind == "handler"
+                pred_states = [
+                    defined_in[p] if entry_state else defined_out[p] for p in preds[bid]
+                ]
+                # No in-loop forward predecessor means the block is not reachable
+                # from the header within one iteration; claim nothing for it.
+                din = frozenset.intersection(*pred_states) if pred_states else frozenset()
+            dout = din | defs_in_block[bid]
+            if din != defined_in[bid] or dout != defined_out[bid]:
+                defined_in[bid], defined_out[bid] = din, dout
+                changed = True
+        if not changed:
+            return defined_in
+    return dict.fromkeys(loop_blocks, frozenset())
 
 
 def _is_back_edge(cfg: CFG, src: int, dst: int) -> bool:
