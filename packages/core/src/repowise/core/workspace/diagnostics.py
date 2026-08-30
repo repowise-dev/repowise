@@ -57,6 +57,15 @@ class UnmatchedReason:
     EXTERNAL_HOST = "external_host"
 
 
+#: The closed set, for the wire copies that have to agree with it.
+UNMATCHED_REASON_VALUES = (
+    UnmatchedReason.NO_PROVIDER,
+    UnmatchedReason.INTERNAL_ONLY,
+    UnmatchedReason.UNLINKED,
+    UnmatchedReason.EXTERNAL_HOST,
+)
+
+
 # ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------
