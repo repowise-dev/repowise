@@ -296,7 +296,7 @@ export function ChatDock({
       <aside
         style={dockOffsetStyle}
         aria-label="Repository chat"
-        className="fixed inset-x-3 bottom-[max(var(--chat-dock-bottom-offset),env(safe-area-inset-bottom))] z-[calc(var(--z-toast)-1)] mx-auto w-auto max-w-[640px] rounded-2xl border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] px-3 pb-3 pt-2 shadow-[var(--shadow-lg)] sm:inset-x-auto sm:right-[max(1rem,env(safe-area-inset-right))] sm:w-[min(420px,calc(100vw-2rem))]"
+        className="[--color-bg-inset:var(--color-bg-inset-on-overlay)] fixed inset-x-3 bottom-[max(var(--chat-dock-bottom-offset),env(safe-area-inset-bottom))] z-[calc(var(--z-toast)-1)] mx-auto w-auto max-w-[640px] rounded-2xl border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] px-3 pb-3 pt-2 shadow-[var(--shadow-lg)] sm:inset-x-auto sm:right-[max(1rem,env(safe-area-inset-right))] sm:w-[min(420px,calc(100vw-2rem))]"
       >
         <div className="flex min-w-0 items-center gap-1">
           <p className="min-w-0 flex-1 truncate pl-1 text-xs text-[var(--color-text-tertiary)]">
@@ -388,7 +388,7 @@ export function ChatDock({
           onInteractOutside={(event) => {
             if (!isMobile) event.preventDefault();
           }}
-          className="fixed inset-x-0 bottom-0 z-[var(--z-modal)] flex h-[min(88dvh,760px)] flex-col overflow-hidden rounded-t-2xl border-t border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] pb-[env(safe-area-inset-bottom)] shadow-[var(--shadow-xl)] outline-none md:inset-x-auto md:bottom-[max(var(--chat-dock-bottom-offset),env(safe-area-inset-bottom))] md:right-[max(1rem,env(safe-area-inset-right))] md:w-[min(520px,calc(100vw-2rem))] md:rounded-2xl md:border xl:w-[min(580px,calc(100vw-2rem))]"
+          className="[--color-bg-inset:var(--color-bg-inset-on-overlay)] fixed inset-x-0 bottom-0 z-[var(--z-modal)] flex h-[min(88dvh,760px)] flex-col overflow-hidden rounded-t-2xl border-t border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] pb-[env(safe-area-inset-bottom)] shadow-[var(--shadow-xl)] outline-none md:inset-x-auto md:bottom-[max(var(--chat-dock-bottom-offset),env(safe-area-inset-bottom))] md:right-[max(1rem,env(safe-area-inset-right))] md:w-[min(520px,calc(100vw-2rem))] md:rounded-2xl md:border xl:w-[min(580px,calc(100vw-2rem))]"
         >
           <DialogPrimitive.Title className="sr-only">
             Repository chat

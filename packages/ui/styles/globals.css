@@ -73,6 +73,10 @@
   --color-bg-elevated: #fbf4ee;
   --color-bg-overlay: #ffffff;
   --color-bg-inset: #f4eae1;
+  /* A well measured from the overlay plane rather than from root. Light mode
+     needs no separate value: overlay is white, so the same warm inset already
+     recesses correctly inside a dialog. See the dark block for why it exists. */
+  --color-bg-inset-on-overlay: #f4eae1;
 
   /* Borders — plum-tinted hairlines */
   --color-border-default: rgba(88, 67, 108, 0.12);
@@ -399,12 +403,27 @@
      three panels, recessed between two lighter ones — a trench, which is the
      opposite of how a reading UI should stack. And near-black gives the accent
      and the semantic colours somewhere to go: the same #f59520 that looked
-     muddy on graphite carries on this ground. */
+     muddy on graphite carries on this ground.
+
+     Elevated and overlay used to sit at #1c1c1f and #26262a. Overlay four
+     steps clear of root made every dialog and the chat dock read as a light
+     grey card floating on a near-black app rather than as the same material
+     lifted. They are compressed here so the ramp still climbs monotonically
+     but a modal reads as a raised plane, not a different palette.
+
+     `inset` stays below root: a code well recessed into the page is correct,
+     and that is where most of them are. It is wrong only when the well is
+     nested inside a floating panel, where dropping from overlay to #0a0a0b is
+     a cliff and the box reads as pure black. `inset-on-overlay` is that same
+     recess measured from the overlay plane instead of from root; dialogs
+     repoint `--color-bg-inset` at it so a well inside a modal sits just under
+     the modal rather than under the page. */
   --color-bg-root: #0e0e0f;
   --color-bg-surface: #141416;
-  --color-bg-elevated: #1c1c1f;
-  --color-bg-overlay: #26262a;
+  --color-bg-elevated: #191a1c;
+  --color-bg-overlay: #1f1f23;
   --color-bg-inset: #0a0a0b;
+  --color-bg-inset-on-overlay: #141417;
 
   /* Neutral hairlines so card / sidebar / table edges read on the gray base.
      Lighter than before: the same alpha reads considerably louder against
@@ -492,7 +511,7 @@
      These are literals rather than var() references because the canvas
      renderer reads them into WebGL, but they have to move with the surface
      ramp or the cards float above a ground that has dropped beneath them. */
-  --color-zoom-card-fill: #1c1c1f; /* leaf card (bg-elevated) */
+  --color-zoom-card-fill: #191a1c; /* leaf card (bg-elevated) */
   --color-zoom-card-fill-2: #141416; /* container card (bg-surface) */
   --color-zoom-card-text: #f2f2f3;
   --color-zoom-card-border: rgba(255, 255, 255, 0.10);
