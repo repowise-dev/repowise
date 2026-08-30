@@ -75,9 +75,33 @@ def test_the_release_version_is_not_baked_into_the_contract(generator) -> None:
         ({"type": "object", "additionalProperties": {"type": "integer"}}, "Record<string, number>"),
         ({"type": "object", "additionalProperties": True}, "Record<string, unknown>"),
         ({"enum": ["a", "b"]}, '"a" | "b"'),
+        # An intersection arm that is itself a union has to keep its brackets:
+        # ``A | B & C`` binds as ``A | (B & C)``.
+        (
+            {
+                "allOf": [
+                    {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                    {"type": "object", "additionalProperties": {"type": "string"}},
+                ]
+            },
+            "(string | null) & Record<string, string>",
+        ),
+        (
+            {"type": "array", "prefixItems": [{"type": "string"}, {"type": "integer"}]},
+            "[string, number]",
+        ),
+        ({"type": "object", "additionalProperties": False}, "Record<string, never>"),
         ({"const": "fixed"}, '"fixed"'),
         ({}, "unknown"),
     ],
 )
 def test_schema_nodes_map_to_typescript(generator, schema, expected) -> None:
     assert generator._type_of(schema) == expected
+
+
+def test_two_schema_names_cannot_share_one_identifier(generator) -> None:
+    """A sanitized collision would emit the same interface twice."""
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="identifier"):
+        generator.render({"components": {"schemas": {"A.B": {}, "A-B": {}}}})

@@ -40,6 +40,9 @@ _HEADER = """// Generated from the FastAPI application's OpenAPI schema. Do not 
 //
 // Scope: the HTTP boundary only. Artifact, UI and other non-wire domain types
 // stay hand-written in the sibling modules.
+//
+// `?` mirrors the schema's `required` list, which states what a request may
+// omit. A response field with a server-side default is still always sent.
 """
 
 
@@ -82,13 +85,22 @@ def _type_of(schema: Any) -> str:
             unique = list(dict.fromkeys(parts))
             if not unique:
                 return "unknown"
-            return unique[0] if len(unique) == 1 else joiner.join(unique)
+            if len(unique) == 1:
+                return unique[0]
+            if joiner == " & ":
+                # ``A | B & C`` binds as ``A | (B & C)``, so a union arm inside
+                # an intersection has to be parenthesized.
+                unique = [f"({part})" if "|" in part else part for part in unique]
+            return joiner.join(unique)
 
     kind = schema.get("type")
     if isinstance(kind, list):
         return " | ".join(dict.fromkeys(_PRIMITIVES.get(k, "unknown") for k in kind))
 
     if kind == "array":
+        prefix = schema.get("prefixItems")
+        if prefix:
+            return "[" + ", ".join(_type_of(entry) for entry in prefix) + "]"
         item = _type_of(schema.get("items", {}))
         # Only a union needs the parentheses; a generic does not.
         return f"({item})[]" if "|" in item or "&" in item else f"{item}[]"
@@ -99,6 +111,8 @@ def _type_of(schema: Any) -> str:
         extra = schema.get("additionalProperties")
         if isinstance(extra, dict) and extra:
             return f"Record<string, {_type_of(extra)}>"
+        if extra is False:
+            return "Record<string, never>"
         return "Record<string, unknown>"
 
     return _PRIMITIVES.get(kind, "unknown")
@@ -132,12 +146,8 @@ def _declaration(name: str, schema: dict[str, Any]) -> str:
     ident = _identifier(name)
     out: list[str] = _docstring(schema)
 
-    if "properties" not in schema and "enum" not in schema and "const" not in schema:
-        # An alias: a union, an array or a bare record under a model name.
-        out.append(f"export type {ident} = {_type_of(schema)};")
-        return "\n".join(out)
-
     if "properties" not in schema:
+        # An alias: a union, an enum, an array or a bare record under a name.
         out.append(f"export type {ident} = {_type_of(schema)};")
         return "\n".join(out)
 
@@ -154,6 +164,12 @@ def _declaration(name: str, schema: dict[str, Any]) -> str:
 
 def render(openapi: dict[str, Any]) -> str:
     schemas = (openapi.get("components") or {}).get("schemas") or {}
+    seen: dict[str, str] = {}
+    for name in sorted(schemas):
+        ident = _identifier(name)
+        first = seen.setdefault(ident, name)
+        if first != name:
+            raise ValueError(f"{name!r} and {first!r} both emit the identifier {ident!r}")
     blocks = [_declaration(name, schemas[name]) for name in sorted(schemas)]
     return _HEADER + "\n" + "\n\n".join(blocks) + "\n"
 

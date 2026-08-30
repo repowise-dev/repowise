@@ -111,6 +111,12 @@ jobs:
         run: |
           npm pkg set version="$VERSION"
           npm pkg set dependencies.@repowise-dev/types="$VERSION"
+          # ``./c4``, ``./graph`` and ``./hosted`` import types from ui, and the
+          # package ships raw TypeScript, so a consumer compiling it needs ui
+          # resolvable. It is a devDependency here because this repo builds
+          # against the workspace copy.
+          npm pkg delete devDependencies.@repowise-dev/ui
+          npm pkg set dependencies.@repowise-dev/ui="$VERSION"
           npm pkg delete private
           if npm view "@repowise-dev/api-client@$VERSION" version >/dev/null 2>&1; then
             echo "@repowise-dev/api-client@$VERSION is already published, skipping"
