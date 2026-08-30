@@ -1501,6 +1501,27 @@ async def persist_git(result: Any, session: Any, repo_id: str) -> None:
         )
 
 
+async def _analyzed_commit(session: Any, repo_id: str) -> str | None:
+    """Live HEAD of the repo being indexed, for stamping health rows.
+
+    Read off disk rather than from ``Repository.head_commit``: the health pass
+    just scored the working tree, and the stored column is written by a
+    different step whose ordering relative to this one is not guaranteed.
+    ``None`` on any failure — an unstamped row reads as "not recorded", which
+    is honest, while a wrong sha would not be. Both index paths read it here;
+    the pipeline result carries no sha, so the full path used to stamp ``NULL``.
+    """
+    from repowise.core.persistence.models import Repository
+    from repowise.core.workspace.update import get_head_commit
+
+    try:
+        repo = await session.get(Repository, repo_id)
+        local_path = getattr(repo, "local_path", None) if repo else None
+        return get_head_commit(Path(local_path)) if local_path else None
+    except Exception:
+        return None
+
+
 async def save_full_health_report(
     session: Any,
     repo_id: str,
@@ -1607,7 +1628,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
         # Hoisted out of the coverage branch below: the same sha now stamps the
         # metric rows, so a reader can tell how far the health pass lags the
         # index instead of assuming the two moved together.
-        head_sha = getattr(result, "head_commit", None) or getattr(result, "commit_sha", None)
+        head_sha = await _analyzed_commit(session, repo_id)
         await save_full_health_report(session, repo_id, hr, analyzed_commit=head_sha)
         # Resolved coverage rows, when a report was ingested this run.
         coverage_files = getattr(hr, "coverage_files", None)
@@ -1769,6 +1790,24 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
                 repo_id=repo_id,
                 count=len(_gov_findings),
             )
+            # The refactoring queue is a fold over the stored findings and was
+            # composed above, before these rows existed, so without a second
+            # pass a fresh index ranks every opportunity against a finding set
+            # holding none of its governance causes. Only this queue: the
+            # performance finalizer reads ``performance`` findings, and every
+            # governance biomarker is ``organizational``.
+            from repowise.core.persistence.crud import (
+                finalize_refactoring_opportunities,
+            )
+
+            # Savepointed like the first composition: this writer reconciles
+            # the whole queue, so a half-failed one would leave it half-described.
+            async with session.begin_nested():
+                await finalize_refactoring_opportunities(
+                    session,
+                    repo_id,
+                    analyzed_commit=await _analyzed_commit(session, repo_id),
+                )
     except Exception as _gov_err:
         logger.debug("governance_findings_skipped", error=str(_gov_err))
 

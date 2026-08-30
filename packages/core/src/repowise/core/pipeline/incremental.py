@@ -909,26 +909,6 @@ def _carry_forward_kg_enrichment(kg: Any, prior_kg: Any) -> None:
         kg.tour = prior_kg.tour
 
 
-async def _analyzed_commit(session: Any, repo_id: str) -> str | None:
-    """Live HEAD of the repo being updated, for stamping health rows.
-
-    Read off disk rather than from ``Repository.head_commit``: the health pass
-    just scored the working tree, and the stored column is written by a
-    different step whose ordering relative to this one is not guaranteed.
-    ``None`` on any failure — an unstamped row reads as "not recorded", which
-    is honest, while a wrong sha would not be.
-    """
-    from repowise.core.persistence.models import Repository
-    from repowise.core.workspace.update import get_head_commit
-
-    try:
-        repo = await session.get(Repository, repo_id)
-        local_path = getattr(repo, "local_path", None) if repo else None
-        return get_head_commit(Path(local_path)) if local_path else None
-    except Exception:
-        return None
-
-
 async def persist_partial_health(session: Any, repo_id: str, report: Any) -> None:
     """Upsert health findings + metrics for the changed-files subset.
 
@@ -944,6 +924,7 @@ async def persist_partial_health(session: Any, repo_id: str, report: Any) -> Non
         upsert_health_metrics,
         upsert_refactoring_suggestions,
     )
+    from repowise.core.pipeline.persist import _analyzed_commit
 
     changed_paths = sorted(
         set(getattr(report, "authoritative_paths", None) or ())
@@ -1722,6 +1703,7 @@ async def persist_incremental_index(
                         finalize_performance_opportunities,
                         finalize_refactoring_opportunities,
                     )
+                    from repowise.core.pipeline.persist import _analyzed_commit
 
                     analyzed_commit = await _analyzed_commit(session, repo_id)
                     await finalize_performance_opportunities(
