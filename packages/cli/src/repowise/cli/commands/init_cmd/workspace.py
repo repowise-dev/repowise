@@ -282,6 +282,9 @@ class _WorkspaceCtx:
     #: Same reasoning for key persistence: each workspace repo gets its own
     #: .repowise/, so each needs its own credential to be MCP-answerable.
     save_key: bool = True
+    #: Mirrors the single-repo flag. ``False`` keeps the workspace path from
+    #: harvesting decisions during a dry run / preview build.
+    harvest_decisions: bool = False
 
 
 @dataclass
