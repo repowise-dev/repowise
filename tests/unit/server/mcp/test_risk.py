@@ -353,6 +353,7 @@ def test_classify_bus_factor_unknown_team_size_keeps_behaviour():
         ("src/user.rs", "tests/user_test.rs"),
         ("lib/user.rb", "spec/user_spec.rb"),
         ("src/user.cr", "spec/user_spec.cr"),
+        ("lib/user.rb", "test/test_user.rb"),
     ],
 )
 def test_health_filename_heuristic_supports_suffix_test_conventions(source, test):

@@ -252,7 +252,7 @@ def _has_paired_test_file(rel_path: str, path_basenames: set[str]) -> bool:
     stem = p.stem
     test_suffix = ".exs" if p.suffix == ".ex" else p.suffix
     candidates = {
-        f"test_{stem}.py",
+        f"test_{stem}{test_suffix}",
         f"{stem}_test{test_suffix}",
         f"{stem}_spec{test_suffix}",
         f"{stem}.test.ts",
