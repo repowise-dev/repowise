@@ -1056,7 +1056,7 @@ class ASTParser:
             else []
         )
         heritage = extract_heritage(matches, config, file_info, src)
-        exports = self._derive_exports(symbols, config, src)
+        exports = self._derive_exports(symbols, config)
         export_aliases = ts_export_aliases(src) if lang in _TS_JS_LANGUAGES else {}
         docstring = extract_module_docstring(root, src, lang)
         type_refs = self._extract_type_refs(matches, src, lang)
@@ -2038,11 +2038,14 @@ class ASTParser:
         self,
         symbols: list[Symbol],
         config: LanguageConfig,
-        src: str,
     ) -> list[str]:
-        """Derive the list of exported names from parsed symbols."""
-        if config.export_node_types:
-            return [s.name for s in symbols if s.visibility == "public" and s.parent_name is None]
+        """Derive the list of exported names from parsed symbols.
+
+        Note on TS/JS: export visibility is resolved upstream during symbol
+        extraction by ``refine_ts_visibility()``, which demotes non-exported
+        declarations to private. This expression relies on that classification to
+        filter top-level public symbols accurately for TS/JS.
+        """
         return [s.name for s in symbols if s.visibility == "public" and s.parent_name is None]
 
     # ------------------------------------------------------------------
