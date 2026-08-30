@@ -3,10 +3,16 @@
 /**
  * ThemeToggle — shared segmented Light / Dark control.
  *
- * Canonical implementation consumed by both `packages/web` and the hosted
- * frontend so the toggle UX stays identical across surfaces. Relies on
- * `next-themes` (a peer dependency of consumers) for state + persistence;
- * this component just calls `setTheme()`.
+ * Used by `packages/web`. Relies on `next-themes` (a peer dependency of
+ * consumers) for state + persistence; this component just calls `setTheme()`.
+ *
+ * It is NOT currently shared with the hosted frontend, which this comment used
+ * to claim. That app renders a single icon button of its own instead, because
+ * a bordered two-option track costs roughly 70px of chrome to express a binary
+ * choice. That fork is deliberate and is meant to land here rather than stay
+ * where it is: it is the newer design, and it carries a focus ring and a
+ * reduced-motion guard this one lacks. Until it does, the two surfaces do not
+ * match, and saying otherwise here is how the divergence went unnoticed.
  *
  * Deliberately two-state — no "System" option (product decision: keep the
  * choice explicit). Consumers set `enableSystem={false}` on their provider;
