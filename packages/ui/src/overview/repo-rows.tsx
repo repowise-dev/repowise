@@ -1,8 +1,7 @@
 import * as React from "react";
-import { bandForScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
 import type { RepoIndexStatus } from "@repowise-dev/types/repos";
-import { healthInk } from "../health/tokens";
 import { formatNumber, formatRelativeTime } from "../lib/format";
+import { healthBand } from "./health-lede";
 import { RepoAvatar } from "./repo-avatar";
 
 export interface RepoRow {
@@ -101,10 +100,11 @@ function figuresFor(repo: RepoRow): string[] {
  * the ribbon above it.
  *
  * Health leads the right-hand column because it is the figure that decides
- * which repo you open. It is painted on `bandForScore`, the canonical three
- * bands, rather than the five-step `healthBand` reading: that one belongs to a
- * lede, where nothing adjacent contradicts it, and a column of rows is the
- * case where two ladders visibly disagree.
+ * which repo you open. It is painted on the five-step `healthBand`, the same
+ * reading the repo overview and the code health page use, so the number that
+ * sends you into a repo means there what it meant here. This row previously
+ * used the three-band `bandForScore`, which made one repo read amber in the
+ * list and green the moment you opened it.
  */
 export function RepoRows({ repos, LinkComponent, actionsFor }: RepoRowsProps) {
   const A = LinkComponent ?? "a";
@@ -115,7 +115,7 @@ export function RepoRows({ repos, LinkComponent, actionsFor }: RepoRowsProps) {
       {repos.map((repo) => {
         const figures = figuresFor(repo);
         const actions = actionsFor?.(repo);
-        const band = repo.health === null ? null : bandForScore(repo.health);
+        const band = repo.health === null ? null : healthBand(repo.health);
 
         return (
           <li key={repo.id} className="group">
@@ -177,15 +177,15 @@ export function RepoRows({ repos, LinkComponent, actionsFor }: RepoRowsProps) {
                     <>
                       <p
                         className="mt-1 text-[22px] font-semibold leading-none tabular-nums"
-                        style={{ color: healthInk(repo.health) }}
+                        style={{ color: band.color }}
                       >
                         {repo.health.toFixed(1)}
                       </p>
                       <p
                         className="mt-1 text-[11px]"
-                        style={{ color: healthInk(repo.health) }}
+                        style={{ color: band.color }}
                       >
-                        {HEALTH_BAND_LABEL[band]}
+                        {band.label}
                       </p>
                     </>
                   )}
