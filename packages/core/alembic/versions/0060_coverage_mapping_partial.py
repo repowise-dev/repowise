@@ -10,8 +10,8 @@ a property of the whole delete-then-insert ingest, so it lives on the table
 Local SQLite stores get the column from the model via ``init_db``'s additive
 schema reconciler; this migration covers the managed Postgres ones.
 
-Revision ID: 0056
-Revises: 0055
+Revision ID: 0060
+Revises: 0059
 Create Date: 2026-08-28
 """
 
@@ -23,8 +23,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers
-revision: str = "0056"
-down_revision: str | None = "0055"
+revision: str = "0060"
+down_revision: str | None = "0059"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
