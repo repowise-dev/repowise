@@ -420,3 +420,63 @@ class WorkspaceArchitectureResponse(BaseModel):
     role_breakdown: dict[str, int] = {}
     roles: list[WorkspaceNodeArchitectureRole] = []
     generated_at: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Cross-repo test impact — which tests in consumer repos cover provider changes.
+# ---------------------------------------------------------------------------
+
+
+class WorkspaceTestImpactRecommendation(BaseModel):
+    """One test recommendation from a consumer repo for a provider change."""
+
+    test_id: str
+    test_file: str
+    consumer_repo: str
+    consumer_repo_alias: str
+    provider_repo: str
+    provider_file: str
+    contract_id: str
+    contract_type: str
+    basis: str  # "measured" | "inferred"
+    via: str  # "coverage-map" | "call-graph" | "import-graph"
+    confidence: float
+    source_files: list[str]  # provider files this test ultimately reaches
+    evidence: list[dict] = []
+
+
+class WorkspaceTestImpactFile(BaseModel):
+    """Per-consumer-file analysis summary."""
+
+    consumer_repo: str
+    consumer_file: str
+    provider_repos: list[str]
+    contract_ids: list[str]
+    measured_tests_count: int
+    inferred_tests_count: int
+    via: str | None = None
+
+
+class WorkspaceTestImpactResponse(BaseModel):
+    """Cross-repository test impact analysis result."""
+
+    workspace: bool = True
+    recommendations: list[WorkspaceTestImpactRecommendation] = []
+    recommendations_total: int = 0
+    recommendations_by_basis: dict[str, int] = {}
+    recommendations_by_repo: dict[str, int] = {}
+    recommendations_by_consumer_repo: dict[str, int] = {}
+    files_analyzed: list[WorkspaceTestImpactFile] = []
+    summary: dict = {}
+
+
+class WorkspaceTestImpactRequest(BaseModel):
+    """Request body for test impact analysis."""
+
+    changed_files: list[dict[str, str]]  # [{"repo": "alias", "path": "file.py"}, ...]
+    call_depth: int = 3
+    import_depth: int = 1
+    include_measured: bool = True
+    include_inferred: bool = True
+    min_confidence: float = 0.0
+    target_repos: list[str] | None = None

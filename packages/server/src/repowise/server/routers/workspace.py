@@ -40,6 +40,8 @@ from repowise.server.schemas import (
     WorkspaceRepoEntry,
     WorkspaceResponse,
     WorkspaceSystemGraphResponse,
+    WorkspaceTestImpactRequest,
+    WorkspaceTestImpactResponse,
 )
 from repowise.server.services.module_health import read_repo_health_score
 
@@ -841,6 +843,56 @@ async def get_architecture(
         generated_at=raw.get("generated_at", ""),
     )
     return WorkspaceArchitectureResponse(**metrics.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# POST /api/workspace/test-impact
+# ---------------------------------------------------------------------------
+
+
+@router.post("/test-impact", response_model=WorkspaceTestImpactResponse)
+async def post_test_impact(
+    request: Request,
+    body: WorkspaceTestImpactRequest,
+    ws_config=Depends(get_workspace_config),
+):
+    """Cross-repository test impact analysis.
+
+    Given a list of changed files in provider repositories, returns the test
+    files in consumer repositories that cover those changes, via:
+
+    - Measured per-test coverage (if ingested via ``repowise coverage add``)
+    - Call-graph reachability (3-hop forward walk from test symbols)
+    - Import-graph fallback (1-hop from test file imports)
+
+    The response is tiered by basis (measured > inferred) and by tier
+    (call-graph > import-graph), with confidence scores from the contract
+    match and reachability analysis.
+    """
+    _require_workspace(ws_config)
+
+    from repowise.core.analysis.workspace_test_impact import (
+        analyze_workspace_test_impact,
+        workspace_test_impact_to_dict,
+    )
+
+    ws_root = getattr(request.app.state, "workspace_root", None)
+    if ws_root is None:
+        raise HTTPException(status_code=500, detail="Workspace root missing on app state")
+    ws_root_path = Path(ws_root)
+
+    result = await analyze_workspace_test_impact(
+        ws_root_path,
+        body.changed_files,
+        call_depth=body.call_depth,
+        import_depth=body.import_depth,
+        include_measured=body.include_measured,
+        include_inferred=body.include_inferred,
+        min_confidence=body.min_confidence,
+        target_repos=body.target_repos,
+    )
+
+    return WorkspaceTestImpactResponse(**workspace_test_impact_to_dict(result))
 
 
 # ---------------------------------------------------------------------------

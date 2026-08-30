@@ -66,6 +66,7 @@ _TOOL_MODULES: dict[str, str] = {
     "get_risk": "tool_risk",
     "get_symbol": "tool_symbol",
     "get_why": "tool_why",
+    "get_workspace_test_impact": "tool_workspace",
     "list_repos": "tool_repos",
     "search_codebase": "tool_search",
 }

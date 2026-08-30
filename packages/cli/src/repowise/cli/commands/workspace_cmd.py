@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import click
 from rich.table import Table
@@ -1227,16 +1227,13 @@ def workspace_check(path: str | None, breaking: bool, fmt: str, as_json: bool) -
     # severity is source-compat only and must not fail a build.
     bc_report = load_breaking_change_report(ws_root) if breaking else None
     bc_ran = bc_report is not None and bc_report.ran
-    breaking_changes = (
-        [
-            c
-            for c in bc_report.changes
-            if c.severity == SEVERITY_BREAKING
-            and any(ic.repo != c.provider_repo for ic in c.impacted_consumers)
-        ]
-        if bc_ran
-        else []
-    )
+    bc_changes = bc_report.changes if bc_ran and bc_report is not None else []
+    breaking_changes = [
+        c
+        for c in bc_changes
+        if c.severity == SEVERITY_BREAKING
+        and any(ic.repo != c.provider_repo for ic in c.impacted_consumers)
+    ]
 
     if fmt == "json":
         payload = report.to_dict()
@@ -1432,3 +1429,181 @@ def workspace_metrics(path: str | None, fmt: str, as_json: bool) -> None:
     }
     parts = ", ".join(f"{role_labels[r]} {breakdown.get(r, 0)}" for r in role_labels)
     console.print(f"\n  Service roles: {parts}")
+
+
+# ---------------------------------------------------------------------------
+# workspace impacted-tests
+# ---------------------------------------------------------------------------
+
+
+@workspace_group.command("impacted-tests")
+@click.argument("changed_files", required=True, nargs=-1)
+@click.option(
+    "--path",
+    "workspace_path",
+    default=None,
+    help="Path to workspace root (default: auto-detect from cwd).",
+)
+@click.option(
+    "--call-depth",
+    default=3,
+    type=click.IntRange(1, 8),
+    help="Call graph walk depth (default: 3).",
+)
+@click.option(
+    "--import-depth",
+    default=1,
+    type=click.IntRange(1, 3),
+    help="Import graph fallback depth (default: 1).",
+)
+@click.option(
+    "--no-measured",
+    is_flag=True,
+    help="Exclude measured coverage-backed recommendations.",
+)
+@click.option(
+    "--no-inferred",
+    is_flag=True,
+    help="Exclude graph-inferred recommendations.",
+)
+@click.option(
+    "--min-confidence",
+    default=0.0,
+    type=click.FloatRange(0.0, 1.0),
+    help="Minimum contract link confidence to consider (0.0-1.0).",
+)
+@click.option(
+    "--target-repo",
+    "target_repos",
+    multiple=True,
+    help="Limit analysis to these consumer repo aliases. Repeatable.",
+)
+@format_option()
+@json_option()
+def workspace_impacted_tests(
+    changed_files: tuple[str, ...],
+    workspace_path: str | None,
+    call_depth: int,
+    import_depth: int,
+    no_measured: bool,
+    no_inferred: bool,
+    min_confidence: float,
+    target_repos: tuple[str, ...],
+    fmt: str,
+    as_json: bool,
+) -> None:
+    """Cross-repository test impact analysis — which downstream tests to run.
+
+    Given a list of changed files in provider repositories (format: repo:path),
+    returns the test files in consumer repositories that cover those changes,
+    via measured per-test coverage, call-graph reachability, and import-graph
+    fallback.
+
+    Example:
+        repowise workspace impacted-tests backend-api:src/api/users.py
+
+    Output format:
+        - table (default): human-readable grouped by consumer repo
+        - json: full machine-readable result
+        - list: test file paths only, one per line (for piping to pytest)
+    """
+    configure_cli_logging()
+    fmt = resolve_format(fmt, as_json)
+
+    if not changed_files:
+        raise click.ClickException(
+            "At least one changed file required. Format: repo_alias:path/to/file.py"
+        )
+
+    # Parse changed_files
+    parsed_changed: list[dict[str, str]] = []
+    for cf in changed_files:
+        if ":" not in cf:
+            raise click.ClickException(
+                f"Invalid format: {cf}. Use repo_alias:path/to/file.py"
+            )
+        repo, path = cf.split(":", 1)
+        parsed_changed.append({"repo": repo, "path": path})
+
+    start = resolve_repo_path(workspace_path)
+    ws_root, _ = _require_workspace(start)
+
+    from repowise.core.analysis.workspace_test_impact import (
+        analyze_workspace_test_impact,
+        workspace_test_impact_to_dict,
+    )
+
+    result = run_async(
+        analyze_workspace_test_impact(
+            ws_root,
+            parsed_changed,
+            call_depth=call_depth,
+            import_depth=import_depth,
+            include_measured=not no_measured,
+            include_inferred=not no_inferred,
+            min_confidence=min_confidence,
+            target_repos=list(target_repos) if target_repos else None,
+        )
+    )
+
+    if fmt == "json":
+        emit_json(workspace_test_impact_to_dict(result))
+        return
+
+    if fmt == "list":
+        # Output test file paths only, one per line
+        seen: set[str] = set()
+        for rec in result.recommendations:
+            key = f"{rec.consumer_repo}:{rec.test_file}"
+            if key not in seen:
+                seen.add(key)
+                click.echo(key)
+        return
+
+    # Table format
+    if result.recommendations_total == 0:
+        console.print("[yellow]No test recommendations found for the given changes.[/yellow]")
+        return
+
+    # Group by consumer repo
+    by_consumer: dict[str, list] = {}
+    for rec in result.recommendations:
+        by_consumer.setdefault(rec.consumer_repo, []).append(rec)
+
+    console.print(f"[bold]Workspace test impact[/bold] for {len(parsed_changed)} changed file(s):")
+    parsed_changed_typed = cast(list[dict[str, str]], parsed_changed)
+    for item in parsed_changed_typed:
+        console.print(f"  [dim]{item['repo']}:{item['path']}[/dim]")
+
+    for consumer_repo, recs in sorted(by_consumer.items()):
+        table = Table(title=f"Consumer: {consumer_repo}")
+        table.add_column("Test File", style="green")
+        table.add_column("Basis", style="yellow")
+        table.add_column("Via", style="dim")
+        table.add_column("Provider Repo", style="cyan")
+        table.add_column("Provider File", style="dim")
+        table.add_column("Contract", style="dim")
+        table.add_column("Confidence", justify="right")
+
+        for rec in recs:
+            table.add_row(
+                rec.test_file,
+                rec.basis,
+                rec.via,
+                rec.provider_repo,
+                rec.provider_file,
+                rec.contract_id,
+                f"{rec.confidence:.2f}",
+            )
+        console.print(table)
+
+    # Summary
+    by_basis = result.recommendations_by_basis
+    console.print(
+        f"\n[bold]{result.recommendations_total}[/bold] test recommendation(s) across "
+        f"[bold]{len(by_consumer)}[/bold] consumer repo(s):"
+    )
+    if by_basis.get("measured", 0):
+        console.print(f"  [green]{by_basis['measured']}[/green] from measured coverage")
+    if by_basis.get("inferred", 0):
+        console.print(f"  [yellow]{by_basis['inferred']}[/yellow] inferred from call/import graph")
