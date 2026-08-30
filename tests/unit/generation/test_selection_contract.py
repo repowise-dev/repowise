@@ -156,6 +156,51 @@ def test_importance_floor_excludes_tests_and_reexports():
     assert len(sel.file_page_paths) == 6
 
 
+def test_test_support_files_pass_importance_floor():
+    """Test infrastructure and fixture files pass the floor to receive file pages."""
+    parsed, pagerank, betweenness, community = _build_synthetic_repo(6)
+    extras = [
+        ("tests/conftest.py", "python"),
+        ("tests/fixtures/setup.py", "python"),
+        ("apps/console/e2e/helpers/hydration.ts", "typescript"),
+        ("apps/console/e2e/fixtures.ts", "typescript"),
+    ]
+    for path, lang in extras:
+        parsed.append(
+            FakeParsedFile(
+                file_info=FakeFileInfo(path=path, language=lang, is_test=True),
+                symbols=[FakeSymbol(name="fixture_helper")],
+            )
+        )
+        pagerank[path] = 0.1
+        betweenness[path] = 0.0
+        community[path] = 0
+
+    # Also add pure specs which must be excluded
+    test_specs = [
+        ("tests/unit/test_foo.py", "python"),
+        ("apps/console/e2e/specs/login.spec.ts", "typescript"),
+    ]
+    for path, lang in test_specs:
+        parsed.append(
+            FakeParsedFile(
+                file_info=FakeFileInfo(path=path, language=lang, is_test=True),
+                symbols=[FakeSymbol(name="test_login")],
+            )
+        )
+        pagerank[path] = 0.1
+        betweenness[path] = 0.0
+        community[path] = 0
+
+    sel = select_pages(_inputs(parsed, pagerank, betweenness, community, GenerationConfig()))
+
+    for path, _ in extras:
+        assert path in sel.file_page_paths, f"Expected {path} to receive a file_page"
+
+    for path, _ in test_specs:
+        assert path not in sel.file_page_paths, f"Expected {path} to be excluded"
+
+
 def test_selection_does_not_depend_on_having_a_key():
     """Keyed and keyless runs select exactly the same pages.
 
