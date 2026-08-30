@@ -372,6 +372,60 @@
   )
 )
 
+; Plain type argument: Option<MyType>, Vec<MyType>
+(type_arguments
+  (type_identifier) @call.target
+) @call.site
+
+; Scoped type argument: Option<super::MyType>, Vec<crate::mod::MyType>
+(type_arguments
+  (scoped_type_identifier
+    name: (type_identifier) @call.target
+  )
+) @call.site
+
+; Field type: struct Foo { bar: MyType }
+; enum_variant reuses field_declaration for struct-like variant bodies
+; (Received { state: MyType }), so this also covers enum variant fields.
+; Rust intra-crate field references need no `use` (path-qualified or
+; same-module access is legal without importing), so without this capture
+; the reference never becomes a graph edge and the field's type looks
+; unimported ("no importers").
+(field_declaration
+  type: (type_identifier) @call.target
+) @call.site
+
+; Scoped field type: struct Foo { bar: super::MyType }
+(field_declaration
+  type: (scoped_type_identifier
+    name: (type_identifier) @call.target
+  )
+) @call.site
+
+; Reference field type: struct Foo { bar: &MyType }
+(field_declaration
+  type: (reference_type
+    type: (type_identifier) @call.target
+  )
+) @call.site
+
+; Scoped reference field type: struct Foo { bar: &super::MyType }
+(field_declaration
+  type: (reference_type
+    type: (scoped_type_identifier
+      name: (type_identifier) @call.target
+    )
+  )
+) @call.site
+
+; Generic field type base: struct Foo { bar: Option<MyType> } — captures
+; Option itself when it is a locally-defined generic type.
+(field_declaration
+  type: (generic_type
+    type: (type_identifier) @call.target
+  )
+) @call.site
+
 ; ---------------------------------------------------------------------------
 ; Fields
 ; ---------------------------------------------------------------------------
