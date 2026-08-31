@@ -38,9 +38,13 @@ def test_shared_boundary_surfaces_degraded_partial_and_truncated_states():
 
     assert result["_meta"]["state"] == {
         "degraded": True,
-        # The umbrella bool cannot say which capability failed, so the keys
-        # behind it travel with it.
-        "degraded_reasons": ["degraded", "retrieval_degraded"],
+        # The umbrella bool cannot say which capability failed, so the reasons
+        # behind it travel with it: the synthesis reason and the broken legs,
+        # not just the names of the keys holding them.
+        "degraded_reasons": {
+            "degraded": "no-provider",
+            "retrieval_degraded": ["vector"],
+        },
         "partial": True,
         "truncated": True,
     }

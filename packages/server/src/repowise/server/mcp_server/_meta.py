@@ -383,13 +383,15 @@ def finalize_trust_envelope(result: Any, *, evidence_kind: str | None = None) ->
 
     state: dict[str, Any] = {}
     combined = {**result, **meta}
-    # The bool is deliberately coarse, so name the keys behind it: "trust is
-    # lower" without "which capability" is not actionable.
-    degraded_by = sorted(
-        key
-        for key, value in combined.items()
+    # The bool is deliberately coarse. Carry the values behind it, not just the
+    # key names: the producers already hold the answer -- a synthesis reason
+    # string, the list of retrieval legs that broke -- and naming only the key
+    # would discard it.
+    degraded_by = {
+        key: value
+        for key, value in sorted(combined.items())
         if value and (key == "degraded" or key.endswith("_degraded"))
-    )
+    }
     if degraded_by:
         state["degraded"] = True
         state["degraded_reasons"] = degraded_by

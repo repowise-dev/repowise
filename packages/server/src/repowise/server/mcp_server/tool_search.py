@@ -20,7 +20,11 @@ from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.core.test_paths import is_test_path, is_test_related_path
 from repowise.server.mcp_server._answer_pipeline import _RRF_K, _RRF_SCORE_SCALE
-from repowise.server.mcp_server._budget import OmissionCollector, register_post_shed
+from repowise.server.mcp_server._budget import (
+    OmissionCollector,
+    register_post_enforce,
+    register_post_shed,
+)
 from repowise.server.mcp_server._helpers import (
     _VECTOR_TIMEOUT_ENV,
     _get_exclude_spec,
@@ -853,7 +857,7 @@ async def _federated_search(
     return response
 
 
-def _refresh_served_targets(response: dict, _collector: OmissionCollector) -> None:
+def _refresh_served_targets(response: dict, _collector: OmissionCollector | None) -> None:
     """Re-derive target-scoped freshness from the hits that survived shedding.
 
     ``_meta.targets`` claims which files the response served. Shedding decides
@@ -864,7 +868,13 @@ def _refresh_served_targets(response: dict, _collector: OmissionCollector) -> No
         response["_meta"]["targets"] = _result_paths(response.get("results") or [])
 
 
+def _refresh_served_targets_final(response: dict) -> None:
+    """Same claim, re-derived after the final size guard may have cut again."""
+    _refresh_served_targets(response, None)
+
+
 register_post_shed("search_codebase", _refresh_served_targets)
+register_post_enforce("search_codebase", _refresh_served_targets_final)
 
 
 def _result_paths(results: list[dict]) -> list[str]:

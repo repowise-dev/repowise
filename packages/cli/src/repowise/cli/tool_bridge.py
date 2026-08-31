@@ -30,6 +30,7 @@ still MCP-only.
 from __future__ import annotations
 
 import contextlib
+import inspect
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -82,7 +83,7 @@ async def _acall_tool(
             decision_store=store,
             repo_path=str(repo_path),
         )
-        return await factory()
+        return _budgeted(tool_name, await factory())
     except Exception as exc:
         return _shape_exception(tool_name, exc)
     finally:
@@ -95,6 +96,30 @@ async def _acall_tool(
         if engine is not None:
             with contextlib.suppress(Exception):
                 await engine.dispose()
+
+
+def _budgeted(tool_name: str, result: dict) -> dict:
+    """Apply the tool's response budget, which the MCP middleware would have.
+
+    A CLI command awaits the undecorated tool function, so none of the
+    middleware runs. Budgeting is the one layer that has to: ``repowise search
+    --format json`` is read by agents, and an unbounded response is the failure
+    the shared contract exists to prevent. The expansion tier needs the call's
+    own arguments, which the zero-argument factory has already closed over, so
+    every bridged call is budgeted at the default tier.
+    """
+    from repowise.server.mcp_server._budget import enforce_response_budget
+
+    def _call() -> None:
+        pass
+
+    return enforce_response_budget(
+        tool_name,
+        result,
+        signature=inspect.signature(_call),
+        args=(),
+        kwargs={},
+    )
 
 
 async def _open_vector_store(repo_path: Path) -> Any:

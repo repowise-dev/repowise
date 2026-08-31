@@ -107,7 +107,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "fallback_targets",
         ),
         expansion_argument="include",
-        protected=("answer", "confidence", "citations", "next_action_hint"),
+        protected=("answer", "confidence", "citations", "next_action_hint", "degraded"),
     ),
     # Whole-block drops served 0 of 50 pages, 0 of 12 episodes and 0 of 58
     # mined rationale comments across the two modes. Trimming runs to
@@ -220,7 +220,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
     # symbol read with no body is a wasted call even with a recoverable ref.
     "get_symbol": ResponseBudgetContract(
         "blocks",
-        ("callee_bodies[]", "candidates[]"),
+        ("callee_bodies.callees[]", "candidates[]"),
         expansion_argument=None,
         protected=(
             "source",
@@ -255,12 +255,12 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "impact",
             "by_directory",
             "by_owner",
-            "tiers.low.items[]",
-            "tiers.medium.items[]",
-            "tiers.high.items[]",
+            "tiers.low.findings[]",
+            "tiers.medium.findings[]",
+            "tiers.high.findings[]",
         ),
         expansion_argument=None,
-        protected=("summary", "tiers", "workspace"),
+        protected=("summary", "tiers", "workspace", "error", "finding", "resolved"),
     ),
     # One ranked list. ``total_entry_points`` is derived before shedding, so
     # the count stays exact.
@@ -272,25 +272,33 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
     ),
     "get_dependency_path": ResponseBudgetContract(
         "blocks",
-        ("shared_neighbors", "bridge_suggestions", "nearest_common_ancestors", "path[]"),
+        (
+            "visual_context.shared_neighbors",
+            "visual_context.bridge_suggestions",
+            "visual_context.nearest_common_ancestors",
+            "visual_context",
+        ),
         expansion_argument=None,
         protected=("distance", "explanation"),
     ),
+    # These three cap their one list at 25 rows by construction and measured
+    # under 1.4k. They publish integer ``*_truncated`` counts of their own,
+    # which a shed order would overwrite with a bool, so they declare none and
+    # ride the size guard.
     "get_architecture": ResponseBudgetContract(
         "blocks",
-        ("role_breakdown", "conformance_violations", "core_members[]"),
+        ("role_breakdown",),
         expansion_argument=None,
-        protected=("summary", "architecture_type", "score"),
+        protected=("summary", "architecture_type", "score", "core_members", "error"),
     ),
     "get_conformance": ResponseBudgetContract(
         "blocks",
-        ("cycles[]", "violations[]"),
         expansion_argument=None,
-        protected=("summary", "violation_count", "cycle_count", "total_cycles"),
+        protected=("summary", "violation_count", "cycle_count", "total_cycles", "error"),
     ),
     "get_blast_radius": ResponseBudgetContract(
         "blocks",
-        ("impact_score_semantics", "impacted[]"),
+        ("impact_score_semantics",),
         expansion_argument=None,
         protected=("summary", "targets", "total_impacted", "unresolved_targets"),
     ),
@@ -388,8 +396,12 @@ def _emergency_fit(
         value = result.pop(key)
         collector.add(f"{key} removed by final budget guard", value)
         if isinstance(value, list):
-            result[f"{key}_total"] = len(value)
+            # An earlier pass may already have trimmed this list, so its total
+            # describes the population, not what is left to drop here.
+            total = max(len(value), int(result.get(f"{key}_total") or 0))
+            result[f"{key}_total"] = total
             result[f"{key}_emitted"] = 0
+            result[f"{key}_omitted"] = total
             result[f"{key}_reduced_reason"] = "response_budget"
         result["truncated"] = True
 

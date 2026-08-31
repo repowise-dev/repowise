@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "sealed_at_commit": "c2f915d07c11ca3f451309054dfb610e75b8ae26",
   "window_size": 5,
   "modes": ["full", "keyless"],

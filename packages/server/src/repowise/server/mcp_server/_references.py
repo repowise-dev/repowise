@@ -44,7 +44,6 @@ def refactoring_plan_id(suggestion: Any, repository: str) -> str:
 # Compatibility aliases for the get_why-specific module that originally
 # owned these primitives. Keeping the private spellings prevents a mechanical
 # promotion from changing sealed evidence identities or downstream imports.
-_repository_identity = repository_identity
 _path_identity = path_identity
 _content_id = content_id
 _reference = reference

@@ -133,10 +133,11 @@ marker; everything else is captured into one combined document per response.
 A response that would still oversize sheds whole blocks, in an order each tool
 declares cheapest-loss-first, and reports `truncated: true` alongside the refs.
 
-Every tool is budgeted. Each of the seventeen declares its own shed order, and a
-tool that declares none still meets a final size guard, so no response is
-returned unbounded and unflagged. `_meta.response_budget` reports the ceiling
-that applied and the size delivered under it.
+Every tool is budgeted. Most declare their own shed order; the rest meet a
+final size guard that trims the largest blocks and records what it took. Either
+way no response is returned unbounded and unflagged, and
+`_meta.response_budget` reports the ceiling that applied and the size delivered
+under it.
 Resolve refs with `repowise expand <ref>` from a shell, or
 `get_symbol("repowise#<ref>")` from any MCP client. See
 [DISTILL.md](DISTILL.md) for the full reversibility model.
@@ -156,7 +157,7 @@ Resolve refs with `repowise expand <ref>` from a shell, or
 | `embedder_degraded` | Whenever an embedder is resolved, `true` or `false`. Absent means none was initialised |
 | `embedder`, `embedder_warning` | Only when the embedder fell back to a mock/degraded mode |
 | `response_budget` | Always: `limit_chars` (the ceiling that applied), `tier` (`default` or `expanded`, chosen by whether the call passed an expansion argument), `serialized_chars` (the size delivered) |
-| `state` | Only when something fired: `degraded` plus `degraded_reasons` naming the keys behind it, `partial`, `truncated`. A coarse roll-up of the response's own flags |
+| `state` | Only when something fired: `degraded` plus `degraded_reasons` mapping each contributing key to its reason (a synthesis reason string, the retrieval legs that broke), `partial`, `truncated`. A coarse roll-up of the response's own flags |
 
 Silence on `stale_warning` means the index is current; don't infer staleness from its absence. `list_repos`, `get_architecture`, `get_blast_radius`, and `get_conformance` don't carry a freshness envelope at all.
 

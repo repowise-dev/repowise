@@ -93,6 +93,40 @@ def _pick_targets(repo: str) -> dict[str, str]:
     }
 
 
+def _skeleton(payload: Any) -> Any:
+    """The nested key shape of a response, with every value discarded.
+
+    A declared shed path that does not resolve against this is a silent no-op,
+    which the size columns cannot reveal: the final guard brings the response
+    under the ceiling either way.
+    """
+    if isinstance(payload, dict):
+        # A map keyed by repository path is one shape under many names, and
+        # those names differ per repo. Collapse it so the fixture describes the
+        # shape rather than the checkout it was recorded against.
+        if len(payload) > 1 and all("/" in key for key in payload):
+            return {"<path>": _skeleton(next(iter(payload.values())))}
+        return {key: _skeleton(value) for key, value in payload.items()}
+    if isinstance(payload, list):
+        return [_skeleton(payload[0])] if payload else []
+    return None
+
+
+def _merge_skeleton(into: Any, new: Any) -> Any:
+    """Union two shapes, so several cases together describe one tool."""
+    if isinstance(into, dict) and isinstance(new, dict):
+        for key, value in new.items():
+            into[key] = _merge_skeleton(into.get(key), value) if key in into else value
+        return into
+    if isinstance(into, list) and isinstance(new, list):
+        if new and not into:
+            return new
+        if into and new:
+            into[0] = _merge_skeleton(into[0], new[0])
+        return into
+    return new if into is None else into
+
+
 def _bind(kwargs: dict[str, Any], targets: dict[str, str]) -> dict[str, Any]:
     def sub(value: Any) -> Any:
         if isinstance(value, str):
@@ -109,6 +143,10 @@ async def main() -> int:
     parser.add_argument("--repo", required=True, help="path to an indexed repository")
     parser.add_argument("--json", help="also write the full rows here")
     parser.add_argument("--only", help="comma-separated tool names")
+    parser.add_argument(
+        "--skeletons",
+        help="write each tool's nested key shape here, for the shed-path fixture",
+    )
     options = parser.parse_args()
 
     os.environ.setdefault("REPOWISE_TELEMETRY_DISABLED", "1")
@@ -131,6 +169,7 @@ async def main() -> int:
         handlers[name] = (function, tool_middleware(function))
 
     rows: list[dict[str, Any]] = []
+    skeletons: dict[str, Any] = {}
     async with _server._lifespan(None):
         ready = getattr(_state, "_vector_store_ready", None)
         if ready is not None:
@@ -154,8 +193,13 @@ async def main() -> int:
                     row[f"{label}_trace"] = traceback.format_exc()[-1200:]
                     continue
                 row[f"{label}_chars"] = _size(payload)
-                if label == "raw" and isinstance(payload, dict) and "error" in payload:
-                    row["unexercised"] = payload["error"]
+                if label == "raw" and isinstance(payload, dict):
+                    if "error" in payload:
+                        row["unexercised"] = payload["error"]
+                    else:
+                        skeletons[tool] = _merge_skeleton(
+                            skeletons.get(tool), _skeleton(payload)
+                        )
             rows.append(row)
 
     print(f"{'tool':<26} {'case':<20} {'raw':>9} {'wrapped':>9}  verdict")
@@ -177,6 +221,9 @@ async def main() -> int:
     if options.json:
         with open(options.json, "w", encoding="utf-8") as handle:
             json.dump(rows, handle, indent=2, default=str)
+    if options.skeletons:
+        with open(options.skeletons, "w", encoding="utf-8") as handle:
+            json.dump(skeletons, handle, indent=2, sort_keys=True)
     return 0
 
 

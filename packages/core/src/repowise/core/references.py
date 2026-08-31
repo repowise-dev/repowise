@@ -8,7 +8,7 @@ passed back verbatim to another tool later. This module knows the spelling.
 Two id shapes. :func:`source_reference` composes a readable pointer (``path``,
 ``path:start-end``, ``path::Symbol``) accepted verbatim by the tool that serves
 it. :func:`content_id`, :func:`reference` and :func:`stable_entity_id` mint a
-digest: sha256 of canonical JSON truncated to :data:`DIGEST_LENGTH`, behind a
+digest: sha256 of canonical JSON truncated to 20 hex characters, behind a
 caller-chosen prefix, so an id quoted yesterday still resolves today.
 
 Normalisation is what keeps either shape stable: ``src\\main.py`` from a
@@ -28,7 +28,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 #: Length of the truncated sha256 digest behind every ``<prefix>_<digest>`` id.
-DIGEST_LENGTH = 20
+_DIGEST_LENGTH = 20
 
 #: A ``repowise#<ref>`` omission token, bare or embedded in a distill marker.
 #: The 12-hex ref itself is minted by ``core.distill``; this only recognises it.
@@ -62,7 +62,7 @@ def content_id(value: object) -> str:
     """Return the stable compact digest used by public reference identities."""
 
     raw = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:DIGEST_LENGTH]
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:_DIGEST_LENGTH]
 
 
 def reference(kind: str, repository: str, **coordinates: object) -> dict[str, Any]:
@@ -145,7 +145,6 @@ def stable_entity_id(prefix: str, repository: str, coordinates: Mapping[str, obj
 
 
 __all__ = [
-    "DIGEST_LENGTH",
     "content_id",
     "omission_reference",
     "path_identity",

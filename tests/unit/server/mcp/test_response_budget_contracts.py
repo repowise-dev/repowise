@@ -510,3 +510,73 @@ def test_budget_hooks_run_for_the_tool_that_registered_them() -> None:
         hooks._POST_ENFORCE.pop("tool_a", None)
 
     assert seen == ["tool_a"]
+
+
+#: Real response shapes, recorded by ``scripts/measure_mcp_response_sizes.py``
+#: against an indexed repository. Regenerate with ``--skeletons`` when a tool's
+#: payload changes shape.
+_SHAPES_FIXTURE = (
+    Path(__file__).resolve().parents[3] / "fixtures" / "mcp" / "tool_response_shapes.json"
+)
+
+
+def _resolve_shed_path(shape: dict[str, Any], key: str) -> str | None:
+    """Return why *key* fails to name a real block, or None when it resolves.
+
+    A block absent from the recording is not a failure: several are conditional
+    on arguments the recording did not pass. A block whose *parent* is present
+    while the leaf is not is a typo, and a silent no-op in ``fit_to_budget``.
+    """
+    leaf, tail = (key[:-2], True) if key.endswith("[]") else (key, False)
+    *parents, name = leaf.split(".")
+    node: Any = shape
+    for parent in parents:
+        if not isinstance(node, dict) or parent not in node:
+            return None
+        node = node[parent]
+    if not isinstance(node, dict):
+        return f"{'.'.join(parents)} is not a block"
+    if name not in node:
+        if not parents:
+            return None
+        return f"{leaf} does not exist; {'.'.join(parents)} has {sorted(node)}"
+    if tail and not isinstance(node[name], (list, dict)):
+        return f"{leaf} is not a collection, so a tail trim cannot apply"
+    return None
+
+
+def test_every_shed_path_names_a_real_block() -> None:
+    """A shed path that does not resolve sheds nothing, silently.
+
+    The size columns cannot catch this: the final guard brings the response
+    under the ceiling either way, so a dead order measures as a working one.
+
+    Bound worth knowing: this catches a leaf misspelled under a parent the
+    recording contains. A top-level block the recording never exercised is
+    skipped, because most tools have blocks conditional on arguments the sweep
+    does not pass, and failing on those would be noise rather than signal.
+    """
+    from repowise.server.mcp_server._budget.contracts import _CONTRACTS
+
+    shapes = json.loads(_SHAPES_FIXTURE.read_text(encoding="utf-8"))
+    problems: list[str] = []
+    for tool, contract in _CONTRACTS.items():
+        shape = shapes.get(tool)
+        if shape is None:
+            continue
+        problems += [
+            f"{tool}: {key} -- {reason}"
+            for key in contract.shed_order
+            if (reason := _resolve_shed_path(shape, key))
+        ]
+    assert not problems, "\n".join(problems)
+
+
+def test_recorded_shapes_cover_the_tools_that_can_be_exercised() -> None:
+    """Guard the fixture itself: a shrinking recording weakens the check above."""
+    from repowise.server.mcp_server import _TOOL_MODULES
+
+    shapes = json.loads(_SHAPES_FIXTURE.read_text(encoding="utf-8"))
+    # generate_refactoring_code needs a stored plan, which the recorded index
+    # had none of. Reported as not measured rather than assumed bounded.
+    assert set(shapes) == set(_TOOL_MODULES) - {"generate_refactoring_code"}
