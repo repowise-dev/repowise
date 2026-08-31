@@ -59,6 +59,20 @@ export interface WorkspaceContractLinkEntry {
   consumer_symbol_id: string | null;
 }
 
+export interface WorkspaceCoChangeEvidence {
+  /** Distinct author emails behind the pair (bounded sample). */
+  authors: string[];
+  /** Example matched commit pairs: short SHAs, date, time gap in hours. */
+  commit_pairs: Array<{
+    source_sha: string;
+    target_sha: string;
+    date: string;
+    gap_hours: number;
+  }>;
+  /** Largest time gap between a matched commit pair, in hours. */
+  max_gap_hours: number;
+}
+
 export interface WorkspaceCoChangeEntry {
   source_repo: string;
   source_file: string;
@@ -67,6 +81,8 @@ export interface WorkspaceCoChangeEntry {
   strength: number;
   frequency: number;
   last_date: string;
+  /** Bounded supporting evidence (#483); null for pre-evidence overlays. */
+  evidence: WorkspaceCoChangeEvidence | null;
 }
 
 export interface WorkspacePackageDepEntry {
