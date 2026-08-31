@@ -114,11 +114,11 @@ async def persist_result(
 
     Handles both index-only (no pages) and full (with pages + FTS) modes.
 
-    *progress* is optional and reports the full-text indexing loop below, the
-    one part of persistence whose length is known in advance and proportional
-    to the wiki. Everything after "Generated N pages" used to happen under a
-    single indeterminate spinner, so on a repo of a few thousand pages the run
-    sat silent for minutes with no way to tell work from a hang.
+    *progress* is optional, and closing the phase is all it is used for here.
+    The full-text index used to be written a page at a time, which was minutes
+    of silence on a large wiki and earned a bar with a real denominator; it is
+    one statement now, and nothing else persistence does is proportional to
+    the page count, so the phase the CLI opens stays indeterminate.
 
     *timings* splits that span into its SQL and full-text halves, which the
     single ``persist`` number cannot distinguish.
@@ -251,20 +251,12 @@ async def persist_result(
         if fts is not None and swept_page_ids:
             await fts.delete_many(swept_page_ids)
         if fts is not None and result.generated_pages:
-            if progress is not None:
-                progress.on_phase_start("persist", len(result.generated_pages))
             await fts.index_many(
                 [
                     (page.page_id, page.title, page.content, page.summary, page.target_path)
                     for page in result.generated_pages
                 ]
             )
-            # The whole corpus lands in one transaction, so the bar this phase
-            # announced has nothing left to count down; complete it rather
-            # than leave a full-length bar sitting at zero.
-            if progress is not None:
-                for _ in result.generated_pages:
-                    progress.on_item_done("persist")
         await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
 
     # Stamp the analysis (+ generation) phases in the resume ledger now that

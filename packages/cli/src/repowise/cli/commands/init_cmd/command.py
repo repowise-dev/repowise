@@ -1508,8 +1508,9 @@ def init_command(
         console=console,
     ) as persist_bar:
         persist_callback = callback.rebind(RichProgressCallback(persist_bar, console))
-        # Announced before the work starts and re-announced with a real total
-        # once the page loop knows one, so the stage is never silent.
+        # Indeterminate: persistence has no page-proportional loop to count
+        # since the full-text index became a single statement. Announced here
+        # so the stage is never silent.
         persist_callback.on_phase_start("persist", None)
         run_async(persist_result(result, repo_path, persist_callback, callback.table))
         persist_callback.on_phase_done("persist")
