@@ -19,11 +19,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from repowise.server.mcp_server.tool_answer import symbols as symbols_mod
 from repowise.server.mcp_server.tool_answer.answer import (
     _degraded_payload,
     _drop_duplicated_guess_excerpts,
 )
+from repowise.server.mcp_server.tool_answer.confidence import _degraded_confidence
 from repowise.server.mcp_server.tool_answer.projection import project_answer_payload
 
 
@@ -345,7 +348,39 @@ async def test_degraded_never_reaches_high():
         t0=0.0,
     )
     assert payload["retrieval_quality"] == "high"
-    assert payload["confidence"] != "high"
+    assert payload["confidence"] == "medium"
+
+
+@pytest.mark.parametrize("reason", ["no-llm-provider", "synthesis-failed"])
+@pytest.mark.parametrize("quality", ["high", "partial", "weak"])
+def test_the_ceiling_holds_over_every_input(reason: str, quality: str):
+    """The ceiling as a property, not a coincidence of one fixture.
+
+    An assertion on a single payload cannot say "never high" - it says "not high
+    here". This walks the whole input space the grader can be called with.
+    """
+    assert _degraded_confidence(reason, quality) in {"low", "medium"}
+
+
+def test_only_a_no_provider_payload_over_real_retrieval_earns_medium():
+    """The exact shape of the grade, pinned as a table.
+
+    Reading it as one block is what makes the two rules visible: retrieval
+    decides the grade, and only for the install that has no better reply coming.
+    """
+    grades = {
+        (reason, quality): _degraded_confidence(reason, quality)
+        for reason in ("no-llm-provider", "synthesis-failed")
+        for quality in ("high", "partial", "weak")
+    }
+    assert grades == {
+        ("no-llm-provider", "high"): "medium",
+        ("no-llm-provider", "partial"): "medium",
+        ("no-llm-provider", "weak"): "low",
+        ("synthesis-failed", "high"): "low",
+        ("synthesis-failed", "partial"): "low",
+        ("synthesis-failed", "weak"): "low",
+    }
 
 
 async def test_synthesis_failed_stays_low_however_good_the_retrieval_was():
@@ -634,3 +669,23 @@ def test_a_synthesised_payload_still_trims_on_its_grade():
     projected = project_answer_payload(raw, question="how does this work")
 
     assert len(projected["symbol_bodies"]) == 1
+
+
+def test_the_hint_is_the_same_whatever_the_payload_graded():
+    """The grade moved; the hint deliberately does not read it.
+
+    `answer_hint` keys on `degraded` before it looks at confidence, because on
+    this path what is missing is the prose and not the evidence - the push to go
+    verify would be the wrong one. The payload passes its real grade in rather
+    than a hardcoded "low" so the two never drift apart, and this pins that the
+    hint ignoring it is the intended behaviour rather than an oversight.
+    """
+    from repowise.server.mcp_server._meta import answer_hint
+
+    hints = {
+        answer_hint(grade, degraded="no-llm-provider", retrieval_quality="high")
+        for grade in ("low", "medium", "high")
+    }
+
+    assert len(hints) == 1
+    assert "Synthesis is what is missing here" in hints.pop()
