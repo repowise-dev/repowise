@@ -1,4 +1,4 @@
-"""Flutter navigation edges.
+"""Flutter framework edges: navigation + widget tree.
 
 Flutter wires screens together through route tables and builder callbacks
 rather than direct imports of a call site — a widget referenced only from
@@ -13,6 +13,14 @@ are deliberately out of scope here — they need dynamic hints, not regex):
   route-owning file to the page widget's defining file.
 - ``runApp(MyApp())`` — edge to the root widget's file, which is also
   stamped ``is_entry_point``.
+
+Plus the widget tree itself (the Phase 2 ask in #142): a ``build()``
+method returns a widget tree, so every constructor name in the returned
+expression is a *child widget* of the file's widget class. Framework
+widgets (Scaffold, Column, Text, …) resolve to nothing in the repo's
+class map and are skipped; repo widgets emit a parent→child edge from the
+building file to the child's file — the composition structure an LLM
+needs to reuse components.
 """
 
 from __future__ import annotations
@@ -52,6 +60,12 @@ _BUILDER_BLOCK_RE = re.compile(
 _RUNAPP_RE = re.compile(r"""runApp\s*\(""")
 _CTOR_NAME_RE = re.compile(r"""([A-Z]\w*)\s*\(""")
 _RUNAPP_WINDOW = 400
+
+# Widget build(BuildContext context) { return ...; } — the widget tree. The
+# window after the opening brace/arrow holds the returned expression; every
+# constructor name in it is a child widget of this file's widget class.
+_BUILD_METHOD_RE = re.compile(r"""\bWidget\s+build\s*\(\s*[^)]*\)\s*(?:=>|\{)""")
+_BUILD_WINDOW = 600
 
 
 def _uses_flutter(parsed_files: dict[str, Any]) -> bool:
@@ -96,9 +110,25 @@ def _add_flutter_edges(
             if _add_edge_if_new(graph, path, target):
                 count += 1
             if widget in entry_widgets:
-                node = graph.nodes.get(target)
-                if node is not None:
-                    node["is_entry_point"] = True
+                # The runApp target is usually the same file (MyApp lives in
+                # main.dart), so no edge is added and the node may not exist
+                # yet — create it before stamping.
+                if target not in graph:
+                    graph.add_node(target)
+                graph.nodes[target]["is_entry_point"] = True
+
+        # Widget tree: every constructor name inside a build() body is a
+        # child widget of this file's widget class. Framework widgets
+        # (Scaffold, Column, Text, ...) are absent from the repo class map
+        # and skipped; repo widgets get a parent→child edge.
+        for m in _BUILD_METHOD_RE.finditer(text):
+            window = text[m.end() : m.end() + _BUILD_WINDOW]
+            for child in _CTOR_NAME_RE.findall(window):
+                target = class_to_file.get(child)
+                if target is None or target not in path_set:
+                    continue
+                if _add_edge_if_new(graph, path, target):
+                    count += 1
 
     return count
 
