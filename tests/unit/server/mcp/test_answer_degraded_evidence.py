@@ -187,19 +187,20 @@ async def test_degraded_hint_never_advertises_an_unresolvable_id(tmp_path, monke
     assert "src/flask/app.py:122-200" in hint
 
 
-async def test_degraded_with_no_anchor_match_keeps_its_verdict(tmp_path):
-    """The no-body degraded payload keeps every judgement it was making.
+async def test_degraded_with_no_anchor_match_still_describes_a_ranking(tmp_path):
+    """The no-body degraded payload keeps the shape it reports about itself.
 
     This path is still reached (a question that names nothing indexed). It has
     since gained the choosing evidence (best_guesses, and code_rationale where
-    the source carries any), but the verdict it reports about itself — low
-    confidence, the degradation reason, an `answer` that describes a ranking and
-    not a body — must be exactly what it was.
+    the source carries any), and the degradation reason and the `answer` that
+    describes a ranking rather than a body are unchanged. Confidence is no
+    longer part of that fixed verdict: this hit is a sole hit over the score
+    floor, so the retrieval is good and the grade follows it.
     """
     ctx = _tree(tmp_path)
     payload = await _degraded(ctx, _hits(end_line=6), set())
 
-    assert payload["confidence"] == "low"
+    assert payload["confidence"] == "medium"
     assert payload["degraded"] == "no-llm-provider"
     assert "ranked" in payload["answer"]
     assert "symbol_bodies" not in payload
@@ -208,11 +209,11 @@ async def test_degraded_with_no_anchor_match_keeps_its_verdict(tmp_path):
 # --- retrieval_quality on the degraded payload (D10) -----------------------
 #
 # 26 of 26 measured keyless payloads carried no `retrieval_quality` key at all,
-# so the only trust signal a caller had was `confidence: "low"`, which rates
+# so the only trust signal a caller had was `confidence: "low"`, which rated
 # synthesised prose that a degraded payload does not have. 11 of those 26 said
-# "low" while rank 1 was a file the keyed arm went on to cite. `confidence`
-# stays low on purpose; the retrieval gets rated separately, by the same rule
-# the synthesised path uses.
+# "low" while rank 1 was a file the keyed arm went on to cite. The retrieval is
+# rated separately here, by the same rule the synthesised path uses; the grade
+# derived from it is pinned in the confidence block further down.
 
 
 def _scored(*scores: float) -> list[dict]:
@@ -278,12 +279,61 @@ async def test_degraded_agreement_can_lift_but_the_floor_still_binds():
     assert await _quality(_scored(0.9, 0.8), agreement_dominant=True) == "partial"
 
 
-async def test_degraded_keeps_confidence_low():
-    """The label the reporter asked to raise stays where it is.
+# --- confidence on the degraded payload ------------------------------------
+#
+# `confidence` was pinned to "low" here on the grounds that it rates synthesised
+# text and there is none. In the field that told 69 percent of get_answer calls
+# to distrust evidence that was frequently excellent, and 84 percent of those
+# verdicts were unearned: a keyless install never configures a provider, so it
+# got "low" on every call forever, decoupled from what retrieval actually did.
+# The field is now graded from the retrieval, under a ceiling that preserves the
+# original objection rather than discarding it.
 
-    Confidence rates the synthesised text, and a degraded `answer` is assembled
-    boilerplate, byte-identical on 24 of the 26 measured questions. Telling an
-    agent to cite that is worse than the extra call it saves.
+
+async def _confidence(hits, *, reason: str = "no-llm-provider") -> str:
+    payload = await _degraded_payload(
+        reason=reason,
+        note="DEGRADED",
+        question="how does the module work",
+        hits=hits,
+        fallback_targets=["pkg/m0.py"],
+        repository=None,
+        t0=0.0,
+    )
+    return payload["confidence"]
+
+
+async def test_degraded_grades_a_good_retrieval_medium():
+    """The unearned "low" this whole block exists to remove."""
+    assert await _confidence(_scored(6.0, 1.0)) == "medium"
+
+
+async def test_degraded_grades_a_partial_retrieval_medium_too():
+    """Dominant but under the score floor is still a payload worth acting on.
+
+    Only "weak" — no dominant page at all — leaves the caller with a real choice
+    to make, and that is the one the grade should push back on.
+    """
+    assert await _confidence(_scored(1.0, 0.1)) == "medium"
+
+
+async def test_degraded_keeps_a_weak_retrieval_low():
+    """The control. An ambiguous retrieval was always an earned "low".
+
+    This agrees with the `_meta` hint on the same payload, which tells a caller
+    on weak retrieval to refine the query rather than read the hits in order.
+    Two signals that disagreed about the same retrieval would be worse than one.
+    """
+    assert await _confidence(_scored(6.0, 5.9)) == "low"
+
+
+async def test_degraded_never_reaches_high():
+    """The original objection, kept as a ceiling.
+
+    A degraded `answer` is assembled boilerplate, byte-identical on 24 of the 26
+    measured questions, and our own agent instructions license citing a
+    high-confidence answer directly. So "high" has to stay unreachable here even
+    though the retrieval under it graded high.
     """
     payload = await _degraded_payload(
         reason="no-llm-provider",
@@ -294,8 +344,19 @@ async def test_degraded_keeps_confidence_low():
         repository=None,
         t0=0.0,
     )
-    assert payload["confidence"] == "low"
     assert payload["retrieval_quality"] == "high"
+    assert payload["confidence"] != "high"
+
+
+async def test_synthesis_failed_stays_low_however_good_the_retrieval_was():
+    """A configured provider that failed is not the end of the line.
+
+    The evidence is identical to the no-provider case, but a retry can still
+    produce a real answer here, so the payload is not everything the caller is
+    going to get. "no-llm-provider" is the end of the line for that install,
+    which is what makes grading its evidence the honest thing to do.
+    """
+    assert await _confidence(_scored(6.0, 1.0), reason="synthesis-failed") == "low"
 
 
 async def test_degraded_hint_says_what_is_missing_not_what_to_doubt():

@@ -586,10 +586,11 @@ def _retrieval_quality(hits: list[dict], agreement_dominant: bool) -> str:
     """Rate the retrieval, independently of the text it fed.
 
     Kept as one function because the degraded path needs the same rating and must
-    not invent a second one. That path has no synthesised text to rate (its
-    ``confidence`` stays low, correctly), but it ran exactly the same retrieval,
-    and "high" has to mean the same thing to a keyless caller as to a keyed one
-    or the field is worth less than nothing.
+    not invent a second one. That path has no synthesised text to rate, but it ran
+    exactly the same retrieval, and "high" has to mean the same thing to a keyless
+    caller as to a keyed one or the field is worth less than nothing. It is also
+    what :func:`_degraded_confidence` grades from, so the two fields on a
+    synthesis-less payload can never disagree about the same retrieval.
 
     Reads :func:`is_dominant` rather than re-deriving the ratio, so "weak" means
     exactly "not dominant" — the same fact the confidence ceiling and the
@@ -601,6 +602,36 @@ def _retrieval_quality(hits: list[dict], agreement_dominant: bool) -> str:
     if dominant_grade and top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR:
         return "high"
     return "partial" if dominant_grade else "weak"
+
+
+def _degraded_confidence(reason: str, retrieval_quality: str) -> str:
+    """Grade a synthesis-less payload on what a caller can act on, not on prose.
+
+    ``confidence`` used to be pinned to "low" here on the grounds that it rates
+    the synthesised text and there is none. That referent is the problem, not the
+    answer to it: the field is what an agent reads to decide whether it still has
+    work to do, and pinning it told 69 percent of field calls to distrust evidence
+    that was often excellent — 84 percent of those "low" verdicts were unearned,
+    and the keyless install that never configures a provider got one on every call
+    forever. So the field is graded from the retrieval it actually served.
+
+    Two ceilings, both load bearing:
+
+    "high" is unreachable. ``answer`` on this path is assembled boilerplate, and
+    our own agent instructions license citing a high-confidence answer directly,
+    so a "high" here would be an invitation to cite the boilerplate. That was the
+    real objection behind the old pin and it is preserved as a cap rather than
+    discarded.
+
+    ``synthesis-failed`` stays "low" whatever retrieval did. The evidence is
+    identical to the no-provider case, but the *situation* is not: a provider is
+    configured, so a retry can still produce a real answer and this payload is not
+    the end of the line. "no-llm-provider" is the end of the line — no better reply
+    is coming for that install — so there the evidence is all there is to grade.
+    """
+    if reason != "no-llm-provider":
+        return "low"
+    return "low" if retrieval_quality == "weak" else "medium"
 
 
 def _is_question_named_body_cut_by_us(entry: dict, question_ids: set[str]) -> bool:
