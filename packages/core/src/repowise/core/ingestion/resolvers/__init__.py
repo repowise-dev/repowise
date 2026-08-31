@@ -22,6 +22,7 @@ from .lean import resolve_lean_import
 from .luau import resolve_luau_import
 from .php import resolve_php_import
 from .python import resolve_python_import
+from .qml import resolve_qml_import
 from .ruby import resolve_ruby_import
 from .rust import resolve_rust_import
 from .scala import resolve_scala_import
@@ -60,6 +61,9 @@ _RESOLVERS: dict[str, ResolverFn] = {
     "clojure": resolve_clojure_import,
     "haskell": resolve_haskell_import,
     "lean": resolve_lean_import,
+    # QtQuick module specs via the qmldir index; quoted paths resolved
+    # relative to the importing file (see qml.py).
+    "qml": resolve_qml_import,
     "erlang": resolve_erlang_import,
     "fsharp": resolve_fsharp_import,
     # dbt ref()/source(), gated on dbt_project.yml via the model index.

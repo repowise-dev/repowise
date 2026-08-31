@@ -28,6 +28,7 @@ from .fsharp import extract_fsharp_imports
 from .haskell import extract_haskell_imports
 from .html import extract_html_imports
 from .lean import extract_lean_imports
+from .qml import extract_qml_imports
 from .sql import extract_dbt_imports
 
 ExtractorFn = Callable[[str], list[Import]]
@@ -38,6 +39,9 @@ _EXTRACTORS: dict[str, ExtractorFn] = {
     "clojure": extract_clojure_imports,
     "haskell": extract_haskell_imports,
     "lean": extract_lean_imports,
+    # `import QtQuick` / `import "components"` — module specs and quoted
+    # relative references (see qml.py).
+    "qml": extract_qml_imports,
     "erlang": extract_erlang_imports,
     "fsharp": extract_fsharp_imports,
     # dbt {{ ref() }} / {{ source() }}, the only import system .sql files

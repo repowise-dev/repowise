@@ -45,6 +45,7 @@ from .pascal import SPEC as _PASCAL
 from .php import SPEC as _PHP
 from .proto import SPEC as _PROTO
 from .python import SPEC as _PYTHON
+from .qml import SPEC as _QML
 from .r import SPEC as _R
 from .razor import SPEC as _RAZOR
 from .ruby import SPEC as _RUBY
@@ -142,6 +143,7 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _ELM,
     _HASKELL,
     _LEAN,
+    _QML,
     _OCAML,
     _FSHARP,
     _CRYSTAL,

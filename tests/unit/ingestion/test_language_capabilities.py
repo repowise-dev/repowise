@@ -179,6 +179,9 @@ _PARTIAL = {
     # rather than full because template dialects (Django, Jinja, Go templates,
     # ERB, Handlebars) are invisible to an HTML grammar and yield nothing.
     "html",
+    # import QtQuick / import "components": module specs via the qmldir
+    # index, quoted references relative to the importing file (#727).
+    "qml",
 }
 
 
