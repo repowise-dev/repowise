@@ -64,6 +64,7 @@ def _apply_page_upsert(
     summary: str,
     target_path: str,
     source_hash: str,
+    content_hash: str,
     model_name: str,
     provider_name: str,
     input_tokens: int,
@@ -148,6 +149,11 @@ def _apply_page_upsert(
             existing.display_order = display_order
             existing.section_number = section_number
             existing.structural_key = structural_key
+            # The reuse key describes the *subject*, so it can change while
+            # the bytes do not (the same file documented under a new style).
+            # Refresh it on the touch path so an unchanged page still picks
+            # up the current renderer fingerprint (issue #1089).
+            existing.content_hash = content_hash or existing.content_hash
             return existing
 
         # Archive the current state before overwriting
@@ -176,6 +182,7 @@ def _apply_page_upsert(
         existing.summary = summary
         existing.target_path = target_path
         existing.source_hash = source_hash
+        existing.content_hash = content_hash or existing.content_hash
         existing.model_name = model_name
         existing.provider_name = provider_name
         existing.input_tokens = input_tokens
@@ -202,6 +209,7 @@ def _apply_page_upsert(
         summary=summary,
         target_path=target_path,
         source_hash=source_hash,
+        content_hash=content_hash,
         model_name=model_name,
         provider_name=provider_name,
         input_tokens=input_tokens,
@@ -234,6 +242,7 @@ async def upsert_page(
     summary: str = "",
     target_path: str,
     source_hash: str,
+    content_hash: str = "",
     model_name: str,
     provider_name: str,
     input_tokens: int = 0,
@@ -255,6 +264,11 @@ async def upsert_page(
     First call  → inserts Page at version=1.
     Subsequent  → archives the current Page as a PageVersion, then updates the
                   Page in-place (version += 1, created_at preserved).
+
+    ``content_hash`` is the cross-run reuse key: a stable digest of the page's
+    subject folded with a renderer fingerprint, surviving RAG-context drift
+    that invalidates ``source_hash`` on every full run (issue #1089). Empty
+    when the caller has no subject digest (pre-key callers keep working).
     """
     now = _now_utc()
     meta_json = json.dumps(metadata or {})
@@ -274,6 +288,7 @@ async def upsert_page(
         summary=summary,
         target_path=target_path,
         source_hash=source_hash,
+        content_hash=content_hash,
         model_name=model_name,
         provider_name=provider_name,
         input_tokens=input_tokens,
@@ -302,9 +317,13 @@ async def load_prior_pages(
     """Return a ``page_id → PriorPage`` map for cross-run cache reuse.
 
     Loads every existing wiki page for the repository so the generator can
-    short-circuit the LLM call when the freshly rendered prompt produces a
-    matching ``source_hash`` under the same model. Returns an empty dict if
-    nothing has been generated yet.
+    short-circuit the LLM call when the page's subject still matches under
+    the same model — keyed on ``content_hash`` when one is stored, else on
+    the freshly rendered prompt's ``source_hash``. Returns an empty dict if
+    nothing has been generated yet. Rows a model never wrote (``template``
+    provider — keyless stubs, or stubs left by failed provider calls) carry
+    their ``provider_name`` so the reuse gate can refuse to copy them
+    (issue #1089).
     """
     # Import lazily — keeps persistence independent of generation models at
     # module-load time.
@@ -315,11 +334,13 @@ async def load_prior_pages(
     for row in result.scalars():
         prior[row.id] = PriorPage(
             source_hash=row.source_hash,
+            content_hash=row.content_hash or "",
             model_name=row.model_name,
             content=row.content,
             input_tokens=row.input_tokens,
             output_tokens=row.output_tokens,
             cached_tokens=row.cached_tokens,
+            provider_name=row.provider_name,
         )
     return prior
 
@@ -346,6 +367,7 @@ async def upsert_page_from_generated(
         summary=getattr(gp, "summary", "") or "",
         target_path=gp.target_path,  # type: ignore[attr-defined]
         source_hash=gp.source_hash,  # type: ignore[attr-defined]
+        content_hash=getattr(gp, "content_hash", "") or "",  # type: ignore[attr-defined]
         model_name=gp.model_name,  # type: ignore[attr-defined]
         provider_name=gp.provider_name,  # type: ignore[attr-defined]
         input_tokens=gp.input_tokens,  # type: ignore[attr-defined]
@@ -428,6 +450,7 @@ async def upsert_pages_from_generated(
                 summary=getattr(gp, "summary", "") or "",
                 target_path=gp.target_path,
                 source_hash=gp.source_hash,
+                content_hash=getattr(gp, "content_hash", "") or "",
                 model_name=gp.model_name,
                 provider_name=gp.provider_name,
                 input_tokens=gp.input_tokens,

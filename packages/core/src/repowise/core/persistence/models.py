@@ -144,6 +144,13 @@ class Page(Base):
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     target_path: Mapped[str] = mapped_column(Text, nullable=False)
     source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Cross-run reuse key: a stable digest of the page's subject (the file /
+    # group / repo it documents) folded with a fingerprint of the renderer
+    # (prompt template, system prompt, language, style). Unlike ``source_hash``
+    # it survives RAG-context drift between runs, so an unchanged page is
+    # reused instead of re-billed on every full run. Empty for pages written
+    # before the key existed, or for a page with no stable subject.
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)
     provider_name: Mapped[str] = mapped_column(String(64), nullable=False)
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

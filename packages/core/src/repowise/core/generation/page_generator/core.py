@@ -24,6 +24,7 @@ import structlog
 
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 from repowise.core.providers.llm.base import BaseProvider, CacheHint, GeneratedResponse
+from repowise.core.providers.llm.template import TEMPLATE_PROVIDER_NAME
 
 from ..context.evidence import (
     EvidenceItem,
@@ -63,6 +64,13 @@ if TYPE_CHECKING:
     from pathlib import Path as _Path  # noqa: F401
 
 log = structlog.get_logger(__name__)
+
+# Bumped by hand when a change to the model-page reuse fingerprint must force
+# a one-time regeneration of subject-keyed pages whose renderer bytes did not
+# change: a prompt-template edit is picked up automatically (the template
+# source is hashed), so this only covers the cases hashing cannot see — the
+# same convention as ``STRUCTURAL_GENERATION_VERSION`` next door.
+MODEL_PAGE_GENERATION_VERSION = "1"
 
 
 def _attach_file_provenance(page: GeneratedPage, ctx: FilePageContext) -> None:
@@ -118,15 +126,20 @@ def _attach_file_provenance(page: GeneratedPage, ctx: FilePageContext) -> None:
 class PriorPage:
     """Snapshot of a previously-generated page used for cross-run reuse.
 
-    Lives in :class:`PageGenerator` keyed by ``page_id``. When the freshly
-    rendered prompt produces a matching ``source_hash`` under the same
-    ``model_name``, the LLM call is skipped and ``content`` is reused.
+    Lives in :class:`PageGenerator` keyed by ``page_id``. Reuse happens when
+    the freshly rendered page still matches on the *subject* the page
+    documents — ``content_hash`` when both sides have one, else the rendered
+    prompt's ``source_hash`` under the same ``model_name`` — and the row was
+    actually written by a model (``provider_name != 'template'``).
 
     ``content_hash`` is the preferred reuse key when both sides have one: it
-    stays stable across runs even when the rendered prompt drifts (RAG context
-    is rebuilt and populated concurrently each run, so ``source_hash`` alone
-    almost never matches on a reindex). Structural pages compute theirs in
-    :meth:`StructuralRenderMixin._structural_content_hash`.
+    stays stable across runs even when the rendered prompt drifts (RAG
+    context is rebuilt and populated concurrently each run, so ``source_hash``
+    alone almost never matches on a reindex — the defect that made every full
+    run re-bill every page, issue #1089). Structural pages compute theirs in
+    :meth:`StructuralRenderMixin._structural_content_hash`; model pages
+    compute it from their subject material (see
+    :meth:`PageGenerator._reuse_content_hash`).
     """
 
     source_hash: str
@@ -136,6 +149,10 @@ class PriorPage:
     output_tokens: int = 0
     cached_tokens: int = 0
     content_hash: str = ""
+    #: Persisted ``provider_name``. A row stamped ``template`` was never
+    #: written by a model — a keyless stub, or a stub a failed provider call
+    #: left behind — so it must never be reused as if it were prose.
+    provider_name: str = ""
 
 
 class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
@@ -338,6 +355,53 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
     # Provider call + page assembly
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _reuse_content_hash(material: str, fingerprint: str) -> str:
+        """Stable reuse key for a model-written page's subject.
+
+        ``material`` is the page's subject in a form that does not drift
+        between runs — the documented file's byte hash, a group's sorted
+        member list, the repo's name. ``fingerprint`` covers the renderer
+        (prompt template source, system prompt, language, style), so a
+        template/style upgrade forces a one-time regen exactly like the
+        structural pages' ``render_key`` (issue #1089).
+
+        An empty *material* yields an empty key, which keeps the page out of
+        subject-keyed reuse and falls back to the prompt-hash gate.
+        """
+        if not material:
+            return ""
+        return hashlib.sha256(f"{material}:{fingerprint}".encode()).hexdigest()
+
+    def _model_page_fingerprint(self, page_type: str, template: str) -> str:
+        """Renderer fingerprint folded into model pages' subject reuse keys.
+
+        Hashes the resolved prompt-template source (through the Jinja loader,
+        so a custom style's override fingerprints itself) together with the
+        system prompt, language and style — the same inputs that shape the
+        model's output, plus the hand-bumped generation version for the
+        changes hashing cannot see. Cached per (page_type, template) because a
+        full index computes it for thousands of pages.
+        """
+        try:
+            loader = getattr(self._jinja_env, "loader", None)
+            source = loader.get_source(self._jinja_env, template)[0] if loader else None
+        except Exception:
+            source = None
+        system_prompt = SYSTEM_PROMPTS.get(page_type, "")
+        raw = "\x00".join(
+            [
+                MODEL_PAGE_GENERATION_VERSION,
+                page_type,
+                template,
+                source or "",
+                system_prompt,
+                self._language or "en",
+                self._style.fingerprint,
+            ]
+        )
+        return hashlib.sha256(raw.encode()).hexdigest()
+
     async def _call_provider(
         self,
         page_type: str,
@@ -345,6 +409,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         request_id: str,
         target_path: str | None = None,
         source_salt: str = "",
+        reuse_content_hash: str = "",
     ) -> GeneratedResponse:
         """Call the provider with caching, optionally prefixing a language instruction.
 
@@ -353,31 +418,53 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         generation-version salt so a builder/template upgrade forces a one-time
         regen even when the rendered prompt is byte-identical. Empty for every
         other page type, so their reuse hashes are unchanged.
+
+        *reuse_content_hash* is the stable subject digest this page's prose is
+        keyed on (issue #1089). When the caller provides one, the persistent
+        reuse gate prefers it over ``source_hash``: the prompt drifts run to
+        run (RAG context is rebuilt concurrently), so a source-hash-only gate
+        re-billed every page on every full run, while the subject digest stays
+        put for an unchanged file/group/repo. When the prior row was never
+        actually written by a model (``provider_name == 'template'`` — a
+        keyless stub, or a stub left by a failed provider call), it is never
+        reused: copying a placeholder over a placeholder would keep the page
+        unwritten forever and hide the failure from ``repowise generate``.
         """
         # Persistent cross-run cache: if the page exists from a prior run, was
-        # produced by the same model, and the prompt's source_hash matches,
-        # reuse the stored content without an LLM call.
+        # produced by the same model, and still matches on its subject, reuse
+        # the stored content without an LLM call.
         if self._config.cache_enabled and target_path is not None:
             page_id = compute_page_id(page_type, target_path)
             prior = self._prior_pages.get(page_id)
-            if (
-                prior is not None
-                and prior.model_name == self._provider.model_name
-                and prior.source_hash == compute_source_hash(user_prompt + source_salt)
-            ):
-                self._reuse_count += 1
-                log.debug(
-                    "page_cache.persistent_hit",
-                    page_type=page_type,
-                    target_path=target_path,
-                )
-                return GeneratedResponse(
-                    content=prior.content,
-                    input_tokens=0,
-                    output_tokens=0,
-                    cached_tokens=0,
-                    usage={"reused_from_prior_run": True},
-                )
+            if prior is not None and prior.model_name == self._provider.model_name:
+                if reuse_content_hash and prior.content_hash:
+                    subject_match = prior.content_hash == reuse_content_hash
+                else:
+                    # No subject digest on either side (pre-key pages, or a
+                    # caller that could not derive one): fall back to the
+                    # rendered-prompt hash, the gate's historical behaviour.
+                    subject_match = (
+                        prior.source_hash == compute_source_hash(user_prompt + source_salt)
+                    )
+                # A row stamped ``template`` is a stub, never prose. Reusing
+                # it would present a placeholder as the finished page and —
+                # because stubs are kept out of the resume ledger — would let
+                # the run claim the page was written when nothing wrote it.
+                if subject_match and prior.provider_name != TEMPLATE_PROVIDER_NAME:
+                    self._reuse_count += 1
+                    log.debug(
+                        "page_cache.persistent_hit",
+                        page_type=page_type,
+                        target_path=target_path,
+                        key="subject" if reuse_content_hash else "prompt",
+                    )
+                    return GeneratedResponse(
+                        content=prior.content,
+                        input_tokens=0,
+                        output_tokens=0,
+                        cached_tokens=0,
+                        usage={"reused_from_prior_run": True},
+                    )
 
         key = self._compute_cache_key(page_type, user_prompt)
         if self._config.cache_enabled and key in self._cache:
