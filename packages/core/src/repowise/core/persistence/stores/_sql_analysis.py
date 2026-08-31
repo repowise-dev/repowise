@@ -188,9 +188,15 @@ class _SqlAnalysisMixin(AnalysisIndexStore):
         await crud.save_health_findings(self._session, repository_id, findings)
 
     async def save_health_metrics(
-        self, repository_id: str, metrics: list[Any]
+        self,
+        repository_id: str,
+        metrics: list[Any],
+        *,
+        analyzed_commit: str | None = None,
     ) -> None:
-        await crud.save_health_metrics(self._session, repository_id, metrics)
+        await crud.save_health_metrics(
+            self._session, repository_id, metrics, analyzed_commit=analyzed_commit
+        )
 
     async def upsert_health_findings(
         self,
