@@ -72,13 +72,27 @@ def wired(monkeypatch, tmp_path):
     return engine, store, published, tmp_path
 
 
+def _answer_only(result: dict) -> dict:
+    """The tool's own payload, minus the budget envelope the bridge stamps.
+
+    A bridged call is budgeted the way the MCP middleware budgets an MCP call,
+    so every response gains ``_meta.response_budget``. What must not change is
+    the answer the tool returned.
+    """
+    meta = {k: v for k, v in (result.get("_meta") or {}).items() if k != "response_budget"}
+    answer = {k: v for k, v in result.items() if k != "_meta"}
+    if meta:
+        answer["_meta"] = meta
+    return answer
+
+
 def test_it_publishes_this_repos_resources_and_tears_them_down(wired):
     engine, store, published, repo = wired
 
     async def _tool():
         return {"ok": True}
 
-    assert tool_bridge.call_tool(repo, _tool, "get_symbol") == {"ok": True}
+    assert _answer_only(tool_bridge.call_tool(repo, _tool, "get_symbol")) == {"ok": True}
     # The session factory is the object that decides *which repo's database*
     # answers, so it is the one most worth pinning.
     assert published["session_factory"].kw["bind"] is engine
@@ -150,7 +164,7 @@ def test_a_store_that_fails_to_close_does_not_lose_the_answer(wired, monkeypatch
     async def _tool():
         return {"ok": True}
 
-    assert tool_bridge.call_tool(repo, _tool, "get_symbol") == {"ok": True}
+    assert _answer_only(tool_bridge.call_tool(repo, _tool, "get_symbol")) == {"ok": True}
     assert engine.disposed
 
 
@@ -274,7 +288,7 @@ def test_a_store_one_repowise_older_than_the_models_is_still_readable(monkeypatc
             await session.execute(select(Repository).limit(1))
         return {"ok": True}
 
-    assert tool_bridge.call_tool(tmp_path, _tool, "get_answer") == {"ok": True}
+    assert _answer_only(tool_bridge.call_tool(tmp_path, _tool, "get_answer")) == {"ok": True}
 
     conn = sqlite3.connect(db_file)
     healed = {r[1] for r in conn.execute("pragma table_info(repositories)")}
@@ -385,3 +399,26 @@ def test_a_repo_that_asked_for_keyless_is_not_reported_as_degraded(
     asyncio.run(tool_bridge._open_vector_store(tmp_path))
 
     assert restore_embedder_status._embedder_status["degraded"] is False
+
+
+def test_a_bridged_call_is_bounded_like_an_mcp_one(wired):
+    """The CLI awaits tool functions directly, so no middleware runs.
+
+    Budgeting has to happen here or ``repowise search --format json``, which
+    agents read, returns whatever the tool built.
+    """
+    _engine, _store, _published, repo = wired
+
+    async def _tool():
+        return {
+            "results": [{"path": f"src/f{i}.py", "excerpt": "x" * 900} for i in range(80)],
+            "_meta": {},
+        }
+
+    result = tool_bridge.call_tool(repo, _tool, "search_codebase")
+
+    budget = result["_meta"]["response_budget"]
+    assert budget["serialized_chars"] <= budget["limit_chars"]
+    assert result["truncated"] is True
+    assert len(result["results"]) < 80
+    assert result["_meta"]["omitted"]["refs"]
