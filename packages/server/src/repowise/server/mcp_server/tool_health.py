@@ -55,7 +55,11 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._budget import (
+    OmissionCollector,
+    register_post_enforce,
+    register_post_shed,
+)
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -1041,6 +1045,60 @@ def _refactoring_plans_status(
     }
 
 
+def _prune_orphaned_validation_profiles(
+    result: dict[str, Any], collector: OmissionCollector
+) -> None:
+    """Drop profiles whose plan the response budget removed.
+
+    A validation profile only means anything next to the plan referencing it,
+    so leaving one behind after its plan is shed hands the agent an id that
+    resolves to nothing.
+    """
+    plans = result.get("refactoring_plans")
+    profiles = result.get("validation_profiles")
+    if not isinstance(plans, list) or not isinstance(profiles, list):
+        return
+    referenced = {
+        plan.get("validation_profile_id")
+        for plan in plans
+        if isinstance(plan, dict) and plan.get("validation_profile_id")
+    }
+    kept = [
+        profile
+        for profile in profiles
+        if isinstance(profile, dict) and profile.get("id") in referenced
+    ]
+    dropped = [profile for profile in profiles if profile not in kept]
+    if not dropped:
+        return
+    collector.add("validation_profiles no longer referenced after response budgeting", dropped)
+    result["validation_profiles"] = kept
+    result["validation_profiles_emitted"] = len(kept)
+    result["validation_profiles_reduced_reason"] = "response_budget"
+    result["truncated"] = True
+
+
+def _reconcile_plan_status(result: dict[str, Any]) -> None:
+    """Keep plan availability honest after the final budget mutates collections."""
+    status = result.get("refactoring_plans_status")
+    plans = result.get("refactoring_plans")
+    if not isinstance(status, dict) or status.get("state") != "available":
+        return
+    if plans is not None and (not isinstance(plans, list) or plans):
+        return
+    if not result.get("refactoring_plans_total", 0):
+        return
+    status.update(
+        state="available_not_emitted",
+        reason="response_budget",
+        message="Plans exist but were removed by the final response budget.",
+    )
+
+
+register_post_shed("get_health", _prune_orphaned_validation_profiles)
+register_post_enforce("get_health", _reconcile_plan_status)
+
+
 def _attach_health_analysis_meta(
     meta: dict[str, Any], metrics: list[HealthFileMetric]
 ) -> None:
@@ -1065,7 +1123,7 @@ async def _attach_repository_analysis_meta(
     the analysis, but every detail mode used to answer it from the rows it
     happened to be reporting on. A ``plan_id`` call scoped to a file whose row
     carries a commit said ``available`` at the same instant the dashboard said
-    ``degraded (analysis_commit_not_recorded)`` from the repo-wide latest row,
+    ``provenance_unknown (analysis_commit_not_recorded)`` from the repo-wide row,
     and the reverse when the scoped file was the one missing it. Three bounded
     aggregates, so agreeing costs no scan.
     """
@@ -1110,7 +1168,12 @@ def _write_health_analysis_meta(
     metrics = has_metrics
     analyzed = latest_at is not None
     commits_count = distinct_commits
-    status = "available" if latest_commit else "degraded" if metrics else "unavailable"
+    # Metrics without a recorded commit are usable but unattributable: a
+    # provenance gap, not degradation. ``degraded`` is reserved tool-wide for a
+    # capability that failed or was unavailable.
+    status = (
+        "available" if latest_commit else "provenance_unknown" if metrics else "unavailable"
+    )
     analysis: dict[str, Any] = {
         "status": status,
         "source": "stored_health_analysis",
@@ -2829,8 +2892,8 @@ async def get_health(
     analyzed_source = metric_rows if scoped else all_metrics
     if scoped:
         # Scoped calls used to answer repository freshness from the caller's own
-        # files, which is how the same repo read ``available`` and ``degraded``
-        # in the same second depending on which mode answered.
+        # files, so one repo read two different statuses in the same second
+        # depending on which mode answered.
         await _attach_repository_analysis_meta(session, repository, result["_meta"])
     else:
         _attach_health_analysis_meta(result["_meta"], analyzed_source)

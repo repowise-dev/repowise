@@ -2049,7 +2049,9 @@ async def test_meta_omits_the_commit_when_no_row_records_one(setup_mcp, health_d
         "source_bytes_verified": False,
     }
     analysis = meta["health_analysis"]
-    assert analysis["status"] == "degraded"
+    # Usable metrics with no recorded commit: a provenance gap, not a failed
+    # capability, which is what ``degraded`` means everywhere else on the wire.
+    assert analysis["status"] == "provenance_unknown"
     assert analysis["reason"] == "analysis_commit_not_recorded"
     assert analysis["refresh"] == {
         "command": "repowise update",

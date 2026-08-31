@@ -34,7 +34,7 @@ def test_sealed_corpus_has_six_independent_query_shapes() -> None:
 
     assert corpus["sealed_at_commit"] == "c2f915d07c11ca3f451309054dfb610e75b8ae26"
     assert corpus["window_size"] == 5
-    assert corpus["modes"] == ["full", "degraded"]
+    assert corpus["modes"] == ["full", "keyless"]
     assert {case["shape"] for case in cases} == EXPECTED_SHAPES
     assert len(cases) == len(EXPECTED_SHAPES)
 
@@ -50,7 +50,7 @@ def test_sealed_corpus_has_six_independent_query_shapes() -> None:
         assert set(case["supported_generic_targets"]) <= candidate_targets
         for candidate in case["candidates"]:
             assert set(candidate["legs"]) == set(corpus["modes"])
-            assert candidate["legs"]["degraded"], "keyless candidates must retain a local leg"
+            assert candidate["legs"]["keyless"], "keyless candidates must retain a local leg"
 
 
 def test_generic_support_labels_are_fixture_owned_and_include_positive_controls() -> None:
@@ -73,17 +73,17 @@ def test_generic_support_labels_are_fixture_owned_and_include_positive_controls(
     )
 
 
-def test_full_and_degraded_arms_share_queries_windows_and_oracles() -> None:
+def test_full_and_keyless_arms_share_queries_windows_and_oracles() -> None:
     corpus = load_retrieval_precision_corpus()
 
-    assert corpus["degraded_mode"] == {
+    assert corpus["keyless_mode"] == {
         "embedder": "keyless",
         "llm": "absent",
         "retained_legs": ["path", "symbol", "fts", "history"],
     }
     for case in corpus["cases"]:
         assert all(candidate["legs"]["full"] for candidate in case["candidates"])
-        assert all(candidate["legs"]["degraded"] for candidate in case["candidates"])
+        assert all(candidate["legs"]["keyless"] for candidate in case["candidates"])
 
 
 def _rank_case(case: dict, mode: str, window_size: int) -> list[dict]:
@@ -158,7 +158,7 @@ def _case_metrics(corpus: dict, case: dict, mode: str) -> dict:
     }
 
 
-def test_sealed_ranking_corpus_in_full_and_degraded_modes() -> None:
+def test_sealed_ranking_corpus_in_full_and_keyless_modes() -> None:
     corpus = load_retrieval_precision_corpus()
 
     for mode in corpus["modes"]:
@@ -171,5 +171,5 @@ def test_sealed_ranking_corpus_in_full_and_degraded_modes() -> None:
                 assert metrics["protected"], (case["shape"], mode, metrics)
             for required in case["required_targets"]:
                 assert required in metrics["targets"], (case["shape"], mode, metrics)
-            if mode == "degraded":
+            if mode == "keyless":
                 assert all("semantic" not in sources for sources in metrics["sources"])

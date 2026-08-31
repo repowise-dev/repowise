@@ -21,6 +21,7 @@ from repowise.server.mcp_server._budget.budgeter import (
     truncate_to_budget,
 )
 from repowise.server.mcp_server._budget.collector import OmissionCollector
+from repowise.server.mcp_server._budget.hooks import run_post_enforce, run_post_shed
 
 DEFAULT_RESPONSE_CHARS = 24_000
 EXPANDED_RESPONSE_CHARS = 32_000
@@ -36,6 +37,12 @@ class ResponseBudgetContract:
     expansion_argument: str | None = "include"
     protected: tuple[str, ...] = ()
 
+
+#: What a tool gets when it declares no priority of its own. An empty shed
+#: order leaves the ordinary pass a no-op; the final size guard is what this
+#: buys. Declining to rank your evidence has the guard rank it, and is never a
+#: choice to be delivered unbounded.
+_DEFAULT_CONTRACT = ResponseBudgetContract("blocks")
 
 _CONTRACTS: dict[str, ResponseBudgetContract] = {
     "get_context": ResponseBudgetContract("targets", protected=("targets",)),
@@ -202,6 +209,98 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "gap_analysis",
         ),
     ),
+    # The tool caps source at 600 *lines*, and 600 lines of dense code measured
+    # 79k chars — far past the ceiling that line cap was sized against. Callee
+    # bodies are context for the root symbol, so they go first.
+    "get_symbol": ResponseBudgetContract(
+        "blocks",
+        ("callee_bodies[]", "candidates[]", "source"),
+        expansion_argument=None,
+        protected=(
+            "symbol_id",
+            "file",
+            "name",
+            "qualified_name",
+            "signature",
+            "kind",
+            "start_line",
+            "end_line",
+            "verified",
+            "continuation",
+            "continuation_reference",
+            "error",
+        ),
+    ),
+    # Same order the tool used, enforced where the size is rechecked after the
+    # trust envelope: its own pass reserved 400 chars for a collector and the
+    # metadata that followed added roughly 2.6k.
+    "search_codebase": ResponseBudgetContract(
+        "blocks",
+        ("candidates", "results[]"),
+        expansion_argument=None,
+        protected=("results", "mode", "exact_match"),
+    ),
+    "get_dead_code": ResponseBudgetContract(
+        "blocks",
+        # Same order the tool used for its own pass, then the ranked tiers
+        # themselves, least-confident first.
+        (
+            "impact",
+            "by_directory",
+            "by_owner",
+            "tiers.low.items[]",
+            "tiers.medium.items[]",
+            "tiers.high.items[]",
+        ),
+        expansion_argument=None,
+        protected=("summary", "tiers", "workspace"),
+    ),
+    # One ranked list. ``total_entry_points`` is derived before shedding, so
+    # the count stays exact.
+    "get_execution_flows": ResponseBudgetContract(
+        "blocks",
+        ("flows[]",),
+        expansion_argument=None,
+        protected=("total_entry_points",),
+    ),
+    "get_dependency_path": ResponseBudgetContract(
+        "blocks",
+        ("shared_neighbors", "bridge_suggestions", "nearest_common_ancestors", "path[]"),
+        expansion_argument=None,
+        protected=("distance", "explanation"),
+    ),
+    "get_architecture": ResponseBudgetContract(
+        "blocks",
+        ("role_breakdown", "conformance_violations", "core_members[]"),
+        expansion_argument=None,
+        protected=("summary", "architecture_type", "score"),
+    ),
+    "get_conformance": ResponseBudgetContract(
+        "blocks",
+        ("cycles[]", "violations[]"),
+        expansion_argument=None,
+        protected=("summary", "violation_count", "cycle_count", "total_cycles"),
+    ),
+    "get_blast_radius": ResponseBudgetContract(
+        "blocks",
+        ("impact_score_semantics", "impacted[]"),
+        expansion_argument=None,
+        protected=("summary", "targets", "total_impacted", "unresolved_targets"),
+    ),
+    "list_repos": ResponseBudgetContract(
+        "blocks",
+        ("repos[]",),
+        expansion_argument=None,
+        protected=("workspace", "workspace_root", "default_repo"),
+    ),
+    # No shed order: the enabled path returns generated code whose shape we
+    # have not measured, and ranking blocks we have not seen would be a guess.
+    # It rides the final size guard until someone measures it.
+    "generate_refactoring_code": ResponseBudgetContract(
+        "blocks",
+        expansion_argument=None,
+        protected=("suggestion_id", "resolved", "error"),
+    ),
 }
 
 
@@ -353,23 +452,6 @@ def _emergency_fit(
             return
 
 
-def _reconcile_health_plan_status(result: dict[str, Any]) -> None:
-    """Keep plan availability honest after the final budget mutates collections."""
-    status = result.get("refactoring_plans_status")
-    plans = result.get("refactoring_plans")
-    if not isinstance(status, dict) or status.get("state") != "available":
-        return
-    if plans is not None and (not isinstance(plans, list) or plans):
-        return
-    if not result.get("refactoring_plans_total", 0):
-        return
-    status.update(
-        state="available_not_emitted",
-        reason="response_budget",
-        message="Plans exist but were removed by the final response budget.",
-    )
-
-
 def enforce_response_budget(
     tool: str,
     result: Any,
@@ -379,10 +461,15 @@ def enforce_response_budget(
     kwargs: dict[str, Any],
     repo_root: str | Path | None = None,
 ) -> Any:
-    """Apply *tool*'s contract to its final, metadata-complete result."""
-    contract = _CONTRACTS.get(tool)
-    if contract is None or not isinstance(result, dict):
+    """Apply *tool*'s contract to its final, metadata-complete result.
+
+    A tool with no declared contract is budgeted under :data:`_DEFAULT_CONTRACT`
+    rather than returned untouched: an undeclared priority is a missing shed
+    order, never a claim that the response is small.
+    """
+    if not isinstance(result, dict):
         return result
+    contract = _CONTRACTS.get(tool, _DEFAULT_CONTRACT)
 
     if repo_root is None:
         from repowise.server.mcp_server import _state
@@ -416,33 +503,7 @@ def enforce_response_budget(
             headroom=0,
             record_counts=True,
         )
-        if tool == "get_why":
-            # Re-derived after shedding: the basis names a lane, and a lane
-            # this pass emptied must not leave the claim standing.
-            from repowise.server.mcp_server.tool_why import _stamp_answer_basis
-
-            _stamp_answer_basis(result)
-        if tool == "get_health":
-            plans = result.get("refactoring_plans")
-            profiles = result.get("validation_profiles")
-            if isinstance(plans, list) and isinstance(profiles, list):
-                referenced = {
-                    plan.get("validation_profile_id")
-                    for plan in plans
-                    if isinstance(plan, dict) and plan.get("validation_profile_id")
-                }
-                kept_profiles = [
-                    profile
-                    for profile in profiles
-                    if isinstance(profile, dict) and profile.get("id") in referenced
-                ]
-                dropped_profiles = [profile for profile in profiles if profile not in kept_profiles]
-                if dropped_profiles:
-                    collector.add("validation_profiles no longer referenced after response budgeting", dropped_profiles)
-                    result["validation_profiles"] = kept_profiles
-                    result["validation_profiles_emitted"] = len(kept_profiles)
-                    result["validation_profiles_reduced_reason"] = "response_budget"
-                    result["truncated"] = True
+        run_post_shed(tool, result, collector)
         collector.attach(result)
 
     if response_chars(result) > limit:
@@ -450,8 +511,7 @@ def enforce_response_budget(
         _emergency_fit(result, contract, emergency, working_limit)
         emergency.attach(result)
 
-    if tool == "get_health":
-        _reconcile_health_plan_status(result)
+    run_post_enforce(tool, result)
 
     if result.get("truncated"):
         result.setdefault("_meta", {}).setdefault("state", {})["truncated"] = True

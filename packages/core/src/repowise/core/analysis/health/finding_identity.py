@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import posixpath
 from typing import Any
+
+from repowise.core.references import path_identity
 
 from .rows import detail_map, field
 
@@ -42,12 +43,6 @@ when unrelated code changes.
 """
 
 
-def _path_identity(path: str) -> str:
-    """One repository-relative POSIX form, so a Windows caller matches."""
-    normalized = posixpath.normpath(str(path).strip().replace("\\", "/"))
-    return normalized.removeprefix("./")
-
-
 def finding_public_id(row: Any) -> str:
     """The stable public id for one finding row."""
     details = {
@@ -58,7 +53,7 @@ def finding_public_id(row: Any) -> str:
     kernel = {
         "kernel_version": FINDING_ID_VERSION,
         "dimension": field(row, "dimension", None) or "defect",
-        "path": _path_identity(field(row, "file_path", "") or ""),
+        "path": path_identity(field(row, "file_path", "") or ""),
         "kind": field(row, "biomarker_type", "") or "",
         "symbol": field(row, "function_name", None) or "",
         "line_start": field(row, "line_start", None),

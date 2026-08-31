@@ -111,6 +111,12 @@ def _signature() -> inspect.Signature:
 
 
 def _enforce(tool: str, payload: dict[str, Any], include: list[str] | None = None) -> dict:
+    # A tool registers its budget hooks when its module loads, which in
+    # production has always happened by the time the middleware calls through.
+    # Loading the surface is what makes a direct call mirror that.
+    from repowise.server.mcp_server import ensure_full_surface
+
+    ensure_full_surface()
     kwargs = {"include": include} if include is not None else {}
     return enforce_response_budget(
         tool,
@@ -397,3 +403,91 @@ async def test_budget_repo_root_follows_workspace_alias(
 
     signature = inspect.signature(call)
     assert await resolve_response_budget_repo_root(signature, (), {"repo": "other"}) == selected
+
+
+def test_every_registered_tool_declares_a_contract() -> None:
+    """No tool may fall through the shared layer and be delivered unbounded."""
+    from repowise.server.mcp_server import _TOOL_MODULES
+    from repowise.server.mcp_server._budget import budgeted_tool_names
+
+    assert set(_TOOL_MODULES) == set(budgeted_tool_names())
+
+
+def test_no_contract_sheds_a_block_it_also_protects() -> None:
+    """Removing a whole top-level block the guard protects is a contradiction.
+
+    Trimming a protected block's tail (``targets[]`` under ``targets``) is not:
+    ``fit_to_budget`` ranks rows, ``protected`` only stops wholesale removal.
+    """
+    from repowise.server.mcp_server._budget.contracts import _CONTRACTS
+
+    for tool, contract in _CONTRACTS.items():
+        whole_blocks = {
+            key for key in contract.shed_order if "." not in key and not key.endswith("[]")
+        }
+        assert not whole_blocks & set(contract.protected), tool
+
+
+def test_every_hook_owner_registers_on_tool_import() -> None:
+    """A hook lost at import is a silent correctness bug, so pin the owners."""
+    from repowise.server.mcp_server import ensure_full_surface
+    from repowise.server.mcp_server._budget import registered_hook_tools
+
+    ensure_full_surface()
+    assert {"get_health", "get_why", "search_codebase"} <= registered_hook_tools()
+
+
+def test_an_undeclared_tool_is_still_bounded_and_says_so(setup_mcp: str) -> None:
+    """The floor, for a name the registry does not know."""
+    payload = {"body": "x" * 60_000, "_meta": {"contract_version": 1}}
+
+    result = _enforce("not_a_registered_tool", payload)
+
+    assert len(json.dumps(result, separators=(",", ":"), default=str)) <= (
+        result["_meta"]["response_budget"]["limit_chars"]
+    )
+    assert result["truncated"] is True
+    assert result["_meta"]["omitted"]["refs"]
+    assert "repowise expand" in result["_meta"]["omitted"]["restore"]
+
+
+def test_oversized_symbol_read_sheds_callees_before_the_body(setup_mcp: str) -> None:
+    """get_symbol's measured worst case: callee context goes before the subject."""
+    payload = {
+        "symbol_id": "src/hub.py::Hub",
+        "file": "src/hub.py",
+        "name": "Hub",
+        "verified": True,
+        "continuation": "src/hub.py:601-1200",
+        "source": "BODY" * 4_000,
+        "callee_bodies": [{"symbol_id": f"src/c.py::c{i}", "source": "C" * 4_000} for i in range(8)],
+        "_meta": {"contract_version": 1},
+    }
+
+    result = _enforce("get_symbol", payload)
+
+    assert result["symbol_id"] == "src/hub.py::Hub"
+    assert result["continuation"] == "src/hub.py:601-1200"
+    assert result["source"], "the subject body outlives its callee context"
+    assert len(result.get("callee_bodies") or []) < 8
+    assert result["truncated"] is True
+    assert result["_meta"]["omitted"]["refs"]
+
+
+def test_budget_hooks_run_for_the_tool_that_registered_them() -> None:
+    """A hook is keyed by tool, so it must not fire for another tool's response."""
+    from repowise.server.mcp_server._budget import hooks
+
+    seen: list[str] = []
+
+    def hook(result: dict[str, Any]) -> None:
+        seen.append(result["tool"])
+
+    hooks.register_post_enforce("tool_a", hook)
+    try:
+        hooks.run_post_enforce("tool_a", {"tool": "tool_a"})
+        hooks.run_post_enforce("tool_b", {"tool": "tool_b"})
+    finally:
+        hooks._POST_ENFORCE.pop("tool_a", None)
+
+    assert seen == ["tool_a"]

@@ -381,13 +381,18 @@ def finalize_trust_envelope(result: Any, *, evidence_kind: str | None = None) ->
     elif evidence_kind == "generated":
         meta.setdefault("existing_verified_code", False)
 
-    state: dict[str, bool] = {}
+    state: dict[str, Any] = {}
     combined = {**result, **meta}
-    if any(
-        value and (key == "degraded" or key.endswith("_degraded"))
+    # The bool is deliberately coarse, so name the keys behind it: "trust is
+    # lower" without "which capability" is not actionable.
+    degraded_by = sorted(
+        key
         for key, value in combined.items()
-    ):
+        if value and (key == "degraded" or key.endswith("_degraded"))
+    )
+    if degraded_by:
         state["degraded"] = True
+        state["degraded_reasons"] = degraded_by
     if any(
         value and (key == "partial" or key.endswith("_partial")) for key, value in combined.items()
     ):

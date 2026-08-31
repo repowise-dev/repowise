@@ -28,6 +28,7 @@ from repowise.server.mcp_server._budget import (
     cap_collection,
     fit_to_budget,
     over_budget,
+    register_post_shed,
 )
 from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
 from repowise.server.mcp_server._episodes import bank_overflow, episode_evidence
@@ -102,6 +103,18 @@ def _stamp_answer_basis(result: dict) -> dict:
     elif result.get("related_documentation"):
         result["answer_basis"] = "documentation"
     return result
+
+
+def _restamp_answer_basis(result: dict, _collector: OmissionCollector) -> None:
+    """Re-derive the basis after shedding.
+
+    The basis names a lane, and a lane the budget pass emptied must not leave
+    the claim standing.
+    """
+    _stamp_answer_basis(result)
+
+
+register_post_shed("get_why", _restamp_answer_basis)
 
 
 @mcp.tool(
