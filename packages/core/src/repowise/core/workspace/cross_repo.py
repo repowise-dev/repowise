@@ -36,8 +36,10 @@ CROSS_REPO_EDGES_FILENAME = "cross_repo_edges.json"
 
 # Bump when the meaning of the persisted fields changes; ``load_overlay``
 # discards older versions so stale scores never reach consumers that assume
-# the new semantics (v2: strength became a bounded [0,1) session share).
-_OVERLAY_VERSION: int = 2
+# the new semantics (v2: strength became a bounded [0,1) session share;
+# v3: co-change rows gained bounded supporting evidence — authors, example
+# commit pairs, max time gap — issue #483).
+_OVERLAY_VERSION: int = 3
 
 _DEFAULT_TIME_WINDOW_HOURS: int = 24
 _DEFAULT_COMMIT_LIMIT: int = 500
@@ -67,6 +69,11 @@ _MAX_EDGES_PER_REPO_PAIR: int = 50
 # Per-session cap on files paired per side, guarding the O(N*M) cross-product
 # against sprawling release/codemod sessions.
 _MAX_FILES_PER_SESSION_SIDE: int = 20
+# Evidence capture (#483): how many example matched commit pairs survive per
+# co-change pair, and how many distinct authors are recorded. Bounded so a
+# pair backed by hundreds of commit pairs cannot bloat the persisted overlay.
+_MAX_EVIDENCE_COMMIT_PAIRS: int = 3
+_MAX_EVIDENCE_AUTHORS: int = 5
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +169,21 @@ def _is_noise_path(path: str) -> bool:
 
 
 @dataclass
+class CoChangeEvidence:
+    """Bounded supporting evidence for one cross-repo co-change pair (#483).
+
+    A pair is a temporal, same-author hint; the evidence is what lets a user
+    judge whether the relationship is meaningful. The sample is capped —
+    ``_MAX_EVIDENCE_COMMIT_PAIRS`` example matched commit pairs per pair, so
+    the overlay cannot bloat on pairs backed by hundreds of commit pairs.
+    """
+
+    authors: list[str]  # distinct author emails, dedup, insertion order
+    commit_pairs: list[dict]  # capped [{source_sha, target_sha, date, gap_hours}]
+    max_gap_hours: float  # largest time gap between a matched commit pair
+
+
+@dataclass
 class CrossRepoCoChange:
     source_repo: str
     source_file: str
@@ -170,6 +192,7 @@ class CrossRepoCoChange:
     strength: float  # bounded [0, 1) recency-weighted share of co-sessions
     frequency: int  # distinct work sessions in which both files changed
     last_date: str  # ISO date of most recent co-change
+    evidence: CoChangeEvidence | None = None  # bounded sample, None pre-#483 overlays
 
 
 @dataclass
@@ -207,7 +230,27 @@ class CrossRepoOverlay:
 
     @classmethod
     def from_dict(cls, data: dict) -> CrossRepoOverlay:
-        co_changes = [CrossRepoCoChange(**c) for c in data.get("co_changes", [])]
+        def _co_change(c: dict) -> CrossRepoCoChange:
+            ev = c.get("evidence")
+            evidence = None
+            if isinstance(ev, dict) and (ev.get("commit_pairs") or ev.get("authors")):
+                evidence = CoChangeEvidence(
+                    authors=list(ev.get("authors") or []),
+                    commit_pairs=list(ev.get("commit_pairs") or []),
+                    max_gap_hours=float(ev.get("max_gap_hours", 0.0)),
+                )
+            return CrossRepoCoChange(
+                source_repo=c["source_repo"],
+                source_file=c["source_file"],
+                target_repo=c["target_repo"],
+                target_file=c["target_file"],
+                strength=float(c["strength"]),
+                frequency=int(c["frequency"]),
+                last_date=c.get("last_date", ""),
+                evidence=evidence,
+            )
+
+        co_changes = [_co_change(c) for c in data.get("co_changes", [])]
         return cls(
             version=data.get("version", 1),
             generated_at=data.get("generated_at", ""),
@@ -229,6 +272,7 @@ class _GitCommit:
     timestamp: int  # Unix epoch
     files: list[str] = field(default_factory=list)
     author_name: str = ""
+    sha: str = ""  # full commit SHA (%H)
 
     @property
     def author_identity(self) -> str:
@@ -260,7 +304,7 @@ def _parse_git_log(
                 "log",
                 f"-{commit_limit}",
                 # %x01 separator: author names may contain "|"
-                "--format=%x00%ae%x01%an%x01%ct",
+                "--format=%x00%ae%x01%an%x01%ct%x01%H",
                 "--name-only",
                 "--no-merges",
             ],
@@ -287,18 +331,20 @@ def _parse_git_log(
                 commits.append(current)
 
             header = line.lstrip("\x00").strip()
-            parts = header.split("\x01", 2)
-            if len(parts) == 3:
+            parts = header.split("\x01", 3)
+            if len(parts) >= 3:
                 email = parts[0].strip()
                 name = parts[1].strip()
                 try:
                     ts = int(parts[2].strip())
                 except (ValueError, TypeError):
                     ts = 0
+                sha = parts[3].strip() if len(parts) == 4 else ""
                 current = _GitCommit(
                     author_email=email,
                     timestamp=ts,
                     author_name=name,
+                    sha=sha,
                 )
             else:
                 current = None
@@ -458,6 +504,10 @@ def detect_cross_repo_co_changes(
     pair_scores: dict[tuple[str, str, str, str], float] = defaultdict(float)
     pair_freq: dict[tuple[str, str, str, str], int] = defaultdict(int)
     pair_last_ts: dict[tuple[str, str, str, str], int] = {}
+    # Evidence capture (#483): per-pair bounded sample of matched commits.
+    pair_evidence: dict[tuple[str, str, str, str], dict] = defaultdict(
+        lambda: {"authors": [], "commit_pairs": [], "max_gap_hours": 0.0}
+    )
 
     for tagged_commits in author_commits.values():
         tagged_commits.sort(key=lambda x: x[1].timestamp)
@@ -510,6 +560,41 @@ def detect_cross_repo_co_changes(
                             pair_freq[key] += 1
                             if key not in pair_last_ts or last_ts > pair_last_ts[key]:
                                 pair_last_ts[key] = last_ts
+                            # Evidence (#483): one example matched commit pair
+                            # per session — the commits in each repo that
+                            # touched the two files — capped per pair and
+                            # deduped by (source_sha, target_sha).
+                            ev = pair_evidence[key]
+                            src_commit = next(
+                                (c for _, c in session if c.sha and fa in c.files),
+                                None,
+                            )
+                            tgt_commit = next(
+                                (c for _, c in session if c.sha and fb in c.files),
+                                None,
+                            )
+                            if src_commit is not None and tgt_commit is not None:
+                                gap = abs(src_commit.timestamp - tgt_commit.timestamp) / 3600.0
+                                ev["max_gap_hours"] = max(ev["max_gap_hours"], gap)
+                                for email in (src_commit.author_email, tgt_commit.author_email):
+                                    if email and email not in ev["authors"]:
+                                        ev["authors"].append(email)
+                                pair = (src_commit.sha, tgt_commit.sha)
+                                if len(ev["commit_pairs"]) < _MAX_EVIDENCE_COMMIT_PAIRS and not any(
+                                    p["source_sha"] == pair[0] and p["target_sha"] == pair[1]
+                                    for p in ev["commit_pairs"]
+                                ):
+                                    ev["commit_pairs"].append(
+                                        {
+                                            "source_sha": pair[0][:8],
+                                            "target_sha": pair[1][:8],
+                                            "date": datetime.fromtimestamp(
+                                                last_ts, tz=UTC
+                                            ).strftime("%Y-%m-%d"),
+                                            "gap_hours": round(gap, 1),
+                                        }
+                                    )
+                            ev["authors"] = ev["authors"][:_MAX_EVIDENCE_AUTHORS]
 
     # Step 5+6: Normalize to a bounded share, filter, and build results
     results: list[CrossRepoCoChange] = []
@@ -533,6 +618,14 @@ def detect_cross_repo_co_changes(
             if last_ts > 0
             else ""
         )
+        ev = pair_evidence.get((src_repo, src_file, tgt_repo, tgt_file))
+        evidence = None
+        if ev and (ev["commit_pairs"] or ev["authors"]):
+            evidence = CoChangeEvidence(
+                authors=ev["authors"][:_MAX_EVIDENCE_AUTHORS],
+                commit_pairs=ev["commit_pairs"][:_MAX_EVIDENCE_COMMIT_PAIRS],
+                max_gap_hours=round(ev["max_gap_hours"], 1),
+            )
         results.append(
             CrossRepoCoChange(
                 source_repo=src_repo,
@@ -542,6 +635,7 @@ def detect_cross_repo_co_changes(
                 strength=round(strength, 3),
                 frequency=freq,
                 last_date=last_date,
+                evidence=evidence,
             )
         )
 

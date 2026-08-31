@@ -25,6 +25,7 @@ from repowise.server.schemas import (
     WorkspaceBlastRadiusResponse,
     WorkspaceBreakingChangesResponse,
     WorkspaceCoChangeEntry,
+    WorkspaceCoChangeEvidence,
     WorkspaceCoChangesResponse,
     WorkspaceConformanceResponse,
     WorkspaceContractDetail,
@@ -482,6 +483,9 @@ async def get_co_changes(
                 strength=cc.get("strength", 0.0),
                 frequency=cc.get("frequency", 0),
                 last_date=cc.get("last_date", ""),
+                evidence=WorkspaceCoChangeEvidence(**cc["evidence"])
+                if cc.get("evidence")
+                else None,
             )
             for cc in co_changes
         ],
