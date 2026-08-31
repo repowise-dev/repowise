@@ -8,8 +8,6 @@ cannot report stale health data. This pins the ``repowise health`` writer.
 
 from __future__ import annotations
 
-import pytest
-
 from repowise.cli.commands.health_cmd import persist as health_persist
 
 
@@ -51,9 +49,10 @@ def test_persist_health_stamps_analyzed_commit(tmp_path, monkeypatch) -> None:
         return _FakeRepo()
 
     class _FakeReport:
-        metrics = []
-        findings = []
-        kpis = {}
+        def __init__(self) -> None:
+            self.metrics: list = []
+            self.findings: list = []
+            self.kpis: dict = {}
 
     monkeypatch.setattr(
         "repowise.core.persistence.crud.save_health_metrics", _fake_save_health_metrics
