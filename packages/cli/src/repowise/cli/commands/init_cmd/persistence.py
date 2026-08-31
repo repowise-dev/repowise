@@ -106,7 +106,12 @@ async def _index_preserved_pages(sf: Any, fts: Any, preserved_page_ids: set[str]
         logger.debug("persist.preserved_fts_backfill_failed", error=str(exc))
 
 
-async def persist_result(result: Any, repo_path: Path, progress: Any | None = None) -> None:
+async def persist_result(
+    result: Any,
+    repo_path: Path,
+    progress: Any | None = None,
+    timings: Any | None = None,
+) -> None:
     """Persist a PipelineResult to the local SQLite database.
 
     Handles both index-only (no pages) and full (with pages + FTS) modes.
@@ -116,6 +121,9 @@ async def persist_result(result: Any, repo_path: Path, progress: Any | None = No
     to the wiki. Everything after "Generated N pages" used to happen under a
     single indeterminate spinner, so on a repo of a few thousand pages the run
     sat silent for minutes with no way to tell work from a hang.
+
+    *timings* splits that span into its SQL and full-text halves, which the
+    single ``persist`` number cannot distinguish.
     """
     from datetime import UTC, datetime
 
@@ -126,6 +134,7 @@ async def persist_result(result: Any, repo_path: Path, progress: Any | None = No
         persist_generation,
         persist_pipeline_result,
         sweep_stale_generated_pages,
+        timed,
         tombstone_absent_file_pages,
     )
 
@@ -240,24 +249,23 @@ async def persist_result(result: Any, repo_path: Path, progress: Any | None = No
     # holds a write lock raises "database is locked". The swept-id delete must
     # therefore stay here (it cannot move ahead of the SQL commit like the
     # vector delete can); it is idempotent and narrow (orphan FTS rows only).
-    if fts is not None and swept_page_ids:
-        await fts.delete_many(swept_page_ids)
-    if fts is not None and result.generated_pages:
-        if progress is not None:
-            progress.on_phase_start("persist", len(result.generated_pages))
-        for page in result.generated_pages:
-            await fts.index(
-                page.page_id,
-                page.title,
-                page.content,
-                summary=page.summary,
-                target_path=page.target_path,
-            )
+    with timed(timings, "persist.fts"):
+        if fts is not None and swept_page_ids:
+            await fts.delete_many(swept_page_ids)
+        if fts is not None and result.generated_pages:
             if progress is not None:
-                progress.on_item_done("persist")
-        if progress is not None:
-            progress.on_phase_done("persist")
-    await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
+                progress.on_phase_start("persist", len(result.generated_pages))
+            for page in result.generated_pages:
+                await fts.index(
+                    page.page_id,
+                    page.title,
+                    page.content,
+                    summary=page.summary,
+                    target_path=page.target_path,
+                )
+                if progress is not None:
+                    progress.on_item_done("persist")
+        await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
 
     # Stamp the analysis (+ generation) phases in the resume ledger now that
     # they're persisted, so a future resume can skip them too.
@@ -274,6 +282,11 @@ async def persist_result(result: Any, repo_path: Path, progress: Any | None = No
             await ledger.mark_completed(ResumePhase.GENERATION)
 
     await engine.dispose()
+    # Closed here rather than after the indexing loop: the preserved-page
+    # backfill and the ledger stamp are persistence too, and a phase that
+    # stopped short of them reported a different span per run mode.
+    if progress is not None:
+        progress.on_phase_done("persist")
 
 
 # ---------------------------------------------------------------------------

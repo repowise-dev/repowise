@@ -169,6 +169,7 @@ def _run_deterministic_generation_phase(
     embedder_name_resolved: str,
     embedder_was_requested: bool,
     resume: bool,
+    timings: Any | None = None,
 ) -> str:
     """Render the whole wiki from templates, for ``init --index-only``.
 
@@ -244,6 +245,7 @@ def _run_deterministic_generation_phase(
         embedder_name_resolved=embedder,
         resume=resume,
         verbose=True,
+        timings=timings,
     )
     return embedder
 
@@ -267,6 +269,7 @@ def _run_generation_phase(
     embedder_name_resolved: str,
     resume: bool,
     test_run: bool,
+    timings: Any | None = None,
 ) -> tuple[bool, bool]:
     """Run the LLM generation phase for a single-repo init.
 
@@ -396,6 +399,7 @@ def _run_generation_phase(
         resume=resume,
         verbose=True,
         test_run=test_run,
+        timings=timings,
     )
     return False, False
 
@@ -1302,6 +1306,10 @@ def init_command(
         # durations without changing the pipeline API. Timings get
         # persisted to state.json below.
         callback = PhaseTimingRecorder(rich_callback)
+        # The denominator. Phases nest (``persist.fts`` inside ``persist``)
+        # and some overlap, so the totals can exceed it - without it there is
+        # no way to tell an unrecorded stage from an overlapping one.
+        callback.table.start("run")
 
         # Always run ingestion + analysis first (generate_docs=False).
         # Generation happens separately after cost confirmation.
@@ -1366,12 +1374,9 @@ def init_command(
             )
             return
 
-    # Surface per-phase timing data to the caller — both for the
-    # state.json persistence below and for any future "profile" tooling
-    # that wants to introspect a run.
-    phase_timings: dict[str, float] = callback.timings
-    # Same idea, for the failures rather than the durations: what the run
-    # degraded on, in a place an agent can read after the terminal is gone.
+    # What the run degraded on, in a place an agent can read after the
+    # terminal is gone. Timings are read after persistence instead, so
+    # generation and the persist tail are in the table too.
     run_warnings: list[str] = list(rich_callback.warnings)
 
     # ---- Analysis summary (shown between analysis and generation) ----
@@ -1412,6 +1417,7 @@ def init_command(
             embedder_name_resolved=embedder_name_resolved,
             embedder_was_requested=embedder_was_requested,
             resume=resume,
+            timings=callback.table,
         )
     else:
         gen_stop, cost_declined = _run_generation_phase(
@@ -1436,6 +1442,7 @@ def init_command(
             # say nothing, so a template wiki is never a run to continue.
             resume=resume and _prior_docs_mode != "deterministic",
             test_run=test_run,
+            timings=callback.table,
         )
         if gen_stop:
             return
@@ -1471,6 +1478,7 @@ def init_command(
                 embedder_was_requested=True,
                 embedder_name_resolved=embedder_name_resolved,
                 resume=resume,
+                timings=callback.table,
             )
 
     # ---- Persistence ----
@@ -1499,15 +1507,19 @@ def init_command(
         TimeElapsedColumn(),
         console=console,
     ) as persist_bar:
-        persist_callback = RichProgressCallback(persist_bar, console)
+        persist_callback = callback.rebind(RichProgressCallback(persist_bar, console))
         # Announced before the work starts and re-announced with a real total
         # once the page loop knows one, so the stage is never silent.
         persist_callback.on_phase_start("persist", None)
-        run_async(persist_result(result, repo_path, persist_callback))
+        run_async(persist_result(result, repo_path, persist_callback, callback.table))
         persist_callback.on_phase_done("persist")
     # Persistence has its own callback, so its warnings need folding into the
     # run record explicitly — the state write below is the last chance.
     run_warnings.extend(persist_callback.warnings)
+    # Read now, not before generation: ingestion, analysis, generation and
+    # persistence all write into the one table.
+    callback.table.stop("run")
+    phase_timings: dict[str, float] = callback.timings
     console.print(f"  [{OK}]✓[/] Database updated")
 
     # Persist the onboarding choice so subsequent `repowise update` runs
