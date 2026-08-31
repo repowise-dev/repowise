@@ -14,7 +14,7 @@ the same list. Each rule promises at least ``pct`` of the code files under
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from typing import Any
 
 _STR = str
