@@ -2,7 +2,7 @@
 
 repowise exposes a curated set of tools via the [Model Context Protocol](https://modelcontextprotocol.io) (MCP). These tools give AI coding assistants (Claude Code, Codex, Cursor, Cline, Windsurf) structured access to your codebase intelligence: dependency graph, git history, documentation, and architectural decisions.
 
-17 tools are registered in total. A single-repo server advertises 10 by default: exactly the canonical tools. Workspace mode adds the `list_repos` discovery utility, for 11. 6 specialist tools are opt-in where eligible. The surface is configurable; see [Configuring the tool surface](#configuring-the-tool-surface).
+18 tools are registered in total. A single-repo server advertises 10 by default: exactly the canonical tools. Workspace mode adds the `list_repos` discovery utility, for 11. 7 specialist tools are opt-in where eligible. The surface is configurable; see [Configuring the tool surface](#configuring-the-tool-surface).
 
 **Start the MCP server:**
 
@@ -35,13 +35,14 @@ repowise mcp --transport sse --port 7338 # legacy SSE transport
 **Workspace discovery utility (default in workspace mode, 1)**
 [list_repos](#list_repos)
 
-**Opt-in specialists (6; workspace eligibility still applies)**
+**Opt-in specialists (7; workspace eligibility still applies)**
 [get_architecture](#get_architecture) &middot;
 [get_blast_radius](#get_blast_radius) &middot;
 [get_dependency_path](#get_dependency_path) &middot;
 [get_execution_flows](#get_execution_flows) &middot;
 [generate_refactoring_code](#generate_refactoring_code) &middot;
-[get_conformance](#get_conformance)
+[get_conformance](#get_conformance) &middot;
+[set_finding_status](#set_finding_status)
 
 Also see [Configuring the tool surface](#configuring-the-tool-surface), [Reversible truncation](#reversible-truncation-_metaomitted) and [Unrecognised arguments](#unrecognised-arguments-ignored_arguments).
 
@@ -1156,6 +1157,28 @@ Turns one structured refactoring plan from `get_health(include=["refactoring"])`
 
 ```
 generate_refactoring_code(suggestion_id="a1b2c3d4")
+```
+
+#### `set_finding_status`
+
+Records a durable disposition on one refactoring plan — the write half of the findings triage loop. `get_health(include=["refactoring"])` and the generated task prompts ask an agent to flag false positives, but until this tool there was nowhere to record that verdict from inside the agent loop. The status is stored on the plan row, and the analyzer's finalizer never re-emits a `false_positive` plan, so the triage survives every later run.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `suggestion_id` | string | Yes | The `id` or `public_id` of a plan from `get_health(include=["refactoring"])` |
+| `status` | string | Yes | One of `open`, `acknowledged`, `resolved`, `false_positive` |
+| `repo` | string | No | *(workspace only)* Target repo alias |
+| `reason` | string | No | Free-text audit note stored on the row (defaults to `"agent"`) |
+
+- `false_positive` — the plan is wrong for this repository; it is never re-emitted on future runs.
+- `acknowledged` — real, but the team is consciously not acting now; stays visible, stops counting as unheard.
+- `resolved` — the change landed (or the code moved on); a person-resolved plan stays resolved even if the detector still fires.
+- `open` — reset a prior decision.
+
+**When to use:** After `get_health(include=["refactoring"])` surfaces a plan you have judged, so the verdict becomes durable state instead of a one-off remark.
+
+```
+set_finding_status(suggestion_id="a1b2c3d4", status="false_positive", reason="false alarm: the class is a DTO")
 ```
 
 ---

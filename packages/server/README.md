@@ -232,9 +232,9 @@ Job progress events (`JobProgressEvent`) carry: `event` type, `file` currently b
 
 ## MCP Server
 
-repowise registers 17 MCP tools and advertises **10 by default** in single-repo
+repowise registers 18 MCP tools and advertises **10 by default** in single-repo
 mode (10 advertised by default, exactly the canonical set). Workspace mode adds
-`list_repos`; six specialist tools are opt-in where eligible. See
+`list_repos`; seven specialist tools are opt-in where eligible. See
 [`docs/agent/MCP_TOOLS.md`](../../docs/agent/MCP_TOOLS.md).
 Start the MCP server via:
 
