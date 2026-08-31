@@ -94,14 +94,12 @@ async def _index_preserved_pages(sf: Any, fts: Any, preserved_page_ids: set[str]
                         ).where(Page.id.in_(batch))
                     )
                 ).all()
-            for page_id, title, content, summary, target_path in rows:
-                await fts.index(
-                    page_id,
-                    title or "",
-                    content or "",
-                    summary=summary or "",
-                    target_path=target_path or "",
-                )
+            await fts.index_many(
+                [
+                    (page_id, title or "", content or "", summary or "", target_path or "")
+                    for page_id, title, content, summary, target_path in rows
+                ]
+            )
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("persist.preserved_fts_backfill_failed", error=str(exc))
 
@@ -255,15 +253,17 @@ async def persist_result(
         if fts is not None and result.generated_pages:
             if progress is not None:
                 progress.on_phase_start("persist", len(result.generated_pages))
-            for page in result.generated_pages:
-                await fts.index(
-                    page.page_id,
-                    page.title,
-                    page.content,
-                    summary=page.summary,
-                    target_path=page.target_path,
-                )
-                if progress is not None:
+            await fts.index_many(
+                [
+                    (page.page_id, page.title, page.content, page.summary, page.target_path)
+                    for page in result.generated_pages
+                ]
+            )
+            # The whole corpus lands in one transaction, so the bar this phase
+            # announced has nothing left to count down; complete it rather
+            # than leave a full-length bar sitting at zero.
+            if progress is not None:
+                for _ in result.generated_pages:
                     progress.on_item_done("persist")
         await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
 
