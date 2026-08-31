@@ -30,6 +30,7 @@ from repowise.cli.editor_setup import (
     select_agents_interactively,
     write_editor_project_files,
 )
+from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import (
     config_fingerprint,
     console,
@@ -47,7 +48,6 @@ from repowise.cli.helpers import (
     save_config_partial,
     save_state,
 )
-from repowise.cli.platform import telemetry
 from repowise.cli.providers import resolve_embedder
 from repowise.cli.providers.embedders import embedder_was_requested as _embedder_was_requested
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
@@ -790,8 +790,7 @@ def init_command(
     repo_path = resolve_repo_path(path)
 
     if not repo_path.is_dir():
-        telemetry.add_command_outcome(failure_reason="invalid_path")
-        raise click.ClickException(f"Not a directory: {repo_path}")
+        raise reasoned_error(f"Not a directory: {repo_path}", reason="invalid_path")
 
     # ---- Workspace detection ----
     # If the path contains multiple git repos (and is not itself a single repo),
@@ -816,8 +815,10 @@ def init_command(
     if seed_from:
         seed_base = Path(seed_from).resolve()
         if seed_base == repo_path.resolve():
-            telemetry.add_command_outcome(failure_reason="seed_from_is_target")
-            raise click.ClickException("--seed-from cannot be the same as the target directory.")
+            raise reasoned_error(
+                "--seed-from cannot be the same as the target directory.",
+                reason="seed_from_is_target",
+            )
     elif not no_seed and not (repo_path / ".repowise" / "state.json").exists():
         detected = detect_worktree_base(repo_path)
         if detected is not None and base_is_seedable(detected):
@@ -1148,10 +1149,10 @@ def init_command(
             "written versions stay in page history."
         )
         if not sys.stdin.isatty():
-            telemetry.add_command_outcome(failure_reason="wiki_overwrite_unconfirmed")
-            raise click.ClickException(
+            raise reasoned_error(
                 "Refusing to replace a model-written wiki with template pages. "
-                "Re-run with --yes to confirm, or drop --index-only."
+                "Re-run with --yes to confirm, or drop --index-only.",
+                reason="wiki_overwrite_unconfirmed",
             )
         if not click.confirm("  Replace the written wiki with template pages?", default=False):
             console.print("[dim]Nothing changed.[/dim]")
@@ -1265,8 +1266,10 @@ def init_command(
                         )
                     )
                 except ProviderError as exc:
-                    telemetry.add_command_outcome(failure_reason="provider_validation_failed")
-                    raise click.ClickException(f"Provider validation failed: {exc}") from exc
+                    raise reasoned_error(
+                        f"Provider validation failed: {exc}",
+                        reason="provider_validation_failed",
+                    ) from exc
             console.print(f"  [{OK}]✓[/] Provider connection verified")
 
     # ---- Phase 1 & 2: Ingestion + Analysis (always) ----

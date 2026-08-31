@@ -179,6 +179,14 @@ class InstrumentedGroup(click.Group):
         except click.ClickException as exc:
             status = "error"
             error_type = type(exc).__name__  # class name only, never the message
+            # Only the exception that actually ends the command reports its
+            # reason. Recording at the raise site instead attributed a failure
+            # to runs that caught it and went on to succeed.
+            reason = getattr(exc, "reason", None)
+            if isinstance(reason, str) and reason:
+                from repowise.cli.platform import telemetry
+
+                telemetry.add_command_outcome(failure_reason=reason)
             raise
         except Exception as exc:
             status = "error"
