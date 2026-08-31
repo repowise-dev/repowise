@@ -27,6 +27,10 @@ DEFAULT_RESPONSE_CHARS = 24_000
 EXPANDED_RESPONSE_CHARS = 32_000
 _FINAL_HEADROOM_CHARS = 1_200
 
+#: Floor for a long text field the guard trims in place. Below this the excerpt
+#: stops being worth reading and the omission ref is the whole answer.
+_MIN_KEPT_TEXT_CHARS = 800
+
 
 @dataclass(frozen=True)
 class ResponseBudgetContract:
@@ -211,12 +215,15 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
     ),
     # The tool caps source at 600 *lines*, and 600 lines of dense code measured
     # 79k chars — far past the ceiling that line cap was sized against. Callee
-    # bodies are context for the root symbol, so they go first.
+    # bodies are context for the root symbol, so they go first. ``source`` is
+    # protected so the guard trims it to what fits rather than dropping it: a
+    # symbol read with no body is a wasted call even with a recoverable ref.
     "get_symbol": ResponseBudgetContract(
         "blocks",
-        ("callee_bodies[]", "candidates[]", "source"),
+        ("callee_bodies[]", "candidates[]"),
         expansion_argument=None,
         protected=(
+            "source",
             "symbol_id",
             "file",
             "name",
@@ -446,7 +453,11 @@ def _emergency_fit(
         else:
             marker = collector.add_inline(path, value)
             suffix = f"\n{marker}" if marker else "\n[reduced to fit]"
-            container[key] = value[: max(0, 800 - len(suffix))] + suffix
+            # Keep as much as the budget actually allows rather than a fixed
+            # floor: cutting a 33k body to 800 characters costs the caller the
+            # whole read to save bytes the budget never asked for.
+            room = limit - (before - len(value)) - len(suffix)
+            container[key] = value[: max(_MIN_KEPT_TEXT_CHARS, room)] + suffix
         result["truncated"] = True
         if response_chars(result) >= before:
             return

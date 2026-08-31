@@ -468,8 +468,27 @@ def test_oversized_symbol_read_sheds_callees_before_the_body(setup_mcp: str) -> 
 
     assert result["symbol_id"] == "src/hub.py::Hub"
     assert result["continuation"] == "src/hub.py:601-1200"
-    assert result["source"], "the subject body outlives its callee context"
     assert len(result.get("callee_bodies") or []) < 8
+    assert result["truncated"] is True
+    assert result["_meta"]["omitted"]["refs"]
+
+
+def test_an_oversized_body_is_trimmed_to_fit_not_deleted(setup_mcp: str) -> None:
+    """A symbol read with no body is a wasted call, even with a recoverable ref."""
+    payload = {
+        "symbol_id": "src/hub.py::Hub",
+        "file": "src/hub.py",
+        "continuation": "src/hub.py:601-1200",
+        "source": "BODY" * 9_000,
+        "_meta": {"contract_version": 1},
+    }
+
+    result = _enforce("get_symbol", payload)
+
+    limit = result["_meta"]["response_budget"]["limit_chars"]
+    assert len(json.dumps(result, separators=(",", ":"), default=str)) <= limit
+    # Most of the budget goes to the body rather than to a bare pointer.
+    assert len(result["source"]) > limit // 2
     assert result["truncated"] is True
     assert result["_meta"]["omitted"]["refs"]
 
