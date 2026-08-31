@@ -21,9 +21,17 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import replace
+from typing import TYPE_CHECKING, Any
 
-from .biomarkers.base import BiomarkerResult
 from .models import HealthFileMetricData, HealthFindingData, Severity
+from .rows import field
+
+if TYPE_CHECKING:
+    # Annotation-only, and deliberately not imported at runtime: the biomarker
+    # package reaches ingestion and the tree-sitter grammars, which the scoring
+    # tables, the ranking key and the read-model folds have no use for. Keeping
+    # it behind the type gate is what makes those importable on their own.
+    from .biomarkers.base import BiomarkerResult
 
 # The band every dimension's score is clamped into. Named because the floor is
 # lossy — a file 12.9 points deep and one 9.1 points deep both print 1.0 — and
@@ -657,6 +665,15 @@ def attach_impacts(
     return out
 
 
+def _weight(row: Any) -> int:
+    """One row's NLOC weight, floored at 1 so no file weighs nothing."""
+    return max(int(field(row, "nloc", 0) or 0), 1)
+
+
+def _row_score(row: Any) -> float:
+    return float(field(row, "score", SCORE_MAX))
+
+
 def _wavg_attr(rows: list[HealthFileMetricData], attr: str) -> float | None:
     """NLOC-weighted average of one metric attribute, skipping ``None`` values.
 
@@ -664,13 +681,13 @@ def _wavg_attr(rows: list[HealthFileMetricData], attr: str) -> float | None:
     ``maintainability_score`` predates the split) so the KPI reads "not measured"
     rather than a misleading perfect 10.0.
     """
-    scored = [r for r in rows if getattr(r, attr, None) is not None]
+    scored = [r for r in rows if field(r, attr, None) is not None]
     if not scored:
         return None
-    total_w = sum(max(r.nloc, 1) for r in scored)
+    total_w = sum(_weight(r) for r in scored)
     if total_w == 0:
-        return sum(getattr(r, attr) for r in scored) / len(scored)
-    return sum(getattr(r, attr) * max(r.nloc, 1) for r in scored) / total_w
+        return sum(float(field(r, attr)) for r in scored) / len(scored)
+    return sum(float(field(r, attr)) * _weight(r) for r in scored) / total_w
 
 
 def nloc_weighted_score(rows: list[HealthFileMetricData]) -> float:
@@ -682,10 +699,10 @@ def nloc_weighted_score(rows: list[HealthFileMetricData]) -> float:
     """
     if not rows:
         return 10.0
-    total_w = sum(max(r.nloc, 1) for r in rows)
+    total_w = sum(_weight(r) for r in rows)
     if total_w == 0:
-        return sum(r.score for r in rows) / len(rows)
-    return sum(r.score * max(r.nloc, 1) for r in rows) / total_w
+        return sum(_row_score(r) for r in rows) / len(rows)
+    return sum(_row_score(r) * _weight(r) for r in rows) / total_w
 
 
 def hotspot_health(
@@ -713,7 +730,7 @@ def hotspot_health(
     when they have none. :func:`compute_kpis` still floors it to 10.0 for the
     persisted KPI, and says why there.
     """
-    rows = [m for m in metrics if m.file_path in hotspot_paths]
+    rows = [m for m in metrics if field(m, "file_path") in hotspot_paths]
     if not rows:
         return None
     return round(nloc_weighted_score(rows), 2)
@@ -750,8 +767,8 @@ def compute_kpis(
             "performance_hotspot": None,
         }
 
-    hotspots = [m for m in metrics if m.file_path in hotspot_paths]
-    worst = min(metrics, key=lambda m: m.score)
+    hotspots = [m for m in metrics if field(m, "file_path") in hotspot_paths]
+    worst = min(metrics, key=_row_score)
     maint_avg = _wavg_attr(metrics, "maintainability_score")
     maint_hotspot = _wavg_attr(hotspots, "maintainability_score")
     perf_avg = _wavg_attr(metrics, "performance_score")
@@ -765,8 +782,8 @@ def compute_kpis(
     return {
         "hotspot_health": hotspot_kpi if hotspot_kpi is not None else 10.0,
         "average_health": round(nloc_weighted_score(metrics), 2),
-        "worst_performer_path": worst.file_path,
-        "worst_performer_score": round(worst.score, 2),
+        "worst_performer_path": field(worst, "file_path"),
+        "worst_performer_score": round(_row_score(worst), 2),
         "file_count": len(metrics),
         "maintainability_average": round(maint_avg, 2) if maint_avg is not None else None,
         "maintainability_hotspot": round(maint_hotspot, 2) if maint_hotspot is not None else None,

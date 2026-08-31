@@ -11,6 +11,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
+from repowise.core.analysis.health.aggregation import module_rollups as _module_rollups
 from repowise.core.analysis.health.churn_complexity import churn_complexity_points
 from repowise.core.analysis.health.complexity.languages import LANGUAGE_MAPS
 from repowise.core.analysis.health.coverage import decay_since, measurement_ref
@@ -21,6 +22,7 @@ from repowise.core.analysis.health.grading import distribution as health_distrib
 from repowise.core.analysis.health.models import primary_finding
 from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
 from repowise.core.analysis.health.perf.opportunity_rank import observation_rank
+from repowise.core.analysis.health.ranking import deduction_by_path, sort_metrics_worst_first
 from repowise.core.analysis.health.refactoring.recommendations import (
     Recommendation,
     build_recommendations,
@@ -44,7 +46,6 @@ from repowise.core.persistence.crud import (
     get_test_file_paths,
     list_health_snapshots,
     load_coverage_for_repo,
-    sort_metrics_worst_first,
 )
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -837,39 +838,6 @@ def _serialize_coverage_row(row: Any, *, covered_lines: bool = True) -> dict[str
     out["total_coverable_lines"] = row.total_coverable_lines
     out["ingested_at"] = row.ingested_at.isoformat() if row.ingested_at else None
     out["ingested_commit_sha"] = row.ingested_commit_sha
-    return out
-
-
-def _module_rollups(metrics: list[HealthFileMetric]) -> list[dict[str, Any]]:
-    """NLOC-weighted module rollups derived from ``HealthFileMetric.module``.
-
-    One row per module; ``None`` modules are dropped. Sorted by health
-    ascending so the worst modules surface first — matches the per-file
-    ordering and what the dashboard already expects.
-    """
-    buckets: dict[str, list[HealthFileMetric]] = {}
-    for m in metrics:
-        if m.module:
-            buckets.setdefault(m.module, []).append(m)
-    out: list[dict[str, Any]] = []
-    for name, rows in buckets.items():
-        total_nloc = sum(max(r.nloc, 1) for r in rows)
-        if total_nloc:
-            avg = sum(r.score * max(r.nloc, 1) for r in rows) / total_nloc
-        else:
-            avg = sum(r.score for r in rows) / len(rows)
-        worst = min(rows, key=lambda r: r.score)
-        out.append(
-            {
-                "module": name,
-                "file_count": len(rows),
-                "nloc": sum(r.nloc for r in rows),
-                "average_health": round(avg, 2),
-                "worst_performer_path": worst.file_path,
-                "worst_performer_score": round(worst.score, 2),
-            }
-        )
-    out.sort(key=lambda r: r["average_health"])
     return out
 
 
@@ -1936,18 +1904,14 @@ async def get_health(
         # Deliberately ``lead_rows`` (the unfiltered open set) rather than
         # ``emitted``: asking to *see* one dimension must not restate which
         # files the repo's worst are.
-        deduction_by_path: dict[str, float] = {}
-        for f in lead_rows:
-            deduction_by_path[f.file_path] = deduction_by_path.get(f.file_path, 0.0) + float(
-                f.health_impact or 0.0
-            )
+        deductions = deduction_by_path(lead_rows)
         # Rebound rather than kept beside a sorted copy, and above every reader.
-        # ``kpis``, the module rollup, the leverage view and the churn quadrant
-        # all reduce with ``min()`` or a stable sort, which resolve ties by
-        # *input* order — so leaving them on the raw list would have one
-        # response name one file as the worst performer while the
-        # ``worst_files`` list printed below it led with another.
-        all_metrics = sort_metrics_worst_first(all_metrics, deduction_by_path)
+        # ``kpis``, the leverage view and the churn quadrant all reduce with
+        # ``min()`` or a stable sort, which resolve ties by *input* order — so
+        # leaving them on the raw list would have one response name one file as
+        # the worst performer while the ``worst_files`` list printed below it
+        # led with another. The module rollup takes the map itself.
+        all_metrics = sort_metrics_worst_first(all_metrics, deductions)
         metric_rows = (
             [m for m in all_metrics if m.file_path in set(effective_targets)]
             if scoped
@@ -2231,7 +2195,7 @@ async def get_health(
                 row["signals"] = signals_by_path[m.file_path]
             metric_payload.append(row)
         module_rollup = _module_rollups(
-            [m for m in all_metrics if m.module in set(module_targets)]
+            [m for m in all_metrics if m.module in set(module_targets)], deductions
         )
         result: dict[str, Any] = {
             "mode": "targets",
@@ -2321,7 +2285,7 @@ async def get_health(
         # round-trip. ``by_leverage`` is built above, before the leads.
         # Same serializer as worst_files, so every row carries
         # weighted_deficit for the caller to sort on further.
-        all_modules = _module_rollups(all_metrics)
+        all_modules = _module_rollups(all_metrics, deductions)
         gap = _gap_analysis(all_metrics)
         result = {
             # Lead with the call, not the data. Every block below ranks and
@@ -2447,6 +2411,9 @@ async def get_health(
             result["defect_accuracy"] = compute_defect_accuracy(
                 all_metrics,
                 [_serialize_finding(f, reference_repository) for f in accuracy_rows],
+                # The same map ``all_metrics`` was ranked with, so the stat
+                # measures exactly the ``worst_files`` this response printed.
+                deductions=deductions,
             )
 
     if "biomarkers" in include_set and "findings" not in result:

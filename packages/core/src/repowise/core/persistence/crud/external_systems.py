@@ -11,6 +11,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...analysis.external_systems.links import (
+    EXTERNAL_NODE_PREFIX,
+    declaration_name_candidates,
+)
 from ..models import (
     ExternalSystem,
     GraphNode,
@@ -114,14 +118,6 @@ async def link_graph_nodes_to_external_systems(
     """
     if not name_to_id:
         return 0
-
-    # Imported inside the function, not at module scope: the matcher's package
-    # reaches this module back through ``analysis.health``, which loads the
-    # analyzer engine on import.
-    from repowise.core.analysis.external_systems.links import (
-        EXTERNAL_NODE_PREFIX,
-        declaration_name_candidates,
-    )
 
     prefix = EXTERNAL_NODE_PREFIX
     result = await session.execute(

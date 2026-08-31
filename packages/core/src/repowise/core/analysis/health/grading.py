@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from .rows import field
+
 HealthBand = Literal["healthy", "warning", "alert"]
 
 # Canonical band cutoffs. Frozen (scoring is frozen; this is presentation).
@@ -48,13 +50,6 @@ def band_for(score: float) -> HealthBand:
     return "healthy"
 
 
-def _get(obj: Any, key: str, default: Any = None) -> Any:
-    """Read ``key`` from a mapping or an attribute-bearing object."""
-    if isinstance(obj, dict):
-        return obj.get(key, default)
-    return getattr(obj, key, default)
-
-
 def distribution(metrics: list[Any]) -> dict[str, Any]:
     """NLOC-weighted file distribution across the 3 bands.
 
@@ -70,10 +65,10 @@ def distribution(metrics: list[Any]) -> dict[str, Any]:
     total_files = 0
     total_weight = 0
     for m in metrics:
-        if _get(m, "file_path") is None:
+        if field(m, "file_path") is None:
             continue
-        score = float(_get(m, "score", 10.0))
-        weight = max(int(_get(m, "nloc", 0) or 0), 1)
+        score = float(field(m, "score", 10.0))
+        weight = max(int(field(m, "nloc", 0) or 0), 1)
         band = band_for(score)
         bands[band]["files"] += 1
         bands[band]["nloc"] += weight

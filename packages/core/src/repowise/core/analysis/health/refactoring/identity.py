@@ -22,6 +22,8 @@ import json
 import re
 from typing import Any
 
+from ..rows import field
+
 REFACTORING_MODEL_VERSION = 2
 """Version of the identity semantics. v1 was the fresh-UUID-per-index era.
 
@@ -70,16 +72,10 @@ def _evidence_of(suggestion: Any) -> dict:
     return evidence if isinstance(evidence, dict) else {}
 
 
-def _field(suggestion: Any, name: str, default: Any = None) -> Any:
-    if isinstance(suggestion, dict):
-        return suggestion.get(name, default)
-    return getattr(suggestion, name, default)
-
-
 def _span_length(suggestion: Any) -> int | None:
     """Span size, which survives the whole block moving down the file."""
-    start = _field(suggestion, "line_start")
-    end = _field(suggestion, "line_end")
+    start = field(suggestion, "line_start")
+    end = field(suggestion, "line_end")
     if isinstance(start, int) and isinstance(end, int):
         return end - start
     return None
@@ -152,7 +148,7 @@ def _extract_class_kernel(suggestion: Any, file_path: str) -> RefactoringKernel:
     return (
         "extract_class",
         file_path,
-        _field(suggestion, "target_symbol") or "",
+        field(suggestion, "target_symbol") or "",
         tuple(membership),
     )
 
@@ -180,7 +176,7 @@ def _extract_method_kernel(suggestion: Any, file_path: str) -> RefactoringKernel
     return (
         "extract_method",
         file_path,
-        _field(suggestion, "target_symbol") or "",
+        field(suggestion, "target_symbol") or "",
         tuple(str(name) for name in (plan.get("params") or [])),
         tuple(str(name) for name in (plan.get("returns") or [])),
         _span_length(suggestion),
@@ -208,7 +204,7 @@ def _generic_kernel(kind: str, suggestion: Any, file_path: str) -> RefactoringKe
     return (
         kind,
         file_path,
-        _field(suggestion, "target_symbol") or "",
+        field(suggestion, "target_symbol") or "",
         _span_length(suggestion),
     )
 
@@ -219,9 +215,9 @@ def refactoring_kernel(suggestion: Any) -> RefactoringKernel:
     Accepts a detector dataclass, a plain dict, or a persisted ORM row: the
     three describe the same plan and must reach the same string.
     """
-    kind = str(_field(suggestion, "refactoring_type") or "")
-    file_path = str(_field(suggestion, "file_path") or "")
-    biomarker = str(_field(suggestion, "source_biomarker") or "")
+    kind = str(field(suggestion, "refactoring_type") or "")
+    file_path = str(field(suggestion, "file_path") or "")
+    biomarker = str(field(suggestion, "source_biomarker") or "")
 
     if kind == "performance_fix":
         # The performance layer already owns a versioned causal id for this
@@ -291,9 +287,9 @@ def assign_public_ids(suggestions: list[Any]) -> list[str]:
         ordered = sorted(
             members,
             key=lambda index: (
-                str(_field(suggestions[index], "file_path") or ""),
-                _field(suggestions[index], "line_start") or 0,
-                str(_field(suggestions[index], "target_symbol") or ""),
+                str(field(suggestions[index], "file_path") or ""),
+                field(suggestions[index], "line_start") or 0,
+                str(field(suggestions[index], "target_symbol") or ""),
             ),
         )
         for ordinal, index in enumerate(ordered):

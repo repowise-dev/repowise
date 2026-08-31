@@ -27,10 +27,11 @@ cache with no observable effect on any return value.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
-from typing import Any
+from typing import Any, TypeAlias
 
 from .scoring import SCORE_FLOOR, SCORE_MAX
 
@@ -257,6 +258,15 @@ def snapshot_file_maps(
     return per_file_scores, per_file_deductions
 
 
+#: One normalized snapshot reading for a single file: when it was taken, the
+#: clamped score, and the recorded pre-clamp deduction where the reading
+#: captured one. The storage-neutral input to :func:`build_file_points`.
+FileScoreReading: TypeAlias = tuple[datetime | None, float, float | None]
+
+#: Readings needed before a per-file series is worth drawing.
+MIN_TREND_POINTS: int = 2
+
+
 @dataclass
 class FileTrendPoint:
     """One file's score at one snapshot.
@@ -353,13 +363,13 @@ def _score_in_snapshot(snap: Any, file_path: str) -> float | None:
     return _value_in_snapshot(snap, "per_file_scores_json", file_path)
 
 
-def _unclamped_in_snapshot(snap: Any, file_path: str, score: float) -> float | None:
-    """``file_path``'s score with the floor undone, as far as *snap* knows.
+def _unclamped_score(score: float, deduction: float | None) -> float | None:
+    """One reading's score with the floor undone, as far as it is known.
 
     Three cases, and the third is the one that matters:
 
-    * A recorded deduction means the clamp bit and this snapshot kept the
-      depth. The honest value is ``SCORE_MAX - deduction``, below the floor and
+    * A recorded deduction means the clamp bit and the reading kept the depth.
+      The honest value is ``SCORE_MAX - deduction``, below the floor and
       possibly negative.
     * No deduction and a score above the floor: the clamp did not bite, so the
       score already *is* the unclamped value.
@@ -368,58 +378,79 @@ def _unclamped_in_snapshot(snap: Any, file_path: str, score: float) -> float | N
       ``None`` — not ``score``, which would assert a depth of exactly 9.0 that
       was never measured.
     """
-    deduction = _value_in_snapshot(snap, "per_file_deductions_json", file_path)
     if deduction is not None:
         return round(SCORE_MAX - deduction, 2)
     return score if score > SCORE_FLOOR else None
+
+
+def build_file_points(
+    readings: Sequence[FileScoreReading],
+    *,
+    min_points: int = MIN_TREND_POINTS,
+) -> list[FileTrendPoint]:
+    """Turn normalized readings into a file's oldest-first trend series.
+
+    The correctness half of a per-file trend, over storage-neutral readings, so
+    that where the numbers came from — a snapshot row here, something else
+    elsewhere — stays entirely inside the adapter that produced them.
+
+    Returns ``[]`` below *min_points*, so a consumer renders a "no history yet"
+    state instead of a single misleading dot. The threshold is a parameter
+    rather than a constant because it is a presentation floor, not a
+    correctness one: two is right for a chart, and a consumer that can surface a
+    lone reading honestly may ask for one.
+
+    ``unclamped_score`` diverges from ``score`` only when **every** reading has
+    a known depth. A series that mixes measured depth with readings that never
+    recorded it is the dangerous case, not the harmless one: the unmeasured
+    points read as ``1.0`` and the measured ones as their real depth, so the
+    first index after depth capture is switched on draws a cliff on a file that
+    did not change. Measured against the live index — fifteen snapshots without
+    capture plus one with, and nothing altered — that flipped **21 of 32**
+    floored files to ``declining`` with drops up to 3.9 points. Waiting for the
+    window to fill costs a slow start; not waiting reports a collapse that
+    never happened.
+    """
+    if len(readings) < min_points:
+        return []
+    depths = [_unclamped_score(score, deduction) for _, score, deduction in readings]
+    depth_known = all(depth is not None for depth in depths)
+    return [
+        FileTrendPoint(
+            taken_at=taken_at,
+            score=score,
+            unclamped_score=depth if depth_known and depth is not None else score,
+        )
+        for (taken_at, score, _), depth in zip(readings, depths, strict=True)
+    ]
+
+
+def _snapshot_readings(history: list[Any], file_path: str) -> list[FileScoreReading]:
+    """Normalize one file out of the snapshot window. The storage adapter."""
+    readings: list[FileScoreReading] = []
+    for snap in history:
+        score = _score_in_snapshot(snap, file_path)
+        if score is None:
+            continue
+        readings.append(
+            (
+                getattr(snap, "taken_at", None),
+                score,
+                _value_in_snapshot(snap, "per_file_deductions_json", file_path),
+            )
+        )
+    return readings
 
 
 def file_score_series(history: list[Any], file_path: str) -> list[FileTrendPoint]:
     """A file's oldest-first score series across the snapshot window.
 
     Snapshots missing the file are skipped (gaps don't break the line).
-    Returns ``[]`` when fewer than two points are available so consumers can
-    render a "no history yet" state instead of a single misleading dot.
-
     *history* is expected oldest-first (the natural ``list_health_snapshots``
     order). This is the exact function the PR bot reuses for its in-comment
     sparkline, so it stays free of any persistence or presentation concern.
-
-    ``unclamped_score`` diverges from ``score`` only when **every** point in
-    the series has a known depth. A series that mixes measured depth with
-    snapshots that never recorded it is the dangerous case, not the harmless
-    one: the unmeasured points read as ``1.0`` and the measured ones as their
-    real depth, so the first index after depth capture is switched on draws a
-    cliff on a file that did not change. Measured against the live index —
-    fifteen snapshots without capture plus one with, and nothing altered —
-    that flipped **21 of 32** floored files to ``declining`` with drops up to
-    3.9 points. Waiting for the window to fill costs a slow start; not waiting
-    reports a collapse that never happened.
     """
-    raw: list[tuple[Any, float, float | None]] = []
-    for snap in history:
-        score = _score_in_snapshot(snap, file_path)
-        if score is None:
-            continue
-        raw.append(
-            (
-                getattr(snap, "taken_at", None),
-                score,
-                _unclamped_in_snapshot(snap, file_path, score),
-            )
-        )
-    depth_known = all(unclamped is not None for _, _, unclamped in raw)
-    points = [
-        FileTrendPoint(
-            taken_at=taken_at,
-            score=score,
-            unclamped_score=unclamped if depth_known else score,
-        )
-        for taken_at, score, unclamped in raw
-    ]
-    if len(points) < 2:
-        return []
-    return points
+    return build_file_points(_snapshot_readings(history, file_path))
 
 
 def _file_declining(points: list[FileTrendPoint]) -> bool:
@@ -458,15 +489,24 @@ def _file_declining(points: list[FileTrendPoint]) -> bool:
     return False
 
 
-def file_trend(history: list[Any], file_path: str) -> FileTrend:
-    """Assemble a file's :class:`FileTrend` from the snapshot history.
+def file_trend_from_points(
+    file_path: str,
+    readings: Sequence[FileScoreReading],
+    *,
+    snapshot_count: int,
+    min_points: int = MIN_TREND_POINTS,
+) -> FileTrend:
+    """Assemble a :class:`FileTrend` from normalized readings.
 
-    Wraps :func:`file_score_series` with the current value, the prior value,
-    their delta, and the declining flag. ``snapshot_count`` is the size of
-    the whole repo window (not just the points carrying this file) so the UI
-    can distinguish "young repo" from "file not in older snapshots".
+    The whole per-file trend contract with no storage in it. *snapshot_count*
+    is the size of the caller's whole window rather than of *readings*, so a
+    consumer can tell "young repo" from "file absent from older snapshots".
+
+    ``previous``, ``delta`` and ``unclamped_delta`` need two points and stay
+    ``None`` on a series shorter than that — which only a caller passing
+    ``min_points=1`` can see.
     """
-    points = file_score_series(history, file_path)
+    points = build_file_points(readings, min_points=min_points)
     if not points:
         return FileTrend(
             file_path=file_path,
@@ -475,9 +515,19 @@ def file_trend(history: list[Any], file_path: str) -> FileTrend:
             previous=None,
             delta=None,
             declining=False,
-            snapshot_count=len(history),
+            snapshot_count=snapshot_count,
         )
     current = round(points[-1].score, 2)
+    if len(points) < 2:
+        return FileTrend(
+            file_path=file_path,
+            points=points,
+            current=current,
+            previous=None,
+            delta=None,
+            declining=False,
+            snapshot_count=snapshot_count,
+        )
     previous = round(points[-2].score, 2)
     return FileTrend(
         file_path=file_path,
@@ -487,5 +537,17 @@ def file_trend(history: list[Any], file_path: str) -> FileTrend:
         delta=round(current - previous, 2),
         unclamped_delta=round(points[-1].unclamped_score - points[-2].unclamped_score, 2),
         declining=_file_declining(points),
+        snapshot_count=snapshot_count,
+    )
+
+
+def file_trend(history: list[Any], file_path: str) -> FileTrend:
+    """A file's :class:`FileTrend` over the snapshot window.
+
+    The snapshot adapter over :func:`file_trend_from_points`.
+    """
+    return file_trend_from_points(
+        file_path,
+        _snapshot_readings(history, file_path),
         snapshot_count=len(history),
     )

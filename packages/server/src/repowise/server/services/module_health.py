@@ -24,6 +24,7 @@ from sqlalchemy import func as sa_func
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.aggregation import module_label
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DecisionRecord,
@@ -32,15 +33,9 @@ from repowise.core.persistence.models import (
     WikiSymbol,
 )
 
-
-def top_level_module(file_path: str) -> str:
-    """The top-level directory of *file_path*, or ``"root"`` for a root file.
-
-    The one definition behind every ownership rollup. Not a package boundary --
-    see the module docstring.
-    """
-    parts = file_path.split("/", 1)
-    return parts[0] if len(parts) > 1 else "root"
+#: The one definition behind every ownership rollup. Not a package boundary --
+#: see the module docstring.
+top_level_module = module_label
 
 
 def _compute_health_score(
