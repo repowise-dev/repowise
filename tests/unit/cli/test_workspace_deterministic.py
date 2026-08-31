@@ -119,6 +119,7 @@ def test_single_repo_deterministic_generation_loads_source_evidence_config(
         embedder_name_resolved="mock",
         embedder_was_requested=False,
         resume=False,
+        folder_coverage=(),
     )
 
     config = captured["gen_config"]
