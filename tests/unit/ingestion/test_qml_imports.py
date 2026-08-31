@@ -12,7 +12,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import networkx as nx
-import pytest
 
 from repowise.core.ingestion.lightweight_imports import extract_lightweight_imports
 from repowise.core.ingestion.lightweight_imports.qml import extract_qml_imports
