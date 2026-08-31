@@ -84,6 +84,52 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r"\.execute\(\s*[\'\"]\s*SELECT.*\+"), "concat_sql", "med"),
     (re.compile(r"verify\s*=\s*False"), "tls_verify_false", "med"),
     (re.compile(r"\bmd5\b|\bsha1\b"), "weak_hash", "low"),
+    # -- JS/TS patterns (#1935 Tier 1) -------------------------------------
+    # Measured on the same 17-repo, 1109-file corpus as the exec_call/secret
+    # fixes in #1947. Three of these five needed tightening before they were
+    # shippable; see docs/layers/SECURITY.md and the PR body for the
+    # first-cut vs. after-tightening counts per pattern.
+    #
+    # ``__html: <value>`` is the React ``dangerouslySetInnerHTML`` shape. A
+    # pinned string literal there is inert; the interesting case is a value
+    # that is an identifier, a member access or a call. The value test has to
+    # be stated positively (an identifier/`$`/`(` lead character) rather than
+    # as a negative lookahead excluding quotes: after the variable-width
+    # `\s*` before it, a negative lookahead is tried at the position *before*
+    # the whitespace, where "not a quote" trivially succeeds and a string
+    # literal slips through anyway. Severity is ``med``, not ``high``: on the
+    # measured corpus every hit was a name reference to a source-pinned
+    # constant (a stylesheet string assigned to a module-level name), which
+    # this test cannot distinguish from a genuinely dynamic value without
+    # dataflow, so the pattern is a places-to-read signal rather than a
+    # confirmed sink.
+    (re.compile(r"__html\s*:\s*(?=[A-Za-z_$(])"), "unsafe_inner_html", "med"),
+    # Analogue of ``fstring_sql`` for a JS/TS template literal. The bare verb
+    # `SELECT` or `UPDATE` is an ordinary English word and fires on prose
+    # (`` `Order update failed: ${status}` ``) and even on class names
+    # (`select-none`), so each verb needs its companion clause —
+    # `SELECT`..`FROM`, `UPDATE`..`SET` — before an interpolation counts.
+    (
+        re.compile(r"`[^`\n]*\b(?:SELECT\b[^`\n]*\bFROM|UPDATE\b[^`\n]*\bSET)\b[^`\n]*\$\{"),
+        "template_literal_sql",
+        "med",
+    ),
+    # A secret-shaped name exposed through a `NEXT_PUBLIC_`/`VITE_` prefix
+    # ships straight into the client bundle. The prefix needing the most care
+    # against legitimate public config: an `..._ANON_...` name (a Supabase
+    # anon key, public by design and meant to be paired with RLS) is excluded
+    # rather than flagged, since that class made up most of the corpus noise.
+    (
+        re.compile(
+            r"\b(?:NEXT_PUBLIC|VITE)_(?!\w*ANON)[A-Z0-9_]*"
+            r"(?:API_?KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*\b"
+        ),
+        "public_env_secret",
+        "high",
+    ),
+    (re.compile(r"\bnew\s+Function\s*\("), "new_function_call", "high"),
+    # Analogue of ``tls_verify_false`` for Node's https/tls agent options.
+    (re.compile(r"rejectUnauthorized\s*:\s*false"), "reject_unauthorized_false", "med"),
 ]
 
 # Combined prefilter: one search per line rejects the (overwhelmingly common)

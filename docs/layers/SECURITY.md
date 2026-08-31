@@ -4,7 +4,7 @@ Repowise records a small set of security signals while it indexes: pattern
 matches over source text, and symbol names that look security-relevant. Pure
 regex and SQL, no LLM calls, no network, no dependency resolution.
 
-This is a floor, not a scanner. The registry holds eleven patterns. It has no
+This is a floor, not a scanner. The registry holds sixteen patterns. It has no
 model of your framework, no notion of which inputs are attacker-controlled, and
 no dataflow: it cannot tell a parameterised query from a concatenated one beyond
 what the surrounding characters give away, and it cannot tell whether a
@@ -44,7 +44,7 @@ Findings also appear on the Security tab of the code-health page, and at
 
 ## What the registry catches
 
-Eleven patterns plus a symbol-name scan, giving twelve kinds across three
+Sixteen patterns plus a symbol-name scan, giving seventeen kinds across three
 severities. Severity is a fixed property of the pattern; nothing is scored,
 ranked, or aggregated.
 
@@ -61,6 +61,11 @@ ranked, or aggregated.
 | `concat_sql` | med | `.execute("SELECT ... +` |
 | `tls_verify_false` | med | `verify = False` |
 | `weak_hash` | low | the words `md5` or `sha1` |
+| `unsafe_inner_html` | med | `__html:` (React's `dangerouslySetInnerHTML` shape) assigned a non-literal value |
+| `template_literal_sql` | med | a JS/TS template literal containing `SELECT`+`FROM` or `UPDATE`+`SET` and an interpolation |
+| `public_env_secret` | high | a secret-shaped name (`API_KEY`, `SECRET`, `TOKEN`, `PASSWORD`) behind a `NEXT_PUBLIC_` or `VITE_` prefix, excluding `..._ANON_...` |
+| `new_function_call` | high | `new Function(...)` |
+| `reject_unauthorized_false` | med | `rejectUnauthorized: false` |
 | `security_sensitive_symbol` | low | a symbol whose name contains `auth`, `token`, `password`, `jwt`, `session` or `crypto` |
 
 The last one is informational. It flags nothing wrong; it marks where the
@@ -88,12 +93,13 @@ characters, so a closed call cannot reach forward into an unrelated one.
 
 Stated plainly, because the table above reads like more coverage than it is.
 
-**Most languages.** The registry is shaped by Python. `pickle.loads`,
-`os.system`, `subprocess(shell=True)` and `verify=False` are Python idioms;
-`fstring_sql` is a Python f-string. On a JavaScript, TypeScript, Go, Rust or
-Java codebase, `eval` / `exec` and the two secret patterns are most of what can
-fire. A repo in one of those languages reporting few findings is reporting the
-registry's shape, not its own health.
+**Most languages.** The registry is shaped by Python, with five patterns added
+for JavaScript and TypeScript (below). `pickle.loads`, `os.system`,
+`subprocess(shell=True)` and `verify=False` are still Python-only idioms;
+`fstring_sql` is a Python f-string. On a Go, Rust or Java codebase, `eval` /
+`exec` and the two secret patterns are most of what can fire. A repo in one of
+those languages reporting few findings is reporting the registry's shape, not
+its own health.
 
 **Anything needing framework semantics.** Missing authorization on a route
 handler, permissive CORS on a mutating endpoint, an unvalidated redirect, an
@@ -136,6 +142,36 @@ The per-line patterns run on raw source, comments included. A comment that
 spells out a credential assignment reports itself as a `hardcoded_secret`, and
 `weak_hash` fires on a comment explaining why md5 was removed. Only the
 `eval`/`exec` path masks comments and string literals; nothing else does.
+
+**Five patterns for JavaScript and TypeScript, measured the same way as the
+`exec_call` and secret-case fixes above** — a 17-repository, 1109-file corpus,
+every hit adjudicated by hand. Three of the five needed tightening before they
+were worth shipping:
+
+| Kind | First cut | Verified real | After tightening | The noise |
+|---|---|---|---|---|
+| `unsafe_inner_html` | 15 | 0 | 4 | every hit a source-pinned stylesheet constant referenced by name |
+| `template_literal_sql` | 10 | 2 | 2 | prose (`` `Order update failed: ${status}` ``) and a Tailwind class (`select-none`) |
+| `public_env_secret` | 9 | 3 | 3 | Supabase anon keys — public by design, protected by row-level security |
+| `new_function_call` | 0 | 0 | 0 | — |
+| `reject_unauthorized_false` | 0 | 0 | 0 | — |
+
+`unsafe_inner_html` ships at `med`, not `high`, because of that first row: a
+name reference cannot be told apart from a pinned constant without dataflow,
+so the pattern is a places-to-read signal, not a confirmed sink. The same
+gap explains why the value test (`__html:` followed by an identifier, `$`, or
+`(`) is written as a positive lookahead rather than a negative one excluding
+quotes — tried at the position *before* the preceding `\s*`, a negative
+lookahead would trivially pass and let a string literal through anyway.
+
+`public_env_secret` excludes any name containing `ANON`, which is the one
+carve-out narrow enough to state as a rule rather than a heuristic: an
+`..._ANON_...` key is meant to be public. Nothing else in the corpus noise was
+worth a similarly specific exclusion.
+
+`template_literal_sql` requires the SQL verb's companion clause —
+`SELECT`+`FROM`, `UPDATE`+`SET` — because the bare verb is an ordinary English
+word and fires on both prose and a Tailwind utility class otherwise.
 
 ## Working tree versus history
 
