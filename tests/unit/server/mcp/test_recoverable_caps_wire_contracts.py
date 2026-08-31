@@ -834,7 +834,12 @@ async def test_why_fallback_archaeology_and_rationale_wire_recover_annotated_tai
     from repowise.core.persistence.models import Repository
 
     repository = await session.get(Repository, setup_mcp)
-    repository.local_path = str(Path.cwd())
+    # A linked worktree stores `.git` as a gitdir pointer file. The live git
+    # log only needs a working tree, so this must still enable the fallback.
+    worktree_path = tmp_path / "worktree"
+    worktree_path.mkdir()
+    (worktree_path / ".git").write_text("gitdir: /tmp/repowise-test-worktree\n")
+    repository.local_path = str(worktree_path)
     await session.flush()
 
     async def sealed_git_log(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
