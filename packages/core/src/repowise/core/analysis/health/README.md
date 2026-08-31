@@ -127,12 +127,23 @@ text used by both the MCP `get_health(include=["refactoring"])` response and
 the dashboard's `RefactoringCard`. Templates live in `suggestions.py` —
 adding a new marker means adding a new `_TEMPLATES` entry.
 
-## Module rollups
+## Ranking and aggregation
+
+`ranking.py` and `aggregation.py` are the one owner for the arithmetic that
+used to be reimplemented per caller: worst-first ordering
+(`sort_metrics_worst_first`, `worst_metric`), module rollups
+(`module_rollups`), and the severity / biomarker / score breakdowns
+(`severity_breakdown`, `biomarker_breakdown`, `score_breakdown`). Both are
+pure folds over rows a caller has already loaded, read through
+`rows.field`/`rows.detail_map` so a mapping, an analyzer dataclass and an ORM
+row rank and roll up identically. Neither imports persistence, a session, or
+the analyzer engine.
 
 `HealthFileMetric.module` is populated from graph community labels by the
 orchestrator (falls back to the top-level directory). The MCP tool
-(`tool_health.py`) and the API endpoint (`routers/code_health.py`) both
-expose NLOC-weighted module aggregates and accept `module:foo` targets.
+(`tool_health.py`) and the API endpoint (`routers/code_health/`) both call
+`aggregation.module_rollups` for NLOC-weighted module aggregates and accept
+`module:foo` targets.
 
 ## Sub-packages
 

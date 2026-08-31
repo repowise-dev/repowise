@@ -63,6 +63,8 @@ analysis/health/
 ├── __init__.py                     # public API: HealthAnalyzer, HealthReport
 ├── engine.py                       # orchestrator: walker → biomarkers → scorer
 ├── scoring.py                      # weighted aggregation, category caps, KPIs
+├── ranking.py                      # canonical worst-first key + deduction fold
+├── aggregation.py                  # module rollups, severity/biomarker/score breakdowns
 ├── grading.py                      # 3 defect-backed bands + NLOC-weighted distribution
 ├── defect_accuracy.py              # "does the score find the bugs?" self-validation
 ├── trends.py                       # snapshot diff, Declining/Predicted alerts, per-file score series
