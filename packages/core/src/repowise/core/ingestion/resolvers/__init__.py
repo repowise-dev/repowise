@@ -30,6 +30,7 @@ from .scala import resolve_scala_import
 from .shell import resolve_shell_import
 from .sql import resolve_dbt_import
 from .swift import resolve_swift_import
+from .vbnet import resolve_vbnet_import
 from .typescript import resolve_ts_js_import
 
 ResolverFn = Callable[[str, str, ResolverContext], str | None]
@@ -74,6 +75,8 @@ _RESOLVERS: dict[str, ResolverFn] = {
     # <script src>/<link href> are asset paths, not module specifiers — they
     # get their own document-/root-relative resolution, never the TS/JS one.
     "html": resolve_html_asset,
+    # VB.NET Imports → namespace stem/path match (dotnet resolver lineage).
+    "vbnet": resolve_vbnet_import,
 }
 
 

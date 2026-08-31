@@ -101,7 +101,7 @@ class TestParityGoldens:
         camel = REGISTRY.camel_test_res_by_extension()
         assert set(camel) == {
             ".java", ".kt", ".kts", ".scala", ".cs", ".swift", ".php",
-            ".hs", ".lhs",
+            ".hs", ".lhs", ".vb",
         }
         assert camel[".java"].pattern == r"(?<=[a-z0-9])(?:Tests|Test|IT)$"
         assert camel[".scala"].pattern == r"(?<=[a-z0-9])(?:Suite|Spec|Test)$"
@@ -163,6 +163,9 @@ _FULL = {
     # vue components project to TypeScript through the same SFC pass as
     # svelte, so their <script> imports are ordinary ESM.
     "vue",
+    # vbnet through the fixed tree-sitter-vb-dotnet fork (generics, As New,
+    # own-line Inherits/Implements) with the namespace stem resolver.
+    "vbnet",
 }
 _PARTIAL = {
     "luau",

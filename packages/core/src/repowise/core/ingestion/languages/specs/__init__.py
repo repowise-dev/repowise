@@ -60,6 +60,7 @@ from .terraform import SPEC as _TERRAFORM
 from .toml import SPEC as _TOML
 from .typescript import SPEC as _TYPESCRIPT
 from .unknown import SPEC as _UNKNOWN
+from .vbnet import SPEC as _VBNET
 from .vue import SPEC as _VUE
 from .xaml import SPEC as _XAML
 from .yaml import SPEC as _YAML
@@ -103,6 +104,7 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _DART,
     _PASCAL,
     _GDSCRIPT,
+    _VBNET,
     # -----------------------------------------------------------------
     # Config / data / markup languages (passthrough — no AST)
     # -----------------------------------------------------------------

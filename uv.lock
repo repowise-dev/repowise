@@ -3100,6 +3100,7 @@ dependencies = [
     { name = "tree-sitter-svelte" },
     { name = "tree-sitter-swift" },
     { name = "tree-sitter-typescript" },
+    { name = "tree-sitter-vb-dotnet" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "watchdog" },
 ]
@@ -3196,6 +3197,7 @@ requires-dist = [
     { name = "tree-sitter-svelte", specifier = ">=1,<2" },
     { name = "tree-sitter-swift", specifier = ">=0.0.1" },
     { name = "tree-sitter-typescript", specifier = ">=0.23,<1" },
+    { name = "tree-sitter-vb-dotnet", git = "https://github.com/sloemo01/tree-sitter-vb-dotnet.git?rev=c29b08e" },
     { name = "types-networkx", marker = "extra == 'dev'", specifier = ">=3.3,<4" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<1" },
     { name = "watchdog", specifier = ">=4,<5" },
@@ -4278,6 +4280,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/8b/ab/dd84f0e2337296a5f09749f7b5483215d75c8fa9e33738522e5ed81f7254/tree_sitter_typescript-0.23.2-cp39-abi3-win_amd64.whl", hash = "sha256:3f730b66396bc3e11811e4465c41ee45d9e9edd6de355a58bbbc49fa770da8f9", size = 278015, upload-time = "2024-11-11T02:36:07.631Z" },
     { url = "https://files.pythonhosted.org/packages/9f/e4/81f9a935789233cf412a0ed5fe04c883841d2c8fb0b7e075958a35c65032/tree_sitter_typescript-0.23.2-cp39-abi3-win_arm64.whl", hash = "sha256:05db58f70b95ef0ea126db5560f3775692f609589ed6f8dd0af84b7f19f1cbb7", size = 274052, upload-time = "2024-11-11T02:36:09.514Z" },
 ]
+
+[[package]]
+name = "tree-sitter-vb-dotnet"
+version = "0.1.0"
+source = { git = "https://github.com/sloemo01/tree-sitter-vb-dotnet.git?rev=c29b08e#c29b08e107318a9255a1d3d6b42f7081618e349d" }
 
 [[package]]
 name = "typer"
