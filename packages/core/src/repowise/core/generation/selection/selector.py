@@ -303,10 +303,19 @@ def _passes_importance_floor(path: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _build_file_candidates(
+def _score_code_files(
     inputs: SelectionInputs,
 ) -> list[tuple[float, str]]:
-    """Return ``[(score, file_path), ...]`` for code files, descending."""
+    """Return ``[(score, file_path), ...]`` for code files, descending, uncapped.
+
+    The folder-coverage pins (issue #633) need the *whole* code-file set under
+    a glob — files that score below the global cutoff must still be pinnable —
+    so the scoring is separated from the global cap. ``select_pages`` calls
+    this once and derives both the capped selection and the uncapped pin
+    candidates from the same ranking, so the two can never disagree.
+    ``_build_file_candidates`` is this + the global cap, kept for its other
+    callers.
+    """
     max_pr = max(inputs.pagerank.values(), default=0.0)
     max_bet = max(inputs.betweenness.values(), default=0.0)
     git = inputs.git_meta_map or {}
@@ -332,6 +341,14 @@ def _build_file_candidates(
         if s > 0.0:
             scored.append((s, path))
     scored.sort(key=lambda x: (-x[0], x[1]))
+    return scored
+
+
+def _build_file_candidates(
+    inputs: SelectionInputs,
+) -> list[tuple[float, str]]:
+    """Return ``[(score, file_path), ...]`` for code files, descending."""
+    scored = _score_code_files(inputs)
     # Three states, because "how many file pages" has three real answers.
     #
     #   unset (None) -> the volume policy decides: untouched below the automatic
@@ -773,6 +790,7 @@ def select_pages(inputs: SelectionInputs) -> Selection:
     Deterministic given identical inputs. Safe to call from both the generator
     and the cost estimator.
     """
+    scored_files = _score_code_files(inputs)
     files = _build_file_candidates(inputs)
     symbols = _build_symbol_candidates(inputs)
     concepts = _build_module_groups(inputs)
@@ -781,8 +799,20 @@ def select_pages(inputs: SelectionInputs) -> Selection:
     infras = _build_infra_candidates(inputs)
     sccs = _build_scc_candidates(inputs)
 
+    selected_paths = [p for _, p in files]
+    # Folder-specific documentation floors (issue #633). Each rule promises
+    # ceil(pct * len(folder_code_files)) of the code files under its glob get
+    # a file_page, whatever their global score. Additive union — a floor that
+    # can raise the page count (and therefore the estimate) but never
+    # displaces a global pick. Mirrors how tour landmarks force-include
+    # entry points; these are user-supplied globs instead. Uses the *uncapped*
+    # ranking so files below the global cutoff are pinnable.
+    pinned = _folder_coverage_pins(inputs, scored_files)
+    if pinned:
+        selected_paths = list(dict.fromkeys(selected_paths + pinned))
+
     sel = Selection(
-        file_page_paths=[p for _, p in files],
+        file_page_paths=selected_paths,
         symbol_spotlights=[t for _, t in symbols],
         module_groups=[m for _, m in modules],
         concept_groups=list(concepts.groups),
@@ -794,6 +824,49 @@ def select_pages(inputs: SelectionInputs) -> Selection:
     )
     log.info("page_selection.complete", counts=sel.counts())
     return sel
+
+
+def _folder_coverage_pins(
+    inputs: SelectionInputs,
+    files: list[tuple[float, str]],
+) -> list[str]:
+    """Return the additive file-page pins for configured folder-coverage rules.
+
+    Each ``(glob, pct)`` rule promises at least ``ceil(pct * n)`` of the code
+    files under *glob* a file_page, chosen highest-importance first from the
+    already-scored candidate list. Files already selected globally are kept
+    (the union dedups), so a rule only ever *adds* pages for files that scored
+    below the global cutoff — a floor, never a displacement (issue #633).
+
+    Glob match uses shell-style matching against the repo-relative path
+    (``src/core`` matches ``src/core`` itself and everything under it;
+    ``src/*`` matches one level). Empty rules and non-positive fractions are
+    ignored.
+    """
+    import fnmatch
+    import math
+
+    rules = tuple(getattr(inputs.config, "folder_coverage", ()) or ())
+    if not rules:
+        return []
+
+    scored = {p: s for s, p in files}  # path -> score (code files only)
+    pinned: list[str] = []
+    for glob_pattern, pct in rules:
+        if not glob_pattern or pct is None or pct <= 0:
+            continue
+        matches = [
+            p for p in scored if fnmatch.fnmatch(p, glob_pattern) or p.startswith(glob_pattern.rstrip("/") + "/")
+        ]
+        if not matches:
+            continue
+        want = max(1, math.ceil(pct * len(matches)))  # ceil, at least 1
+        # Highest score first — same ordering the global budget uses.
+        ranked = sorted(matches, key=lambda p: (-scored[p], p))
+        for p in ranked[:want]:
+            if p not in pinned:
+                pinned.append(p)
+    return pinned
 
 
 def summarize_selection(sel: Selection) -> dict[str, int]:
