@@ -11,7 +11,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import networkx as nx
-import pytest
 
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.vbnet import resolve_vbnet_import
