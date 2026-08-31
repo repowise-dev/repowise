@@ -69,6 +69,7 @@ def _gate_cost(
             COST_GATE_USD,
             cost_gate_declined,
             format_cost,
+            structural_page_summary,
         )
         from repowise.core.cost_estimator import build_generation_plan, estimate_cost
 
@@ -80,6 +81,9 @@ def _gate_cost(
 
     pages = sum(p.count for p in plans)
     console.print(f"Estimated: [bold]{pages}[/bold] pages, [bold]{format_cost(est)}[/bold].")
+    structural = structural_page_summary(plans)
+    if structural:
+        console.print(f"  [dim]{structural}[/dim]")
 
     # Nothing to ask on a run that cannot be asked. Without this the confirm
     # reads EOF, raises, and the caller reports a successful run that generated
@@ -197,7 +201,7 @@ async def _run_upgrade(
         upsert_pages_from_generated,
         upsert_repository,
     )
-    from repowise.core.pipeline import rehydrate_graph_builder, run_generation
+    from repowise.core.pipeline import rehydrate_graph_builder
 
     url = get_db_url_for_repo(repo_path)
     engine = create_engine(url)
@@ -266,21 +270,52 @@ async def _run_upgrade(
     except Exception as exc:
         console.print(f"[yellow]Embedding skipped: {exc}[/yellow]")
 
-    generated_pages = await run_generation(
-        repo_path=repo_path,
-        parsed_files=parsed_files,
-        source_map=source_map,
-        graph_builder=graph_builder,
-        repo_structure=repo_structure,
-        git_meta_map=git_meta_map,
-        llm_client=provider,
-        embedder=embedder,
-        vector_store=vector_store,
-        concurrency=config.max_concurrency,
-        progress=None,
-        cost_tracker=cost_tracker,
-        generation_config=config,
+    # Generate with init's persistence wrapper: pages are written to the DB the
+    # instant each one completes (so a Ctrl-C loses at most the in-flight page,
+    # not the whole run), prior pages are reused from the store, and the
+    # progress bar the user expected to see actually advances. The old path
+    # passed ``progress=None`` and buffered every page in memory until the end —
+    # hour eight of a long run showed a dead screen and an interrupt cost the
+    # entire run (issue #1709).
+    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+
+    from repowise.cli.commands.init_cmd._generation_persist import (
+        run_generation_with_persistence,
     )
+    from repowise.cli.ui import (
+        BRAND_STYLE,
+        OK,
+        OWL_SPINNER,
+        MaybeCountColumn,
+        RichProgressCallback,
+    )
+
+    with Progress(
+        SpinnerColumn(spinner_name=OWL_SPINNER, style=BRAND_STYLE),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MaybeCountColumn(),
+        TimeElapsedColumn(),
+        TextColumn(f"[{OK}]${{task.fields[cost]:.3f}}[/]"),
+        console=console,
+    ) as upgrade_progress:
+        gen_callback = RichProgressCallback(upgrade_progress, console)
+        generated_pages = await run_generation_with_persistence(
+            repo_path=repo_path,
+            repo_name=repo_path.name,
+            parsed_files=parsed_files,
+            source_map=source_map,
+            graph_builder=graph_builder,
+            repo_structure=repo_structure,
+            git_meta_map=git_meta_map,
+            llm_client=provider,
+            embedder=embedder,
+            vector_store=vector_store,
+            concurrency=config.max_concurrency,
+            progress=gen_callback,
+            cost_tracker=cost_tracker,
+            generation_config=config,
+        )
 
     # Flush buffered cost rows now generation is done (best-effort).
     await cost_tracker.flush()
