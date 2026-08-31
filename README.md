@@ -4,42 +4,34 @@
 
 <a href="https://www.repowise.dev"><img src=".github/assets/banner-v2.png" alt="repowise: evidence-backed codebase intelligence" width="100%" /></a>
 
-<h1 align="center">Know the code. Know what breaks. Change it with confidence.</h1>
+<h1 align="center">Understand your codebase without paying your agent to rediscover it.</h1>
 
-<p align="center"><strong>Evidence-backed codebase intelligence for humans and AI agents.</strong></p>
-
-<p align="center">Repowise indexes your code, call graph, git history, tests, and architectural<br />
-decisions once, then gives agents and reviewers cited context, blast radius, test<br />
-impact, and code-health fixes. Core analysis is local and deterministic; optional<br />
-synthesis is the only LLM layer.</p>
+<p align="center">Repowise indexes your code, dependency graph, git history, tests,<br />
+documentation, and decisions once, then gives agents and developers cited answers,<br />
+change impact, and concrete code-health fixes.</p>
 
 <p align="center">
-  <a href="#quickstart"><img src="https://img.shields.io/badge/INSTALL_LOCALLY-IN_MINUTES-F59520?style=for-the-badge&labelColor=0A0A0A" alt="Install Repowise locally in minutes" /></a>
-  <a href="https://www.repowise.dev"><img src="https://img.shields.io/badge/EXPLORE_LIVE-repowise.dev-F59520?style=for-the-badge&labelColor=0A0A0A" alt="Explore Repowise live" /></a>
+  <a href="https://www.repowise.dev"><img src="https://img.shields.io/badge/LIVE_DEMO-repowise.dev-F59520?style=for-the-badge&labelColor=0A0A0A" alt="Open the live Repowise demo" /></a>
 </p>
 
-<picture>
-  <source media="(prefers-reduced-motion: reduce)" srcset=".github/assets/agent-workflow-poster.png" />
-  <img src=".github/assets/agent-workflow.gif" alt="Repowise brings code graph, git history, tests, contracts, decisions, code health, documentation, and workspaces into one index for understanding code, changing it safely, and improving it continuously; the measured workflow shows 31.6% less agent-generated output, 3.8 instead of 7.2 tool calls, and a separate 393 versus 13,984-token retrieval payload" width="100%" />
-</picture>
-
-<p align="center"><sub>The animation uses measured results: <strong>31.6% less
-agent-generated output</strong> across 43 repository questions and <strong>3.8 instead
-of 7.2 tool calls</strong>. The 393-vs-13,984 figure is one retrieval payload, not
-end-to-end agent savings. <a href="docs/BENCHMARKS.md"><strong>Audit the run →</strong></a></sub></p>
+<img src=".github/assets/product-map-dark.png" alt="Repowise connects code and dependency data, git history, tests and contracts, documentation, and architectural decisions in one continuously updated local index that gives developers and AI agents cited understanding, change impact, and concrete code-health improvements across editors, pull requests, dashboards, and multi-repository workspaces" width="100%" />
 
 <table align="center">
 <tr>
 <td align="center" width="250"><h2>−31.6%</h2></td>
-<td align="center" width="250"><h2>7 / 7</h2></td>
+<td align="center" width="250"><h2>97.2%</h2></td>
 <td align="center" width="250"><h2>2.3×</h2></td>
 </tr>
 <tr>
-<td align="center" valign="top"><sub><strong>less agent output</strong><br />than a bare coding agent, reached<br />in 3.8 tool calls instead of 7.2.<br /><em>n=43 · p&lt;0.0001</em></sub></td>
-<td align="center" valign="top"><sub><strong>undominated precision/recall</strong><br />in all 7 compiler-graded cells:<br />nothing finding as much is more precise.<br /><em>5 tools · 37,853 oracle edges</em></sub></td>
-<td align="center" valign="top"><sub><strong>more defects surfaced</strong><br />than CodeScene under the same<br />20%-of-lines review budget.<br /><em>2,770 files · p=0.003</em></sub></td>
+<td align="center" valign="top"><sub><strong>less agent output</strong><br />3.8 vs 7.2 tool calls<br /><em>n=43 · p&lt;0.0001</em></sub></td>
+<td align="center" valign="top"><sub><strong>smaller context payload</strong><br />393 vs 13,984 tokens<br /><em>30 Flask commits</em></sub></td>
+<td align="center" valign="top"><sub><strong>more defects surfaced</strong><br />same 20%-of-lines budget<br /><em>2,770 files · p=0.003</em></sub></td>
 </tr>
 </table>
+
+<p align="center"><sub><strong>Graph accuracy leader at matched coverage.</strong><br />
+No tool finding as much was more precise in all 7 compiler-graded cells.<br />
+<em>5 tools · 37,853 oracle edges</em></sub></p>
 
 <p align="center"><sub><strong>Zero LLM calls</strong> for graph, risk, health, tests,
 dead code, and PR review. Generated prose is optional. Every benchmark publishes its
@@ -86,10 +78,9 @@ the same evidence reaches your agent, editor, pull request, local dashboard, and
 cross-repository system map.
 
 <div align="center">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/one-index-dark.svg" />
-  <img src=".github/assets/one-index.svg" alt="One Repowise index producing graph, git, documentation, decision, and code-health intelligence for agents, developers, pull requests, and teams" width="100%" />
-</picture>
+<img src=".github/assets/demo.gif" alt="The Repowise dashboard running locally: health scores, the code-health map, a graph-aware refactoring plan, change coupling, and the generated documentation" width="100%" />
+<p><sub>A dashboard tour recorded on this repository. The same local index powers the UI,
+MCP tools, editor views, and PR analysis. No API key and nothing uploaded.</sub></p>
 </div>
 
 ### Pick your front door
@@ -287,10 +278,10 @@ stays about seventeen rows whatever it finds.
 Markdown runs out. The comment shows three callers and says "+6 more"; the page shows
 all nine. Public, no sign-in, on a repository the reader has never seen.
 
-<img src=".github/assets/pr-bot/pr-page-blast-map.jpg" alt="The public per-PR analysis page: the whole repository drawn as a treemap with the pull request's files lit and their importers marked, and below it a focus frame zoomed into the directory the change landed in, with every filename legible" width="100%" />
+<img src=".github/assets/pr-bot/pr-page-blast-map-dark.png" alt="The dark Repowise per-PR analysis page showing change risk, repository health, changed contracts, outside callers, newly added findings, and a blast-radius treemap of the repository" width="100%" />
 
-<sub>Every file in the repo, grouped by directory and sized by lines. The frame below
-zooms to where the change landed.
+<sub>The page leads with change risk and newly introduced findings, then maps every
+changed file and outside caller across the repository.
 [See it live →](https://repowise.dev/pr/repowise-dev/repowise/1204)</sub>
 
 **[Install the PR bot →](https://github.com/apps/repowise-bot)** ·
@@ -370,11 +361,6 @@ Guides: **[code health](docs/layers/CODE_HEALTH.md)** · **[refactoring](docs/la
 
 `repowise serve` starts the full web dashboard next to the MCP server. No separate
 setup, all local.
-
-<img src=".github/assets/demo.gif" alt="The Repowise dashboard running locally: health scores, the code-health map, a graph-aware refactoring plan, change coupling, and the generated wiki" width="100%" />
-
-<sub>A dashboard tour recorded on this repository. The same local index powers the UI,
-MCP tools, editor views, and PR analysis. No API key and nothing uploaded.</sub>
 
 <table>
 <tr>
