@@ -282,6 +282,23 @@ def _derive_entry_point_scores(graph_builder: Any) -> dict[str, float]:
     }
 
 
+def _betweenness_commits(graph_builder: Any) -> dict[str, str | None]:
+    """Per kind, the commit its betweenness was last exactly computed at.
+
+    ``None`` means the builder cannot say, which is not "never scored" and must
+    not be written as one: a builder rehydrated from SQL serves real values it
+    did not compute, and stamping those NULL would report an entire indexed
+    repository as unscored.
+    """
+    scoring = getattr(graph_builder, "betweenness_scoring", None)
+    if scoring is None:
+        return {"file": None, "symbol": None}
+    try:
+        return {k: getattr(scoring(k), "scored_commit", None) for k in ("file", "symbol")}
+    except Exception:  # pragma: no cover - a builder without the accessor
+        return {"file": None, "symbol": None}
+
+
 async def persist_graph_nodes(
     session: Any,
     repo_id: str,
@@ -316,6 +333,8 @@ async def persist_graph_nodes(
     if ep_scores is None:
         ep_scores = _derive_entry_point_scores(graph_builder)
 
+    bt_commits = _betweenness_commits(graph_builder)
+
     nodes = []
     for node_id in graph.nodes:
         data = graph.nodes[node_id]
@@ -336,6 +355,17 @@ async def persist_graph_nodes(
             "betweenness": bc.get(node_id, sym_bc.get(node_id, 0.0)),
             "community_id": cd.get(node_id, 0),
         }
+
+        # Scored → its commit; in no scoring → NULL, the unscored marker;
+        # provenance unknown → key omitted, so the stored stamp survives.
+        if node_id in bc:
+            kind, scored = "file", True
+        elif node_id in sym_bc:
+            kind, scored = "symbol", True
+        else:
+            kind, scored = ("file" if node_type == "file" else "symbol"), False
+        if bt_commits[kind] is not None:
+            node_dict["betweenness_commit"] = bt_commits[kind] if scored else None
 
         community_meta: dict[str, Any] = {}
         if node_type == "file":

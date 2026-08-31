@@ -517,16 +517,25 @@ async def _resolve_metrics(
             return 0
         return round(100 * sum(1 for v in all_vals if v < value) / len(all_vals))
 
-    result_data["metrics"] = {
+    metrics: dict[str, Any] = {
         "pagerank": round(node.pagerank or 0.0, 6),
         "pagerank_percentile": _pct(node.pagerank or 0.0, pr_values),
-        "betweenness": round(node.betweenness or 0.0, 6),
-        "betweenness_percentile": _pct(node.betweenness or 0.0, bt_values),
         "in_degree": degrees["in_degree"],
         "out_degree": degrees["out_degree"],
         "community_id": node.community_id,
         "community_label": meta.get("label") or None,
     }
+    # A node added since the last scoring holds the column default and has
+    # never been measured. Reporting that 0.0 would read as "on no shortest
+    # path" — the opposite claim for a symbol just spliced into a hot call
+    # chain.
+    if node.betweenness_commit is None:
+        metrics["betweenness"] = None
+        metrics["betweenness_note"] = "not scored yet: added since the last centrality run"
+    else:
+        metrics["betweenness"] = round(node.betweenness or 0.0, 6)
+        metrics["betweenness_percentile"] = _pct(node.betweenness or 0.0, bt_values)
+    result_data["metrics"] = metrics
 
 
 async def _resolve_community(

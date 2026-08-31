@@ -226,6 +226,13 @@ class GraphNode(Base):
     is_entry_point: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     pagerank: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     betweenness: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # The commit ``betweenness`` was last actually computed at. Betweenness is
+    # reused across small structural changes, so a node that appeared since the
+    # last scoring holds the ``0.0`` default unmeasured; NULL keeps that apart
+    # from a symbol genuinely on no shortest path. Same "omitted reads as not
+    # recorded" contract as ``analyzed_commit``. The other metrics on this row
+    # are recomputed every run and need no stamp.
+    betweenness_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
     community_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     community_meta_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     # Symbol-level fields (null for file nodes)

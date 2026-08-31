@@ -171,6 +171,10 @@ class GraphMetricsResponse(BaseModel):
     pagerank_percentile: int
     betweenness: float
     betweenness_percentile: int
+    # False when this node appeared after the last exact centrality scoring, so
+    # the two fields above are the column default rather than a measurement.
+    # Additive and defaulted so existing clients keep their shape.
+    betweenness_scored: bool = True
     community_id: int
     community_label: str | None
     is_entry_point: bool

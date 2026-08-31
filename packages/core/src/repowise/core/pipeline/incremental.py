@@ -110,6 +110,7 @@ def build_repo_graph(
         _read_sources,
         _split_cached,
     )
+    from repowise.core.workspace.update import get_head_commit
 
     fi_and_bytes = _read_sources(file_infos, None)
     parse_cache, cached_hits, to_parse = _split_cached(Path(repo_path), fi_and_bytes, None)
@@ -121,6 +122,7 @@ def build_repo_graph(
         repo_path,
         exclude_patterns=exclude_patterns,
         centrality_cache_dir=Path(repo_path) / ".repowise",
+        head_commit=get_head_commit(Path(repo_path)),
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
     )

@@ -1331,6 +1331,7 @@ export interface GraphMetricsResponse {
   pagerank_percentile: number;
   betweenness: number;
   betweenness_percentile: number;
+  betweenness_scored?: boolean;
   community_id: number;
   community_label: string | null;
   is_entry_point: boolean;

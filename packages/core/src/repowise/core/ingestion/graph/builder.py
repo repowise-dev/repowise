@@ -47,6 +47,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         *,
         exclude_patterns: list[str] | None = None,
         centrality_cache_dir: Path | str | None = None,
+        head_commit: str | None = None,
         include_submodules: bool = False,
         include_nested_repos: bool = False,
     ) -> None:
@@ -87,6 +88,12 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                 self._centrality_cache = CentralityCache(centrality_cache_dir)
             except Exception:
                 self._centrality_cache = None
+        # Stamped onto an exact betweenness scoring so a later reuse can say
+        # which commit the values are from. Passed in rather than read here:
+        # reaching for HEAD from ``ingestion`` would invert the package order.
+        self._head_commit: str | None = head_commit
+        # kind -> BetweennessScoring, read by persistence to stamp each node.
+        self._betweenness_scoring: dict[str, Any] = {}
 
         import pathspec
 
