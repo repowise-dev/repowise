@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools as _functools
 from pathlib import Path as _DoctorPath
 
 from rich.table import Table
@@ -491,6 +492,11 @@ def _run_repo_checks(
     registration_check, registration_wedged = _claude_registration_check()
     checks.append(registration_check)
 
+    # 12b. Does that registration actually start? Reported separately, because
+    # a wired-up server that dies on every invocation is a different problem
+    # with a different fix than one that is not wired up at all.
+    checks.append(_mcp_responds_check())
+
     # 13. Per-agent health, reported by each agent's own descriptor
     agent_checks, agents_need_refresh = _agent_target_checks()
     checks.extend(agent_checks)
@@ -786,6 +792,74 @@ def _agent_target_checks() -> tuple[list[DoctorCheck], bool]:
     return checks, needs_refresh
 
 
+def _registered_mcp_entry() -> dict | None:
+    """The Claude Code ``mcpServers.repowise`` entry, or None if there isn't one.
+
+    Delegates to ``claude_config``, which owns reading this entry, so the two
+    doctor checks and the registration writer cannot drift apart on what counts
+    as registered. Both checks must judge the same entry: a smoke check that
+    launched a *different* command than the one registered would give a clean
+    bill of health to the broken thing.
+    """
+    from repowise.cli.editor_integrations.claude_config import (
+        _claude_code_settings_path,
+        _stored_repowise_entry,
+    )
+
+    return _stored_repowise_entry(_claude_code_settings_path())
+
+
+def _unregistered_detail() -> str:
+    """Why there is no entry: absent, or present but unreadable.
+
+    Those have different fixes, and collapsing them tells a user with a
+    hand-broken settings.json to run ``init``, which will fail on the same
+    file. Only reached when there is no entry, so it costs nothing normally.
+    """
+    from repowise.cli.editor_integrations.claude_config import (
+        _claude_code_settings_path,
+        load_existing_config,
+    )
+
+    settings_path = _claude_code_settings_path()
+    if settings_path.exists():
+        try:
+            load_existing_config(settings_path)
+        except Exception:
+            return f"could not parse {settings_path}"
+    return "not registered (repowise init registers it)"
+
+
+@_functools.cache
+def _mcp_responds_check() -> DoctorCheck:
+    """Launch the registered MCP server and complete one round trip.
+
+    Reported separately from the registration row: registration answers "is it
+    wired up", this answers "does it run". An install whose server dies on
+    every invocation passes the first and fails this one, which is the whole
+    point. Absence of a registration is informational, matching
+    the registration check.
+
+    Cached for the process because there is one global ``mcpServers.repowise``
+    entry and this takes no repo argument, while workspace mode runs the repo
+    checks once per entry. Without the cache a ten-repo workspace would launch
+    the same server ten times and pay the startup cost for each.
+    """
+    from .mcp_smoke import CHECK_NAME, mcp_smoke_check
+
+    try:
+        entry = _registered_mcp_entry()
+        if entry is None:
+            return _check(CHECK_NAME, True, "not registered - nothing to launch")
+        command = entry.get("command")
+        args = entry.get("args")
+        if not isinstance(command, str) or not isinstance(args, list):
+            return _check(CHECK_NAME, True, "registration is hand-shaped - not launching it")
+        return mcp_smoke_check(command, [str(a) for a in args], entry.get("env"))
+    except Exception as exc:  # a doctor check must never be the crash
+        return _check(CHECK_NAME, True, f"Could not check: {exc}")
+
+
 def _claude_registration_check() -> tuple[DoctorCheck, bool]:
     """Detect a wedged Claude Code MCP registration (stale paths).
 
@@ -795,24 +869,15 @@ def _claude_registration_check() -> tuple[DoctorCheck, bool]:
     server silently fails to start in every Claude Code session. Returns
     ``(check, wedged)``; ``wedged`` drives the ``--repair`` re-registration.
     Absence of a registration is informational, never a failure.
+
+    This is a *static* check. Whether the server actually starts is
+    ``_mcp_responds_check``.
     """
     name = "Claude Code MCP entry"
     try:
-        import json as _json
-
-        from repowise.cli.editor_integrations.claude_config import _claude_code_settings_path
-
-        settings_path = _claude_code_settings_path()
-        if not settings_path.exists():
-            return _check(name, True, "not registered (repowise init registers it)"), False
-        try:
-            settings = _json.loads(settings_path.read_text(encoding="utf-8"))
-        except (OSError, _json.JSONDecodeError):
-            return _check(name, True, f"could not parse {settings_path}"), False
-        servers = settings.get("mcpServers") if isinstance(settings, dict) else None
-        entry = servers.get("repowise") if isinstance(servers, dict) else None
-        if not isinstance(entry, dict):
-            return _check(name, True, "not registered (repowise init registers it)"), False
+        entry = _registered_mcp_entry()
+        if entry is None:
+            return _check(name, True, _unregistered_detail()), False
 
         problems: list[str] = []
         command = entry.get("command")
