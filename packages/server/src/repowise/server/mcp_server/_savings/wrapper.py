@@ -44,8 +44,19 @@ logger = logging.getLogger(__name__)
 #: Coarse, non-identifying result fields worth reporting per tool call. All are
 #: enums or booleans (confidence tier, retrieval quality, staleness) — never
 #: query text, paths, or repo/symbol names. See the telemetry privacy contract.
+#:
+#: ``degraded`` names WHY a get_answer reply carries no synthesised prose (no
+#: provider, versus a provider that failed), which is the difference between an
+#: install working as designed and one that broke.
 _META_FLAGS = ("index_behind", "embedder_degraded")
-_RESULT_ENUMS = ("confidence", "retrieval_quality", "grounding")
+_RESULT_ENUMS = ("confidence", "retrieval_quality", "grounding", "degraded")
+
+
+def _semantic_search_state() -> bool | None:
+    """The install's vector-leg state, or ``None`` when it was never evaluated."""
+    from repowise.server.mcp_server._meta import semantic_search_state
+
+    return semantic_search_state()
 
 
 def _results_count_bucket(result: Any) -> str | None:
@@ -89,6 +100,15 @@ def _telemetry_properties(tool: str, result: Any, duration_ms: int) -> dict[str,
         bucket = _results_count_bucket(result)
         if bucket is not None:
             props["results_bucket"] = bucket
+    # Read from server state rather than from the response. `embedder_degraded`
+    # is False on a keyless install by design, so it only ever catches
+    # misconfiguration and the larger keyless population - retrieval genuinely
+    # full-text-only - was invisible. Taking it here keeps the caller's response
+    # exactly as it was: this is a fact about the install, and the agent already
+    # has everything it needs to see it.
+    semantic_search = _semantic_search_state()
+    if semantic_search is not None:
+        props["semantic_search"] = semantic_search
     return props
 
 

@@ -183,6 +183,21 @@ class InstrumentedGroup(click.Group):
         except Exception as exc:
             status = "error"
             error_type = type(exc).__name__
+            # A task-group crash raises one leaf and stamps the class names of
+            # its siblings on it. `error_type` can only name the one, which
+            # cannot say whether a crash-looping server has a single fault or
+            # several. Read here rather than in the command, so every host of a
+            # task group is covered and an interrupt - handled above, and not a
+            # failure - never lands in the failure dimension.
+            from repowise.core.platform.telemetry import GROUP_LEAF_TYPES_ATTR
+
+            leaves = getattr(exc, GROUP_LEAF_TYPES_ATTR, None)
+            if isinstance(leaves, tuple) and leaves:
+                from repowise.cli.platform import telemetry
+
+                telemetry.add_command_outcome(
+                    error_leaves=",".join(leaves), error_leaf_count=len(leaves)
+                )
             raise
         finally:
             # ``invoked_subcommand`` is only populated once ``super().invoke``

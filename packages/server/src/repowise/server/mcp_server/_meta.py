@@ -412,6 +412,29 @@ def finalize_trust_envelope(result: Any, *, evidence_kind: str | None = None) ->
     return result
 
 
+def semantic_search_state() -> bool | None:
+    """Whether retrieval has a real vector leg. ``None`` when never evaluated.
+
+    Three-valued on purpose, and the third value is the point: a signal that only
+    ever reports ``False`` cannot be told apart, by anything aggregating it, from
+    one this version does not report at all. That is exactly the trap
+    ``embedder_degraded`` was written to avoid, and it bites harder here, because
+    the population this measures - keyless installs, where nothing is broken and
+    retrieval is simply full-text-only - is the larger one.
+
+    Kept beside :func:`_embedder_meta` and read by it, so the response and the
+    telemetry can never disagree about the same install.
+    """
+    from repowise.server.mcp_server import _state
+
+    status = getattr(_state, "_embedder_status", None)
+    if not status:
+        return None
+    if status.get("degraded"):
+        return False
+    return status.get("active") != "mock"
+
+
 def _embedder_meta() -> dict[str, Any]:
     """Surface embedder degradation (issue #306) in the `_meta` envelope.
 
@@ -430,7 +453,12 @@ def _embedder_meta() -> dict[str, Any]:
     is broken and nothing was misconfigured, so it is not flagged as degraded;
     but retrieval really is full-text-only, and a caller that assumes semantic
     matching is running will misread a lexical miss as "not in the codebase".
-    ``semantic_search: false`` says so once per response without crying wolf.
+    ``semantic_search: false`` says so once per response without crying wolf. The
+    healthy case stays silent on the wire, because ``embedder_degraded: False``
+    with no ``embedder`` key already says it and a second key on every response of
+    every tool would be paid for in the caller's token budget to tell it something
+    it can already see. Telemetry needs the third state named rather than
+    inferred, so it reads :func:`semantic_search_state` directly instead.
     """
     # Lazy import: `_state` is a sibling module; importing it at call-time keeps
     # `_meta` free of any package import-ordering coupling.
