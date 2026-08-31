@@ -53,6 +53,7 @@ def _fake_run(max_concurrency: int = 1) -> SimpleNamespace:
         on_page_ready=None,
         vector_store=None,
         completed_page_summaries={},
+        timings=None,
     )
 
 
