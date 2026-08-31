@@ -99,7 +99,7 @@ function SingleValueFact({ facet, only }: { facet: PerformanceFacetKey; only: Pe
       <span className="text-[var(--color-text-secondary)]">
         {facetValueLabel(facet, only.value)}
       </span>{" "}
-      <span className="tabular-nums">on all {only.total.toLocaleString()}</span>
+      <span className="tabular-nums">on {only.total.toLocaleString()} matching</span>
     </p>
   );
 }
@@ -205,4 +205,3 @@ export function ContextHint({ context }: { context: PerformanceContextFilter }) 
     </p>
   );
 }
-

@@ -76,8 +76,8 @@ export function FilteredEmpty({ onClear }: { onClear: () => void }) {
         No opportunities match these filters
       </h3>
       <p className="mx-auto mt-2 max-w-[60ch] text-sm text-[var(--color-text-tertiary)]">
-        The counts beside each filter come from the whole repository, so a combination can still
-        be empty.
+        The counts beside each filter already account for the other active filters. This
+        combination may come from a restored view state that no longer matches the index.
       </p>
       <button
         type="button"

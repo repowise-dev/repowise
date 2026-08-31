@@ -68,7 +68,7 @@ describe("PerformanceView queue", () => {
     render(<PerformanceView adapter={adapter()} />);
     await rows();
     expect(screen.queryByLabelText("Evidence confidence")).toBeNull();
-    expect(screen.getByText("on all 7")).toBeTruthy();
+    expect(screen.getByText("on 7 matching")).toBeTruthy();
   });
 
   it("states the rendered scope, the filtered total, and the repository total", async () => {
