@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -35,7 +36,25 @@ def _prepare_repo(repo: Path) -> Path:
         "provider: config-provider\nmodel: config-model\n",
         encoding="utf-8",
     )
+    # Seed every mutable marker/store that the full-upgrade path could touch.
+    # A dry-run must preserve existing state too, not merely avoid creating
+    # these files when they are absent.
+    (repowise_dir / ".update.lock").write_text("held-by-another-update\n", encoding="utf-8")
+    (repowise_dir / ".update.pending").write_text("{\"head\": \"sentinel\"}\n", encoding="utf-8")
+    with sqlite3.connect(repowise_dir / "wiki.db") as connection:
+        connection.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO sentinel VALUES (?)", ("existing-index",))
     return state_path
+
+
+def _snapshot_repowise_tree(repo: Path) -> dict[str, bytes]:
+    """Capture all files in the persisted index, including hidden markers."""
+    repowise_dir = repo / ".repowise"
+    return {
+        str(path.relative_to(repowise_dir)): path.read_bytes()
+        for path in repowise_dir.rglob("*")
+        if path.is_file()
+    }
 
 
 def _patch_boundary(monkeypatch: pytest.MonkeyPatch, repo: Path) -> None:
@@ -73,8 +92,8 @@ def test_full_dry_run_preserves_state_and_never_dispatches_upgrade(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo"
-    state_path = _prepare_repo(repo)
-    state_before = state_path.read_bytes()
+    _prepare_repo(repo)
+    persisted_before = _snapshot_repowise_tree(repo)
     _patch_boundary(monkeypatch, repo)
 
     calls: list[dict[str, Any]] = []
@@ -93,9 +112,7 @@ def test_full_dry_run_preserves_state_and_never_dispatches_upgrade(
 
     assert outcome is update_cmd.UpdateOutcome.DRY_RUN
     assert calls == []
-    assert state_path.read_bytes() == state_before
-    assert not (repo / ".repowise" / ".update.lock").exists()
-    assert not (repo / ".repowise" / ".update.pending").exists()
+    assert _snapshot_repowise_tree(repo) == persisted_before
     rendered = output.getvalue()
     assert "config-provider / config-model" in rendered
     assert "ESSENTIAL -> FULL" in rendered
