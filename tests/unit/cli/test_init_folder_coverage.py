@@ -18,8 +18,6 @@ def test_folder_coverage_rules_parse_and_reach_generation_config(monkeypatch) ->
     """The repeatable flag parses to rules and lands in the GenerationConfig."""
     import click
 
-    captured: dict = {}
-
     def fake_resolve_repo_path(*a, **k):
         return "/tmp/repo"
 
@@ -38,8 +36,6 @@ def test_folder_coverage_rules_parse_and_reach_generation_config(monkeypatch) ->
 
 def test_config_round_trip_persists_rules(monkeypatch, tmp_path) -> None:
     """save_config_partial must record folder_coverage as a list of strings."""
-    from pathlib import Path
-
     import yaml
 
     from repowise.cli.helpers import save_config_partial
