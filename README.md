@@ -618,6 +618,21 @@ already rendered from structure at index time.
 Or pick the provider for the first index directly with `repowise init --provider
 gemini|anthropic|openai`.
 
+**Resuming an interrupted index.** If `init` is interrupted (timeout, crash,
+Ctrl+C), re-run it with `--resume` and it continues from where it stopped —
+pages already written to the vector store are skipped, and only the missing
+ones are generated:
+
+```bash
+repowise init . --resume
+```
+
+`--resume` is a safe no-op on a fully indexed repo, so it is the right thing to
+reach for whenever a long run is cut short. It works because pages are written
+to LanceDB incrementally, while the SQL `generation_jobs` row only finalizes at
+the end — a hard interrupt can leave LanceDB ahead of SQL, and `--resume` is
+the supported recovery path (`repowise doctor` flags the drift).
+
 **3. Connect your agent.** Step 2 already did this for Claude Code: `init`
 writes a repo-root `.mcp.json` unconditionally and, unless you passed
 `--no-editor-setup`, also registers repowise with `~/.claude/settings.json`.
