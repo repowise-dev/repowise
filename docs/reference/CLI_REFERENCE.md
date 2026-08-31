@@ -1650,6 +1650,11 @@ To remove a single agent rather than all of them, use
 
 Hook-driven context enrichment engine. Not meant to be called manually, invoked by Claude Code and Codex hooks installed during `repowise init`. Claude Code uses it for search-result enrichment, stale-wiki checks, and decision injection: session start gets the standing decisions relevant to the session's working set (relevance-ranked, hard token cap, silent when nothing clears the floor), and editing a governed file gets a one-line "governed by" notice once per session per decision. Codex uses it for `SessionStart` and `PostToolUse` lifecycle guidance. Shown decisions are recorded in `.repowise/sessions/sessions.db` so the next `repowise update` can judge whether the guidance was followed or contradicted and adjust decision staleness.
 
+| Flag | Meaning |
+|---|---|
+| `--client` | Hook client marker: `codex`. Codex lifecycle hooks pass this explicitly. |
+| `--verbose`, `-v` | Show debug logs from the hook pipeline. |
+
 ### `repowise-augment` / `repowise-rewrite`
 
 Two separate console scripts (not `repowise` subcommands) installed alongside the CLI: `repowise-augment` is an import-isolated entry point for the Claude Code/Codex augment hooks above; `repowise-rewrite` backs the Distill command-rewrite hook (`repowise hook rewrite install`). Neither is meant to be run by hand.
