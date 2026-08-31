@@ -16,6 +16,7 @@ from typing import Any
 
 from repowise.core.cancellation import check_cancelled
 
+from ..source_reader import disk_source_reader
 from .detector import (
     DEFAULT_MIN_LINES,
     DEFAULT_WINDOW_TOKENS,
@@ -80,6 +81,7 @@ def detect_clones_with_isolation(
     limits: DuplicationLimits | None = None,
     cache_dir: Path | None = None,
     changed_files: set[str] | None = None,
+    source_reader: Any | None = None,
     isolation_file_threshold: int = _ISOLATION_FILE_THRESHOLD,
 ) -> DuplicationReport:
     """Detect clones, isolating repository-scale transient allocations.
@@ -87,8 +89,21 @@ def detect_clones_with_isolation(
     Only the three file-info strings used by the detector cross the process
     boundary. The full parsed AST/model graph remains in the parent, and the
     child returns the comparatively small final report.
+
+    Isolation is taken only for a working-tree read, which is the case it was
+    measured on and the only one whose reader survives a spawn. Any other
+    *source_reader* runs the detector in process; see the comment below.
     """
-    if len(parsed_files) < isolation_file_threshold:
+    # A reader that is not the working tree cannot cross the spawn boundary.
+    # ``MappingSourceReader`` holds every file's bytes, so shipping it would
+    # send the exact memory this isolation exists to avoid; and letting the
+    # worker fall back to disk would report working-tree findings as the
+    # revision's, which that reader documents as the thing it must not do.
+    # Those callers (the base side of a diff, a historical commit) analyse a
+    # changed-file set, not a repository, so the bound is not what they need.
+    reader_is_working_tree = source_reader is None or source_reader is disk_source_reader
+
+    if len(parsed_files) < isolation_file_threshold or not reader_is_working_tree:
         return detect_clones(
             parsed_files,
             git_meta_map,
@@ -97,6 +112,7 @@ def detect_clones_with_isolation(
             limits=limits,
             cache_dir=cache_dir,
             changed_files=changed_files,
+            source_reader=source_reader,
         )
 
     files = [
