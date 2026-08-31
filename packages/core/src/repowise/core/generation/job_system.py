@@ -3,7 +3,25 @@
 JobSystem manages long-running generation jobs via JSON checkpoint files.
 Each job maps to a single {job_id}.json file in the configured jobs_dir.
 The checkpoint records progress (completed/failed pages), current level, and
-job status so generation can be resumed after interruption.
+job status.
+
+Durability contract
+-------------------
+A job's state lives in memory and is flushed to disk atomically. Page
+completions are flushed on a bound (``_FLUSH_EVERY_PAGES``), at each level
+boundary, and whenever a run ends or is interrupted; everything else is
+flushed as it happens. So an unclean kill can lose at most the last
+``_FLUSH_EVERY_PAGES`` entries of ``completed_page_ids``.
+
+That window is safe because *nothing reads this field to decide what to
+generate*. A resumed run derives its skip set from the vector store (see
+``_GenerationRun._seed_resume``), never from this file, so a lost entry
+cannot make a resume skip a page or regenerate one it should have kept.
+``failed_page_ids`` and every status transition are flushed immediately,
+because the post-run failure report reads them back off disk.
+
+Writes go through ``atomic_write_text``: a reader now never sees the
+truncated file a crash used to be able to leave behind mid-write.
 
 Phase 4 will replace this with a full SQLAlchemy-backed job table.
 """
@@ -20,7 +38,14 @@ from typing import Any, Literal
 
 import structlog
 
+from repowise.core.fsutils import atomic_write_text
+
 log = structlog.get_logger(__name__)
+
+# Page completions buffered before a flush. Bounds both the write amplification
+# (one whole-file rewrite per page rebuilt a list that grows by one each time)
+# and the state a kill can lose.
+_FLUSH_EVERY_PAGES = 128
 
 JobStatus = Literal["pending", "running", "completed", "failed", "paused"]
 
@@ -76,6 +101,21 @@ class Checkpoint:
         )
 
 
+@dataclass
+class _LiveJob:
+    """A job's in-memory state between flushes.
+
+    ``completed`` indexes ``checkpoint.completed_page_ids`` for membership.
+    The list stays the on-disk shape and keeps completion order; scanning it
+    per page was quadratic in the page count on its own, separately from the
+    I/O.
+    """
+
+    checkpoint: Checkpoint
+    completed: set[str]
+    unflushed: int = 0
+
+
 # ---------------------------------------------------------------------------
 # JobSystem
 # ---------------------------------------------------------------------------
@@ -92,6 +132,7 @@ class JobSystem:
     def __init__(self, jobs_dir: Path) -> None:
         self._jobs_dir = jobs_dir
         jobs_dir.mkdir(parents=True, exist_ok=True)
+        self._live: dict[str, _LiveJob] = {}
 
     # ------------------------------------------------------------------
     # Job lifecycle
@@ -114,6 +155,12 @@ class JobSystem:
             )
         except TypeError:
             config_dict = {}
+
+        # Normalise to the JSON shapes (tuples become lists) up front. The
+        # snapshot used to acquire them by way of the disk round-trip every
+        # read did; now that a reader can be served from memory, doing it here
+        # is what keeps both answers the same.
+        config_dict = json.loads(json.dumps(config_dict))
 
         now = _now_iso()
         checkpoint = Checkpoint(
@@ -144,17 +191,30 @@ class JobSystem:
         self._save(cp)
 
     def complete_page(self, job_id: str, page_id: str) -> None:
-        """Record a successfully generated page."""
-        cp = self._load(job_id)
-        if page_id not in cp.completed_page_ids:
+        """Record a successfully generated page.
+
+        Buffered: this is the one per-page write, and it is the field no
+        reader consults to decide what to generate. See the module docstring
+        for the window this leaves.
+        """
+        live = self._job(job_id)
+        cp = live.checkpoint
+        if page_id not in live.completed:
+            live.completed.add(page_id)
             cp.completed_page_ids.append(page_id)
             cp.completed_pages = len(cp.completed_page_ids)
             cp.total_pages = max(cp.total_pages, cp.completed_pages)
+            live.unflushed += 1
         cp.updated_at = _now_iso()
-        self._save(cp)
+        if live.unflushed >= _FLUSH_EVERY_PAGES:
+            self._flush(live)
 
     def fail_page(self, job_id: str, page_id: str, error: str) -> None:
-        """Record a failed page (job stays running)."""
+        """Record a failed page (job stays running).
+
+        Flushed immediately, unlike a completion: failures are rare, and the
+        CLI reads this field back off disk to report them after the run.
+        """
         cp = self._load(job_id)
         if page_id not in cp.failed_page_ids:
             cp.failed_page_ids.append(page_id)
@@ -205,7 +265,14 @@ class JobSystem:
         return set(self._load(job_id).completed_page_ids)
 
     def list_jobs(self) -> list[Checkpoint]:
-        """Return all jobs sorted by created_at descending."""
+        """Return all jobs sorted by created_at descending.
+
+        Flushes first: this reads the directory rather than the live state, so
+        without it the listing would report the one job this instance is
+        writing as behind by up to a flush bound.
+        """
+        for job_id in list(self._live):
+            self.flush(job_id)
         checkpoints: list[Checkpoint] = []
         for json_path in self._jobs_dir.glob("*.json"):
             try:
@@ -220,20 +287,58 @@ class JobSystem:
     # Internals
     # ------------------------------------------------------------------
 
-    def _load(self, job_id: str) -> Checkpoint:
+    def _job(self, job_id: str) -> _LiveJob:
+        """This instance's live state for *job_id*, read from disk once.
+
+        A second JobSystem over the same directory (the CLI opens one to read
+        the failure report back) still sees a current file, because every
+        write this one buffers is flushed by the time a run ends.
+        """
+        live = self._live.get(job_id)
+        if live is None:
+            checkpoint = self._read(job_id)
+            live = _LiveJob(checkpoint, set(checkpoint.completed_page_ids))
+            self._live[job_id] = live
+        return live
+
+    def _read(self, job_id: str) -> Checkpoint:
         path = self._jobs_dir / f"{job_id}.json"
         if not path.exists():
             raise FileNotFoundError(f"Job checkpoint not found: {job_id}")
         data = json.loads(path.read_text(encoding="utf-8"))
         return Checkpoint.from_dict(data)
 
-    def _save(self, checkpoint: Checkpoint) -> None:
-        checkpoint.updated_at = _now_iso()
+    def _load(self, job_id: str) -> Checkpoint:
+        """The current checkpoint, buffered writes included."""
+        return self._job(job_id).checkpoint
+
+    def _flush(self, live: _LiveJob) -> None:
+        checkpoint = live.checkpoint
         path = self._jobs_dir / f"{checkpoint.job_id}.json"
-        path.write_text(
+        atomic_write_text(
+            path,
             json.dumps(dataclasses.asdict(checkpoint), indent=2),
-            encoding="utf-8",
         )
+        live.unflushed = 0
+
+    def _save(self, checkpoint: Checkpoint) -> None:
+        """Stamp and flush *checkpoint* now. For everything but page counts."""
+        checkpoint.updated_at = _now_iso()
+        live = self._live.get(checkpoint.job_id)
+        if live is None:
+            live = _LiveJob(checkpoint, set(checkpoint.completed_page_ids))
+            self._live[checkpoint.job_id] = live
+        self._flush(live)
+
+    def flush(self, job_id: str) -> None:
+        """Make this job's buffered page completions durable.
+
+        Called at every level boundary and on interruption, so the window a
+        kill can lose is one level rather than a whole run.
+        """
+        live = self._live.get(job_id)
+        if live is not None and live.unflushed:
+            self._flush(live)
 
     def _transition(
         self,
