@@ -574,3 +574,63 @@ async def test_first_resolvable_id_keeps_an_id_whose_file_cannot_be_read(tmp_pat
     ctx = SimpleNamespace(path=str(tmp_path), session_factory=None)
 
     assert await _first_resolvable_id(["gone.py::Thing"], ctx, None, None) == "gone.py::Thing"
+
+
+# --- projection of a degraded payload --------------------------------------
+#
+# The projection trims evidence by `confidence`, on the rule that prose replaces
+# it: a high-confidence answer makes the ranked list redundant. A degraded
+# payload has no prose, so nothing replaces anything, and grading its evidence
+# must not be read as licence to serve less of it.
+
+
+def _degraded_raw(confidence: str) -> dict:
+    return {
+        "answer": "No synthesized prose (no-llm-provider), but the evidence is here",
+        "citations": ["pkg/m0.py"],
+        "confidence": confidence,
+        "retrieval_quality": "high",
+        "degraded": "no-llm-provider",
+        "fallback_targets": ["pkg/m0.py"],
+        "retrieval": [
+            {"path": f"pkg/m{i}.py", "title": f"m{i}", "summary": "s"} for i in range(4)
+        ],
+        "symbol_bodies": [
+            {"name": f"S{i}", "path": f"pkg/m{i}.py", "lines": [1, 4], "source": "x"}
+            for i in range(3)
+        ],
+        "_meta": {},
+    }
+
+
+def test_a_graded_degraded_payload_serves_the_same_evidence_as_before():
+    """The regression guard on grading confidence at all.
+
+    `medium` trims symbol_bodies to 1 and the ranked list to 2. Applying that to
+    a payload whose whole value is the evidence would take a body and a hit away
+    from the keyless caller this change exists to help.
+    """
+    projected = project_answer_payload(_degraded_raw("medium"), question="how does this work")
+
+    assert len(projected["symbol_bodies"]) == 2
+    assert len(projected["retrieval"]) == 3
+
+
+def test_the_degraded_shape_does_not_move_with_the_grade():
+    """Whatever it graded, the caller is served the same evidence."""
+    low = project_answer_payload(_degraded_raw("low"), question="how does this work")
+    medium = project_answer_payload(_degraded_raw("medium"), question="how does this work")
+
+    assert len(low["symbol_bodies"]) == len(medium["symbol_bodies"])
+    assert len(low["retrieval"]) == len(medium["retrieval"])
+    assert medium["confidence"] == "medium"
+
+
+def test_a_synthesised_payload_still_trims_on_its_grade():
+    """The control: the trimming rule is untouched where prose really does exist."""
+    raw = _degraded_raw("medium")
+    del raw["degraded"]
+
+    projected = project_answer_payload(raw, question="how does this work")
+
+    assert len(projected["symbol_bodies"]) == 1
