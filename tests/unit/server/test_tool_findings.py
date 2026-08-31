@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from repowise.server.mcp_server.tool_findings import ALLOWED_STATUSES, set_finding_status
+from repowise.server.mcp_server.tool_findings import set_finding_status
 
 
 class _Row:
@@ -71,9 +71,8 @@ async def test_missing_plan_raises(ctx):
     ), patch(
         "repowise.server.mcp_server.tool_findings.get_refactoring_suggestions",
         new=AsyncMock(return_value=[]),
-    ):
-        with pytest.raises(ValueError, match="refactoring plan not found"):
-            await set_finding_status("absent", "resolved")
+    ), pytest.raises(ValueError, match="refactoring plan not found"):
+        await set_finding_status("absent", "resolved")
 
 
 async def test_write_goes_through_the_shared_writer(ctx):
@@ -105,7 +104,6 @@ async def test_display_id_fallback(ctx):
     """A deep link may carry the display id (\"<alias> <file>:<symbol>\")
     rather than a storage or content id; the tool falls back like
     generate_refactoring_code does."""
-    matched = object()
     with patch(
         "repowise.server.mcp_server.tool_findings.get_refactoring_suggestion",
         new=AsyncMock(return_value=None),
