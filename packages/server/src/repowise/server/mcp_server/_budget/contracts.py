@@ -316,6 +316,20 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
         expansion_argument=None,
         protected=("suggestion_id", "resolved", "error"),
     ),
+    # Same shape as generate_refactoring_code: a small fixed write response
+    # whose fields are all load-bearing. No shed order — nothing to rank.
+    "set_finding_status": ResponseBudgetContract(
+        "blocks",
+        expansion_argument=None,
+        protected=(
+            "id",
+            "public_id",
+            "status",
+            "status_reason",
+            "status_changed_at",
+            "note",
+        ),
+    ),
 }
 
 
