@@ -138,8 +138,8 @@ async def test_scopeless_adr_stays_a_candidate(async_session):
 
     Acceptance requires a scope, and the ADR is the accepter here; a document
     that says what to do but not where it applies has not said enough to bind
-    future work, and reading as ``active`` would be the pre-split behaviour
-    this phase exists to remove.
+    future work, and reading it as ``active`` would put it in front of an agent
+    as an instruction nobody can check.
     """
     repo = await insert_repo(async_session)
     scopeless = _adr_dict()
