@@ -123,6 +123,11 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             # Every tail trimmed before any lane is dropped, cheapest loss
             # first. Episodes last here; the path fitter sheds them first for a
             # different reason, documented on _fit_path_response.
+            # Candidates before accepted decisions: a candidate is a review
+            # request, so losing one to the budget costs the reader nothing
+            # they were meant to act on now.
+            "history[]",
+            "candidates[]",
             "decisions[]",
             "git_archaeology.file_commits[]",
             "git_archaeology.cross_references[]",
@@ -136,6 +141,8 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "git_archaeology.git_log",
             "related_documentation",
             "code_rationale",
+            "history",
+            "candidates",
             "origin_story",
         ),
         expansion_argument=None,

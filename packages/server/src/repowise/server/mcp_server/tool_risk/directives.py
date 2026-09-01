@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.analysis.risk_semantics import structural_impact_contract
+from repowise.core.persistence.crud.authority import decision_currencies
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.decision_graph import list_conflict_edges
 from repowise.core.persistence.models import DecisionNodeLink, DecisionRecord
@@ -388,13 +389,23 @@ async def _governance_directive(ctx: Any, changed_files: list[str]) -> list[dict
             by_file: dict[str, list[Any]] = {}
             for record, node_id in linked_rows:
                 by_file.setdefault(node_id, []).append(record)
+            # A directive tells a reviewer their change is constrained, so only
+            # an accepted decision may raise one. Without the join a candidate
+            # nobody had reviewed produced a stale-governance warning against a
+            # pull request.
+            currencies = await decision_currencies(
+                _gr_session, _gr_repo_id, [r for r, _ in linked_rows]
+            )
             seen_dr_ids: set[str] = set()
             for cf in changed_files:
                 for dr in by_file.get(cf, []):
                     if dr.id in seen_dr_ids:
                         continue
                     seen_dr_ids.add(dr.id)
-                    reason = _governance_reason(dr, conflict_decision_ids)
+                    currency = currencies.get(dr.id)
+                    if currency is None:
+                        continue
+                    reason = _governance_reason(dr, currency, conflict_decision_ids)
                     if reason is None:
                         continue
                     governance_risk.append(
@@ -403,6 +414,7 @@ async def _governance_directive(ctx: Any, changed_files: list[str]) -> list[dict
                             "decision_id": dr.id,
                             "title": dr.title,
                             "status": dr.status,
+                            "currency": currency,
                             "reason": reason,
                         }
                     )
@@ -411,12 +423,19 @@ async def _governance_directive(ctx: Any, changed_files: list[str]) -> list[dict
     return governance_risk
 
 
-def _governance_reason(dr: Any, conflict_decision_ids: set[str]) -> str | None:
-    """Map a governing decision to a directive reason, or None when clean."""
-    staleness = dr.staleness_score or 0.0
-    if dr.status == "active" and staleness >= 0.5:
+def _governance_reason(
+    dr: Any, currency: str, conflict_decision_ids: set[str]
+) -> str | None:
+    """Map an accepted decision to a directive reason, or None when clean.
+
+    *currency* is the effective currency from the acceptance, so the caller has
+    already established the record is a decision rather than a candidate.
+    ``needs_review`` is the derived answer to "have the files it names moved",
+    which is the staleness test this used to apply to the column by hand.
+    """
+    if currency == "needs_review":
         return "stale_governance"
-    if dr.status == "superseded":
+    if currency == "superseded":
         return "superseded_decision"
     if dr.id in conflict_decision_ids:
         return "contradicted_decision"

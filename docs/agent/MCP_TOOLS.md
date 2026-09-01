@@ -656,7 +656,7 @@ Architectural decision intelligence. Falls back to git archaeology when no decis
 **Modes:**
 
 1. **NL search**: pass a question, optionally anchored to `targets`: `get_why(query="why JWT over sessions?")` -> searches decision records.
-2. **Path-based**: pass a file path as `query`: `get_why(query="src/auth/service.ts")` -> returns decisions governing that file plus its origin story.
+2. **Path-based**: pass a file path as `query`: `get_why(query="src/auth/service.ts")` -> returns three lanes, `decisions` (accepted, governing), `candidates` (nobody accepted them) and `history` (accepted and since replaced), plus the file's origin story.
 3. **Health dashboard**: no `query`: `get_why()` -> stale decisions, conflicts, ungoverned hotspots.
 4. **Reference lookup**: pass `id`: `get_why(id="ev_...")` -> the exact evidence and supporting decision in one call.
 
@@ -664,9 +664,13 @@ Architectural decision intelligence. Falls back to git archaeology when no decis
 
 `answer_basis` names the strongest lane the response rests on: `decision`, `episode`, `rationale`, `archaeology`, or `documentation`. Only `decision` is a ruling; the rest are evidence to weigh. Absent when no lane was served, and on the health dashboard.
 
-**A record's `status` decides whether it binds you.** `active` means somebody accepted it, in a recorded event that names the reason, the scope, the evidence and the accepter: treat it as a constraint. Anything else is a candidate — something was inferred and nobody has agreed to it — so read it as a hint and never as a rule. Nothing produces an acceptance except an explicit `repowise decision confirm` or a committed ADR that says it is accepted, so a candidate that has recurred across fifty sessions is still a candidate.
+**The lane a record is in decides whether it binds you, and path mode puts it in one.** `decisions` holds accepted records: somebody accepted each in a recorded event naming the reason, the scope, the evidence and the accepter, so treat them as constraints. `candidates` holds records something inferred and nobody has agreed to; read them as hints and never as rules, and note the `candidates_note` beside them says so too. Nothing produces an acceptance except an explicit `repowise decision confirm` or a committed ADR that says it is accepted, so a candidate that has recurred across fifty sessions is still a candidate.
 
-Path mode's `alignment` counts the two separately: `active_count` is what governs the file, `candidate_count` is what is merely awaiting review, and `score` is derived from the accepted records alone. A file with `active_count: 0` is ungoverned however many candidates name it.
+Do not read the lane off `status`. That column is a projection kept in step for readers that predate the split, and a record can carry `status: "active"` with no acceptance behind it at all. An accepted record instead carries a `currency`: `active` (still describes its code), `needs_review` (its files have moved, and it still binds), `uncheckable` (it names nothing, so nothing can check it), `superseded` or `dismissed`. A candidate carries `review_state: "open"` and no `currency`.
+
+Path mode's `alignment` counts the lanes separately and they sum to `governing_count`, which is every record naming the file: `active_count` is what governs it, `deprecated_count` what was accepted and withdrawn, `uncheckable_count` what was accepted but names nothing, `candidate_count` what is merely awaiting review. `score` is derived from `active_count` alone, so a file with `active_count: 0` is ungoverned however many candidates name it.
+
+The `candidates` and `history` lanes are capped at three rows each and shed first under response-budget pressure, so an absent lane means the budget was tight, not that it was empty. `get_overview`, `get_risk` directives and `get_answer` serve accepted records only; a candidate reaches none of them as an instruction.
 
 **When to use:** Before architectural changes, understand existing intent and constraints. After changes, record new decisions.
 

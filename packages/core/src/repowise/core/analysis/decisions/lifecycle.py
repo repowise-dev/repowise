@@ -18,7 +18,9 @@ __all__ = [
     "ACCEPTANCE_ACTIONS",
     "CANDIDATE_REVIEW_STATES",
     "DECISION_CURRENCIES",
+    "DECISION_STATUS_ORDER",
     "NEEDS_REVIEW_STALENESS",
+    "REVIEW_LANES",
     "STORED_CURRENCIES",
     "AcceptanceRequirement",
     "acceptance_blockers",
@@ -26,6 +28,7 @@ __all__ = [
     "effective_currency",
     "is_governing",
     "legacy_status_for_currency",
+    "status_rank",
 ]
 
 #: What a decision's authority currently amounts to. Replaces the numeric
@@ -57,6 +60,42 @@ STORED_CURRENCIES: tuple[str, ...] = (
     "needs_review",
     "superseded",
     "dismissed",
+)
+
+#: The one ranking of ``decision_records.status``, best first. A rule the team
+#: stands behind, then a candidate, then history, then a tombstone. Four
+#: independent copies of this ordering existed and two of them disagreed about
+#: where ``superseded`` sat, so a list and the tool describing it ranked the
+#: same rows differently.
+DECISION_STATUS_ORDER: tuple[str, ...] = (
+    "active",
+    "proposed",
+    "superseded",
+    "deprecated",
+    "dismissed",
+)
+
+_STATUS_RANK: dict[str, int] = {s: i for i, s in enumerate(DECISION_STATUS_ORDER)}
+
+
+def status_rank(status: str) -> int:
+    """Sort key for *status*. An unknown status sorts after every known one."""
+    return _STATUS_RANK.get(status, len(DECISION_STATUS_ORDER))
+
+
+#: The review lanes, which partition a repository: every record is in exactly
+#: one, and the five sum to the total. ``candidates`` is the absence of an
+#: acceptance; the other four are the currencies, with ``superseded`` and
+#: ``dismissed`` folded into ``history`` because a reader working a queue does
+#: not need those apart. ``governing`` is deliberately not here: it is the
+#: roll-up of ``active`` and ``needs_review``, so it overlaps two lanes and
+#: belongs in a filter rather than in a tab row.
+REVIEW_LANES: tuple[str, ...] = (
+    "active",
+    "candidates",
+    "needs_review",
+    "uncheckable",
+    "history",
 )
 
 #: What an acceptance row records having happened.

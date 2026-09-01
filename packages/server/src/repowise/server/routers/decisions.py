@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.decisions.lifecycle import is_governing
 from repowise.core.persistence import crud, decision_graph
 from repowise.core.persistence.models import DecisionEvidence
 from repowise.server.deps import get_db_session, verify_api_key
@@ -23,6 +24,7 @@ from repowise.server.schemas import (
     DecisionGraphNode,
     DecisionGraphResponse,
     DecisionHealthResponse,
+    DecisionLaneCountsResponse,
     DecisionLineageEntry,
     DecisionLineageResponse,
     DecisionRecordResponse,
@@ -39,6 +41,30 @@ router = APIRouter(
 )
 
 
+def _in_lane(currency: str | None, lane: str) -> bool:
+    """Whether a record at *currency* belongs in review lane *lane*.
+
+    ``None`` means no acceptance row, which is the whole definition of a
+    candidate. The accept/candidate half of this is pushed into SQL by
+    ``list_decisions(accepted=...)``; only the currency, which comes from the
+    record's scope and staleness rather than from the acceptance row, is
+    resolved here.
+    """
+    if lane == "candidates":
+        return currency is None
+    if lane == "governing":
+        return currency is not None and is_governing(currency)
+    if lane == "history":
+        return currency in ("superseded", "dismissed")
+    return currency == lane
+
+
+#: How many accepted records a currency-derived lane scans before paging in
+#: Python. Matches the endpoint's own ``limit`` ceiling: past it the lane would
+#: need the currency in SQL, which the derivation cannot give it.
+_LANE_SCAN_CAP = 500
+
+
 @router.get(
     "/api/repos/{repo_id}/decisions",
     response_model=list[DecisionRecordResponse],
@@ -50,6 +76,15 @@ async def list_decisions(
     tag: str | None = Query(None, description="Filter by tag"),
     module: str | None = Query(None, description="Filter by module path"),
     include_proposed: bool = Query(True),
+    lane: str | None = Query(
+        None,
+        pattern="^(candidates|governing|active|needs_review|uncheckable|history)$",
+        description=(
+            "Review lane. candidates: never accepted. governing: accepted and "
+            "still binding. history: accepted and withdrawn. Applied after the "
+            "page is fetched, because the lane is a join and not a column."
+        ),
+    ),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     sort: str = Query(
@@ -63,12 +98,26 @@ async def list_decisions(
 
     Each row carries an ``evidence_preview`` (the top-ranked evidence row's
     verbatim quote) plus the total ``evidence_count``, so the table can show
-    provenance without N+1 calls to the per-decision /evidence endpoint.
+    provenance without N+1 calls to the per-decision /evidence endpoint, and a
+    ``currency`` naming what its acceptance currently amounts to. A row with no
+    ``currency`` is a candidate: nobody has accepted it.
 
     Defaults to ``sort=priority``. Newest-first buried every confirmed
     decision under the unreviewed proposals the indexer had just mined, so
     page one was entirely machine guesses.
     """
+    # The acceptance half of the lane is a SQL predicate, so a page of a lane
+    # is a page of that lane. The currency half cannot be: ``needs_review`` and
+    # ``uncheckable`` are derived from the record's scope and staleness. Those
+    # lanes therefore over-fetch the accepted set and cut the page afterwards,
+    # which is affordable because an accepted decision requires a human action
+    # and the set stays small by construction.
+    # Every lane but ``candidates`` filters the accepted set by currency, and a
+    # currency is derived from the record rather than stored, so the page has
+    # to be cut after the derivation. ``governing`` is in here for the same
+    # reason as the rest: cutting first returned an empty tab on a repository
+    # whose newest accepted records had all been superseded.
+    derived = lane is not None and lane != "candidates"
     decisions = await crud.list_decisions(
         session,
         repo_id,
@@ -77,11 +126,22 @@ async def list_decisions(
         tag=tag,
         module=module,
         include_proposed=include_proposed,
-        limit=limit,
-        offset=offset,
+        accepted=None if lane is None else lane != "candidates",
+        # History has to reach a decision that was accepted and then dismissed,
+        # which carries a tombstone status the default listing hides.
+        include_dismissed=lane == "history",
+        limit=max(_LANE_SCAN_CAP, offset + limit) if derived else limit,
+        offset=0 if derived else offset,
         sort=sort,
     )
+    currencies = await crud.decision_currencies(session, repo_id, decisions)
+    if lane is not None:
+        decisions = [d for d in decisions if _in_lane(currencies.get(d.id), lane)]
+    if derived:
+        decisions = decisions[offset : offset + limit]
     items = [DecisionRecordResponse.from_orm(d) for d in decisions]
+    for item in items:
+        item.currency = currencies.get(item.id)
 
     ids = [d.id for d in decisions]
     if ids:
@@ -167,6 +227,30 @@ async def decision_counts(
         proposed=counts["proposed"],
         superseded=counts["superseded"],
         deprecated=counts["deprecated"],
+    )
+
+
+@router.get(
+    "/api/repos/{repo_id}/decisions/lane-counts",
+    response_model=DecisionLaneCountsResponse,
+)
+async def decision_lane_counts(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> DecisionLaneCountsResponse:
+    """Counts per review lane.
+
+    Separate from ``/counts``, which groups the ``status`` column. That column
+    is the projection kept in step for readers that predate the acceptance
+    split, so its ``active`` and this endpoint's ``active`` are different
+    questions: a record can be stored active and have no acceptance at all.
+    A tab row must not be labelled from the other one's answer.
+
+    Declared above ``/{decision_id}`` for the same reason ``/counts`` is:
+    FastAPI matches in declaration order.
+    """
+    return DecisionLaneCountsResponse(
+        **await crud.count_decisions_by_lane(session, repo_id)
     )
 
 
@@ -421,7 +505,42 @@ async def create_decision(
     body: DecisionCreate,
     session: AsyncSession = Depends(get_db_session),
 ) -> DecisionRecordResponse:
-    """Create a new decision record (e.g. from CLI capture via API)."""
+    """Create a decision record, accepting it when it names a scope.
+
+    Typing a decision by hand is an acceptance, but it is recorded as one
+    rather than written straight into the status column, so this surface and
+    the CLI agree about what made the record govern.
+
+    A record naming no file or module is stored as a candidate instead of
+    being refused, which is what ``repowise decision add`` does with the same
+    input. It cannot be checked against the code and cannot reach an agent
+    editing a governed file, so it cannot govern; discarding the fields the
+    author did fill in would be worse. The response's ``status`` says which of
+    the two happened, and a form can predict it from the same one field.
+    """
+    # ``upsert_decision`` dedups on the title and overwrites the scope with
+    # whatever the body carries, so a second post of an accepted decision's
+    # title with no files would clear the scope it governs and leave its
+    # acceptance row pointing at a record that no longer binds. Refuse, and
+    # name the record, rather than quietly retiring somebody's decision from a
+    # call that says "create".
+    existing = await crud.find_decision_by_title(
+        session, repo_id, body.title, source="cli"
+    )
+    scoped = bool(body.affected_files or body.affected_modules)
+    if existing is not None and not scoped and await crud.is_accepted(
+        session, existing.id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{existing.title!r} is already an accepted decision "
+                f"({existing.id}). Recording it again without the files it "
+                "governs would withdraw its scope. Edit it instead, or post it "
+                "with affected_files."
+            ),
+        )
+
     rec = await crud.upsert_decision(
         session,
         repository_id=repo_id,
@@ -438,13 +557,11 @@ async def create_decision(
         source="cli",
         confidence=1.0,
     )
-    # Typing a decision by hand is an acceptance, but it is still recorded as
-    # one rather than written straight into the status column, so this surface
-    # and the CLI agree about what made the record govern.
-    try:
-        await crud.accept_decision(session, rec, accepter="web")
-    except crud.AcceptanceRefusedError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if scoped:
+        try:
+            await crud.accept_decision(session, rec, accepter="web")
+        except crud.AcceptanceRefusedError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     return DecisionRecordResponse.from_orm(rec)
 
 

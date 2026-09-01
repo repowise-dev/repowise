@@ -149,6 +149,31 @@ Similarity never supersedes anything: an edge exists because somebody named the
 successor. Merging and superseding retire ids that may already be written down
 somewhere, so both leave an alias and the retired id keeps resolving.
 
+The same actions are on the Decisions page, split into five review lanes that
+partition the repository, so the counts add up and no record is in two of them:
+
+| Lane | What is in it |
+|------|---------------|
+| Active | Accepted, and still describes the code it names. These are the rules. |
+| Candidates | Never accepted. Governs nothing, reaches no agent. Carries the evidence quote it was drawn from, so it can be accepted or dismissed from the row. |
+| Needs review | Accepted, but the files it names have moved. Still binds. |
+| Uncheckable | Accepted, but names no file or module, so nothing can check it against the code and no agent editing a file will be given it. |
+| History | Accepted and then withdrawn, superseded or dismissed. |
+
+The lane is a join onto the acceptance, not a filter on the status column, so
+`GET /api/repos/{id}/decisions?lane=candidates` and
+`GET /api/repos/{id}/decisions/lane-counts` are different questions from
+`/decisions/counts`, which groups the status projection. Every listed record
+also carries a `currency` field; a record with no `currency` is a candidate.
+The lane is applied before the page is cut, so a page of a lane is a page of
+that lane.
+
+Accepting from the UI goes through the same acceptance contract as
+`repowise decision confirm`, so a candidate missing a reason, a scope or an
+evidence reference has its Accept disabled with the gap named beside it rather
+than failing after the click. Dismissing stays available: a candidate that
+cannot be accepted is the one most worth tombstoning.
+
 ```
 repowise decision health
 
@@ -512,9 +537,16 @@ record's staleness: whether you overrode a decision is a judgement about the
 record, staleness is a measurement of the code, and one of those is per-machine
 while the other travels with the repository.
 
-Decisions also land in the generated `CLAUDE.md` (active records, freshest
+Decisions also land in the generated `CLAUDE.md` (accepted records, freshest
 first) and in `get_overview()`, `get_context()`, and the `governance_risk` flag
 in `get_risk()` PR review.
+
+Every one of those reads is the acceptance join, not the status column. A
+candidate does not appear in `get_overview()`'s key decisions, cannot raise a
+`governance_risk` directive against a pull request, and reaches `get_answer`'s
+prompt labelled `candidate` rather than `active`. That labelling matters: the
+row is rendered verbatim into a model prompt, and a candidate named `active`
+reads to the model as something the repository has settled on.
 
 ## CLI reference
 
@@ -523,6 +555,13 @@ the primary repo. Decision ids accept an 8-character prefix.
 
 | Command | What it does |
 |---------|--------------|
+Recording a decision from the UI follows the same rule as `repowise decision
+add`: name the files or modules it governs and the write records an acceptance,
+name none and it is stored as a candidate, and the form says which before you
+press the button. Re-recording the title of a decision that is already accepted
+without naming its scope is refused rather than applied, because it would clear
+the scope that decision governs.
+
 | `repowise decision add` | Guided interactive capture: title, context, decision, rationale, rejected alternatives, tradeoffs, affected files, tags. Answering the prompts is an acceptance, recorded as one. Name no files and it is kept as a candidate instead, because a decision that names nothing cannot be checked against the code. |
 | `repowise decision list` | Table of id, title, status, source, confidence, staleness, created date. |
 | `repowise decision show ID` | Full record including alternatives, consequences, affected files, and the evidence file and line. |
@@ -559,12 +598,27 @@ Full flag reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-d
 | Call shape | Mode | Returns |
 |------------|------|---------|
 | No `query` | health | `counts`, `stale_decisions`, `proposed_awaiting_review`, `ungoverned_hotspots`, `conflicts` |
-| `query` is a path | path | The decisions governing that file (with `lineage` when the chain is longer than one), an `origin_story` from git, and an `alignment` read scored on accepted decisions only |
+| `query` is a path | path | Three lanes: `decisions`, the accepted decisions governing that file (with `lineage` when the chain is longer than one); `candidates`, records naming it that nobody has accepted; and `history`, records accepted and since superseded or withdrawn. Plus an `origin_story` from git and an `alignment` read scored on the first lane only |
 | `query` is a question | search | Ranked decision records plus `related_documentation`, optionally anchored with `targets` |
 | `repo="all"` | workspace search | The same records across every workspace repo, each tagged with its alias |
 
-It is designed never to come back empty-handed. If no decision record covers a
-path, it falls back to git archaeology on that file. If git history is silent
+The lanes never mix. `decisions` is what governs, and it is the only lane an
+agent should read as a rule. `candidates` carries a `candidates_note` saying in
+as many words that nobody has accepted them and how to accept one, and
+`history` carries a `history_note` saying its records were accepted and have
+since been replaced. When only candidates name a path, `alignment.score` is
+`none` and its explanation says there is no accepted decision, rather than
+reporting the file as governed. `alignment` also splits its counts four ways,
+and they sum to `governing_count`: `active_count`, `deprecated_count`,
+`uncheckable_count`, `candidate_count`.
+
+Both non-governing lanes are capped at three rows and are the first things shed
+under budget pressure: they are context, and a response that cannot afford the
+rules must not spend on the queue. A note is dropped with its lane, so a
+sentence never counts rows that are no longer in the payload.
+
+It is designed never to come back empty-handed. If no accepted decision covers
+a path, it falls back to git archaeology on that file. If git history is silent
 too, it mines a rationale comment live from the source and returns it as
 `code_rationale`. Semantic decision search falls back to full-text search when
 the vector store is unavailable.

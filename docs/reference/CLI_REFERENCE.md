@@ -972,6 +972,12 @@ Broad discovery itself is a source, so it is switched with
 `confirm` is the acceptance event. Nothing else promotes a record to `active`:
 extraction, recurrence across sessions, and confidence all stop at `proposed`.
 
+`--status` filters the status column, which is a projection of the acceptance
+kept in step for readers that predate the split, so it is not the same question
+as "what governs". `repowise decision candidates` is the authoritative list of
+what nobody has accepted, and the Decisions page splits the same repository
+into five lanes over the acceptance join.
+
 **Scripting these:** every subcommand takes `--format json`, and `confirm`,
 `dismiss`, `deprecate`, and `show` exit non-zero on an unknown id with
 `{"error": "decision_not_found", "decision_id": "..."}` so a caller can tell a
@@ -982,7 +988,7 @@ typo from a successful transition. `dismiss` skips its confirmation prompt under
 
 | Flag | Description |
 |------|-------------|
-| `--status` | `active`, `proposed`, `deprecated`, `superseded`, `all` |
+| `--status` | `active`, `proposed`, `deprecated`, `superseded`, `dismissed`, `all` |
 | `--source` | `adr`, `cli`, `comment`, `commit`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all` |
 | `--proposed` | Shortcut for `--status proposed` |
 | `--stale-only` | Only stale decisions |

@@ -13,9 +13,10 @@ shortcut past the reason/scope/evidence/identity requirement.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +26,7 @@ from repowise.core.analysis.decisions.lifecycle import (
     AcceptanceRequirement,
     acceptance_blockers,
     effective_currency,
+    is_governing,
     legacy_status_for_currency,
 )
 
@@ -43,7 +45,9 @@ __all__ = [
     "accept_decision",
     "accepted_decision_ids",
     "accepted_predicate",
+    "count_decisions_by_lane",
     "current_currency",
+    "decision_currencies",
     "dismiss_candidate",
     "is_accepted",
     "latest_acceptance",
@@ -156,6 +160,142 @@ async def accepted_decision_ids(
     if not governing_only:
         return {did for did, _ in rows}
     return {did for did, currency in rows if currency not in ("superseded", "dismissed")}
+
+
+async def decision_currencies(
+    session: AsyncSession,
+    repository_id: str,
+    records: Iterable[DecisionRecord],
+) -> dict[str, str]:
+    """Effective currency per decision id. A candidate is absent from the map.
+
+    The batched form of :func:`current_currency`, and the primitive every read
+    surface splits its lanes with. One query for the repository's current
+    acceptances, then :func:`effective_currency` per record, because the
+    ``needs_review`` and ``uncheckable`` derivations need the record's scope and
+    staleness and the acceptance row does not carry them.
+
+    Absent means candidate, which is the only test that separates the two
+    entities. Reading ``status == "active"`` instead is the same question with a
+    different answer: the column is a projection every writer keeps in step, so
+    it agrees right up until something writes it without an acceptance.
+    """
+    latest_seq = (
+        select(
+            DecisionAcceptance.decision_id.label("did"),
+            func.max(DecisionAcceptance.seq).label("seq"),
+        )
+        .where(DecisionAcceptance.repository_id == repository_id)
+        .group_by(DecisionAcceptance.decision_id)
+        .subquery()
+    )
+    q = select(DecisionAcceptance.decision_id, DecisionAcceptance.currency).join(
+        latest_seq,
+        (DecisionAcceptance.decision_id == latest_seq.c.did)
+        & (DecisionAcceptance.seq == latest_seq.c.seq),
+    )
+    stored = {did: currency for did, currency in (await session.execute(q)).all()}
+
+    out: dict[str, str] = {}
+    for record in records:
+        currency = stored.get(record.id)
+        if currency is None:
+            continue
+        out[record.id] = effective_currency(
+            currency,
+            has_scope=bool(_record_scope(record)),
+            staleness=record.staleness_score,
+        )
+    return out
+
+
+async def count_decisions_by_lane(
+    session: AsyncSession, repository_id: str
+) -> dict[str, int]:
+    """Records per review lane, as counts a surface can put on a tab.
+
+    ``candidates`` plus the four currencies (``active``, ``needs_review``,
+    ``uncheckable``, ``history``) partition the repository, so the five sum to
+    ``total`` and no record is counted twice. ``governing`` is the roll-up of
+    the two currencies that still bind, reported alongside rather than as a
+    peer lane: a tab row of overlapping datasets is a tab row a reader cannot
+    add up.
+
+    Loads the id, scope and staleness of every record rather than grouping in
+    SQL: two of the currencies are derived from the record's scope and
+    staleness by :func:`effective_currency`, so no ``GROUP BY`` over the
+    acceptance table can produce them. Three columns per row, which is less
+    than ``get_decision_health_summary`` already pays for whole rows.
+    """
+    rows = (
+        await session.execute(
+            select(
+                DecisionRecord.id,
+                DecisionRecord.affected_files_json,
+                DecisionRecord.affected_modules_json,
+                DecisionRecord.staleness_score,
+            ).where(
+                DecisionRecord.repository_id == repository_id,
+                # Tombstoned candidates are excluded; a decision that was
+                # accepted and then withdrawn is not, because it is history
+                # the History lane promises. ``dismiss_candidate`` writes the
+                # same status for both, so the acceptance row is what tells
+                # them apart, and the loop below does that.
+                or_(
+                    DecisionRecord.status != "dismissed",
+                    accepted_predicate(),
+                ),
+            )
+        )
+    ).all()
+
+    latest_seq = (
+        select(
+            DecisionAcceptance.decision_id.label("did"),
+            func.max(DecisionAcceptance.seq).label("seq"),
+        )
+        .where(DecisionAcceptance.repository_id == repository_id)
+        .group_by(DecisionAcceptance.decision_id)
+        .subquery()
+    )
+    stored = dict(
+        (
+            await session.execute(
+                select(
+                    DecisionAcceptance.decision_id, DecisionAcceptance.currency
+                ).join(
+                    latest_seq,
+                    (DecisionAcceptance.decision_id == latest_seq.c.did)
+                    & (DecisionAcceptance.seq == latest_seq.c.seq),
+                )
+            )
+        ).all()
+    )
+
+    counts = {
+        "candidates": 0,
+        "active": 0,
+        "needs_review": 0,
+        "uncheckable": 0,
+        "history": 0,
+        "governing": 0,
+        "total": len(rows),
+    }
+    for did, files_json, modules_json, staleness in rows:
+        acceptance = stored.get(did)
+        if acceptance is None:
+            counts["candidates"] += 1
+            continue
+        has_scope = bool(json.loads(files_json or "[]")) or bool(
+            json.loads(modules_json or "[]")
+        )
+        currency = effective_currency(
+            acceptance, has_scope=has_scope, staleness=staleness or 0.0
+        )
+        counts["history" if currency in ("superseded", "dismissed") else currency] += 1
+        if is_governing(currency):
+            counts["governing"] += 1
+    return counts
 
 
 async def current_currency(session: AsyncSession, record: DecisionRecord) -> str | None:

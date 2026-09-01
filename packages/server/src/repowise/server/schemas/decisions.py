@@ -55,6 +55,11 @@ class DecisionRecordResponse(BaseModel):
     # /evidence endpoint instead).
     evidence_count: int | None = None
     evidence_preview: EvidencePreview | None = None
+    # Effective currency from the acceptance, or None for a candidate. This is
+    # the authority answer; ``status`` is the projection kept in step for
+    # readers that predate the split. A record can be stored ``active`` and
+    # carry no currency at all, which is precisely what a candidate is.
+    currency: str | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> DecisionRecordResponse:
@@ -111,6 +116,23 @@ class DecisionCountsResponse(BaseModel):
     proposed: int
     superseded: int
     deprecated: int
+
+
+class DecisionLaneCountsResponse(BaseModel):
+    """Records per review lane, from a scan of the acceptance join.
+
+    ``candidates`` and the four currency lanes partition the repository and sum
+    to ``total``; ``governing`` is the roll-up of the two that still bind, so a
+    caller can state "N rules" without adding two tabs together.
+    """
+
+    candidates: int
+    active: int
+    needs_review: int
+    uncheckable: int
+    history: int
+    governing: int
+    total: int
 
 
 class DecisionCreate(BaseModel):

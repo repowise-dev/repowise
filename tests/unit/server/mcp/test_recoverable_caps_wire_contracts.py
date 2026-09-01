@@ -598,7 +598,10 @@ async def test_why_real_minimum_and_typical_wire_shapes(
 
     typical = await wrapped("src/auth/service.py")
     _assert_wire(typical, "mode", DEFAULT_RESPONSE_CHARS)
-    assert typical["decisions"]
+    # The fixture's records name this path and nobody has accepted them, so
+    # the typical response carries a candidate lane and no rules.
+    assert typical["decisions"] == []
+    assert typical["candidates"]
 
 
 @pytest.mark.asyncio

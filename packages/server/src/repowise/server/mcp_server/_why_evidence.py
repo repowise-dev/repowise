@@ -533,7 +533,16 @@ def annotate_response_evidence(
                     lineage_record, repository, resolved_commits=resolved_commits
                 )
 
-    for key in ("decisions", "stale_decisions", "proposed_awaiting_review"):
+    # ``candidates`` is annotated like every other lane. A candidate is the row
+    # a reader is most likely to want the provenance of, because deciding
+    # whether to accept it is the whole reason it is on the page.
+    for key in (
+        "decisions",
+        "candidates",
+        "history",
+        "stale_decisions",
+        "proposed_awaiting_review",
+    ):
         for row in result.get(key) or []:
             if isinstance(row, dict):
                 annotate_decision(row)

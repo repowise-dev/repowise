@@ -7,6 +7,7 @@ read that counted proposals as things governing a file.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from repowise.core.sessions.miners.decisions import promotion_decisions
@@ -52,12 +53,22 @@ class TestRecurrenceIsNotAcceptance:
 
 
 class TestOnlyAcceptedDecisionsGovern:
-    def _decision(self, status: str, title: str = "d", staleness: float = 0.0) -> dict:
-        return {"status": status, "title": title, "staleness_score": staleness}
+    """Authority is the acceptance join, not the status column.
 
-    def test_proposals_alone_govern_nothing(self):
+    Every case here passes a currency map instead of a status string, because
+    that map is the whole test: a record absent from it has no acceptance row
+    and is a candidate regardless of what ``decision_records.status`` says.
+    """
+
+    def _decision(self, did: str = "d1", title: str = "d") -> dict:
+        return {"id": did, "title": title}
+
+    def test_candidates_alone_govern_nothing(self):
         result = _compute_alignment(
-            "src/a.py", [self._decision("proposed"), self._decision("proposed", "d2")], []
+            "src/a.py",
+            [self._decision("d1"), self._decision("d2", "d2")],
+            [],
+            {},
         )
 
         assert result["score"] == "none"
@@ -66,64 +77,164 @@ class TestOnlyAcceptedDecisionsGovern:
         # governing_count keeps its old meaning: records naming this file.
         assert result["governing_count"] == 2
 
-    def test_proposals_are_named_as_awaiting_review(self):
-        result = _compute_alignment("src/a.py", [self._decision("proposed")], [])
+    def test_a_record_absent_from_the_currency_map_is_a_candidate(self):
+        """Absence from the map is the whole test, whatever the column says.
+
+        The end-to-end half of this, with a record actually stored active
+        and carrying no acceptance row, is
+        test_decisions_lanes.test_an_active_status_without_an_acceptance_is_a_candidate.
+        This function never sees a status, which is the point: it cannot be
+        fooled by one.
+        """
+        result = _compute_alignment("src/a.py", [self._decision()], [], {})
+
+        assert result["score"] == "none"
+        assert result["active_count"] == 0
+        assert result["candidate_count"] == 1
+
+    def test_candidates_are_named_as_awaiting_review(self):
+        result = _compute_alignment("src/a.py", [self._decision()], [], {})
 
         assert "awaiting review" in result["explanation"]
         assert "No accepted decision" in result["explanation"]
 
-    def test_accepted_decisions_still_govern(self):
-        result = _compute_alignment("src/a.py", [self._decision("active")], [])
+    def test_accepted_decisions_govern(self):
+        result = _compute_alignment(
+            "src/a.py", [self._decision()], [], {"d1": "active"}
+        )
 
         assert result["score"] == "high"
         assert result["active_count"] == 1
         assert result["candidate_count"] == 0
 
-    def test_proposals_do_not_inflate_the_accepted_count(self):
+    def test_a_decision_whose_code_moved_still_governs(self):
+        """``needs_review`` binds: it is a decision to re-read, not to ignore."""
+        result = _compute_alignment(
+            "src/a.py", [self._decision()], [], {"d1": "needs_review"}
+        )
+
+        assert result["active_count"] == 1
+        assert result["stale_count"] == 1
+        assert result["score"] == "low"
+
+    def test_candidates_do_not_inflate_the_accepted_count(self):
         governing = [
-            self._decision("active"),
-            self._decision("proposed", "d2"),
-            self._decision("proposed", "d3"),
+            self._decision("d1"),
+            self._decision("d2", "d2"),
+            self._decision("d3", "d3"),
         ]
 
-        result = _compute_alignment("src/a.py", governing, [])
+        result = _compute_alignment("src/a.py", governing, [], {"d1": "active"})
 
         assert result["active_count"] == 1
         assert result["candidate_count"] == 2
         assert result["governing_count"] == 3
 
-    def test_proposals_cannot_rescue_an_all_deprecated_file(self):
-        governing = [self._decision("deprecated"), self._decision("proposed", "d2")]
+    def test_candidates_cannot_rescue_a_withdrawn_file(self):
+        governing = [self._decision("d1"), self._decision("d2", "d2")]
 
-        result = _compute_alignment("src/a.py", governing, [])
+        result = _compute_alignment(
+            "src/a.py", governing, [], {"d1": "superseded"}
+        )
 
         assert result["score"] == "low"
-        assert "deprecated" in result["explanation"]
+        assert result["deprecated_count"] == 1
+        assert result["candidate_count"] == 1
 
     def test_staleness_is_measured_over_accepted_records_only(self):
-        governing = [
-            self._decision("active", "d1", staleness=0.0),
-            self._decision("proposed", "d2", staleness=1.0),
-        ]
+        governing = [self._decision("d1"), self._decision("d2", "d2")]
 
-        result = _compute_alignment("src/a.py", governing, [])
+        result = _compute_alignment("src/a.py", governing, [], {"d1": "active"})
 
         assert result["stale_count"] == 0
         assert result["score"] == "high"
 
     def test_a_majority_stale_accepted_set_still_scores_low(self):
-        governing = [
-            self._decision("active", "d1", staleness=0.9),
-            self._decision("active", "d2", staleness=0.0),
-        ]
+        governing = [self._decision("d1"), self._decision("d2", "d2")]
 
-        result = _compute_alignment("src/a.py", governing, [])
+        result = _compute_alignment(
+            "src/a.py", governing, [], {"d1": "needs_review", "d2": "active"}
+        )
 
         assert result["score"] == "low"
 
+    def test_the_four_lane_counts_add_up_to_the_records_naming_the_file(self):
+        """No record naming the file may fall out of every count."""
+        governing = [self._decision(f"d{i}", f"d{i}") for i in range(4)]
+
+        result = _compute_alignment(
+            "src/a.py",
+            governing,
+            [],
+            {"d0": "active", "d1": "superseded", "d2": "uncheckable"},
+        )
+
+        assert result["active_count"] == 1
+        assert result["deprecated_count"] == 1
+        assert result["uncheckable_count"] == 1
+        assert result["candidate_count"] == 1
+        assert (
+            result["active_count"]
+            + result["deprecated_count"]
+            + result["uncheckable_count"]
+            + result["candidate_count"]
+            == result["governing_count"]
+        )
+
+    def test_an_uncheckable_decision_governs_nothing(self):
+        """Accepted, but it names nothing, so nothing can check it."""
+        result = _compute_alignment(
+            "src/a.py", [self._decision()], [], {"d1": "uncheckable"}
+        )
+
+        assert result["score"] == "none"
+        assert result["active_count"] == 0
+        assert result["uncheckable_count"] == 1
+
     def test_ungoverned_shape_carries_the_candidate_count(self):
-        result = _compute_alignment("src/a.py", [], [])
+        result = _compute_alignment("src/a.py", [], [], {})
 
         assert result["candidate_count"] == 0
         assert result["active_count"] == 0
         assert result["governing_count"] == 0
+
+
+class TestSiblingCoverageCountsAcceptedRecordsOnly:
+    """A pattern established only by candidates is not an established pattern."""
+
+    class _Row:
+        def __init__(self, did: str, title: str, files: list[str]):
+            self.id = did
+            self.title = title
+            self.affected_files_json = json.dumps(files)
+
+    def test_a_candidate_sibling_is_not_a_pattern(self):
+        siblings = [self._Row("s1", "shared rule", ["src/b.py"])]
+
+        result = _compute_alignment(
+            "src/a.py",
+            [{"id": "d1", "title": "shared rule"}],
+            siblings,
+            {"d1": "active"},
+        )
+
+        # No accepted sibling, so there is nothing to compare against and the
+        # score falls back to "governed by one accepted decision".
+        assert result["sibling_coverage"] is None
+        assert result["score"] == "high"
+
+    def test_an_accepted_sibling_sets_the_denominator(self):
+        siblings = [
+            self._Row("s1", "shared rule", ["src/b.py"]),
+            self._Row("s2", "other rule", ["src/c.py"]),
+        ]
+
+        result = _compute_alignment(
+            "src/a.py",
+            [{"id": "d1", "title": "shared rule"}],
+            siblings,
+            {"d1": "active", "s1": "active", "s2": "active"},
+        )
+
+        assert result["sibling_coverage"] == 0.5
+        assert result["score"] == "high"

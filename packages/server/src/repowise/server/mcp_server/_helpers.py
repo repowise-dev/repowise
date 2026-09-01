@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.decisions.lifecycle import is_governing
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.persistence.models import (
     Repository,
@@ -462,7 +463,12 @@ def _build_origin_story(
     }
 
 
-def _sibling_coverage(file_path: str, governing: list[dict], all_decisions: list) -> float | None:
+def _sibling_coverage(
+    file_path: str,
+    governing: list[dict],
+    all_decisions: list,
+    accepted_ids: set[str],
+) -> float | None:
     """Fraction of sibling-file decisions that also cover *file_path* (None if no siblings).
 
     Both sides count accepted records only. Filtering the numerator alone read
@@ -474,7 +480,7 @@ def _sibling_coverage(file_path: str, governing: list[dict], all_decisions: list
     file_decision_titles = {d["title"] for d in governing}
 
     for d in all_decisions:
-        if getattr(d, "status", None) != "active":
+        if getattr(d, "id", None) not in accepted_ids:
             continue
         affected = json.loads(d.affected_files_json)
         for af in affected:
@@ -513,8 +519,9 @@ def _alignment_score(
 ) -> tuple:
     """Derive the (score, explanation) tuple from accepted decisions.
 
-    Only accepted (``active``) records score. A proposed record is a candidate
-    awaiting review: counting one as governance let a machine-inferred record
+    Only accepted records score, and accepted means an acceptance row exists,
+    not that the status column reads ``active``. A candidate awaiting review
+    scores nothing: counting one as governance let a machine-inferred record
     report a file as aligned with a decision nobody had agreed to.
     """
     if stale and len(stale) >= len(accepted) / 2:
@@ -546,8 +553,19 @@ def _compute_alignment(
     file_path: str,
     governing: list[dict],
     all_decisions: list,
+    currencies: dict[str, str],
 ) -> dict:
-    """Compute how well a file aligns with established architectural decisions."""
+    """Compute how well a file aligns with established architectural decisions.
+
+    *currencies* maps decision id to effective currency for every **accepted**
+    record in the repository; a record absent from it is a candidate. That map
+    is the authority test, and it is a required argument rather than an
+    optional one on purpose. This function previously read
+    ``status == "active"`` and called the result ``accepted``, so a record
+    written straight to the column with no acceptance behind it made a file
+    report as governed. Defaulting the argument would have left that path
+    reachable from any caller that forgot it.
+    """
     if not governing:
         return {
             "score": "none",
@@ -563,15 +581,37 @@ def _compute_alignment(
             "sibling_coverage": None,
         }
 
-    accepted = [d for d in governing if d["status"] == "active"]
-    deprecated = [d for d in governing if d["status"] in ("deprecated", "superseded")]
-    stale = [d for d in accepted if d.get("staleness_score", 0) > 0.5]
-    candidates = [d for d in governing if d["status"] == "proposed"]
+    # Three lanes, split by the acceptance rather than by the column: what a
+    # person accepted and still binds, what they accepted and then withdrew,
+    # and what nobody has reviewed.
+    accepted = [d for d in governing if is_governing(currencies.get(d["id"], ""))]
+    deprecated = [
+        d
+        for d in governing
+        if currencies.get(d["id"]) in ("superseded", "dismissed")
+    ]
+    # Repository-wide, not scoped to the matched records: the sibling
+    # denominator is drawn from decisions naming *other* files in the same
+    # directory, none of which appear in ``governing``.
+    accepted_ids = {
+        did for did, currency in currencies.items() if is_governing(currency)
+    }
+    # ``needs_review`` is the derived answer to "have the files it names
+    # moved", which is the same 0.5 threshold this used to apply by hand.
+    stale = [d for d in accepted if currencies.get(d["id"]) == "needs_review"]
+    candidates = [d for d in governing if d["id"] not in currencies]
+    # Accepted, and neither binding nor withdrawn: it names nothing the
+    # repository can be asked about. Counted on its own so the four lanes add
+    # up to ``governing_count``; without it a reader could subtract them and
+    # find records unaccounted for with nothing saying where they went.
+    uncheckable = [d for d in governing if currencies.get(d["id"]) == "uncheckable"]
 
     dir_path = "/".join(file_path.split("/")[:-1])
     # Scoped to accepted records for the same reason the score is: a sibling
-    # pattern established only by proposals is not an established pattern.
-    sibling_coverage = _sibling_coverage(file_path, accepted, all_decisions)
+    # pattern established only by candidates is not an established pattern.
+    sibling_coverage = _sibling_coverage(
+        file_path, accepted, all_decisions, accepted_ids
+    )
 
     score, explanation = _alignment_score(
         accepted, deprecated, stale, candidates, dir_path, sibling_coverage
@@ -580,13 +620,16 @@ def _compute_alignment(
     return {
         "score": score,
         "explanation": explanation,
-        # Unchanged meaning: how many records name this file at all. The
-        # authority split is carried by active_count / candidate_count, which
-        # is what the score reads.
+        # Unchanged meaning, and deliberately not renamed: how many records
+        # name this file at all, which is what every existing consumer reads
+        # it as. The authority split is carried by the four counts below, and
+        # they sum to it: accepted + withdrawn + uncheckable + candidate.
         "governing_count": len(governing),
         "active_count": len(accepted),
         "candidate_count": len(candidates),
+        # Accepted once and withdrawn since, whether superseded or dismissed.
         "deprecated_count": len(deprecated),
+        "uncheckable_count": len(uncheckable),
         "stale_count": len(stale),
         "sibling_coverage": round(sibling_coverage, 2) if sibling_coverage is not None else None,
     }

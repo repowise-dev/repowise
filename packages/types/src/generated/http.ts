@@ -801,6 +801,23 @@ export interface DecisionHealthResponse {
   ungoverned_hotspots?: string[];
 }
 
+/**
+ * Records per review lane, from a scan of the acceptance join.
+ *
+ * ``candidates`` and the four currency lanes partition the repository and sum
+ * to ``total``; ``governing`` is the roll-up of the two that still bind, so a
+ * caller can state "N rules" without adding two tabs together.
+ */
+export interface DecisionLaneCountsResponse {
+  candidates: number;
+  active: number;
+  needs_review: number;
+  uncheckable: number;
+  history: number;
+  governing: number;
+  total: number;
+}
+
 /** One node in a decision lineage chain (root → … → current). */
 export interface DecisionLineageEntry {
   id: string;
@@ -842,6 +859,7 @@ export interface DecisionRecordResponse {
   updated_at: string;
   evidence_count?: number | null;
   evidence_preview?: EvidencePreview | null;
+  currency?: string | null;
 }
 
 /** The resolved decision capture policy for one repository. */

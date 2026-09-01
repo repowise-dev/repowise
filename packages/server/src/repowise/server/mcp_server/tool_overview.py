@@ -22,13 +22,14 @@ from repowise.core.generation.onboarding.slots import (
     PROMOTED_SLOTS,
 )
 from repowise.core.persistence.crud import (
+    accepted_predicate,
+    get_hotspot_file_paths,
+)
+from repowise.core.persistence.crud import (
     get_health_metrics as _get_health_metrics,
 )
 from repowise.core.persistence.crud import (
     get_health_summary as _get_health_summary,
-)
-from repowise.core.persistence.crud import (
-    get_hotspot_file_paths,
 )
 from repowise.core.persistence.crud import (
     get_kg_layers as _get_kg_layers,
@@ -836,7 +837,13 @@ async def _build_recent_reversals(session: Any, repository: Any) -> list[dict[st
 async def _build_key_decisions(
     session: Any, repository: Any, exclude_spec: Any = None
 ) -> dict[str, Any]:
-    """Top active decisions + recent reversals (Phase 4A)."""
+    """The repository's accepted decisions, and its recent reversals.
+
+    ``accepted_predicate()`` rather than the status column: this block is the
+    first thing an agent reads about a repository, so a machine-inferred
+    record nobody agreed to must not appear under a heading that presents it
+    as what the repository has settled on.
+    """
     try:
         # Over-fetch, then drop records anchored entirely in excluded paths
         # (vendored venvs, local-only scratch dirs mined before the exclude
@@ -846,6 +853,7 @@ async def _build_key_decisions(
             .where(
                 DecisionRecord.repository_id == repository.id,
                 DecisionRecord.status == "active",
+                accepted_predicate(),
             )
             .order_by(DecisionRecord.confidence.desc())
             .limit(25)

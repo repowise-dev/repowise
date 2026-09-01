@@ -14,6 +14,7 @@ import structlog
 from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.decisions.lifecycle import DECISION_STATUS_ORDER
 from repowise.core.analysis.decisions.provenance import (
     SOURCE_RANK,
     compute_confidence,
@@ -73,6 +74,50 @@ def _merge_status(existing: str, incoming: str) -> str:
     return incoming
 
 
+def _dedup_query(
+    repository_id: str,
+    title: str,
+    *,
+    source: str,
+    evidence_file: str | None,
+) -> Any:
+    """The identity :func:`upsert_decision` deduplicates on.
+
+    ``evidence_file`` may be NULL, which no equality test matches, so the two
+    cases are separate clauses. Shared with :func:`find_decision_by_title` so a
+    caller can ask what an upsert would land on before it lands on it.
+    """
+    q = select(DecisionRecord).where(
+        DecisionRecord.repository_id == repository_id,
+        DecisionRecord.title == title,
+        DecisionRecord.source == source,
+    )
+    if evidence_file is not None:
+        return q.where(DecisionRecord.evidence_file == evidence_file)
+    return q.where(DecisionRecord.evidence_file.is_(None))
+
+
+async def find_decision_by_title(
+    session: AsyncSession,
+    repository_id: str,
+    title: str,
+    *,
+    source: str = "cli",
+    evidence_file: str | None = None,
+) -> DecisionRecord | None:
+    """The record an :func:`upsert_decision` with these arguments would update.
+
+    Exists so a caller can tell "this creates a record" from "this overwrites
+    one" before writing. The create endpoint needs the difference: overwriting
+    an accepted decision with a scopeless body would clear the scope it governs
+    and leave its acceptance row behind.
+    """
+    result = await session.execute(
+        _dedup_query(repository_id, title, source=source, evidence_file=evidence_file)
+    )
+    return result.scalar_one_or_none()
+
+
 async def upsert_decision(
     session: AsyncSession,
     *,
@@ -107,16 +152,9 @@ async def upsert_decision(
     context = context or ""
     decision = decision or ""
 
-    # Build the WHERE clause — evidence_file may be NULL
-    q = select(DecisionRecord).where(
-        DecisionRecord.repository_id == repository_id,
-        DecisionRecord.title == title,
-        DecisionRecord.source == source,
+    q = _dedup_query(
+        repository_id, title, source=source, evidence_file=evidence_file
     )
-    if evidence_file is not None:
-        q = q.where(DecisionRecord.evidence_file == evidence_file)
-    else:
-        q = q.where(DecisionRecord.evidence_file.is_(None))
 
     # No write path creates authority. ``active`` here would be a status a
     # caller asserted rather than an acceptance anyone performed; the caller
@@ -189,6 +227,8 @@ async def list_decisions(
     tag: str | None = None,
     module: str | None = None,
     include_proposed: bool = True,
+    accepted: bool | None = None,
+    include_dismissed: bool = False,
     limit: int = 100,
     offset: int = 0,
     sort: str = "priority",
@@ -197,6 +237,17 @@ async def list_decisions(
 
     Dismissed records are tombstones and only show up when explicitly asked
     for via ``status="dismissed"``.
+
+    ``accepted`` filters on the acceptance join rather than the status column:
+    ``False`` is every candidate, ``True`` every decision. It is applied in SQL,
+    before the page is cut, because a caller paging a lane needs the page to be
+    of that lane. Filtering after the cut returned an empty Candidates page on a
+    store whose first fifty rows by priority were all statused ``active``.
+
+    ``include_dismissed`` keeps the tombstones in without narrowing to them.
+    A candidate that was dismissed should stay hidden, but a *decision* that was
+    accepted and then withdrawn is history somebody needs to be able to read,
+    and ``dismiss_candidate`` writes ``status="dismissed"`` for both.
 
     ``sort`` controls ordering:
 
@@ -212,7 +263,8 @@ async def list_decisions(
     if status is not None:
         q = q.where(DecisionRecord.status == status)
     else:
-        q = q.where(DecisionRecord.status != "dismissed")
+        if not include_dismissed:
+            q = q.where(DecisionRecord.status != "dismissed")
         if not include_proposed:
             q = q.where(DecisionRecord.status != "proposed")
     if source is not None:
@@ -224,21 +276,32 @@ async def list_decisions(
     if module is not None:
         # Match exact module path in JSON array
         q = q.where(DecisionRecord.affected_modules_json.contains(f'"{module}"'))
+    if accepted is not None:
+        from .authority import accepted_predicate
+
+        predicate = accepted_predicate()
+        q = q.where(predicate if accepted else ~predicate)
     q = q.order_by(*_decision_order(sort)).limit(limit).offset(offset)
     result = await session.execute(q)
     return list(result.scalars().all())
 
 
-# Lower sorts first. Active is a rule the team stands behind; proposed is a
-# candidate; superseded and deprecated are history.
-_STATUS_RANK = {"active": 0, "proposed": 1, "superseded": 2, "deprecated": 3}
+# Lower sorts first, from the one ladder in lifecycle. ``dismissed`` is in the
+# ladder but not here: this rank also zero-fills ``count_decisions_by_status``,
+# which excludes dismissed rows, so a key for it would report a count of zero
+# for rows the query never looked at.
+_STATUS_RANK = {
+    status: rank
+    for rank, status in enumerate(DECISION_STATUS_ORDER)
+    if status != "dismissed"
+}
 
 
 def _decision_order(sort: str) -> tuple[Any, ...]:
     """ORDER BY terms for :func:`list_decisions`."""
     if sort == "recent":
         return (DecisionRecord.created_at.desc(),)
-    rank = case(_STATUS_RANK, value=DecisionRecord.status, else_=4)
+    rank = case(_STATUS_RANK, value=DecisionRecord.status, else_=len(DECISION_STATUS_ORDER))
     return (
         rank,
         DecisionRecord.confidence.desc(),
