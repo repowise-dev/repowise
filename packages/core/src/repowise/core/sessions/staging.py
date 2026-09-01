@@ -47,6 +47,16 @@ RAW_TTL_DAYS = 90.0
 #: database with raw sqlite3 and must not learn about a new one.
 _VERDICT_REPAIR_VERSION = 1
 
+#: ``raw_candidates.kind`` for a broad-discovery candidate. Discovery writes
+#: its raw row only as the anchor ``upsert_structured`` needs, never as work
+#: for the deterministic structuring pass.
+DISCOVERY_KIND = "session_discovery"
+
+#: Retries a discovery span gets across updates before it is retired. Bounded
+#: so one span the provider keeps choking on cannot wedge the queue head
+#: forever; a validation rejection is not a retry, since the span was read.
+MAX_SPAN_ATTEMPTS = 3
+
 #: Cap on the distinct session ids tracked per structured decision. Two is
 #: enough to promote; beyond a handful the extra ids only pad evidence.
 _MAX_SESSIONS_TRACKED = 20
@@ -103,8 +113,21 @@ CREATE TABLE IF NOT EXISTS injections (
     build TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (session_id, decision_id)
 );
+CREATE TABLE IF NOT EXISTS discovery_spans (
+    span_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    text TEXT NOT NULL,
+    files TEXT NOT NULL,
+    ts REAL,
+    created_at REAL NOT NULL,
+    consumed_at REAL,
+    attempts INTEGER NOT NULL DEFAULT 0
+);
 CREATE INDEX IF NOT EXISTS idx_raw_pending ON raw_candidates(structured_key)
     WHERE structured_key IS NULL;
+CREATE INDEX IF NOT EXISTS idx_discovery_pending ON discovery_spans(created_at)
+    WHERE consumed_at IS NULL;
 """
 
 #: Columns added to ``injections`` after PR4 shipped the table (the ledger now
@@ -150,9 +173,17 @@ def normalize_title(title: str) -> str:
     return _WS_RE.sub(" ", t)
 
 
-def title_key(title: str) -> str:
-    """Stable 16-hex staging key for a decision title."""
-    return hashlib.sha256(normalize_title(title).encode("utf-8")).hexdigest()[:16]
+def title_key(title: str, lane: str = "") -> str:
+    """Stable 16-hex staging key for a decision title within one *lane*.
+
+    Lanes get separate key namespaces because folding is destructive: the merge
+    path overwrites ``structured`` and keeps a ``user_correction`` kind sticky.
+    A broad-discovery candidate whose title happened to normalize onto a gate
+    hit's would replace that row's text while inheriting its one-observation
+    promotion path, which is neither lane's rule.
+    """
+    payload = f"{lane}|{normalize_title(title)}" if lane else normalize_title(title)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def default_store_path(repo_path: Path) -> Path:
@@ -245,13 +276,17 @@ class SessionStagingStore:
         User corrections first (they carry the one-observation fast path),
         then dead ends, then choices; oldest first within a kind, so a
         cold-start backlog drains its highest-value candidates first.
+
+        Broad-discovery rows are excluded: they arrive already structured and
+        grounded against their own spans, and this query feeds a prompt that
+        would re-derive them from the wrong evidence.
         """
         rows = self._conn.execute(
             "SELECT hash, kind, quotes, files, session_id FROM raw_candidates "
-            "WHERE structured_key IS NULL "
+            "WHERE structured_key IS NULL AND kind <> ? "
             "ORDER BY CASE kind WHEN 'user_correction' THEN 0 WHEN 'dead_end' THEN 1 ELSE 2 END, "
             "created_at ASC LIMIT ?",
-            (limit,),
+            (DISCOVERY_KIND, limit),
         ).fetchall()
         return [
             {
@@ -268,6 +303,98 @@ class SessionStagingStore:
         """The LLM (or the substring gate) ruled this raw out; never retry it."""
         self._conn.execute("UPDATE raw_candidates SET structured_key = '' WHERE hash = ?", (hash_,))
 
+    # -- discovery spans -----------------------------------------------------
+    # The durable input queue for the one broad update-level discovery call.
+    # Spans are written during the same transcript read that stages gate hits,
+    # so they commit with the cursors; whatever does not fit one update's
+    # budget stays pending and is served oldest-first by the next.
+
+    def add_discovery_span(
+        self,
+        *,
+        span_id: str,
+        session_id: str,
+        role: str,
+        text: str,
+        files: list[str],
+        ts: float | None,
+        now: float | None = None,
+    ) -> bool:
+        """Queue one prose span; idempotent per span id. True when new."""
+        cur = self._conn.execute(
+            "INSERT OR IGNORE INTO discovery_spans "
+            "(span_id, session_id, role, text, files, ts, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                span_id,
+                session_id,
+                role,
+                text,
+                json.dumps(files),
+                ts,
+                now if now is not None else time.time(),
+            ),
+        )
+        return cur.rowcount > 0
+
+    def pending_discovery_spans(self, limit: int) -> list[dict[str, Any]]:
+        """Unconsumed spans, oldest first, then in transcript order.
+
+        Ordered by ``created_at`` before ``ts`` so a backlog drains in the
+        order it accumulated rather than by whichever session happens to hold
+        the oldest wall-clock turn.
+        """
+        rows = self._conn.execute(
+            "SELECT span_id, session_id, role, text, files, ts "
+            "FROM discovery_spans WHERE consumed_at IS NULL "
+            "ORDER BY created_at ASC, ts ASC, span_id ASC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "span_id": r[0],
+                "session_id": r[1],
+                "role": r[2],
+                "text": r[3],
+                "files": json.loads(r[4]),
+                "ts": r[5],
+            }
+            for r in rows
+        ]
+
+    def pending_discovery_count(self) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM discovery_spans WHERE consumed_at IS NULL"
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def mark_discovery_consumed(self, span_ids: list[str], *, now: float | None = None) -> None:
+        """Retire spans that were actually put in front of the model."""
+        ts = now if now is not None else time.time()
+        self._conn.executemany(
+            "UPDATE discovery_spans SET consumed_at = ? WHERE span_id = ?",
+            [(ts, span_id) for span_id in span_ids],
+        )
+
+    def bump_discovery_attempts(self, span_ids: list[str], *, now: float | None = None) -> int:
+        """Record a transient failure over *span_ids*; retire the exhausted.
+
+        Returns how many spans hit :data:`MAX_SPAN_ATTEMPTS` and were retired,
+        so the caller can report a permanent drop rather than a silent one.
+        """
+        ts = now if now is not None else time.time()
+        self._conn.executemany(
+            "UPDATE discovery_spans SET attempts = attempts + 1 WHERE span_id = ?",
+            [(span_id,) for span_id in span_ids],
+        )
+        marks = ",".join("?" * len(span_ids))
+        cur = self._conn.execute(
+            f"UPDATE discovery_spans SET consumed_at = ? "
+            f"WHERE consumed_at IS NULL AND attempts >= ? AND span_id IN ({marks})",
+            (ts, MAX_SPAN_ATTEMPTS, *span_ids),
+        )
+        return cur.rowcount
+
     # -- structured decisions --------------------------------------------------
 
     def upsert_structured(
@@ -280,6 +407,7 @@ class SessionStagingStore:
         quotes: list[str],
         files: list[str],
         session_id: str | None,
+        lane: str = "",
         now: float | None = None,
     ) -> str:
         """Fold one structured candidate into its normalized-title row.
@@ -291,7 +419,7 @@ class SessionStagingStore:
         Returns the decision key.
         """
         ts = now if now is not None else time.time()
-        key = title_key(title)
+        key = title_key(title, lane)
         row = self._conn.execute(
             "SELECT kind, sessions, quotes, files FROM decisions WHERE key = ?", (key,)
         ).fetchone()
@@ -339,6 +467,13 @@ class SessionStagingStore:
         return key
 
     # -- promotion ---------------------------------------------------------
+
+    def structured_exists(self, title: str, lane: str = "") -> bool:
+        """Whether *title* already folds into an existing row in *lane*."""
+        row = self._conn.execute(
+            "SELECT 1 FROM decisions WHERE key = ?", (title_key(title, lane),)
+        ).fetchone()
+        return row is not None
 
     def promotable(self) -> list[dict[str, Any]]:
         """Decisions that qualify for (re-)emission into decision_records.
@@ -706,10 +841,21 @@ class SessionStagingStore:
     # -- lifecycle -----------------------------------------------------------
 
     def prune(self, *, now: float | None = None) -> None:
-        """Drop never-structured raws past the TTL (see :data:`RAW_TTL_DAYS`)."""
+        """Drop spent rows past the TTL (see :data:`RAW_TTL_DAYS`).
+
+        Discovery spans are dropped only once *consumed*: the candidate they
+        produced keeps its own copy of the quote, so the raw prose is only the
+        input queue. A span still waiting for a call is never pruned, however
+        old, because ageing out unread input is exactly the silent backlog loss
+        the queue exists to prevent.
+        """
         cutoff = (now if now is not None else time.time()) - RAW_TTL_DAYS * 86400.0
         self._conn.execute(
             "DELETE FROM raw_candidates WHERE structured_key IS NULL AND created_at < ?",
+            (cutoff,),
+        )
+        self._conn.execute(
+            "DELETE FROM discovery_spans WHERE consumed_at IS NOT NULL AND consumed_at < ?",
             (cutoff,),
         )
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from repowise.core.sessions.miners.decisions import _promotion_decisions
+from repowise.core.sessions.miners.decisions import promotion_decisions
 from repowise.server.mcp_server._helpers import _compute_alignment
 
 
@@ -35,19 +35,19 @@ def _row(**overrides):
 class TestRecurrenceIsNotAcceptance:
     def test_first_promotion_lands_proposed(self):
         """Recurrence across sessions is evidence, not an acceptance event."""
-        out = _promotion_decisions(_row(first_promotion=True), Path("."))
+        out = promotion_decisions(_row(first_promotion=True), Path("."))
 
         assert out
         assert {d.status for d in out} == {"proposed"}
 
     def test_re_emission_also_lands_proposed(self):
-        out = _promotion_decisions(_row(first_promotion=False), Path("."))
+        out = promotion_decisions(_row(first_promotion=False), Path("."))
 
         assert {d.status for d in out} == {"proposed"}
 
     def test_no_observation_count_produces_an_active_record(self):
         for observations in (1, 2, 5, 50):
-            out = _promotion_decisions(_row(observations=observations), Path("."))
+            out = promotion_decisions(_row(observations=observations), Path("."))
             assert all(d.status != "active" for d in out)
 
 

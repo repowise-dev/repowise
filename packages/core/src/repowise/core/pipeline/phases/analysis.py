@@ -7,11 +7,18 @@ orchestrator.py) imports these phase functions. No CLI/click/rich imports.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import structlog
 
+from repowise.core.analysis.decisions.discovery import (
+    DISCOVERY_SOURCE,
+    DiscoveryOutcome,
+    DiscoveryReport,
+    run_update_discovery,
+)
 from repowise.core.pipeline.progress import ProgressCallback
 
 from ._common import _phase_done
@@ -32,6 +39,7 @@ _DECISION_SOURCE_LABELS: tuple[tuple[str, str], ...] = (
     ("git_archaeology", "from git history"),
     ("comment", "from comments"),
     ("session", "from agent sessions"),
+    ("session_discovery", "from session discovery"),
 )
 
 
@@ -293,6 +301,36 @@ async def _run_health_analysis(
         return None
 
 
+async def _run_session_discovery(
+    repo_path: Path,
+    *,
+    llm_client: Any | None,
+    policy: Any,
+    report: Any,
+) -> DiscoveryOutcome:
+    """The one broad session-discovery call, folded into the decision report.
+
+    Never raises: a discovery outage must degrade this phase's reporting, not
+    lose the decisions every other source already found.
+    """
+    try:
+        outcome = await asyncio.wait_for(
+            run_update_discovery(
+                repo_path,
+                provider=llm_client,
+                policy=policy,
+            ),
+            timeout=DECISION_EXTRACTION_TIMEOUT_SECS,
+        )
+    except Exception as exc:
+        outcome = DiscoveryOutcome(report=DiscoveryReport(status="failed", reason=str(exc)))
+    if outcome.decisions:
+        report.decisions.extend(outcome.decisions)
+        report.by_source[DISCOVERY_SOURCE] = len(outcome.decisions)
+        report.total_found = len(report.decisions)
+    return outcome
+
+
 async def _run_decision_extraction(
     repo_path: Path,
     *,
@@ -354,7 +392,11 @@ async def _run_decision_extraction(
             if policy.source_enabled("session"):
                 session_provider = llm_client if policy.llm_allowed("session") else None
                 session_decisions = await asyncio.wait_for(
-                    mine_session_decisions(repo_path, provider=session_provider),
+                    mine_session_decisions(
+                        repo_path,
+                        provider=session_provider,
+                        collect_discovery_spans=policy.llm_allowed("session_discovery"),
+                    ),
                     timeout=DECISION_EXTRACTION_TIMEOUT_SECS,
                 )
                 if session_decisions:
@@ -364,6 +406,13 @@ async def _run_decision_extraction(
         except Exception as exc:
             if progress:
                 progress.on_message("warning", f"Session decision mining skipped: {exc}")
+
+        # The broad lane, after the miner because the miner's single read is
+        # what filled its span queue. At most one call, and it reports its own
+        # zero so a switched-off source never reads as an empty repository.
+        discovery = await _run_session_discovery(
+            repo_path, llm_client=llm_client, policy=policy, report=report
+        )
 
         if progress:
             # Only the sources that actually found something. On a typical
@@ -403,7 +452,9 @@ async def _run_decision_extraction(
             # nobody could read. Same shape the update path already uses for
             # its ``degraded`` list, so both runs report an outage the same
             # way instead of one of them printing a reassuring zero.
-            failures = getattr(report, "failures", {}) or {}
+            failures = dict(getattr(report, "failures", {}) or {})
+            if discovery.report.status == "failed":
+                failures["session_discovery"] = discovery.report.reason
             # Sources that never ran, and why. Built first because a source
             # listed here must not also appear as an honest zero below: with no
             # API key the three model-only sources return [] immediately, and
@@ -418,14 +469,35 @@ async def _run_decision_extraction(
                 for key, rt in runtime.items()
                 if rt.togglable and rt.status in ("disabled", "skipped_no_provider")
             }
+            # Broad discovery is not one of the extractor's sources, so it
+            # would fall out of all three lists on ``source in enabled`` alone.
+            # It is always considered, so it lands in exactly one of them. Its
+            # own reason overrides the policy's, being the more specific of the
+            # two ("no new prose since the last update" is not "switched off").
+            considered = set(enabled) | {DISCOVERY_SOURCE}
+            if discovery.report.status in ("not_run", "skipped_no_provider"):
+                not_run.add(DISCOVERY_SOURCE)
+            if discovery.report.reason:
+                runtime[DISCOVERY_SOURCE] = replace(
+                    runtime[DISCOVERY_SOURCE], reason=discovery.report.reason
+                )
+            # A grounded candidate is a finding even though promotion waits for
+            # a second sighting, so discovery is not empty on the run that
+            # first finds something.
+            staged = discovery.report.candidates_grounded
             empty = [
                 label.removeprefix("from ")
                 for source, label in _DECISION_SOURCE_LABELS
-                if source in enabled
+                if source in considered
                 and source not in not_run
                 and not bs.get(source)
                 and source not in failures
+                and not (source == DISCOVERY_SOURCE and staged)
             ]
+            if staged:
+                progress.on_message(
+                    "info", f"→ {staged} session-discovery candidate(s) staged for review"
+                )
             if empty:
                 progress.on_message("info", f"→ Nothing found in: {', '.join(empty)}")
             for source, label in _DECISION_SOURCE_LABELS:

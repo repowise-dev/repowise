@@ -11,6 +11,7 @@ from repowise.core.analysis.decisions.policy import (
     CAPTURE_SOURCE_KEYS,
     PRESET_NAMES,
     SOURCE_SPECS,
+    DiscoveryBudget,
     preset_policy,
     resolve_policy,
 )
@@ -42,9 +43,13 @@ def test_absent_config_resolves_to_prior_behaviour(config):
 
     assert policy.enabled is True
     assert policy.llm is True
-    assert all(policy.source_enabled(key) for key in CAPTURE_SOURCE_KEYS)
-    assert all(policy.llm_allowed(key) for key in CAPTURE_SOURCE_KEYS)
-    assert policy.preset_name() == "full"
+    legacy = [key for key in CAPTURE_SOURCE_KEYS if key != "session_discovery"]
+    assert all(policy.source_enabled(key) for key in legacy)
+    assert all(policy.llm_allowed(key) for key in legacy)
+    # A source added after this config shape existed is off until asked for:
+    # an upgrade must not start a model call nobody enabled.
+    assert policy.source_enabled("session_discovery") is False
+    assert policy.preset_name() == "default"
 
 
 def test_legacy_session_mining_false_disables_the_session_source():
@@ -93,7 +98,11 @@ def test_retired_source_keys_say_retired_not_unknown(retired):
 
     assert any(retired in w and "retired" in w for w in resolution.warnings)
     assert not any("Unknown decision source" in w for w in resolution.warnings)
-    assert all(resolution.policy.source_enabled(key) for key in CAPTURE_SOURCE_KEYS)
+    assert all(
+        resolution.policy.source_enabled(key)
+        for key in CAPTURE_SOURCE_KEYS
+        if key != "session_discovery"
+    )
 
 
 @pytest.mark.parametrize(
@@ -343,3 +352,123 @@ def test_a_broken_config_file_raises_rather_than_resolving_to_defaults(tmp_path)
 
     with pytest.raises(RepoConfigError):
         load_policy(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Broad session discovery: opt-in, and its budget
+# ---------------------------------------------------------------------------
+
+
+def test_discovery_is_off_by_default_and_on_in_the_discovery_presets():
+    assert preset_policy("default").source_enabled("session_discovery") is False
+    assert preset_policy("off").source_enabled("session_discovery") is False
+    assert preset_policy("local_only").llm_allowed("session_discovery") is False
+    assert preset_policy("balanced").llm_allowed("session_discovery") is True
+    assert preset_policy("full").llm_allowed("session_discovery") is True
+
+
+def test_the_legacy_default_is_not_the_full_preset():
+    """Reusing ``full`` here is how a new source switches itself on everywhere."""
+    assert resolve_policy(None).policy != preset_policy("full")
+
+
+def test_discovery_has_no_deterministic_stage_so_llm_off_disables_it():
+    policy = preset_policy("balanced").with_llm(False)
+    runtime = {rt.key: rt for rt in policy.runtime(provider_available=True)}
+
+    assert runtime["session_discovery"].status == "disabled"
+    assert policy.llm_allowed("session_discovery") is False
+
+
+def test_discovery_without_a_provider_is_skipped_not_failed():
+    runtime = {
+        rt.key: rt for rt in preset_policy("balanced").runtime(provider_available=False)
+    }
+    assert runtime["session_discovery"].status == "skipped_no_provider"
+
+
+def test_discovery_budget_round_trips_through_the_config_block():
+    policy = preset_policy("balanced").with_discovery(max_sessions=4, max_input_tokens=9000)
+    block = policy.to_config_block()
+
+    assert block["discovery"] == {"max_sessions": 4, "max_input_tokens": 9000}
+    assert resolve_policy({"decisions": block}).policy == policy
+    assert policy.preset_name() == "custom"
+
+
+def test_a_default_budget_is_not_written_back():
+    assert "discovery" not in preset_policy("balanced").to_config_block()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"max_sessions": 0},
+        {"max_sessions": 999},
+        {"max_input_tokens": 10},
+        {"max_input_tokens": 10_000_000},
+        {"max_sessions": "twelve"},
+        {"max_sessions": True},
+    ],
+)
+def test_out_of_range_budgets_warn_and_fall_back(raw):
+    resolution = resolve_policy({"decisions": {"discovery": raw}})
+
+    assert resolution.warnings
+    assert resolution.policy.discovery == DiscoveryBudget()
+
+
+def test_a_non_mapping_discovery_block_warns():
+    resolution = resolve_policy({"decisions": {"discovery": "big"}})
+
+    assert any("discovery" in w for w in resolution.warnings)
+    assert resolution.policy.discovery == DiscoveryBudget()
+
+
+def test_with_discovery_rejects_an_out_of_range_value():
+    with pytest.raises(ValueError, match="max_sessions"):
+        preset_policy("balanced").with_discovery(max_sessions=0)
+
+
+def test_a_stored_preset_does_not_adopt_a_source_added_after_it_was_written():
+    """The upgrade path that `_LEGACY_DEFAULT` alone does not cover.
+
+    `write_policy` stamps `preset:` into every config it writes, alongside a
+    `sources:` block enumerating every source that existed then. Resolving the
+    preset's *current* membership over that block is how a stored `balanced`
+    would silently acquire a model call on upgrade.
+    """
+    stored = {
+        "decisions": {
+            "preset": "balanced",
+            "enabled": True,
+            "llm": True,
+            "sources": {
+                "inline_marker": True,
+                "git_archaeology": True,
+                "adr": True,
+                "pr": True,
+                "comment": False,
+                "session": True,
+            },
+        }
+    }
+    policy = resolve_policy(stored).policy
+
+    assert policy.source_enabled("session_discovery") is False
+    assert policy.llm_allowed("session_discovery") is False
+    assert policy.source_enabled("session") is True
+
+
+def test_a_bare_preset_declaration_still_gets_its_current_membership():
+    """No enumeration means no claim about which sources it covered."""
+    policy = resolve_policy({"decisions": {"preset": "balanced"}}).policy
+
+    assert policy.llm_allowed("session_discovery") is True
+
+
+def test_a_preset_written_today_round_trips_with_discovery_on():
+    policy = preset_policy("balanced")
+    stored = {"decisions": {**policy.to_config_block(), "preset": "balanced"}}
+
+    assert resolve_policy(stored).policy == policy

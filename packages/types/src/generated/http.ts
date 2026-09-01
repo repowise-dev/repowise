@@ -730,6 +730,24 @@ export interface DecisionCreate {
   tags?: string[];
 }
 
+/** Per-update ceiling on the one broad session-discovery call. */
+export interface DecisionDiscoveryBudget {
+  max_sessions?: number;
+  max_input_tokens?: number;
+}
+
+/**
+ * A change to the discovery budget. Omitted fields keep their value.
+ *
+ * Separate from :class:`DecisionDiscoveryBudget` because a response states
+ * both numbers while a write may set one, and a shared model would fill the
+ * other from its default and quietly reset it.
+ */
+export interface DecisionDiscoveryPatch {
+  max_sessions?: number | null;
+  max_input_tokens?: number | null;
+}
+
 export interface DecisionEvidenceListResponse {
   evidence?: DecisionEvidenceResponse[];
 }
@@ -831,6 +849,7 @@ export interface DecisionSettings {
   enabled?: boolean;
   llm?: boolean;
   preset?: string;
+  discovery?: DecisionDiscoveryBudget;
   sources?: DecisionSourceState[];
   provider_available?: boolean;
   warnings?: string[];
@@ -844,6 +863,7 @@ export interface DecisionSettingsUpdate {
   llm?: boolean | null;
   preset?: string | null;
   sources?: Record<string, DecisionSourcePatch> | null;
+  discovery?: DecisionDiscoveryPatch | null;
   etag?: string | null;
 }
 

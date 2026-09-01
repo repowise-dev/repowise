@@ -55,6 +55,7 @@ from typing import Any
 
 import structlog
 
+from repowise.core.analysis.decisions.discovery.spans import SpanCollector
 from repowise.core.analysis.decisions.extractor import ExtractedDecision
 from repowise.core.analysis.decisions.policy import resolve_policy
 from repowise.core.analysis.decisions.provenance import (
@@ -77,7 +78,7 @@ from repowise.core.sessions.events import (
     is_prose_user_text,
     relative_files,
 )
-from repowise.core.sessions.staging import SessionStagingStore
+from repowise.core.sessions.staging import DISCOVERY_KIND, SessionStagingStore
 
 logger = structlog.get_logger(__name__)
 
@@ -86,6 +87,7 @@ __all__ = [
     "apply_injection_feedback",
     "mine_events",
     "mine_session_decisions",
+    "promotion_decisions",
     "session_mining_enabled",
 ]
 
@@ -599,7 +601,7 @@ def _gate_structured(item: dict[str, Any], raw: dict[str, Any]) -> dict[str, Any
 _MAX_EVIDENCE_SESSIONS = 5
 
 
-def _promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[ExtractedDecision]:
+def promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[ExtractedDecision]:
     """decision_records-ready members for one promotable staging row.
 
     One member per observing session (capped) so each session becomes its own
@@ -789,6 +791,7 @@ async def mine_session_decisions(
     provider: Any | None,
     projects_root: Path | None = None,
     max_structured: int = MAX_STRUCTURED_PER_UPDATE,
+    collect_discovery_spans: bool = False,
     now: float | None = None,
 ) -> list[ExtractedDecision]:
     """Read this repo's new transcript lines once, and serve both consumers.
@@ -809,6 +812,11 @@ async def mine_session_decisions(
     *provider* may be ``None``. Discovery, folding and staging are keyless and
     run regardless; only the structuring pass needs a model, so a user with no
     API key gets transcript episodes and a staged backlog rather than nothing.
+
+    With *collect_discovery_spans*, the same read also queues the user and
+    assistant prose that the broad discovery lane consumes. It rides this pass
+    for the same reason the episode recorder does: the cursor advances as the
+    bytes are read, so a second reader would find an empty file.
     """
     repo_root = Path(repo_path).resolve()
     repo_prefix = str(repo_root).lower().rstrip("\\/")
@@ -819,6 +827,7 @@ async def mine_session_decisions(
     recorder = TranscriptEpisodeRecorder(repo_root)
 
     store = SessionStagingStore.open_default(repo_root)
+    collector = SpanCollector(store, repo_root, now=now) if collect_discovery_spans else None
     try:
         # Stage new gate hits from transcript lines appended since last run.
         staged = 0
@@ -842,7 +851,10 @@ async def mine_session_decisions(
                 break
             try:
                 events = iter_new_events(adapter, path, store.cursors, prefilter=prefilter)
-                for candidate in mine_events(recorder.observe(path, events), repo_prefix):
+                stream = recorder.observe(path, events)
+                if collector is not None:
+                    stream = collector.observe(stream)
+                for candidate in mine_events(stream, repo_prefix):
                     if store.add_raw(
                         hash_=candidate.hash,
                         kind=candidate.kind,
@@ -909,7 +921,9 @@ async def mine_session_decisions(
         # Promotion: observation-qualified decisions, ready for upsert.
         decisions: list[ExtractedDecision] = []
         for row in store.promotable():
-            decisions.extend(_promotion_decisions(row, repo_root))
+            if row["kind"] == DISCOVERY_KIND:
+                continue  # the broad lane runs its own promotion, under its own rules
+            decisions.extend(promotion_decisions(row, repo_root))
             store.mark_emitted(row["key"], observations=row["observations"], now=now)
         store.commit()
 
@@ -918,6 +932,7 @@ async def mine_session_decisions(
             staged=staged,
             structured=structured_count,
             pending_backlog=max(0, len(pending) - processed),
+            discovery_spans=collector.queued if collector else 0,
             promoted=len(decisions),
             episodes=episodes,
             transcripts_deferred=deferred,

@@ -53,9 +53,10 @@ def test_show_json_lists_every_source(repo: Path):
         "pr",
         "comment",
         "session",
+        "session_discovery",
         "cli",
     ]
-    assert payload["policy"]["preset"] == "full"
+    assert payload["policy"]["preset"] == "default"
 
 
 def test_show_table_renders_without_a_config(repo: Path):
@@ -241,3 +242,84 @@ def test_a_broken_config_is_a_clean_error_not_a_traceback(repo: Path):
     assert result.exit_code != 0
     assert "Could not parse" in result.output
     assert "Traceback" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# config discovery
+# ---------------------------------------------------------------------------
+
+
+def test_discovery_budget_writes_and_reports(repo: Path):
+    result = _run(
+        "decision", "config", "discovery", str(repo),
+        "--max-sessions", "4", "--max-input-tokens", "9000",
+        "--format", "json",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["policy"]["discovery"] == {
+        "max_sessions": 4,
+        "max_input_tokens": 9000,
+    }
+    assert _config(repo)["decisions"]["discovery"] == {
+        "max_sessions": 4,
+        "max_input_tokens": 9000,
+    }
+
+
+def test_discovery_budget_setting_one_field_keeps_the_other(repo: Path):
+    _run("decision", "config", "discovery", str(repo), "--max-input-tokens", "9000")
+    _run("decision", "config", "discovery", str(repo), "--max-sessions", "4")
+
+    assert _config(repo)["decisions"]["discovery"] == {
+        "max_sessions": 4,
+        "max_input_tokens": 9000,
+    }
+
+
+def test_discovery_budget_with_no_flags_only_reports(repo: Path):
+    result = _run("decision", "config", "discovery", str(repo), "--format", "json")
+
+    assert result.exit_code == 0, result.output
+    assert not (repo / ".repowise" / "config.yaml").exists()
+
+
+def test_discovery_budget_rejects_an_out_of_range_value(repo: Path):
+    result = _run("decision", "config", "discovery", str(repo), "--max-sessions", "0")
+
+    assert result.exit_code != 0
+    assert "between 1 and 24" in result.output
+
+
+def test_discovery_budget_dry_run_writes_nothing(repo: Path):
+    result = _run(
+        "decision", "config", "discovery", str(repo), "--max-sessions", "4", "--dry-run"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "discovery.max_sessions" in result.output
+    assert not (repo / ".repowise" / "config.yaml").exists()
+
+
+def test_discovery_budget_resolves_its_target_like_every_sibling(repo: Path, monkeypatch):
+    """It must not bypass workspace/primary-repo redirection with its own resolve()."""
+    seen: list[object] = []
+
+    def _spy(path=None, **kw):
+        seen.append(path)
+        from repowise.cli.helpers import resolve_command_target
+
+        return resolve_command_target(path=path, **kw)
+
+    monkeypatch.setattr("repowise.cli.commands.decision_cmd.resolve_command_target", _spy)
+    result = _run("decision", "config", "discovery", str(repo), "--max-sessions", "4")
+
+    assert result.exit_code == 0, result.output
+    assert seen == [str(repo)]
+
+
+def test_switching_discovery_on_is_an_ordinary_source_toggle(repo: Path):
+    result = _run("decision", "source", "set", "session_discovery", str(repo), "--on")
+
+    assert result.exit_code == 0, result.output
+    assert _config(repo)["decisions"]["sources"]["session_discovery"] is True

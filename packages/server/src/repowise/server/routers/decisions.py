@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,6 +16,7 @@ from repowise.server.schemas import (
     DecisionCodeEdge,
     DecisionCountsResponse,
     DecisionCreate,
+    DecisionDiscoveryBudget,
     DecisionEvidenceListResponse,
     DecisionEvidenceResponse,
     DecisionGraphEdge,
@@ -250,6 +252,7 @@ def _settings_payload(repo_path: Path, resolution) -> DecisionSettings:
         enabled=policy.enabled,
         llm=policy.llm,
         preset=policy.preset_name(),
+        discovery=DecisionDiscoveryBudget(**policy.discovery.to_dict()),
         sources=[
             DecisionSourceState(**rt.to_dict())
             for rt in policy.runtime(provider_available=available)
@@ -319,7 +322,9 @@ async def update_decision_settings(
 
     if body.preset is not None:
         try:
-            policy = preset_policy(body.preset)
+            # A preset names source membership, not a budget; the budget the
+            # caller did not send is theirs and survives.
+            policy = replace(preset_policy(body.preset), discovery=policy.discovery)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     if body.enabled is not None:
@@ -329,6 +334,12 @@ async def update_decision_settings(
     for key, patch in (body.sources or {}).items():
         try:
             policy = policy.with_source(key, enabled=patch.enabled, llm=patch.llm)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    patch = body.discovery.model_dump(exclude_none=True) if body.discovery else {}
+    if patch:
+        try:
+            policy = policy.with_discovery(**patch)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

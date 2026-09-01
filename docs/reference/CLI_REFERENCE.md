@@ -920,7 +920,8 @@ repowise decision deprecate ID [PATH]   # mark deprecated
 repowise decision health [PATH]         # health dashboard
 
 repowise decision config show [PATH]              # the resolved capture policy
-repowise decision config preset NAME [PATH]       # off | local_only | balanced | full
+repowise decision config preset NAME [PATH]       # default | off | local_only | balanced | full
+repowise decision config discovery [PATH]         # budget for the one broad discovery call
 repowise decision source list [PATH]              # the source registry and its state
 repowise decision source set SRC --on|--off       # switch one source
 repowise decision source set SRC --llm|--no-llm   # switch only its model stage
@@ -931,8 +932,15 @@ repowise decision llm --on|--off [PATH]           # all decision-extraction mode
 
 | Flag | Description |
 |------|-------------|
-| `--dry-run` | Print the change and write nothing. On `config preset`, `source set`, `llm`. |
+| `--dry-run` | Print the change and write nothing. On `config preset`, `config discovery`, `source set`, `llm`. |
 | `--format` | `table` (default) or `json`. `json` returns the full source registry. |
+| `--max-sessions` | `config discovery` only: session deltas one broad call may read (1-24, default 12). |
+| `--max-input-tokens` | `config discovery` only: input-token ceiling for one broad call (2000-60000, default 30000). |
+
+`config discovery` with neither budget flag just prints the resolved policy.
+Broad discovery itself is a source, so it is switched with
+`repowise decision source set session_discovery --on|--off`; it is off in the
+`default` policy and on in the `balanced` and `full` presets.
 
 `confirm` is the acceptance event. Nothing else promotes a record to `active`:
 extraction, recurrence across sessions, and confidence all stop at `proposed`.

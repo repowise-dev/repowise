@@ -20,11 +20,13 @@ from repowise.core.analysis.decisions.provenance import RETIRED_SOURCES
 
 __all__ = [
     "CAPTURE_SOURCE_KEYS",
+    "DISCOVERY_BOUNDS",
     "INDEX_SOURCE_KEYS",
     "PRESETS",
     "PRESET_NAMES",
     "SOURCE_SPECS",
     "DecisionPolicy",
+    "DiscoveryBudget",
     "PolicyResolution",
     "SourceRuntime",
     "SourceSetting",
@@ -124,6 +126,15 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
         default_enabled=True,
     ),
     SourceSpec(
+        key="session_discovery",
+        label="Session discovery",
+        description="One broad model pass over new transcript prose each update.",
+        deterministic=False,
+        llm=True,
+        authority="machine",
+        default_enabled=False,
+    ),
+    SourceSpec(
         key="cli",
         label="Manual entry",
         description="Decisions you recorded yourself. Always available.",
@@ -154,6 +165,33 @@ INDEX_SOURCE_KEYS: tuple[str, ...] = (
 )
 
 
+#: Inclusive ``(min, max, default)`` for each broad-discovery budget knob.
+#: The upper bounds are what the probe actually measured at: roughly 8-12
+#: session deltas and about 30,000 input tokens for one call. Bounds are
+#: enforced on resolution so a typo'd config costs a warning, not a bill.
+DISCOVERY_BOUNDS: dict[str, tuple[int, int, int]] = {
+    "max_sessions": (1, 24, 12),
+    "max_input_tokens": (2_000, 60_000, 30_000),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveryBudget:
+    """Per-update ceiling on the one broad session-discovery call."""
+
+    max_sessions: int = DISCOVERY_BOUNDS["max_sessions"][2]
+    max_input_tokens: int = DISCOVERY_BOUNDS["max_input_tokens"][2]
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "max_sessions": self.max_sessions,
+            "max_input_tokens": self.max_input_tokens,
+        }
+
+
+_DEFAULT_DISCOVERY = DiscoveryBudget()
+
+
 @dataclass(frozen=True, slots=True)
 class SourceSetting:
     """Per-source configuration, already merged with defaults."""
@@ -178,6 +216,11 @@ _OFF = SourceSetting(enabled=False, llm=False)
 #: Named conveniences over the same policy. A preset is only a way to write
 #: several settings at once; nothing downstream branches on the preset name.
 PRESETS: dict[str, dict[str, Any]] = {
+    "default": {
+        "enabled": True,
+        "llm": True,
+        "sources": _preset(),
+    },
     "off": {
         "enabled": False,
         "llm": True,
@@ -198,7 +241,7 @@ PRESETS: dict[str, dict[str, Any]] = {
     "balanced": {
         "enabled": True,
         "llm": True,
-        "sources": _preset(comment=_OFF),
+        "sources": _preset(comment=_OFF, session_discovery=_ON),
     },
     "full": {
         "enabled": True,
@@ -209,12 +252,14 @@ PRESETS: dict[str, dict[str, Any]] = {
 
 PRESET_NAMES: tuple[str, ...] = tuple(PRESETS)
 
-#: What an absent ``decisions:`` block resolves to. Deliberately every source
-#: on with the model enabled, because that is what a repo indexed before this
-#: module existed already did, and a config-less repo must not change behavior
-#: on upgrade. New repos pick a preset explicitly instead of inheriting a
-#: different hidden default.
-_LEGACY_DEFAULT = PRESETS["full"]
+#: What an absent ``decisions:`` block resolves to: every source whose spec
+#: says it shipped on, with the model enabled, because that is what a repo
+#: indexed before this module existed already did and a config-less repo must
+#: not change behavior on upgrade. Deliberately *not* ``full``: ``full`` means
+#: every source there is, so a source added later joins it, and reusing it here
+#: would switch that source on for every repository that never asked for it.
+#: New repos pick a preset explicitly instead of inheriting a hidden default.
+_LEGACY_DEFAULT = PRESETS["default"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +301,7 @@ class DecisionPolicy:
     enabled: bool
     llm: bool
     sources: dict[str, SourceSetting]
+    discovery: DiscoveryBudget = _DEFAULT_DISCOVERY
 
     # -- queries ---------------------------------------------------------
 
@@ -312,6 +358,7 @@ class DecisionPolicy:
                 self.enabled == spec["enabled"]
                 and self.llm == spec["llm"]
                 and self.sources == spec["sources"]
+                and self.discovery == _DEFAULT_DISCOVERY
             ):
                 return name
         return "custom"
@@ -386,7 +433,14 @@ class DecisionPolicy:
                 sources[spec.key] = setting.enabled
             else:
                 sources[spec.key] = {"enabled": setting.enabled, "llm": setting.llm}
-        return {"enabled": self.enabled, "llm": self.llm, "sources": sources}
+        block: dict[str, Any] = {
+            "enabled": self.enabled,
+            "llm": self.llm,
+            "sources": sources,
+        }
+        if self.discovery != _DEFAULT_DISCOVERY:
+            block["discovery"] = self.discovery.to_dict()
+        return block
 
     def to_dict(self, *, provider_available: bool = True) -> dict[str, Any]:
         """The JSON payload shared by ``decision config show`` and the API."""
@@ -394,6 +448,7 @@ class DecisionPolicy:
             "enabled": self.enabled,
             "llm": self.llm,
             "preset": self.preset_name(),
+            "discovery": self.discovery.to_dict(),
             "sources": [rt.to_dict() for rt in self.runtime(provider_available=provider_available)],
         }
 
@@ -414,6 +469,14 @@ class DecisionPolicy:
         sources[key] = merged
         return replace(self, sources=sources)
 
+    def with_discovery(self, **fields: int) -> DecisionPolicy:
+        """A copy with the named discovery budget fields replaced."""
+        for name, value in fields.items():
+            low, high, _ = DISCOVERY_BOUNDS[name]
+            if not low <= value <= high:
+                raise ValueError(f"decisions.discovery.{name} must be between {low} and {high}")
+        return replace(self, discovery=replace(self.discovery, **fields))
+
     def with_llm(self, value: bool) -> DecisionPolicy:
         return replace(self, llm=value)
 
@@ -431,6 +494,30 @@ class PolicyResolution:
     warnings: tuple[str, ...] = ()
     #: Keys carried through from the legacy shape, for the migration notice.
     legacy_keys: tuple[str, ...] = ()
+
+
+def _resolve_discovery(raw: Any, warnings: list[str]) -> DiscoveryBudget:
+    """Bounds-checked discovery budget from the ``decisions.discovery`` block."""
+    if raw is None:
+        return _DEFAULT_DISCOVERY
+    if not isinstance(raw, dict):
+        warnings.append("`decisions.discovery:` is not a mapping; ignoring it.")
+        return _DEFAULT_DISCOVERY
+    fields: dict[str, int] = {}
+    for name, (low, high, default) in DISCOVERY_BOUNDS.items():
+        value = raw.get(name, default)
+        if isinstance(value, bool) or not isinstance(value, int):
+            warnings.append(f"`decisions.discovery.{name}` must be an integer; using {default}.")
+            value = default
+        elif not low <= value <= high:
+            warnings.append(
+                f"`decisions.discovery.{name}` must be between {low} and {high}; using {default}."
+            )
+            value = default
+        fields[name] = value
+    for field in set(raw) - set(DISCOVERY_BOUNDS):
+        warnings.append(f"Unknown key `decisions.discovery.{field}`; ignoring it.")
+    return DiscoveryBudget(**fields)
 
 
 def preset_policy(name: str) -> DecisionPolicy:
@@ -487,11 +574,24 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
     sources: dict[str, SourceSetting] = dict(base["sources"])
 
     raw_sources = raw.get("sources")
+    enumerated = isinstance(raw_sources, dict)
     if raw_sources is None:
         raw_sources = {}
-    elif not isinstance(raw_sources, dict):
+    elif not enumerated:
         warnings.append("`decisions.sources:` is not a mapping; ignoring it.")
         raw_sources = {}
+
+    # A `sources:` block written next to a preset is the authoritative list of
+    # the sources that preset covered when it was written, because every write
+    # through this layer enumerates all of them. So a source missing from a
+    # present enumeration is one that did not exist yet, and it stays off: a
+    # stored `preset: balanced` must not silently acquire a model call the day
+    # a new source joins that preset. A bare `preset:` with no enumeration is a
+    # live declaration and does get the preset's current membership.
+    if preset_name and enumerated:
+        for spec in SOURCE_SPECS:
+            if spec.togglable and not spec.default_enabled and spec.key not in raw_sources:
+                sources[spec.key] = SourceSetting(enabled=False, llm=spec.llm)
 
     for key, value in raw_sources.items():
         spec = _SPECS_BY_KEY.get(str(key))
@@ -539,11 +639,16 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
         else:
             warnings.append("`decisions.session_mining` is not a boolean; ignoring it.")
 
-    for field in set(raw) - {"preset", "enabled", "llm", "sources", "session_mining"}:
+    discovery = _resolve_discovery(raw.get("discovery"), warnings)
+
+    known = {"preset", "enabled", "llm", "sources", "session_mining", "discovery"}
+    for field in set(raw) - known:
         warnings.append(f"Unknown key `decisions.{field}`; ignoring it.")
 
     return PolicyResolution(
-        policy=DecisionPolicy(enabled=enabled, llm=llm, sources=sources),
+        policy=DecisionPolicy(
+            enabled=enabled, llm=llm, sources=sources, discovery=discovery
+        ),
         warnings=tuple(warnings),
         legacy_keys=tuple(legacy),
     )

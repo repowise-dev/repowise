@@ -57,9 +57,11 @@ history.
 | PR bodies | `pr` | Squash-merge and PR commit bodies | A body only qualifies when it looks like a PR description (`## Why`, `## Motivation`, `## Context`, `Closes #`, `Before:` / `After:`). Up to 25 bodies. |
 | Code comments | `comment` | Block comments and docstrings on high-centrality files | Bounded to 30 nodes, and to prose carrying a rationale cue ("because", "instead of", "rather than", "trade-off", "we chose", "deliberately"). Centrality-bounded on purpose: comment archaeology across a whole repo is noise. |
 
-Two more sources sit outside the index-time set: `session` (mined from your
-coding-agent transcripts, below) and `cli` (a decision you typed yourself, the
-most authoritative source there is).
+Three more sources sit outside the index-time set: `session` (deterministic
+gates over your coding-agent transcripts, below), `session_discovery` (one
+broad model pass over the same transcript prose, below, off unless you enable
+it), and `cli` (a decision you typed yourself, the most authoritative source
+there is).
 
 ### Controlling capture
 
@@ -73,6 +75,8 @@ repowise decision config preset local_only
 repowise decision source list
 repowise decision source set comment --off
 repowise decision source set adr --no-llm   # keep the parse, skip the model
+repowise decision source set session_discovery --on   # the broad lane, opt-in
+repowise decision config discovery --max-sessions 6   # and its per-update budget
 repowise decision llm --off                 # no decision extraction reaches a model
 ```
 
@@ -88,12 +92,21 @@ git_archaeology  disabled            no   This source is switched off.
 adr              deterministic_only  no   Decision LLM extraction is off. The deterministic stage still runs.
 pr               disabled            no   This source is switched off.
 comment          disabled            no   This source is switched off.
-session          deterministic_only  no   Decision LLM extraction is off. The deterministic stage still runs.
-cli              always_on           -    Manual entry is always available.
+session            deterministic_only  no   Decision LLM extraction is off. The deterministic stage still runs.
+session_discovery  disabled            no   This source is switched off.
+cli                always_on           -    Manual entry is always available.
+
+  Discovery budget: up to 12 session(s), 30,000 input tokens per update.
 ```
 
-The four presets are `off`, `local_only`, `balanced`, and `full`; editing any
-individual switch afterwards reads as `custom`. Mutations take `--dry-run` and
+The presets are `default`, `off`, `local_only`, `balanced`, and `full`; editing
+any individual switch afterwards reads as `custom`. `default` is what a config
+with no `decisions:` block resolves to, and it is deliberately not `full`: a
+source added after those switches existed stays off until you ask for it, so an
+upgrade never starts a model call you did not enable. A stored preset that
+lists its sources is treated the same way: that list is what the preset
+covered when it was written. Re-apply the preset to pick up a source added to
+it since. Mutations take `--dry-run` and
 `--format json`, write atomically, and preserve every unrelated key in
 `config.yaml`.
 
@@ -270,6 +283,59 @@ Everything stays on your machine. Transcripts are read locally, staging lives in
 codebase is stored. Turn the pipeline off with
 `repowise decision source set session --off`, or keep the transcript reading and
 drop only the structuring call with `--no-llm`.
+
+### Broad session discovery
+
+Those gates are precision-first, and they are the recall bottleneck: a decision
+settled in a paragraph that never opens with "no," or pairs a decision verb
+with a causal cue is invisible to them. `session_discovery` is the recall lane
+beside them, off unless you enable it:
+
+```bash
+repowise decision source set session_discovery --on
+```
+
+Once per update it makes **one** model call over the user and assistant prose
+that update newly read, bounded by `discovery.max_sessions` (default 12) and
+`discovery.max_input_tokens` (default 30,000). It reuses the transcript read
+the `session` source already performs, so enabling it does not read your
+transcripts twice, and it costs one call whether the queue holds one session or
+forty.
+
+Each span of prose it sends carries a stable id, and every candidate must cite
+the ids it rests on. Before anything is stored:
+
+- the cited spans must all be spans that were actually sent;
+- the evidence quote must be verbatim, or near enough that only reflow and
+  articles separate it from the span's own text. The deterministic lane accepts
+  a looser paraphrase because its excerpts are the few sentences its gates
+  already matched; this lane is shown thousands of words, where a partial
+  overlap with some part of them is not evidence of anything;
+- the claim itself must overlap that text on its content words, so a fluent
+  invention riding a real quote is still rejected;
+- a rationale that fails the same check is dropped rather than invented;
+- a path the model names is kept only if the cited turns' tools touched it.
+  Scope is resolved from those files, never from the model, and naming none is
+  an honest repository-wide claim;
+- a claim that bundles two independent choices is flagged for splitting at
+  review, never split by machine.
+
+Everything that survives is a **candidate**. Like the deterministic lane it is
+written `proposed`, needs two distinct sessions to be proposed at all, and only
+`repowise decision confirm` makes it govern. The model's own
+`implemented_and_validated` verdict is evidence for review, not authority.
+
+Zero calls, and a stated reason, on every path that should not call: capture
+off, the source off, `llm: false`, no provider configured, and no new prose
+since the last update. Prose that does not fit one update's budget stays queued
+and is sent oldest-first next time, and a queued span is never aged out unread;
+a provider failure requeues the same prose and retries it on the next two
+updates before retiring it. Switching the source off leaves what is already
+queued in place, to be drained if you switch it back on. New prose is only
+captured while the source is on, so there is no backfill of what was read in
+between. It also depends on the `session` source, which is what reads the
+transcripts; with `session` off, discovery says so rather than reporting an
+empty repository.
 
 ## Getting decisions back to your agent
 

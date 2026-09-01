@@ -302,3 +302,79 @@ async def test_a_repo_with_no_transcripts_derives_nothing_and_deletes_nothing(tm
     )
     assert decisions == []
     assert not episode_store_path(repo_root).exists()
+
+
+# ---------------------------------------------------------------------------
+# Broad discovery rides the same read (one cursor, one pass over the bytes)
+# ---------------------------------------------------------------------------
+
+
+async def test_discovery_spans_are_collected_only_when_asked(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    projects_root = tmp_path / "projects"
+    _write_transcript(repo_root, projects_root, "one.jsonl", "sess-1", CORRECTION)
+
+    await mine_session_decisions(
+        repo_root, provider=None, projects_root=projects_root, now=100.0
+    )
+    with SessionStagingStore(default_store_path(repo_root)) as store:
+        assert store.pending_discovery_count() == 0
+
+
+async def test_discovery_spans_ride_the_miners_single_transcript_read(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    projects_root = tmp_path / "projects"
+    _write_transcript(repo_root, projects_root, "one.jsonl", "sess-1", CORRECTION)
+
+    await mine_session_decisions(
+        repo_root,
+        provider=None,
+        projects_root=projects_root,
+        collect_discovery_spans=True,
+        now=100.0,
+    )
+    with SessionStagingStore(default_store_path(repo_root)) as store:
+        spans = store.pending_discovery_spans(10)
+    assert [span["session_id"] for span in spans] == ["sess-1"]
+    assert CORRECTION in spans[0]["text"]
+
+    # The cursor already consumed those bytes, so a second pass adds nothing.
+    await mine_session_decisions(
+        repo_root,
+        provider=None,
+        projects_root=projects_root,
+        collect_discovery_spans=True,
+        now=200.0,
+    )
+    with SessionStagingStore(default_store_path(repo_root)) as store:
+        assert store.pending_discovery_count() == 1
+
+
+async def test_a_span_from_another_checkout_is_not_collected(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    projects_root = tmp_path / "projects"
+    directory = transcript_dir_for(repo_root, projects_root)
+    directory.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "type": "user",
+        "cwd": str(other),
+        "timestamp": "2026-07-11T10:00:00.000Z",
+        "sessionId": "sess-elsewhere",
+        "message": {"role": "user", "content": [{"type": "text", "text": CORRECTION}]},
+    }
+    (directory / "one.jsonl").write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+    await mine_session_decisions(
+        repo_root,
+        provider=None,
+        projects_root=projects_root,
+        collect_discovery_spans=True,
+        now=100.0,
+    )
+    with SessionStagingStore(default_store_path(repo_root)) as store:
+        assert store.pending_discovery_count() == 0

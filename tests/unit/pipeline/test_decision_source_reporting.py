@@ -155,3 +155,93 @@ async def test_a_disabled_source_is_reported_as_switched_off(tmp_path, monkeypat
     assert "comments" in not_run
     assert "agent sessions" in not_run
     assert "switched off" in not_run
+
+
+async def test_discovery_off_is_reported_as_not_run_and_makes_no_call(_patched):
+    """The default policy: the source exists, is off, and reaches no provider."""
+
+    class _Exploding:
+        async def generate(self, *_a, **_k):
+            raise AssertionError("a model call was made with discovery off")
+
+    progress = _RecordingProgress()
+
+    await _run_decision_extraction(
+        _patched,
+        llm_client=_Exploding(),
+        graph_builder=SimpleNamespace(graph=lambda: None),
+        git_meta_map={},
+        parsed_files=[],
+        progress=progress,
+    )
+
+    # A swallowed call would surface as a failed source, not as "not run".
+    assert "discovery" not in progress.text_at("warning").lower()
+    not_run = next(t for lvl, t in progress.messages if lvl == "info" and "Not run" in t)
+    assert "session discovery" in not_run
+    assert "switched off" in not_run
+    for level, text in progress.messages:
+        if level == "info" and "Nothing found" in text:
+            assert "session discovery" not in text
+
+
+async def test_discovery_enabled_with_no_prose_is_an_honest_zero(tmp_path, monkeypatch):
+    """Ran and found nothing is not the same state as never ran."""
+    import repowise.core.analysis.decision_extractor as de
+
+    monkeypatch.setattr(de, "DecisionExtractor", _StubExtractor)
+    _write_policy(tmp_path, session=False, session_discovery=True)
+    progress = _RecordingProgress()
+
+    await _run_decision_extraction(
+        tmp_path,
+        llm_client=SimpleNamespace(),
+        graph_builder=SimpleNamespace(graph=lambda: None),
+        git_meta_map={},
+        parsed_files=[],
+        progress=progress,
+    )
+
+    nothing = next(t for lvl, t in progress.messages if lvl == "info" and "Nothing found" in t)
+    assert "session discovery" in nothing
+    not_run = [t for lvl, t in progress.messages if lvl == "info" and "Not run" in t]
+    for line in not_run:
+        assert "session discovery" not in line
+
+
+async def test_discovery_candidates_are_reported_even_when_nothing_promotes(
+    tmp_path, monkeypatch
+):
+    """The first sighting is the normal case, and it must not vanish.
+
+    A grounded candidate needs a second session before it is proposed, so a
+    successful first run has zero promotions. Reporting that as an honest zero
+    would hide the whole lane on exactly the run that found something.
+    """
+    import repowise.core.analysis.decision_extractor as de
+    import repowise.core.pipeline.phases.analysis as phase
+    from repowise.core.analysis.decisions.discovery import DiscoveryOutcome, DiscoveryReport
+
+    monkeypatch.setattr(de, "DecisionExtractor", _StubExtractor)
+    _write_policy(tmp_path, session=False, session_discovery=True)
+
+    async def _fake(*_a, **_k):
+        return DiscoveryOutcome(report=DiscoveryReport(status="ran", candidates_grounded=3))
+
+    monkeypatch.setattr(phase, "run_update_discovery", _fake)
+    progress = _RecordingProgress()
+
+    await _run_decision_extraction(
+        tmp_path,
+        llm_client=SimpleNamespace(),
+        graph_builder=SimpleNamespace(graph=lambda: None),
+        git_meta_map={},
+        parsed_files=[],
+        progress=progress,
+    )
+
+    info = progress.text_at("info")
+    assert "3 session-discovery candidate(s) staged for review" in info
+    for level, text in progress.messages:
+        if level == "info" and ("Nothing found" in text or "Not run" in text):
+            assert "session discovery" not in text

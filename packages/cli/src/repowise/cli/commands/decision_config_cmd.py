@@ -15,6 +15,7 @@ from rich.table import Table
 from repowise.cli.helpers import console
 from repowise.cli.output import emit_json, format_option, notice_console
 from repowise.core.analysis.decisions.policy import (
+    DISCOVERY_BOUNDS,
     PRESET_NAMES,
     SOURCE_SPECS,
     DecisionPolicy,
@@ -101,6 +102,11 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
             f"[dim]{rt.reason}[/dim]",
         )
     console.print(table)
+    budget = policy.discovery
+    console.print(
+        f"  [dim]Discovery budget: up to {budget.max_sessions} session(s), "
+        f"{budget.max_input_tokens:,} input tokens per update.[/dim]"
+    )
     console.print("")
 
     for warning in resolution.warnings:
@@ -162,6 +168,13 @@ def _diff(before: DecisionPolicy, after: DecisionPolicy) -> list[dict[str, str]]
                 "to": f"enabled={new.enabled if new else '?'} llm={new.llm if new else '?'}",
             }
         )
+    for key in DISCOVERY_BOUNDS:
+        old_value = getattr(before.discovery, key)
+        new_value = getattr(after.discovery, key)
+        if old_value != new_value:
+            changes.append(
+                {"key": f"discovery.{key}", "from": str(old_value), "to": str(new_value)}
+            )
     return changes
 
 
@@ -192,7 +205,7 @@ def config_show(path: str | None, fmt: str) -> None:
 @click.option("--dry-run", is_flag=True, default=False, help="Show the change; write nothing.")
 @format_option()
 def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
-    """Apply a named preset: off, local_only, balanced, full."""
+    """Apply a named preset: default, off, local_only, balanced, full."""
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
     from repowise.core.analysis.decisions.policy import preset_policy
 
@@ -203,6 +216,51 @@ def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
 # ---------------------------------------------------------------------------
 # decision source
 # ---------------------------------------------------------------------------
+
+
+@config_group.command("discovery")
+@click.argument("path", required=False, default=None)
+@click.option(
+    "--max-sessions",
+    type=int,
+    default=None,
+    help="Session deltas one broad discovery call may read.",
+)
+@click.option(
+    "--max-input-tokens",
+    type=int,
+    default=None,
+    help="Input-token ceiling for one broad discovery call.",
+)
+@click.option("--dry-run", is_flag=True, default=False, help="Show the change; write nothing.")
+@format_option()
+def config_discovery(
+    path: str | None,
+    max_sessions: int | None,
+    max_input_tokens: int | None,
+    dry_run: bool,
+    fmt: str,
+) -> None:
+    """Set the per-update budget for broad session discovery."""
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    repo_path = _resolve_decision_repo(path, fmt)
+    fields = {
+        key: value
+        for key, value in (
+            ("max_sessions", max_sessions),
+            ("max_input_tokens", max_input_tokens),
+        )
+        if value is not None
+    }
+    if not fields:
+        _emit(repo_path, _load(repo_path), fmt)
+        return
+    try:
+        policy = _load(repo_path).policy.with_discovery(**fields)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _apply(repo_path, policy, fmt, dry_run)
 
 
 @click.group("source")

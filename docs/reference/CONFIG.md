@@ -390,7 +390,7 @@ API, and the index pipeline, so all three agree about what will run.
 decisions:
   enabled: true             # master switch for automatic capture
   llm: true                 # master switch for decision-extraction model calls
-  preset: balanced          # off | local_only | balanced | full
+  preset: balanced          # default | off | local_only | balanced | full
   sources:
     inline_marker: true     # WHY:/DECISION: markers
     git_archaeology: true   # commit messages
@@ -400,17 +400,28 @@ decisions:
     session:                # long form: run the source, skip its model stage
       enabled: true
       llm: false
+    session_discovery: true # one broad model pass over new transcript prose
+  discovery:                # budget for that one pass, per update
+    max_sessions: 12        # 1-24
+    max_input_tokens: 30000 # 2000-60000
 ```
 
 Every key is optional. **A config with no `decisions:` block behaves exactly as
-it did before these switches existed**: every source on, model stages on.
+it did before these switches existed**: every source that shipped on is on,
+model stages on. That resolved policy is named `default`. A source added after
+those switches existed (`session_discovery` is the first) stays off until you
+ask for it, so upgrading never starts a model call nobody enabled. The same
+holds for a config that names a preset *and* lists its sources: that list is
+what the preset covered when it was written, so a source added to that preset
+later does not join it retroactively. Re-apply the preset to pick it up.
 
 A source is a bare boolean or a `{enabled, llm}` mapping. The long form only
 matters for a source with both a deterministic and a model stage
 (`inline_marker`, `adr`, `session`): it keeps the deterministic parse and skips
 the model call. A source that is model-only (`git_archaeology`, `pr`,
-`comment`) is skipped entirely when its model stage is off, because running it
-would produce a zero indistinguishable from an empty repository.
+`comment`, `session_discovery`) is skipped entirely when its model stage is
+off, because running it would produce a zero indistinguishable from an empty
+repository.
 
 Unknown keys are reported as warnings rather than discarded, so a typo'd source
 name shows up instead of silently reading as a working switch. Retired names
@@ -421,9 +432,10 @@ still loads, it just says which key it ignored.
 
 | Preset | Effect |
 |--------|--------|
+| `default` | What a config with no `decisions:` block resolves to. Every long-standing source on, broad discovery off. |
 | `off` | No automatic capture. Stored decisions and manual entry keep working. |
 | `local_only` | Deterministic capture only. Zero decision-extraction model calls. |
-| `balanced` | The high-signal sources plus session mining; comment archaeology off. |
+| `balanced` | The high-signal sources plus session mining and broad session discovery; comment archaeology off. |
 | `full` | Every source, every model stage. |
 
 Editing any individual key after applying a preset drops the `preset` line and
@@ -441,6 +453,8 @@ repowise decision config show          # the resolved policy, per source
 repowise decision config preset local_only
 repowise decision source set comment --off
 repowise decision source set adr --no-llm     # keep the parse, skip the model
+repowise decision source set session_discovery --on
+repowise decision config discovery --max-sessions 6 --max-input-tokens 12000
 repowise decision llm --off
 ```
 
@@ -462,6 +476,31 @@ many sessions they recur across; confirming one with `repowise decision confirm`
 is what makes it govern. Everything stays local: transcripts are read from your
 machine, staging lives in `.repowise/sessions/sessions.db`, and only the
 distilled decision text about the codebase is stored.
+
+`session_discovery` is the broad lane beside those gates. Once per update it
+sends the user and assistant prose that update newly read, bounded by
+`discovery.max_sessions` and `discovery.max_input_tokens`, to the model in a
+single call, and asks for durable decisions the gates never surfaced. It reuses
+the transcript read the `session` source already performs, so enabling it does
+not read your transcripts twice.
+
+Every candidate it returns must cite the span ids it rests on, and each cited
+quote is verified against that span's exact text before anything is stored.
+A candidate that cites a span that was not sent, quotes something no span
+says, or names a file the cited turns never touched is rejected and counted,
+never stored. Scope comes from the files those turns' tools touched; the model
+may select among them and may not add one. Everything it produces is a
+candidate: like the deterministic lane it is written `proposed`, and only
+`repowise decision confirm` makes a decision govern.
+
+Prose that does not fit one update's budget is not dropped. It stays queued in
+`.repowise/sessions/sessions.db`, the next update sends it oldest-first, and a
+queued span is never aged out before it is read. A provider failure leaves the
+same prose queued and retries it on the next two updates before retiring it, so
+an outage costs a round rather than the input. Switching the source off leaves
+what is already queued in place; new prose is only captured while the source is
+on, so there is no backfill of what was read while it was off. Discovery reads
+what the `session` source read, so it needs that source on too.
 
 Dismissals are sticky: `repowise decision dismiss` keeps the record as a
 `dismissed` tombstone, so reindexing never re-proposes the same decision, and

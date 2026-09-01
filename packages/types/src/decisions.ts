@@ -216,13 +216,29 @@ export interface DecisionSourceState {
   reason: string;
 }
 
-export type DecisionPreset = "off" | "local_only" | "balanced" | "full" | "custom";
+export type DecisionPreset =
+  | "default"
+  | "off"
+  | "local_only"
+  | "balanced"
+  | "full"
+  | "custom";
+
+/** Per-update ceiling on the one broad session-discovery call. */
+export interface DecisionDiscoveryBudget {
+  max_sessions: number;
+  max_input_tokens: number;
+}
+
+/** A change to the discovery budget. Omitted fields keep their value. */
+export type DecisionDiscoveryPatch = Partial<DecisionDiscoveryBudget>;
 
 /** The resolved decision capture policy for one repository. */
 export interface DecisionSettings {
   enabled: boolean;
   llm: boolean;
   preset: DecisionPreset;
+  discovery: DecisionDiscoveryBudget;
   sources: DecisionSourceState[];
   provider_available: boolean;
   warnings: string[];
@@ -244,5 +260,6 @@ export interface DecisionSettingsUpdate {
   llm?: boolean;
   preset?: Exclude<DecisionPreset, "custom">;
   sources?: Record<string, DecisionSourcePatch>;
+  discovery?: DecisionDiscoveryPatch;
   etag?: string;
 }

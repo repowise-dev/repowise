@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
+from repowise.core.analysis.decisions.policy import DISCOVERY_BOUNDS
 from repowise.core.analysis.decisions.scope import derive_decision_scope
 
 
@@ -254,6 +255,12 @@ class DecisionLineageResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+#: Sourced from the policy registry so the wire bounds cannot drift from the
+#: ones the resolver enforces.
+_DISCOVERY_DEFAULTS = {key: bounds[2] for key, bounds in DISCOVERY_BOUNDS.items()}
+_DISCOVERY_RANGE = {key: {"ge": bounds[0], "le": bounds[1]} for key, bounds in DISCOVERY_BOUNDS.items()}
+
+
 class DecisionSourceState(BaseModel):
     """One capture source's capabilities and resolved state."""
 
@@ -273,13 +280,37 @@ class DecisionSourceState(BaseModel):
     reason: str
 
 
+class DecisionDiscoveryBudget(BaseModel):
+    """Per-update ceiling on the one broad session-discovery call."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_sessions: int = _DISCOVERY_DEFAULTS["max_sessions"]
+    max_input_tokens: int = _DISCOVERY_DEFAULTS["max_input_tokens"]
+
+
+class DecisionDiscoveryPatch(BaseModel):
+    """A change to the discovery budget. Omitted fields keep their value.
+
+    Separate from :class:`DecisionDiscoveryBudget` because a response states
+    both numbers while a write may set one, and a shared model would fill the
+    other from its default and quietly reset it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_sessions: int | None = Field(default=None, **_DISCOVERY_RANGE["max_sessions"])
+    max_input_tokens: int | None = Field(default=None, **_DISCOVERY_RANGE["max_input_tokens"])
+
+
 class DecisionSettings(BaseModel):
     """The resolved decision capture policy for one repository."""
 
     enabled: bool = True
     llm: bool = True
-    #: off | local_only | balanced | full | custom
-    preset: str = "full"
+    #: default | off | local_only | balanced | full | custom
+    preset: str = "default"
+    discovery: DecisionDiscoveryBudget = DecisionDiscoveryBudget()
     sources: list[DecisionSourceState] = []
     provider_available: bool = True
     #: Recoverable config problems, e.g. an unknown source key.
@@ -316,4 +347,6 @@ class DecisionSettingsUpdate(BaseModel):
     #: Applied first, so a preset plus per-source overrides works in one call.
     preset: str | None = None
     sources: dict[str, DecisionSourcePatch] | None = None
+    #: Budget for broad session discovery. Omitted fields keep their value.
+    discovery: DecisionDiscoveryPatch | None = None
     etag: str | None = None

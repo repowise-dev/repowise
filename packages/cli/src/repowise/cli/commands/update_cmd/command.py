@@ -1513,7 +1513,11 @@ def run_update(
         if decision_policy.source_enabled("session"):
             session_provider = provider if decision_policy.llm_allowed("session") else None
             session_decisions = run_async(
-                mine_session_decisions(repo_path, provider=session_provider)
+                mine_session_decisions(
+                    repo_path,
+                    provider=session_provider,
+                    collect_discovery_spans=decision_policy.llm_allowed("session_discovery"),
+                )
             )
             if session_decisions and verbose:
                 promoted_titles = {d.title for d in session_decisions}
@@ -1522,6 +1526,35 @@ def run_update(
         degraded.append(f"Session decision mining: {exc}")
         if verbose:
             console.print(f"[yellow]Session decision mining skipped: {exc}[/yellow]")
+
+    # The broad lane: at most one model call over the prose the pass above
+    # just read. It runs second because that read is what fills its queue.
+    try:
+        from repowise.core.analysis.decisions.discovery import run_update_discovery
+
+        with cost_tracker.record_as("decision_extraction"):
+            outcome = run_async(
+                run_update_discovery(
+                    repo_path,
+                    provider=provider,
+                    policy=decision_policy,
+                )
+            )
+        session_decisions = [*session_decisions, *outcome.decisions]
+        if outcome.report.status == "failed":
+            degraded.append(f"Session discovery: {outcome.report.reason}")
+        if verbose:
+            funnel = outcome.report
+            console.print(
+                f"Session discovery: {funnel.status}"
+                + (f" ({funnel.reason})" if funnel.reason else "")
+                + f" · {funnel.calls} call(s) · {funnel.candidates_grounded} grounded"
+                + f" · {funnel.spans_deferred} span(s) queued"
+            )
+    except Exception as exc:
+        degraded.append(f"Session discovery: {exc}")
+        if verbose:
+            console.print(f"[yellow]Session discovery skipped: {exc}[/yellow]")
 
     # Usage feedback v1: decisions the augment hooks injected into agent
     # sessions are judged against those sessions' mined corrections (followed

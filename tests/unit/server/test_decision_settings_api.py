@@ -44,9 +44,10 @@ async def test_get_returns_the_full_source_registry(client: AsyncClient):
         "pr",
         "comment",
         "session",
+        "session_discovery",
         "cli",
     ]
-    assert body["preset"] == "full"
+    assert body["preset"] == "default"
     assert body["enabled"] is True
     assert body["etag"]
 
@@ -234,3 +235,47 @@ async def test_a_repo_with_no_checkout_on_this_server_is_a_404(client: AsyncClie
 
     assert resp.status_code == 404
     assert "not accessible" in resp.json()["detail"]
+
+
+async def test_put_discovery_merges_rather_than_replacing(client: AsyncClient):
+    """A UI sending one budget field must not reset the other to its default."""
+    repo = await create_test_repo(client)
+    await client.put(
+        f"/api/repos/{repo['id']}/decisions/settings",
+        json={"discovery": {"max_sessions": 4, "max_input_tokens": 50000}},
+    )
+
+    resp = await client.put(
+        f"/api/repos/{repo['id']}/decisions/settings",
+        json={"discovery": {"max_sessions": 6}},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["discovery"] == {"max_sessions": 6, "max_input_tokens": 50000}
+
+
+async def test_put_preset_keeps_a_custom_discovery_budget(client: AsyncClient):
+    """A preset names source membership; the budget is not part of it."""
+    repo = await create_test_repo(client)
+    await client.put(
+        f"/api/repos/{repo['id']}/decisions/settings",
+        json={"discovery": {"max_sessions": 4}},
+    )
+
+    resp = await client.put(
+        f"/api/repos/{repo['id']}/decisions/settings", json={"preset": "balanced"}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["discovery"]["max_sessions"] == 4
+
+
+async def test_put_rejects_an_out_of_range_budget(client: AsyncClient):
+    repo = await create_test_repo(client)
+
+    resp = await client.put(
+        f"/api/repos/{repo['id']}/decisions/settings",
+        json={"discovery": {"max_sessions": 999}},
+    )
+
+    assert resp.status_code == 422
