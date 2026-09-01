@@ -1739,6 +1739,19 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     except Exception as _rank_err:
         logger.debug("decision_rank_reconcile_skipped", error=str(_rank_err))
 
+    # Classify legacy rows against the entity split. A record promoted by
+    # recurrence rather than by a person becomes a candidate, which visibly
+    # shrinks what governs; leaving it to an explicit command would instead
+    # leave the status column and the acceptance log permanently disagreeing,
+    # with half the surfaces reading each. Idempotent, and it never reopens a
+    # review action somebody already performed.
+    try:
+        from repowise.core.persistence.decision_migration import apply_migration
+
+        await apply_migration(session, repo_id)
+    except Exception as _migrate_err:
+        logger.debug("decision_entity_migration_skipped", error=str(_migrate_err))
+
     if decision_dicts:
         # Reuse the run's shared vector store for semantic (paraphrase) dedup
         # and to make decisions searchable; title dedup still runs when None.

@@ -664,7 +664,7 @@ Architectural decision intelligence. Falls back to git archaeology when no decis
 
 `answer_basis` names the strongest lane the response rests on: `decision`, `episode`, `rationale`, `archaeology`, or `documentation`. Only `decision` is a ruling; the rest are evidence to weigh. Absent when no lane was served, and on the health dashboard.
 
-**A record's `status` decides whether it binds you.** `active` means a person accepted it: treat it as a constraint. `proposed` means something was inferred and nobody has confirmed it: read it as a hint and never as a rule. Nothing promotes a record to `active` except an explicit `repowise decision confirm`, so a proposal that has recurred across fifty sessions is still a proposal.
+**A record's `status` decides whether it binds you.** `active` means somebody accepted it, in a recorded event that names the reason, the scope, the evidence and the accepter: treat it as a constraint. Anything else is a candidate — something was inferred and nobody has agreed to it — so read it as a hint and never as a rule. Nothing produces an acceptance except an explicit `repowise decision confirm` or a committed ADR that says it is accepted, so a candidate that has recurred across fifty sessions is still a candidate.
 
 Path mode's `alignment` counts the two separately: `active_count` is what governs the file, `candidate_count` is what is merely awaiting review, and `score` is derived from the accepted records alone. A file with `active_count: 0` is ungoverned however many candidates name it.
 

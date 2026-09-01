@@ -16,7 +16,7 @@ from repowise.cli.helpers import (
     resolve_command_target,
     run_async,
 )
-from repowise.cli.output import emit_json, format_option, notice_console
+from repowise.cli.output import emit_json, emit_refusal, format_option, notice_console
 from repowise.core.analysis.decisions.provenance import LISTABLE_SOURCES
 from repowise.core.precedent.currency import describe_decision_currency
 
@@ -66,6 +66,25 @@ def _register_config_commands() -> None:
     decision_group.add_command(source_group)
     decision_group.add_command(llm_command)
 
+    from repowise.cli.commands.decision_review_cmd import (
+        candidates_command,
+        export_command,
+        import_command,
+        merge_command,
+        migrate_command,
+        split_command,
+    )
+
+    for command in (
+        migrate_command,
+        candidates_command,
+        merge_command,
+        split_command,
+        export_command,
+        import_command,
+    ):
+        decision_group.add_command(command)
+
 
 _register_config_commands()
 
@@ -92,7 +111,25 @@ async def _resolve_decision_id(session, decision_id: str) -> str | None:
         raise click.ClickException(
             f"Decision id prefix {decision_id!r} is ambiguous; use more characters."
         )
-    return ids[0] if ids else None
+    if ids:
+        return ids[0]
+
+    # Merging and superseding retire ids that are already written down
+    # somewhere. Resolving through the alias keeps those working instead of
+    # reporting the decision as gone.
+    from repowise.core.persistence.models import DecisionAlias
+
+    alias = await session.execute(
+        select(DecisionAlias.decision_id)
+        .where(DecisionAlias.alias_id.like(f"{escape_like(decision_id)}%", escape=LIKE_ESCAPE))
+        .limit(2)
+    )
+    alias_ids = [row[0] for row in alias.all()]
+    if len(alias_ids) > 1:
+        raise click.ClickException(
+            f"Decision id prefix {decision_id!r} is ambiguous; use more characters."
+        )
+    return alias_ids[0] if alias_ids else None
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +223,8 @@ def decision_add(
         consequences_list = [c.strip() for c in consequences_raw.split(",") if c.strip()]
 
         affected_raw = click.prompt(
-            "Affected files/modules (comma-separated, optional)", default=""
+            "Affected files/modules (comma-separated; required to make it govern)",
+            default="",
         )
         affected_files = [f.strip() for f in affected_raw.split(",") if f.strip()]
 
@@ -230,11 +268,39 @@ def decision_add(
                 confidence=1.0,
             )
             decision_id = rec.id
+            # A decision that names nothing cannot be checked against the code
+            # and cannot reach the agent editing a governed file, so it cannot
+            # be accepted. Keeping it as a candidate is better than discarding
+            # eight answered questions; ``confirm --scope`` finishes the job.
+            if status == "active" and affected_files:
+                # Answering the prompts is the acceptance; recording it as one
+                # is what makes this record indistinguishable from any other
+                # accepted decision to every reader.
+                from repowise.core.analysis.decisions.accepter import resolve_accepter
+                from repowise.core.persistence.crud.authority import (
+                    AcceptanceRefusedError,
+                    accept_decision,
+                )
+
+                try:
+                    await accept_decision(
+                        session, rec, accepter=resolve_accepter(repo_path)
+                    )
+                except AcceptanceRefusedError as exc:
+                    raise click.ClickException(
+                        f"Cannot accept this decision: {exc}."
+                    ) from exc
 
         await engine.dispose()
-        return decision_id
+        return decision_id, rec.status
 
-    decision_id = run_async(_persist())
+    decision_id, stored_status = run_async(_persist())
+    if stored_status != "active" and not non_interactive:
+        console.print(
+            "[yellow]Stored as a candidate: it names no files, so it cannot be "
+            "checked against the code.[/yellow]\n"
+            f"[dim]repowise decision confirm {decision_id[:8]} --scope <path>[/dim]"
+        )
 
     if fmt == "json":
         # The full id, not the table's 8-char prefix — a caller that parses
@@ -537,37 +603,86 @@ def _emit_lifecycle(rec, decision_id: str, action: str, fmt: str, note: str = ""
 @decision_group.command("confirm")
 @click.argument("decision_id")
 @click.argument("path", required=False, default=None)
+@click.option("--reason", default="", help="Rationale, or why the constraint needs none.")
+@click.option(
+    "--scope",
+    multiple=True,
+    help="File or module this governs. Repeatable; replaces the proposed scope.",
+)
+@click.option(
+    "--evidence",
+    multiple=True,
+    help="Commit, file or link the decision rests on. Repeatable.",
+)
+@click.option("--as", "accepter", default="", help="Record a different accepter identity.")
 @format_option()
-def decision_confirm(decision_id: str, path: str | None, fmt: str) -> None:
-    """Confirm a proposed decision (set status to active).
+def decision_confirm(
+    decision_id: str,
+    path: str | None,
+    reason: str,
+    scope: tuple[str, ...],
+    evidence: tuple[str, ...],
+    accepter: str,
+    fmt: str,
+) -> None:
+    """Accept a candidate, making it a decision that governs.
 
-    This is the acceptance event. Nothing else promotes a record to ``active``:
-    extraction, recurrence and confidence all stop at ``proposed``.
+    This is the acceptance event, and it is the only thing that produces one:
+    extraction, recurrence and confidence all stop at a candidate. Acceptance
+    is refused rather than stored blank when the candidate carries no reason,
+    no scope or no evidence; ``--reason``, ``--scope`` and ``--evidence``
+    supply what is missing, and correcting them here corrects the record too.
     """
     repo_path = _resolve_decision_repo(path, fmt)
 
     async def _update():
+        from repowise.core.analysis.decisions.accepter import resolve_accepter
         from repowise.core.persistence import (
             create_engine,
             create_session_factory,
             get_session,
             init_db,
-            update_decision_status,
         )
+        from repowise.core.persistence.crud.authority import (
+            AcceptanceRefusedError,
+            accept_decision,
+        )
+        from repowise.core.persistence.models import DecisionRecord
 
         url = get_db_url_for_repo(repo_path)
         engine = create_engine(url)
         await init_db(engine)
         sf = create_session_factory(engine)
 
-        async with get_session(sf) as session:
-            full_id = await _resolve_decision_id(session, decision_id)
-            rec = await update_decision_status(session, full_id, "active") if full_id else None
+        try:
+            async with get_session(sf) as session:
+                full_id = await _resolve_decision_id(session, decision_id)
+                rec = await session.get(DecisionRecord, full_id) if full_id else None
+                if rec is None:
+                    return None
+                try:
+                    await accept_decision(
+                        session,
+                        rec,
+                        accepter=resolve_accepter(repo_path, override=accepter),
+                        reason=reason,
+                        scope=list(scope) or None,
+                        evidence=list(evidence) or None,
+                    )
+                except AcceptanceRefusedError as exc:
+                    emit_refusal(
+                        "acceptance_refused",
+                        f"Cannot accept {rec.id[:8]}: {exc}",
+                        fmt,
+                        decision_id=rec.id,
+                        blockers=list(exc.blockers),
+                        remedy="Supply the missing parts with --reason, --scope or --evidence.",
+                    )
+                return rec
+        finally:
+            await engine.dispose()
 
-        await engine.dispose()
-        return rec
-
-    _emit_lifecycle(run_async(_update()), decision_id, "confirmed", fmt, "(active)")
+    _emit_lifecycle(run_async(_update()), decision_id, "accepted", fmt, "(governing)")
 
 
 # ---------------------------------------------------------------------------
@@ -596,20 +711,28 @@ def decision_dismiss(decision_id: str, path: str | None, yes: bool, fmt: str) ->
             create_session_factory,
             get_session,
             init_db,
-            update_decision_status,
         )
+        from repowise.core.persistence.crud.authority import dismiss_candidate
+        from repowise.core.persistence.models import DecisionRecord
 
         url = get_db_url_for_repo(repo_path)
         engine = create_engine(url)
         await init_db(engine)
         sf = create_session_factory(engine)
 
-        async with get_session(sf) as session:
-            full_id = await _resolve_decision_id(session, decision_id)
-            rec = await update_decision_status(session, full_id, "dismissed") if full_id else None
+        try:
+            async with get_session(sf) as session:
+                full_id = await _resolve_decision_id(session, decision_id)
+                rec = await session.get(DecisionRecord, full_id) if full_id else None
+                if rec is not None:
+                    from repowise.core.analysis.decisions.accepter import resolve_accepter
 
-        await engine.dispose()
-        return rec
+                    await dismiss_candidate(
+                        session, rec, accepter=resolve_accepter(repo_path)
+                    )
+                return rec
+        finally:
+            await engine.dispose()
 
     _emit_lifecycle(
         run_async(_dismiss()),
@@ -633,10 +756,16 @@ def decision_dismiss(decision_id: str, path: str | None, yes: bool, fmt: str) ->
 def decision_deprecate(
     decision_id: str, path: str | None, superseded_by: str | None, fmt: str
 ) -> None:
-    """Deprecate an active decision."""
+    """Retire a decision, optionally naming the one that replaces it.
+
+    With ``--superseded-by`` this writes an explicit lineage edge and keeps the
+    retired id resolving to its successor. Similarity never does either: an edge
+    exists because somebody named the successor.
+    """
     repo_path = _resolve_decision_repo(path, fmt)
 
     async def _update():
+        from repowise.core.analysis.decisions.accepter import resolve_accepter
         from repowise.core.persistence import (
             create_engine,
             create_session_factory,
@@ -644,24 +773,55 @@ def decision_deprecate(
             init_db,
             update_decision_status,
         )
+        from repowise.core.persistence.crud.authority import (
+            AcceptanceRefusedError,
+            is_accepted,
+            supersede_decision,
+        )
+        from repowise.core.persistence.models import DecisionRecord
 
         url = get_db_url_for_repo(repo_path)
         engine = create_engine(url)
         await init_db(engine)
         sf = create_session_factory(engine)
 
-        async with get_session(sf) as session:
-            full_id = await _resolve_decision_id(session, decision_id)
-            rec = (
-                await update_decision_status(
-                    session, full_id, "deprecated", superseded_by=superseded_by
+        try:
+            async with get_session(sf) as session:
+                full_id = await _resolve_decision_id(session, decision_id)
+                rec = await session.get(DecisionRecord, full_id) if full_id else None
+                if rec is None:
+                    return None
+                successor = (
+                    await _resolve_decision_id(session, superseded_by)
+                    if superseded_by
+                    else None
                 )
-                if full_id
-                else None
-            )
-
-        await engine.dispose()
-        return rec
+                if superseded_by and successor is None:
+                    emit_refusal(
+                        "decision_not_found",
+                        f"Unknown successor: {superseded_by}",
+                        fmt,
+                        decision_id=superseded_by,
+                    )
+                if successor and await is_accepted(session, rec.id):
+                    try:
+                        await supersede_decision(
+                            session,
+                            rec,
+                            successor_id=successor,
+                            accepter=resolve_accepter(repo_path),
+                        )
+                    except (AcceptanceRefusedError, ValueError) as exc:
+                        emit_refusal("supersede_refused", str(exc), fmt, decision_id=rec.id)
+                else:
+                    # A candidate has no authority to retire, so this stays the
+                    # plain status change it always was.
+                    await update_decision_status(
+                        session, rec.id, "deprecated", superseded_by=successor
+                    )
+                return rec
+        finally:
+            await engine.dispose()
 
     _emit_lifecycle(run_async(_update()), decision_id, "deprecated", fmt)
 

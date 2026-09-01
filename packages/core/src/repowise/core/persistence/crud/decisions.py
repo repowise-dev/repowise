@@ -48,13 +48,26 @@ _VALID_DECISION_STATUSES = frozenset(
 _PROTECTED_STATUSES = frozenset({"active", "deprecated", "superseded", "dismissed"})
 
 
+def _extraction_status(incoming: str) -> str:
+    """The status extraction is allowed to write.
+
+    Extraction proposes; acceptance promotes. An incoming ``active`` is a
+    parsed ADR heading or an old code path's optimism, and neither is an
+    acceptance event, so it lands as a proposal. A tracked ADR still reaches
+    ``active`` — via :func:`_accept_from_tracked_artifact` below, which records
+    the document as the accepter instead of leaving the promotion anonymous.
+    """
+    return "proposed" if incoming == "active" else incoming
+
+
 def _merge_status(existing: str, incoming: str) -> str:
     """Resolve a re-extracted status against the stored one.
 
-    Extraction only ever emits ``proposed`` or ``active`` (ADR files can also
-    carry ``deprecated``/``superseded``). A protected stored status wins over
-    an incoming ``proposed``; anything else follows the incoming value.
+    A protected stored status wins over an incoming ``proposed``; anything else
+    follows the incoming value, after :func:`_extraction_status` has taken
+    authority out of extraction's hands.
     """
+    incoming = _extraction_status(incoming)
     if incoming == "proposed" and existing in _PROTECTED_STATUSES:
         return existing
     return incoming
@@ -104,6 +117,11 @@ async def upsert_decision(
         q = q.where(DecisionRecord.evidence_file == evidence_file)
     else:
         q = q.where(DecisionRecord.evidence_file.is_(None))
+
+    # No write path creates authority. ``active`` here would be a status a
+    # caller asserted rather than an acceptance anyone performed; the caller
+    # accepts explicitly afterwards if it means to.
+    status = _extraction_status(status)
 
     result = await session.execute(q)
     existing = result.scalar_one_or_none()
@@ -300,10 +318,18 @@ async def update_decision_status(
     status: str,
     *,
     superseded_by: str | None = None,
+    accepter: str = "",
 ) -> DecisionRecord | None:
-    """Update the status of a decision record.
+    """Move a decision record between statuses, recording authority changes.
 
-    Raises ValueError for invalid statuses. Returns None if not found.
+    The status column is a projection, so a caller asking for ``active`` is
+    asking for an acceptance and gets one, stamped with *accepter*; a caller
+    retiring an accepted decision gets a withdrawal appended to the same log.
+    Writing the column alone would leave the two disagreeing, which is how a
+    dismissal survives in one surface and not another.
+
+    Raises ValueError for an invalid status, and for an acceptance the record
+    cannot support. Returns None if not found.
     """
     if status not in _VALID_DECISION_STATUSES:
         raise ValueError(
@@ -312,6 +338,30 @@ async def update_decision_status(
     rec = await session.get(DecisionRecord, decision_id)
     if rec is None:
         return None
+
+    from .authority import (
+        AcceptanceRefusedError,
+        accept_decision,
+        is_accepted,
+        record_acceptance,
+    )
+
+    accepted = await is_accepted(session, rec.id)
+    try:
+        if status == "active":
+            if not accepted:
+                await accept_decision(session, rec, accepter=accepter or "unrecorded")
+        elif accepted and status in ("dismissed", "deprecated", "superseded"):
+            await record_acceptance(
+                session,
+                rec,
+                action="superseded" if status == "superseded" else "dismissed",
+                currency="superseded" if status == "superseded" else "dismissed",
+                accepter=accepter or "unrecorded",
+            )
+    except AcceptanceRefusedError as exc:
+        raise ValueError(str(exc)) from exc
+
     rec.status = status
     if superseded_by is not None:
         rec.superseded_by = superseded_by
@@ -679,6 +729,56 @@ def _first_commit(d: dict) -> str | None:
     return commits[0] if commits else None
 
 
+#: Sources whose evidence file is itself a reviewable, version-controlled
+#: statement of the decision. Only these can accept without a person present.
+_TRACKED_ARTIFACT_SOURCES: frozenset[str] = frozenset({"adr"})
+
+
+async def _accept_from_tracked_artifact(
+    session: AsyncSession, rec: DecisionRecord, headline: dict
+) -> None:
+    """Grant acceptance to an ADR the repository has committed as accepted.
+
+    Silent on anything that is not one: a missing rationale or scope means the
+    document did not say enough to bind future work, and a refusal there is
+    correct rather than an error to report. Re-running is a no-op because the
+    acceptance already exists.
+    """
+    if headline.get("status") != "active":
+        return
+    if headline.get("source") not in _TRACKED_ARTIFACT_SOURCES:
+        return
+    artifact = headline.get("evidence_file") or ""
+    if not artifact:
+        return
+
+    from repowise.core.analysis.decisions.accepter import is_tracked
+
+    from ..models import Repository
+    from .authority import AcceptanceRefusedError, is_accepted, record_acceptance
+
+    if await is_accepted(session, rec.id):
+        return
+    repo = await session.get(Repository, rec.repository_id)
+    if repo is None or not is_tracked(repo.local_path, artifact):
+        # An uncommitted document is one machine's file. Letting it accept would
+        # replace the human acceptance event with a file an agent can write.
+        return
+    try:
+        await record_acceptance(
+            session,
+            rec,
+            action="accepted",
+            currency="active",
+            artifact=artifact,
+            note="accepted by a tracked decision record",
+        )
+    except AcceptanceRefusedError as exc:
+        structlog.get_logger(__name__).debug(
+            "adr_acceptance_refused", decision_id=rec.id, reason=str(exc)
+        )
+
+
 async def bulk_upsert_decisions(
     session: AsyncSession,
     repository_id: str,
@@ -854,7 +954,7 @@ async def bulk_upsert_decisions(
                 id=_new_uuid(),
                 repository_id=repository_id,
                 title=headline.get("title", ""),
-                status=headline.get("status", "proposed"),
+                status=_extraction_status(headline.get("status", "proposed")),
                 context=headline.get("context") or "",
                 decision=headline.get("decision") or "",
                 rationale=headline.get("rationale") or "",
@@ -906,6 +1006,11 @@ async def bulk_upsert_decisions(
                 confidence=d.get("confidence", 0.5),
                 verification=d.get("verification", "unverified"),
             )
+
+        # A committed ADR that says "accepted" is the one non-human acceptance
+        # the contract allows, because the document is version controlled and
+        # reviewable. Recorded here, where the parsed heading is still in hand.
+        await _accept_from_tracked_artifact(session, rec, headline)
 
         # Re-derive headline confidence + verification from the FULL evidence
         # set (existing + just-added), so corroboration accrues across runs.

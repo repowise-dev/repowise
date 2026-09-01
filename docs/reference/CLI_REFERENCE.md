@@ -911,13 +911,20 @@ Manage architectural decision records.
 **Subcommands:**
 
 ```bash
-repowise decision list [PATH]           # list decisions
+repowise decision list [PATH]           # list records
 repowise decision show ID [PATH]        # full details
 repowise decision add [PATH]            # interactive add
-repowise decision confirm ID [PATH]     # confirm a proposal
-repowise decision dismiss ID [PATH]     # dismiss a proposal (sticky; never re-proposed)
-repowise decision deprecate ID [PATH]   # mark deprecated
+repowise decision candidates [PATH]     # what is awaiting review; these govern nothing
+repowise decision confirm ID [PATH]     # accept a candidate: this is what makes it govern
+repowise decision dismiss ID [PATH]     # tombstone it (sticky; never re-proposed)
+repowise decision merge ID INTO_ID      # fold a candidate into an existing decision
+repowise decision split ID [PATH]       # flag a candidate as bundling two choices
+repowise decision deprecate ID [PATH]   # retire a decision, optionally naming its successor
 repowise decision health [PATH]         # health dashboard
+
+repowise decision export [PATH]         # write accepted decisions to .repowise/decisions.yaml
+repowise decision import [PATH]         # reconcile the store to that file
+repowise decision migrate [PATH]        # classify pre-split rows (dry run unless --apply)
 
 repowise decision config show [PATH]              # the resolved capture policy
 repowise decision config preset NAME [PATH]       # default | off | local_only | balanced | full
@@ -927,6 +934,26 @@ repowise decision source set SRC --on|--off       # switch one source
 repowise decision source set SRC --llm|--no-llm   # switch only its model stage
 repowise decision llm --on|--off [PATH]           # all decision-extraction model calls
 ```
+
+**Review options:**
+
+| Flag | Description |
+|------|-------------|
+| `--reason TEXT` | On `confirm`: the rationale, or why a constraint needs none. Also corrects the record. |
+| `--scope PATH` | On `confirm`: a file or module this governs. Repeatable, and replaces the proposed scope. |
+| `--evidence REF` | On `confirm`: a commit, file or link it rests on. Repeatable. |
+| `--as NAME` | On `confirm`: record a different accepter than the repo's git identity. |
+| `--superseded-by ID` | On `deprecate`: writes an explicit lineage edge and keeps the retired id resolving. |
+| `--state STATE` | On `candidates`: `open` (default), `accepted`, `merged`, `needs_split`, `dismissed`, `all`. |
+| `--lane NAME` | On `candidates`: only candidates raised by that extraction lane. |
+| `--apply` | On `migrate`: write the plan. Without it the command reports and writes nothing. |
+| `--dry-run` | On `import`: report and write nothing. |
+
+`confirm` refuses rather than storing a blank acceptance: a candidate needs a
+reason, a scope and an evidence reference, and the flags above supply whatever
+is missing. Under `--format json` the refusal is a document
+(`{"error": "acceptance_refused", "blockers": [...]}`) and the exit code is 1,
+so a scripted review can tell it apart from a crash.
 
 **Capture-control options:**
 

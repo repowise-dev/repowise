@@ -10,12 +10,144 @@ and pushed back at your agent at the moment it is about to violate or honor it.
 
 ```bash
 repowise init                      # extraction runs as part of indexing
-repowise decision list             # what has been captured
-repowise decision list --proposed  # auto-proposed, awaiting your review
-repowise decision confirm a1b2c3d4 # promote a proposal to active
+repowise decision candidates       # what is awaiting review; none of it governs
+repowise decision confirm a1b2c3d4 # accept one: this is what makes it govern
+repowise decision export           # write the accepted ones to a tracked file
+repowise decision list             # everything, decisions and candidates alike
 repowise decision health           # stale, conflicting, ungoverned hotspots
 repowise decision add              # guided interactive capture
 ```
+
+## Three things, not one
+
+Repowise distinguishes what it observed, what it inferred, and what you agreed
+to, because conflating them is how a machine ends up writing your team's rules.
+
+| | What it is | Can a machine create it? | Does it govern? |
+|---|---|---|---|
+| **Episode** | An evidenced event: a transcript span, a commit, a structural change | Yes | No |
+| **Candidate** | A durable choice inferred from that evidence | Yes | No |
+| **Decision** | A constraint you accepted | No, except a committed ADR | Yes |
+
+Only the third reaches your agent, scores path alignment, or lands in the
+generated `CLAUDE.md`. Recurrence, confidence, a model's verdict and a
+successful implementation are all evidence that a candidate is worth reading;
+none of them is an acceptance.
+
+**Acceptance is a recorded event**, not a status somebody set. It carries a
+reason, a scope, an evidence reference, and who accepted it, and repowise
+refuses to store one missing any of those rather than filling in a blank:
+
+```
+$ repowise decision confirm 4b6ddc58
+Cannot accept 4b6ddc58: no scope: name the files or modules it governs
+Supply the missing parts with --reason, --scope or --evidence.
+
+$ repowise decision confirm 4b6ddc58 --scope packages/core/src/repowise/core/ingestion
+Decision 4b6ddc58 accepted (governing)
+```
+
+The log is append-only. Re-accepting after review, sending a decision back to
+review, superseding it and withdrawing it each add a row, so the history of who
+granted and withdrew authority survives every later action.
+
+### Upgrading from before the split
+
+Before this, a record reached `active` by appearing in two coding-agent
+sessions, with nobody involved. `repowise decision migrate` classifies those:
+
+```
+$ repowise decision migrate
+
+Decision migration (dry run)
+
+  Total legacy records           504
+  Kept as decisions                0
+  Reclassified as candidates     502
+  Dismissed tombstones             2
+  Already migrated                 0
+
+  Why records became candidates:
+     381  never accepted: it was awaiting review
+     121  active by recurrence, not by a person: a session row carries no acceptance event
+```
+
+**Expect your standing decisions to shrink**, and on many repositories to
+empty. That is the correction, not a regression: those records were never
+accepted, and everything is still there under `repowise decision candidates`,
+ready to be accepted deliberately. Nothing is deleted, every id keeps
+resolving, retirements you performed are preserved, and re-running changes
+nothing. `repowise init` and `repowise update` run the same classification, so
+a store cannot sit half-migrated with the status column and the acceptance log
+disagreeing.
+
+## The tracked manifest
+
+Accepted decisions are the one part of this layer that belongs to the
+repository rather than to your machine, so they live in a file you commit:
+
+```bash
+repowise decision export   # store -> .repowise/decisions.yaml
+repowise decision import   # .repowise/decisions.yaml -> store
+```
+
+```yaml
+# Accepted architectural decisions for this repository.
+version: 1
+decisions:
+- id: 228ddce7b28c4f93a8f1e8976dd1ba4c
+  title: Avoid feature gating
+  decision: Do not add feature gating.
+  reason: Feature flags outlived their purpose here
+  scope:
+  - packages/core
+  currency: active
+  source: session
+  accepted_at: '2026-09-01T13:04:22+00:00'
+  accepted_by: Raghav
+```
+
+Ordered by id and rendered from a fixed field order, so two machines holding
+the same decisions produce the same bytes and a one-line change is a one-line
+diff. Written atomically and fsynced; an unchanged render is not rewritten at
+all. Comments are not preserved — it is generated, and says so in its own
+header.
+
+`export` un-ignores the file in your `.gitignore` if a `.repowise/` rule was
+hiding it, leaving everything else under `.repowise/` ignored, including nested
+ones elsewhere in the tree.
+
+On import the file wins: it is what a colleague's commit changed and the store
+is the copy. A decision the file has and the store does not is created and
+accepted with the file itself as the accepter — the only non-human accepter
+there is, and only because it is version controlled and reviewable. An entry
+that differs is re-accepted from the file. An entry missing a reason or a scope
+is skipped rather than guessed at, and an entry the file no longer holds is
+left alone: a missing line is as likely a bad merge as a deliberate removal.
+
+Two guards on the write. A store with no acceptances refuses to overwrite a
+non-empty committed file, because deleting the index is a documented recovery
+step and it must not delete your decisions with it. And a file written by a
+newer repowise is refused rather than silently downgraded.
+
+Episodes and candidates stay out of it. They are evidence and inference, they
+turn over constantly, and committing them would put a machine's opinions under
+review as though they were the team's.
+
+## Review actions
+
+| Command | What it records |
+|---------|-----------------|
+| `decision confirm ID` | Accept, optionally editing the reason and scope on the way. |
+| `decision confirm ID` on a decision | Reaffirm it after review. |
+| `decision merge ID INTO_ID` | Fold a candidate into an existing decision. The old id resolves to the target. |
+| `decision split ID` | Flag a candidate as bundling two choices. Never splits it for you. |
+| `decision dismiss ID` | Tombstone it. On an accepted decision this also withdraws its authority. |
+| `decision deprecate ID --superseded-by ID2` | Retire it with an explicit lineage edge. |
+
+Similarity never supersedes anything: an edge exists because somebody named the
+successor. Merging and superseding retire ids that may already be written down
+somewhere, so both leave an alias and the retired id keeps resolving.
 
 ```
 repowise decision health
@@ -51,7 +183,7 @@ history.
 
 | Source | Key | Reads | Notes |
 |--------|-----|-------|-------|
-| ADR files | `adr` | `adr/`, `adrs/`, `docs/adr/`, `docs/adrs/`, `docs/decisions/`, `decisions/`, `architecture/`, `doc/adr/` | Nygard and MADR headings plus YAML frontmatter, parsed without an LLM. Up to 60 files. `accepted`/`approved` map to `active`, `draft` to `proposed`, `rejected` to `deprecated`. |
+| ADR files | `adr` | `adr/`, `adrs/`, `docs/adr/`, `docs/adrs/`, `docs/decisions/`, `decisions/`, `architecture/`, `doc/adr/` | Nygard and MADR headings plus YAML frontmatter, parsed without an LLM. Up to 60 files. A document that explicitly says `accepted`/`approved`, is committed, and names what it governs accepts its own decision, with the file recorded as the accepter; it is the only non-human acceptance there is. A draft, an uncommitted file, or one with no Status section lands as a candidate. |
 | Inline markers | `inline_marker` | `# WHY:` / `# DECISION:` / `# TRADEOFF:` / `# ADR:` / `# RATIONALE:` / `# REJECTED:` | Any comment syntax (`#`, `//`, `--`, `/*`, `*`). The keyword is case-sensitive and must be capitalised, like `TODO:` and `FIXME:` — otherwise ordinary prose ("# Rejected: nothing to extract.") becomes an architectural decision. Up to 5 continuation lines, plus 20 lines of surrounding context. Fenced code blocks in Markdown are skipped. |
 | Git archaeology | `git_archaeology` | Commit messages | Gated on 19 decision verbs (migrate, switch to, replace, adopt, deprecate, drop, rewrite, split, revert, and the rest). |
 | PR bodies | `pr` | Squash-merge and PR commit bodies | A body only qualifies when it looks like a PR description (`## Why`, `## Motivation`, `## Context`, `Closes #`, `Before:` / `After:`). Up to 25 bodies. |
@@ -224,6 +356,20 @@ affected files that have been committed to since the decision was recorded.**
 `>= 0.5` is stale everywhere: `repowise decision list --stale-only`, the health
 summary, and the staleness column in the CLI table.
 
+The number is a supporting fact; what an accepted decision *is* gets a word:
+
+| Currency | Meaning |
+|----------|---------|
+| `active` | Accepted, and still describes the code. |
+| `needs_review` | Accepted, but the files it names have moved. Still governs — a decision whose code moved is one to re-read, not one to ignore. |
+| `uncheckable` | Accepted, but names nothing the repository can be asked about. |
+| `superseded` | Replaced by a later decision, through an explicit lineage edge. |
+| `dismissed` | Authority withdrawn, kept for history. |
+
+The first three are derived from the code on every read, so a decision moves
+between them without anybody touching it. The last two are states a person set,
+and the repository does not get to argue with them.
+
 There is deliberately no constant in that definition. An earlier version grew
 the score with 90-day commit volume and record age, and added a boost when a
 later commit *message* contained words like "migrate away"; both were fitted to
@@ -249,9 +395,11 @@ cannot be mistaken for a successful one; `dismiss` skips its prompt under
 the whole source registry with a `status` and a `reason` per source, which is
 the machine-readable answer to "will this source run, and if not why not".
 
-Reading decisions back, the `status` field is what decides whether a record
-binds: `active` was accepted by a person, `proposed` was inferred and is a hint.
-See [MCP_TOOLS.md](../agent/MCP_TOOLS.md#get_why).
+Reading decisions back, `active` means somebody accepted it and it binds;
+anything else is a candidate and is a hint. The stored status is a projection
+of the acceptance event, not the authority itself — the acceptance is — but the
+two are kept in step, so a reader that only has the status column stays correct
+rather than merely stale. See [MCP_TOOLS.md](../agent/MCP_TOOLS.md#get_why).
 
 ## Session-mined decisions
 
@@ -271,12 +419,12 @@ Three stages, in order:
 2. **One batched LLM structuring call per update**, capped at 60 candidates.
    Every produced field must quote the transcript verbatim or it is dropped;
    an ungrounded `source_quote` rejects the candidate.
-3. **Promotion to a proposal.** A decision seen in two or more distinct
+3. **Promotion to a candidate.** A decision seen in two or more distinct
    sessions, or one direct user correction, is written with `source: session`
-   and status `proposed`. Recurrence is evidence that a candidate is worth
-   reading, not an acceptance event: `repowise decision confirm` is what makes
-   it govern. Repeated observations accrete evidence rows and raise confidence
-   without ever changing status.
+   as a candidate. Recurrence is evidence that a candidate is worth reading,
+   not an acceptance event: `repowise decision confirm` is what makes it
+   govern. Repeated observations accrete evidence rows and raise confidence
+   without ever creating authority.
 
 Everything stays on your machine. Transcripts are read locally, staging lives in
 `.repowise/sessions/sessions.db`, and only the distilled decision text about the
@@ -375,12 +523,17 @@ the primary repo. Decision ids accept an 8-character prefix.
 
 | Command | What it does |
 |---------|--------------|
-| `repowise decision add` | Guided interactive capture: title, context, decision, rationale, rejected alternatives, tradeoffs, affected files, tags. Stored `active` at confidence 1.0. |
+| `repowise decision add` | Guided interactive capture: title, context, decision, rationale, rejected alternatives, tradeoffs, affected files, tags. Answering the prompts is an acceptance, recorded as one. Name no files and it is kept as a candidate instead, because a decision that names nothing cannot be checked against the code. |
 | `repowise decision list` | Table of id, title, status, source, confidence, staleness, created date. |
 | `repowise decision show ID` | Full record including alternatives, consequences, affected files, and the evidence file and line. |
-| `repowise decision confirm ID` | Promote a proposal to `active`. |
+| `repowise decision confirm ID` | Accept a candidate. Refuses, naming the gap, when it has no reason, scope or evidence; `--reason`, `--scope` and `--evidence` supply them. |
 | `repowise decision dismiss ID` | Tombstone it. Never re-proposed on reindex. |
-| `repowise decision deprecate ID` | Mark deprecated, optionally `--superseded-by <ID>`. |
+| `repowise decision deprecate ID` | Retire it, optionally `--superseded-by <ID>`, which writes the lineage edge. |
+| `repowise decision candidates` | What is awaiting review, and why each was raised. |
+| `repowise decision merge ID INTO_ID` | Fold a candidate into an existing decision. |
+| `repowise decision split ID` | Flag a candidate as bundling two choices. |
+| `repowise decision export` / `import` | Round-trip accepted decisions through `.repowise/decisions.yaml`. |
+| `repowise decision migrate` | Classify pre-split records. Dry run unless `--apply`. |
 | `repowise decision health` | Counts, stale decisions, ungoverned hotspots, proposals awaiting review. |
 | `repowise decision config show` | The resolved capture policy: every source, its status, and why. |
 | `repowise decision config preset NAME` | Apply `off`, `local_only`, `balanced`, or `full`. |

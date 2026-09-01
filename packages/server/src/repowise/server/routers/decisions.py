@@ -426,7 +426,7 @@ async def create_decision(
         session,
         repository_id=repo_id,
         title=body.title,
-        status="active",
+        status="proposed",
         context=body.context,
         decision=body.decision,
         rationale=body.rationale,
@@ -438,6 +438,13 @@ async def create_decision(
         source="cli",
         confidence=1.0,
     )
+    # Typing a decision by hand is an acceptance, but it is still recorded as
+    # one rather than written straight into the status column, so this surface
+    # and the CLI agree about what made the record govern.
+    try:
+        await crud.accept_decision(session, rec, accepter="web")
+    except crud.AcceptanceRefusedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return DecisionRecordResponse.from_orm(rec)
 
 
@@ -468,6 +475,7 @@ async def patch_decision(
                 decision_id,
                 body.status,
                 superseded_by=body.superseded_by,
+                accepter="web",
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

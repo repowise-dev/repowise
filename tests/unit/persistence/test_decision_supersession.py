@@ -23,7 +23,7 @@ from repowise.core.analysis.decisions import evolution
 from repowise.core.persistence.crud import bulk_upsert_decisions, get_decision
 from repowise.core.persistence.decision_graph import get_decision_edges
 from repowise.core.persistence.vector_store import InMemoryVectorStore
-from tests.unit.persistence.helpers import insert_repo
+from tests.unit.persistence.helpers import accept, insert_repo
 
 
 @pytest.fixture
@@ -65,13 +65,27 @@ class _TopicEmbedder:
         return out
 
 
+async def _seed_active(session, repo_id, decisions, **kwargs):
+    """Upsert decisions and accept each one.
+
+    The detector only considers accepted decisions, and extraction can no
+    longer produce one: a dict carrying ``status: "active"`` lands as a
+    proposal, so a setup that relied on it was seeding candidates and asserting
+    on decisions.
+    """
+    ids = await bulk_upsert_decisions(session, repo_id, decisions, **kwargs)
+    for decision_id in ids:
+        await accept(session, decision_id)
+    return ids
+
+
 def _dec(title: str, decision: str, *, files: list[str]) -> dict:
     return {
         "title": title,
         "decision": decision,
         "rationale": "",
         "source": "inline_marker",
-        "status": "active",
+        "status": "proposed",
         "affected_files": files,
         "evidence_file": files[0],
         "confidence": 0.6,
@@ -90,7 +104,7 @@ async def test_reversal_creates_supersedes_edge_and_autoflips(async_session, ena
     repo = await insert_repo(async_session)
     store = InMemoryVectorStore(_TopicEmbedder())
 
-    old_ids = await bulk_upsert_decisions(
+    old_ids = await _seed_active(
         async_session,
         repo.id,
         [
@@ -102,7 +116,7 @@ async def test_reversal_creates_supersedes_edge_and_autoflips(async_session, ena
         ],
         vector_store=store,
     )
-    new_ids = await bulk_upsert_decisions(
+    new_ids = await _seed_active(
         async_session,
         repo.id,
         [
@@ -142,7 +156,7 @@ async def test_two_active_conflicts_without_reversal(async_session, enable_3b):
     repo = await insert_repo(async_session)
     store = InMemoryVectorStore(_TopicEmbedder())
 
-    ids_a = await bulk_upsert_decisions(
+    ids_a = await _seed_active(
         async_session,
         repo.id,
         [
@@ -154,7 +168,7 @@ async def test_two_active_conflicts_without_reversal(async_session, enable_3b):
         ],
         vector_store=store,
     )
-    ids_b = await bulk_upsert_decisions(
+    ids_b = await _seed_active(
         async_session,
         repo.id,
         [
@@ -184,7 +198,7 @@ async def test_related_but_compatible_pair_gets_no_edge(async_session, enable_3b
     repo = await insert_repo(async_session)
     store = InMemoryVectorStore(_TopicEmbedder())
 
-    ids_a = await bulk_upsert_decisions(
+    ids_a = await _seed_active(
         async_session,
         repo.id,
         [
@@ -198,7 +212,7 @@ async def test_related_but_compatible_pair_gets_no_edge(async_session, enable_3b
     )
     # Same related band (jwt/session axes), but no opposing verb / reversal and
     # too few shared content tokens → not a contradiction.
-    ids_b = await bulk_upsert_decisions(
+    ids_b = await _seed_active(
         async_session,
         repo.id,
         [
@@ -233,13 +247,13 @@ async def test_disabled_detector_writes_nothing(async_session):
     repo = await insert_repo(async_session)
     store = InMemoryVectorStore(_TopicEmbedder())
 
-    old_ids = await bulk_upsert_decisions(
+    old_ids = await _seed_active(
         async_session,
         repo.id,
         [_dec("Use sessions for authentication", "use server-side sessions", files=["a.py"])],
         vector_store=store,
     )
-    new_ids = await bulk_upsert_decisions(
+    new_ids = await _seed_active(
         async_session,
         repo.id,
         [_dec("Adopt JWT authentication", "replace sessions with JWT tokens", files=["a.py"])],
@@ -261,7 +275,7 @@ async def test_disabled_detector_writes_nothing(async_session):
 
 async def test_no_store_is_a_noop(async_session, enable_3b):
     repo = await insert_repo(async_session)
-    ids = await bulk_upsert_decisions(
+    ids = await _seed_active(
         async_session,
         repo.id,
         [_dec("Use sessions", "use sessions", files=["a.py"])],

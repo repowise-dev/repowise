@@ -8,6 +8,10 @@ from typing import Any
 
 CONFIG_FILENAME = "config.yaml"
 
+#: Named here rather than imported from the manifest module, which imports yaml
+#: and the analysis package; this file is on the cheap config path.
+MANIFEST_BASENAME = "decisions.yaml"
+
 
 class RepoConfigError(ValueError):
     """A repo-local ``.repowise/config.yaml`` or ``.env`` could not be parsed.
@@ -254,6 +258,50 @@ def save_repo_env_key(
         os.chmod(env_file, 0o600)
     except OSError:
         pass
+
+
+def ensure_manifest_tracked(repo_path: Path | str) -> bool:
+    """Let ``.repowise/decisions.yaml`` be committed. Returns whether it changed.
+
+    The manifest is the only thing under ``.repowise/`` meant to travel with the
+    repository, and a ``.repowise/`` rule blocks it: git does not descend into an
+    excluded directory, so a negation for a file inside one never fires.
+
+    The existing rule is left in place and three anchored lines are appended
+    after it. Rewriting ``.repowise/`` to ``.repowise/*`` would look equivalent
+    and is not: the first has no internal slash and so matches a ``.repowise``
+    directory at *any* depth, while the second is anchored to this file's own
+    directory. That rewrite would un-ignore every nested ``.repowise/`` in the
+    tree, which is how a fixture's session database gets committed.
+    """
+    from repowise.core.fsutils import atomic_write_text
+
+    gitignore = Path(repo_path) / ".gitignore"
+    if not gitignore.exists():
+        return False
+
+    # Read as bytes: text mode translates CRLF away, and the line ending is
+    # exactly what has to survive here. Rewriting a CRLF .gitignore as LF turns
+    # one appended rule into a whole-file diff for every contributor on the
+    # platform this project mostly runs on.
+    raw = gitignore.read_bytes()
+    content = raw.decode("utf-8", errors="replace")
+    lines = content.splitlines()
+    if f"!/.repowise/{MANIFEST_BASENAME}" in {line.strip() for line in lines}:
+        return False
+
+    newline = "\r\n" if b"\r\n" in raw else "\n"
+    addition = [
+        "",
+        "# repowise: the decisions manifest is meant to be committed",
+        "!/.repowise/",
+        "/.repowise/*",
+        f"!/.repowise/{MANIFEST_BASENAME}",
+    ]
+    atomic_write_text(
+        gitignore, newline.join([*lines, *addition]) + newline, newline=""
+    )
+    return True
 
 
 def _ensure_env_gitignored(repo_path: Path | str) -> None:

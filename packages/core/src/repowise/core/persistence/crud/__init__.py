@@ -19,6 +19,7 @@ knowledge_graph). Import names from here — sub-module layout may change.
 from __future__ import annotations
 
 from .analysis import *  # noqa: F403
+from .authority import *  # noqa: F403
 from .chat import *  # noqa: F403
 from .decisions import *  # noqa: F403
 from .external_systems import *  # noqa: F403

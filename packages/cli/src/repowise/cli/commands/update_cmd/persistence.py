@@ -811,6 +811,12 @@ async def _persist_full_update_async(
                     await purge_proposed_decisions_by_source(session, repo_id, _retired)
                 await reconcile_source_ranks(session)
 
+                # Same repair on the path a ``repowise update`` user takes: the
+                # entity split is only coherent once legacy rows are classified.
+                from repowise.core.persistence.decision_migration import apply_migration
+
+                await apply_migration(session, repo_id)
+
                 decision_dicts: list[dict] = []
                 if new_decision_markers:
                     import dataclasses as _dc

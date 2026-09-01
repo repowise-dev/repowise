@@ -466,13 +466,23 @@ The legacy `decisions.session_mining: true|false` key is still honoured and
 resolves to the `session` source. The first write through the CLI or the API
 replaces it with `sources.session`.
 
+### `.repowise/decisions.yaml`
+
+Everything else under `.repowise/` is a local index you can delete and rebuild.
+This one file is not: it holds the decisions you accepted, and it is meant to be
+committed. `repowise decision export` writes it and un-ignores it in your
+`.gitignore` if a `.repowise/` rule was hiding it; `repowise decision import`
+reconciles the store to it, with the file as the authority. Its format carries
+its own `version`, and a file written by a newer repowise is refused rather than
+downgraded. See [DECISIONS.md](../layers/DECISIONS.md) for the round trip.
+
 `session` mining lets `repowise update` read coding-agent session transcripts
 (Claude Code's `~/.claude/projects/`) for durable decisions: user corrections,
 explicit choices with a stated reason, and failed approaches replaced by working
 ones. Candidates pass deterministic gates first, then one batched LLM
 structuring call per update, and every produced field must quote the transcript
-verbatim or it is dropped. **Mined decisions are stored as `proposed`**, however
-many sessions they recur across; confirming one with `repowise decision confirm`
+verbatim or it is dropped. **Mined decisions are stored as candidates**, however
+many sessions they recur across; accepting one with `repowise decision confirm`
 is what makes it govern. Everything stays local: transcripts are read from your
 machine, staging lives in `.repowise/sessions/sessions.db`, and only the
 distilled decision text about the codebase is stored.

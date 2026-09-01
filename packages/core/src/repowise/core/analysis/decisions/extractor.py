@@ -883,8 +883,12 @@ class DecisionExtractor:
         if not (decision_txt or context):
             return None
 
+        # A document with no Status section has not said it is accepted, and a
+        # committed ADR is the one artifact allowed to accept its own decision.
+        # Defaulting to ``active`` therefore let any draft under docs/adr/ grant
+        # itself authority.
         status_key = status.strip().lower().split()[0] if status.strip() else ""
-        mapped_status = _ADR_STATUS_MAP.get(status_key, "active")
+        mapped_status = _ADR_STATUS_MAP.get(status_key, "proposed")
 
         return ExtractedDecision(
             title=_truncate_title(title or rel_path, 200),
