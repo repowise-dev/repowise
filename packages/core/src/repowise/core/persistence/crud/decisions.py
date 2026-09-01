@@ -121,11 +121,22 @@ def derive_decision_id(
 
     Deliberately the same four columns :func:`_dedup_query` matches on, and
     kept beside it so the id and the dedupe key cannot drift apart. Those
-    columns are already ``uq_decision_record``, so this only makes the primary
-    key agree with the uniqueness the schema enforces; it invents no new
-    identity. A random id, by contrast, is re-minted whenever a store is
+    columns are what ``uq_decision_record`` names, so this makes the primary
+    key agree with the identity the schema already declares rather than
+    inventing one. A random id, by contrast, is re-minted whenever a store is
     rebuilt instead of updated, which strands every reference held outside the
     row: an acceptance, an alias, a vector key, a link somebody wrote down.
+
+    That constraint is weaker than it looks, and this is stricter than it:
+    ``evidence_file`` is nullable and SQL calls two NULLs distinct, so the
+    constraint does not fire for the majority of records, while two rows that
+    agree on all four do collapse to one id here. Every write path reaches an
+    insert only after a dedupe that would have found such a row, so the
+    stricter reading is not reachable from them; the migration classifies the
+    pairs a store already holds and leaves them alone.
+
+    Note the id follows the identity, so editing one of the four moves it. The
+    migration at the head of each run is what settles that.
 
     32 lowercase hex, because ``DecisionRecord.id`` is ``String(32)`` and so is
     every foreign key to it, so a truncated digest fits without a column

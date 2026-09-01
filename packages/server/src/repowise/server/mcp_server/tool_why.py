@@ -13,7 +13,10 @@ from sqlalchemy import select
 
 from repowise.core.analysis.decision_semantic_match import DECISION_VECTOR_PREFIX
 from repowise.core.analysis.decisions.lifecycle import is_governing, status_rank
-from repowise.core.persistence.crud.authority import decision_currencies
+from repowise.core.persistence.crud.authority import (
+    decision_currencies,
+    resolve_decision_id,
+)
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     DecisionEdge,
@@ -212,6 +215,15 @@ async def _why_reference(
     ctx, repository, records, _target_git = await _load_corpus(repo, None)
     async with get_session(ctx.session_factory) as session:
         await _attach_decision_evidence(session, records)
+        # This tool tells callers to hold onto the ids it emits, so an id quoted
+        # from an earlier session may name a decision that has since moved.
+        # Follow the alias for one that no longer matches anything live; a live
+        # id is left alone, so a merged candidate still answers about itself.
+        stale_decision_id = not reference_id.startswith("ev_") and not any(
+            record.id == reference_id for record in records
+        )
+        if stale_decision_id:
+            reference_id = await resolve_decision_id(session, reference_id) or reference_id
 
     payload = {
         "decisions": [

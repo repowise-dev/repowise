@@ -37,7 +37,16 @@ from repowise.core.analysis.decisions.semantic_match import (
 )
 
 from .crud.decisions import derive_decision_id
-from .models import DecisionAlias, DecisionRecord, _now_utc
+from .models import (
+    DecisionAcceptance,
+    DecisionAlias,
+    DecisionCandidateMeta,
+    DecisionEdge,
+    DecisionEvidence,
+    DecisionNodeLink,
+    DecisionRecord,
+    _now_utc,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -215,32 +224,45 @@ async def _rewrite_one(
 
     if "decision_aliases" not in tables:
         return
-    existing = await session.get(DecisionAlias, row.old_id)
-    if existing is None:
-        session.add(
-            DecisionAlias(
-                alias_id=row.old_id,
-                repository_id=repository_id,
-                decision_id=row.new_id,
-                reason=ALIAS_REASON,
-                created_at=_now_utc(),
-            )
+    if await session.get(DecisionAlias, row.old_id) is not None:
+        # This id was already retired once, and the row saying where it went is
+        # not ours to rewrite. A merged candidate keeps its record, so it is
+        # reachable here: repointing its alias at the moved candidate would
+        # undo the merge and leave nothing recording that it happened.
+        return
+    session.add(
+        DecisionAlias(
+            alias_id=row.old_id,
+            repository_id=repository_id,
+            decision_id=row.new_id,
+            reason=ALIAS_REASON,
+            created_at=_now_utc(),
         )
-    else:
-        existing.decision_id = row.new_id
-        existing.reason = ALIAS_REASON
+    )
 
 
-def _detach_moved(session: AsyncSession, old_ids: set[str]) -> None:
-    """Drop the moved records from the session's identity map.
+def _detach_moved(session: AsyncSession) -> None:
+    """Drop every loaded decision row from the session's identity map.
 
-    They are still keyed by the id they were loaded under, so leaving them
-    attached lets a later flush write a departed id back. Detaching rather than
-    expiring, because expiring would make every one of them reload on next
-    access, including for a caller that only wanted a field it already had.
+    The rewrites are raw SQL, so anything already loaded still holds the id it
+    was loaded under and a later flush would write that departed id back. The
+    dependents matter as much as the records: ``DecisionCandidateMeta`` is
+    keyed *by* ``decision_id``, so a stale instance flushes an UPDATE matching
+    no rows. Detaching rather than expiring, because expiring makes every one
+    of them reload on next access, including for a caller that only wanted a
+    field it already had.
     """
+    detachable = (
+        DecisionRecord,
+        DecisionAlias,
+        DecisionAcceptance,
+        DecisionCandidateMeta,
+        DecisionEdge,
+        DecisionEvidence,
+        DecisionNodeLink,
+    )
     for obj in list(session.sync_session.identity_map.values()):
-        if isinstance(obj, DecisionRecord) and obj.id in old_ids:
+        if isinstance(obj, detachable):
             session.expunge(obj)
 
 
@@ -320,9 +342,15 @@ async def apply_id_migration(
 
     tables = await _existing_tables(session)
     for row in rewrites:
-        await _rewrite_one(session, repository_id, row, tables)
+        # A savepoint per record, because a rewrite that fails halfway has
+        # already inserted the copy under a placeholder title. Both callers
+        # swallow the exception and commit later, so without this the store
+        # keeps a phantom decision that every count and search would pick up,
+        # and that the next run would faithfully rekey rather than clean.
+        async with session.begin_nested():
+            await _rewrite_one(session, repository_id, row, tables)
     await session.flush()
-    _detach_moved(session, {row.old_id for row in rewrites})
+    _detach_moved(session)
 
     rekeyed = 0
     if vector_store is not None:

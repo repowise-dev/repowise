@@ -437,12 +437,20 @@ async def update_decision_settings(
 async def _live_decision_id(session: AsyncSession, decision_id: str) -> str:
     """The id a caller-supplied decision id names today.
 
-    Ids get written down elsewhere and then retired underneath them, by a merge
-    or by moving onto a derived id. Resolving through the alias table is what
-    keeps those references working instead of reading as a deleted decision.
-    An id with no alias and no record resolves to itself, so the handler still
-    raises its own 404.
+    Only for an id that no longer names a record. Ids get retired underneath
+    the places they were written down when a decision moves onto a derived id,
+    and following the alias is what keeps those working instead of reading as
+    deleted.
+
+    A live record always wins, so this cannot redirect one request to a
+    different decision. ``resolve_decision_id`` alone would: it follows a merge
+    even when the merged record still exists, which is right where the caller
+    is asking about the constraint, and wrong here, where the caller named a
+    row it is looking at in the candidates lane. An id with neither record nor
+    alias resolves to itself, so the handler still raises its own 404.
     """
+    if await crud.get_decision(session, decision_id) is not None:
+        return decision_id
     return await crud.resolve_decision_id(session, decision_id) or decision_id
 
 

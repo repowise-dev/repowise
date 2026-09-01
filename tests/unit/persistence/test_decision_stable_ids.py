@@ -384,3 +384,66 @@ async def test_the_decision_vectors_move_to_the_new_key(async_session, in_memory
     keys = await in_memory_vector_store.list_page_ids()
     assert f"{DECISION_VECTOR_PREFIX}{new_id}" in keys
     assert f"{DECISION_VECTOR_PREFIX}{old_id}" not in keys
+
+
+@pytest.mark.asyncio
+async def test_a_merge_alias_survives_the_move(async_session):
+    """A merged candidate keeps its record, so the migration reaches it.
+
+    Repointing its alias at the moved candidate would undo the merge and leave
+    nothing recording that it happened.
+    """
+    repo = await insert_repo(async_session)
+    folded = await _legacy_record(async_session, repo.id, "Folded away")
+    target = await _legacy_record(async_session, repo.id, "The survivor")
+    async_session.add(
+        DecisionAlias(
+            alias_id=folded.id,
+            repository_id=repo.id,
+            decision_id=target.id,
+            reason="merged",
+        )
+    )
+    await async_session.flush()
+    folded_id, target_id = folded.id, target.id
+
+    await apply_id_migration(async_session, repo.id)
+
+    alias = await async_session.get(DecisionAlias, folded_id)
+    assert alias.reason == "merged"
+    # Still points at the survivor, which itself moved, rather than at the
+    # candidate that was folded away.
+    assert alias.decision_id != folded_id
+    assert alias.decision_id == derive_decision_id(
+        repo.id, "The survivor", source="session", evidence_file="src/app.py"
+    )
+    assert target_id != alias.decision_id
+
+
+@pytest.mark.asyncio
+async def test_a_failed_rewrite_leaves_no_half_moved_record(async_session, monkeypatch):
+    """Both callers swallow the exception and commit later.
+
+    Without a savepoint the store would keep the copy, under its placeholder
+    title, as a phantom decision that every count and search picks up.
+    """
+    repo = await insert_repo(async_session)
+    await _legacy_record(async_session, repo.id, "Legacy one")
+
+    import repowise.core.persistence.decision_id_migration as mod
+
+    real = mod._rewrite_one
+
+    async def _explode(session, repository_id, row, tables):
+        await real(session, repository_id, row, tables)
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(mod, "_rewrite_one", _explode)
+
+    with pytest.raises(RuntimeError):
+        await apply_id_migration(async_session, repo.id)
+
+    titles = (
+        (await async_session.execute(select(DecisionRecord.title))).scalars().all()
+    )
+    assert titles == ["Legacy one"]

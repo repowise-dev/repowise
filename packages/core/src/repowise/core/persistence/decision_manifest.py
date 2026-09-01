@@ -161,13 +161,21 @@ def _differs(
     )
 
 
-def _apply_entry(entry: ManifestDecision, record: DecisionRecord) -> None:
+async def _apply_entry(
+    session: AsyncSession, entry: ManifestDecision, record: DecisionRecord
+) -> None:
     """Copy the file's version of a decision onto the stored record."""
     record.title = entry.title
     record.decision = entry.decision
     record.rationale = entry.reason
     record.affected_files_json = json.dumps(sorted(entry.scope))
-    record.superseded_by = entry.superseded_by or None
+    # The successor is an id the file wrote down, and the file can be older
+    # than the store it is being read into. Storing it unresolved would put a
+    # retired id back into the column.
+    successor = entry.superseded_by or None
+    if successor is not None:
+        successor = await resolve_decision_id(session, successor) or successor
+    record.superseded_by = successor
 
 
 async def import_manifest(
@@ -225,7 +233,7 @@ async def import_manifest(
                 outcome.reaffirmed.append(entry.id)
                 if dry_run:
                     continue
-                _apply_entry(entry, record)
+                await _apply_entry(session, entry, record)
 
         if record is None:
             outcome.created.append(entry.id)
