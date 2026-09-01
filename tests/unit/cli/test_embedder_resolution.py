@@ -451,7 +451,8 @@ def test_two_real_widths_are_never_compared(
             return [[0.0] * 1024 for _ in texts]
 
     monkeypatch.setattr(
-        "repowise.cli.providers.embedders.build_embedder", lambda _n, _p=None: _MisreportingEmbedder()
+        "repowise.cli.providers.embedders.build_embedder",
+        lambda _n, _p=None: _MisreportingEmbedder(),
     )
 
     assert _vector_dims(tmp_path) == (None, None)
@@ -654,3 +655,61 @@ def test_build_embedder_is_silent_for_the_keyless_default(monkeypatch):
 
     assert isinstance(embedder, KeylessEmbedder)
     assert printed == []
+
+
+def test_build_embedder_warns_once_per_invocation(monkeypatch):
+    """A run that degrades in several sites reports the fallback once.
+
+    ``repowise update`` builds the embedder for its decision semantic-dedup
+    store and again for the deterministic page path; a workspace run builds one
+    per repo. If each build printed the full warning, one command stacks the
+    same sentence N times, burying the signal. The first fallback in a process
+    reports it, the rest stay quiet — the same once-per-invocation gate the
+    init header probe uses.
+    """
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    def _boom(name: str, **kwargs: object):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("repowise.core.providers.embedding.registry.get_embedder", _boom)
+    printed = _capture_console(monkeypatch)
+
+    first = providers.build_embedder("openai")
+    second = providers.build_embedder("gemini")
+    third = providers.build_embedder("ollama")
+
+    assert isinstance(first, KeylessEmbedder)
+    assert isinstance(second, KeylessEmbedder)
+    assert isinstance(third, KeylessEmbedder)
+    said = " ".join(printed)
+    assert "semantic search" in said.lower()
+    # Exactly one warning across the three degraded builds.
+    assert said.count("could not be built") == 1
+
+
+def test_build_embedder_warns_again_after_a_reset(monkeypatch):
+    """The once-per-invocation gate is per invocation, not permanent.
+
+    A process that runs several logical invocations (tests, an embedded
+    runner) re-arms the gate and sees the warning again on the next degraded
+    build, so the sentence is not lost to the first run.
+    """
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    def _boom(name: str, **kwargs: object):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("repowise.core.providers.embedding.registry.get_embedder", _boom)
+    printed = _capture_console(monkeypatch)
+
+    from repowise.cli.providers.embedders import reset_degradation_warning
+
+    assert isinstance(providers.build_embedder("openai"), KeylessEmbedder)
+    assert isinstance(providers.build_embedder("openai"), KeylessEmbedder)
+    assert " ".join(printed).count("could not be built") == 1
+
+    reset_degradation_warning()
+
+    assert isinstance(providers.build_embedder("openai"), KeylessEmbedder)
+    assert " ".join(printed).count("could not be built") == 2
