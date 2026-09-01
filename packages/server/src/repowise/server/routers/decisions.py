@@ -434,6 +434,18 @@ async def update_decision_settings(
     return _settings_payload(repo_path, resolution)
 
 
+async def _live_decision_id(session: AsyncSession, decision_id: str) -> str:
+    """The id a caller-supplied decision id names today.
+
+    Ids get written down elsewhere and then retired underneath them, by a merge
+    or by moving onto a derived id. Resolving through the alias table is what
+    keeps those references working instead of reading as a deleted decision.
+    An id with no alias and no record resolves to itself, so the handler still
+    raises its own 404.
+    """
+    return await crud.resolve_decision_id(session, decision_id) or decision_id
+
+
 @router.get(
     "/api/repos/{repo_id}/decisions/{decision_id}",
     response_model=DecisionRecordResponse,
@@ -444,6 +456,7 @@ async def get_decision(
     session: AsyncSession = Depends(get_db_session),
 ) -> DecisionRecordResponse:
     """Get a single decision record by ID."""
+    decision_id = await _live_decision_id(session, decision_id)
     rec = await crud.get_decision(session, decision_id)
     if rec is None or rec.repository_id != repo_id:
         raise HTTPException(status_code=404, detail="Decision not found")
@@ -466,6 +479,7 @@ async def list_decision_evidence(
     badge (``exact`` | ``fuzzy`` | ``unverified``). 404 if the decision does not
     exist or belongs to a different repository.
     """
+    decision_id = await _live_decision_id(session, decision_id)
     rec = await crud.get_decision(session, decision_id)
     if rec is None or rec.repository_id != repo_id:
         raise HTTPException(status_code=404, detail="Decision not found")
@@ -488,6 +502,7 @@ async def get_decision_lineage(
     UI can render a timeline. An isolated decision returns a single-entry chain.
     404 if the decision does not exist or belongs to a different repository.
     """
+    decision_id = await _live_decision_id(session, decision_id)
     rec = await crud.get_decision(session, decision_id)
     if rec is None or rec.repository_id != repo_id:
         raise HTTPException(status_code=404, detail="Decision not found")
@@ -581,17 +596,23 @@ async def patch_decision(
     governance edits (``affected_modules``, ``affected_files``). Any field
     left as ``None`` in the body is preserved.
     """
+    decision_id = await _live_decision_id(session, decision_id)
     rec = await crud.get_decision(session, decision_id)
     if rec is None or rec.repository_id != repo_id:
         raise HTTPException(status_code=404, detail="Decision not found")
 
     if body.status is not None:
+        # The successor is a caller-supplied id too, and storing a retired one
+        # would record a pointer that no longer resolves.
+        superseded_by = body.superseded_by
+        if superseded_by is not None:
+            superseded_by = await _live_decision_id(session, superseded_by)
         try:
             rec = await crud.update_decision_status(
                 session,
                 decision_id,
                 body.status,
-                superseded_by=body.superseded_by,
+                superseded_by=superseded_by,
                 accepter="web",
             )
         except ValueError as exc:

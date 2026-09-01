@@ -6,6 +6,7 @@ every public name, so existing imports are unaffected.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 from typing import Any
@@ -28,13 +29,25 @@ from ..models import (
     DecisionNodeLink,
     DecisionRecord,
     GitMetadata,
-    _new_uuid,
     _now_utc,
 )
 
 # ---------------------------------------------------------------------------
 # DecisionRecord CRUD
 # ---------------------------------------------------------------------------
+
+# Namespaced so a decision id can never collide with another kind of derived
+# id, and versioned so a future change of the recipe is a visible new value
+# rather than a silent reshuffle of every id in every store.
+_ID_NAMESPACE = "repowise.decision.id.v1"
+
+# The four identity fields are joined with a separator none of them can
+# contain, so no pair of distinct records can flatten to the same string.
+_FIELD_SEP = "\x00"
+
+# ``evidence_file`` is nullable and NULL is not the empty string here: the
+# dedupe query treats them as different records, so the derivation must too.
+_NULL_EVIDENCE_FILE = "\x01"
 
 _VALID_DECISION_STATUSES = frozenset(
     {"proposed", "active", "deprecated", "superseded", "dismissed"}
@@ -95,6 +108,40 @@ def _dedup_query(
     if evidence_file is not None:
         return q.where(DecisionRecord.evidence_file == evidence_file)
     return q.where(DecisionRecord.evidence_file.is_(None))
+
+
+def derive_decision_id(
+    repository_id: str,
+    title: str,
+    *,
+    source: str,
+    evidence_file: str | None,
+) -> str:
+    """The id a decision with this identity has, in every store, on every run.
+
+    Deliberately the same four columns :func:`_dedup_query` matches on, and
+    kept beside it so the id and the dedupe key cannot drift apart. Those
+    columns are already ``uq_decision_record``, so this only makes the primary
+    key agree with the uniqueness the schema enforces; it invents no new
+    identity. A random id, by contrast, is re-minted whenever a store is
+    rebuilt instead of updated, which strands every reference held outside the
+    row: an acceptance, an alias, a vector key, a link somebody wrote down.
+
+    32 lowercase hex, because ``DecisionRecord.id`` is ``String(32)`` and so is
+    every foreign key to it, so a truncated digest fits without a column
+    change. ``evidence_file`` is NULL far more often than not, and NULL is a
+    distinct case in the dedupe query, so it gets a sentinel no path can
+    contain rather than collapsing into the empty string.
+    """
+    parts = (
+        _ID_NAMESPACE,
+        repository_id,
+        title,
+        source,
+        _NULL_EVIDENCE_FILE if evidence_file is None else evidence_file,
+    )
+    digest = hashlib.sha256(_FIELD_SEP.join(parts).encode("utf-8")).hexdigest()
+    return digest[:32]
 
 
 async def find_decision_by_title(
@@ -186,7 +233,12 @@ async def upsert_decision(
         return existing
 
     rec = DecisionRecord(
-        id=decision_id or _new_uuid(),
+        # An explicit id still wins: the manifest importer carries ids in from
+        # a tracked file and those are the record's identity, not ours.
+        id=decision_id
+        or derive_decision_id(
+            repository_id, title, source=source, evidence_file=evidence_file
+        ),
         repository_id=repository_id,
         title=title,
         status=status,
@@ -1013,10 +1065,18 @@ async def bulk_upsert_decisions(
             continue
 
         if rec is None:
+            headline_title = headline.get("title", "")
+            headline_source = headline.get("source", "cli")
+            headline_evidence_file = headline.get("evidence_file")
             rec = DecisionRecord(
-                id=_new_uuid(),
+                id=derive_decision_id(
+                    repository_id,
+                    headline_title,
+                    source=headline_source,
+                    evidence_file=headline_evidence_file,
+                ),
                 repository_id=repository_id,
-                title=headline.get("title", ""),
+                title=headline_title,
                 status=_extraction_status(headline.get("status", "proposed")),
                 context=headline.get("context") or "",
                 decision=headline.get("decision") or "",
@@ -1027,8 +1087,8 @@ async def bulk_upsert_decisions(
                 affected_modules_json=json.dumps(headline.get("affected_modules") or []),
                 tags_json=json.dumps(headline.get("tags") or []),
                 evidence_commits_json=json.dumps(headline.get("evidence_commits") or []),
-                source=headline.get("source", "cli"),
-                evidence_file=headline.get("evidence_file"),
+                source=headline_source,
+                evidence_file=headline_evidence_file,
                 evidence_line=headline.get("evidence_line"),
                 confidence=headline.get("confidence", 0.5),
             )

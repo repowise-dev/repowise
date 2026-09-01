@@ -811,8 +811,19 @@ async def _persist_full_update_async(
                     await purge_proposed_decisions_by_source(session, repo_id, _retired)
                 await reconcile_source_ranks(session)
 
-                # Same repair on the path a ``repowise update`` user takes: the
-                # entity split is only coherent once legacy rows are classified.
+                # Same repairs on the path a ``repowise update`` user takes.
+                # Derived ids come first, so everything after this reads a
+                # record by the id it will still have after a rebuild.
+                from repowise.core.persistence.decision_id_migration import (
+                    apply_id_migration,
+                )
+
+                await apply_id_migration(
+                    session, repo_id, vector_store=decision_vector_store
+                )
+
+                # The entity split is only coherent once legacy rows are
+                # classified.
                 from repowise.core.persistence.decision_migration import apply_migration
 
                 await apply_migration(session, repo_id)

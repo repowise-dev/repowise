@@ -1739,6 +1739,19 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     except Exception as _rank_err:
         logger.debug("decision_rank_reconcile_skipped", error=str(_rank_err))
 
+    # Move legacy records onto ids derived from their own identity, before
+    # anything else reads or writes one. A random id is re-minted whenever a
+    # store is rebuilt rather than updated, which strands every reference held
+    # outside the row. Idempotent, and it never deletes a record.
+    try:
+        from repowise.core.persistence.decision_id_migration import apply_id_migration
+
+        await apply_id_migration(
+            session, repo_id, vector_store=getattr(result, "vector_store", None)
+        )
+    except Exception as _id_err:
+        logger.debug("decision_id_migration_skipped", error=str(_id_err))
+
     # Classify legacy rows against the entity split. A record promoted by
     # recurrence rather than by a person becomes a candidate, which visibly
     # shrinks what governs; leaving it to an explicit command would instead
