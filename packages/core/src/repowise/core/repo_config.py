@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -68,15 +69,36 @@ def save_repo_config(repo_path: Path | str, config: dict[str, Any]) -> None:
     unrelated keys are preserved; this writer just serializes the final dict.
     Key order is preserved and flow style is block style, to match the files the
     CLI writes.
+
+    The write is atomic: serialize to a sibling temp file, fsync, then
+    ``os.replace``. A crash or a serializer failure part-way leaves the previous
+    bytes intact rather than a truncated config, which every reader would take
+    for "no provider, no coverage settings, defaults everywhere".
     """
+    import os
+    import tempfile
+
     import yaml  # type: ignore[import-untyped]
 
     cfg_dir = get_repowise_dir(repo_path)
     cfg_dir.mkdir(parents=True, exist_ok=True)
-    (cfg_dir / CONFIG_FILENAME).write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False),
-        encoding="utf-8",
-    )
+    target = cfg_dir / CONFIG_FILENAME
+    payload = yaml.dump(config, default_flow_style=False, sort_keys=False)
+
+    fd, tmp_name = tempfile.mkstemp(dir=str(cfg_dir), prefix=".config.", suffix=".tmp")
+    try:
+        # No explicit newline: the previous writer used the platform default,
+        # and config_fingerprint hashes raw bytes, so pinning LF here would
+        # move the fingerprint of every existing Windows config on first save.
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
 
 
 def config_fingerprint(repo_path: Path | str) -> str:

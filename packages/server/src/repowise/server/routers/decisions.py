@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +24,9 @@ from repowise.server.schemas import (
     DecisionLineageEntry,
     DecisionLineageResponse,
     DecisionRecordResponse,
+    DecisionSettings,
+    DecisionSettingsUpdate,
+    DecisionSourceState,
     DecisionStatusUpdate,
 )
 from repowise.server.schemas.decisions import EvidencePreview
@@ -214,6 +219,124 @@ async def get_decision_graph(
     ]
 
     return DecisionGraphResponse(nodes=nodes, decision_edges=decision_edges, code_edges=code_edges)
+
+
+# ---------------------------------------------------------------------------
+# Capture policy
+#
+# Declared before the dynamic ``/{decision_id}`` GET so the static ``settings``
+# path wins. Backed by ``.repowise/config.yaml``, so it needs a local checkout.
+# ---------------------------------------------------------------------------
+
+
+async def _local_repo_path(session: AsyncSession, repo_id: str) -> Path:
+    repo = await crud.get_repository(session, repo_id)
+    if repo is None or not repo.local_path:
+        raise HTTPException(status_code=404, detail=f"repository not found: {repo_id}")
+    repo_path = Path(repo.local_path)
+    if not repo_path.exists():
+        raise HTTPException(
+            status_code=404, detail="repository checkout not accessible on this server"
+        )
+    return repo_path
+
+
+def _settings_payload(repo_path: Path, resolution) -> DecisionSettings:
+    from repowise.core.analysis.decisions.policy_store import policy_etag
+
+    policy = resolution.policy
+    available = _provider_available(repo_path)
+    return DecisionSettings(
+        enabled=policy.enabled,
+        llm=policy.llm,
+        preset=policy.preset_name(),
+        sources=[
+            DecisionSourceState(**rt.to_dict())
+            for rt in policy.runtime(provider_available=available)
+        ],
+        provider_available=available,
+        warnings=list(resolution.warnings),
+        legacy_keys=list(resolution.legacy_keys),
+        etag=policy_etag(policy),
+    )
+
+
+def _load_policy_or_400(repo_path: Path):
+    """Resolve the policy, turning an unparseable config into a 400.
+
+    A malformed ``decisions:`` block is a warning, but a malformed *file* never
+    reaches the resolver, so it would otherwise surface as a 500 with nothing
+    the user could act on.
+    """
+    from repowise.core.analysis.decisions.policy_store import load_policy
+    from repowise.core.repo_config import RepoConfigError
+
+    try:
+        return load_policy(repo_path)
+    except RepoConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _provider_available(repo_path: Path) -> bool:
+    """Whether a provider resolves, without constructing one."""
+    from repowise.core.providers.llm.registry import provider_available_for_repo
+
+    return provider_available_for_repo(repo_path)
+
+
+@router.get(
+    "/api/repos/{repo_id}/decisions/settings",
+    response_model=DecisionSettings,
+)
+async def get_decision_settings(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> DecisionSettings:
+    """The resolved decision capture policy and source registry."""
+    repo_path = await _local_repo_path(session, repo_id)
+    return _settings_payload(repo_path, _load_policy_or_400(repo_path))
+
+
+@router.put(
+    "/api/repos/{repo_id}/decisions/settings",
+    response_model=DecisionSettings,
+)
+async def update_decision_settings(
+    repo_id: str,
+    body: DecisionSettingsUpdate,
+    session: AsyncSession = Depends(get_db_session),
+) -> DecisionSettings:
+    """Apply a partial policy change to ``.repowise/config.yaml``.
+
+    Omitted fields keep their current value, so a UI can send one switch.
+    ``preset`` is applied before the per-source overrides.
+    """
+    from repowise.core.analysis.decisions.policy import preset_policy
+    from repowise.core.analysis.decisions.policy_store import PolicyConflictError, write_policy
+
+    repo_path = await _local_repo_path(session, repo_id)
+    policy = _load_policy_or_400(repo_path).policy
+
+    if body.preset is not None:
+        try:
+            policy = preset_policy(body.preset)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if body.enabled is not None:
+        policy = policy.with_enabled(body.enabled)
+    if body.llm is not None:
+        policy = policy.with_llm(body.llm)
+    for key, patch in (body.sources or {}).items():
+        try:
+            policy = policy.with_source(key, enabled=patch.enabled, llm=patch.llm)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        resolution = write_policy(repo_path, policy, expected_etag=body.etag)
+    except PolicyConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _settings_payload(repo_path, resolution)
 
 
 @router.get(

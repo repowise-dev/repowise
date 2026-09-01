@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from repowise.core.analysis.decisions.scope import derive_decision_scope
 
@@ -247,3 +247,73 @@ class DecisionLineageResponse(BaseModel):
     """The supersedes/refines chain, root first."""
 
     lineage: list[DecisionLineageEntry] = []
+
+
+# ---------------------------------------------------------------------------
+# Capture policy
+# ---------------------------------------------------------------------------
+
+
+class DecisionSourceState(BaseModel):
+    """One capture source's capabilities and resolved state."""
+
+    key: str
+    label: str
+    description: str
+    #: ``machine`` for inferred capture, ``human`` for authority routes.
+    authority: str
+    deterministic: bool
+    supports_llm: bool
+    #: False for authority routes, which have no capture to switch off.
+    togglable: bool
+    enabled: bool
+    llm_enabled: bool
+    #: enabled | disabled | deterministic_only | skipped_no_provider | always_on
+    status: str
+    reason: str
+
+
+class DecisionSettings(BaseModel):
+    """The resolved decision capture policy for one repository."""
+
+    enabled: bool = True
+    llm: bool = True
+    #: off | local_only | balanced | full | custom
+    preset: str = "full"
+    sources: list[DecisionSourceState] = []
+    provider_available: bool = True
+    #: Recoverable config problems, e.g. an unknown source key.
+    warnings: list[str] = []
+    #: Legacy keys still being honoured. A write through this endpoint
+    #: replaces them, so a settings form can say so before saving.
+    legacy_keys: list[str] = []
+    #: Changes ``etag`` whenever the resolved policy changes. Pass it back on
+    #: write to detect a concurrent edit.
+    etag: str = ""
+
+
+class DecisionSourcePatch(BaseModel):
+    """A change to one source. Omitted fields keep their current value.
+
+    ``extra="forbid"`` on purpose: an untyped mapping accepted a misspelt
+    ``{"enable": true}`` and returned 200 having changed nothing, so a UI
+    toggle read as saved when it was not.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    llm: bool | None = None
+
+
+class DecisionSettingsUpdate(BaseModel):
+    """A partial policy write. Omitted fields keep their current value."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    llm: bool | None = None
+    #: Applied first, so a preset plus per-source overrides works in one call.
+    preset: str | None = None
+    sources: dict[str, DecisionSourcePatch] | None = None
+    etag: str | None = None

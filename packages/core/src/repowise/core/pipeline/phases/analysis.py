@@ -305,17 +305,16 @@ async def _run_decision_extraction(
 ) -> Any | None:
     """Extract architectural decisions from source and git history."""
     try:
-        from repowise.core.analysis.decision_extractor import (
-            DecisionExtractor,
-            enabled_source_names,
-        )
+        from repowise.core.analysis.decision_extractor import DecisionExtractor
+        from repowise.core.analysis.decisions.policy import resolve_policy
         from repowise.core.repo_config import load_repo_config
 
         # Sources run concurrently inside extract_all(); drive a determinate
-        # bar so users see live progress. ``decisions.sources`` in the repo
-        # config can disable individual sources (#751).
+        # bar so users see live progress. The resolved policy decides which
+        # sources run and which of them may call a model.
         repo_cfg = load_repo_config(repo_path)
-        enabled = enabled_source_names(repo_cfg)
+        policy = resolve_policy(repo_cfg).policy
+        enabled = policy.enabled_index_sources()
         if progress:
             progress.on_phase_start("decisions", len(enabled))
 
@@ -326,6 +325,7 @@ async def _run_decision_extraction(
             git_meta_map=git_meta_map,
             parsed_files=parsed_files,
             source_map=source_map,
+            policy=policy,
         )
 
         def _decision_step(_source: str) -> None:
@@ -344,18 +344,17 @@ async def _run_decision_extraction(
         # re-gating without a source_text would wipe its verification. A
         # server-side index has no transcript directory and no-ops here.
         try:
-            from repowise.core.sessions.miners.decisions import (
-                mine_session_decisions,
-                session_mining_enabled,
-            )
+            from repowise.core.sessions.miners.decisions import mine_session_decisions
 
             # Not gated on a provider: the same pass records transcript
             # episodes, which need no model, and gating the read on a key
             # would leave a keyless index with no transcript supply at all.
-            # The miner skips its own structuring pass when provider is None.
-            if session_mining_enabled(repo_cfg):
+            # The miner skips its own structuring pass when provider is None,
+            # which is also how the policy's LLM switch is enforced here.
+            if policy.source_enabled("session"):
+                session_provider = llm_client if policy.llm_allowed("session") else None
                 session_decisions = await asyncio.wait_for(
-                    mine_session_decisions(repo_path, provider=llm_client),
+                    mine_session_decisions(repo_path, provider=session_provider),
                     timeout=DECISION_EXTRACTION_TIMEOUT_SECS,
                 )
                 if session_decisions:
@@ -405,10 +404,27 @@ async def _run_decision_extraction(
             # its ``degraded`` list, so both runs report an outage the same
             # way instead of one of them printing a reassuring zero.
             failures = getattr(report, "failures", {}) or {}
+            # Sources that never ran, and why. Built first because a source
+            # listed here must not also appear as an honest zero below: with no
+            # API key the three model-only sources return [] immediately, and
+            # reporting that as "nothing found" is the confusion this split
+            # exists to remove.
+            runtime = {
+                rt.key: rt
+                for rt in policy.runtime(provider_available=llm_client is not None)
+            }
+            not_run = {
+                key
+                for key, rt in runtime.items()
+                if rt.togglable and rt.status in ("disabled", "skipped_no_provider")
+            }
             empty = [
                 label.removeprefix("from ")
                 for source, label in _DECISION_SOURCE_LABELS
-                if source in enabled and not bs.get(source) and source not in failures
+                if source in enabled
+                and source not in not_run
+                and not bs.get(source)
+                and source not in failures
             ]
             if empty:
                 progress.on_message("info", f"→ Nothing found in: {', '.join(empty)}")
@@ -419,6 +435,13 @@ async def _run_decision_extraction(
                         f"Decision source {label.removeprefix('from ')} failed, "
                         f"so this run found none there: {failures[source]}",
                     )
+            skipped = [
+                f"{label.removeprefix('from ')} ({runtime[source].reason.rstrip('.')})"
+                for source, label in _DECISION_SOURCE_LABELS
+                if source in not_run
+            ]
+            if skipped:
+                progress.on_message("info", f"→ Not run: {', '.join(skipped)}")
 
         _phase_done(progress, "decisions")
         return report

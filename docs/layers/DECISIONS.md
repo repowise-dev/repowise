@@ -61,22 +61,55 @@ Two more sources sit outside the index-time set: `session` (mined from your
 coding-agent transcripts, below) and `cli` (a decision you typed yourself, the
 most authoritative source there is).
 
-Turn any source off per repo in `.repowise/config.yaml`:
+### Controlling capture
 
-```yaml
-decisions:
-  session_mining: true
-  sources:
-    comment: false          # skip comment archaeology
-    # inline_marker: false
-    # git_archaeology: false
-    # adr: false
-    # pr: false
+Every source is switchable, and so is the model. One resolved policy backs the
+CLI, the API, and the index pipeline, so what `config show` prints is what the
+next `init` or `update` will actually run.
+
+```bash
+repowise decision config show           # resolved policy, per source, with reasons
+repowise decision config preset local_only
+repowise decision source list
+repowise decision source set comment --off
+repowise decision source set adr --no-llm   # keep the parse, skip the model
+repowise decision llm --off                 # no decision extraction reaches a model
 ```
 
-Sources you do not mention stay on, and unknown keys are ignored, so an old
-config never breaks extraction. Full block reference:
-[CONFIG.md](../reference/CONFIG.md).
+```
+repowise decision config show
+
+  Decision capture on  ·  LLM extraction off  ·  preset local_only
+  No LLM provider configured; model stages are skipped.
+
+Source           Status              LLM  Why
+inline_marker    deterministic_only  no   Decision LLM extraction is off. The deterministic stage still runs.
+git_archaeology  disabled            no   This source is switched off.
+adr              deterministic_only  no   Decision LLM extraction is off. The deterministic stage still runs.
+pr               disabled            no   This source is switched off.
+comment          disabled            no   This source is switched off.
+session          deterministic_only  no   Decision LLM extraction is off. The deterministic stage still runs.
+cli              always_on           -    Manual entry is always available.
+```
+
+The four presets are `off`, `local_only`, `balanced`, and `full`; editing any
+individual switch afterwards reads as `custom`. Mutations take `--dry-run` and
+`--format json`, write atomically, and preserve every unrelated key in
+`config.yaml`.
+
+Three things the switches deliberately do **not** do. Turning a source off stops
+new capture from it; it deletes nothing already stored. A decision you have
+already accepted keeps governing after the source that found it is switched off,
+because authority comes from your acceptance and not from the source staying on.
+And `llm: false` is a complete mode rather than a broken one: transcripts are
+still read, markers and ADRs still parsed, episodes still recorded, manual
+entry unaffected. Status says *skipped*, never *failed*.
+
+`skipped_no_provider` is the same idea for a missing API key: an LLM-only source
+reports that it had nothing to run with, and a hybrid source falls back to its
+deterministic stage.
+
+Full block reference: [CONFIG.md](../reference/CONFIG.md).
 
 ## Evidence: verified, fuzzy, unverified
 
@@ -193,6 +226,20 @@ further and ask git directly, printing what it says: *"nothing in the 3 files it
 governs has changed since 2026-05-02"*. That costs a subprocess, so it is served
 only where one is affordable — never from an editor hook or during an update.
 
+## Driving decisions from an agent
+
+Every subcommand takes `--format json`. The lifecycle commands (`confirm`,
+`dismiss`, `deprecate`, `show`) exit non-zero on an unknown id and emit
+`{"error": "decision_not_found", "decision_id": "..."}`, so a scripted confirm
+cannot be mistaken for a successful one; `dismiss` skips its prompt under
+`--format json` or with `--yes`. `decision config show --format json` returns
+the whole source registry with a `status` and a `reason` per source, which is
+the machine-readable answer to "will this source run, and if not why not".
+
+Reading decisions back, the `status` field is what decides whether a record
+binds: `active` was accepted by a person, `proposed` was inferred and is a hint.
+See [MCP_TOOLS.md](../agent/MCP_TOOLS.md#get_why).
+
 ## Session-mined decisions
 
 `repowise update` (docs mode) reads your local coding-agent transcripts and mines
@@ -211,13 +258,18 @@ Three stages, in order:
 2. **One batched LLM structuring call per update**, capped at 60 candidates.
    Every produced field must quote the transcript verbatim or it is dropped;
    an ungrounded `source_quote` rejects the candidate.
-3. **Observation-counted promotion.** A decision seen in two or more distinct
-   sessions is promoted to `active` with `source: session`. A direct user
-   correction promotes after one.
+3. **Promotion to a proposal.** A decision seen in two or more distinct
+   sessions, or one direct user correction, is written with `source: session`
+   and status `proposed`. Recurrence is evidence that a candidate is worth
+   reading, not an acceptance event: `repowise decision confirm` is what makes
+   it govern. Repeated observations accrete evidence rows and raise confidence
+   without ever changing status.
 
 Everything stays on your machine. Transcripts are read locally, staging lives in
 `.repowise/sessions/sessions.db`, and only the distilled decision text about the
-codebase is stored. Turn the pipeline off with `decisions.session_mining: false`.
+codebase is stored. Turn the pipeline off with
+`repowise decision source set session --off`, or keep the transcript reading and
+drop only the structuring call with `--no-llm`.
 
 ## Getting decisions back to your agent
 
@@ -264,6 +316,11 @@ the primary repo. Decision ids accept an 8-character prefix.
 | `repowise decision dismiss ID` | Tombstone it. Never re-proposed on reindex. |
 | `repowise decision deprecate ID` | Mark deprecated, optionally `--superseded-by <ID>`. |
 | `repowise decision health` | Counts, stale decisions, ungoverned hotspots, proposals awaiting review. |
+| `repowise decision config show` | The resolved capture policy: every source, its status, and why. |
+| `repowise decision config preset NAME` | Apply `off`, `local_only`, `balanced`, or `full`. |
+| `repowise decision source list` | The source registry with capabilities and current state. |
+| `repowise decision source set SRC --on/--off` | Switch one source. `--llm/--no-llm` switches only its model stage. |
+| `repowise decision llm --on/--off` | Master switch for decision-extraction model calls. |
 
 `list` filters:
 
@@ -283,7 +340,7 @@ Full flag reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-d
 | Call shape | Mode | Returns |
 |------------|------|---------|
 | No `query` | health | `counts`, `stale_decisions`, `proposed_awaiting_review`, `ungoverned_hotspots`, `conflicts` |
-| `query` is a path | path | The decisions governing that file (with `lineage` when the chain is longer than one), an `origin_story` from git, and an `alignment` read |
+| `query` is a path | path | The decisions governing that file (with `lineage` when the chain is longer than one), an `origin_story` from git, and an `alignment` read scored on accepted decisions only |
 | `query` is a question | search | Ranked decision records plus `related_documentation`, optionally anchored with `targets` |
 | `repo="all"` | workspace search | The same records across every workspace repo, each tagged with its alias |
 

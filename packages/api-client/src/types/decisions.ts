@@ -7,6 +7,16 @@
 // accepted — so the UI had no way to say it and sent `deprecated` instead.
 import type { DecisionStatus } from "@repowise-dev/types/decisions";
 
+// Re-exported rather than re-declared: the capture policy has one shape and
+// the server generates it from the same registry.
+export type {
+  DecisionPreset,
+  DecisionSettings,
+  DecisionSettingsUpdate,
+  DecisionSourcePatch,
+  DecisionSourceState,
+} from "@repowise-dev/types/decisions";
+
 export interface DecisionRecordResponse {
   id: string;
   repository_id: string;

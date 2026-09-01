@@ -382,35 +382,86 @@ mcp:
 
 ### The `decisions:` block
 
-Controls decision extraction. Each key under `sources:` names an index-time
-capture source; set it to `false` to skip that source on the next
-`init` / `update`. Unknown keys are ignored, and sources you don't mention
-stay enabled.
+Controls decision capture: whether it runs at all, which sources it uses, and
+whether any of them may call a model. One resolved policy backs the CLI, the
+API, and the index pipeline, so all three agree about what will run.
 
 ```yaml
 decisions:
-  session_mining: true      # mine agent-session transcripts (see below)
+  enabled: true             # master switch for automatic capture
+  llm: true                 # master switch for decision-extraction model calls
+  preset: balanced          # off | local_only | balanced | full
   sources:
-    comment: false          # LLM comment archaeology (top central files)
-    # inline_marker: false  # WHY:/DECISION: markers
-    # git_archaeology: false
-      # adr: false
-    # changelog: false
-    # pr: false
+    inline_marker: true     # WHY:/DECISION: markers
+    git_archaeology: true   # commit messages
+    adr: true               # ADR files
+    pr: true                # PR / squash-merge bodies
+    comment: false          # comment archaeology on top central files
+    session:                # long form: run the source, skip its model stage
+      enabled: true
+      llm: false
 ```
 
-`session_mining` (default on) lets `repowise update` mine coding-agent
-session transcripts (Claude Code's `~/.claude/projects/`) for durable
-decisions: user corrections, explicit choices with a stated reason, and
-failed approaches replaced by working ones. Candidates pass deterministic
-gates first, then one batched LLM structuring call per update, and every
-produced field must quote the transcript verbatim or it is dropped. A
-decision observed in two or more sessions is promoted as `active` with
-`source: session`; a direct user correction promotes after one. Everything
-stays local: transcripts are read from your machine, staging lives in
-`.repowise/sessions/sessions.db`, and only the distilled decision text about
-the codebase is stored. Set `session_mining: false` to turn the whole
-pipeline off.
+Every key is optional. **A config with no `decisions:` block behaves exactly as
+it did before these switches existed**: every source on, model stages on.
+
+A source is a bare boolean or a `{enabled, llm}` mapping. The long form only
+matters for a source with both a deterministic and a model stage
+(`inline_marker`, `adr`, `session`): it keeps the deterministic parse and skips
+the model call. A source that is model-only (`git_archaeology`, `pr`,
+`comment`) is skipped entirely when its model stage is off, because running it
+would produce a zero indistinguishable from an empty repository.
+
+Unknown keys are reported as warnings rather than discarded, so a typo'd source
+name shows up instead of silently reading as a working switch. Retired names
+(`code_comment`, `changelog`, `readme_mining`) are among them: an old config
+still loads, it just says which key it ignored.
+
+**Presets** are conveniences that write the same keys:
+
+| Preset | Effect |
+|--------|--------|
+| `off` | No automatic capture. Stored decisions and manual entry keep working. |
+| `local_only` | Deterministic capture only. Zero decision-extraction model calls. |
+| `balanced` | The high-signal sources plus session mining; comment archaeology off. |
+| `full` | Every source, every model stage. |
+
+Editing any individual key after applying a preset drops the `preset` line and
+the resolved policy reads as `custom`.
+
+`llm: false` is a complete mode, not a degraded one: transcripts are still
+read, markers and ADRs are still parsed, episodes are still recorded, manual
+decisions still work, and already-accepted decisions keep governing. It is the
+one switch that proves no decision extraction reaches a model.
+
+Set these from the CLI rather than by hand if you prefer:
+
+```bash
+repowise decision config show          # the resolved policy, per source
+repowise decision config preset local_only
+repowise decision source set comment --off
+repowise decision source set adr --no-llm     # keep the parse, skip the model
+repowise decision llm --off
+```
+
+Every mutating command takes `--dry-run` to print the change without writing,
+and `--format json` for scripts. Writes are atomic and preserve every unrelated
+key in `config.yaml`.
+
+The legacy `decisions.session_mining: true|false` key is still honoured and
+resolves to the `session` source. The first write through the CLI or the API
+replaces it with `sources.session`.
+
+`session` mining lets `repowise update` read coding-agent session transcripts
+(Claude Code's `~/.claude/projects/`) for durable decisions: user corrections,
+explicit choices with a stated reason, and failed approaches replaced by working
+ones. Candidates pass deterministic gates first, then one batched LLM
+structuring call per update, and every produced field must quote the transcript
+verbatim or it is dropped. **Mined decisions are stored as `proposed`**, however
+many sessions they recur across; confirming one with `repowise decision confirm`
+is what makes it govern. Everything stays local: transcripts are read from your
+machine, staging lives in `.repowise/sessions/sessions.db`, and only the
+distilled decision text about the codebase is stored.
 
 Dismissals are sticky: `repowise decision dismiss` keeps the record as a
 `dismissed` tombstone, so reindexing never re-proposes the same decision, and

@@ -463,12 +463,19 @@ def _build_origin_story(
 
 
 def _sibling_coverage(file_path: str, governing: list[dict], all_decisions: list) -> float | None:
-    """Fraction of sibling-file decisions that also cover *file_path* (None if no siblings)."""
+    """Fraction of sibling-file decisions that also cover *file_path* (None if no siblings).
+
+    Both sides count accepted records only. Filtering the numerator alone read
+    a directory whose siblings are covered by proposals as one this file
+    diverges from, when nothing there has been agreed to either.
+    """
     dir_path = "/".join(file_path.split("/")[:-1])
     sibling_decision_ids = set()
     file_decision_titles = {d["title"] for d in governing}
 
     for d in all_decisions:
+        if getattr(d, "status", None) != "active":
+            continue
         affected = json.loads(d.affected_files_json)
         for af in affected:
             af_dir = "/".join(af.split("/")[:-1])
@@ -497,33 +504,42 @@ def _active_alignment(active: list, dir_path: str, sibling_coverage: float | Non
 
 
 def _alignment_score(
-    governing: list[dict],
-    active: list,
+    accepted: list,
     deprecated: list,
     stale: list,
-    proposed: list,
+    candidates: list,
     dir_path: str,
     sibling_coverage: float | None,
 ) -> tuple:
-    """Derive the (score, explanation) tuple from decision status counts."""
-    if deprecated and not active and not proposed:
+    """Derive the (score, explanation) tuple from accepted decisions.
+
+    Only accepted (``active``) records score. A proposed record is a candidate
+    awaiting review: counting one as governance let a machine-inferred record
+    report a file as aligned with a decision nobody had agreed to.
+    """
+    if stale and len(stale) >= len(accepted) / 2:
         return "low", (
-            "All governing decisions are deprecated/superseded. "
-            "This file likely contains technical debt that should be migrated."
-        )
-    if stale and len(stale) >= len(governing) / 2:
-        return "low", (
-            f"{len(stale)} of {len(governing)} governing decision(s) are stale. "
+            f"{len(stale)} of {len(accepted)} accepted decision(s) are stale. "
             f"The architectural rationale may no longer apply."
         )
-    if active:
-        return _active_alignment(active, dir_path, sibling_coverage)
-    if proposed:
-        return "medium", (
-            f"Governed by {len(proposed)} proposed (unreviewed) decision(s). "
-            f"Patterns are established but not yet formally approved."
+    if accepted:
+        return _active_alignment(accepted, dir_path, sibling_coverage)
+    if deprecated:
+        trailer = (
+            f" {len(candidates)} proposed candidate(s) await review."
+            if candidates
+            else ""
         )
-    return "medium", f"Governed by {len(governing)} decision(s) with mixed status."
+        return "low", (
+            "Every accepted decision here is deprecated/superseded. "
+            "This file likely contains technical debt that should be migrated." + trailer
+        )
+    if candidates:
+        return "none", (
+            f"No accepted decision governs this file. {len(candidates)} proposed "
+            f"candidate(s) mention it, awaiting review."
+        )
+    return "none", "No accepted decision governs this file."
 
 
 def _compute_alignment(
@@ -541,29 +557,35 @@ def _compute_alignment(
             ),
             "governing_count": 0,
             "active_count": 0,
+            "candidate_count": 0,
             "deprecated_count": 0,
             "stale_count": 0,
             "sibling_coverage": None,
         }
 
-    # Count decision statuses
-    active = [d for d in governing if d["status"] == "active"]
+    accepted = [d for d in governing if d["status"] == "active"]
     deprecated = [d for d in governing if d["status"] in ("deprecated", "superseded")]
-    stale = [d for d in governing if d.get("staleness_score", 0) > 0.5]
-    proposed = [d for d in governing if d["status"] == "proposed"]
+    stale = [d for d in accepted if d.get("staleness_score", 0) > 0.5]
+    candidates = [d for d in governing if d["status"] == "proposed"]
 
     dir_path = "/".join(file_path.split("/")[:-1])
-    sibling_coverage = _sibling_coverage(file_path, governing, all_decisions)
+    # Scoped to accepted records for the same reason the score is: a sibling
+    # pattern established only by proposals is not an established pattern.
+    sibling_coverage = _sibling_coverage(file_path, accepted, all_decisions)
 
     score, explanation = _alignment_score(
-        governing, active, deprecated, stale, proposed, dir_path, sibling_coverage
+        accepted, deprecated, stale, candidates, dir_path, sibling_coverage
     )
 
     return {
         "score": score,
         "explanation": explanation,
+        # Unchanged meaning: how many records name this file at all. The
+        # authority split is carried by active_count / candidate_count, which
+        # is what the score reads.
         "governing_count": len(governing),
-        "active_count": len(active),
+        "active_count": len(accepted),
+        "candidate_count": len(candidates),
         "deprecated_count": len(deprecated),
         "stale_count": len(stale),
         "sibling_coverage": round(sibling_coverage, 2) if sibling_coverage is not None else None,

@@ -8,6 +8,7 @@ the reassuring sentence a failed source used to produce.
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -50,26 +51,33 @@ class _StubExtractor:
         )
 
 
+def _write_policy(repo: Path, **sources: bool) -> None:
+    """Switch capture sources through the config the pipeline actually reads."""
+    lines = ["decisions:", "  sources:"]
+    lines += [f"    {key}: {str(value).lower()}" for key, value in sources.items()]
+    cfg = repo / ".repowise"
+    cfg.mkdir(parents=True, exist_ok=True)
+    (cfg / "config.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 @pytest.fixture
 def _patched(monkeypatch, tmp_path):
+    """A repo whose whole capture policy is on, with a stubbed extractor.
+
+    The session source is switched off through the policy rather than by
+    patching a gate function: the pipeline reads one resolved policy, so a
+    patch on anything else silently stops isolating the session miner and the
+    test starts reading the developer's real transcripts.
+    """
     import repowise.core.analysis.decision_extractor as de
 
     monkeypatch.setattr(de, "DecisionExtractor", _StubExtractor)
-    monkeypatch.setattr(
-        de,
-        "enabled_source_names",
-        lambda _cfg: ("inline_marker", "git_archaeology", "adr", "pr", "comment"),
-    )
+    _write_policy(tmp_path, session=False)
     return tmp_path
 
 
-async def test_failed_source_warns_and_is_kept_out_of_the_empty_list(_patched, monkeypatch):
+async def test_failed_source_warns_and_is_kept_out_of_the_empty_list(_patched):
     progress = _RecordingProgress()
-
-    # The session miner is a separate pass; keep it out of this assertion.
-    import repowise.core.sessions.miners.decisions as miners
-
-    monkeypatch.setattr(miners, "session_mining_enabled", lambda _cfg: False)
 
     await _run_decision_extraction(
         _patched,
@@ -95,3 +103,55 @@ async def test_failed_source_warns_and_is_kept_out_of_the_empty_list(_patched, m
     # Sources that genuinely found nothing still appear there.
     assert "git history" in nothing_line
     assert "ADR files" in nothing_line
+
+
+async def test_a_source_that_never_ran_is_not_an_honest_zero(_patched):
+    """The keyless default path: three model-only sources return [] at once.
+
+    Reporting those as "nothing found" is the same confusion the failed/empty
+    split exists to remove, so they belong on the "not run" line instead.
+    """
+    progress = _RecordingProgress()
+
+    await _run_decision_extraction(
+        _patched,
+        llm_client=None,
+        graph_builder=SimpleNamespace(graph=lambda: None),
+        git_meta_map={},
+        parsed_files=[],
+        progress=progress,
+    )
+
+    info = progress.text_at("info")
+    assert "Not run" in info
+    not_run = next(t for lvl, t in progress.messages if lvl == "info" and "Not run" in t)
+    assert "pull requests" in not_run
+    assert "git history" in not_run
+    assert "No LLM provider" in not_run
+
+    nothing = [t for lvl, t in progress.messages if lvl == "info" and "Nothing found" in t]
+    for line in nothing:
+        assert "pull requests" not in line
+        assert "git history" not in line
+
+
+async def test_a_disabled_source_is_reported_as_switched_off(tmp_path, monkeypatch):
+    import repowise.core.analysis.decision_extractor as de
+
+    monkeypatch.setattr(de, "DecisionExtractor", _StubExtractor)
+    _write_policy(tmp_path, session=False, comment=False)
+    progress = _RecordingProgress()
+
+    await _run_decision_extraction(
+        tmp_path,
+        llm_client=SimpleNamespace(),
+        graph_builder=SimpleNamespace(graph=lambda: None),
+        git_meta_map={},
+        parsed_files=[],
+        progress=progress,
+    )
+
+    not_run = next(t for lvl, t in progress.messages if lvl == "info" and "Not run" in t)
+    assert "comments" in not_run
+    assert "agent sessions" in not_run
+    assert "switched off" in not_run

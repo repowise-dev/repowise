@@ -56,6 +56,7 @@ from typing import Any
 import structlog
 
 from repowise.core.analysis.decisions.extractor import ExtractedDecision
+from repowise.core.analysis.decisions.policy import resolve_policy
 from repowise.core.analysis.decisions.provenance import (
     compute_confidence,
     rank_for_source,
@@ -497,12 +498,13 @@ _LLM_CHUNK = 12
 
 
 def session_mining_enabled(repo_config: dict[str, Any] | None) -> bool:
-    """Resolve the ``decisions.session_mining`` config gate (default on)."""
-    cfg = repo_config or {}
-    decisions_cfg = cfg.get("decisions") or {}
-    if not isinstance(decisions_cfg, dict):
-        return True
-    return decisions_cfg.get("session_mining", True) is not False
+    """Whether the transcript miner may run at all.
+
+    Resolved from the shared policy, which still honours the legacy
+    ``decisions.session_mining`` boolean.
+    """
+    return resolve_policy(repo_config).policy.source_enabled("session")
+
 
 
 def _candidates_block(raws: list[dict[str, Any]]) -> str:
@@ -601,13 +603,15 @@ def _promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[Extracted
     """decision_records-ready members for one promotable staging row.
 
     One member per observing session (capped) so each session becomes its own
-    evidence row via the ``bulk_upsert_decisions`` accretion path. The first
-    promotion lands ``active``; later observation-driven re-emissions land
-    ``proposed``, which adds evidence but can never overwrite a status a
-    human (or the evolution judge) set deliberately.
+    evidence row via the ``bulk_upsert_decisions`` accretion path.
+
+    Every member lands ``proposed``, first promotion included. Recurrence
+    across sessions is evidence that a candidate is worth reviewing, not an
+    acceptance event: authority comes from a person confirming the record.
+    ``first_promotion`` still gates re-emission in the staging store, so a
+    recurring candidate accretes evidence without re-proposing itself.
     """
     structured = row["structured"]
-    status = "active" if row["first_promotion"] else "proposed"
     files = relative_files(structured.get("affected_files") or row["files"], repo_root)
     modules = resolve_module_nodes(files)
     confidence = compute_confidence(
@@ -626,7 +630,7 @@ def _promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[Extracted
             source="session",
             evidence_commits=[sid] if sid else [],
             confidence=confidence,
-            status=status,
+            status="proposed",
             source_quote=structured.get("source_quote", ""),
             verification=structured.get("verification", "unverified"),
         )
@@ -641,7 +645,6 @@ def _promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[Extracted
 #: An injection is judged only after this long: the showing session must have
 #: had time to react (or end) before "no contradiction" reads as "followed".
 INJECTION_EVAL_MIN_AGE_SECONDS = 3600.0
-
 
 
 async def apply_injection_feedback(

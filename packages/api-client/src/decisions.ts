@@ -1,4 +1,4 @@
-import { apiGet, apiPost, apiPatch } from "./client";
+import { apiGet, apiPost, apiPatch, apiPut } from "./client";
 import type {
   DecisionCreate,
   DecisionEvidence,
@@ -8,6 +8,8 @@ import type {
   DecisionLineageEntry,
   DecisionLineageResponse,
   DecisionRecordResponse,
+  DecisionSettings,
+  DecisionSettingsUpdate,
   DecisionStatusUpdate,
 } from "./types";
 
@@ -96,4 +98,15 @@ export async function getDecisionLineage(
 
 export async function getDecisionGraph(repoId: string): Promise<DecisionGraph> {
   return apiGet<DecisionGraph>(`/api/repos/${repoId}/decisions/graph`);
+}
+
+export async function getDecisionSettings(repoId: string): Promise<DecisionSettings> {
+  return apiGet<DecisionSettings>(`/api/repos/${repoId}/decisions/settings`);
+}
+
+export async function updateDecisionSettings(
+  repoId: string,
+  update: DecisionSettingsUpdate,
+): Promise<DecisionSettings> {
+  return apiPut<DecisionSettings>(`/api/repos/${repoId}/decisions/settings`, update);
 }

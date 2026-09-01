@@ -63,7 +63,9 @@ async def test_correction_mines_structures_and_promotes(tmp_path):
 
     (decision,) = decisions
     assert decision.source == "session"
-    assert decision.status == "active"  # correction fast path, first promotion
+    # A user correction promotes on one observation, but promotion means
+    # "worth reviewing", not "accepted": only `decision confirm` sets active.
+    assert decision.status == "proposed"
     assert decision.verification == "exact"
     assert decision.evidence_commits == ["sess-1"]
     assert decision.source_quote == CORRECTION
@@ -149,7 +151,7 @@ async def test_llm_failure_leaves_candidates_staged(tmp_path):
         repo_root, provider=provider, projects_root=projects_root, now=200.0
     )
     (decision,) = decisions
-    assert decision.status == "active"
+    assert decision.status == "proposed"
 
 
 async def test_init_pipeline_appends_session_decisions(tmp_path, monkeypatch):

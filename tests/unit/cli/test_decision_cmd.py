@@ -329,3 +329,87 @@ def test_decision_health_prints_summary(indexed_repo: Path) -> None:
     assert "Decision Health" in result.output
     assert "Active decisions" in result.output
     assert "Proposed (needs review)" in result.output
+
+
+class TestTheLifecycleIsDrivableByAnAgent:
+    """Confirm/dismiss/deprecate are how a decision gains and loses authority.
+
+    They were human-only: no machine-readable output, exit 0 on a bad id, and a
+    dismissal that blocked on a prompt no non-interactive caller can answer.
+    """
+
+    def test_confirm_emits_json_and_the_new_status(self, indexed_repo: Path):
+        _seed_wiki_db(indexed_repo, [{"id": "c0ffee01", "title": "T", "status": "proposed"}])
+
+        result = CliRunner().invoke(
+            cli, ["decision", "confirm", "c0ffee01", str(indexed_repo), "--format", "json"]
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload == {"id": "c0ffee01", "status": "active", "action": "confirmed"}
+
+    def test_dismiss_does_not_prompt_under_json(self, indexed_repo: Path):
+        _seed_wiki_db(indexed_repo, [{"id": "c0ffee02", "title": "T", "status": "proposed"}])
+
+        result = CliRunner().invoke(
+            cli, ["decision", "dismiss", "c0ffee02", str(indexed_repo), "--format", "json"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["status"] == "dismissed"
+
+    def test_dismiss_yes_skips_the_prompt_for_a_person_too(self, indexed_repo: Path):
+        _seed_wiki_db(indexed_repo, [{"id": "c0ffee03", "title": "T", "status": "proposed"}])
+
+        result = CliRunner().invoke(
+            cli, ["decision", "dismiss", "c0ffee03", str(indexed_repo), "--yes"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "dismissed" in result.output
+
+    @pytest.mark.parametrize("action", ["confirm", "dismiss", "deprecate", "show"])
+    def test_an_unknown_id_exits_non_zero(self, indexed_repo: Path, action: str):
+        """Exit 0 on a typo'd id made a failed confirm indistinguishable from a
+        successful one."""
+        _seed_wiki_db(indexed_repo, [])
+
+        result = CliRunner().invoke(
+            cli, ["decision", action, "deadbeef", str(indexed_repo), "--format", "json"]
+        )
+
+        assert result.exit_code != 0, result.output
+
+    @pytest.mark.parametrize("action", ["confirm", "dismiss", "deprecate"])
+    def test_an_unknown_id_reports_a_parseable_reason(self, indexed_repo: Path, action: str):
+        _seed_wiki_db(indexed_repo, [])
+
+        result = CliRunner().invoke(
+            cli, ["decision", action, "deadbeef", str(indexed_repo), "--format", "json"]
+        )
+
+        assert json.loads(result.output) == {
+            "error": "decision_not_found",
+            "decision_id": "deadbeef",
+        }
+
+    def test_deprecate_records_the_successor(self, indexed_repo: Path):
+        _seed_wiki_db(
+            indexed_repo,
+            [
+                {"id": "c0ffee04", "title": "old"},
+                {"id": "c0ffee05", "title": "new"},
+            ],
+        )
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "decision", "deprecate", "c0ffee04", str(indexed_repo),
+                "--superseded-by", "c0ffee05", "--format", "json",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["status"] == "deprecated"

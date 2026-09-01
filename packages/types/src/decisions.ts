@@ -193,3 +193,56 @@ export interface DecisionCounts {
   superseded: number;
   deprecated: number;
 }
+
+/** One capture source's capabilities and resolved state. */
+export interface DecisionSourceState {
+  key: string;
+  label: string;
+  description: string;
+  /** `machine` for inferred capture, `human` for authority routes. */
+  authority: "machine" | "human";
+  deterministic: boolean;
+  supports_llm: boolean;
+  /** False for authority routes, which have no capture to switch off. */
+  togglable: boolean;
+  enabled: boolean;
+  llm_enabled: boolean;
+  status:
+    | "enabled"
+    | "disabled"
+    | "deterministic_only"
+    | "skipped_no_provider"
+    | "always_on";
+  reason: string;
+}
+
+export type DecisionPreset = "off" | "local_only" | "balanced" | "full" | "custom";
+
+/** The resolved decision capture policy for one repository. */
+export interface DecisionSettings {
+  enabled: boolean;
+  llm: boolean;
+  preset: DecisionPreset;
+  sources: DecisionSourceState[];
+  provider_available: boolean;
+  warnings: string[];
+  /** Legacy config keys still honoured. A save replaces them. */
+  legacy_keys: string[];
+  /** Pass back on write to detect a concurrent edit. */
+  etag: string;
+}
+
+/** A change to one source. Omitted fields keep their current value. */
+export interface DecisionSourcePatch {
+  enabled?: boolean;
+  llm?: boolean;
+}
+
+/** A partial policy write. Omitted fields keep their current value. */
+export interface DecisionSettingsUpdate {
+  enabled?: boolean;
+  llm?: boolean;
+  preset?: Exclude<DecisionPreset, "custom">;
+  sources?: Record<string, DecisionSourcePatch>;
+  etag?: string;
+}

@@ -826,6 +826,54 @@ export interface DecisionRecordResponse {
   evidence_preview?: EvidencePreview | null;
 }
 
+/** The resolved decision capture policy for one repository. */
+export interface DecisionSettings {
+  enabled?: boolean;
+  llm?: boolean;
+  preset?: string;
+  sources?: DecisionSourceState[];
+  provider_available?: boolean;
+  warnings?: string[];
+  legacy_keys?: string[];
+  etag?: string;
+}
+
+/** A partial policy write. Omitted fields keep their current value. */
+export interface DecisionSettingsUpdate {
+  enabled?: boolean | null;
+  llm?: boolean | null;
+  preset?: string | null;
+  sources?: Record<string, DecisionSourcePatch> | null;
+  etag?: string | null;
+}
+
+/**
+ * A change to one source. Omitted fields keep their current value.
+ *
+ * ``extra="forbid"`` on purpose: an untyped mapping accepted a misspelt
+ * ``{"enable": true}`` and returned 200 having changed nothing, so a UI
+ * toggle read as saved when it was not.
+ */
+export interface DecisionSourcePatch {
+  enabled?: boolean | null;
+  llm?: boolean | null;
+}
+
+/** One capture source's capabilities and resolved state. */
+export interface DecisionSourceState {
+  key: string;
+  label: string;
+  description: string;
+  authority: string;
+  deterministic: boolean;
+  supports_llm: boolean;
+  togglable: boolean;
+  enabled: boolean;
+  llm_enabled: boolean;
+  status: string;
+  reason: string;
+}
+
 /**
  * PATCH body for /decisions/{id}.
  *

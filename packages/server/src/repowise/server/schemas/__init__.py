@@ -87,6 +87,10 @@ from .decisions import (
     DecisionLineageEntry,
     DecisionLineageResponse,
     DecisionRecordResponse,
+    DecisionSettings,
+    DecisionSettingsUpdate,
+    DecisionSourcePatch,
+    DecisionSourceState,
     DecisionStatusUpdate,
 )
 from .episodes import (
@@ -348,6 +352,10 @@ __all__ = [
     "DecisionLineageEntry",
     "DecisionLineageResponse",
     "DecisionRecordResponse",
+    "DecisionSettings",
+    "DecisionSettingsUpdate",
+    "DecisionSourcePatch",
+    "DecisionSourceState",
     "DecisionStatusUpdate",
     "DependencyPathResponse",
     "DirectRiskEntry",

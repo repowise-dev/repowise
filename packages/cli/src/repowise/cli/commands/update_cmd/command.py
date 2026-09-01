@@ -1422,17 +1422,23 @@ def run_update(
     # (dead_code_report computed above, before the index-only branch)
 
     # Re-scan changed files for inline decision markers
+    from repowise.core.analysis.decisions.policy import resolve_policy
+
+    decision_policy = resolve_policy(cfg).policy
     new_decision_markers: list = []
     try:
         from repowise.core.analysis.decision_extractor import DecisionExtractor
 
         changed_paths = [fd.path for fd in file_diffs if fd.status in ("added", "modified")]
-        if changed_paths:
+        # The rescan is the inline_marker source; it was running regardless of
+        # whether that source was switched off.
+        if changed_paths and decision_policy.source_enabled("inline_marker"):
             extractor = DecisionExtractor(
                 repo_path=repo_path,
                 provider=provider,
                 graph=graph_builder.graph(),
                 git_meta_map=git_meta_map,
+                policy=decision_policy,
             )
             # Label these calls as decision extraction so the Costs page can
             # tell them apart from page regeneration (both ride this provider).
@@ -1456,13 +1462,13 @@ def run_update(
     # `decisions.session_mining: false` in .repowise/config.yaml disables it.
     session_decisions: list = []
     try:
-        from repowise.core.sessions.miners.decisions import (
-            mine_session_decisions,
-            session_mining_enabled,
-        )
+        from repowise.core.sessions.miners.decisions import mine_session_decisions
 
-        if session_mining_enabled(cfg):
-            session_decisions = run_async(mine_session_decisions(repo_path, provider=provider))
+        if decision_policy.source_enabled("session"):
+            session_provider = provider if decision_policy.llm_allowed("session") else None
+            session_decisions = run_async(
+                mine_session_decisions(repo_path, provider=session_provider)
+            )
             if session_decisions and verbose:
                 promoted_titles = {d.title for d in session_decisions}
                 console.print(f"Session decisions promoted: [green]{len(promoted_titles)}[/green]")
@@ -1478,7 +1484,7 @@ def run_update(
     try:
         from repowise.core.sessions.miners.decisions import apply_injection_feedback
 
-        if session_mining_enabled(cfg):
+        if decision_policy.source_enabled("session"):
 
             async def _run_injection_feedback() -> dict:
                 from repowise.cli.helpers import get_db_url_for_repo
@@ -1522,7 +1528,7 @@ def run_update(
     try:
         from repowise.core.sessions.efficacy import ingest_transcript_efficacy
 
-        if session_mining_enabled(cfg):
+        if decision_policy.source_enabled("session"):
             classified = ingest_transcript_efficacy(
                 repo_path, since=time.time() - _EFFICACY_LOOKBACK_SECONDS
             )

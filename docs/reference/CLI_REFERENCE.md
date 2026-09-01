@@ -918,7 +918,30 @@ repowise decision confirm ID [PATH]     # confirm a proposal
 repowise decision dismiss ID [PATH]     # dismiss a proposal (sticky; never re-proposed)
 repowise decision deprecate ID [PATH]   # mark deprecated
 repowise decision health [PATH]         # health dashboard
+
+repowise decision config show [PATH]              # the resolved capture policy
+repowise decision config preset NAME [PATH]       # off | local_only | balanced | full
+repowise decision source list [PATH]              # the source registry and its state
+repowise decision source set SRC --on|--off       # switch one source
+repowise decision source set SRC --llm|--no-llm   # switch only its model stage
+repowise decision llm --on|--off [PATH]           # all decision-extraction model calls
 ```
+
+**Capture-control options:**
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Print the change and write nothing. On `config preset`, `source set`, `llm`. |
+| `--format` | `table` (default) or `json`. `json` returns the full source registry. |
+
+`confirm` is the acceptance event. Nothing else promotes a record to `active`:
+extraction, recurrence across sessions, and confidence all stop at `proposed`.
+
+**Scripting these:** every subcommand takes `--format json`, and `confirm`,
+`dismiss`, `deprecate`, and `show` exit non-zero on an unknown id with
+`{"error": "decision_not_found", "decision_id": "..."}` so a caller can tell a
+typo from a successful transition. `dismiss` skips its confirmation prompt under
+`--format json`, or with `--yes`.
 
 **List options:**
 
@@ -930,7 +953,7 @@ repowise decision health [PATH]         # health dashboard
 | `--stale-only` | Only stale decisions |
 | `--format` | `table` (default) or `json` |
 
-`--format json` is also available on `decision show` and `decision health`. In JSON, `decision list` emits full ids rather than the table's 8-character prefixes, and `show` / `health` skip the caps the human output applies to keep a panel readable.
+`--format json` is available on every `decision` subcommand. In JSON, `decision list` emits full ids rather than the table's 8-character prefixes, and `show` / `health` skip the caps the human output applies to keep a panel readable.
 
 ---
 

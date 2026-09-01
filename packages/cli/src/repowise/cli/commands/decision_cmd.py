@@ -50,6 +50,26 @@ def decision_group() -> None:
     """Manage architectural decision records."""
 
 
+def _register_config_commands() -> None:
+    """Attach the capture-control commands.
+
+    They live in their own module (policy resolution, presets, per-source
+    switches) and are attached here so ``decision`` stays one group.
+    """
+    from repowise.cli.commands.decision_config_cmd import (
+        config_group,
+        llm_command,
+        source_group,
+    )
+
+    decision_group.add_command(config_group)
+    decision_group.add_command(source_group)
+    decision_group.add_command(llm_command)
+
+
+_register_config_commands()
+
+
 async def _resolve_decision_id(session, decision_id: str) -> str | None:
     """Expand a (possibly truncated) decision id to the full stored id.
 
@@ -399,7 +419,9 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
         notice_console(fmt).print(f"[red]Decision not found: {decision_id}[/red]")
         if fmt == "json":
             emit_json({"query": decision_id, "decision": None})
-        return
+        # Non-zero for the same reason the lifecycle commands are: a caller
+        # scripting `show` cannot tell a missing id from an empty record.
+        raise click.exceptions.Exit(1)
 
     if fmt == "json":
         emit_json(
@@ -488,6 +510,25 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
     console.print(Panel("\n".join(lines), title=f"Decision {rec.id[:8]}"))
 
 
+
+def _emit_lifecycle(rec, decision_id: str, action: str, fmt: str, note: str = "") -> None:
+    """Report one status transition to a person or to a machine.
+
+    Not found exits non-zero: an agent driving the lifecycle could not tell a
+    typo'd id from a successful confirm when both returned 0.
+    """
+    if rec is None:
+        if fmt == "json":
+            emit_json({"error": "decision_not_found", "decision_id": decision_id})
+        else:
+            console.print(f"[red]Decision not found: {decision_id}[/red]")
+        raise click.exceptions.Exit(1)
+    if fmt == "json":
+        emit_json({"id": rec.id, "status": rec.status, "action": action})
+        return
+    console.print(f"[green]Decision {rec.id[:8]} {action}[/green]" + (f" {note}" if note else ""))
+
+
 # ---------------------------------------------------------------------------
 # decision confirm
 # ---------------------------------------------------------------------------
@@ -496,9 +537,14 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
 @decision_group.command("confirm")
 @click.argument("decision_id")
 @click.argument("path", required=False, default=None)
-def decision_confirm(decision_id: str, path: str | None) -> None:
-    """Confirm a proposed decision (set status to active)."""
-    repo_path = _resolve_decision_repo(path)
+@format_option()
+def decision_confirm(decision_id: str, path: str | None, fmt: str) -> None:
+    """Confirm a proposed decision (set status to active).
+
+    This is the acceptance event. Nothing else promotes a record to ``active``:
+    extraction, recurrence and confidence all stop at ``proposed``.
+    """
+    repo_path = _resolve_decision_repo(path, fmt)
 
     async def _update():
         from repowise.core.persistence import (
@@ -521,11 +567,7 @@ def decision_confirm(decision_id: str, path: str | None) -> None:
         await engine.dispose()
         return rec
 
-    rec = run_async(_update())
-    if rec is None:
-        console.print(f"[red]Decision not found: {decision_id}[/red]")
-    else:
-        console.print(f"[green]Decision {rec.id[:8]} confirmed (active)[/green]")
+    _emit_lifecycle(run_async(_update()), decision_id, "confirmed", fmt, "(active)")
 
 
 # ---------------------------------------------------------------------------
@@ -536,11 +578,15 @@ def decision_confirm(decision_id: str, path: str | None) -> None:
 @decision_group.command("dismiss")
 @click.argument("decision_id")
 @click.argument("path", required=False, default=None)
-def decision_dismiss(decision_id: str, path: str | None) -> None:
+@click.option("--yes", "-y", is_flag=True, default=False, help="Skip the confirmation prompt.")
+@format_option()
+def decision_dismiss(decision_id: str, path: str | None, yes: bool, fmt: str) -> None:
     """Dismiss a proposed decision (kept as a tombstone; never re-proposed)."""
-    repo_path = _resolve_decision_repo(path)
+    repo_path = _resolve_decision_repo(path, fmt)
 
-    if not click.confirm(f"Dismiss decision {decision_id[:8]}?"):
+    # A machine-readable invocation is non-interactive by construction: the
+    # prompt read EOF and aborted every scripted dismissal.
+    if not yes and fmt != "json" and not click.confirm(f"Dismiss decision {decision_id[:8]}?"):
         console.print("[yellow]Cancelled.[/yellow]")
         return
 
@@ -565,14 +611,13 @@ def decision_dismiss(decision_id: str, path: str | None) -> None:
         await engine.dispose()
         return rec
 
-    rec = run_async(_dismiss())
-    if rec is not None:
-        console.print(
-            f"[green]Decision {rec.id[:8]} dismissed[/green] "
-            "[dim](kept as a tombstone; reindexing will not re-propose it)[/dim]"
-        )
-    else:
-        console.print(f"[red]Decision not found: {decision_id}[/red]")
+    _emit_lifecycle(
+        run_async(_dismiss()),
+        decision_id,
+        "dismissed",
+        fmt,
+        "[dim](kept as a tombstone; reindexing will not re-propose it)[/dim]",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -584,9 +629,12 @@ def decision_dismiss(decision_id: str, path: str | None) -> None:
 @click.argument("decision_id")
 @click.argument("path", required=False, default=None)
 @click.option("--superseded-by", default=None, help="ID of the decision that replaces this one.")
-def decision_deprecate(decision_id: str, path: str | None, superseded_by: str | None) -> None:
+@format_option()
+def decision_deprecate(
+    decision_id: str, path: str | None, superseded_by: str | None, fmt: str
+) -> None:
     """Deprecate an active decision."""
-    repo_path = _resolve_decision_repo(path)
+    repo_path = _resolve_decision_repo(path, fmt)
 
     async def _update():
         from repowise.core.persistence import (
@@ -615,11 +663,7 @@ def decision_deprecate(decision_id: str, path: str | None, superseded_by: str | 
         await engine.dispose()
         return rec
 
-    rec = run_async(_update())
-    if rec is None:
-        console.print(f"[red]Decision not found: {decision_id}[/red]")
-    else:
-        console.print(f"[yellow]Decision {rec.id[:8]} deprecated.[/yellow]")
+    _emit_lifecycle(run_async(_update()), decision_id, "deprecated", fmt)
 
 
 # ---------------------------------------------------------------------------
