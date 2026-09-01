@@ -15,8 +15,19 @@ from __future__ import annotations
 
 import pytest
 
+from repowise.core.ingestion.models import EXTENSION_TO_LANGUAGE
 from repowise.core.ingestion.parser import ASTParser
 from tests.unit.ingestion.parser._helpers import _make_file_info
+
+
+def test_vb_extension_reaches_the_traversal_gate() -> None:
+    """A .vb file must be recognized by the traverser, not just the AST
+    parser. Both share the language registry, but EXTENSION_TO_LANGUAGE is
+    filtered through a static LanguageTag Literal at import time — a spec
+    alone isn't enough. Regression: #1041 shipped without the tag, so .vb
+    files scanned as unknown."""
+    assert ".vb" in EXTENSION_TO_LANGUAGE
+    assert EXTENSION_TO_LANGUAGE[".vb"] == "vbnet"
 
 # The grammar is a git dependency on the fixed fork; skip explicitly when a
 # partial venv lacks it so the failure mode is "run uv sync" not confusing
