@@ -167,24 +167,36 @@ export default async function DecisionsPage({ params }: Props) {
         unit={denominator}
         layout="beside"
       >
-        {empty || accepted === 0 ? (
+        {empty ? (
+          <p>
+            Decisions land here as the indexer mines them from pull requests,
+            commit messages, code comments and your own sessions, and as you
+            record them yourself — below, or with{" "}
+            <code>repowise decision add</code>. Each one keeps the quote it was
+            drawn from and the files it governs.
+          </p>
+        ) : accepted === 0 ? (
+          // A repository with records and no accepted one is not an empty
+          // repository, and it used to get the copy for one: "decisions land
+          // here as the indexer mines them" on a store already holding five
+          // hundred of them. It is also what a store looks like the first time
+          // it is read after the acceptance split, when everything the status
+          // column called active turns out to be something nobody accepted, so
+          // this is the state most likely to be read by somebody surprised.
           <>
             <p>
-              Decisions land here as the indexer mines them from pull requests,
-              commit messages, code comments and your own sessions, and as you
-              record them yourself — below, or with{" "}
-              <code>repowise decision add</code>. Each one keeps the quote it
-              was drawn from and the files it governs.
+              Nothing here governs yet. A record governs only once somebody
+              accepts it, naming the files it covers and why — mining it,
+              seeing it recur, and scoring it confident all stop short of that.
             </p>
-            {proposed > 0 && (
-              <p>
-                {proposed.toLocaleString()} candidate
-                {proposed === 1 ? " is" : "s are"} waiting below. Accepting one
-                takes a click and changes no code; it marks the record as
-                something the team stands behind, which is what makes it worth
-                quoting back to an agent later.
-              </p>
-            )}
+            <p>
+              {proposed.toLocaleString()} candidate
+              {proposed === 1 ? " is" : "s are"} waiting below, and{" "}
+              {proposed === 1 ? "it is" : "they are"} all still here: nothing
+              was deleted and every id still resolves. If this page used to
+              show confirmed decisions, those are the records now in
+              Candidates. Accepting one takes a click and changes no code.
+            </p>
           </>
         ) : (
           <>

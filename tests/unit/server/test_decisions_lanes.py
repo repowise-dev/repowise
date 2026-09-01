@@ -519,3 +519,101 @@ async def test_a_scopeless_re_record_of_a_candidate_is_fine(
 
     assert again.status_code == 201, again.text
     assert again.json()["status"] == "proposed"
+
+
+# ---------------------------------------------------------------------------
+# The health rollup
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_health_counts_the_acceptance_not_the_status_column(
+    client: AsyncClient, app
+) -> None:
+    """The fifth governance reader, and the one a migrated store meets first.
+
+    Between the acceptance tables appearing and the classifier running, the
+    status column still says ``active`` for records nobody accepted. Counting
+    it made ``repowise decision health`` and ``get_why()`` report a hundred
+    governing decisions on a store whose acceptance log was empty, while every
+    other surface reported none.
+    """
+    repo = await create_test_repo(client)
+    sf = app.state.session_factory
+    await _seed(sf, repo["id"], title="Never accepted", status="active")
+    await _seed(sf, repo["id"], title="A real rule", accept=True)
+
+    res = await client.get(f"/api/repos/{repo['id']}/decisions/health")
+
+    assert res.status_code == 200, res.text
+    summary = res.json()["summary"]
+    assert summary["active"] == 1
+    assert summary["proposed"] == 1
+    titles = [d["title"] for d in res.json()["proposed_awaiting_review"]]
+    assert "Never accepted" in titles
+
+
+@pytest.mark.asyncio
+async def test_a_candidate_does_not_make_a_hotspot_governed(
+    client: AsyncClient, app
+) -> None:
+    """``ungoverned_hotspots`` exists to say where nobody has decided anything.
+
+    A candidate naming a hotspot used to remove it from that list, which is
+    the one answer the list must not give.
+    """
+    repo = await create_test_repo(client)
+    sf = app.state.session_factory
+    async with get_session(sf) as session:
+        from repowise.core.persistence.models import GitMetadata
+
+        session.add(
+            GitMetadata(
+                repository_id=repo["id"],
+                file_path="src/app.py",
+                is_hotspot=True,
+                temporal_hotspot_score=0.9,
+            )
+        )
+        await session.flush()
+    await _seed(sf, repo["id"], title="Names the hotspot", status="active")
+
+    res = await client.get(f"/api/repos/{repo['id']}/decisions/health")
+
+    assert res.status_code == 200, res.text
+    assert "src/app.py" in res.json()["ungoverned_hotspots"]
+
+    # Accepting it is what makes the file governed, and only then.
+    async with get_session(sf) as session:
+        rec = await crud.find_decision_by_title(
+            session,
+            repo["id"],
+            "Names the hotspot",
+            source="inline_marker",
+            evidence_file="src/app.py",
+        )
+        await crud.accept_decision(session, rec, accepter="tester", evidence=["x"])
+        await session.flush()
+
+    after = await client.get(f"/api/repos/{repo['id']}/decisions/health")
+    assert "src/app.py" not in after.json()["ungoverned_hotspots"]
+
+
+@pytest.mark.asyncio
+async def test_health_and_lane_counts_agree(client: AsyncClient, app) -> None:
+    """Two rollups, one question. They disagreed before, and loudly."""
+    repo = await create_test_repo(client)
+    sf = app.state.session_factory
+    await _seed(sf, repo["id"], title="Rule", accept=True)
+    await _seed(sf, repo["id"], title="Drifted", accept=True, staleness=0.9)
+    await _seed(sf, repo["id"], title="Candidate", status="active")
+
+    health = (await client.get(f"/api/repos/{repo['id']}/decisions/health")).json()
+    lanes = (
+        await client.get(f"/api/repos/{repo['id']}/decisions/lane-counts")
+    ).json()
+
+    assert health["summary"]["active"] == lanes["governing"]
+    assert health["summary"]["proposed"] == lanes["candidates"]
+    assert health["summary"]["stale"] == lanes["needs_review"]
+    assert health["summary"]["unscoped"] == lanes["uncheckable"]

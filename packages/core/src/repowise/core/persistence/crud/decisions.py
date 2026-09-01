@@ -1340,12 +1340,21 @@ async def get_decision_health_summary(
     session: AsyncSession,
     repository_id: str,
 ) -> dict:
-    """Return decision health: counts by status, stale decisions, ungoverned hotspots.
+    """Return decision health: counts by lane, stale decisions, ungoverned hotspots.
 
     The three list fields are returned ranked worst-first: stale by staleness,
     proposed by confidence, ungoverned hotspots by temporal hotspot score. A
     caller that shows only the first few shows the few that matter.
     Callers may truncate; they must not re-order.
+
+    Counts the acceptance, not the status column. The key names are the ones
+    every caller already renders, and they keep their product meaning:
+    ``active`` is what governs, ``proposed`` is what nobody has accepted. What
+    changed is that a record reaches ``active`` here by having an acceptance,
+    the same way it does on every other governance read. Counting the column
+    made this the one surface still reporting a hundred governing decisions on
+    a store whose acceptances were empty, and it fed ``ungoverned_hotspots``,
+    so unaccepted records were also suppressing the files nothing governs.
     """
     result = await session.execute(
         select(DecisionRecord).where(
@@ -1353,6 +1362,9 @@ async def get_decision_health_summary(
         )
     )
     all_decisions = list(result.scalars().all())
+    from .authority import decision_currencies
+
+    currencies = await decision_currencies(session, repository_id, all_decisions)
 
     counts = {
         "active": 0,
@@ -1361,7 +1373,7 @@ async def get_decision_health_summary(
         "superseded": 0,
         "dismissed": 0,
         "stale": 0,
-        # Active records naming no file. They score 0.0 because the staleness
+        # Accepted records naming no file. They score 0.0 because the staleness
         # question cannot be asked of them, which renders identically to a
         # record whose code genuinely has not moved — so they are counted
         # separately rather than banked as fresh.
@@ -1370,21 +1382,38 @@ async def get_decision_health_summary(
     stale_decisions: list[DecisionRecord] = []
     proposed_decisions: list[DecisionRecord] = []
 
-    # Collect all governed files from active decisions
+    # Files an *accepted* decision names. A candidate naming a hotspot does not
+    # make it governed, and counting one did: it removed the file from
+    # ``ungoverned_hotspots``, which is the list whose whole job is to say
+    # where nobody has decided anything.
     governed_files: set[str] = set()
     for d in all_decisions:
-        counts[d.status] = counts.get(d.status, 0) + 1
-        if d.status == "active":
-            if d.staleness_score >= 0.5:
-                counts["stale"] += 1
-                stale_decisions.append(d)
-            affected_files = json.loads(d.affected_files_json)
-            if not affected_files:
-                counts["unscoped"] += 1
-            for fp in affected_files:
-                governed_files.add(fp)
-        elif d.status == "proposed":
-            proposed_decisions.append(d)
+        currency = currencies.get(d.id)
+        if currency is None:
+            # No acceptance, so it does not govern. A retired one is not
+            # awaiting review either: it keeps the status that retired it and
+            # stays out of the queue, which is the one thing a tombstone must
+            # never be counted as.
+            if d.status in ("dismissed", "deprecated", "superseded"):
+                counts[d.status] = counts.get(d.status, 0) + 1
+            else:
+                counts["proposed"] += 1
+                proposed_decisions.append(d)
+            continue
+        if currency == "superseded":
+            counts["superseded"] += 1
+            continue
+        if currency == "dismissed":
+            counts["dismissed"] += 1
+            continue
+        counts["active"] += 1
+        if currency == "needs_review":
+            counts["stale"] += 1
+            stale_decisions.append(d)
+        if currency == "uncheckable":
+            counts["unscoped"] += 1
+        for fp in json.loads(d.affected_files_json):
+            governed_files.add(fp)
 
     # Find ungoverned hotspots, hottest first. Sorting these by path put the file
     # most in need of a decision behind whatever sorts alphabetically first,
