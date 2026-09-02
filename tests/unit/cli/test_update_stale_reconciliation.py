@@ -137,7 +137,7 @@ def test_doctor_detects_stale_pages_and_clears_after_reconciliation(tmp_path: Pa
     repo_path, _ = asyncio.run(_setup_repo_with_pages(tmp_path, ["foo.py", "bar.py"]))
 
     # 1. Doctor initially reports stale pages
-    all_ok, checks = repo_checks._run_repo_checks(repo_path, repair=False, fmt="quiet")
+    _, checks = repo_checks._run_repo_checks(repo_path, repair=False, fmt="quiet")
     stale_check = next(c for c in checks if c.name == "Stale pages")
     assert stale_check.ok is False
     assert stale_check.detail == "2 stale"

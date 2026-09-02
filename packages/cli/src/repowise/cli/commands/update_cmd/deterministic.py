@@ -20,6 +20,9 @@ from pathlib import Path
 from typing import Any
 
 from repowise.cli.helpers import console, run_async
+from repowise.core.persistence import (
+    load_stale_structural_file_paths as load_stale_structural_file_paths,
+)
 
 
 def deterministic_embedder_name(cfg: dict) -> str:
@@ -428,8 +431,3 @@ async def _load_spotlight_render_keys(repo_path: Path) -> dict[str, list[str]]:
         return {}
     finally:
         await engine.dispose()
-
-
-from repowise.core.persistence import (
-    load_stale_structural_file_paths as load_stale_structural_file_paths,
-)
