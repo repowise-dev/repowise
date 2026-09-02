@@ -179,7 +179,11 @@ class PerTypeGenerationMixin:
         return self._structural_symbol_spotlight(
             ctx,
             target,
-            structural_page_title(self._language, "symbol_spotlight", symbol.qualified_name),
+            # Titled by the target the page is keyed on, not by the dotted
+            # path built from every directory above the file. That path is
+            # synthetic; a real path beside a real name is what a reader
+            # scanning the tree can place.
+            structural_page_title(self._language, "symbol_spotlight", target),
             subject_hash=parsed.content_hash or "",
         )
 

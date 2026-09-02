@@ -49,9 +49,7 @@ from .pertype import PerTypeGenerationMixin
 from .prompts import CORRECTIVE_RETRY_DIRECTIVE, SUPPORTED_LANGUAGES, SYSTEM_PROMPTS
 from .structural import (
     StructuralRenderMixin,
-    as_markdown,
-    oneline,
-    signature,
+    register_filters,
 )
 from .validation import (
     InvalidGeneratedContentError,
@@ -206,9 +204,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         self._jinja_env = jinja_env
         # Registered on whatever env we ended up with (including one a caller
         # injected), since deterministic templates depend on it.
-        self._jinja_env.filters.setdefault("oneline", oneline)
-        self._jinja_env.filters.setdefault("as_markdown", as_markdown)
-        self._jinja_env.filters.setdefault("signature", signature)
+        register_filters(self._jinja_env)
         # A pipe ends a table cell wherever it appears, and a deterministic
         # template interpolates the repository's own prose — which routinely
         # quotes a shell pipeline. Without this every column to the right of

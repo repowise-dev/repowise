@@ -72,6 +72,33 @@ ENGLISH_LABELS: dict[str, str] = {
     "part_of_module_cluster": "Part of the **{community}** module cluster.",
     "layer": "Layer",
     "role": "Role",
+    # The knowledge graph's three roles, spelled for a reader. The stored
+    # values are enum members and one of them, ``edge_connector``, says
+    # nothing at all outside the code that computes it.
+    "role_entry_point": "entry point into its layer",
+    "role_internal": "internal to its layer",
+    "role_boundary": "boundary — imported from other layers",
+    # Symbols the API table leaves out, named so the identifier stays on the
+    # page even though the row does not.
+    "also_defined": "Also defined: {names}.",
+    # -- file page: history ------------------------------------------------
+    "history": "History",
+    "history_commits": "{total} {commit_word} in its history, {recent} in the last 90 days.",
+    "history_last_commit": "The last landed on {date}.",
+    "history_owner": "**{owner}** is its primary maintainer, at {pct}% of commits.",
+    "history_fixes": "{count} of those commits fixed a bug.",
+    "history_hotspot": "It is one of the repository's change hotspots.",
+    "history_stable": "It has been stable: nothing has changed it lately.",
+    "commit_singular": "commit",
+    "commit_plural": "commits",
+    "changes_with": "Changes together with",
+    "changes_with_intro": (
+        "Files that change in the same commits as this one without importing it "
+        "or being imported by it."
+    ),
+    "changes_with_entry": "{count} shared {commit_word}",
+    "last_together": "last together on {date}",
+    "decisions_heading": "Decisions touching this file",
     "in_the_code": "In the code",
     "question_exports": "What does `{path}` export?",
     "question_where_defined": "Where is `{symbol}` defined?",
@@ -95,6 +122,12 @@ ENGLISH_LABELS: dict[str, str] = {
     ),
     "import_verb_singular": "imports",
     "import_verb_plural": "import",
+    "call_sites_summary": "Reached by {count} resolved {call_word}.",
+    "imported_by_heading": "Files importing this module",
+    "call_site_singular": "call",
+    "call_site_plural": "calls",
+    "in_file": "in `{path}`",
+    "question_what_calls": "What calls `{symbol}`?",
     "implementation": "Implementation",
     "question_what_is": "What is `{symbol}`?",
     "question_which_files_import": ("Which files import the module that defines `{symbol}`?"),
@@ -191,6 +224,29 @@ LOCALIZED_LABELS: dict[str, dict[str, str]] = {
         "part_of_module_cluster": "Teil des Modulclusters **{community}**.",
         "layer": "Schicht",
         "role": "Rolle",
+        "role_entry_point": "Einstiegspunkt in ihre Schicht",
+        "role_internal": "innerhalb ihrer Schicht",
+        "role_boundary": "Randstelle — wird aus anderen Schichten importiert",
+        "also_defined": "Ebenfalls definiert: {names}.",
+        "history": "Historie",
+        "history_commits": (
+            "{total} {commit_word} in ihrer Historie, {recent} in den letzten 90 Tagen."
+        ),
+        "history_last_commit": "Der letzte stammt vom {date}.",
+        "history_owner": "**{owner}** betreut sie hauptsächlich, mit {pct}% der Commits.",
+        "history_fixes": "{count} dieser Commits haben einen Fehler behoben.",
+        "history_hotspot": "Sie gehört zu den Änderungs-Hotspots des Repositorys.",
+        "history_stable": "Sie ist stabil: zuletzt hat sich nichts an ihr geändert.",
+        "commit_singular": "Commit",
+        "commit_plural": "Commits",
+        "changes_with": "Ändert sich gemeinsam mit",
+        "changes_with_intro": (
+            "Dateien, die in denselben Commits geändert werden wie diese, ohne sie zu "
+            "importieren oder von ihr importiert zu werden."
+        ),
+        "changes_with_entry": "{count} gemeinsame {commit_word}",
+        "last_together": "zuletzt gemeinsam am {date}",
+        "decisions_heading": "Entscheidungen zu dieser Datei",
         "in_the_code": "Im Code",
         "question_exports": "Was exportiert `{path}`?",
         "question_where_defined": "Wo ist `{symbol}` definiert?",
@@ -213,6 +269,12 @@ LOCALIZED_LABELS: dict[str, dict[str, str]] = {
         ),
         "import_verb_singular": "importiert",
         "import_verb_plural": "importieren",
+        "call_sites_summary": "Erreicht von {count} aufgelösten {call_word}.",
+        "imported_by_heading": "Dateien, die dieses Modul importieren",
+        "call_site_singular": "Aufrufstelle",
+        "call_site_plural": "Aufrufstellen",
+        "in_file": "in `{path}`",
+        "question_what_calls": "Was ruft `{symbol}` auf?",
         "implementation": "Implementierung",
         "question_what_is": "Was ist `{symbol}`?",
         "question_which_files_import": (
