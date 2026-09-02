@@ -12,6 +12,7 @@ import json
 import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence.crud import bulk_upsert_decisions, update_decision_status
 from repowise.core.persistence.crud.authority import (
@@ -373,3 +374,36 @@ async def test_effective_currency_reads_the_code_not_only_the_log(async_session)
     rec.affected_modules_json = json.dumps([])
     await async_session.flush()
     assert await current_currency(async_session, rec) == "uncheckable"
+
+
+async def test_seq_retry_keeps_earlier_acceptances(async_session, monkeypatch):
+    """The retry rolls back its own attempt, not the whole session.
+
+    ``decision confirm`` writes many acceptances per session, so a root-scoped
+    rollback here would discard every id reviewed before the collision.
+    """
+    repo = await insert_repo(async_session)
+    first, second = await _seed(async_session, repo.id, "First", "Second")
+    await accept_decision(async_session, first, accepter="tester")
+
+    real_flush = AsyncSession.flush
+    tripped: list[bool] = []
+
+    async def flaky(self, *args, **kwargs):
+        pending = [
+            obj
+            for obj in self.new
+            if isinstance(obj, DecisionAcceptance) and obj.decision_id == second.id
+        ]
+        if pending and not tripped:
+            tripped.append(True)
+            raise IntegrityError("seq collision", None, Exception("unique"))
+        return await real_flush(self, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "flush", flaky)
+    await accept_decision(async_session, second, accepter="tester")
+    monkeypatch.undo()
+
+    assert tripped, "the collision never fired, so the retry was not exercised"
+    assert await latest_acceptance(async_session, first.id) is not None
+    assert await latest_acceptance(async_session, second.id) is not None

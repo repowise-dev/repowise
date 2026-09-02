@@ -476,13 +476,15 @@ async def _append_acceptance(
             artifact=artifact,
             note=note,
         )
-        session.add(acceptance)
         try:
-            await session.flush()
+            # Savepoint-scoped: a root rollback would discard every earlier
+            # acceptance in the session, not just this attempt.
+            async with session.begin_nested():
+                session.add(acceptance)
+                await session.flush()
         except IntegrityError:
             if attempt == _SEQ_RETRIES - 1:
                 raise
-            await session.rollback()
             continue
         return acceptance
     raise RuntimeError("unreachable")  # pragma: no cover
