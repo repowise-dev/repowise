@@ -22,7 +22,7 @@ from repowise.core.analysis.health.refactoring.identity import (
 
 # The three stamps as they stand together. Moving either identity model means
 # moving the analyzer with it, and updating this tuple in the same commit.
-_STAMPS = (7, 2, 2)
+_STAMPS = (8, 2, 2)
 
 
 def test_the_identity_models_and_the_analyzer_stamp_are_pinned_together() -> None:

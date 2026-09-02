@@ -2,6 +2,14 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.48.0
+
+### Changed
+- Version bump only. No command, skill or doc change this cycle: the CLI flags
+  each command names are unchanged, `hooks.json` still mirrors
+  `claude_config.py`, and every tool named in a command or skill is one the
+  server lists. `generate_refactoring_code` is live and deliberately unreferenced.
+
 ## 0.47.0
 
 ### Changed

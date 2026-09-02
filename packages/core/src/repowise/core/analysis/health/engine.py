@@ -91,13 +91,13 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp: the performance identity kernel moved to model version 2. A
-# cross-function cause is now named by the caller that repeats the work as well
-# as the sink that pays for it, so a shared infrastructure helper no longer
-# merges unrelated workflows, and execution context gained ``unknown`` instead of
-# defaulting an unclassifiable file to production. Stored opportunity ids and
-# plan links are restamped by the rescore this forces.
-HEALTH_ANALYZER_VERSION = 7
+# Current stamp: paired-test detection changed. ``_has_paired_test_file`` had
+# ``test_<stem>.py`` hardcoded, so the prefix layout only ever matched Python;
+# it now follows the file's own suffix, and ``<stem>_spec`` joins the suffix
+# forms. Files that were counted untested and are not become tested, which
+# moves untested-hotspot findings and the scores that carry them, on every
+# language with a prefix or spec convention rather than Ruby alone.
+HEALTH_ANALYZER_VERSION = 8
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.
