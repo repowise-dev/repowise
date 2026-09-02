@@ -45,6 +45,7 @@ __all__ = [
     "accept_decision",
     "accepted_decision_ids",
     "accepted_predicate",
+    "candidate_predicate",
     "count_decisions_by_lane",
     "current_currency",
     "decision_currencies",
@@ -96,6 +97,17 @@ def accepted_predicate() -> Any:
     return select(DecisionAcceptance.id).where(
         DecisionAcceptance.decision_id == DecisionRecord.id
     ).exists()
+
+
+def candidate_predicate() -> Any:
+    """A ``WHERE`` clause restricting a ``DecisionRecord`` query to candidates.
+
+    Never accepted, and not tombstoned. The second half is what keeps a
+    dismissed candidate out of a review queue while
+    :func:`count_decisions_by_lane` keeps it out of the totals, so the two
+    cannot report different backlogs off the same store.
+    """
+    return ~accepted_predicate() & (DecisionRecord.status != "dismissed")
 
 
 #: The same predicate for the hook path, which opens the store with stdlib

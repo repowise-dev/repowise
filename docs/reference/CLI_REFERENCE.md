@@ -915,12 +915,13 @@ repowise decision list [PATH]           # list records
 repowise decision show ID [PATH]        # full details
 repowise decision add [PATH]            # interactive add
 repowise decision candidates [PATH]     # what is awaiting review; these govern nothing
-repowise decision confirm ID [PATH]     # accept a candidate: this is what makes it govern
-repowise decision dismiss ID [PATH]     # tombstone it (sticky; never re-proposed)
+repowise decision confirm ID... [PATH]  # accept candidates: this is what makes them govern
+repowise decision dismiss ID... [PATH]  # tombstone them (sticky; never re-proposed)
 repowise decision merge ID INTO_ID      # fold a candidate into an existing decision
 repowise decision split ID [PATH]       # flag a candidate as bundling two choices
 repowise decision deprecate ID [PATH]   # retire a decision, optionally naming its successor
 repowise decision health [PATH]         # health dashboard
+repowise decision status [PATH]         # what capture did, and what it cost
 
 repowise decision export [PATH]         # write accepted decisions to .repowise/decisions.yaml
 repowise decision import [PATH]         # reconcile the store to that file
@@ -943,6 +944,8 @@ repowise decision llm --on|--off [PATH]           # all decision-extraction mode
 | `--scope PATH` | On `confirm`: a file or module this governs. Repeatable, and replaces the proposed scope. |
 | `--evidence REF` | On `confirm`: a commit, file or link it rests on. Repeatable. |
 | `--as NAME` | On `confirm`: record a different accepter than the repo's git identity. |
+| `--preview` | On `confirm` and `dismiss`: report what each id would do, and write nothing. |
+| `--reason TEXT` | On `dismiss`: why it was tombstoned. |
 | `--superseded-by ID` | On `deprecate`: writes an explicit lineage edge and keeps the retired id resolving. |
 | `--state STATE` | On `candidates`: `open` (default), `accepted`, `merged`, `needs_split`, `dismissed`, `all`. |
 | `--lane NAME` | On `candidates`: only candidates raised by that extraction lane. |
@@ -954,6 +957,30 @@ reason, a scope and an evidence reference, and the flags above supply whatever
 is missing. Under `--format json` the refusal is a document
 (`{"error": "acceptance_refused", "blockers": [...]}`) and the exit code is 1,
 so a scripted review can tell it apart from a crash.
+
+`confirm` and `dismiss` take one id or many, with the optional repository path
+still last. A refused id does not stop the others, and each id is applied
+independently, so a batch that refuses one commits the rest and exits 1.
+`--preview` puts every id through the same acceptance contract and then rolls
+the whole run back, so what it reports is what the write would have said.
+
+One id keeps the transition document those verbs already emitted
+(`{"id", "status", "action"}`). Two or more, or `--preview`, emit a results
+document instead:
+
+```json
+{
+  "action": "accepted",
+  "preview": false,
+  "results": [
+    {"given": "9f3c", "id": "...", "title": "...", "ok": true, "action": "accepted", "status": "active"},
+    {"given": "2b70", "id": "...", "title": "...", "ok": false,
+     "error": "acceptance_refused", "blockers": ["no scope: name the files or modules it governs"]}
+  ],
+  "succeeded": 1,
+  "failed": 1
+}
+```
 
 **Capture-control options:**
 
@@ -977,6 +1004,31 @@ kept in step for readers that predate the split, so it is not the same question
 as "what governs". `repowise decision candidates` is the authoritative list of
 what nobody has accepted, and the Decisions page splits the same repository
 into five lanes over the acceptance join.
+
+**Reporting on capture:** `repowise decision status` answers what the sources
+actually did, in one screen: the effective policy and preset, every source with
+its state and the reason it made no call, what each one has captured and when,
+the five review lanes, the age of the unreviewed backlog, the staging queues,
+and the model spend booked to decision extraction.
+
+Nothing records a capture run, so every figure is derived from a durable trace
+rather than a run ledger. That has two consequences the command states rather
+than papering over: spend is all-time with the last call named, because no
+stored boundary says which call belonged to which run; and a queue that a
+store predates is reported absent rather than as zero.
+
+```
+repowise decision status
+
+  Decision capture
+
+    Capture on  ·  LLM extraction on  ·  preset default
+
+  Source             Status               Records  Accepted  Last seen   Why
+  inline_marker      enabled              4        2         2026-08-31  Runs with model structuring.
+  pr                 skipped_no_provider  213      0         2026-08-31  No LLM provider is configured.
+  session_discovery  disabled             0        0         -           This source is switched off.
+```
 
 **Scripting these:** every subcommand takes `--format json`, and `confirm`,
 `dismiss`, `deprecate`, and `show` exit non-zero on an unknown id with

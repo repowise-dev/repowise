@@ -138,12 +138,19 @@ review as though they were the team's.
 
 | Command | What it records |
 |---------|-----------------|
-| `decision confirm ID` | Accept, optionally editing the reason and scope on the way. |
+| `decision confirm ID...` | Accept, optionally editing the reason and scope on the way. Takes many ids. |
 | `decision confirm ID` on a decision | Reaffirm it after review. |
 | `decision merge ID INTO_ID` | Fold a candidate into an existing decision. The old id resolves to the target. |
 | `decision split ID` | Flag a candidate as bundling two choices. Never splits it for you. |
-| `decision dismiss ID` | Tombstone it. On an accepted decision this also withdraws its authority. |
+| `decision dismiss ID...` | Tombstone it. On an accepted decision this also withdraws its authority. Takes many ids. |
 | `decision deprecate ID --superseded-by ID2` | Retire it with an explicit lineage edge. |
+
+`confirm` and `dismiss` take a list because a repository accumulates candidates
+faster than anyone reviews them one command at a time. Every id in a batch goes
+through the same acceptance contract as a single one, and each is applied on its
+own, so one refusal commits the rest and reports itself instead of ending the
+run. `--preview` runs the batch through that contract and rolls it back, so the
+report is what the write would have said rather than a second opinion about it.
 
 Similarity never supersedes anything: an edge exists because somebody named the
 successor. Merging and superseding retire ids that may already be written down
@@ -191,6 +198,21 @@ repowise decision health
   Ungoverned hotspots (1):
     payments/processor.ts
 ```
+
+`repowise decision health` scores governance. `repowise decision status` reports
+capture: the effective policy and preset, every source with the reason it made
+no call, what each has captured and when, the review lanes and the age of the
+unreviewed backlog, the staging queues, and the model spend booked to decision
+extraction.
+
+Nothing records a capture run. The extraction report and the broad lane's
+discovery report are rendered to the progress line and discarded, and
+`.repowise/state.json` carries nothing per source, so `status` derives every
+figure from a durable trace instead: the records and their review rows, the
+staging queues, and the `decision_extraction` cost rows. Two things follow, and
+the command says both rather than papering over them. Spend is all-time with
+the last call named, because no stored boundary says which call belonged to
+which run. And a queue that a store predates is reported absent, not as zero.
 
 From an agent:
 
@@ -565,8 +587,8 @@ the scope that decision governs.
 | `repowise decision add` | Guided interactive capture: title, context, decision, rationale, rejected alternatives, tradeoffs, affected files, tags. Answering the prompts is an acceptance, recorded as one. Name no files and it is kept as a candidate instead, because a decision that names nothing cannot be checked against the code. |
 | `repowise decision list` | Table of id, title, status, source, confidence, staleness, created date. |
 | `repowise decision show ID` | Full record including alternatives, consequences, affected files, and the evidence file and line. |
-| `repowise decision confirm ID` | Accept a candidate. Refuses, naming the gap, when it has no reason, scope or evidence; `--reason`, `--scope` and `--evidence` supply them. |
-| `repowise decision dismiss ID` | Tombstone it. Never re-proposed on reindex. |
+| `repowise decision confirm ID...` | Accept candidates. Refuses, naming the gap, when one has no reason, scope or evidence; `--reason`, `--scope` and `--evidence` supply them. A refused id does not stop the others. `--preview` writes nothing. |
+| `repowise decision dismiss ID...` | Tombstone them. Never re-proposed on reindex. `--preview` writes nothing. |
 | `repowise decision deprecate ID` | Retire it, optionally `--superseded-by <ID>`, which writes the lineage edge. |
 | `repowise decision candidates` | What is awaiting review, and why each was raised. |
 | `repowise decision merge ID INTO_ID` | Fold a candidate into an existing decision. |
@@ -574,6 +596,7 @@ the scope that decision governs.
 | `repowise decision export` / `import` | Round-trip accepted decisions through `.repowise/decisions.yaml`. |
 | `repowise decision migrate` | Classify pre-split records. Dry run unless `--apply`. |
 | `repowise decision health` | Counts, stale decisions, ungoverned hotspots, proposals awaiting review. |
+| `repowise decision status` | What capture did: policy and preset, per-source state and why, review lanes and backlog age, staging queues, model spend. |
 | `repowise decision config show` | The resolved capture policy: every source, its status, and why. |
 | `repowise decision config preset NAME` | Apply `off`, `local_only`, `balanced`, or `full`. |
 | `repowise decision source list` | The source registry with capabilities and current state. |

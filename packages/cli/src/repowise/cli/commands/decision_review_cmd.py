@@ -20,6 +20,7 @@ __all__ = [
     "merge_command",
     "migrate_command",
     "split_command",
+    "status_command",
 ]
 
 
@@ -379,3 +380,132 @@ def import_command(path: str | None, dry_run: bool, fmt: str) -> None:
         console.print(f"  [yellow]skipped[/yellow] {skipped['id'][:8]}: {skipped['reason']}")
     if dry_run:
         console.print("[dim]Nothing was written.[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# decision status
+# ---------------------------------------------------------------------------
+
+
+_STATUS_STYLE = {
+    "enabled": "green",
+    "always_on": "green",
+    "deterministic_only": "yellow",
+    "skipped_no_provider": "yellow",
+    "disabled": "dim",
+}
+
+
+def _render_status(report: dict) -> None:
+    """Render the capture report for a person."""
+    policy = report["policy"]
+    console.print("[bold]Decision capture[/bold]\n")
+    console.print(
+        f"  Capture [bold]{'on' if policy['enabled'] else 'off'}[/bold]  ·  "
+        f"LLM extraction [bold]{'on' if policy['llm'] else 'off'}[/bold]  ·  "
+        f"preset [bold]{policy['preset']}[/bold]"
+    )
+    if not policy["provider_available"]:
+        console.print("  [dim]No LLM provider configured; model stages are skipped.[/dim]")
+    for warning in policy["warnings"]:
+        console.print(f"  [yellow]{warning}[/yellow]")
+
+    sources = Table(title="\nSources", box=None, pad_edge=False, show_edge=False)
+    for column in ("Source", "Status", "Records", "Accepted", "Last seen", "Why"):
+        sources.add_column(column)
+    for source in report["sources"]:
+        style = _STATUS_STYLE.get(source["status"], "")
+        last = source.get("last_captured")
+        sources.add_row(
+            source["key"],
+            f"[{style}]{source['status']}[/{style}]" if style else source["status"],
+            str(source["records"]),
+            str(source["accepted"]),
+            str(last)[:10] if last else "-",
+            f"[dim]{source['reason']}[/dim]",
+        )
+    console.print(sources)
+
+    lanes = report["lanes"]
+    review = report["review"]
+    counts = Table(title="\nRecords", show_header=False, box=None, pad_edge=False, show_edge=False)
+    counts.add_column("Metric", style="cyan")
+    counts.add_column("Value", justify="right")
+    counts.add_row("Governing", str(lanes["governing"]))
+    counts.add_row("Active", str(lanes["active"]))
+    counts.add_row("Needs review", str(lanes["needs_review"]))
+    counts.add_row("Uncheckable", str(lanes["uncheckable"]))
+    counts.add_row("History", str(lanes["history"]))
+    counts.add_row("Candidates", f"[yellow]{lanes['candidates']}[/yellow]")
+    counts.add_row("Total", str(lanes["total"]))
+    console.print(counts)
+    console.print(
+        f"  [dim]{review['unreviewed']} awaiting review · oldest "
+        f"{review['oldest_age_days']:.0f}d · median {review['median_age_days']:.0f}d[/dim]"
+    )
+
+    backlog = report["backlog"]
+    if backlog["available"]:
+        console.print(
+            "\n  Backlog: "
+            + "  ".join(f"{k} {v}" for k, v in backlog.items() if k != "available")
+        )
+    else:
+        console.print(f"\n  [dim]Backlog: {backlog.get('reason', 'unavailable')}[/dim]")
+
+    cost = report["cost"]
+    if cost["calls"]:
+        last = cost["last_call"]
+        console.print(
+            f"\n  Model spend: {cost['calls']} calls  "
+            f"{cost['input_tokens'] + cost['output_tokens']} tokens  "
+            f"${cost['cost_usd']:.4f}"
+        )
+        console.print(f"  [dim]Last call {str(last['at'])[:19]} on {last['model']}[/dim]")
+    else:
+        console.print("\n  [dim]No decision-extraction model calls recorded.[/dim]")
+    console.print(
+        "\n[dim]Totals are all-time: capture records no per-run ledger, so a single "
+        "run cannot be costed on its own.[/dim]"
+    )
+
+
+@click.command("status")
+@click.argument("path", required=False, default=None)
+@format_option()
+def status_command(path: str | None, fmt: str) -> None:
+    """Report what decision capture did, and what it cost."""
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    repo_path = _resolve_decision_repo(path, fmt)
+
+    async def _run():
+        from repowise.core.analysis.decisions.status import capture_status
+        from repowise.core.persistence import get_session
+        from repowise.core.providers.llm.registry import provider_available_for_repo
+
+        engine, sf = await _open(repo_path)
+        try:
+            async with get_session(sf) as session:
+                repo_id = await _repository_id(session, repo_path)
+                return await capture_status(
+                    session,
+                    repo_id,
+                    repo_path,
+                    provider_available=provider_available_for_repo(repo_path),
+                )
+        finally:
+            await engine.dispose()
+
+    from repowise.core.repo_config import RepoConfigError
+
+    try:
+        report = run_async(_run())
+    except RepoConfigError as exc:
+        emit_refusal("config_unreadable", str(exc), fmt)
+        return
+
+    if fmt == "json":
+        emit_json({"repo": str(repo_path), **report})
+        return
+    _render_status(report)
