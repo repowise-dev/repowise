@@ -207,6 +207,34 @@ def test_embed_replaces_the_models_own_packages_section():
     assert "text" in out
 
 
+def test_embed_stops_at_the_provenance_footer():
+    """The footer is last on the page and carries no heading, so the
+    horizontal rule is the only terminator between it and a trailing section.
+
+    It rendered as ``---*Built from...`` for as long as the rule and the text
+    were joined, which is not a rule at all, so the section ran to the end of
+    the document and took the footer with it.
+    """
+    page = (
+        "# Page\n\n## Packages\n\n- **core** (`packages/core`, python)\n\n"
+        "---\n\n*Built from the code's structure.*\n"
+    )
+    out = embed_package_table(page, "| Package |\n|---|\n| a |")
+    assert "Built from the code's structure" in out
+    assert "- **core**" not in out
+
+
+def test_the_stub_footer_renders_a_standalone_rule():
+    """Guards the shape the terminator above depends on, at the source."""
+    from jinja2 import Environment, PackageLoader
+
+    env = Environment(loader=PackageLoader("repowise.core.generation", "templates"))
+    rendered = env.get_template("stub/_footer.j2").render()
+
+    assert rendered.startswith("---\n\n")
+    assert "---*" not in rendered
+
+
 def test_embed_without_a_table_leaves_the_page_alone():
     page = "# Page\n\nprose\n"
     assert embed_package_table(page, None) == page
