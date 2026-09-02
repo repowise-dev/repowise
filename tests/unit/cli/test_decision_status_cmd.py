@@ -223,3 +223,42 @@ def test_the_source_census_counts_the_same_records_the_lanes_do(status_repo: Pat
 
     assert counted == report["lanes"]["total"] == 2
     assert report["review"]["unreviewed"] == report["lanes"]["candidates"] == 2
+
+
+def test_status_separates_acceptable_from_blocked_backlog(status_repo: Path) -> None:
+    """A backlog size means little without saying how much of it is workable."""
+    review = _status(status_repo)["review"]
+
+    # All three name a scope, a rationale and an evidence file, so `confirm`
+    # would take them and `decision candidates` renders them acceptable. The
+    # two commands have to agree about that.
+    assert review["unreviewed"] == 3
+    assert review["acceptable"] == 3
+    assert review["blocked"] == 0
+    assert review["acceptable"] + review["blocked"] == review["unreviewed"]
+    # Seeded straight into the store, so no capture has written them a row.
+    assert review["no_review_row"] == 3
+
+
+def test_status_counts_a_blocked_candidate_as_blocked(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".repowise").mkdir()
+    _seed_wiki_db(
+        repo,
+        [
+            {"id": "d" * 32, "title": "Scoped", "status": "proposed", "source": "pr"},
+            {
+                "id": "e" * 32,
+                "title": "Unscoped",
+                "status": "proposed",
+                "source": "pr",
+                "affected_files": [],
+            },
+        ],
+    )
+
+    review = _status(repo)["review"]
+
+    assert review["acceptable"] == 1
+    assert review["blocked"] == 1

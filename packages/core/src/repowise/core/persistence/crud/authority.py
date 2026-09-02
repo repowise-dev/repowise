@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.lifecycle import (
     ACCEPTANCE_ACTIONS,
+    NO_SCOPE_BLOCKER,
     STORED_CURRENCIES,
     AcceptanceRequirement,
     acceptance_blockers,
@@ -46,6 +47,7 @@ __all__ = [
     "accepted_decision_ids",
     "accepted_predicate",
     "candidate_predicate",
+    "candidate_review_signals",
     "count_decisions_by_lane",
     "current_currency",
     "decision_currencies",
@@ -56,6 +58,7 @@ __all__ = [
     "merge_candidate",
     "reaffirm_decision",
     "record_acceptance",
+    "record_blockers",
     "request_split",
     "resolve_decision_id",
     "return_to_review",
@@ -358,9 +361,15 @@ def _json_list(value: Any) -> list[str]:
     return [str(v) for v in (value or [])]
 
 
+def _non_blank(values: list[str]) -> list[str]:
+    return [v for v in values if v and v.strip()]
+
+
 def _record_scope(record: DecisionRecord) -> list[str]:
-    return _json_list(record.affected_files_json) or _json_list(
-        record.affected_modules_json
+    # Blank entries fall through to the modules rather than short-circuiting on
+    # them, so this agrees with the TypeScript mirror about a whitespace path.
+    return _non_blank(_json_list(record.affected_files_json)) or _non_blank(
+        _json_list(record.affected_modules_json)
     )
 
 
@@ -369,6 +378,58 @@ def _record_evidence(record: DecisionRecord) -> list[str]:
     if record.evidence_file:
         evidence.append(record.evidence_file)
     return evidence
+
+
+def _first_non_blank(*values: str) -> str:
+    return next((v for v in values if v and v.strip()), "")
+
+
+def _requirement(
+    record: DecisionRecord,
+    *,
+    reason: str = "",
+    scope: list[str] | None = None,
+    evidence: list[str] | None = None,
+    accepter: str = "",
+    artifact: str = "",
+) -> AcceptanceRequirement:
+    """What the acceptance contract would be asked to take for *record*."""
+    # A record somebody typed is its own provenance: the accepter did not read
+    # an inference, they wrote the claim. Everything mined from a transcript, a
+    # commit or a document still has to say what it rests on.
+    self_authored = record.source == "cli" and bool(accepter.strip())
+    resolved_evidence = evidence if evidence is not None else _record_evidence(record)
+    if not resolved_evidence and self_authored:
+        resolved_evidence = [f"accepted by {accepter}"]
+    return AcceptanceRequirement(
+        reason=_first_non_blank(reason, record.rationale, record.decision),
+        scope=scope if scope is not None else _record_scope(record),
+        evidence=resolved_evidence,
+        accepter=accepter,
+        artifact=artifact,
+        self_authored=self_authored,
+    )
+
+
+def record_blockers(record: DecisionRecord) -> list[str]:
+    """Why the contract would refuse *record* as it stands, empty if it would not.
+
+    The accepter and artifact are what a reviewer supplies at the moment they
+    act, so this asks with an identity in hand: what is left is what a person
+    has to go and fill in first.
+    """
+    return acceptance_blockers(_requirement(record, accepter="reviewer"))
+
+
+def candidate_review_signals(record: DecisionRecord) -> tuple[float, bool]:
+    """Review ordering and the scope flag for *record*, both from the contract.
+
+    Priority is the contract's verdict and nothing else, so the queue leads
+    with candidates a reviewer can act on and leaves confidence and recency to
+    break ties.
+    """
+    blockers = acceptance_blockers(_requirement(record, accepter="reviewer"))
+    return (0.0 if blockers else 1.0), NO_SCOPE_BLOCKER in blockers
 
 
 async def record_acceptance(
@@ -397,21 +458,13 @@ async def record_acceptance(
     if currency not in STORED_CURRENCIES:
         raise ValueError(f"Unknown stored currency {currency!r}.")
 
-    # A record somebody typed is its own provenance: the accepter did not read
-    # an inference, they wrote the claim. Everything mined from a transcript, a
-    # commit or a document still has to say what it rests on.
-    self_authored = record.source == "cli" and bool(accepter.strip())
-    resolved_evidence = evidence if evidence is not None else _record_evidence(record)
-    if not resolved_evidence and self_authored:
-        resolved_evidence = [f"accepted by {accepter}"]
-
-    req = AcceptanceRequirement(
-        reason=reason or record.rationale or record.decision,
-        scope=scope if scope is not None else _record_scope(record),
-        evidence=resolved_evidence,
+    req = _requirement(
+        record,
+        reason=reason,
+        scope=scope,
+        evidence=evidence,
         accepter=accepter,
         artifact=artifact,
-        self_authored=self_authored,
     )
     blockers = acceptance_blockers(req)
     if blockers:
@@ -801,7 +854,9 @@ async def list_candidates(
     if lane is not None:
         q = q.where(DecisionCandidateMeta.lane == lane)
     q = q.order_by(
-        DecisionCandidateMeta.review_priority.desc().nullslast(),
+        # A candidate with no review row yet is unjudged, not lowest: it ranks
+        # with the ones the contract refused and confidence orders within.
+        func.coalesce(DecisionCandidateMeta.review_priority, 0.0).desc(),
         DecisionRecord.confidence.desc(),
         DecisionRecord.created_at.desc(),
     ).limit(limit).offset(offset)

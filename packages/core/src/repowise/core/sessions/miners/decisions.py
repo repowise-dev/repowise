@@ -614,6 +614,9 @@ def promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[ExtractedD
     recurring candidate accretes evidence without re-proposing itself.
     """
     structured = row["structured"]
+    # Both session lanes store source="session"; the staging kind is what tells
+    # a reviewer which one raised the candidate.
+    lane = DISCOVERY_KIND if row.get("kind") == DISCOVERY_KIND else "session"
     files = relative_files(structured.get("affected_files") or row["files"], repo_root)
     modules = resolve_module_nodes(files)
     confidence = compute_confidence(
@@ -635,6 +638,8 @@ def promotion_decisions(row: dict[str, Any], repo_root: Path) -> list[ExtractedD
             status="proposed",
             source_quote=structured.get("source_quote", ""),
             verification=structured.get("verification", "unverified"),
+            lane=lane,
+            needs_split=bool(structured.get("needs_split")),
         )
         for sid in sessions
     ]

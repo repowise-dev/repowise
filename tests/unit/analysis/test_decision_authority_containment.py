@@ -238,3 +238,23 @@ class TestSiblingCoverageCountsAcceptedRecordsOnly:
 
         assert result["sibling_coverage"] == 0.5
         assert result["score"] == "high"
+
+
+class TestPromotionCarriesTheReviewLane:
+    """``source`` is ``session`` for both lanes, so ``lane`` is what tells them apart."""
+
+    def test_the_broad_lane_names_itself(self):
+        out = promotion_decisions(_row(kind="session_discovery"), Path("."))
+
+        assert {d.lane for d in out} == {"session_discovery"}
+
+    def test_the_deterministic_lane_is_plain_session(self):
+        out = promotion_decisions(_row(kind="user_correction"), Path("."))
+
+        assert {d.lane for d in out} == {"session"}
+
+    def test_a_bundled_candidate_carries_its_split_flag(self):
+        row = _row(kind="session_discovery")
+        row["structured"]["needs_split"] = True
+
+        assert all(d.needs_split for d in promotion_decisions(row, Path(".")))

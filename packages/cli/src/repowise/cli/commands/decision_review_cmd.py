@@ -114,20 +114,30 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
     default="open",
     show_default=True,
 )
-@click.option("--lane", default=None, help="Only candidates raised by this lane.")
+@click.option(
+    "--lane", default=None, help="Only candidates raised by this extraction lane."
+)
 @click.option("--limit", default=30, show_default=True)
 @format_option()
 def candidates_command(
     path: str | None, state: str, lane: str | None, limit: int, fmt: str
 ) -> None:
-    """List records awaiting review. These do not govern anything."""
+    """List records awaiting review. These do not govern anything.
+
+    Acceptable candidates come first, so the top of the list is work a reviewer
+    can finish. The rest name what has to be filled in before `confirm` will
+    take them.
+    """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
     repo_path = _resolve_decision_repo(path, fmt)
 
     async def _run():
         from repowise.core.persistence import get_session
-        from repowise.core.persistence.crud.authority import list_candidates
+        from repowise.core.persistence.crud.authority import (
+            list_candidates,
+            record_blockers,
+        )
 
         engine, sf = await _open(repo_path)
         try:
@@ -149,6 +159,7 @@ def candidates_command(
                         "review_state": meta.review_state if meta else "open",
                         "needs_split": bool(meta.needs_split) if meta else False,
                         "lane": meta.lane if meta else "",
+                        "blockers": record_blockers(rec),
                     }
                     for rec, meta in rows
                 ]
@@ -163,16 +174,18 @@ def candidates_command(
         console.print("[dim]No candidates in this state.[/dim]")
         return
     table = Table(title=f"Candidates ({state})")
-    for column in ("ID", "Title", "Source", "Conf", "State"):
+    for column in ("ID", "Title", "Source", "Conf", "State", "Acceptable"):
         table.add_column(column)
     for row in rows:
         title = row["title"] + (" [yellow](split?)[/yellow]" if row["needs_split"] else "")
+        blockers = row["blockers"]
         table.add_row(
             row["id"][:8],
             title,
             row["source"],
             f"{row['confidence']:.2f}",
             row["review_state"],
+            ("[red]" + "; ".join(blockers) + "[/red]") if blockers else "[green]yes[/green]",
         )
     console.print(table)
     console.print(
@@ -443,6 +456,15 @@ def _render_status(report: dict) -> None:
         f"  [dim]{review['unreviewed']} awaiting review · oldest "
         f"{review['oldest_age_days']:.0f}d · median {review['median_age_days']:.0f}d[/dim]"
     )
+    console.print(
+        f"  [dim]{review['acceptable']} ready to accept · {review['blocked']} blocked; "
+        "`repowise decision candidates` names why[/dim]"
+    )
+    if review["no_review_row"]:
+        console.print(
+            f"  [dim]{review['no_review_row']} candidates carry no review row yet, "
+            "so they rank as unjudged until the next index.[/dim]"
+        )
 
     backlog = report["backlog"]
     if backlog["available"]:

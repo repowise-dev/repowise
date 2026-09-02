@@ -160,6 +160,11 @@ class AcceptanceRequirement:
     self_authored: bool = False
 
 
+#: Named because the review row's ``scope_unresolved`` flag is this exact
+#: verdict, and re-deriving it would be a second opinion about scope.
+NO_SCOPE_BLOCKER = "no scope: name the files or modules it governs"
+
+
 def acceptance_blockers(req: AcceptanceRequirement) -> list[str]:
     """Return the reasons *req* cannot become an acceptance, empty if it can.
 
@@ -171,7 +176,7 @@ def acceptance_blockers(req: AcceptanceRequirement) -> list[str]:
     if not req.reason.strip():
         blockers.append("no rationale or explicit constraint reason")
     if not [s for s in req.scope if s and s.strip()]:
-        blockers.append("no scope: name the files or modules it governs")
+        blockers.append(NO_SCOPE_BLOCKER)
     if not req.self_authored and not [e for e in req.evidence if e and e.strip()]:
         blockers.append("no evidence reference")
     if not req.accepter.strip() and not req.artifact.strip():

@@ -28,6 +28,7 @@ from repowise.core.analysis.decisions.lifecycle import currency_for_legacy_statu
 from .crud.authority import (
     AcceptanceRefusedError,
     accepted_decision_ids,
+    candidate_review_signals,
     record_acceptance,
     upsert_candidate_meta,
 )
@@ -114,10 +115,10 @@ def _normalize_title(title: str) -> str:
 
 
 def _has_scope(rec: DecisionRecord) -> bool:
-    return rec.affected_files_json not in ("", "[]") or rec.affected_modules_json not in (
-        "",
-        "[]",
-    )
+    # The acceptance contract's own answer, so the gap this plan reports and
+    # the flag the review row carries cannot disagree about one record.
+    _, scope_unresolved = candidate_review_signals(rec)
+    return not scope_unresolved
 
 
 async def plan_migration(
@@ -348,14 +349,19 @@ async def apply_migration(
                 continue
 
         existed = await session.get(DecisionCandidateMeta, rec.id) is not None
-        await upsert_candidate_meta(session, rec, lane=rec.source)
+        priority, scope_unresolved = candidate_review_signals(rec)
+        await upsert_candidate_meta(
+            session,
+            rec,
+            lane=rec.source,
+            review_priority=priority,
+            scope_unresolved=scope_unresolved,
+        )
+        # Only a row this run created gets its review state set. Rerunning must
+        # not walk a split or a dismissal back to unreviewed.
         meta = await session.get(DecisionCandidateMeta, rec.id)
-        if meta is not None:
-            # Only a row this run created gets its review state set. Rerunning
-            # must not walk a split or a dismissal back to unreviewed.
-            if not existed:
-                meta.review_state = row.review_state
-            meta.scope_unresolved = not _has_scope(rec)
+        if meta is not None and not existed:
+            meta.review_state = row.review_state
         # The legacy column is a projection: a candidate is not ``active``, and
         # leaving it so would keep every unmigrated reader treating it as one.
         # A tombstone keeps the status that records its retirement.

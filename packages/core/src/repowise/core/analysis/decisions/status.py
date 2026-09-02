@@ -22,6 +22,7 @@ from repowise.core.persistence.crud.authority import (
     accepted_decision_ids,
     candidate_predicate,
     count_decisions_by_lane,
+    record_blockers,
 )
 from repowise.core.persistence.models import (
     DecisionCandidateMeta,
@@ -109,27 +110,34 @@ async def _review(session: AsyncSession, repository_id: str) -> dict[str, Any]:
             )
         ).all()
     )
-    # A candidate raised before the review table existed has no meta row, so
-    # the record's own created_at is the only age it has.
-    ages = (
-        (
-            await session.execute(
-                select(DecisionRecord.created_at).where(
-                    DecisionRecord.repository_id == repository_id,
-                    candidate_predicate(),
-                )
+    # Asked of the record rather than read off the stored review priority, so
+    # this and `decision candidates` cannot report different backlogs for one
+    # store. Having no review row at all is a separate count, not a blocker.
+    open_rows = (
+        await session.execute(
+            select(DecisionRecord, DecisionCandidateMeta.decision_id)
+            .outerjoin(
+                DecisionCandidateMeta,
+                DecisionCandidateMeta.decision_id == DecisionRecord.id,
+            )
+            .where(
+                DecisionRecord.repository_id == repository_id,
+                candidate_predicate(),
             )
         )
-        .scalars()
-        .all()
-    )
+    ).all()
 
     now = _now_utc()
-    days = sorted(_age_days(value, now) for value in ages)
+    days = sorted(_age_days(record.created_at, now) for record, _ in open_rows)
+    acceptable = sum(1 for record, _ in open_rows if not record_blockers(record))
+    no_review_row = sum(1 for _, meta_id in open_rows if meta_id is None)
     middle = len(days) // 2
     return {
         "states": {state: int(states.get(state, 0)) for state in CANDIDATE_REVIEW_STATES},
         "unreviewed": len(days),
+        "acceptable": acceptable,
+        "blocked": len(days) - acceptable,
+        "no_review_row": no_review_row,
         "oldest_age_days": days[-1] if days else 0.0,
         "median_age_days": (
             0.0

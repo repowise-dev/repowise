@@ -948,9 +948,16 @@ repowise decision llm --on|--off [PATH]           # all decision-extraction mode
 | `--reason TEXT` | On `dismiss`: why it was tombstoned. |
 | `--superseded-by ID` | On `deprecate`: writes an explicit lineage edge and keeps the retired id resolving. |
 | `--state STATE` | On `candidates`: `open` (default), `accepted`, `merged`, `needs_split`, `dismissed`, `all`. |
-| `--lane NAME` | On `candidates`: only candidates raised by that extraction lane. |
+| `--lane NAME` | On `candidates`: only candidates raised by that extraction lane (`pr`, `session`, `session_discovery`, `comment`, `git_archaeology`, `adr`, `inline_marker`, `cli`). Unrelated to the review lanes the Decisions page splits on. |
 | `--apply` | On `migrate`: write the plan. Without it the command reports and writes nothing. |
 | `--dry-run` | On `import`: report and write nothing. |
+
+`candidates` is a review queue, so it leads with the candidates the acceptance
+contract would take, as judged at the last index, and puts the rest below them.
+Its `Acceptable` column is either `yes` or the same blockers `confirm` would
+refuse with, so the work you can finish and the work waiting on somebody is
+separated before you start. Under `--format json` each row carries a `blockers`
+array.
 
 `confirm` refuses rather than storing a blank acceptance: a candidate needs a
 reason, a scope and an evidence reference, and the flags above supply whatever
@@ -1008,7 +1015,8 @@ into five lanes over the acceptance join.
 **Reporting on capture:** `repowise decision status` answers what the sources
 actually did, in one screen: the effective policy and preset, every source with
 its state and the reason it made no call, what each one has captured and when,
-the five review lanes, the age of the unreviewed backlog, the staging queues,
+the five review lanes, how much of the unreviewed backlog a reviewer can accept
+today against how much is blocked, the age of that backlog, the staging queues,
 and the model spend booked to decision extraction.
 
 Nothing records a capture run, so every figure is derived from a durable trace

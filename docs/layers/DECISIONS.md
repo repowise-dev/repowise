@@ -162,7 +162,7 @@ partition the repository, so the counts add up and no record is in two of them:
 | Lane | What is in it |
 |------|---------------|
 | Active | Accepted, and still describes the code it names. These are the rules. |
-| Candidates | Never accepted. Governs nothing, reaches no agent. Carries the evidence quote it was drawn from, so it can be accepted or dismissed from the row. |
+| Candidates | Never accepted. Governs nothing, reaches no agent. Carries the evidence quote it was drawn from, so it can be accepted or dismissed from the row. Ordered so the ones the acceptance contract would take come first. |
 | Needs review | Accepted, but the files it names have moved. Still binds. |
 | Uncheckable | Accepted, but names no file or module, so nothing can check it against the code and no agent editing a file will be given it. |
 | History | Accepted and then withdrawn, superseded or dismissed. |
@@ -174,6 +174,22 @@ The lane is a join onto the acceptance, not a filter on the status column, so
 also carries a `currency` field; a record with no `currency` is a candidate.
 The lane is applied before the page is cut, so a page of a lane is a page of
 that lane.
+
+A candidate carries a review row, written where it is captured and refreshed
+for every open candidate on each index. It records which lane raised it, the
+version that extracted it, whether the lane saw the candidate bundling more
+than one choice, and whether the record names any scope at all. It also carries
+the review priority the Candidates lane and `repowise decision candidates`
+order on, which is the acceptance contract's verdict as of the last index and
+nothing else: a reviewer meets the candidates they can finish first, and
+confidence and recency break the ties. Re-extraction refreshes those signals
+but never the review state, so a dismissal or a split request survives the next
+index.
+
+A store indexed before the row existed has candidates without one. Until the
+next index writes them a row they rank as unjudged, alongside the ones the
+contract refused, and `repowise decision status` counts them so the gap is
+visible rather than silent.
 
 Accepting from the UI goes through the same acceptance contract as
 `repowise decision confirm`, so a candidate missing a reason, a scope or an
@@ -201,8 +217,9 @@ repowise decision health
 
 `repowise decision health` scores governance. `repowise decision status` reports
 capture: the effective policy and preset, every source with the reason it made
-no call, what each has captured and when, the review lanes and the age of the
-unreviewed backlog, the staging queues, and the model spend booked to decision
+no call, what each has captured and when, the review lanes, how much of the
+unreviewed backlog is ready to accept against how much is blocked, the age of
+that backlog, the staging queues, and the model spend booked to decision
 extraction.
 
 Nothing records a capture run. The extraction report and the broad lane's

@@ -158,6 +158,10 @@ class ExtractedDecision:
     # each extractor, consumed by the substring gate, then cleared before
     # persistence (the persistence layer ignores unknown dict keys anyway).
     source_text: str = ""
+    # ``source`` alone cannot separate the two session lanes. Blank and False
+    # mean the lane said nothing, not that it said no.
+    lane: str = ""
+    needs_split: bool = False
 
 
 class DecisionSourceError(RuntimeError):

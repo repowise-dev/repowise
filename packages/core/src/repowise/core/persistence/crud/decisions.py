@@ -15,6 +15,7 @@ import structlog
 from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core import __version__
 from repowise.core.analysis.decisions.lifecycle import DECISION_STATUS_ORDER
 from repowise.core.analysis.decisions.provenance import (
     SOURCE_RANK,
@@ -24,12 +25,19 @@ from repowise.core.analysis.decisions.provenance import (
 
 from ..decision_graph import sync_decision_node_links
 from ..models import (
+    DecisionCandidateMeta,
     DecisionEdge,
     DecisionEvidence,
     DecisionNodeLink,
     DecisionRecord,
     GitMetadata,
     _now_utc,
+)
+from .authority import (
+    accepted_predicate,
+    candidate_predicate,
+    candidate_review_signals,
+    upsert_candidate_meta,
 )
 
 # ---------------------------------------------------------------------------
@@ -241,6 +249,7 @@ async def upsert_decision(
         existing.superseded_by = superseded_by
         existing.updated_at = _now_utc()
         await session.flush()
+        await _write_candidate_meta(session, repository_id, {}, only={existing.id})
         return existing
 
     rec = DecisionRecord(
@@ -273,6 +282,7 @@ async def upsert_decision(
     )
     session.add(rec)
     await session.flush()
+    await _write_candidate_meta(session, repository_id, {}, only={rec.id})
     return rec
 
 
@@ -340,11 +350,22 @@ async def list_decisions(
         # Match exact module path in JSON array
         q = q.where(DecisionRecord.affected_modules_json.contains(f'"{module}"'))
     if accepted is not None:
-        from .authority import accepted_predicate
-
         predicate = accepted_predicate()
         q = q.where(predicate if accepted else ~predicate)
-    q = q.order_by(*_decision_order(sort)).limit(limit).offset(offset)
+    order = _decision_order(sort)
+    if accepted is False and sort != "recent":
+        # A candidates page is a review queue, so it leads with the rows the
+        # acceptance contract would take rather than the highest-confidence
+        # ones a reviewer cannot act on.
+        q = q.outerjoin(
+            DecisionCandidateMeta,
+            DecisionCandidateMeta.decision_id == DecisionRecord.id,
+        )
+        order = (
+            func.coalesce(DecisionCandidateMeta.review_priority, 0.0).desc(),
+            *order,
+        )
+    q = q.order_by(*order).limit(limit).offset(offset)
     result = await session.execute(q)
     return list(result.scalars().all())
 
@@ -1045,6 +1066,7 @@ async def bulk_upsert_decisions(
     pending = PendingDecisionIndex() if batch_mode else None
 
     touched_ids: list[str] = []
+    captured: dict[str, tuple[str, bool]] = {}
 
     for norm, members in groups.items():
         headline = headline_by_norm[norm]
@@ -1151,6 +1173,13 @@ async def bulk_upsert_decisions(
         _rederive_headline(rec, await list_decision_evidence(session, rec.id))
         rec.updated_at = _now_utc()
         touched_ids.append(rec.id)
+        # Two title groups can fold onto one record, so this accumulates:
+        # the later group must not drop what the earlier one raised.
+        prior_lane, prior_split = captured.get(rec.id, ("", False))
+        captured[rec.id] = (
+            prior_lane or headline.get("lane") or "",
+            prior_split or bool(headline.get("needs_split")),
+        )
 
         # Mirror the JSON file/module arrays into first-class decision→code
         # links so the graph is traversable both directions (Phase 3A). The
@@ -1214,8 +1243,76 @@ async def bulk_upsert_decisions(
         }
         await upsert_decision_vectors(vector_store, items, vectors_by_text=vectors_by_text)
 
+    await _write_candidate_meta(session, repository_id, captured)
+
     await session.flush()
     return touched_ids
+
+
+async def _write_candidate_meta(
+    session: AsyncSession,
+    repository_id: str,
+    captured: dict[str, tuple[str, bool]],
+    *,
+    only: set[str] | None = None,
+) -> None:
+    """Refresh the review row every open candidate in the repository is owed.
+
+    Not only the ones this run touched: the staging store does not re-emit an
+    already-promoted decision, so a backlog would otherwise stay unjudged until
+    something happened to re-extract each record individually. The signals come
+    from the record, so an unchanged candidate costs a comparison and no write.
+    """
+    rows = (
+        await session.execute(
+            select(DecisionRecord, DecisionCandidateMeta)
+            .outerjoin(
+                DecisionCandidateMeta,
+                DecisionCandidateMeta.decision_id == DecisionRecord.id,
+            )
+            .where(
+                DecisionRecord.repository_id == repository_id,
+                candidate_predicate(),
+                *([DecisionRecord.id.in_(only)] if only is not None else []),
+            )
+        )
+    ).all()
+
+    for rec, meta in rows:
+        priority, scope_unresolved = candidate_review_signals(rec)
+        capture = captured.get(rec.id)
+        if capture is None:
+            # Not extracted this run, so the provenance is not ours to write:
+            # only the contract-derived signals are refreshed, and a row with
+            # no lane yet takes the record's own source.
+            if (
+                meta is not None
+                and meta.lane
+                and meta.review_priority == priority
+                and meta.scope_unresolved == scope_unresolved
+            ):
+                continue
+            await upsert_candidate_meta(
+                session,
+                rec,
+                lane=meta.lane if meta is not None and meta.lane else rec.source,
+                review_priority=priority,
+                scope_unresolved=scope_unresolved,
+            )
+            continue
+
+        lane, needs_split = capture
+        await upsert_candidate_meta(
+            session,
+            rec,
+            lane=lane or rec.source,
+            extractor_version=__version__,
+            review_priority=priority,
+            # Raised, never cleared: a re-extraction must not walk back a split
+            # somebody asked for.
+            needs_split=True if needs_split else None,
+            scope_unresolved=scope_unresolved,
+        )
 
 
 async def purge_proposed_decisions_by_source(

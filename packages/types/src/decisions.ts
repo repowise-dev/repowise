@@ -431,9 +431,12 @@ export const DECISION_PRESETS = [
 ] as const;
 
 /**
- * The four checks `record_acceptance` refuses on, mirrored so a review surface
- * can disable a control it knows will be refused instead of finding out from
- * the error toast. Pinned against the Python contract by the vocabulary tests.
+ * What `record_acceptance` would refuse this record for, mirrored so a review
+ * surface can disable a control it knows will be refused instead of finding out
+ * from the error toast. Pinned against the Python contract by the vocabulary
+ * tests. The fourth check, accepter-or-artifact identity, is not here: the
+ * reviewer supplies that at the moment they act, so it is never something the
+ * record is missing. `record_blockers` on the Python side asks the same way.
  *
  * `selfAuthored` is the exemption for a record somebody typed: they wrote the
  * claim rather than reviewing an inference, so the entry is its own provenance.
