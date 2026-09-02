@@ -26,6 +26,11 @@ import os
 from pathlib import Path
 from typing import Any, NamedTuple
 
+
+def _global_config_path() -> Path:
+    """Resolved per call, never at import: tests redirect ``Path.home``."""
+    return Path.home() / ".repowise" / "config.yaml"
+
 # Mirrors ``mcp_server/_server.py::_EMBEDDER_KEY_ENV``. The two copies are the
 # shape this module exists to stop spreading, but the server cannot import the
 # CLI and neither can reach a shared home without moving the map into
@@ -103,21 +108,62 @@ def resolve_embedder_api_key(embedder_name: str, repo_path: Any = None) -> KeyLo
             if value:
                 return KeyLookup(value, tuple(searched))
 
-    global_config = Path.home() / ".repowise" / "config.yaml"
-    searched.append(f"embedder_api_key in {global_config}")
-    try:
-        if global_config.is_file():
-            import yaml  # type: ignore[import-untyped]
-
-            cfg = yaml.safe_load(global_config.read_text(encoding="utf-8")) or {}
-            if str(cfg.get("embedder") or "").strip().lower() == embedder_name:
-                key = str(cfg.get("embedder_api_key") or "").strip()
-                if key:
-                    return KeyLookup(key, tuple(searched))
-    except Exception:
-        pass
+    searched.append(f"embedder_api_key in {_global_config_path()}")
+    cfg = _load_global_config()
+    if str(cfg.get("embedder") or "").strip().lower() == embedder_name:
+        key = str(cfg.get("embedder_api_key") or "").strip()
+        if key:
+            return KeyLookup(key, tuple(searched))
 
     return KeyLookup(None, tuple(searched))
 
 
-__all__ = ["KeyLookup", "embedder_key_env_vars", "resolve_embedder_api_key"]
+def _load_global_config() -> dict[str, Any]:
+    """``~/.repowise/config.yaml`` as a mapping, or empty when it is not one.
+
+    Absent is the normal case, so this is silent. The ``isinstance`` matters:
+    ``safe_load`` returns whatever the document is, so a hand-edited file
+    holding a bare scalar or a list parses fine and then raises ``AttributeError``
+    on ``.get`` -- out through ``resolve_embedder``, which every command calls.
+    """
+    try:
+        path = _global_config_path()
+        if not path.is_file():
+            return {}
+        import yaml  # type: ignore[import-untyped]
+
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def global_config_embedder() -> str | None:
+    """The ``embedder`` backend pinned in ``~/.repowise/config.yaml``.
+
+    ``resolve_embedder_api_key`` above already parses this file for the *key*;
+    the *name* beside it had no reader at all. ``repowise serve`` writes both
+    fields together, so a user who configured through that prompt had a valid
+    key ``init`` could not see.
+
+    ``None`` for ``mock``: that is what a keyless run persists on its way out,
+    not a backend anyone chose. ``None`` too for a backend that needs a key and
+    has none here, because callers reach this only after the environment and
+    the repo ``.env`` came up empty, so the build is certain to fail and the
+    name would still be persisted as the repo's pin.
+    """
+    cfg = _load_global_config()
+    name = str(cfg.get("embedder") or "").strip().lower()
+    if not name or name == "mock":
+        return None
+    if name in _EMBEDDER_KEY_ENV and not str(cfg.get("embedder_api_key") or "").strip():
+        return None
+    return name
+
+
+__all__ = [
+    "KeyLookup",
+    "embedder_key_env_vars",
+    "global_config_embedder",
+    "resolve_embedder_api_key",
+]

@@ -6,7 +6,11 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
-from repowise.cli.providers.keys import embedder_key_env_vars, resolve_embedder_api_key
+from repowise.cli.providers.keys import (
+    embedder_key_env_vars,
+    global_config_embedder,
+    resolve_embedder_api_key,
+)
 
 
 def _embedder_kwargs(embedder_name: str, repo_path: Any = None) -> dict[str, Any]:
@@ -55,12 +59,16 @@ def resolve_embedding_model(embedder_name: str) -> str | None:
 
 
 def resolve_embedder(embedder_flag: str | None, env: Mapping[str, str] | None = None) -> str:
-    """Auto-detect embedder from env vars, or use the flag value.
+    """Auto-detect the embedder backend, or use the flag value.
 
     *env* layers a repo's persisted ``.repowise/.env`` under the process
     environment for callers that must not merge it into ``os.environ``. The
     process still wins on every key, so an exported variable keeps overriding
     the file, exactly as ``load_dotenv``'s non-overwriting merge did.
+
+    ``~/.repowise/config.yaml``'s ``embedder`` is the last tier, below every
+    environment source and above the keyless fallback. See
+    :func:`~repowise.cli.providers.keys.global_config_embedder`.
     """
     if embedder_flag:
         return embedder_flag
@@ -81,7 +89,7 @@ def resolve_embedder(embedder_flag: str | None, env: Mapping[str, str] | None = 
         return "ollama"
     if _get("EDENAI_API_KEY"):
         return "edenai"
-    return "mock"
+    return global_config_embedder() or "mock"
 
 
 def pin_names_an_embedder(pinned_embedder: Any) -> bool:
