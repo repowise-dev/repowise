@@ -182,6 +182,10 @@ class RepoOverviewContext:
     # Phase 2: third-party dependencies + headline architectural decisions
     external_systems: list[dict] = field(default_factory=list)
     decision_records: list[dict] = field(default_factory=list)
+    # The repository's own headings and section openers, capped. Framing and
+    # vocabulary only: every path, count and package name on the page still
+    # comes from the structural fields above. See ``readme_digest``.
+    prose_digest: str = ""
     # Per-package file counts and observed languages, largest first. Counted
     # from the run's own parsed files rather than written by the model, so the
     # table they feed reads the same on every render. Empty when the repository

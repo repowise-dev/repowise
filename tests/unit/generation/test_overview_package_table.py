@@ -341,3 +341,20 @@ def test_table_build_is_logged(sample_config, structure, parsed_files):
         build_package_table([])
     events = {e["event"] for e in logs}
     assert "overview_package_table_empty" in events
+
+
+def test_the_provenance_footer_survives_a_table_that_lands_last():
+    """The section ends at the footer's rule, not only at the next heading.
+
+    The deterministic page used to render a path table below its packages, so
+    the replacement always had a heading to stop at. With those tables gone the
+    packages can be the last section, and without this the footer is inside the
+    span that gets replaced.
+    """
+    page = (
+        "# Repository Overview: r\n\n## Packages\n- **core** (`packages/core`, python)\n\n"
+        "---\n\n*Built from the code's structure.*\n"
+    )
+    out = embed_package_table(page, "| Package |\n|---|\n| core |")
+    assert "| core |" in out
+    assert "*Built from the code's structure.*" in out
