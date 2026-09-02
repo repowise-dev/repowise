@@ -156,6 +156,60 @@ def _record_init_outcome(
         return
 
 
+def _print_structural_plan(
+    *,
+    result: Any,
+    repo_path: Path,
+    concurrency: int,
+    language: str,
+    onboarding: bool,
+    wiki_style: str,
+    max_file_pages: int | None,
+    skip_tests: bool,
+    skip_infra: bool,
+) -> None:
+    """The plan a dry run owes the deterministic branch.
+
+    ``build_generation_plan`` is provider-free, so the same selector that
+    generation would run gives the real per-type counts. A raw file count
+    would not: ``select_pages`` caps file pages, and module, onboarding and
+    infra pages are not in it at all.
+    """
+    from repowise.core.cost_estimator import build_generation_plan
+    from repowise.core.generation import GenerationConfig
+
+    gen_config = GenerationConfig.from_repo_config(
+        load_config(repo_path),
+        deterministic=True,
+        max_concurrency=concurrency,
+        language=language,
+        enable_onboarding=onboarding,
+        wiki_style=wiki_style,
+        max_file_pages=max_file_pages,
+    )
+    kg_modules = getattr(getattr(result, "knowledge_graph_result", None), "modules", None) or None
+    plans = build_generation_plan(
+        result.parsed_files,
+        result.graph_builder,
+        gen_config,
+        skip_tests,
+        skip_infra,
+        kg_modules=kg_modules,
+    )
+
+    table = Table(title="Generation Plan (dry run)", border_style=BRAND)
+    table.add_column("Pages", style="cyan")
+    table.add_column("Count", justify="right")
+    total = 0
+    for plan in plans:
+        total += plan.count
+        table.add_row(page_type_label(plan.page_type), f"{plan.count:,}")
+    table.add_section()
+    table.add_row("[bold]Total[/bold]", f"[bold]{total:,}[/bold]")
+    console.print(table)
+    console.print("  Dry run: every page above is rendered from structure. No wiki written.")
+
+
 def _run_deterministic_generation_phase(
     *,
     repo_path: Path,
@@ -437,7 +491,12 @@ def _run_generation_phase(
 @click.option("--skip-tests", is_flag=True, default=False, help="Skip test files.")
 @click.option("--skip-infra", is_flag=True, default=False, help="Skip infrastructure files.")
 @click.option(
-    "--dry-run", is_flag=True, default=False, help="Show generation plan without running."
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    # "No wiki", not "writes nothing": the pipeline still warms its parse and
+    # duplication caches, which are derived data.
+    help="Show the generation plan and cost estimate. Writes no wiki.",
 )
 @click.option("--yes", "-y", is_flag=True, default=False, help="Skip cost confirmation prompt.")
 @click.option(
@@ -1290,7 +1349,9 @@ def init_command(
     # the run isn't wasted, and propagate the choice to the persisted docs
     # mode so subsequent updates default to index-only.
     cost_declined = False
-    llm_client = provider if not index_only else decision_provider
+    # None on a dry run: decision extraction and KG enrichment both call this
+    # client before the generation phase's dry-run return is reached.
+    llm_client = None if dry_run else (provider if not index_only else decision_provider)
 
     from repowise.core.pipeline import PhaseTimingRecorder, run_pipeline
     from repowise.core.pipeline.modes import OrchestratorMode
@@ -1394,9 +1455,32 @@ def init_command(
     show_analysis_summary(result)
 
     # ---- Phase 3: Generation ----
+    # The priced branch below has its own dry-run return; these two rendered
+    # the template wiki and fell through to persistence, overwriting a
+    # model-written one. Same shape as #2005 (update) and #1526 (workspace).
+    if dry_run and (index_only or no_provider):
+        if run_mode == "fast":
+            # Fast skips generation outright, so promising a wiki here would
+            # preview the opposite of what the real run does.
+            console.print("\n  Dry run: fast mode indexes graph and git only. No wiki written.")
+        else:
+            _print_structural_plan(
+                result=result,
+                repo_path=repo_path,
+                concurrency=concurrency,
+                language=language,
+                onboarding=onboarding,
+                wiki_style=wiki_style,
+                max_file_pages=max_file_pages,
+                skip_tests=skip_tests,
+                skip_infra=skip_infra,
+            )
+        return
+
     # The embedder the template wiki was actually built with, persisted below
     # so `repowise update` reuses it. None means no template wiki was rendered.
     _index_only_embedder: str | None = None
+
     # Both modes generate. Index-only renders from templates; full mode picks
     # a coverage level, estimates the spend and prompts a model.
     #

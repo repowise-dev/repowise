@@ -155,6 +155,103 @@ class TestInitDryRun:
         # No DB should be created
         assert not (work_repo / ".repowise" / "wiki.db").exists()
 
+    def test_no_prose_dry_run_writes_no_wiki(self, runner, work_repo):
+        """The branch above prices a model and returns; this one never did.
+
+        ``--no-prose`` and a keyless run both reach the deterministic
+        generation phase, which takes no ``dry_run`` argument at all.
+        """
+        result = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--no-prose", "--dry-run", "--yes"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "Dry run" in result.output
+        assert not (work_repo / ".repowise" / "wiki.db").exists()
+        assert not (work_repo / ".repowise" / "state.json").exists()
+
+    def test_no_provider_dry_run_writes_no_wiki(self, runner, work_repo, monkeypatch):
+        """The other half of the predicate, and the worse one.
+
+        A keyless run sets ``no_provider`` rather than ``index_only``, so it
+        walked past the downgrade guard at the top of the command even
+        interactively.
+        """
+        for key in (
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "OPENROUTER_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "REPOWISE_PROVIDER",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        result = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--prose", "--dry-run", "--yes"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "Dry run" in result.output
+        assert not (work_repo / ".repowise" / "wiki.db").exists()
+        assert not (work_repo / ".repowise" / "state.json").exists()
+
+    def test_fast_dry_run_promises_no_wiki(self, runner, work_repo):
+        """Fast skips generation, so the preview must not promise a wiki."""
+        result = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--mode", "fast", "--dry-run", "--yes"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "No wiki written" in result.output
+        assert "Generation Plan" not in result.output
+        assert not (work_repo / ".repowise" / "wiki.db").exists()
+
+    def test_dry_run_does_not_replace_a_model_written_wiki(self, runner, work_repo):
+        """Rendering templates over an existing wiki rewrote every page and
+        downgraded ``docs_mode``, on the one command that promises not to act.
+        Recoverable through page history, but every reader served templates
+        afterwards and the spend behind the originals was wasted.
+        """
+        import json
+        import sqlite3
+        from contextlib import closing
+
+        seed = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--provider", "mock", "--yes"],
+            catch_exceptions=False,
+        )
+        assert seed.exit_code == 0, seed.output
+
+        db_path = work_repo / ".repowise" / "wiki.db"
+        state_path = work_repo / ".repowise" / "state.json"
+        with closing(sqlite3.connect(db_path)) as db:
+            db.execute("UPDATE wiki_pages SET provider_name='gemini', content='WRITTEN'")
+            db.commit()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["docs_mode"] = "llm"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        result = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--no-prose", "--dry-run", "--yes"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+
+        written = _db_scalar(db_path, "SELECT COUNT(*) FROM wiki_pages WHERE content='WRITTEN'")
+        templated = _db_scalar(
+            db_path, "SELECT COUNT(*) FROM wiki_pages WHERE provider_name='template'"
+        )
+        assert templated == 0
+        assert written > 0
+        assert json.loads(state_path.read_text(encoding="utf-8"))["docs_mode"] == "llm"
+
 
 class TestInitFullMock:
     def test_creates_db_and_state(self, runner, work_repo):
