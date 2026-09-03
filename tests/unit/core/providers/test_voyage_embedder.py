@@ -49,7 +49,8 @@ def test_embed_routes_through_thread_pool_and_normalizes() -> None:
     class _FakeResponse:
         # 1024 dims to match voyage-3's declared width; the guard below
         # catches a mismatch, so the fake must be honest.
-        embeddings = [[3.0] + [0.0] * 1022 + [4.0]]
+        def __init__(self) -> None:
+            self.embeddings: list[list[float]] = [[3.0] + [0.0] * 1022 + [4.0]]
 
     class _FakeClient:
         def __init__(self, *a, **k) -> None:
