@@ -28,7 +28,7 @@ import re
 import tomllib
 from pathlib import Path
 
-import click
+from repowise.cli.errors import reasoned_error
 
 from ..types import FileAction
 from .json_merge import json_deep_equal
@@ -87,10 +87,11 @@ def ensure_valid_toml(merged_text: str, config_path: Path) -> dict:
     try:
         return tomllib.loads(merged_text)
     except tomllib.TOMLDecodeError as exc:
-        raise click.ClickException(
+        raise reasoned_error(
             f"Cannot update {config_path}: merging the repowise entry would produce "
             "invalid TOML (an existing entry may use a different key spelling). "
-            "No changes were written."
+            "No changes were written.",
+            reason="editor_config_unmergeable",
         ) from exc
 
 
@@ -99,9 +100,10 @@ def load_toml_document(config_path: Path, existing_text: str) -> dict:
     try:
         return tomllib.loads(existing_text)
     except tomllib.TOMLDecodeError as exc:
-        raise click.ClickException(
+        raise reasoned_error(
             f"Cannot update {config_path}: existing file is not valid TOML. "
-            "Fix or remove it and retry; no changes were written."
+            "Fix or remove it and retry; no changes were written.",
+            reason="editor_config_malformed",
         ) from exc
 
 
@@ -111,9 +113,10 @@ def require_table(doc: dict, key: str, config_path: Path, label: str) -> dict | 
     if value is None:
         return None
     if not isinstance(value, dict):
-        raise click.ClickException(
+        raise reasoned_error(
             f"Cannot update {config_path}: [{label}] must be a TOML table. "
-            "Fix or remove it and retry; no changes were written."
+            "Fix or remove it and retry; no changes were written.",
+            reason="editor_config_malformed",
         )
     return value
 

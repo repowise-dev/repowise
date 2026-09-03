@@ -42,6 +42,7 @@ import { useRouter } from "next/navigation";
 import { useQueryState, parseAsStringLiteral } from "nuqs";
 import { Code2 } from "lucide-react";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
+import { ErrorBoundary } from "@repowise-dev/ui/shared";
 import { GraphView } from "@/components/architecture/graph-view";
 import { DependenciesView } from "@/components/architecture/dependencies-view";
 import { SymbolTableWrapper as SymbolTable } from "@/components/symbols/symbol-table-wrapper";
@@ -95,7 +96,7 @@ const TAB_FOR_VIEW: Record<CanonicalView, string> = {
 const TABS: { id: string; label: string }[] = [
   { id: "map", label: "Map" },
   { id: "coupling", label: "Coupling" },
-  { id: "packages", label: "Packages" },
+  { id: "packages", label: "Third-party" },
   { id: "symbols", label: "Symbols" },
 ];
 
@@ -196,7 +197,9 @@ export default function ArchitecturePage({
           </div>
         )}
         {activeTab === "coupling" && (
-          <div className="mx-auto max-w-[1100px] p-4 sm:p-6">
+          <div className="mx-auto max-w-[1500px] p-4 sm:p-6">
+            {/* Wider than the other tabs: the pairs table carries a sentence
+                per row plus both modules. The ring keeps its own 820px cap. */}
             <div className="mb-2">
               <h1 className="mb-1 flex items-center gap-2 text-xl font-semibold text-[var(--color-text-primary)]">
                 <Code2 className="h-5 w-5 text-[var(--color-accent-primary)]" />
@@ -206,7 +209,11 @@ export default function ArchitecturePage({
                 {COUPLING_DISCLAIMER}
               </p>
             </div>
-            <CouplingTab repoId={repoId} />
+            {/* Contain a render throw to the tab instead of letting it reach
+                the route boundary and blank the page. */}
+            <ErrorBoundary title="Couldn't load change coupling">
+              <CouplingTab repoId={repoId} />
+            </ErrorBoundary>
           </div>
         )}
       </div>

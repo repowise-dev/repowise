@@ -678,6 +678,7 @@ class DeadCodeAnalyzer:
         # along so the evidence line can say why.
         self._unindexed_source_files = list(unindexed_source_files or [])
         self._repo_root = repo_root
+        self._source_map = source_map
         self._unindexed_tokens: frozenset[str] | None = None
         # Kept for the absence check below, which is the one pass that needs
         # the raw text of *every* indexed file rather than of a suffix-filtered
@@ -733,6 +734,11 @@ class DeadCodeAnalyzer:
         # because the whitelist arrives per ``analyze()`` call and the map does
         # not.
         self._package_files: PackageFileMap | None = None
+        # Cache for JSX prop-guard extraction: maps pred_file → list of
+        # (parent_fn, child_component, guard_prop) triples. Populated lazily
+        # by _get_unsatisfied_prop_guard so each TSX/JSX file is read from
+        # disk and parsed by tree-sitter at most once per analysis run.
+        self._guard_cache: dict[str, list[tuple[str, str, str]]] = {}
 
     def _reachability_rescues(self, whitelist: AbstractSet[str]) -> ReachabilityRescues:
         """Assemble the rescue state the shared predicate reads."""
@@ -1329,6 +1335,8 @@ class DeadCodeAnalyzer:
                 # alias; importers carry the alias in ``imported_names``.
                 export_alias = self._ts_export_aliases.get(str(node), {}).get(sym_name)
 
+                unsatisfied_guard: tuple[str, str] | None = None
+
                 has_importers = False
                 for pred in self.graph.predecessors(node):
                     edge_data = self.graph[pred][node]
@@ -1342,13 +1350,17 @@ class DeadCodeAnalyzer:
                         break
 
                 if has_importers:
-                    continue
+                    node_lang = node_data.get("language", "")
+                    if node_lang in ("typescript", "javascript"):
+                        unsatisfied_guard = self._get_unsatisfied_prop_guard(sym_id, sym_name)
+                    if unsatisfied_guard is None:
+                        continue
 
                 # Namespace-import rescue: see ``file_imported_as_namespace``
                 # computation above. Any public symbol in a file pulled by
                 # module name could be the dispatch target for
                 # ``<modname>.<attr>(...)``.
-                if file_imported_as_namespace:
+                if file_imported_as_namespace and unsatisfied_guard is None:
                     continue
 
                 # Symbol-level usage signal: any incoming ``calls`` /
@@ -1356,78 +1368,64 @@ class DeadCodeAnalyzer:
                 # ``implements`` / ``type_use`` edge means somewhere in
                 # the codebase actually uses this symbol — even if the
                 # file-level ``imported_names`` machinery missed it
-                # (intra-file C++ helpers, ``Foo::method`` qualified
-                # definitions linked by call resolution but never named
-                # in a header, Razor/XAML code-behind dispatches, and
-                # abstract base classes / interfaces that are only ever
-                # extended or implemented, never called directly — Java
-                # padding bases like ``BoundedLocalCache.BLCHeader``,
-                # Kotlin sealed parents, Scala typeclass traits).
-                if self.graph.has_node(sym_id) and any(
-                    self.graph[pred][sym_id].get("edge_type") in REACHABILITY_USE_EDGE_TYPES
-                    for pred in self.graph.predecessors(sym_id)
+                if (
+                    unsatisfied_guard is None
+                    and self.graph.has_node(sym_id)
+                    and any(
+                        self.graph[pred][sym_id].get("edge_type") in REACHABILITY_USE_EDGE_TYPES
+                        for pred in self.graph.predecessors(sym_id)
+                    )
                 ):
                     continue
 
-                # A container whose member is used is itself used, and no
-                # search for the container's own name can see it. A C# static
-                # holder class is only ever named at its declaration --
-                # ``Guard.Against.EmptyBasket(...)`` writes the method, never
-                # ``BasketGuards`` -- so the name really is absent and the name
-                # is the wrong thing to look for. Asked after the direct check
-                # so it can only rescue, never displace.
-                #
-                # Gated to C# because that is where the idiom lives. The
-                # argument generalises -- deleting any class whose method has a
-                # caller breaks that caller -- but ungating it removes findings
-                # in every language at once, which is its own measured change.
                 if self._member_is_used(sym_id, sym.get("language")):
                     continue
 
-                if is_deprecated:
-                    confidence = 0.3
-                elif file_has_importers:
-                    confidence = 1.0
-                else:
-                    confidence = 0.7
-
-                # Interfaces / protocols are reached almost exclusively
-                # through their implementors. Implementor detection is
-                # heuristic — its absence is "evidence missing", not
-                # "evidence of absence". Cap confidence below the
-                # safe-to-delete threshold when the file containing the
-                # interface has no incoming ``implements``-class edges,
-                # so the demo doesn't ship public-API interfaces as
-                # confident dead code. Generic across all languages
-                # (C#, Java, Kotlin, Scala, Swift protocols, TS).
-                if sym.get("kind") == "interface" and not self._file_has_implementors(node):
-                    confidence = min(confidence, RISK_CAP_CONFIDENCE)
-
-                # COM / IUnknown / IDispatch contract methods
-                # (``QueryInterface``, ``AddRef``, ``Release``, …) are
-                # dispatched through native vtables — no static caller
-                # edge will ever land in the graph. Clamp below the
-                # safe-to-delete threshold so we never ship them as
-                # confident dead code on Windows / COM-heavy C++ repos.
-                if is_contract_method(sym_name, sym.get("kind"), sym.get("language", "unknown")):
-                    confidence = min(confidence, RISK_CAP_CONFIDENCE)
-
-                # Runtime-load risk factors for the defining file (config /
-                # bootstrap / database / environment / script / asset): symbols in
-                # such files are often wired up reflectively, so cap below the
-                # deletion-ready threshold and tag the finding for review.
                 risk_factors = path_risk_factors(str(node))
-                if risk_factors:
-                    confidence = min(confidence, RISK_CAP_CONFIDENCE)
+                file_basename = Path(node).name
 
-                safe = confidence >= SAFE_CONFIDENCE_THRESHOLD
+                if unsatisfied_guard:
+                    guard_prop, caller_name = unsatisfied_guard
+                    confidence = RISK_CAP_CONFIDENCE
+                    if risk_factors:
+                        confidence = min(confidence, RISK_CAP_CONFIDENCE)
+                    safe = False
+                    reason = f"Public symbol '{sym_name}' is rendered behind prop guard '{guard_prop}' which is never supplied"
+                    evidence = [f"Prop '{guard_prop}' is missing across all call sites of '{caller_name}'"]
+                else:
+                    if is_deprecated:
+                        confidence = 0.3
+                    elif file_has_importers:
+                        confidence = 1.0
+                    else:
+                        confidence = 0.7
+
+                    if sym.get("kind") == "interface" and not self._file_has_implementors(node):
+                        confidence = min(confidence, RISK_CAP_CONFIDENCE)
+
+                    if is_contract_method(sym_name, sym.get("kind"), sym.get("language", "unknown")):
+                        confidence = min(confidence, RISK_CAP_CONFIDENCE)
+
+                    if risk_factors:
+                        confidence = min(confidence, RISK_CAP_CONFIDENCE)
+
+                    if self._dynamic_import_dirs and str(Path(node).parent) in self._dynamic_import_dirs:
+                        confidence = min(confidence, RISK_CAP_CONFIDENCE)
+
+                    safe = confidence >= SAFE_CONFIDENCE_THRESHOLD
+
+                    evidence = [f"No file imports symbol '{sym_name}' from {file_basename}"]
+                    risk_line = risk_evidence(risk_factors)
+                    if risk_line:
+                        evidence.append(risk_line)
+                    if self._dynamic_import_files and confidence <= RISK_CAP_CONFIDENCE:
+                        evidence.append(
+                            "Package uses dynamic imports or runtime-resolved edges, "
+                            "so the absence of a static reference does not establish disuse"
+                        )
+                    reason = f"Public symbol '{sym_name}' has no importers"
 
                 git_meta = self.git_meta_map.get(str(node), {})
-
-                evidence = [f"No imports of '{sym_name}' found in graph"]
-                risk_line = risk_evidence(risk_factors)
-                if risk_line:
-                    evidence.append(risk_line)
 
                 findings.append(
                     DeadCodeFindingData(
@@ -1436,7 +1434,7 @@ class DeadCodeAnalyzer:
                         symbol_name=sym_name,
                         symbol_kind=sym.get("kind"),
                         confidence=confidence,
-                        reason=f"Public symbol '{sym_name}' has no importers",
+                        reason=reason,
                         last_commit_at=git_meta.get("last_commit_at")
                         if isinstance(git_meta.get("last_commit_at"), datetime)
                         else None,
@@ -1454,6 +1452,91 @@ class DeadCodeAnalyzer:
                 )
 
         return findings
+
+    def _get_unsatisfied_prop_guard(
+        self, sym_id: str, sym_name: str, visited: set[str] | None = None
+    ) -> tuple[str, str] | None:
+        """Check if a symbol is rendered behind a prop guard that is never supplied."""
+        if not self.graph.has_node(sym_id):
+            return None
+
+        if visited is None:
+            visited = set()
+        if sym_id in visited:
+            return None
+        visited.add(sym_id)
+
+        from .jsx_prop_guards import extract_guarded_jsx_renders
+
+        predecessors = [
+            pred for pred in self.graph.predecessors(sym_id)
+            if self.graph[pred][sym_id].get("edge_type") in REACHABILITY_USE_EDGE_TYPES
+        ]
+        if not predecessors:
+            return None
+
+        for pred in predecessors:
+            pred_file = pred.split("::")[0] if "::" in pred else pred
+            if not pred_file.endswith((".tsx", ".jsx", ".ts", ".js")):
+                continue
+
+            if pred_file not in self._guard_cache:
+                src = self._read_file_text(pred_file)
+                self._guard_cache[pred_file] = (
+                    extract_guarded_jsx_renders(pred_file, src) if src else []
+                )
+            pred_parent = pred.split("::")[-1] if "::" in pred else None
+            guarded = self._guard_cache[pred_file]
+            found_guard = None
+            for parent_fn, child_comp, prop_name in guarded:
+                if child_comp == sym_name and (
+                    pred_parent is None or parent_fn == pred_parent or parent_fn == "Anonymous"
+                ):
+                    found_guard = (prop_name, parent_fn if parent_fn != "Anonymous" else (pred_parent or ""))
+                    break
+
+            if found_guard:
+                prop_name, parent_name = found_guard
+                incoming = [
+                    caller for caller in self.graph.predecessors(pred)
+                    if self.graph[caller][pred].get("edge_type") in REACHABILITY_USE_EDGE_TYPES
+                ]
+                if incoming:
+                    all_missing = True
+                    for caller in incoming:
+                        edge = self.graph[caller][pred]
+                        supplied = edge.get("supplied_props")
+                        if supplied is None or prop_name in supplied:
+                            all_missing = False
+                            break
+                    if all_missing:
+                        return (prop_name, parent_name)
+
+            pred_name = pred.split("::")[-1]
+            parent_guard = self._get_unsatisfied_prop_guard(pred, pred_name, visited)
+            if parent_guard is not None:
+                return parent_guard
+
+        return None
+
+    def _read_file_text(self, file_path: str) -> str | None:
+        """Safely read the content of a file, using source_map if available."""
+        try:
+            if getattr(self, "_source_map", None) is not None:
+                abs_path = (
+                    str(Path(self._repo_root) / file_path)
+                    if getattr(self, "_repo_root", None) and not Path(file_path).is_absolute()
+                    else file_path
+                )
+                return read_source_text(file_path, abs_path, self._source_map)
+            p = Path(file_path)
+            if not p.is_absolute() and getattr(self, "_repo_root", None):
+                p = Path(self._repo_root) / p
+            if p.exists():
+                return p.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            logger.warning("read_file_text_failed", path=file_path, error=str(exc))
+        return None
 
     def _detect_unused_internals(
         self,

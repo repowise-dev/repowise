@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import {
   SourceCitations,
   extractSources,
@@ -139,5 +139,15 @@ describe("SourceCitations render", () => {
     const pct = screen.getByText("82%");
     expect(pct.className).toContain("tabular-nums");
     expect(pct.className).toContain("font-mono");
+  });
+
+  it("collapses end-of-answer sources by default and lets the reader expand them", () => {
+    const { container } = renderList();
+    const disclosure = container.querySelector("details");
+    expect(disclosure).not.toHaveAttribute("open");
+    expect(screen.getByText("Sources · 2")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Sources · 2"));
+    expect(disclosure).toHaveAttribute("open");
   });
 });

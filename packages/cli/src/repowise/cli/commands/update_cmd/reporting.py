@@ -163,19 +163,67 @@ def render_degraded(degraded: list[str] | None) -> None:
 
     These used to be swallowed (``except Exception: pass``), so the update
     claimed clean success while, say, git metadata or graph nodes silently
-    stayed at the previous commit. The run still exits 0 — every listed step
-    is retried by the next update — but the panel must not say "complete"
-    without this block when something was skipped.
+    stayed at the previous commit. The run still exits 0, but the panel must
+    not say "complete" without this block when something was skipped.
+
+    Not every degraded step heals on the next update. A transient failure
+    (lock contention, a server that recovered, a network blip) re-runs and
+    fixes itself, so promising a retry is honest. A step that failed because
+    the *config* is broken — the canonical case is the embedder: a bad
+    ``REPOWISE_EMBEDDER`` value, a missing/bad API key, or an unreachable
+    endpoint the user configured — reads the same config on the next run and
+    fails identically, so telling the user "will retry on the next update" is
+    a promise nothing will keep. Those steps are surfaced as a config error
+    with the way to fix them instead.
     """
     if not degraded:
         return
-    console.print()
-    console.print(
-        f"[yellow]Update completed with {len(degraded)} degraded step(s) "
-        "(will retry on the next update):[/yellow]"
-    )
+    config, retryable = _split_degraded(degraded)
+    if retryable:
+        console.print()
+        console.print(
+            f"[yellow]Update completed with {len(retryable)} degraded step(s) "
+            "(will retry on the next update):[/yellow]"
+        )
+        for entry in retryable:
+            console.print(f"  [yellow]-[/yellow] {entry}")
+    if config:
+        console.print()
+        console.print(
+            "[yellow]Update degraded on config-dependent steps a retry cannot heal. "
+            "Fix the config, then run [cyan]repowise reindex[/cyan]:[/yellow]"
+        )
+        for entry in config:
+            console.print(f"  [yellow]-[/yellow] {entry}")
+
+
+def _split_degraded(
+    degraded: list[str],
+) -> tuple[list[str], list[str]]:
+    """Split degraded entries into ``(config_cannot_self_heal, retryable)``.
+
+    Entries are ``"Step: message"`` strings. The step name before the first
+    colon decides the class.  The embedder step is config-driven: a bad env
+    value or unreachable endpoint is identical on the next run, so no retry
+    can heal it and the panel must say how to fix the config instead of
+    promising a retry.  Every other step is a transient/range-scoped failure
+    that genuinely re-runs on the next update.
+    """
+    config: list[str] = []
+    retryable: list[str] = []
     for entry in degraded:
-        console.print(f"  [yellow]-[/yellow] {entry}")
+        step = entry.split(":", 1)[0].strip()
+        if step in _CONFIG_CANNOT_SELF_HEAL_STEPS:
+            config.append(entry)
+        else:
+            retryable.append(entry)
+    return config, retryable
+
+
+# Degraded steps whose failure is a config value that is unchanged on the
+# next run, so "will retry on the next update" would be a promise retry cannot
+# keep. Promoted here so the panel can say how to fix them instead.
+_CONFIG_CANNOT_SELF_HEAL_STEPS = frozenset({"Page embedding"})
 
 
 def _dead_code_counts(

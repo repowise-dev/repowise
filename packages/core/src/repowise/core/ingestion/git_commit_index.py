@@ -7,7 +7,7 @@ made the git phase dominate the total ``repowise init`` wall-clock.
 
 This module replaces the fan-out with one repo-wide ``git log`` pass
 and an in-memory bucketing step. The shape mirrors what
-``_compute_co_changes`` already does — one subprocess, fan-out via
+``compute_co_changes_and_entropy`` already does — one subprocess, fan-out via
 Python dicts — so any future debugging only has one log format to
 understand.
 

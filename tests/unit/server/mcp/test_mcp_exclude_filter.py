@@ -141,7 +141,7 @@ async def test_get_health_excludes_configured_paths(setup_mcp, health_data, tmp_
     (rw / "config.yaml").write_text("exclude_patterns:\n  - src/db/\n", encoding="utf-8")
     monkeypatch.setattr(mcp_mod._state, "_repo_path", str(tmp_path))
 
-    result = await get_health()
+    result = await get_health(only=["worst_files"])
     paths = {m["file_path"] for m in result.get("worst_files", [])}
     assert "src/db/models.py" not in paths
     assert "src/auth/service.py" in paths

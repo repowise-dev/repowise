@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.generation.editor_files import ClaudeMdGenerator, EditorFileDataFetcher
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.schemas import ClaudeMdGenerateResponse, ClaudeMdResponse
 
 router = APIRouter(
     tags=["claude-md"],
@@ -17,7 +18,7 @@ router = APIRouter(
 )
 
 
-@router.get("/api/repos/{repo_id}/claude-md")
+@router.get("/api/repos/{repo_id}/claude-md", response_model=ClaudeMdResponse)
 async def get_claude_md(
     repo_id: str,
     session: AsyncSession = Depends(get_db_session),
@@ -45,7 +46,11 @@ async def get_claude_md(
     }
 
 
-@router.post("/api/repos/{repo_id}/claude-md/generate", status_code=202)
+@router.post(
+    "/api/repos/{repo_id}/claude-md/generate",
+    response_model=ClaudeMdGenerateResponse,
+    status_code=202,
+)
 async def generate_claude_md(
     repo_id: str,
     session: AsyncSession = Depends(get_db_session),

@@ -83,6 +83,50 @@ async def test_non_dominant_returns_prose_at_medium_with_evidence(setup_mcp, mon
 
 
 @pytest.mark.asyncio
+async def test_configured_reasoning_reaches_synthesis(setup_mcp, monkeypatch):
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, scores=(2.0, 1.9))
+    _patch_provider(monkeypatch, answer_mod, "The go() function drives it (pkg/alpha/one.py).")
+    monkeypatch.setenv("REPOWISE_REASONING", "off")
+    seen: dict = {}
+
+    async def _capture_synthesis(provider, system_prompt, user_prompt, **kwargs):
+        seen.update(kwargs)
+        return "The go() function drives it (pkg/alpha/one.py).", None
+
+    monkeypatch.setattr(answer_mod, "synthesize", _capture_synthesis)
+
+    await get_answer("how does the alpha module go function work")
+
+    assert seen["reasoning"] == "off"
+
+
+@pytest.mark.asyncio
+async def test_repo_reasoning_resolution_reaches_synthesis(setup_mcp, monkeypatch):
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    _patch_pipeline(monkeypatch, answer_mod, scores=(2.0, 1.9))
+    _patch_provider(monkeypatch, answer_mod, "The go() function drives it (pkg/alpha/one.py).")
+    monkeypatch.setattr(
+        answer_mod, "_resolve_reasoning_for_answer", lambda _path: "low", raising=False
+    )
+    seen: dict = {}
+
+    async def _capture_synthesis(provider, system_prompt, user_prompt, **kwargs):
+        seen.update(kwargs)
+        return "The go() function drives it (pkg/alpha/one.py).", None
+
+    monkeypatch.setattr(answer_mod, "synthesize", _capture_synthesis)
+
+    await get_answer("how does the alpha module go function work")
+
+    assert seen["reasoning"] == "low"
+
+
+@pytest.mark.asyncio
 async def test_hedged_non_dominant_demotes_low_but_keeps_prose(setup_mcp, monkeypatch):
     """(b) A hedged synthesis on non-dominant retrieval still demotes to low,
     but now carries the prose + best_guesses instead of an empty answer."""
@@ -118,7 +162,8 @@ async def test_flag_off_restores_legacy_abstain(setup_mcp, monkeypatch):
     monkeypatch.setattr(answer_mod, "_resolve_provider_for_answer", _no_provider)
 
     result = await get_answer("how does the alpha module go function work")
-    assert result["answer"] == "", "flag off abstains — no synthesized prose"
+    assert result["answer"], "flag off still leads with an actionable abstention"
+    assert "synthesis skipped" in result["answer"]
     assert result["confidence"] == "low"
     assert result["best_guesses"], "abstain path still hands back candidates"
 

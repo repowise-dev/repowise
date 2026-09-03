@@ -7,9 +7,9 @@ rippling across the codebase. This is the breadth complement to
 flag a file coupled to *many* others regardless of whether the links are
 declared.
 
-Reads ``git_meta["co_change_partners_json"]`` (the decay-weighted partner list
-the git indexer already stores). **scatter** = the number of distinct partners
-whose ``co_change_count`` clears the indexer's recording threshold (2.0).
+Reads ``git_meta["co_change_partners_json"]`` (the partner list the git indexer
+already stores). **scatter** = the number of distinct partners recorded for the
+file, which the indexer has already filtered to pairs sharing real commits.
 
 Fires when the file is actively changing and broadly coupled:
 
@@ -22,37 +22,21 @@ detector emits nothing.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
+from ....co_change import parse_partners
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
-_MIN_PARTNER_WEIGHT = 2.0
 _SCATTER_THRESHOLD = 8
 _HIGH_SCATTER = 15
 _MIN_COMMITS_90D = 3
 
 
 def _count_scatter(meta: dict[str, Any]) -> int:
-    raw = meta.get("co_change_partners_json")
-    if not raw:
-        return 0
-    try:
-        partners = json.loads(raw)
-    except (TypeError, ValueError):
-        return 0
-    scatter = 0
-    for p in partners:
-        if not isinstance(p, dict):
-            continue
-        weight = p.get("co_change_count") or p.get("count") or 0
-        try:
-            if float(weight) >= _MIN_PARTNER_WEIGHT:
-                scatter += 1
-        except (TypeError, ValueError):
-            continue
-    return scatter
+    # No second cutoff here: the indexer already dropped pairs that share too
+    # few commits, so every recorded partner counts.
+    return len(parse_partners(meta.get("co_change_partners_json")))
 
 
 def _as_int(value: object, default: int = 0) -> int:

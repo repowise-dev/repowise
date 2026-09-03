@@ -373,12 +373,16 @@ async def test_overview_layer_file_count(setup_mcp_with_kg):
 
 
 @pytest.mark.asyncio
-async def test_overview_layer_description_truncated(setup_mcp_with_kg):
+async def test_overview_layers_carry_names_and_counts_only(setup_mcp_with_kg):
     from repowise.server.mcp_server import get_overview
 
     result = await get_overview()
-    for layer in result["architecture"]["layers"]:
-        assert len(layer["description"]) <= 120
+    layers = result["architecture"]["layers"]
+    assert layers
+    # The layer prose restated the overview essay; get_context on a layer file
+    # is the route to it now.
+    for layer in layers:
+        assert set(layer) == {"name", "file_count"}
 
 
 # ---------------------------------------------------------------------------

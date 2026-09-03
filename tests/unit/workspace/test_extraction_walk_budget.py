@@ -45,6 +45,15 @@ REPO_SOURCE = {
     "svc_b/queue.js": "channel.sendToQueue('jobs', payload);\n",
 }
 
+# Source files in the extractor's combined extension set.  The manifests
+# (pyproject.toml, package.json) are not in this set: .toml/.json are not
+# among the extensions any extractor claims, so iter_source_files never reads
+# them via read_bytes.  pyproject.toml is still read once via read_text by
+# _collect_console_scripts during FileTraverser.traverse.
+_SOURCE_FILES = frozenset(
+    rel for rel in REPO_SOURCE if not rel.endswith((".toml", ".json"))
+)
+
 
 def _make_repo(root: Path) -> None:
     for rel, content in REPO_SOURCE.items():
@@ -65,28 +74,55 @@ def workspace(tmp_path: Path) -> WorkspaceConfig:
 
 
 @pytest.fixture
-def counters(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
-    """Count tree walks, file reads and boundary detections."""
-    counts = {"walks": 0, "reads": 0, "boundaries": 0}
+def counters(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict:
+    """Count tree walks, file reads (scoped to the fixture repos) and boundary detections.
 
+    ``Path.read_text`` and ``Path.read_bytes`` are patched at the class level because
+    that is the only interception point that catches every call site.  Without a path
+    filter the counter is process-global: reads by unrelated threads (leaked aiosqlite
+    workers, pytest internals) increment the same counter the assertion checks.
+
+    The filter restricts counting to paths under *tmp_path* — the two fixture repos
+    live there and nowhere else, so nothing outside the repos under test can pollute
+    the tally.  ``FileTraverser.traverse`` is similarly scoped to this process's
+    constructors: only repowise code builds a ``FileTraverser``, and each one carries
+    ``repo_root``, which the closure checks against *tmp_path*.
+    """
+    counts: dict = {"walks": 0, "reads_per_path": {}, "boundaries": 0}
+
+    def _under_fixture(p: Path) -> bool:
+        """True when *p* resolves to a path under the fixture workspace."""
+        try:
+            p.resolve().relative_to(tmp_path)
+            return True
+        except ValueError:
+            return False
+
+    # --- FileTraverser.traverse -------------------------------------------
     original_traverse = FileTraverser.traverse
 
     def counted_traverse(self, *args, **kwargs):
-        counts["walks"] += 1
+        if _under_fixture(self.repo_root):
+            counts["walks"] += 1
         return original_traverse(self, *args, **kwargs)
 
+    # --- Path.read_text / read_bytes --------------------------------------
     # Both, because the shared walk reads bytes (so it can hash them) while
-    # other call sites still read text. Counting only one would let a second
+    # other call sites still read text.  Counting only one would let a second
     # read slip in through the other.
     original_read_text = Path.read_text
     original_read_bytes = Path.read_bytes
 
     def counted_read_text(self, *args, **kwargs):
-        counts["reads"] += 1
+        if _under_fixture(self):
+            key = str(self.resolve())
+            counts["reads_per_path"][key] = counts["reads_per_path"].get(key, 0) + 1
         return original_read_text(self, *args, **kwargs)
 
     def counted_read_bytes(self, *args, **kwargs):
-        counts["reads"] += 1
+        if _under_fixture(self):
+            key = str(self.resolve())
+            counts["reads_per_path"][key] = counts["reads_per_path"].get(key, 0) + 1
         return original_read_bytes(self, *args, **kwargs)
 
     monkeypatch.setattr(FileTraverser, "traverse", counted_traverse)
@@ -110,7 +146,7 @@ def counters(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
 async def test_one_tree_walk_per_repo(
     workspace: WorkspaceConfig,
     tmp_path: Path,
-    counters: dict[str, int],
+    counters: dict,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(contracts_mod, "save_contract_store", lambda store, root: root)
@@ -121,20 +157,43 @@ async def test_one_tree_walk_per_repo(
 async def test_each_file_is_read_once_per_repo(
     workspace: WorkspaceConfig,
     tmp_path: Path,
-    counters: dict[str, int],
+    counters: dict,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(contracts_mod, "save_contract_store", lambda store, root: root)
     await run_contract_extraction(workspace, tmp_path, [])
-    # 4 source files per repo are in the extractors' combined extension set
-    # (api.py, db.py, client.ts, queue.js); the manifests are not source.
-    assert counters["reads"] <= 2 * len(REPO_SOURCE)
+
+    reads = counters["reads_per_path"]
+
+    # Every file under the fixture repos is read at most once per repo:
+    #
+    # - Source files (.py, .ts, .js) are read once via read_bytes inside
+    #   iter_source_files, which is the shared walk.
+    # - pyproject.toml is read once via read_text by _collect_console_scripts
+    #   during FileTraverser.traverse (entry-point detection).  It is NOT read
+    #   by iter_source_files because .toml is not in any extractor's extension
+    #   set.
+    # - package.json is traversed for language detection but never opened:
+    #   .json is not in any extractor's extension set, and json/toml are in
+    #   _SKIP_GENERATED_CHECK so the 512-byte generated-file read is skipped.
+    #
+    # A second read of any file means an extractor re-read outside the shared
+    # walk — the regression this test exists to catch.
+    MAX_READS_PER_FILE = 1
+    over_budget = {path: n for path, n in reads.items() if n > MAX_READS_PER_FILE}
+    assert not over_budget, (
+        f"Files read more than {MAX_READS_PER_FILE} time(s) — "
+        "an extractor is re-reading outside the shared walk:\n"
+        + "\n".join(
+            f"  {n}x  {path}" for path, n in sorted(over_budget.items())
+        )
+    )
 
 
 async def test_boundaries_detected_once_per_repo_when_supplied(
     workspace: WorkspaceConfig,
     tmp_path: Path,
-    counters: dict[str, int],
+    counters: dict,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(contracts_mod, "save_contract_store", lambda store, root: root)
@@ -150,7 +209,7 @@ async def test_boundaries_detected_once_per_repo_when_supplied(
 async def test_boundaries_are_detected_when_not_supplied(
     workspace: WorkspaceConfig,
     tmp_path: Path,
-    counters: dict[str, int],
+    counters: dict,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(contracts_mod, "save_contract_store", lambda store, root: root)
@@ -161,7 +220,7 @@ async def test_boundaries_are_detected_when_not_supplied(
 async def test_hooks_detect_boundaries_once_per_repo(
     workspace: WorkspaceConfig,
     tmp_path: Path,
-    counters: dict[str, int],
+    counters: dict,
 ) -> None:
     """The 2-per-repo -> 1-per-repo budget, through the caller that wires it.
 
@@ -201,7 +260,7 @@ async def test_every_contract_records_its_extraction_layer(
     monkeypatch.setattr(contracts_mod, "save_contract_store", lambda store, root: root)
     store = await run_contract_extraction(workspace, tmp_path, [])
     assert store.contracts
-    # No parse cache in these fixture repos, so everything is regex-sourced.
+    # No wiki.db in these fixture repos, so everything is regex-sourced.
     assert {c.meta.get(EXTRACTION_LAYER_KEY) for c in store.contracts} == {LAYER_REGEX}
 
 

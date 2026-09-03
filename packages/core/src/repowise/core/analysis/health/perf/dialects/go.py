@@ -47,7 +47,7 @@ GO_SQL_METHODS: frozenset[str] = frozenset(
 # ``Scan`` is deliberately EXCLUDED: ``*sql.Rows.Scan`` (decoding an
 # already-fetched cursor row inside ``for rows.Next()``) is far more common than
 # GORM's ``db.Scan`` finisher and is NOT a round-trip — it FP'd ``io_in_loop``
-# on every cursor-read loop (Phase-7c syft corpus). Dropping it costs ~0
+# on every cursor-read loop, measured across a Go corpus. Dropping it costs ~0
 # measured recall (no corpus GORM-``Scan``-in-loop) and removes the FP class.
 GO_GORM_METHODS: frozenset[str] = frozenset(
     {
@@ -110,11 +110,11 @@ class GoPerfDialect(BasePerfDialect):
             "regex_compile_in_loop",
             "resource_construction_in_loop",
             "lock_in_loop",
-            # Phase 7b — centrality-gated / nesting-confidence markers.
+            # Centrality-gated / nesting-confidence markers.
             "nested_loop_with_io",
             "nested_loop_quadratic",
             "hot_path_sync_io",
-            # Phase 7d — Go-specific spawn explosion.
+            # Go-specific spawn explosion.
             "goroutine_in_unbounded_loop",
         }
     )
@@ -192,7 +192,7 @@ class GoPerfDialect(BasePerfDialect):
             # Only a *string-literal* pattern is unambiguously hoistable: a
             # dynamic argument (``regexp.MustCompile(pat)`` / a concatenation with
             # a per-iteration variable) may legitimately vary each iteration and
-            # cannot be lifted out of the loop. Phase-7c Go corpus: the 10
+            # cannot be lifted out of the loop. Measured on a Go corpus: the 10
             # dynamic-arg cases were all UNSURE; gating on a literal removes them.
             return "regex_compile_in_loop"
         if (root, method) in GO_RESOURCE_CTORS:
@@ -375,7 +375,7 @@ class GoPerfDialect(BasePerfDialect):
     def _nearest_for_is_range(node: Node) -> bool:
         """True if the nearest enclosing ``for`` loop ranges over a COLLECTION.
 
-        Phase-7d gate: a single-variable ``for i := range n`` (Go 1.22
+        Gate: a single-variable ``for i := range n`` (Go 1.22
         range-over-int, or a count constant) is a bounded count loop, NOT a
         per-element fan-out — both 0%-precision FPs were ``for i := range
         <const>`` in tests. The two-variable ``for k, v := range coll`` form is

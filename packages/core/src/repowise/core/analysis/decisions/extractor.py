@@ -47,6 +47,11 @@ from typing import Any
 import structlog
 
 from repowise.core.analysis.decisions.gate import apply_substring_gate
+from repowise.core.analysis.decisions.policy import (
+    INDEX_SOURCE_KEYS,
+    DecisionPolicy,
+    resolve_policy,
+)
 from repowise.core.analysis.decisions.scope import resolve_module_nodes
 from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 from repowise.core.ingestion.traverser import load_gitignore_spec
@@ -153,6 +158,10 @@ class ExtractedDecision:
     # each extractor, consumed by the substring gate, then cleared before
     # persistence (the persistence layer ignores unknown dict keys anyway).
     source_text: str = ""
+    # ``source`` alone cannot separate the two session lanes. Blank and False
+    # mean the lane said nothing, not that it said no.
+    lane: str = ""
+    needs_split: bool = False
 
 
 class DecisionSourceError(RuntimeError):
@@ -204,30 +213,18 @@ class DecisionExtractionReport:
 
 
 # Every index-time capture source, in progress order. The CLI derives its
-# progress-bar step count from this; the config gate validates against it.
-SOURCE_NAMES: tuple[str, ...] = (
-    "inline_marker",
-    "git_archaeology",
-    "adr",
-    "pr",
-    "comment",
-)
+# progress-bar step count from this. Re-exported from the source registry so
+# capabilities and run order cannot drift apart.
+SOURCE_NAMES: tuple[str, ...] = INDEX_SOURCE_KEYS
 
 
 def enabled_source_names(repo_config: dict[str, Any] | None) -> tuple[str, ...]:
-    """Resolve which capture sources are enabled for a repo.
+    """Resolve which index-time capture sources are enabled for a repo.
 
-    Reads the ``decisions.sources`` mapping from a loaded
-    ``.repowise/config.yaml`` dict (``{source_name: bool}``). Sources absent
-    from the mapping default to enabled; unknown keys are ignored so a stale
-    config (e.g. the removed ``code_comment``) never breaks extraction.
+    Thin wrapper over :func:`resolve_policy`; kept because callers pass a
+    loaded config dict and want only the names.
     """
-    cfg = repo_config or {}
-    decisions_cfg = cfg.get("decisions") or {}
-    sources_cfg = decisions_cfg.get("sources") if isinstance(decisions_cfg, dict) else {}
-    if not isinstance(sources_cfg, dict):
-        sources_cfg = {}
-    return tuple(name for name in SOURCE_NAMES if sources_cfg.get(name, True) is not False)
+    return resolve_policy(repo_config).policy.enabled_index_sources()
 
 
 # ---------------------------------------------------------------------------
@@ -418,9 +415,13 @@ class DecisionExtractor:
         git_meta_map: dict[str, dict] | None = None,
         parsed_files: list[Any] | None = None,
         source_map: dict[str, bytes] | None = None,
+        policy: DecisionPolicy | None = None,
     ) -> None:
         self._repo_path = Path(repo_path)
         self._provider = provider
+        # Per-source model gate. ``None`` means "no policy supplied", which
+        # keeps the provider available to every source, as before this existed.
+        self._policy = policy
         self._graph = graph
         self._git_meta_map = git_meta_map or {}
         self._parsed_files = parsed_files or []
@@ -430,6 +431,17 @@ class DecisionExtractor:
         # re-reading every file from disk (redundant with ingestion). ``None``
         # keeps the legacy self-walk fallback for callers that don't thread it.
         self._source_map = source_map
+
+    def _llm(self, source: str) -> Any | None:
+        """The provider *source* may use, or None when its model stage is off.
+
+        One gate for all five sources: a hybrid source (inline_marker, adr)
+        falls back to its deterministic parse, and an LLM-only source returns
+        nothing, which is the same shape as having no provider at all.
+        """
+        if self._policy is not None and not self._policy.llm_allowed(source):
+            return None
+        return self._provider
 
     # ------------------------------------------------------------------
     # Source 1: Inline markers
@@ -498,6 +510,7 @@ class DecisionExtractor:
         if not markers_by_file:
             return []
 
+        marker_llm = self._llm("inline_marker")
         decisions: list[ExtractedDecision] = []
 
         for file_path, markers in markers_by_file.items():
@@ -506,7 +519,7 @@ class DecisionExtractor:
 
             markers_by_line = {m["line"]: m for m in markers}
 
-            if self._provider:
+            if marker_llm:
                 # Use LLM to structure markers
                 try:
                     llm_decisions = await self._structure_markers_via_llm(file_path, markers)
@@ -586,6 +599,7 @@ class DecisionExtractor:
         exception, so those markers were never structured and never fell
         back — they left no record and no log line.
         """
+        provider = self._llm("inline_marker")
         decisions: list[ExtractedDecision] = []
         for start in range(0, len(markers), _MARKERS_PER_CALL):
             batch = markers[start : start + _MARKERS_PER_CALL]
@@ -602,7 +616,7 @@ class DecisionExtractor:
                 markers_block=markers_block,
             )
 
-            response = await self._provider.generate(
+            response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=2000, temperature=0.2
             )
             decisions.extend(self._parse_decisions_json(response.content))
@@ -614,7 +628,8 @@ class DecisionExtractor:
 
     async def mine_git_archaeology(self) -> list[ExtractedDecision]:
         """Extract decisions from significant git commits."""
-        if not self._provider or not self._git_meta_map:
+        provider = self._llm("git_archaeology")
+        if not provider or not self._git_meta_map:
             return []
 
         # Collect unique significant commits with decision signals
@@ -685,7 +700,7 @@ class DecisionExtractor:
                 source_by_sha[c["sha"]] = f"{c['message']}\n{body}".strip()
 
             prompt = GIT_ARCHAEOLOGY_PROMPT.format(commits_block=commits_block)
-            response = await self._provider.generate(
+            response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=2000, temperature=0.2
             )
             extracted = self._parse_decisions_json(response.content)
@@ -738,6 +753,7 @@ class DecisionExtractor:
         adr_paths = self._find_adr_files()
         if not adr_paths:
             return []
+        provider = self._llm("adr")
 
         decisions: list[ExtractedDecision] = []
         for path in adr_paths:
@@ -755,11 +771,11 @@ class DecisionExtractor:
             parsed = self._parse_adr(content, rel)
             if parsed is not None:
                 decisions.append(parsed)
-            elif self._provider:
+            elif provider:
                 try:
                     stripped = self._strip_code_blocks(content)
                     prompt = README_MINING_PROMPT.format(file_path=rel, content=stripped[:15_000])
-                    response = await self._provider.generate(
+                    response = await provider.generate(
                         _SYSTEM_PROMPT, prompt, max_tokens=2000, temperature=0.2
                     )
                     for d in self._parse_decisions_json(response.content):
@@ -871,8 +887,12 @@ class DecisionExtractor:
         if not (decision_txt or context):
             return None
 
+        # A document with no Status section has not said it is accepted, and a
+        # committed ADR is the one artifact allowed to accept its own decision.
+        # Defaulting to ``active`` therefore let any draft under docs/adr/ grant
+        # itself authority.
         status_key = status.strip().lower().split()[0] if status.strip() else ""
-        mapped_status = _ADR_STATUS_MAP.get(status_key, "active")
+        mapped_status = _ADR_STATUS_MAP.get(status_key, "proposed")
 
         return ExtractedDecision(
             title=_truncate_title(title or rel_path, 200),
@@ -896,7 +916,8 @@ class DecisionExtractor:
 
     async def mine_pr_bodies(self) -> list[ExtractedDecision]:
         """Extract decisions from PR / squash-merge commit bodies."""
-        if not self._provider or not self._git_meta_map:
+        provider = self._llm("pr")
+        if not provider or not self._git_meta_map:
             return []
 
         candidates: dict[str, dict] = {}
@@ -944,7 +965,7 @@ class DecisionExtractor:
             # saw no errors and the run reported "Nothing found in: pull
             # requests" — the exact zero-that-means-failure this change exists
             # to remove.
-            response = await self._provider.generate(
+            response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=2500, temperature=0.2
             )
             extracted = self._parse_decisions_json(response.content)
@@ -982,7 +1003,8 @@ class DecisionExtractor:
         ``instead of`` …) rather than the explicit markers already covered by
         ``scan_inline_markers``.
         """
-        if not self._provider or self._graph is None:
+        provider = self._llm("comment")
+        if not provider or self._graph is None:
             return []
 
         top_files = self._top_central_files(_MAX_COMMENT_NODES)
@@ -1009,7 +1031,7 @@ class DecisionExtractor:
             # all — the quietest of the three swallows, and the one that made
             # "comment: 0" unfalsifiable. Let it propagate to the gather
             # below, which counts it.
-            response = await self._provider.generate(
+            response = await provider.generate(
                 _SYSTEM_PROMPT, prompt, max_tokens=2500, temperature=0.2
             )
             extracted = self._parse_decisions_json(response.content)
@@ -1257,9 +1279,9 @@ class DecisionExtractor:
         sub-extractor finishes (the names in :data:`SOURCE_NAMES`). Used by the
         CLI to surface per-source progress.
 
-        *enabled_sources* restricts the run to the named sources (``None`` runs
-        everything). Callers derive it from ``decisions.sources`` in
-        ``.repowise/config.yaml`` via :func:`enabled_source_names`.
+        *enabled_sources* restricts the run to the named sources. It defaults
+        to the policy passed at construction, and to everything when there is
+        none.
 
         Every extracted decision is then put through the anti-hallucination
         substring gate (:meth:`_apply_substring_gate`) before being returned —
@@ -1293,6 +1315,8 @@ class DecisionExtractor:
             ("pr", self.mine_pr_bodies),
             ("comment", self.mine_comment_archaeology),
         ]
+        if enabled_sources is None and self._policy is not None:
+            enabled_sources = self._policy.enabled_index_sources()
         if enabled_sources is None:
             sources = all_sources
         else:

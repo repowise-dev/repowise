@@ -184,7 +184,7 @@ export function InferredTestsView({
 
       <OverviewSection
         title="Health against tests"
-        description="Every file placed by its defect-risk score, split by whether any test reaches it, sized by lines of code. There is no percentage axis here because there is no line-level evidence to build one from. The left column is the page: weak code nothing runs. Click a file to open it."
+        description="Every file placed by its 0–10 defect-health score (higher is healthier), split by whether any test reaches it, sized by lines of code. There is no percentage axis here because there is no line-level evidence to build one from. The left column is the page: weak code nothing runs. Click a file to open it."
       >
         <RiskCoverageScatter
           basis="inferred"

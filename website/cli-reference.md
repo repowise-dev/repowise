@@ -536,7 +536,9 @@ repowise health --trend
 
 ## `risk`
 
-Score the defect risk of a *change* (commit or `base..head` range). No LLM.
+Rank a *change* (commit or `base..head` range) for review. The repo-relative
+percentile/classification is authoritative; the supporting 0-10 score measures
+diff size and spread and is not a probability. No LLM.
 
 ```bash
 repowise risk [REVSPEC] [OPTIONS]

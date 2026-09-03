@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ..base import line_at
 from ..langs import PYTHON
 from .dialect import METHODS, build_consumer_contract
 
@@ -28,7 +29,11 @@ class PythonClientsDialect:
         out: list[Contract] = []
         for m in _REQUESTS_RE.finditer(ctx.content):
             c = build_consumer_contract(
-                ctx, method=m.group(1).upper(), url=m.group(2), client="requests"
+                ctx,
+                method=m.group(1).upper(),
+                url=m.group(2),
+                client="requests",
+                line=line_at(ctx.content, m.start()),
             )
             if c is not None:
                 out.append(c)

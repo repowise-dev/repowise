@@ -373,7 +373,11 @@ def build_cpp_workspace_index(ctx: ResolverContext) -> CppWorkspaceIndex:
     # is what that path did before.
     source_map = getattr(ctx, "source_map", None)
 
-    cmake_files = discover_cmake_reactor(repo_path)
+    # Same reason as ``source_map`` above: the stand-in context has no
+    # snapshot, and None means the live walk this always did.
+    cmake_files = discover_cmake_reactor(
+        repo_path, snapshot=getattr(ctx, "walk_snapshot", None)
+    )
     file_api_targets = parse_cmake_file_api_reply(repo_path)
     bazel_files = discover_bazel_packages(repo_path) if is_bazel_repo(repo_path) else []
 

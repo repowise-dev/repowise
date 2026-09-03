@@ -2,6 +2,22 @@
 
 from ..spec import LanguageSpec
 
+# Primitives plus the prelude names a file may use without importing them. Read
+# by two spec fields below, which ask different questions of the same list.
+_PRELUDE_TYPES = frozenset(
+    {
+        "bool", "char", "str", "u8", "u16", "u32", "u64", "u128", "usize",
+        "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64",
+        "String", "Vec", "Option", "Result", "Box", "Arc", "Rc",
+        "HashMap", "HashSet", "BTreeMap", "BTreeSet", "Cow",
+        "Pin", "Future", "Send", "Sync", "Sized", "Copy", "Clone",
+        "Debug", "Display", "Default", "Iterator", "IntoIterator",
+        "From", "Into", "TryFrom", "TryInto", "AsRef", "AsMut",
+        "Fn", "FnMut", "FnOnce", "Drop", "Deref", "DerefMut",
+        "Self", "self",
+    }
+)
+
 SPEC = LanguageSpec(
     tag="rust",
     display_name="Rust",
@@ -98,19 +114,12 @@ SPEC = LanguageSpec(
     # so a type reference to one can never point at a file this repo declares.
     # Wider than ``builtin_parents``: that set only has to cover what may sit in
     # an impl clause, this one every position a type may be written in.
-    builtin_types=frozenset(
-        {
-            "bool", "char", "str", "u8", "u16", "u32", "u64", "u128", "usize",
-            "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64",
-            "String", "Vec", "Option", "Result", "Box", "Arc", "Rc",
-            "HashMap", "HashSet", "BTreeMap", "BTreeSet", "Cow",
-            "Pin", "Future", "Send", "Sync", "Sized", "Copy", "Clone",
-            "Debug", "Display", "Default", "Iterator", "IntoIterator",
-            "From", "Into", "TryFrom", "TryInto", "AsRef", "AsMut",
-            "Fn", "FnMut", "FnOnce", "Drop", "Deref", "DerefMut",
-            "Self", "self",
-        }
-    ),
+    builtin_types=_PRELUDE_TYPES,
+    # The same names, read for a different question: may a repo symbol answer a
+    # call written ON one of these. Measured on bevy at 21 wrong of 28 hand-read
+    # (M64); the seven correct ones are all a file that rebound the name from a
+    # workspace crate, which the resolver exempts by reading the import list.
+    external_receiver_types=_PRELUDE_TYPES,
     # Prelude constructors and std trait methods. Every one is in scope in
     # every file without an import, so a bare-name guess that answers one with
     # a repo symbol is answering for the standard library — `Ok(())` bound to

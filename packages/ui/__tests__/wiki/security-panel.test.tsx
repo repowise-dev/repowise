@@ -23,7 +23,7 @@ describe("SecurityPanel", () => {
 
   it("renders a skeleton while loading", () => {
     const { container } = render(<SecurityPanel findings={undefined} isLoading />);
-    expect(container.querySelector(".animate-pulse")).toBeInTheDocument();
+    expect(container.querySelector("[data-skeleton]")).toBeInTheDocument();
     expect(screen.queryByText(/no security signals/i)).not.toBeInTheDocument();
   });
 

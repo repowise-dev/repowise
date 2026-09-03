@@ -1,7 +1,7 @@
 """Repo-relative normalization of change-risk scores.
 
-The raw :func:`change_risk.score_change` value is a calibrated absolute
-probability, anchored to the offline calibration corpus — which makes its
+The raw :func:`change_risk.score_change` value is an offline-calibrated
+0-10 model score, anchored to a single-commit corpus — which makes its
 high/moderate/low *banding* portable only across repos whose typical commit
 resembles that corpus. On a repo whose median commit is large, the diff-size
 feature (``la``) dominates and the absolute band skews high (two-thirds of
@@ -19,10 +19,15 @@ from __future__ import annotations
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 
+from ..risk_semantics import (
+    REVIEW_PRIORITY_HIGH_PERCENTILE,
+    REVIEW_PRIORITY_MODERATE_PERCENTILE,
+)
+
 # Tercile cut points on the repo-relative percentile (0-100). A commit in the
 # top third of its repo's risk distribution is the review-priority tier.
-_HIGH_PCT = 200.0 / 3.0  # ≈ 66.67
-_MODERATE_PCT = 100.0 / 3.0  # ≈ 33.33
+_HIGH_PCT = REVIEW_PRIORITY_HIGH_PERCENTILE
+_MODERATE_PCT = REVIEW_PRIORITY_MODERATE_PERCENTILE
 _PRIORITY_CLASSIFICATIONS = {
     "low": "Below typical",
     "moderate": "Typical",
@@ -111,7 +116,7 @@ class RiskNormalizer:
         """Repo-relative review priority: ``high`` | ``moderate`` | ``low``.
 
         Derived from the repo-relative percentile (terciles), NOT the absolute
-        calibrated band — so two-thirds of commits can never all read "high".
+        model-score band — so two-thirds of commits can never all read "high".
         """
         if score is None or not self.scores:
             return "low"

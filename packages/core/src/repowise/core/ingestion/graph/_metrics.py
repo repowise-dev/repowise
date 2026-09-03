@@ -26,6 +26,17 @@ log = structlog.get_logger(__name__)
 
 _LARGE_REPO_THRESHOLD = 30_000  # nodes — above this, algorithms are expensive
 
+# How far the graph may drift from the last exact betweenness scoring before it
+# is rescored, as a fraction of nodes-plus-edges. Set at the knee of a sweep
+# that deleted symbols and rescored: rankings held to ~55 churn on a 27k-element
+# graph and broke well before 190.
+#
+# Not a worst case. Betweenness is not Lipschitz in edge count, so removing a
+# single bridge between two subsystems reroutes every path that crossed it
+# while scoring as churn 1. Tolerable only because the values carry the commit
+# they were scored at.
+_CHURN_BUDGET_FRACTION = 0.002
+
 
 class MetricsMixin:
     """Centrality + community + degree metrics for :class:`GraphBuilder`."""
@@ -324,15 +335,42 @@ class MetricsMixin:
         self._symbol_betweenness_cache = self._betweenness_with_disk_cache("symbol", sub)
         return self._symbol_betweenness_cache
 
+    def betweenness_scoring(self, kind: str) -> Any | None:
+        """Return the provenance of *kind*'s betweenness, or ``None`` if unscored.
+
+        A :class:`~._centrality_cache.BetweennessScoring`. Persistence stamps
+        each node from it, so a symbol that appeared after the last exact
+        scoring is recorded as never scored rather than as a legitimate zero.
+        """
+        return self._betweenness_scoring.get(kind)
+
+    def _churn_budget(self, g: nx.DiGraph) -> int:
+        """How far *g* may drift from its last exact scoring before rescoring.
+
+        Zero below the cost threshold that already decides whether exact
+        Brandes is worth parallelising: under it the recompute is fast enough
+        that trading accuracy for it buys nothing, so those graphs keep the
+        exact-signature-only behaviour they had before. Above it, proportional
+        to the graph, because the same absolute delta perturbs a large ranking
+        far less than a small one.
+        """
+        from . import _betweenness
+
+        n, e = g.number_of_nodes(), g.number_of_edges()
+        # Read through the module so the tests that lower the threshold reach
+        # this decision too.
+        if n * e < _betweenness._PARALLEL_COST_THRESHOLD:
+            return 0
+        return int((n + e) * _CHURN_BUDGET_FRACTION)
+
     def _betweenness_with_disk_cache(self, kind: str, g: nx.DiGraph) -> dict[str, float]:
         """Compute betweenness for *g*, consulting the structure-keyed disk cache.
 
         With a cache attached (see ``GraphBuilder(centrality_cache_dir=...)``)
-        and an unchanged subgraph structure, the previous run's values are
-        returned without re-running Brandes — the dominant metric cost of an
-        incremental update whose change didn't move any edges. Structural
-        changes, cache errors, or no cache all fall through to the exact
-        computation used before.
+        the previous exact scoring is reused both when the structure is
+        unchanged and when it has drifted no further than the churn budget.
+        Drifting past the budget, cache errors, or no cache all fall through to
+        the exact computation used before.
         """
         cache = getattr(self, "_centrality_cache", None)
         signature: str | None = None
@@ -341,10 +379,19 @@ class MetricsMixin:
                 from ._centrality_cache import subgraph_signature
 
                 signature = subgraph_signature(g)
-                hit = cache.get(kind, signature)
+                hit = cache.lookup(
+                    kind, g, signature=signature, max_churn=self._churn_budget(g)
+                )
                 if hit is not None:
-                    log.info("betweenness_reused_from_cache", kind=kind, nodes=len(hit))
-                    return hit
+                    log.info(
+                        "betweenness_reused_from_cache",
+                        kind=kind,
+                        nodes=len(hit.values),
+                        churn=hit.churn,
+                        scored_commit=hit.scored_commit,
+                    )
+                    self._betweenness_scoring[kind] = hit
+                    return hit.values
             except Exception as exc:
                 log.debug("centrality_cache_lookup_failed", kind=kind, error=str(exc))
                 signature = None
@@ -372,9 +419,12 @@ class MetricsMixin:
             from ._betweenness import betweenness_centrality_fast
 
             values = betweenness_centrality_fast(g, normalized=True)
+        from ._centrality_cache import BetweennessScoring
+
+        self._betweenness_scoring[kind] = BetweennessScoring(values, self._head_commit, 0)
         if cache is not None and signature is not None:
             try:
-                cache.put(kind, signature, values)
+                cache.put(kind, signature, values, graph=g, scored_commit=self._head_commit)
             except Exception as exc:
                 log.debug("centrality_cache_store_failed", kind=kind, error=str(exc))
         return values

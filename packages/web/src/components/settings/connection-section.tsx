@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Loader2 } from "lucide-react";
+import { Spinner } from "@repowise-dev/ui/ui/spinner";
 import { config } from "@/lib/config";
 import { getHealth } from "@/lib/api/health";
 import { OverviewSection } from "@repowise-dev/ui/overview";
@@ -132,7 +132,7 @@ export function ConnectionSection() {
             >
               {testing ? (
                 <>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <Spinner size="sm" />
                   Testing
                 </>
               ) : (

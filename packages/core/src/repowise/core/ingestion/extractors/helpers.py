@@ -59,6 +59,51 @@ def refine_kotlin_class_kind(class_node: Node) -> str:
     return "class"
 
 
+def refine_pascal_type_kind(decl_type_node: Node) -> str:
+    """Refine the generic ``class`` kind for Pascal ``declType`` nodes.
+
+    ``declType`` wraps class / record / object / interface / class-helper
+    / enum / set / array / plain-alias in one node shape (see
+    ``languages/specs/pascal.py``'s spec docstring). Its ``type`` field is
+    one of two shapes:
+
+    * a class-like node directly -- ``declClass`` (covers *both* the
+      ``class`` and ``record``/``object`` keyword forms; the grammar has
+      no separate "record" node, so the first child's keyword token
+      (``kRecord`` vs. ``kClass``/``kObject``) is what actually
+      distinguishes them), ``declIntf``, or ``declHelper``;
+    * a generic ``type`` wrapper around ``declEnum``, ``declSet``,
+      ``declArray``, or a bare ``typeref`` (a plain alias, e.g.
+      ``TMyInt = Integer;``).
+
+    ``object`` and class-helper both collapse to ``"class"`` -- Pascal's
+    pre-OOP ``object`` type and a class helper both declare members the
+    same shape a class does, and neither has a closer match in
+    :data:`~repowise.core.ingestion.models.SymbolKind`. ``set``/``array``/
+    plain-alias all collapse to ``"type_alias"`` for the same reason:
+    none of them declare members of their own, so ``"class"`` would be
+    actively misleading.
+    """
+    type_node = decl_type_node.child_by_field_name("type")
+    if type_node is None:
+        return "class"
+    if type_node.type == "declClass":
+        first_child = type_node.children[0] if type_node.children else None
+        if first_child is not None and first_child.type == "kRecord":
+            return "struct"
+        return "class"
+    if type_node.type == "declIntf":
+        return "interface"
+    if type_node.type == "declHelper":
+        return "class"
+    if type_node.type == "type":
+        inner = next(iter(type_node.named_children), None)
+        if inner is not None and inner.type == "declEnum":
+            return "enum"
+        return "type_alias"
+    return "class"
+
+
 def clean_string_literal(text: str) -> str:
     """Strip quote characters from a Python string literal."""
     text = text.strip()

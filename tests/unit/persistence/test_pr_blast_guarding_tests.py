@@ -106,7 +106,12 @@ async def test_guarding_tests_map_empty_is_honest_unknown(async_session):
     result = await analyzer._guarding_tests(["src/math.py"])
 
     # No map -> "unknown", never an empty-because-untested claim.
-    assert result == {"map_present": False, "basis": "none", "tests_to_run": [], "by_file": {}}
+    assert result["map_present"] is False
+    assert result["basis"] == "none"
+    assert result["tests_to_run"] == []
+    assert result["by_file"] == {}
+    assert result["coverage"]["status"] == "unavailable"
+    assert result["analysis"]["partial"] is True
 
 
 async def test_guarding_tests_file_with_no_rows_omitted_but_map_present(async_session):
@@ -134,7 +139,11 @@ async def test_guarding_tests_empty_changed_set(async_session):
     analyzer = PRBlastRadiusAnalyzer(async_session, repo.id)
     result = await analyzer._guarding_tests([])
 
-    assert result == {"map_present": False, "basis": "none", "tests_to_run": [], "by_file": {}}
+    assert result["map_present"] is False
+    assert result["basis"] == "none"
+    assert result["tests_to_run"] == []
+    assert result["by_file"] == {}
+    assert result["coverage"]["reason"] == "no_changed_files"
 
 
 # ---------------------------------------------------------------------------
@@ -180,8 +189,8 @@ async def test_no_map_falls_back_to_the_graph_and_says_so(async_session):
     assert result["by_file"] == {"src/math.py": ["tests/test_math.py"]}
 
 
-async def test_a_measured_map_is_never_diluted_by_the_graph(async_session):
-    """Coverage answered, so the graph is not consulted at all."""
+async def test_measured_and_inferred_rows_remain_distinguishable(async_session):
+    """Both sources may answer, but the inferred row is never called measured."""
     repo = await insert_repo(async_session)
     await _seed_map(async_session, repo.id)
     _graph(
@@ -192,10 +201,18 @@ async def test_a_measured_map_is_never_diluted_by_the_graph(async_session):
     )
     await async_session.commit()
 
-    result = await PRBlastRadiusAnalyzer(async_session, repo.id)._guarding_tests(["src/math.py"])
+    analyzer = PRBlastRadiusAnalyzer(async_session, repo.id)
+    result = await analyzer._guarding_tests(["src/math.py"])
+    typed = await analyzer._test_impact(["src/math.py"])
 
     assert result["basis"] == "measured"
-    assert "tests/test_unrelated.py" not in result["tests_to_run"]
+    rows = {row["test_id"]: row for row in result["tests_to_run_with_basis"]}
+    assert rows["tests/test_math.py::test_add"]["basis"] == "measured"
+    assert rows["tests/test_math.py::test_sub"]["basis"] == "measured"
+    assert "tests/test_unrelated.py" not in rows
+    typed_rows = {row["test_id"]: row for row in typed["recommendations"]}
+    assert typed_rows["tests/test_unrelated.py"]["basis"] == "inferred"
+    assert typed_rows["tests/test_unrelated.py"]["bases"] == ["inferred"]
 
 
 async def test_a_map_that_is_silent_about_this_file_still_asks_the_graph(async_session):

@@ -106,6 +106,14 @@ class TestParityGoldens:
         assert camel[".java"].pattern == r"(?<=[a-z0-9])(?:Tests|Test|IT)$"
         assert camel[".scala"].pattern == r"(?<=[a-z0-9])(?:Suite|Spec|Test)$"
 
+    def test_camel_prefix_extension_map(self) -> None:
+        # Case-sensitive camel-boundary test prefixes per language -- the
+        # mirror of test_camel_suffix_extension_map for languages whose test
+        # program is named Test<Subject> rather than <Subject>Test.
+        camel = REGISTRY.camel_test_prefix_res_by_extension()
+        assert set(camel) == {".pas", ".pp", ".dpr", ".dpk", ".lpr"}
+        assert camel[".dpr"].pattern == r"^(?:Test)(?=[A-Z])"
+
     def test_test_dir_paths_union(self) -> None:
         assert REGISTRY.test_dir_paths() == (
             # "src/*Test" = Gradle source-set wildcard (src/commonTest,

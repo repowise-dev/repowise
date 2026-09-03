@@ -7,7 +7,26 @@ import type { ImpactAdapter } from "../../src/blast-radius/impact-adapter.js";
 import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
 
 const RESULT: BlastRadiusResponse = {
+  structural_impact_score: 0.42,
+  structural_impact_band: "localized",
+  structural_impact_scale: {
+    field: "structural_impact_score",
+    kind: "heuristic_structural_score",
+    unit: "normalized_points",
+    range: { minimum: 0, maximum: 10 },
+    measures: "indexed structural exposure",
+    deterministic: true,
+    calibration: { status: "uncalibrated", source: null },
+    authoritative_for_change_review: false,
+    runtime_breakage_probability: false,
+  },
   overall_risk_score: 0.42,
+  overall_risk_score_compatibility: {
+    deprecated: true,
+    replacement: "structural_impact_score",
+    equivalent_value: true,
+    historical_meaning: "uncalibrated 0-10 structural blast-radius heuristic",
+  },
   direct_risks: [],
   transitive_affected: [],
   cochange_warnings: [],

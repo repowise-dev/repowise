@@ -89,6 +89,15 @@ def _numbers_in(text: str) -> set[str]:
     return set(_NUMBER_RE.findall(_THOUSANDS_SEP_RE.sub("", text or "")))
 
 
+def _asserted_numbers(answer_text: str) -> set[str]:
+    """Standalone numbers the answer asserts, citation line refs removed.
+
+    Shared by :func:`_ungrounded_numbers` and the value-grounding gate so the
+    two never disagree about what counts as an asserted value.
+    """
+    return _numbers_in(_FILE_LINE_REF_RE.sub(" ", answer_text or ""))
+
+
 def _is_value_question(question: str) -> bool:
     """True when the question asks for a concrete value."""
     return bool(_VALUE_QUESTION_RE.search(question or ""))
@@ -142,8 +151,7 @@ def _ungrounded_numbers(answer_text: str, hits: list[dict]) -> list[str]:
     everything the LLM was shown for the hits — titles, summaries, snippets,
     and hydrated symbols (signatures, docstrings, source excerpts).
     """
-    text = _FILE_LINE_REF_RE.sub(" ", answer_text or "")
-    asserted = _numbers_in(text)
+    asserted = _asserted_numbers(answer_text)
     if not asserted:
         return []
 
@@ -417,6 +425,15 @@ def implicated_withheld_symbols(
     return out
 
 
+def _confidence_score(hit: dict) -> float:
+    """Return a score on get_answer's absolute coverage confidence scale."""
+    score = hit.get("score", 0.0)
+    factor = hit.get("_confidence_score_factor", 1.0)
+    if isinstance(factor, (int, float)) and factor >= 0:
+        return score * factor
+    return score
+
+
 def _top_two_score_ratio(hits: list[dict]) -> float:
     """The top hit's retrieval score over the runner-up's.
 
@@ -427,7 +444,7 @@ def _top_two_score_ratio(hits: list[dict]) -> float:
     no hits at all is zero.
     """
     if len(hits) >= 2:
-        return hits[0].get("score", 0.0) / (hits[1].get("score", 0.0) or 1e-9)
+        return _confidence_score(hits[0]) / (_confidence_score(hits[1]) or 1e-9)
     return float("inf") if hits else 0.0
 
 
@@ -540,8 +557,8 @@ def dominance_reason(hits: list[dict], *, agreement_dominant: bool = False) -> s
         return None
     if len(hits) < 2:
         return "sole_hit"
-    top_score = hits[0].get("score", 0.0)
-    second_score = hits[1].get("score", 0.0) or 1e-9
+    top_score = _confidence_score(hits[0])
+    second_score = _confidence_score(hits[1]) or 1e-9
     if top_score >= _DOMINANCE_ABS_SCORE_FLOOR:
         if (top_score - second_score) >= _DOMINANCE_ABS_GAP:
             return "gap"
@@ -569,21 +586,52 @@ def _retrieval_quality(hits: list[dict], agreement_dominant: bool) -> str:
     """Rate the retrieval, independently of the text it fed.
 
     Kept as one function because the degraded path needs the same rating and must
-    not invent a second one. That path has no synthesised text to rate (its
-    ``confidence`` stays low, correctly), but it ran exactly the same retrieval,
-    and "high" has to mean the same thing to a keyless caller as to a keyed one
-    or the field is worth less than nothing.
+    not invent a second one. That path has no synthesised text to rate, but it ran
+    exactly the same retrieval, and "high" has to mean the same thing to a keyless
+    caller as to a keyed one or the field is worth less than nothing. It is also
+    what :func:`_degraded_confidence` grades from, so the two fields on a
+    synthesis-less payload can never disagree about the same retrieval.
 
     Reads :func:`is_dominant` rather than re-deriving the ratio, so "weak" means
     exactly "not dominant" — the same fact the confidence ceiling and the
     ambiguity caveat are keyed on. Without that the payload could rate retrieval
     weak and treat it as dominant in the same breath.
     """
-    top_score = hits[0].get("score", 0.0) if hits else 0.0
+    top_score = _confidence_score(hits[0]) if hits else 0.0
     dominant_grade = is_dominant(hits, agreement_dominant=agreement_dominant)
     if dominant_grade and top_score >= _HIGH_CONFIDENCE_SCORE_FLOOR:
         return "high"
     return "partial" if dominant_grade else "weak"
+
+
+def _degraded_confidence(reason: str, retrieval_quality: str) -> str:
+    """Grade a synthesis-less payload on what a caller can act on, not on prose.
+
+    ``confidence`` used to be pinned to "low" here on the grounds that it rates
+    the synthesised text and there is none. That referent is the problem, not the
+    answer to it: the field is what an agent reads to decide whether it still has
+    work to do, and pinning it told 69 percent of field calls to distrust evidence
+    that was often excellent — 84 percent of those "low" verdicts were unearned,
+    and the keyless install that never configures a provider got one on every call
+    forever. So the field is graded from the retrieval it actually served.
+
+    Two ceilings, both load bearing:
+
+    "high" is unreachable. ``answer`` on this path is assembled boilerplate, and
+    our own agent instructions license citing a high-confidence answer directly,
+    so a "high" here would be an invitation to cite the boilerplate. That was the
+    real objection behind the old pin and it is preserved as a cap rather than
+    discarded.
+
+    ``synthesis-failed`` stays "low" whatever retrieval did. The evidence is
+    identical to the no-provider case, but the *situation* is not: a provider is
+    configured, so a retry can still produce a real answer and this payload is not
+    the end of the line. "no-llm-provider" is the end of the line — no better reply
+    is coming for that install — so there the evidence is all there is to grade.
+    """
+    if reason != "no-llm-provider":
+        return "low"
+    return "low" if retrieval_quality == "weak" else "medium"
 
 
 def _is_question_named_body_cut_by_us(entry: dict, question_ids: set[str]) -> bool:
@@ -677,8 +725,8 @@ def _grade_answer(
     """
     dominant = dominance is not None
     _ratio = _top_two_score_ratio(hits)
-    _top_score = hits[0].get("score", 0.0) if hits else 0.0
-    _second_score = hits[1].get("score", 0.0) if len(hits) >= 2 else 0.0
+    _top_score = _confidence_score(hits[0]) if hits else 0.0
+    _second_score = _confidence_score(hits[1]) if len(hits) >= 2 else 0.0
 
     # A response can EARN "high" on a NON-dominant retrieval, by two routes that
     # are NOT equally good and so are tracked apart. Both need the score floor,
@@ -756,12 +804,23 @@ def _grade_answer(
     # appear somewhere in the material retrieval actually contained. A
     # number synthesis produced from thin air is a factual error delivered
     # with authority — the single worst calibration failure, because the
-    # consumer was told not to verify. Cap at low and say why.
+    # consumer was told not to verify. Cap and say why.
     ungrounded_values: list[str] = []
     if not hedged and _is_value_question(question):
         ungrounded_values = _ungrounded_numbers(answer_text, hits)
         if ungrounded_values:
-            confidence = "low"
+            # A value derived from grounded operands is not a fabrication, so
+            # soften one notch instead of capping — but only on a clean high over
+            # dominant retrieval (earn_high on weak retrieval stays capped), and
+            # only when some OTHER asserted number is grounded. Without that
+            # second clause a lone invented value would soften too, which is the
+            # case this gate exists to catch. The note and next_action_hint fire
+            # on ungrounded_values regardless of tier.
+            grounded_sibling = len(_asserted_numbers(answer_text)) > len(ungrounded_values)
+            if grounded_sibling and confidence == "high" and dominant:
+                confidence = "medium"
+            else:
+                confidence = "low"
 
     # Fifth gate — citation-source gate: a high-confidence answer must cite
     # at least one page that contributed actual source material (hydrated

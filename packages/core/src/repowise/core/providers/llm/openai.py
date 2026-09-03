@@ -13,9 +13,11 @@ Recommended models (as of 2026):
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import os
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 import structlog
 from openai import APIError as _OpenAIAPIError
@@ -163,11 +165,39 @@ def _openai_temperature(model: str, requested: float) -> float:
     return requested
 
 
-def _is_openai_text_model(model_id: str) -> bool:
+def _openai_chat_tool_kwargs(model: str, *, has_tools: bool) -> dict[str, Any]:
+    """Return Chat Completions overrides required by tool-enabled models.
+
+    GPT-5.6 models default to a non-none reasoning effort. OpenAI recommends
+    the Responses API for reasoning with tool-calling, while this provider's
+    repository chat loop still uses Chat Completions. Keep the family's normal
+    reasoning default for generation and only disable it when function tools
+    are attached. Migrating the shared chat protocol is a separate change.
+    """
+    leaf = _model_leaf(model)
+    if has_tools and (leaf == "gpt-5.6" or leaf.startswith("gpt-5.6-")):
+        return {"reasoning_effort": "none"}
+    return {}
+
+
+def _is_openai_text_model(model_id: str, *, allow_namespaced: bool = False) -> bool:
+    """Keep chat-capable ids, including arbitrary ids from custom gateways."""
     leaf = _model_leaf(model_id)
     if any(marker in leaf for marker in _OPENAI_NON_TEXT_MARKERS):
         return False
-    return leaf.startswith(_OPENAI_TEXT_MODEL_PREFIXES)
+    return allow_namespaced or leaf.startswith(_OPENAI_TEXT_MODEL_PREFIXES)
+
+
+def _is_loopback_url(base_url: str) -> bool:
+    host = urlparse(base_url).hostname
+    if not host:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _openai_option(
@@ -201,20 +231,31 @@ def _openai_model_options(
         reasoning_modes=("auto", *_openai_supported_reasoning_modes(fallback_model)),
     )
     try:
-        import httpx
-
-        response = httpx.get(
-            f"{base_url.rstrip('/')}/models",
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=5.0,
-        )
-        response.raise_for_status()
-        data = response.json().get("data", [])
+        return _discover_openai_model_options(api_key, base_url, fallback_model)
     except Exception:
         return (fallback,)
 
-    if not isinstance(data, list):
-        return (fallback,)
+
+def _discover_openai_model_options(
+    api_key: str,
+    base_url: str,
+    fallback_model: str,
+) -> tuple[ProviderModelOption, ...]:
+    """Fetch model ids, raising when an endpoint cannot prove it is usable."""
+    import httpx
+
+    request_kwargs: dict[str, Any] = {
+        "headers": {"Authorization": f"Bearer {api_key}"},
+        "timeout": 5.0,
+    }
+    if _is_loopback_url(base_url):
+        request_kwargs["trust_env"] = False
+    response = httpx.get(f"{base_url.rstrip('/')}/models", **request_kwargs)
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        raise ValueError("the /models response does not contain a data list")
+    data = payload["data"]
 
     model_ids = sorted(
         {
@@ -222,11 +263,14 @@ def _openai_model_options(
             for model in data
             if isinstance(model, dict)
             and isinstance(model.get("id"), str)
-            and _is_openai_text_model(model["id"])
+            and _is_openai_text_model(
+                model["id"],
+                allow_namespaced=base_url.rstrip("/") != "https://api.openai.com/v1",
+            )
         }
     )
     if not model_ids:
-        return (fallback,)
+        raise ValueError("the /models response contains no text-generation models")
 
     return tuple(_openai_option(model_id, fallback_model=fallback_model) for model_id in model_ids)
 
@@ -258,7 +302,16 @@ class OpenAIProvider(BaseProvider):
         resolved_base_url = base_url or os.environ.get("OPENAI_BASE_URL")
         self._api_key = resolved_key
         self._base_url = resolved_base_url or "https://api.openai.com/v1"
-        self._client = AsyncOpenAI(api_key=resolved_key, base_url=resolved_base_url)
+        http_client = None
+        if resolved_base_url and _is_loopback_url(resolved_base_url):
+            import httpx
+
+            http_client = httpx.AsyncClient(trust_env=False)
+        self._client = AsyncOpenAI(
+            api_key=resolved_key,
+            base_url=resolved_base_url,
+            http_client=http_client,
+        )
         self._model = model
         self._rate_limiter = rate_limiter
         self._cost_tracker = cost_tracker
@@ -276,6 +329,10 @@ class OpenAIProvider(BaseProvider):
 
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
         return _openai_model_options(self._api_key, self._base_url, self._model)
+
+    def discover_model_options(self) -> tuple[ProviderModelOption, ...]:
+        """Return live `/models` options or raise an actionable endpoint error."""
+        return _discover_openai_model_options(self._api_key, self._base_url, self._model)
 
     async def generate(
         self,
@@ -432,6 +489,7 @@ class OpenAIProvider(BaseProvider):
         }
         if tools:
             kwargs["tools"] = tools
+        kwargs.update(_openai_chat_tool_kwargs(self._model, has_tools=bool(tools)))
 
         try:
             stream = await self._client.chat.completions.create(**kwargs)

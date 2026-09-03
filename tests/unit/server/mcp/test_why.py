@@ -27,8 +27,11 @@ async def test_get_why_file_path(setup_mcp):
     result = await get_why("src/auth/service.py")
     assert result["mode"] == "path"
     assert result["path"] == "src/auth/service.py"
-    assert len(result["decisions"]) >= 1
-    assert any(d["title"] == "Use JWT for authentication" for d in result["decisions"])
+    # The JWT record has never been accepted, so it is a review request rather
+    # than a rule, and it is in the lane that says so.
+    assert result["decisions"] == []
+    assert any(d["title"] == "Use JWT for authentication" for d in result["candidates"])
+    assert "not a rule" in result["candidates_note"]
 
     # Origin story
     origin = result["origin_story"]
@@ -39,10 +42,13 @@ async def test_get_why_file_path(setup_mcp):
     assert len(origin["contributors"]) >= 1
     assert "Alice" in origin["summary"]
 
-    # Alignment — dec1 is "proposed", both service.py and middleware.py share it
+    # Alignment — dec1 names this file but nobody accepted it, so it counts as
+    # a candidate and the file scores as ungoverned.
     alignment = result["alignment"]
-    assert alignment["score"] in ("high", "medium", "low", "none")
+    assert alignment["score"] == "none"
     assert alignment["governing_count"] >= 1
+    assert alignment["active_count"] == 0
+    assert alignment["candidate_count"] >= 1
     assert "explanation" in alignment
 
 
@@ -108,10 +114,12 @@ async def test_get_why_file_no_git_metadata(setup_mcp):
     assert origin["available"] is False
     assert "No git history" in origin["summary"]
 
-    # But it still has decisions (dec1 affects middleware.py)
-    assert len(result["decisions"]) >= 1
+    # But it still has a record naming it (dec1 affects middleware.py), in the
+    # candidate lane because nobody has accepted it.
+    assert len(result["candidates"]) >= 1
     alignment = result["alignment"]
     assert alignment["governing_count"] >= 1
+    assert alignment["candidate_count"] >= 1
 
 
 @pytest.mark.asyncio
@@ -196,7 +204,7 @@ async def test_one_target_and_no_query_answers_about_that_target(setup_mcp):
 
     assert result["mode"] == "path"
     assert result["path"] == "src/auth/service.py"
-    assert result["decisions"]
+    assert result["candidates"]
 
 
 @pytest.mark.asyncio
@@ -233,8 +241,8 @@ async def test_get_why_module_path(setup_mcp):
 
     result = await get_why("src/db")
     assert result["mode"] == "path"
-    assert len(result["decisions"]) >= 1
-    assert any(d["title"] == "SQLAlchemy as ORM" for d in result["decisions"])
+    assert len(result["candidates"]) >= 1
+    assert any(d["title"] == "SQLAlchemy as ORM" for d in result["candidates"])
 
 
 @pytest.mark.asyncio
@@ -372,27 +380,41 @@ async def test_get_why_semantic_decision_namespace_filtering(session, setup_mcp)
 
 
 async def _seed_bulky_decisions(session, rid: str, path: str, count: int) -> None:
-    """``count`` records governing *path*, each as heavy as a real one gets."""
+    """``count`` records governing *path*, each as heavy as a real one gets.
+
+    Every one is accepted, because these fixtures exist to press the transport
+    budget with the lane an agent actually reads. Seeding them as candidates
+    would test the budget against a lane the fitter sheds first.
+    """
     import json
 
+    from repowise.core.persistence.crud.authority import accept_decision
     from repowise.core.persistence.models import DecisionRecord
 
+    records = []
     for i in range(count):
-        session.add(
-            DecisionRecord(
-                id=f"bulk{i}",
-                repository_id=rid,
-                title=f"Bulky decision {i}",
-                status="superseded" if i else "active",
-                context="ctx " * 200,
-                decision="dec " * 200,
-                rationale="why " * 200,
-                affected_files_json=json.dumps([path] + [f"src/f{i}/{n}.py" for n in range(60)]),
-                affected_modules_json=json.dumps([]),
-                source="pr",
-                confidence=0.5,
-                staleness_score=0.0,
-            )
+        record = DecisionRecord(
+            id=f"bulk{i}",
+            repository_id=rid,
+            title=f"Bulky decision {i}",
+            status="active",
+            context="ctx " * 200,
+            decision="dec " * 200,
+            rationale="why " * 200,
+            affected_files_json=json.dumps([path] + [f"src/f{i}/{n}.py" for n in range(60)]),
+            affected_modules_json=json.dumps([]),
+            source="pr",
+            confidence=0.5,
+            staleness_score=0.0,
+        )
+        session.add(record)
+        records.append(record)
+    await session.flush()
+    for i, record in enumerate(records):
+        # Mined from a pull request, so the acceptance has to cite what the
+        # accepter went on; only a hand-typed record is its own provenance.
+        await accept_decision(
+            session, record, accepter="test", evidence=[f"pr#{i}"]
         )
     await session.flush()
 
@@ -439,21 +461,69 @@ async def test_get_why_path_fits_a_narrowed_host_cap(session, setup_mcp, monkeyp
     assert len(_json.dumps(result, default=str)) <= effective_char_budget()
 
 
+def test_path_final_fit_composes_episode_construction_counts(tmp_path, monkeypatch):
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server.tool_why import _fit_path_response
+
+    monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", "2000")
+    response = {
+        "mode": "path",
+        "path": "src/large.py",
+        "decisions": [],
+        "episodes": [
+            {"subject": f"episode-{index}", "recorded": "x" * 5000}
+            for index in range(3)
+        ],
+        "episodes_total": 8,
+        "episodes_emitted": 3,
+        "episodes_reduced_reason": "construction_cap",
+        "episodes_truncated": True,
+        "episodes_omitted": 5,
+        "_meta": {},
+    }
+    collector = OmissionCollector(
+        "get_why", store_path=tmp_path / "omissions.sqlite3"
+    )
+
+    result = _fit_path_response(response, tmp_path, collector)
+
+    assert result["episodes_total"] == 8
+    assert result["episodes_emitted"] == 0
+    assert result["episodes_omitted"] == 8
+    assert result["episodes_reduced_reason"] == (
+        "construction_cap_and_response_budget"
+    )
+    assert result["_meta"]["omitted"]["refs"]
+
+
 @pytest.mark.asyncio
-async def test_get_why_path_caps_records_and_keeps_the_active_one_first(session, setup_mcp):
+async def test_get_why_path_caps_records_and_keeps_the_active_one_first(
+    session, setup_mcp, tmp_path, monkeypatch
+):
     from repowise.server.mcp_server import get_why
+    from repowise.server.mcp_server._budget import collector as collector_mod
     from repowise.server.mcp_server.tool_why import _MAX_PATH_DECISIONS
+
+    monkeypatch.setattr(
+        collector_mod, "default_store_path", lambda start=None: tmp_path / "omissions.db"
+    )
 
     await _seed_bulky_decisions(session, setup_mcp, "src/auth/service.py", 30)
 
     result = await get_why("src/auth/service.py")
 
     assert len(result["decisions"]) <= _MAX_PATH_DECISIONS
-    # Ranked, not table-scan order: the one active record leads.
+    # Ranked, not table-scan order, and every row is an accepted decision.
     assert result["decisions"][0]["status"] == "active"
+    assert all(d["currency"] == "active" for d in result["decisions"])
     # And the count that was capped is still reported honestly.
-    assert result["decisions_total"] == 31
+    assert result["decisions_total"] == 30
+    assert result["decisions_emitted"] == _MAX_PATH_DECISIONS
+    assert result["decisions_reduced_reason"] == "construction_cap_and_response_budget"
+    assert result["_meta"]["omitted"]["refs"]
+    # The fixture's unaccepted JWT record is counted, and it is not a decision.
     assert result["alignment"]["governing_count"] == 31
+    assert result["alignment"]["candidate_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -518,7 +588,7 @@ async def test_get_why_path_leaves_a_small_response_untouched(session, setup_mcp
 
     assert "truncated" not in result
     assert "decisions_total" not in result
-    jwt = next(d for d in result["decisions"] if d["title"] == "Use JWT for authentication")
+    jwt = next(d for d in result["candidates"] if d["title"] == "Use JWT for authentication")
     assert jwt["affected_files"] == ["src/auth/service.py", "src/auth/middleware.py"]
     assert "affected_files_total" not in jwt
 

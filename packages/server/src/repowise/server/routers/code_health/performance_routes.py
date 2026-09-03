@@ -1,128 +1,131 @@
-"""Bounded causal performance opportunities and raw-evidence drill-down."""
+"""Bounded causal performance opportunities and raw-evidence drill-down.
+
+A thin adapter: query parameters map onto the shared performance service, and
+the response is what that service returned. Filtering, ordering, paging, plan
+linkage, and facets live there, so this surface and the agent surface cannot
+drift apart about what the same opportunity is.
+"""
 
 from __future__ import annotations
 
-import json
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.perf.opportunities import (
-    build_performance_opportunities,
-    opportunity_id_for_finding,
-)
-from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
+from repowise.server.services.performance_health import (
+    PerformanceHealthService,
+    parse_query,
+)
 
 from ._router import router
-from .loaders import _attach_symbol_ids
-from .serializers import _finding_to_dict
 
 
-def _json_dict(raw: str | None) -> dict[str, Any]:
+def _service(session: AsyncSession, repo_id: str) -> PerformanceHealthService:
+    """Bind the shared service to this repository.
+
+    The repository token only scopes the agent-address-space plan reference,
+    which this surface strips: a plan here is addressed by the row id its own
+    detail route resolves.
+    """
+    return PerformanceHealthService(session, repo_id, repo_id)
+
+
+_EVIDENCE_PER_ITEM = 8
+"""Evidence rows carried inline on a queue row, so the tab can show the paths."""
+
+
+_MAX_SCOPED_PATHS = 50
+"""Files one scoped request may name. A file surface asks about one or a few."""
+
+
+def _paths(raw: str | None) -> tuple[str, ...] | None:
+    """Split the file scope, or nothing when the caller did not scope."""
     if not raw:
-        return {}
-    try:
-        value = json.loads(raw)
-    except (TypeError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
+        return None
+    parts = tuple(dict.fromkeys(p.strip() for p in raw.split(",") if p.strip()))
+    return parts[:_MAX_SCOPED_PATHS] or None
 
 
-def _plan_ids(rows: list[Any]) -> dict[str, str]:
-    matches: dict[str, str] = {}
-    for row in rows:
-        opportunity_id = _json_dict(row.plan_json).get("opportunity_id")
-        if isinstance(opportunity_id, str) and opportunity_id:
-            plan_id = str(row.id)
-            matches[opportunity_id] = min(matches.get(opportunity_id, plan_id), plan_id)
-    return matches
-
-
-def _finding_opportunity_id(row: Any) -> str:
-    persisted = _json_dict(getattr(row, "details_json", None)).get("opportunity_id")
-    return (
-        persisted if isinstance(persisted, str) and persisted else opportunity_id_for_finding(row)
-    )
-
-
-def _plan_link(opportunity: Any, plan_id: str | None) -> dict[str, str | None]:
-    if plan_id:
-        return {
-            "plan_id": plan_id,
-            "plan_status": "available",
-            "plan_reason": "A stored performance plan addresses this exact opportunity.",
-        }
-    if opportunity.fix is None:
-        return {
-            "plan_id": None,
-            "plan_status": "no_safe_plan",
-            "plan_reason": (
-                "The analysis found the shared cause but could not prove one coherent "
-                "intervention without guessing."
-            ),
-        }
-    return {
-        "plan_id": None,
-        "plan_status": "not_persisted",
-        "plan_reason": (
-            "A supported strategy exists, but this index does not contain its matching "
-            "stored plan. Reindex to refresh recommendations."
-        ),
-    }
+def _item(item: dict[str, Any]) -> dict[str, Any]:
+    """Drop the reference minted for the other address space."""
+    return {key: value for key, value in item.items() if key != "plan_reference"}
 
 
 @router.get("/api/repos/{repo_id}/health/performance-opportunities")
 async def list_performance_opportunities(
     repo_id: str,
-    context: Literal["production_tooling", "test", "all"] = Query("production_tooling"),
+    context: str | None = Query(
+        None,
+        description=(
+            "Execution context to scope to: production, tooling, test, unknown "
+            "or all. Defaults to production."
+        ),
+    ),
+    boundary: str | None = Query(None),
+    confidence: str | None = Query(None),
+    actionability: str | None = Query(None),
+    view: str = Query("detail"),
+    sort: str = Query("rank"),
+    file_paths: str | None = Query(
+        None,
+        description=(
+            "Comma-separated files to scope to, matched against the file "
+            "holding each opportunity's intervention."
+        ),
+    ),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    """One bounded page over the canonical causal read model.
+    """One bounded page over the materialized causal read model.
 
-    Findings and performance-plan rows are each read once. Exact
-    ``opportunity_id`` equality is the only accepted plan match.
+    The rows fetched are the page, not the repository: grouping already
+    happened when the findings were persisted.
     """
-    findings = await crud.get_health_findings(session, repo_id, dimension="performance")
-    plan_rows = await crud.get_refactoring_suggestions(
-        session, repo_id, refactoring_type="performance_fix"
+    query, ignored = parse_query(
+        context=context,
+        boundary=boundary,
+        confidence=confidence,
+        actionability=actionability,
+        view=view,
+        sort=sort,
+        file_paths=_paths(file_paths),
+        limit=limit,
+        offset=offset,
     )
-    opportunities = build_performance_opportunities(findings, evidence_limit=8)
-    matches = _plan_ids(plan_rows)
-    contexts = {
-        "production_tooling": {"production", "tooling"},
-        "test": {"test"},
-        "all": {"production", "tooling", "test"},
-    }[context]
-    filtered = [item for item in opportunities if item.execution_context in contexts]
-    total = len(filtered)
-    page = filtered[offset : offset + limit]
-    next_offset = offset + len(page) if offset + len(page) < total else None
+    page = await _service(session, repo_id).page(
+        query, evidence_per_item=_EVIDENCE_PER_ITEM, with_facets=True, with_summary=True
+    )
     return {
-        "items": [
-            {
-                **item.as_dict(),
-                **_plan_link(item, matches.get(item.opportunity_id)),
-            }
-            for item in page
-        ],
-        "total": total,
-        "has_more": next_offset is not None,
-        "next_offset": next_offset,
-        "summary": {
-            "total": len(opportunities),
-            "production_total": sum(
-                item.execution_context == "production" for item in opportunities
-            ),
-            "tooling_total": sum(item.execution_context == "tooling" for item in opportunities),
-            "test_total": sum(item.execution_context == "test" for item in opportunities),
-            "with_plan_total": sum(item.opportunity_id in matches for item in opportunities),
-            "without_plan_total": sum(item.opportunity_id not in matches for item in opportunities),
-        },
+        "items": [_item(item) for item in page.items],
+        "total": page.total,
+        "has_more": page.next_offset is not None,
+        "next_offset": page.next_offset,
+        "facets": page.facets,
+        "summary": page.summary,
+        **({"ignored_arguments": ignored} if ignored else {}),
     }
+
+
+@router.get("/api/repos/{repo_id}/health/performance-opportunities/{opportunity_id}")
+async def get_performance_opportunity_detail(
+    repo_id: str,
+    opportunity_id: str,
+    evidence_limit: int = Query(8, ge=0, le=200),
+    evidence_offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """One opportunity by its stable id, with bounded evidence.
+
+    An id from an older performance model resolves to an explicit stale-model
+    state and the refresh that fixes it, rather than reading as "no plan".
+    """
+    detail = await _service(session, repo_id).detail(
+        opportunity_id, evidence_limit=evidence_limit, evidence_offset=evidence_offset
+    )
+    return _item(detail)
 
 
 @router.get("/api/repos/{repo_id}/health/performance-opportunities/{opportunity_id}/findings")
@@ -133,24 +136,21 @@ async def list_performance_opportunity_findings(
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    """Click-gated raw canonical observations for one stable opportunity id."""
-    findings = await crud.get_health_findings(session, repo_id, dimension="performance")
-    matched = [
-        finding for finding in findings if _finding_opportunity_id(finding) == opportunity_id
-    ]
-    matched.sort(key=lambda row: (row.file_path, row.line_start or 0, row.id))
-    total = len(matched)
-    page = matched[offset : offset + limit]
-    items = await _attach_symbol_ids(
-        session, repo_id, [_finding_to_dict(finding) for finding in page]
+    """Click-gated raw observations for one stable opportunity id."""
+    items, total = await _service(session, repo_id).evidence(
+        opportunity_id, limit=limit, offset=offset
     )
-    next_offset = offset + len(page) if offset + len(page) < total else None
+    emitted = offset + len(items)
     return {
         "items": items,
         "total": total,
-        "has_more": next_offset is not None,
-        "next_offset": next_offset,
+        "has_more": emitted < total,
+        "next_offset": emitted if emitted < total else None,
     }
 
 
-__all__ = ["list_performance_opportunities", "list_performance_opportunity_findings"]
+__all__ = [
+    "get_performance_opportunity_detail",
+    "list_performance_opportunities",
+    "list_performance_opportunity_findings",
+]

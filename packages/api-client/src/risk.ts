@@ -4,6 +4,7 @@
  */
 
 import { apiGet } from "./client";
+import type { RiskAuthority } from "@repowise-dev/types/risk-semantics";
 import type { RiskDriverResponse } from "./types/git";
 
 export interface RiskRangeParams {
@@ -13,7 +14,8 @@ export interface RiskRangeParams {
   head?: string;
   /**
    * How many recent commits to build the percentile baseline from. 0 skips
-   * the percentile (risk_percentile and review_priority come back null).
+   * every percentile (risk_percentile, review_priority and
+   * fix_history.percentile all come back null).
    */
   baseline?: number;
 }
@@ -34,7 +36,7 @@ export interface FixHistory {
   available: boolean;
   /** Churn-weighted mean fix pressure across the changed files. */
   density: number;
-  /** Rank against this repo's own fix-bearing files; null if too few to rank. */
+  /** Rank against the fix density of this repo's own recent commits; null if too few to rank. */
   percentile: number | null;
   files: FixHistoryFile[];
 }
@@ -42,8 +44,10 @@ export interface FixHistory {
 export interface RiskRangeResponse {
   base: string;
   head: string;
-  /** Where the change lands. Read before `score`. */
+  /** Separate historical evidence about where the change lands. */
   fix_history: FixHistory;
+  /** Percentile/classification authority plus explicit absolute fallback. */
+  risk_authority: RiskAuthority;
   score: number;
   /** What `score` measures: diff size and spread, not where the change lands. */
   score_measures: string;
@@ -59,7 +63,7 @@ export interface RiskRangeResponse {
   drivers: RiskDriverResponse[];
 }
 
-/** Scores the aggregate diff between two revisions (0-10, with drivers). */
+/** Assesses a live diff; lead with its repo-relative percentile/classification. */
 export async function getRiskRange(
   repoId: string,
   params: RiskRangeParams,

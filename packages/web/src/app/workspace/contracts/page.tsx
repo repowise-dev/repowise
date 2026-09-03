@@ -60,7 +60,12 @@ export default async function ContractsPage({ searchParams }: Props) {
 
   const data = ct.status === "fulfilled" ? ct.value : null;
   const diagnostics = diag.status === "fulfilled" ? diag.value : null;
-  const repos = ws.status === "fulfilled" ? ws.value.repos.map((r) => r.alias) : [];
+  const workspace = ws.status === "fulfilled" ? ws.value : null;
+  const repos = workspace?.repos.map((r) => r.alias) ?? [];
+  // The workspace-wide breakdown, not `data.by_type`: that one is counted
+  // after the filters run, so picking a type would leave the select holding
+  // only the type already picked.
+  const byType = workspace?.contract_summary?.by_type ?? null;
 
   const rows = data?.contracts ?? [];
   const links = data?.links ?? [];
@@ -169,7 +174,7 @@ export default async function ContractsPage({ searchParams }: Props) {
       <OverviewSection
         title="All detected contracts"
         description={tableDescription(rows.length, data?.total_contracts ?? 0, filtered)}
-        action={<ContractFilters repos={repos} />}
+        action={<ContractFilters repos={repos} byType={byType} />}
       >
         {rows.length === 0 ? (
           <EmptyState

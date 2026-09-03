@@ -144,7 +144,7 @@ current ones. Changes there are welcome, but expect closer review and bring test
    ```
 5. **Check your own change** with the tool you are contributing to:
    ```bash
-   uv run repowise risk main..HEAD        # 0-10 defect score, plus will_break,
+   uv run repowise risk main..HEAD        # 0-10 defect score, plus may_break,
                                           # missing_cochanges and missing_tests
    uv run repowise impacted-tests --staged  # the tests your diff actually exercises
    uv run repowise health --file <path>   # did the file you touched get worse?

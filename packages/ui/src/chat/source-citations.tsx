@@ -161,21 +161,22 @@ export function SourceCitations({
   if (sources.length === 0) return null;
 
   return (
-    <div className="mt-5 pt-4 border-t border-[var(--color-border-default)]">
-      <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] mb-2.5">
-        Sources
-      </p>
+    <details className="group mt-5 border-t border-[var(--color-border-default)] pt-3">
+      <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] marker:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden">
+        <span>Sources · {sources.length}</span>
+        <span aria-hidden className="transition-transform group-open:rotate-90">›</span>
+      </summary>
       {/* Links, not chips. Each one goes somewhere, so the accent is earned on
           hover; a border and a ground on every entry turned a list of eight
           into a wall of boxes that outweighed the answer above it. The counter
           badge went with them — numbering is only worth its weight when the
           prose cites [1], and a reply does not. */}
-      <ul className="flex flex-col gap-1.5">
+      <ul className="flex flex-col gap-1.5 pb-1 pt-2">
         {sources.map((source) => (
           <li key={source.id}>
             <a
               href={buildHref ? buildHref(source) : defaultBuildHref(source, prefix)}
-              className="group inline-flex items-baseline gap-2 text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors"
+              className="group flex w-full min-w-0 items-baseline gap-2 text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] transition-colors"
             >
               <SourceIcon
                 pageType={source.pageType}
@@ -183,7 +184,7 @@ export function SourceCitations({
               />
               {/* No truncation: a cut title reports a layout decision to the
                   reader as missing content. Long ones wrap. */}
-              <span className="font-medium">{source.title}</span>
+              <span className="min-w-0 font-medium [overflow-wrap:anywhere]">{source.title}</span>
               {source.confidence != null && (
                 <span className="font-mono text-[11px] text-[var(--color-text-tertiary)] tabular-nums">
                   {(source.confidence * 100).toFixed(0)}%
@@ -194,6 +195,6 @@ export function SourceCitations({
           </li>
         ))}
       </ul>
-    </div>
+    </details>
   );
 }

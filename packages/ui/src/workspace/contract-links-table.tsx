@@ -53,10 +53,10 @@ export function ContractLinksTable({ links }: ContractLinksTableProps) {
           <span className="text-xs font-medium text-[var(--color-text-primary)]">
             {link.provider_repo}
           </span>
-          <span
-            className="text-xs font-mono text-[var(--color-text-tertiary)] truncate min-w-[140px] max-w-[260px] block"
-            title={link.provider_file}
-          >
+          {/* No truncation: a path is exactly the string somebody is
+              scanning for, and an ellipsis reports a layout decision as
+              missing content. Wraps instead, as the contracts table does. */}
+          <span className="text-xs font-mono text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
             {link.provider_file}
           </span>
         </div>
@@ -66,10 +66,10 @@ export function ContractLinksTable({ links }: ContractLinksTableProps) {
           <span className="text-xs font-medium text-[var(--color-text-primary)]">
             {link.consumer_repo}
           </span>
-          <span
-            className="text-xs font-mono text-[var(--color-text-tertiary)] truncate min-w-[140px] max-w-[260px] block"
-            title={link.consumer_file}
-          >
+          {/* No truncation: a path is exactly the string somebody is
+              scanning for, and an ellipsis reports a layout decision as
+              missing content. Wraps instead, as the contracts table does. */}
+          <span className="text-xs font-mono text-[var(--color-text-tertiary)] [overflow-wrap:anywhere]">
             {link.consumer_file}
           </span>
         </div>

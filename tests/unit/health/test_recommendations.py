@@ -14,6 +14,7 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     apply_view,
     build_recommendations,
     build_validation_plan,
+    detector_native_benefit,
     hydrate_recommendations,
     rehydrate_suggestion,
 )
@@ -341,3 +342,42 @@ def test_an_untruncated_test_list_keeps_the_precise_command() -> None:
     plan = build_validation_plan(_multi_site_plan(), {}, {"svc/orders.py": reached}, test_limit=12)
     assert plan.truncated is False
     assert plan.commands == ["pytest tests/test_orders.py::test_a tests/test_orders.py::test_b"]
+
+
+# ---- R1 ranking contract -------------------------------------------------
+
+
+def test_blast_radius_is_charged_once() -> None:
+    narrow, wide = build_recommendations([_plan("narrow", blast=1), _plan("wide", blast=30)])
+    by_target = {item.suggestion.target_symbol: item for item in (narrow, wide)}
+    # Surface moves risk and only risk; effort alone sets cost.
+    assert by_target["wide"].cost == by_target["narrow"].cost
+    assert by_target["wide"].risk > by_target["narrow"].risk
+
+
+def test_zero_benefit_plan_cannot_outrank_a_health_recovering_one() -> None:
+    # The zero-impact clone sits in the far more popular, far sicker file.
+    clone = _plan("clone", rtype="extract_helper", file_path="src/hot.py", impact=0.0)
+    real = _plan("real", rtype="extract_method", file_path="src/cold.py", impact=1.5)
+    items = build_recommendations(
+        [clone, real],
+        metric_by_path={
+            "src/hot.py": SimpleNamespace(nloc=4000, score=0.0),
+            "src/cold.py": SimpleNamespace(nloc=40, score=9.0),
+        },
+        centrality={"src/hot.py": 300.0, "src/cold.py": 0.0},
+    )
+    by_target = {item.suggestion.target_symbol: item for item in items}
+    assert by_target["clone"].benefit == 0.0
+    assert by_target["clone"].rank_score == 0.0
+    assert by_target["real"].rank_score > by_target["clone"].rank_score
+    assert [item.suggestion.target_symbol for item in items] == ["real", "clone"]
+
+
+def test_performance_fix_benefit_stays_detector_native() -> None:
+    evidence = {"rank_factors": {"loop_depth": 2.0, "affected_call_sites": 40.0}}
+    plan = _plan("perf", rtype="performance_fix", impact=0.0, evidence=evidence)
+    (item,) = build_recommendations([plan])
+    native = detector_native_benefit(rehydrate_suggestion(plan))
+    assert item.benefit == round(native, 4)
+    assert item.benefit > 0.0

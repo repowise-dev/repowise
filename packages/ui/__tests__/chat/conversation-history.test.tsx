@@ -97,4 +97,63 @@ describe("ConversationHistory shell", () => {
     fireEvent.click(screen.getByRole("button", { name: /history/i }));
     expect(screen.getByText(/No conversations yet/i)).toBeInTheDocument();
   });
+
+  it("closes on Escape and restores focus to the history trigger", () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => { callback(0); return 1; });
+    render(<ConversationHistory conversations={CONVERSATIONS} onSelect={vi.fn()} onDelete={vi.fn()} onNew={vi.fn()} />);
+    const trigger = screen.getByRole("button", { name: /history/i });
+    fireEvent.click(trigger);
+    expect(screen.getByRole("dialog", { name: "Conversation history" })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Conversation history" })).toBeNull();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("renders grouped history as a persistent rail with management actions", () => {
+    const onPin = vi.fn();
+    const onFork = vi.fn();
+    render(
+      <ConversationHistory
+        variant="rail"
+        conversations={[{ ...CONVERSATIONS[0]!, pinned: true }, CONVERSATIONS[1]!]}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+        onNew={vi.fn()}
+        onRename={vi.fn()}
+        onPin={onPin}
+        onFork={onFork}
+        undoDelete={{ title: "Old chat", onUndo: vi.fn() }}
+      />,
+    );
+    expect(screen.getByRole("complementary", { name: "Conversation history" })).toBeInTheDocument();
+    expect(screen.getByText("Pinned")).toBeInTheDocument();
+    expect(screen.getByText("Auth flow review").className).toContain("overflow-wrap:anywhere");
+    fireEvent.click(screen.getByRole("button", { name: "Unpin conversation" }));
+    expect(onPin).toHaveBeenCalledWith("c1", false);
+    fireEvent.click(screen.getAllByRole("button", { name: "Fork conversation" })[0]!);
+    expect(onFork).toHaveBeenCalledWith("c1");
+    expect(screen.getByRole("button", { name: /Undo/ })).toBeInTheDocument();
+  });
+
+  it("collapses to a compact rail and remembers the preference", () => {
+    const preferenceKey = "test:history-rail";
+    window.localStorage.removeItem(preferenceKey);
+    render(
+      <ConversationHistory
+        variant="rail"
+        collapsible
+        railPreferenceKey={preferenceKey}
+        conversations={CONVERSATIONS}
+        onSelect={vi.fn()}
+        onDelete={vi.fn()}
+        onNew={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Collapse conversation history" }));
+    expect(screen.getByRole("complementary", { name: "Conversation history" })).toHaveAttribute("data-collapsed", "true");
+    expect(window.localStorage.getItem(preferenceKey)).toBe("collapsed");
+    fireEvent.click(screen.getByRole("button", { name: "Expand conversation history" }));
+    expect(screen.getByRole("complementary", { name: "Conversation history" })).toHaveAttribute("data-collapsed", "false");
+    expect(window.localStorage.getItem(preferenceKey)).toBe("expanded");
+  });
 });

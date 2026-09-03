@@ -176,7 +176,7 @@ export function extractMethodPlan(plan: RefactoringPlan): ExtractMethodPlan {
 export interface SplitGroup {
   name: string | null;
   symbols: string[];
-  suggested_file: string;
+  suggested_file: string | null;
 }
 
 export function splitGroups(plan: RefactoringPlan): SplitGroup[] {
@@ -187,7 +187,7 @@ export function splitGroups(plan: RefactoringPlan): SplitGroup[] {
     return {
       name: typeof rec.name === "string" ? rec.name : null,
       symbols: Array.isArray(rec.symbols) ? (rec.symbols as string[]) : [],
-      suggested_file: String(rec.suggested_file ?? ""),
+      suggested_file: typeof rec.suggested_file === "string" ? rec.suggested_file : null,
     };
   });
 }

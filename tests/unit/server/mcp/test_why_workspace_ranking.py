@@ -44,7 +44,9 @@ def _decision(rec_id: str, repo_id: str, title: str, body: str, **kw) -> Decisio
 def _install(contexts: dict, default: str, root) -> _MockRegistry:
     import repowise.server.mcp_server as mcp_mod
 
-    registry = _MockRegistry(contexts=contexts, default_alias=default)
+    registry = _MockRegistry(
+        contexts=contexts, default_alias=default, workspace_root=root
+    )
     primary = contexts[default]
     mcp_mod._registry = registry
     mcp_mod._workspace_root = str(root)
@@ -65,10 +67,18 @@ async def _uninstall(registry: _MockRegistry) -> None:
         setattr(mcp_mod, attr, None)
 
 
-async def _store(tmp_path, alias: str, records: list) -> tuple:
+async def _store(
+    tmp_path, alias: str, records: list, *, repo_name: str | None = None
+) -> tuple:
     repo_dir = tmp_path / alias
     repo_dir.mkdir()
-    return await _make_repo_context(alias, str(repo_dir), pages=[], extra_models=records)
+    return await _make_repo_context(
+        alias,
+        str(repo_dir),
+        pages=[],
+        extra_models=records,
+        repo_name=repo_name,
+    )
 
 
 @pytest.fixture
@@ -123,7 +133,22 @@ async def test_a_partial_match_in_an_earlier_store_is_left_under_the_floor(two_r
 
     assert result["workspace"] is True
     assert [d["id"] for d in result["decisions"]] == ["b-1"]
-    assert result["decisions"][0]["repo"] == "beta"
+    decision = result["decisions"][0]
+    assert decision["repo"] == "beta"
+    assert decision["source"] == "cli"
+    assert decision["provenance"] == "human_decision"
+    assert decision["evidence_refs"] == [
+        {
+            "id": "ev_fb245a52dbd371b929d4",
+            "repository": "beta",
+            "kind": "legacy",
+            "content_id": "338f3ae3ca60c54e7741",
+            "provenance": "human_decision",
+            "source": "cli",
+            "source_kind": "cli",
+            "verification_basis": "indexed",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -176,7 +201,7 @@ async def test_a_question_the_workspace_cannot_answer_gets_a_redirect(two_repos)
 
 
 @pytest.mark.asyncio
-async def test_workspace_search_serves_five_of_nine_answers(tmp_path):
+async def test_workspace_search_serves_five_of_nine_answers(tmp_path, monkeypatch):
     """The count is written out rather than read from the constant.
 
     Comparing the result against ``_MAX_WORKSPACE_DECISIONS`` would hold for any
@@ -184,7 +209,16 @@ async def test_workspace_search_serves_five_of_nine_answers(tmp_path):
     about an agent's context, which is exactly the kind of thing a test should
     fail on when it changes.
     """
-    from repowise.server.mcp_server import get_why
+    from repowise.server.mcp_server import get_symbol, get_why, tool_middleware
+
+    monkeypatch.setattr(
+        "repowise.server.mcp_server._budget.collector.default_store_path",
+        lambda _root: tmp_path / "omissions.sqlite3",
+    )
+    monkeypatch.setattr(
+        "repowise.core.distill.store.default_store_path",
+        lambda _root=None: tmp_path / "omissions.sqlite3",
+    )
 
     ctx = await _store(
         tmp_path,
@@ -208,7 +242,57 @@ async def test_workspace_search_serves_five_of_nine_answers(tmp_path):
         # and the cap is the only thing deciding the count. A question carrying a
         # word none of them holds would be refused outright instead, since an unseen
         # term takes the rarest weight the store can award.
-        result = await get_why(query="why is Redis the session cache backend", repo="all")
+        result = await tool_middleware(get_why)(
+            query="why is Redis the session cache backend", repo="all"
+        )
         assert len(result["decisions"]) == 5
+        assert result["decisions_total"] == 9
+        assert result["decisions_emitted"] == 5
+        assert result["decisions_reduced_reason"] == "construction_cap"
+        [ref] = result["_meta"]["omitted"]["refs"]
+        recovered = await get_symbol(ref)
+        assert "Redis session cache decision 8" in recovered["content"]
+        assert '"evidence_refs"' in recovered["content"]
+    finally:
+        await _uninstall(registry)
+
+
+@pytest.mark.asyncio
+async def test_workspace_and_single_repo_share_alias_scoped_evidence_ids(tmp_path):
+    """A persisted display name must not change identity across query modes."""
+    import json
+
+    from repowise.server.mcp_server import get_why, tool_middleware
+
+    ctx = await _store(
+        tmp_path,
+        "frontend",
+        [
+            _decision(
+                "fe-1",
+                "repo-frontend",
+                "Redis session cache",
+                "Use Redis as the session cache backend",
+                evidence_commits_json='["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]',
+            )
+        ],
+        repo_name="web-client",
+    )
+    registry = _install({"frontend": ctx}, "frontend", tmp_path)
+    try:
+        query = "why is Redis the session cache backend"
+        call = tool_middleware(get_why)
+        single = await call(query=query, repo="frontend")
+        workspace = await call(query=query, repo="all")
+
+        single_ref = single["decisions"][0]["evidence_refs"][0]
+        workspace_ref = workspace["decisions"][0]["evidence_refs"][0]
+        assert single_ref == workspace_ref
+        assert single_ref["repository"] == "frontend"
+        for result in (single, workspace):
+            accounting = result["_meta"]["response_budget"]
+            assert accounting["serialized_chars"] == len(
+                json.dumps(result, separators=(",", ":"), default=str)
+            )
     finally:
         await _uninstall(registry)

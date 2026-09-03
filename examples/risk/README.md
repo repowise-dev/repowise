@@ -1,6 +1,6 @@
 # Change-Risk Example
 
-Score the defect risk of a commit or `base..head` range with
+Rank a commit or `base..head` range against recent repository changes with
 `repowise risk`. No LLM key required — pure git + calibrated signals.
 Works without `repowise init` (index is optional).
 
@@ -24,8 +24,8 @@ repowise risk HEAD~5..HEAD    # recent local work
 ```
 
 The headline is **fix history**: which of the touched files have needed bug
-fixes before, recency-weighted, and where that sits among this repo's
-fix-bearing files. Below it, the diff shape — percentile and review priority
+fixes before, recency-weighted, and where that sits among this repo's own
+recent commits. Below it, the diff shape — percentile and review priority
 (`Below typical` / `Typical` / `Elevated`) among recent commits, and the 0–10
 score, which measures how large and spread out the change is rather than how
 dangerous.
@@ -51,7 +51,7 @@ repowise risk main..HEAD --format json
 
 | Step | Expected |
 |------|----------|
-| `repowise risk` | Table with score / percentile / review priority for HEAD |
+| `repowise risk` | Table led by percentile/review priority, with a supporting diff-shape score |
 | `repowise risk main..HEAD` | Same shape for the range (or a clear revspec error) |
 | `repowise risk --format json` | JSON object; no API key needed |
 

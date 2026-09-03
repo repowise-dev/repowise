@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from repowise.core.persistence.database import (
@@ -20,6 +21,7 @@ from repowise.core.persistence.database import (
 )
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
+from repowise.core.platform.telemetry import GROUP_LEAF_TYPES_ATTR
 from repowise.core.providers.embedding.base import KeylessEmbedder
 from repowise.server.mcp_server import _state
 
@@ -346,14 +348,18 @@ def _detect_workspace(repo_path: str | None):
         # Determine which repo the given path belongs to
         resolved = _Path(repo_path).resolve()
         repo_alias = None
+        best_match_depth = -1
         for entry in ws_config.repos:
             entry_abs = (ws_root / entry.path).resolve()
             try:
                 resolved.relative_to(entry_abs)
-                repo_alias = entry.alias
-                break
             except ValueError:
                 continue
+
+            match_depth = len(entry_abs.parts)
+            if match_depth > best_match_depth:
+                repo_alias = entry.alias
+                best_match_depth = match_depth
 
         if repo_alias is None:
             # Path is inside workspace but doesn't match a repo — use default
@@ -573,31 +579,98 @@ def create_mcp_server(
 #: two deep in practice; the cap only stops a pathological cycle from hanging.
 _MAX_GROUP_DEPTH = 10
 
+#: Host values FastMCP's own default construction already treats as local.
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
-def _run_transport(transport: str) -> None:
-    """Run the server, raising the cause of a task-group failure rather than the group.
+#: ``allowed_hosts``/``allowed_origins`` patterns for the loopback callers a
+#: non-loopback bind should still accept (e.g. an SSH tunnel or a client
+#: running on the same box as the server).
+_LOOPBACK_ALLOWLIST_PATTERNS = ("127.0.0.1:*", "localhost:*", "[::1]:*")
+
+
+def _bracket_if_ipv6(host: str) -> str:
+    """Bracket a bare IPv6 literal to match the ``Host``/``Origin`` header shape a client sends.
+
+    ``TransportSecurityMiddleware`` matches by ``host.startswith(base + ":")``
+    (see ``mcp/server/transport_security.py``), so an allowlist entry has to
+    be shaped exactly like the wire value. A client connecting to an IPv6
+    literal sends a bracketed Host header (``[2001:db8::1]:7338``), which
+    never starts with a bare ``2001:db8::1:`` — hostnames and IPv4 addresses
+    never contain a colon, so any colon in ``host`` here means IPv6.
+    """
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
+
+
+def _configure_transport_security(host: str) -> None:
+    """Widen the DNS-rebinding ``Host`` allowlist to match ``--host``.
+
+    ``FastMCP`` builds ``mcp.settings.transport_security`` at import time,
+    before any CLI ``--host`` is known, so it bakes in an allowlist scoped to
+    loopback only. ``run_mcp`` rebinds the socket via ``mcp.settings.host``
+    later, but nothing updated the allowlist to match — so every request to a
+    non-loopback ``--host`` failed ``Host`` header validation with
+    ``421 Misdirected Request`` no matter what host was actually given.
+
+    A loopback host needs no change (FastMCP's default already covers it).
+    Anything else — including a concrete IPv6 literal, bracketed to match the
+    header shape — gets an allowlist scoped to that host plus loopback.
+
+    A wildcard bind (``0.0.0.0``/``::``) can't be matched by any single
+    ``Host`` value, so the check is disabled rather than left permanently
+    failing. That trades DNS-rebinding protection for reachability on a
+    wildcard bind; the startup security warning logged elsewhere in
+    ``run_mcp`` for an unauthenticated wide bind is, until #1400 lands, the
+    only remaining gate on that surface — this fix is what makes it live
+    traffic instead of traffic that already 421'd.
+    """
+    if host in _LOOPBACK_HOSTS:
+        return
+    if host in ("0.0.0.0", "::"):
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
+        )
+        return
+    base = _bracket_if_ipv6(host)
+    # allowed_origins inherits the SDK's same startswith(base + ":") prefix
+    # match as allowed_hosts (see _validate_origin), so e.g.
+    # "http://172.21.12.48:*" also technically accepts an Origin like
+    # "http://172.21.12.48:8080.evil.com". Pre-existing SDK behavior — the
+    # loopback defaults FastMCP bakes in have the identical looseness — not
+    # something introduced or worsened here.
+    mcp.settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[f"{base}:*", *_LOOPBACK_ALLOWLIST_PATTERNS],
+        allowed_origins=[
+            f"http://{base}:*",
+            *(f"http://{p}" for p in _LOOPBACK_ALLOWLIST_PATTERNS),
+        ],
+    )
+
+
+def group_leaves(exc: BaseException, *, _depth: int = 0) -> list[BaseException]:
+    """Every non-group exception inside *exc*, outermost group flattened.
 
     ``mcp.run`` drives an anyio event loop, and anyio reports a child task's
     failure as an ``ExceptionGroup`` wrapping the real exception. Anything that
-    reads the outermost class then learns only that *a* task failed: the CLI
-    records the wrapper's name as the error type, so a missing dependency, a
-    permission problem and a closed pipe are indistinguishable after the fact.
-    Unwrap to the first leaf and raise that, so the layers above name the real
-    error. A group holding several distinct failures loses the siblings, which
-    is worth it to stop losing the cause entirely.
+    reads the outermost class learns only that *a* task failed: a missing
+    dependency, a permission problem and a closed pipe are indistinguishable
+    after the fact.
+
+    Returns the whole leaf set rather than the first one. The caller still
+    *raises* the first, because an exception can only be one thing, but the
+    siblings are what say whether a crash is one fault or several — a question
+    the single-leaf unwrap could not be asked, since it discarded them before
+    anything could look. A group that is empty, or nested past
+    :data:`_MAX_GROUP_DEPTH`, yields itself: no leaf is a worse answer than an
+    honest wrapper.
     """
-    try:
-        mcp.run(transport=transport)
-    except BaseExceptionGroup as group:
-        leaf: BaseException = group
-        for _ in range(_MAX_GROUP_DEPTH):
-            if not isinstance(leaf, BaseExceptionGroup) or not leaf.exceptions:
-                break
-            leaf = leaf.exceptions[0]
-        # A cancelled run is how a client-initiated shutdown looks, not a fault.
-        if isinstance(leaf, Exception):
-            _log.error("MCP server (%s) stopped: %r", transport, leaf, exc_info=leaf)
-        raise leaf from group
+    if not isinstance(exc, BaseExceptionGroup) or _depth >= _MAX_GROUP_DEPTH:
+        return [exc]
+    if not exc.exceptions:
+        return [exc]
+    return [leaf for child in exc.exceptions for leaf in group_leaves(child, _depth=_depth + 1)]
 
 
 def run_mcp(
@@ -612,48 +685,76 @@ def run_mcp(
     ``tools`` overrides which tools are advertised (see
     :func:`repowise.server.mcp_server._tool_selection.apply_tool_selection`);
     when omitted, the ``mcp.tools`` config block is honoured.
+
+    A task-group failure is unwrapped over the whole body, not around ``mcp.run``
+    alone: surface construction and transport security run outside that call, and
+    a group raised by either escaped with its wrapper class intact. Every leaf is
+    logged, and the first is re-raised carrying the class names of all of them in
+    :data:`GROUP_LEAF_TYPES_ATTR`. That is what lets the layer recording the
+    outcome say whether one fault or several killed the server, without reaching
+    back in here to re-derive it.
     """
-    _state._repo_path = repo_path
-    from repowise.server.mcp_server import ensure_full_surface
-    from repowise.server.mcp_server._tool_selection import apply_tool_selection
+    try:
+        _state._repo_path = repo_path
+        from repowise.server.mcp_server import ensure_full_surface
+        from repowise.server.mcp_server._tool_selection import apply_tool_selection
 
-    ensure_full_surface()
-    apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+        ensure_full_surface()
+        apply_tool_selection(mcp, repo_path=repo_path, override=tools)
 
-    if transport == "sse":
-        mcp.settings.host = host
-        mcp.settings.port = port
-        if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
-            _log.warning(
-                "SECURITY WARNING: MCP server (sse) is binding to %s without "
-                "REPOWISE_API_KEY. All tools are unauthenticated and "
-                "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
-                host,
+        if transport == "sse":
+            mcp.settings.host = host
+            mcp.settings.port = port
+            _configure_transport_security(host)
+            if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
+                _log.warning(
+                    "SECURITY WARNING: MCP server (sse) is binding to %s without "
+                    "REPOWISE_API_KEY. All tools are unauthenticated and "
+                    "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
+                    host,
+                )
+            mcp.run(transport="sse")
+        elif transport == "streamable-http":
+            mcp.settings.host = host
+            mcp.settings.port = port
+            _configure_transport_security(host)
+            if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
+                _log.warning(
+                    "SECURITY WARNING: MCP server (streamable-http) is binding to %s without "
+                    "REPOWISE_API_KEY. All tools are unauthenticated and "
+                    "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
+                    host,
+                )
+            mcp.run(transport="streamable-http")
+        else:
+            # stdout is the JSON-RPC channel on stdio, so every log line written
+            # there arrives at the client as a malformed protocol frame. Move the
+            # log sinks to stderr before anything can log.
+            from repowise.server.mcp_server._stdio_logging import route_logging_to_stderr
+
+            route_logging_to_stderr()
+            # stdio servers are spawned per-session by the MCP client; when the
+            # client dies abnormally the stdio loop doesn't exit (and Windows
+            # never kills children), leaking servers that hold wiki.db handles.
+            # The watchdog exits this process once the client is gone.
+            from repowise.server.mcp_server._watchdog import start_parent_watchdog
+
+            start_parent_watchdog()
+            mcp.run(transport="stdio")
+    except BaseExceptionGroup as group:
+        leaves = group_leaves(group)
+        for leaf in leaves:
+            # A cancelled run is how a client-initiated shutdown looks, not a fault.
+            if isinstance(leaf, Exception):
+                _log.error("MCP server (%s) stopped: %r", transport, leaf, exc_info=leaf)
+        first = leaves[0]
+        # Best effort: a leaf class with __slots__ refuses the attribute, and the
+        # sibling names are not worth losing the exception over.
+        with contextlib.suppress(AttributeError, TypeError):
+            setattr(
+                first,
+                GROUP_LEAF_TYPES_ATTR,
+                tuple(sorted({type(leaf).__name__ for leaf in leaves})),
             )
-        _run_transport("sse")
-    elif transport == "streamable-http":
-        mcp.settings.host = host
-        mcp.settings.port = port
-        if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
-            _log.warning(
-                "SECURITY WARNING: MCP server (streamable-http) is binding to %s without "
-                "REPOWISE_API_KEY. All tools are unauthenticated and "
-                "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
-                host,
-            )
-        _run_transport("streamable-http")
-    else:
-        # stdout is the JSON-RPC channel on stdio, so every log line written
-        # there arrives at the client as a malformed protocol frame. Move the
-        # log sinks to stderr before anything can log.
-        from repowise.server.mcp_server._stdio_logging import route_logging_to_stderr
+        raise first from group
 
-        route_logging_to_stderr()
-        # stdio servers are spawned per-session by the MCP client; when the
-        # client dies abnormally the stdio loop doesn't exit (and Windows
-        # never kills children), leaking servers that hold wiki.db handles.
-        # The watchdog exits this process once the client is gone.
-        from repowise.server.mcp_server._watchdog import start_parent_watchdog
-
-        start_parent_watchdog()
-        _run_transport("stdio")

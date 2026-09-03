@@ -19,6 +19,7 @@ Built-in providers:
     ollama     — local inference (llama3.2, codellama, etc.)
     litellm    — 100+ providers via LiteLLM proxy
     codex_cli  — local authenticated Codex CLI via codex exec
+    claude_cli — local authenticated Claude Code CLI via claude -p
     opencode   — local opencode CLI via opencode run
     mock       — deterministic test provider
 """

@@ -68,6 +68,9 @@ _CONTRACT_TYPE_TO_EDGE_KIND: dict[str, str] = {
     "socket": "socket",
     "topic": "event",
     "data": "db",
+    # A package boundary is exactly what the existing "package" kind means,
+    # so the graph, the conformance rules and the map need no new taxonomy.
+    "code": "package",
 }
 
 #: All edge kinds the graph can carry. ``db`` carries the shared-table
@@ -198,16 +201,18 @@ class SystemEdge:
 class SystemGraph:
     """The versioned cross-repo structure: nodes, typed edges, diagnostics."""
 
-    version: int = 1
+    version: int = 2
     generated_at: str = ""
     nodes: list[SystemNode] = field(default_factory=list)
     edges: list[SystemEdge] = field(default_factory=list)
     diagnostics: ExtractionDiagnostics = field(default_factory=ExtractionDiagnostics)
+    repo_provenance: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "version": self.version,
             "generated_at": self.generated_at,
+            "repo_provenance": self.repo_provenance,
             "nodes": [n.to_dict() for n in self.nodes],
             "edges": [e.to_dict() for e in self.edges],
             "diagnostics": self.diagnostics.to_dict(),
@@ -218,6 +223,7 @@ class SystemGraph:
         return cls(
             version=data.get("version", 1),
             generated_at=data.get("generated_at", ""),
+            repo_provenance=data.get("repo_provenance", {}),
             nodes=[SystemNode.from_dict(n) for n in data.get("nodes", [])],
             edges=[SystemEdge.from_dict(e) for e in data.get("edges", [])],
             diagnostics=ExtractionDiagnostics.from_dict(data.get("diagnostics", {})),
@@ -332,7 +338,10 @@ class _GraphBuilder:
         for e in edges:
             endpoints.add(e.source)
             endpoints.add(e.target)
-            if e.structural and e.kind != "package":
+            # A `package` edge is a manifest dependency, which says nothing
+            # about whether a contract was consumed — unless a `code` contract
+            # link built it, which `contract_refs` is what distinguishes.
+            if e.structural and (e.kind != "package" or e.contract_refs):
                 contract_targets.add(e.target)
                 contract_sources.add(e.source)
 
@@ -354,8 +363,9 @@ def build_system_graph(
     boundaries_by_repo: dict[str, list[ServiceBoundary]],
     diagnostics: ExtractionDiagnostics | None = None,
     *,
-    version: int = 1,
+    version: int = 2,
     generated_at: str = "",
+    repo_provenance: dict[str, dict[str, str]] | None = None,
 ) -> SystemGraph:
     """Assemble the service-granular system graph (pure, no I/O).
 
@@ -415,6 +425,7 @@ def build_system_graph(
     return SystemGraph(
         version=version,
         generated_at=generated_at,
+        repo_provenance=repo_provenance or {},
         nodes=nodes,
         edges=edges,
         diagnostics=diagnostics,
@@ -432,9 +443,7 @@ def save_system_graph(graph: SystemGraph, workspace_root: Path) -> Path:
     out_path = data_dir / SYSTEM_GRAPH_FILENAME
     # Atomic: the MCP enricher reads these artifacts from a separate
     # process and must never observe a half-written file.
-    atomic_write_text(
-        out_path, json.dumps(graph.to_dict(), indent=2, ensure_ascii=False)
-    )
+    atomic_write_text(out_path, json.dumps(graph.to_dict(), indent=2, ensure_ascii=False))
     return out_path
 
 
@@ -489,9 +498,7 @@ async def run_system_graph_build(
             _detect_boundaries_by_repo, ws_config, workspace_root
         )
 
-    diagnostics = build_diagnostics(
-        store.contracts, store.contract_links, store.extraction_stats
-    )
+    diagnostics = build_diagnostics(store.contracts, store.contract_links, store.extraction_stats)
     graph = build_system_graph(
         store.contracts,
         store.contract_links,
@@ -499,6 +506,7 @@ async def run_system_graph_build(
         boundaries_by_repo,
         diagnostics,
         generated_at=datetime.now(UTC).isoformat(),
+        repo_provenance=store.repo_provenance,
     )
 
     out_path = save_system_graph(graph, workspace_root)

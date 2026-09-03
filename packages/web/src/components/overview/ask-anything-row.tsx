@@ -46,17 +46,19 @@ export function AskAnythingRow({ repoId }: { repoId: string }) {
         }}
         className="group relative flex items-center gap-2.5 overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] py-2 pl-3.5 pr-2 transition-colors focus-within:border-[var(--color-border-hover)]"
       >
-        {/* Ember rail on the leading edge — the same accent the Code Health
-            hero uses, at a quarter the width, so the two read as related
-            without competing. */}
+        {/* Plum rail on the leading edge. This was the Code Health hero's
+            ember, borrowed so the two read as related; the row is now on the
+            model accent, and a warm rail under a plum icon and a plum submit
+            would read as two systems arguing over one control. Same device,
+            same quarter width, following the row's own meaning. */}
         <span
           aria-hidden
           className="absolute inset-y-0 left-0 w-[3px]"
-          style={{ background: "var(--gradient-ember)" }}
+          style={{ background: "var(--gradient-plum)" }}
         />
         <Sparkles
           aria-hidden
-          className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-primary)] transition-transform group-focus-within:scale-110"
+          className="h-3.5 w-3.5 shrink-0 text-[var(--color-model)] transition-transform group-focus-within:scale-110"
         />
         <label htmlFor="overview-ask" className="sr-only">
           Ask a question about this codebase
@@ -71,7 +73,7 @@ export function AskAnythingRow({ repoId }: { repoId: string }) {
         <button
           type="submit"
           disabled={!question.trim()}
-          className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[var(--color-accent-fill)] px-2.5 py-1 text-xs font-medium text-[var(--color-text-on-accent)] transition hover:bg-[var(--color-accent-fill-hover)] disabled:opacity-40"
+          className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[var(--color-model)] px-2.5 py-1 text-xs font-medium text-[var(--color-text-on-model)] transition hover:bg-[var(--color-model-hover)] disabled:opacity-40"
         >
           Ask
           <ArrowRight className="h-3 w-3" />
@@ -84,7 +86,7 @@ export function AskAnythingRow({ repoId }: { repoId: string }) {
             key={s}
             type="button"
             onClick={() => ask(s)}
-            className="rounded-full border border-[var(--color-border-default)] px-2.5 py-1 text-[11px] text-[var(--color-text-tertiary)] transition-colors hover:border-[var(--color-accent-primary)] hover:text-[var(--color-accent-primary)]"
+            className="rounded-full border border-[var(--color-border-default)] px-2.5 py-1 text-[11px] text-[var(--color-text-tertiary)] transition-colors hover:border-[var(--color-model)] hover:text-[var(--color-model)]"
           >
             {s}
           </button>

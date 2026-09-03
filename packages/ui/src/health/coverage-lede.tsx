@@ -18,7 +18,7 @@ import type { CoverageFileRow, CoverageSummary } from "@repowise-dev/types/healt
 
 import { PageLede } from "../shared/page-lede";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
-import { formatNumber } from "../lib/format";
+import { formatDate, formatDateTime, formatNumber } from "../lib/format";
 import { coverageBand } from "./tokens";
 
 export interface CoverageLedeProps {
@@ -96,7 +96,7 @@ export function CoverageLede({
       label: "Report format",
       value: (summary.source_format ?? "").toUpperCase(),
       ...(summary.ingested_at
-        ? { sub: `ingested ${new Date(summary.ingested_at).toLocaleDateString()}` }
+        ? { sub: `ingested ${formatDate(summary.ingested_at)}` }
         : {}),
     },
   ];
@@ -144,7 +144,7 @@ export function CoverageLede({
             </span>{" "}
             output
             {summary.ingested_at
-              ? `, ingested ${new Date(summary.ingested_at).toLocaleString()}`
+              ? `, ingested ${formatDateTime(summary.ingested_at)}`
               : ""}
             {summary.ingested_commit_sha
               ? ` at ${summary.ingested_commit_sha.slice(0, 8)}`

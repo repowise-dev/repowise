@@ -2,6 +2,7 @@
 
 import { Scissors, Sparkles, Zap } from "lucide-react";
 import { Card, CardContent } from "../ui/card";
+import { Skeleton, SkeletonRegion } from "../ui/skeleton";
 import { formatCost, formatTokens } from "../lib/format";
 
 export interface DistillSavingsGroup {
@@ -73,10 +74,65 @@ export function DistillSavingsCard({ data }: DistillSavingsCardProps) {
   const hasData = !!data?.available && total > 0;
 
   if (!data) {
+    // Mirrors the populated card below rather than reserving a flat block:
+    // headline, the two right-aligned totals, the breakdown bar with its
+    // legend, and the two detail columns. The flat version stood 176px tall
+    // against a card that measures 350-450px, so the whole page jumped on
+    // first paint.
     return (
       <Card>
-        <CardContent className="py-10">
-          <div className="h-24 w-full animate-pulse rounded-lg bg-[var(--color-bg-inset)]" />
+        <CardContent className="py-6">
+          <SkeletonRegion label="Loading agent token savings">
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2 text-xs uppercase tracking-wide">
+                  <Skeleton className="block h-[1lh] w-48" />
+                </div>
+                <div className="mt-1 flex items-baseline gap-3">
+                  <span className="text-4xl font-semibold">
+                    <Skeleton className="block h-[1lh] w-32" />
+                  </span>
+                  <span className="text-2xl font-semibold">
+                    <Skeleton className="block h-[1lh] w-24" />
+                  </span>
+                </div>
+                <p className="mt-1 text-xs">
+                  <Skeleton className="block h-[1lh] w-56" />
+                </p>
+              </div>
+              <div className="flex gap-6">
+                {[0, 1].map((i) => (
+                  <div key={i}>
+                    <div className="text-lg font-semibold">
+                      <Skeleton className="block h-[1lh] w-20" />
+                    </div>
+                    <div className="text-xs">
+                      <Skeleton className="mt-0.5 block h-[1lh] w-28" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <Skeleton className="mt-4 h-2.5 w-full rounded-full" />
+            <div className="mt-1.5 flex items-center gap-4 text-xs">
+              <Skeleton className="block h-[1lh] w-24" />
+              <Skeleton className="block h-[1lh] w-24" />
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2">
+              {[0, 1].map((col) => (
+                <div key={col} className="space-y-2">
+                  <div className="text-xs">
+                    <Skeleton className="block h-[1lh] w-32" />
+                  </div>
+                  {Array.from({ length: 5 }).map((_, row) => (
+                    <Skeleton key={row} className="h-4 w-full" />
+                  ))}
+                </div>
+              ))}
+            </div>
+          </SkeletonRegion>
         </CardContent>
       </Card>
     );

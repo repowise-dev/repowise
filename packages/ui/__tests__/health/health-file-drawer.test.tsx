@@ -5,6 +5,7 @@ import {
   type HealthDrawerFinding,
   type HealthDrawerMetric,
 } from "../../src/health/health-file-drawer.js";
+import type { PerformanceOpportunity } from "@repowise-dev/types/health";
 
 function metric(partial: Partial<HealthDrawerMetric> = {}): HealthDrawerMetric {
   return {
@@ -465,5 +466,152 @@ describe("HealthFileDrawer bug history", () => {
       />,
     );
     expect(screen.queryByRole("button", { name: /Bug history/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("HealthFileDrawer under the performance lens", () => {
+  function cause(
+    id: string,
+    partial: Partial<PerformanceOpportunity> = {},
+  ): PerformanceOpportunity {
+    return {
+      opportunity_id: id,
+      performance_model_version: 2,
+      biomarker_type: "serial_await_in_loop",
+      biomarker_types: ["serial_await_in_loop"],
+      boundary_kind: "db",
+      execution_context: "production",
+      terminal_sink: null,
+      shared_path_suffix: [],
+      intervention_symbol: null,
+      file_path: "packages/cli/doctor_cmd.py",
+      resource_fingerprints: [],
+      affected_call_sites_total: 1,
+      affected_files_total: 1,
+      observations_total: 1,
+      evidence: [],
+      evidence_truncated: false,
+      evidence_total: 1,
+      evidence_emitted: 1,
+      reliable_entry_reachability: null,
+      provenance: "direct",
+      confidence: "high",
+      facets: {
+        actionability_confidence: "high",
+        exposure: "unknown",
+        amplification: "unknown",
+        leverage: "single_site",
+        change_risk: "low",
+      },
+      actionability_state: "plan_ready",
+      actionability_reason: "proven_strategy",
+      prerequisites: [],
+      rank_score: 10,
+      rank_position: 0,
+      rank_factors: {},
+      why_ranked: [],
+      fix: null,
+      plan_id: "plan-1",
+      plan_status: "available",
+      plan_reason: "",
+      ...partial,
+    } as PerformanceOpportunity;
+  }
+
+  const located = (id: string, fn: string, line: number) =>
+    cause(id, {
+      evidence: [
+        {
+          finding_id: `finding_${id}`,
+          file_path: "packages/cli/doctor_cmd.py",
+          biomarker_type: "serial_await_in_loop",
+          function_name: fn,
+          line_start: line,
+          line_end: line,
+          reason: "a database call is awaited serially in a loop",
+          path: [],
+          provenance: "direct",
+        },
+      ],
+    });
+
+  it("leads with the causes rather than with the defect score", () => {
+    const { getByText } = render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric()}
+        lens="performance"
+        performance={{ items: [cause("perf2_a")], total: 1 }}
+      />,
+    );
+    expect(getByText("Performance causes")).toBeInTheDocument();
+  });
+
+  it("tells two causes of one marker apart by where they fire", () => {
+    // Thirty-six causes of a single marker on one file is real here. Titling
+    // them by the marker alone renders thirty-six identical rows.
+    const { getByText } = render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric()}
+        lens="performance"
+        performance={{
+          items: [located("perf2_a", "sweep_pages", 1312), located("perf2_b", "sweep_cycles", 1218)],
+          total: 2,
+        }}
+      />,
+    );
+    expect(getByText("sweep_pages:1312")).toBeInTheDocument();
+    expect(getByText("sweep_cycles:1218")).toBeInTheDocument();
+  });
+
+  it("counts the repository's causes, not the slice it was handed", () => {
+    const { getByText } = render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric()}
+        lens="performance"
+        performance={{ items: [cause("perf2_a"), cause("perf2_b")], total: 36 }}
+      />,
+    );
+    // The figures sit in their own tabular-nums spans, so read the sentence.
+    const summary = getByText(/open cause/).textContent ?? "";
+    expect(summary).toContain("36 open causes");
+    expect(summary).toContain("2 shown");
+  });
+
+  it("says nothing about performance under another lens", () => {
+    const { queryByText } = render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric()}
+        performance={{ items: [cause("perf2_a")], total: 1 }}
+      />,
+    );
+    expect(queryByText("Performance causes")).not.toBeInTheDocument();
+  });
+
+  it("distinguishes a host that did not ask from a file with no cause", () => {
+    const notWired = render(
+      <HealthFileDrawer open onClose={() => {}} metric={metric()} lens="performance" />,
+    );
+    expect(notWired.getByText(/no performance data wired up/)).toBeInTheDocument();
+
+    const clean = render(
+      <HealthFileDrawer
+        open
+        onClose={() => {}}
+        metric={metric()}
+        lens="performance"
+        performance={{ items: [], total: 0 }}
+      />,
+    );
+    // And refuses the reading that a clear detector run means the file is fast.
+    const empty = clean.getByText(/No open cause names this file/).textContent ?? "";
+    expect(empty).toContain("not a measurement that it is fast");
   });
 });

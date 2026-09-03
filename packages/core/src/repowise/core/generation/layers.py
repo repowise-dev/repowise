@@ -27,6 +27,7 @@ from pathlib import PurePosixPath
 
 from repowise.core.ids import is_external
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from repowise.core.support_paths import DOC_DIR_TOKENS, EXAMPLE_DIR_TOKENS
 from repowise.core.test_paths import is_test_related_path
 
 # ---------------------------------------------------------------------------
@@ -98,37 +99,11 @@ for _tag, _hints in _LANG_REGISTRY.layer_dir_hints_by_language().items():
         _LANG_ROOT_HINTS[_tag] = _roots
 
 
-# Example/demo/benchmark directories: documentation-by-code and support
-# harnesses, not the system itself. Their files carry entry-style names
-# (main.go, index.js, decode.exs) by convention, so without demotion they
-# flood entry points and the tour on any repo that ships samples (express,
-# chi, …) or benchmarks (cargo's benches/, jason's bench/).
-_EXAMPLE_DIR_TOKENS = frozenset(
-    {
-        "examples", "_examples", "example", "samples", "sample", "demo", "demos",
-        "bench", "benches", "benchmarks",
-    }
-)
-
-
-# Documentation directories: sphinx/docusaurus/vitepress sites and runnable
-# doc snippets (libuv's docs/code/*/main.c, docfx template assets). Like the
-# example dirs above, their files carry entry-style names by convention but
-# document the system rather than being it.
-_DOC_DIR_TOKENS = frozenset({"docs", "doc", "website"})
-
-
-def is_support_path(path: str) -> bool:
-    """Whether *path* is support material (examples/benchmarks/docs sites).
-
-    Support files never seed or anchor a tour and never surface as entry
-    points — a reader orienting in the repo must land in the system itself,
-    not in its documentation or sample harnesses.
-    """
-    return any(
-        s.lower() in _EXAMPLE_DIR_TOKENS or s.lower() in _DOC_DIR_TOKENS
-        for s in PurePosixPath(path).parts[:-1]
-    )
+# The directory vocabularies and `is_support_path` live in `core.support_paths`
+# so `analysis` can ask the same question without importing `generation`. Only
+# the layer-inference use of the token sets stays here.
+_EXAMPLE_DIR_TOKENS = EXAMPLE_DIR_TOKENS
+_DOC_DIR_TOKENS = DOC_DIR_TOKENS
 
 
 # Build / CI / extension tooling directories: scripts, container definitions,

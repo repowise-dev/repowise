@@ -13,6 +13,16 @@ from repowise.server.mcp_server._savings import wrapper
 
 
 class TestTelemetryProperties:
+    @pytest.fixture(autouse=True)
+    def _no_ambient_embedder(self, monkeypatch: pytest.MonkeyPatch):
+        """Pin the install-level state so the exact-shape cases stay exact.
+
+        `semantic_search` is read from server state rather than the response, so
+        without this an unrelated test leaving an embedder resolved would add a
+        key here and the equality assertions would fail for the wrong reason.
+        """
+        monkeypatch.setattr(wrapper, "_semantic_search_state", lambda: None)
+
     def test_answer_shape_extracts_enums_and_flags(self):
         result = {
             "answer": "…prose the agent reads…",  # must NOT be reported
@@ -32,6 +42,49 @@ class TestTelemetryProperties:
             "index_behind": True,
             "embedder_degraded": False,
         }
+
+    def test_degraded_answer_reports_why_synthesis_was_missing(self):
+        """"No provider" and "the provider failed" are different products.
+
+        Both return the same payload shape, so without this dimension a keyless
+        install working exactly as designed is indistinguishable from a broken
+        one, and neither can be sized.
+        """
+        result = {
+            "answer": "…assembled boilerplate…",
+            "confidence": "medium",
+            "retrieval_quality": "high",
+            "degraded": "no-llm-provider",
+            "_meta": {"embedder_degraded": False},
+        }
+        props = wrapper._telemetry_properties("get_answer", result, 7)
+        assert props["degraded"] == "no-llm-provider"
+        assert props["embedder_degraded"] is False
+        # The reason is an enum; the prose it explains never travels.
+        assert "answer" not in props
+
+    def test_semantic_search_is_read_from_the_install_not_the_response(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The response shape is untouched; the dimension still gets all three states.
+
+        Putting this on the wire would have cost every caller tokens on every
+        call to say something `embedder_degraded` already implies. It is a fact
+        about the install, so it is read from the install.
+        """
+        monkeypatch.setattr(wrapper, "_semantic_search_state", lambda: False)
+        props = wrapper._telemetry_properties("get_answer", {"confidence": "low"}, 1)
+        assert props["semantic_search"] is False
+
+        monkeypatch.setattr(wrapper, "_semantic_search_state", lambda: True)
+        assert wrapper._telemetry_properties("get_answer", {}, 1)["semantic_search"] is True
+
+    def test_an_unevaluated_embedder_reports_no_semantic_search(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Absent stays distinct from False: "never checked" is not "off"."""
+        monkeypatch.setattr(wrapper, "_semantic_search_state", lambda: None)
+        assert "semantic_search" not in wrapper._telemetry_properties("get_answer", {}, 1)
 
     def test_error_result_is_status_error(self):
         props = wrapper._telemetry_properties("get_symbol", {"error": "boom"}, 3)

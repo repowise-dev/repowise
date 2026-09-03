@@ -5,6 +5,8 @@ Covers:
   and the degrade-to-silent-drop posture on store failure.
 * truncate_to_budget — dropped symbols / targets / skeleton texts are
   recoverable, and keep/drop decisions are unchanged by the collector.
+* fit_to_budget — the block-shedding ceiling: a no-op under budget, sheds in
+  the tool's declared order over it, and every drop stays expandable.
 * get_symbol — omission-ref overload (``repowise#<12-hex>``), query
   filtering, and byte-identical normal symbol resolution.
 * Migrated tools (get_dead_code, get_risk trim helper, get_overview) — no
@@ -28,7 +30,9 @@ from repowise.server.mcp_server._budget import (
     HOST_MCP_TOKEN_CAP_DEFAULT,
     OmissionCollector,
     effective_char_budget,
+    fit_to_budget,
     host_token_cap,
+    over_budget,
     truncate_to_budget,
 )
 
@@ -46,6 +50,11 @@ def _store_get(repo: Path, ref: str, query: str | None = None) -> str | None:
         return store.get(ref, query=query)
     finally:
         store.close()
+
+
+def _joined(repo: Path, refs: list[str]) -> str:
+    """Every omission doc the refs point at, concatenated."""
+    return chr(10).join(_store_get(repo, r) or "" for r in refs)
 
 
 def _store_record(repo: Path, ref: str) -> dict | None:
@@ -84,6 +93,22 @@ def test_collector_combined_doc_round_trip(repo_root: Path):
     assert _store_record(repo_root, ref)["source"] == "mcp:test_tool"
 
 
+def test_collector_merges_existing_omission_refs(repo_root: Path):
+    first = OmissionCollector("test_tool", repo_root=repo_root)
+    first.add("first", "alpha")
+    response: dict = {"_meta": {}}
+    first.attach(response)
+
+    second = OmissionCollector("test_tool", repo_root=repo_root)
+    second.add("second", "beta")
+    second.attach(response)
+
+    refs = response["_meta"]["omitted"]["refs"]
+    assert len(refs) == 2
+    assert "alpha" in (_store_get(repo_root, refs[0]) or "")
+    assert "beta" in (_store_get(repo_root, refs[1]) or "")
+
+
 def test_collector_inline_marker_is_byte_identical(repo_root: Path):
     collector = OmissionCollector("test_tool", repo_root=repo_root)
     original = "def f():\n    return 1\n\n# tail"
@@ -113,6 +138,20 @@ def test_collector_store_failure_degrades_silently(tmp_path: Path):
     collector.attach(response)
     assert "omission_marker" not in response
     assert "omitted" not in response["_meta"]
+    assert "recovery_unavailable" in response["_meta"]
+
+
+def test_collector_keeps_large_recovery_document_in_one_call(repo_root: Path):
+    collector = OmissionCollector("test_tool", repo_root=repo_root)
+    collector.add("large", "x" * 70_000)
+    response: dict = {"_meta": {}}
+    collector.attach(response)
+
+    refs = response["_meta"]["omitted"]["refs"]
+    assert len(refs) == 1
+    assert "omission_markers" not in response
+    recovered = _store_get(repo_root, refs[0]) or ""
+    assert recovered.endswith("x" * 70_000)
 
 
 # ---------------------------------------------------------------------------
@@ -219,10 +258,160 @@ def test_budgeter_decisions_unchanged_by_collector(repo_root: Path):
 
     # Strip the additive reversibility fields; the rest must be identical.
     collected.pop("omission_marker", None)
+    collected.pop("omission_markers", None)
     collected["_meta"].pop("omitted", None)
     assert json.dumps(collected, sort_keys=True, default=str) == json.dumps(
         plain, sort_keys=True, default=str
     )
+
+
+# ---------------------------------------------------------------------------
+# fit_to_budget — the block-shedding ceiling
+# ---------------------------------------------------------------------------
+
+
+def _blocks_response(pad: int = 0) -> dict:
+    return {
+        "title": "repo",
+        "keep_me": {"entry_points": ["main.py"]},
+        "cheap": "c" * pad,
+        "dear": {"rows": ["d" * pad]},
+        "nested": {"heavy": "h" * pad, "light": 1},
+        "ranked": [{"row": i, "body": "r" * pad} for i in range(6)],
+        "_meta": {"timing_ms": 1.0},
+    }
+
+
+_ORDER = ("cheap", "nested.heavy", "dear", "ranked[]")
+
+
+def _narrow_budget(monkeypatch, tokens: int) -> None:
+    """Pull the host cap down so a small fixture counts as oversized."""
+    monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", str(tokens))
+
+
+def test_fit_to_budget_is_a_noop_under_budget(repo_root: Path):
+    """The common case: a response that fits keeps every block, untouched."""
+    response = _blocks_response(pad=50)
+    before = json.dumps(response, sort_keys=True, default=str)
+    collector = OmissionCollector("get_overview", repo_root=repo_root)
+
+    out = fit_to_budget(response, _ORDER, collector)
+
+    assert json.dumps(out, sort_keys=True, default=str) == before
+    assert "truncated" not in out
+    assert collector.empty
+
+
+def test_fit_to_budget_sheds_in_declared_order(repo_root: Path, monkeypatch):
+    _narrow_budget(monkeypatch, 1200)
+    response = _blocks_response(pad=1200)
+    collector = OmissionCollector("get_overview", repo_root=repo_root)
+
+    out = fit_to_budget(response, _ORDER, collector)
+    collector.attach(out)
+
+    assert out["truncated"] is True
+    # Cheapest first, and shedding stops as soon as it fits.
+    assert "cheap" not in out
+    assert out["title"] == "repo"
+    assert out["keep_me"] == {"entry_points": ["main.py"]}
+    assert not over_budget(out)
+    refs = out["_meta"]["omitted"]["refs"]
+    stored = _joined(repo_root, refs)
+    assert "cccc" in stored
+
+
+def test_fit_to_budget_sheds_a_nested_block(repo_root: Path, monkeypatch):
+    _narrow_budget(monkeypatch, 900)
+    response = _blocks_response(pad=1500)
+    collector = OmissionCollector("get_overview", repo_root=repo_root)
+
+    fit_to_budget(response, ("nested.heavy",), collector)
+
+    assert "heavy" not in response["nested"]
+    assert response["nested"]["light"] == 1
+
+
+def test_fit_to_budget_trims_a_ranked_tail_but_never_empties_it(repo_root: Path, monkeypatch):
+    _narrow_budget(monkeypatch, 700)
+    response = {"results": [{"row": i, "body": "r" * 900} for i in range(6)]}
+    collector = OmissionCollector("search_codebase", repo_root=repo_root)
+
+    fit_to_budget(response, ("results[]",), collector)
+    collector.attach(response)
+
+    assert len(response["results"]) == 1
+    assert response["results"][0]["row"] == 0  # best-ranked survives
+    refs = response["_meta"]["omitted"]["refs"]
+    stored = _joined(repo_root, refs)
+    assert '"row": 5' in stored
+
+
+def test_fit_to_budget_reports_total_emitted_and_reason(repo_root: Path):
+    response = {"results": [{"row": i, "body": "r" * 1000} for i in range(6)]}
+    collector = OmissionCollector("get_answer", repo_root=repo_root)
+
+    fit_to_budget(
+        response,
+        ("results[]",),
+        collector,
+        char_budget=2200,
+        headroom=0,
+        record_counts=True,
+    )
+    collector.attach(response)
+
+    assert response["results_total"] == 6
+    assert response["results_emitted"] == len(response["results"])
+    assert response["results_reduced_reason"] == "response_budget"
+    assert response["results_truncated"] is True
+    assert response["results_omitted"] == 6 - len(response["results"])
+
+
+def test_fit_to_budget_composes_projection_reason_and_full_omission_count(
+    repo_root: Path,
+):
+    response = {
+        "results": [{"row": i, "body": "r" * 1000} for i in range(3)],
+        "results_total": 8,
+        "results_emitted": 3,
+        "results_reduced_reason": "confidence_projection_and_deduplication",
+    }
+    collector = OmissionCollector("get_answer", repo_root=repo_root)
+
+    fit_to_budget(
+        response,
+        ("results[]",),
+        collector,
+        char_budget=2200,
+        headroom=0,
+        record_counts=True,
+    )
+    collector.attach(response)
+
+    assert response["results_total"] == 8
+    assert response["results_emitted"] == len(response["results"])
+    assert response["results_reduced_reason"].endswith("_and_response_budget")
+    assert response["results_omitted"] == 8 - len(response["results"])
+
+
+def test_fit_to_budget_can_reduce_a_ranked_mapping(repo_root: Path):
+    response = {"targets": {f"src/{i}.py": {"body": "x" * 1000} for i in range(6)}}
+    collector = OmissionCollector("get_risk", repo_root=repo_root)
+
+    fit_to_budget(
+        response,
+        ("targets[]",),
+        collector,
+        char_budget=2200,
+        headroom=0,
+        record_counts=True,
+    )
+
+    assert response["targets_total"] == 6
+    assert response["targets_emitted"] == len(response["targets"])
+    assert response["targets_reduced_reason"] == "response_budget"
 
 
 def _skeleton_response(text_chars: int = 12000) -> dict:
@@ -292,7 +481,7 @@ async def test_get_symbol_resolves_omission_ref(setup_mcp, repo_root: Path):
     assert result["kind"] == "omission"
     assert result["content"] == content
     assert result["source"] == "mcp:test"
-    assert result["ref"] == ref
+    assert result["ref"] == f"repowise#{ref}"
     assert "created_at" in result
 
     filtered = await get_symbol(f"repowise#{ref}", query="^ERROR")
@@ -369,17 +558,47 @@ async def test_get_dead_code_truncation_is_expandable(setup_mcp, repo_root: Path
     assert rec["source"] == "mcp:get_dead_code"
 
 
+@pytest.mark.asyncio
+async def test_get_overview_stays_under_a_narrowed_host_cap(
+    setup_mcp, repo_root: Path, monkeypatch
+):
+    """The ceiling is real end to end: no block of a live tool escapes it."""
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server import get_overview, tool_middleware
+
+    mcp_mod._repo_path = str(repo_root)
+    budgeted = tool_middleware(get_overview)
+    full = await budgeted()
+    assert "truncated" not in full  # normal cap: nothing sheds
+    assert full["tool_surface"]["recipes"]
+
+    monkeypatch.setenv("MAX_MCP_OUTPUT_TOKENS", "700")
+    trimmed = await budgeted()
+
+    assert trimmed["truncated"] is True
+    assert not trimmed.get("tool_surface", {}).get("recipes")
+    assert trimmed["title"] == full["title"]
+    accounting = trimmed["_meta"]["response_budget"]
+    assert len(json.dumps(trimmed, separators=(",", ":"), default=str)) <= accounting[
+        "limit_chars"
+    ]
+    stored = _joined(repo_root, trimmed["_meta"]["omitted"]["refs"])
+    assert "answer_question" in stored
+
+
 def test_risk_trim_blast_lists_collects_drops(repo_root: Path):
     from repowise.server.mcp_server.tool_risk import _trim_blast_lists
 
     blast = {
         "transitive_affected": [f"pkg/f{i}.py" for i in range(20)],
-        "overall_risk_score": 4.2,
+        "structural_impact_score": 4.2,
     }
     collector = OmissionCollector("get_risk", repo_root=repo_root)
     trimmed = _trim_blast_lists(blast, None, collector)
     assert len(trimmed["transitive_affected"]) == 15
     assert trimmed["transitive_affected_truncated_total"] == 20
+    assert trimmed["structural_impact_score"] == trimmed["overall_risk_score"] == 4.2
+    assert trimmed["overall_risk_score_compatibility"]["equivalent_value"] is True
 
     response: dict = {"_meta": {}}
     collector.attach(response)

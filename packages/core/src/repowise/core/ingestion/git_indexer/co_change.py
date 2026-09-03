@@ -2,7 +2,8 @@
 
 A single ``git log --name-only`` walk feeds two history signals at once:
 
-* **Co-change** — decay-weighted co-occurrence pairs across tracked files.
+* **Co-change** — decay-weighted co-occurrence pairs across tracked files,
+  each carrying its raw shared-commit count and both files' commit totals.
 * **Change entropy** — Hassan's History Complexity Metric (2009), capturing
   how scattered each file's changes are over time.
 
@@ -13,6 +14,7 @@ defers the whole walk; absent fields are treated as "no signal" downstream.
 
 from __future__ import annotations
 
+import heapq
 import math
 import time
 from collections import defaultdict
@@ -25,21 +27,22 @@ import structlog
 from ._constants import (
     _CO_CHANGE_DECAY_TAU,
     _DEFAULT_CO_CHANGE_COMMIT_LIMIT,
-    _DEFAULT_CO_CHANGE_MIN_COUNT,
     _MAX_FILES_PER_COMMIT_FOR_COCHANGE,
     _MAX_FILES_PER_COMMIT_FOR_ENTROPY,
+    _MAX_PARTNERS_PER_FILE,
+    _MIN_CO_CHANGE_SUPPORT,
 )
 
 logger = structlog.get_logger(__name__)
 
-__all__ = ["compute_co_changes", "compute_co_changes_and_entropy"]
+__all__ = ["compute_co_changes_and_entropy"]
 
 
 def compute_co_changes_and_entropy(
     repo: Any,
     all_files: set[str],
     commit_limit: int = _DEFAULT_CO_CHANGE_COMMIT_LIMIT,
-    min_count: int = _DEFAULT_CO_CHANGE_MIN_COUNT,
+    max_partners: int = _MAX_PARTNERS_PER_FILE,
     on_commit_done: Callable[[], None] | None = None,
     on_co_change_start: Callable[[int], None] | None = None,
     as_of_ts: float | None = None,
@@ -50,9 +53,22 @@ def compute_co_changes_and_entropy(
     ``git diff`` subprocess per commit — O(1) processes vs O(commit_limit).
 
     **Co-change** applies exponential temporal decay so recent co-changes weigh
-    more than ancient ones. ``on_co_change_start(total)`` is called once with the
-    actual number of commits found; ``on_commit_done()`` after each commit block.
-    Both run from a thread-pool thread; callers must ensure thread safety.
+    more than ancient ones, and divides each commit's weight by ``n - 1`` so a
+    pair carries the same mass whether it was seen alone or alongside a hundred
+    other files. Without that, a commit contributes ``O(n^2)`` pairs at full
+    weight and wide commits drown the signal.
+
+    Each pair also keeps ``frequency`` (shared commits, undecayed) and both
+    files' commit totals from this same walk, so a caller can state a
+    directional confidence without borrowing a denominator computed over a
+    different window. Pairs below ``_MIN_CO_CHANGE_SUPPORT`` shared commits are
+    dropped, then each file keeps its ``max_partners`` strongest — both
+    scale-free, unlike a cutoff on the weight, which shifts whenever the
+    weighting does.
+
+    ``on_co_change_start(total)`` is called once with the actual number of
+    commits found; ``on_commit_done()`` after each commit block. Both run from a
+    thread-pool thread; callers must ensure thread safety.
 
     **Change entropy** adapts Hassan's History Complexity Metric: each commit is
     a one-period window whose entropy is ``log2(|F|)`` (``|F|`` = tracked files
@@ -64,7 +80,9 @@ def compute_co_changes_and_entropy(
     value maps ``file_path → decayed HCM sum`` (only files with a positive sum).
     """
     pair_scores: defaultdict[tuple[str, str], float] = defaultdict(float)
+    pair_support: defaultdict[tuple[str, str], int] = defaultdict(int)
     pair_last_date: dict[tuple[str, str], int] = {}  # pair → latest Unix ts
+    file_commits: defaultdict[str, int] = defaultdict(int)
     entropy_scores: defaultdict[str, float] = defaultdict(float)
     # Anchor the decay reference to the repo's most recent commit (passed by the
     # orchestrator) rather than wall-clock time, so the decay is deterministic
@@ -93,6 +111,11 @@ def compute_co_changes_and_entropy(
     def _flush_commit() -> None:
         nonlocal current_ts
         n = len(current)
+        # Counted before the pair guard: a commit where a file changed alone is
+        # still one of its commits, and it is the denominator that decides
+        # whether the file ever changes without its partner.
+        for path in current:
+            file_commits[path] += 1
         if n < 2:
             return
         age_days = max((now_ts - current_ts) / 86400.0, 0.0)
@@ -116,11 +139,15 @@ def compute_co_changes_and_entropy(
                 threshold=_MAX_FILES_PER_COMMIT_FOR_COCHANGE,
             )
             return
+        # Split the commit's weight across the files it touched, so a pair from
+        # a two-file commit outweighs one from a fifty-file commit.
+        pair_weight = weight / (n - 1)
         sorted_files = sorted(current)
         for i in range(len(sorted_files)):
             for j in range(i + 1, len(sorted_files)):
                 pair = (sorted_files[i], sorted_files[j])
-                pair_scores[pair] += weight
+                pair_scores[pair] += pair_weight
+                pair_support[pair] += 1
                 if pair not in pair_last_date or current_ts > pair_last_date[pair]:
                     pair_last_date[pair] = current_ts
 
@@ -143,34 +170,46 @@ def compute_co_changes_and_entropy(
 
     _flush_commit()  # final commit
 
-    # Build result: for each file, list partners above threshold.
-    result: dict[str, list[dict]] = defaultdict(list)
-    for (a, b), score in pair_scores.items():
-        if score >= min_count:
-            last_ts = pair_last_date.get((a, b), 0)
-            last_date = (
-                datetime.fromtimestamp(last_ts, tz=UTC).strftime("%Y-%m-%d")
-                if last_ts > 0
-                else None
-            )
-            result[a].append(
-                {
-                    "file_path": b,
-                    "co_change_count": round(score, 2),
-                    "last_co_change": last_date,
-                }
-            )
-            result[b].append(
-                {
-                    "file_path": a,
-                    "co_change_count": round(score, 2),
-                    "last_co_change": last_date,
-                }
-            )
+    # Keep each file's strongest partners, via a bounded min-heap per file so
+    # the persisted column stays linear in the file count.
+    kept: defaultdict[str, list[tuple[float, str]]] = defaultdict(list)
 
-    # Sort partners by score descending
-    for fp in result:
-        result[fp].sort(key=lambda x: x["co_change_count"], reverse=True)
+    def _offer(owner: str, other: str, score: float) -> None:
+        heap = kept[owner]
+        if len(heap) < max_partners:
+            heapq.heappush(heap, (score, other))
+        elif score > heap[0][0]:
+            heapq.heapreplace(heap, (score, other))
+
+    for pair, score in pair_scores.items():
+        if pair_support[pair] < _MIN_CO_CHANGE_SUPPORT:
+            continue
+        a, b = pair
+        _offer(a, b, score)
+        _offer(b, a, score)
+
+    result: dict[str, list[dict]] = {}
+    for owner, heap in kept.items():
+        records = []
+        for score, other in heap:
+            pair = (owner, other) if owner < other else (other, owner)
+            last_ts = pair_last_date.get(pair, 0)
+            records.append(
+                {
+                    "file_path": other,
+                    "co_change_count": round(score, 4),
+                    "frequency": pair_support[pair],
+                    "self_commits": file_commits[owner],
+                    "partner_commits": file_commits[other],
+                    "last_co_change": (
+                        datetime.fromtimestamp(last_ts, tz=UTC).strftime("%Y-%m-%d")
+                        if last_ts > 0
+                        else None
+                    ),
+                }
+            )
+        records.sort(key=lambda x: x["co_change_count"], reverse=True)
+        result[owner] = records
 
     entropy = {fp: round(score, 6) for fp, score in entropy_scores.items() if score > 0.0}
 
@@ -179,31 +218,12 @@ def compute_co_changes_and_entropy(
         commits=actual_commits,
         tracked_files=len(all_files),
         pairs_considered=len(pair_scores),
-        pairs_above_threshold=sum(1 for s in pair_scores.values() if s >= min_count),
+        pairs_above_support=sum(1 for c in pair_support.values() if c >= _MIN_CO_CHANGE_SUPPORT),
         files_with_partners=len(result),
         files_with_entropy=len(entropy),
-        min_count=min_count,
+        min_support=_MIN_CO_CHANGE_SUPPORT,
+        max_partners=max_partners,
         commit_limit=commit_limit,
     )
 
-    return dict(result), entropy
-
-
-def compute_co_changes(
-    repo: Any,
-    all_files: set[str],
-    commit_limit: int = _DEFAULT_CO_CHANGE_COMMIT_LIMIT,
-    min_count: int = _DEFAULT_CO_CHANGE_MIN_COUNT,
-    on_commit_done: Callable[[], None] | None = None,
-    on_co_change_start: Callable[[int], None] | None = None,
-) -> dict[str, list[dict]]:
-    """Co-change-only wrapper over :func:`compute_co_changes_and_entropy`.
-
-    Preserves the historical signature for the instance shim and existing
-    tests. Production indexing calls the combined function directly so the
-    single ``git log`` walk feeds both signals.
-    """
-    co_changes, _entropy = compute_co_changes_and_entropy(
-        repo, all_files, commit_limit, min_count, on_commit_done, on_co_change_start
-    )
-    return co_changes
+    return result, entropy

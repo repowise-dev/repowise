@@ -170,13 +170,27 @@ class TestRustFunctionValues:
         graph = _build(tmp_path)
         assert _inbound(graph, "main.rs::on_tick", "references")
 
-    def test_a_macro_invocation_is_still_a_call(self, tmp_path: Path) -> None:
-        """Macros carry no argument capture either, and are not value references.
 
-        The two are separated by the pattern, not by the absence of an argument
-        list — reading that absence as "this is a value" would reclassify every
-        ``println!`` in the corpus.
-        """
+class TestRustMacroInvocations:
+    """``foo!(..)`` names a ``macro_rules! foo``; a macro is not a function.
+
+    Hand-read across ripgrep, serde and bevy, four of the eight wrong rows in
+    the rust precision cell were this one shape, and every one had the *right*
+    target: the resolver found the correct ``macro_rules!`` at the correct site
+    and filed it under the wrong edge type.
+
+    So the site keeps its resolution and changes only its type. That is a
+    deliberate divergence from the value-reference shapes above, which route
+    through the ``@reference.name`` capture and so inherit
+    ``_add_reference_edges``'s 0.85 confidence floor. That floor was bought by
+    a *bare identifier* in argument position, where an ordinary local looks
+    exactly like a function name; ``foo!`` is unambiguous. Applying it here
+    would delete every macro edge the repo-wide unique-name tier answers -
+    160 of 669 across the three repositories - rather than retype them,
+    discarding a real dependency to move a precision number.
+    """
+
+    def test_a_macro_invocation_is_a_reference_not_a_call(self, tmp_path: Path) -> None:
         (tmp_path / "main.rs").write_text(
             "macro_rules! shout { () => {} }\n"
             "fn run() {\n"
@@ -184,6 +198,62 @@ class TestRustFunctionValues:
             "}\n"
         )
         graph = _build(tmp_path)
+        assert _inbound(graph, "main.rs::shout", "references")
+        assert not _inbound(graph, "main.rs::shout", "calls")
+
+    def test_an_ordinary_call_beside_it_is_still_a_call(self, tmp_path: Path) -> None:
+        """The macro node type decides it, not the absence of an argument capture.
+
+        Reading that absence as "not an invocation" would reclassify every
+        ordinary call the argument capture happens to miss.
+        """
+        (tmp_path / "main.rs").write_text(
+            "macro_rules! shout { () => {} }\n"
+            "fn helper() {}\n"
+            "fn run() {\n"
+            "    shout!();\n"
+            "    helper();\n"
+            "}\n"
+        )
+        graph = _build(tmp_path)
+        assert _inbound(graph, "main.rs::helper", "calls")
+        assert _inbound(graph, "main.rs::shout", "references")
+
+    def test_a_macro_edge_below_the_reference_floor_survives(
+        self, tmp_path: Path
+    ) -> None:
+        """The retype must not inherit ``_add_reference_edges``'s 0.85 floor.
+
+        A macro defined in another file resolves on a lower tier than a
+        same-file one. That population is the majority of macro invocations in
+        the corpus, so a floor here would read as a removal rather than a
+        retype.
+        """
+        (tmp_path / "mac.rs").write_text("macro_rules! only_here { () => {} }\n")
+        (tmp_path / "main.rs").write_text("fn run() {\n    only_here!();\n}\n")
+        graph = _build(tmp_path)
+        assert _inbound(graph, "mac.rs::only_here", "references")
+
+    def test_a_reclassified_edge_carries_no_call_lines(self, tmp_path: Path) -> None:
+        """``call_lines`` is what a call site contributes, and this is not one.
+
+        Every other ``references`` producer omits it, and the persistence layer
+        writes the attribute through unconditionally, so setting it here would
+        put a shape in the store that no consumer has ever seen.
+        """
+        (tmp_path / "main.rs").write_text(
+            "macro_rules! shout { () => {} }\nfn run() {\n    shout!();\n}\n"
+        )
+        graph = _build(tmp_path)
+        assert "call_lines" not in graph["main.rs::run"]["main.rs::shout"]
+
+    def test_other_languages_keep_their_call_edges(self, tmp_path: Path) -> None:
+        """The node-type list is per language and empty everywhere but rust."""
+        (tmp_path / "app.py").write_text(
+            "def helper():\n    return 1\n\n\ndef run():\n    return helper()\n"
+        )
+        graph = _build(tmp_path)
+        assert _inbound(graph, "app.py::helper", "calls")
         assert not _edges_of_type(graph, "references")
 
 

@@ -80,6 +80,8 @@ export interface GraphMetricsResponse {
   pagerank_percentile: number;
   betweenness: number;
   betweenness_percentile: number;
+  /** False when the node appeared after the last exact centrality scoring. */
+  betweenness_scored?: boolean;
   community_id: number;
   community_label: string | null;
   is_entry_point: boolean;

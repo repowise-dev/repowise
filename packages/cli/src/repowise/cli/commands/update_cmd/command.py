@@ -12,6 +12,7 @@ from __future__ import annotations
 import sys
 import time
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 import click
@@ -408,6 +409,35 @@ class UpdateOutcome(StrEnum):
     DRY_RUN = "dry_run"  # dry run, nothing written
 
 
+def _render_full_upgrade_dry_run(
+    repo_path: Path,
+    *,
+    provider_name: str | None,
+    model: str | None,
+) -> None:
+    """Describe a full upgrade without resolving providers or touching the store."""
+    state = load_state(repo_path)
+    config = load_config(repo_path)
+
+    planned_provider = (
+        provider_name or config.get("provider") or state.get("provider") or "auto-detect"
+    )
+    planned_model = model or config.get("model") or state.get("model") or "provider default"
+    current_git_tier = str(state.get("git_tier") or "essential").upper()
+    recorded_pages = state.get("total_pages")
+    page_label = f"{recorded_pages:,}" if isinstance(recorded_pages, int) else "unknown"
+
+    console.print("[yellow]Dry run — full upgrade plan:[/yellow]")
+    console.print(
+        f"  Provider: [cyan]{planned_provider}[/cyan] / [cyan]{planned_model}[/cyan]"
+    )
+    console.print(
+        f"  Git tier: [cyan]{current_git_tier}[/cyan] -> [cyan]FULL[/cyan]"
+    )
+    console.print(f"  Pages currently recorded: [cyan]{page_label}[/cyan]")
+    console.print("  The whole-repository wiki would be generated. No changes made.")
+
+
 def _renderer_inputs(repo_path):
     """The (language, style fingerprint, style template dir) a file page uses.
 
@@ -666,6 +696,22 @@ def run_update(
     # incremental change-detection so the normal `repowise update` flow below
     # is byte-for-byte unchanged. ---
     if full:
+        if dry_run:
+            _render_full_upgrade_dry_run(
+                repo_path,
+                provider_name=provider_name,
+                model=model,
+            )
+            if emitter is not None:
+                emitter.done(
+                    ok=True,
+                    pages_generated=0,
+                    cost_usd=0.0,
+                    duration_s=time.monotonic() - start,
+                    outcome=UpdateOutcome.DRY_RUN.value,
+                )
+            return UpdateOutcome.DRY_RUN
+
         from repowise.cli.commands.upgrade_flow import upgrade_to_full
 
         if emitter is not None:
@@ -1422,17 +1468,23 @@ def run_update(
     # (dead_code_report computed above, before the index-only branch)
 
     # Re-scan changed files for inline decision markers
+    from repowise.core.analysis.decisions.policy import resolve_policy
+
+    decision_policy = resolve_policy(cfg).policy
     new_decision_markers: list = []
     try:
         from repowise.core.analysis.decision_extractor import DecisionExtractor
 
         changed_paths = [fd.path for fd in file_diffs if fd.status in ("added", "modified")]
-        if changed_paths:
+        # The rescan is the inline_marker source; it was running regardless of
+        # whether that source was switched off.
+        if changed_paths and decision_policy.source_enabled("inline_marker"):
             extractor = DecisionExtractor(
                 repo_path=repo_path,
                 provider=provider,
                 graph=graph_builder.graph(),
                 git_meta_map=git_meta_map,
+                policy=decision_policy,
             )
             # Label these calls as decision extraction so the Costs page can
             # tell them apart from page regeneration (both ride this provider).
@@ -1456,13 +1508,17 @@ def run_update(
     # `decisions.session_mining: false` in .repowise/config.yaml disables it.
     session_decisions: list = []
     try:
-        from repowise.core.sessions.miners.decisions import (
-            mine_session_decisions,
-            session_mining_enabled,
-        )
+        from repowise.core.sessions.miners.decisions import mine_session_decisions
 
-        if session_mining_enabled(cfg):
-            session_decisions = run_async(mine_session_decisions(repo_path, provider=provider))
+        if decision_policy.source_enabled("session"):
+            session_provider = provider if decision_policy.llm_allowed("session") else None
+            session_decisions = run_async(
+                mine_session_decisions(
+                    repo_path,
+                    provider=session_provider,
+                    collect_discovery_spans=decision_policy.llm_allowed("session_discovery"),
+                )
+            )
             if session_decisions and verbose:
                 promoted_titles = {d.title for d in session_decisions}
                 console.print(f"Session decisions promoted: [green]{len(promoted_titles)}[/green]")
@@ -1471,6 +1527,35 @@ def run_update(
         if verbose:
             console.print(f"[yellow]Session decision mining skipped: {exc}[/yellow]")
 
+    # The broad lane: at most one model call over the prose the pass above
+    # just read. It runs second because that read is what fills its queue.
+    try:
+        from repowise.core.analysis.decisions.discovery import run_update_discovery
+
+        with cost_tracker.record_as("decision_extraction"):
+            outcome = run_async(
+                run_update_discovery(
+                    repo_path,
+                    provider=provider,
+                    policy=decision_policy,
+                )
+            )
+        session_decisions = [*session_decisions, *outcome.decisions]
+        if outcome.report.status == "failed":
+            degraded.append(f"Session discovery: {outcome.report.reason}")
+        if verbose:
+            funnel = outcome.report
+            console.print(
+                f"Session discovery: {funnel.status}"
+                + (f" ({funnel.reason})" if funnel.reason else "")
+                + f" · {funnel.calls} call(s) · {funnel.candidates_grounded} grounded"
+                + f" · {funnel.spans_deferred} span(s) queued"
+            )
+    except Exception as exc:
+        degraded.append(f"Session discovery: {exc}")
+        if verbose:
+            console.print(f"[yellow]Session discovery skipped: {exc}[/yellow]")
+
     # Usage feedback v1: decisions the augment hooks injected into agent
     # sessions are judged against those sessions' mined corrections (followed
     # -> staleness relaxes, contradicted -> staleness bumps). Pure SQLite over
@@ -1478,7 +1563,7 @@ def run_update(
     try:
         from repowise.core.sessions.miners.decisions import apply_injection_feedback
 
-        if session_mining_enabled(cfg):
+        if decision_policy.source_enabled("session"):
 
             async def _run_injection_feedback() -> dict:
                 from repowise.cli.helpers import get_db_url_for_repo
@@ -1522,7 +1607,7 @@ def run_update(
     try:
         from repowise.core.sessions.efficacy import ingest_transcript_efficacy
 
-        if session_mining_enabled(cfg):
+        if decision_policy.source_enabled("session"):
             classified = ingest_transcript_efficacy(
                 repo_path, since=time.time() - _EFFICACY_LOOKBACK_SECONDS
             )
@@ -1660,7 +1745,7 @@ def run_update(
     # re-embedded, so every update silently evicted its pages from semantic
     # search — on long-lived repos the LanceDB corpus ended up holding
     # decisions and structural pages but zero current file pages.
-    assembler = ContextAssembler(config)
+    assembler = ContextAssembler(config, repo_path=repo_path)
     generator = PageGenerator(
         provider,
         assembler,

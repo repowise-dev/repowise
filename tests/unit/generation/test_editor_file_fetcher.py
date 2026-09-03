@@ -130,6 +130,11 @@ async def _add_git_meta(
 
 
 async def _add_decision(session, repo_id, title, status="active", rationale="Some reason"):
+    """Add a record, accepting it when the caller wants one that governs.
+
+    The generated block serves accepted decisions, so a fixture that only sets
+    ``status`` would be seeding candidates and asserting on decisions.
+    """
     dr = DecisionRecord(
         repository_id=repo_id,
         title=title,
@@ -138,10 +143,16 @@ async def _add_decision(session, repo_id, title, status="active", rationale="Som
         decision="Decided to use X",
         context="Context here",
         source="inline_marker",
+        affected_files_json='["src/app.py"]',
+        evidence_file="src/app.py",
         staleness_score=0.0,
     )
     session.add(dr)
     await session.flush()
+    if status == "active":
+        from repowise.core.persistence.crud.authority import accept_decision
+
+        await accept_decision(session, dr, accepter="tester")
     return dr
 
 
@@ -349,6 +360,23 @@ async def test_fetch_active_decisions_only(session, repo, tmp_path):
     assert "Old choice" not in titles
 
 
+async def test_a_candidate_never_reaches_the_generated_block(session, repo, tmp_path):
+    """An agent reads that block as instructions, so acceptance is the gate.
+
+    A record whose status column says ``active`` but which nobody accepted is
+    still a candidate, and the block is where treating one as guidance does the
+    most damage.
+    """
+    await _add_decision(session, repo.id, "Never accepted", status="proposed")
+    unaccepted = await _add_decision(session, repo.id, "Looks active", status="proposed")
+    unaccepted.status = "active"
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert [d.title for d in data.decisions] == []
+
+
 async def test_fetch_avg_confidence(session, repo, tmp_path):
     await _add_page(session, repo.id, "file_page:src/a.py", "file_page", "src/a.py", "content")
     # Update confidence manually
@@ -372,3 +400,45 @@ async def test_fetch_indexed_at_is_date_string(session, repo, tmp_path):
     import re
 
     assert re.match(r"^\d{4}-\d{2}-\d{2}$", data.indexed_at)
+
+
+async def test_fetch_indexed_commit_reports_stored_head_commit(session, tmp_path):
+    """The stamp must report the commit the index was built against.
+
+    Regression test for #1874: the stamp used to shell out for the live HEAD,
+    which drifts from the indexed commit (e.g. a rebase rewrites CLAUDE.md
+    with the then-current HEAD while the index underneath is unchanged).
+    """
+    stored_commit = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+    repo = await upsert_repository(
+        session,
+        name="test-repo",
+        local_path="/tmp/test-repo",
+        url="",
+        head_commit=stored_commit,
+    )
+    await session.commit()
+
+    # tmp_path is not a git checkout, so any shell-out for live HEAD would
+    # return "" — the stamp must still carry the stored commit's short form.
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+
+    assert data.indexed_commit == stored_commit[:7]
+
+
+async def test_fetch_indexed_commit_falls_back_to_live_head_when_stored_is_empty(session, tmp_path):
+    """Pre-backfill indexes (head_commit NULL) keep the legacy shell-out path."""
+    repo = await upsert_repository(
+        session,
+        name="test-repo",
+        local_path="/tmp/test-repo",
+        url="",
+    )
+    await session.commit()
+
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    data = await fetcher.fetch()
+
+    # tmp_path is not a git checkout, so the fallback resolves to "".
+    assert data.indexed_commit == ""

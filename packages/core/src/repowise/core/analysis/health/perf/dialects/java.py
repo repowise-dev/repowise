@@ -108,7 +108,7 @@ class JavaPerfDialect(BasePerfDialect):
             "regex_compile_in_loop",
             "resource_construction_in_loop",
             "lock_in_loop",
-            # Phase 7b — centrality-gated / nesting-confidence markers + the
+            # Centrality-gated / nesting-confidence markers + the
             # block-scoped lock→I/O case (``synchronized`` is a held region).
             "nested_loop_with_io",
             "nested_loop_quadratic",

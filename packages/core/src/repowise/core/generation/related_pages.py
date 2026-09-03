@@ -13,12 +13,12 @@ prose never names its collaborators is still connected to them.
 
 from __future__ import annotations
 
-import json
 from collections import Counter
 from typing import Any
 
 import structlog
 
+from ..co_change import parse_partners
 from .interlinking import FILE_BACKED_PAGE_TYPES as _FILE_BACKED
 from .interlinking import LinkIndex
 from .models import GeneratedPage
@@ -37,21 +37,8 @@ def _co_change_partners(git_meta: dict | None) -> list[tuple[str, float]]:
     """``(partner_path, co_change_count)`` pairs, strongest first."""
     if not git_meta:
         return []
-    raw = git_meta.get("co_change_partners_json") or "[]"
-    try:
-        partners = json.loads(raw)
-    except (TypeError, ValueError):
-        return []
-    out: list[tuple[str, float]] = []
-    for p in partners:
-        if not isinstance(p, dict):
-            continue
-        path = p.get("file_path")
-        if not path:
-            continue
-        out.append((path, float(p.get("co_change_count") or 0.0)))
-    out.sort(key=lambda t: -t[1])
-    return out
+    partners = parse_partners(git_meta.get("co_change_partners_json"))
+    return [(p.file_path, p.weight) for p in partners]
 
 
 def _module_siblings(

@@ -2,8 +2,9 @@
 
 Scans ``.proto`` files for service/rpc declarations (providers) and
 language-specific source files for gRPC server registrations (providers) and
-client stubs (consumers). Each language is an independent *dialect* module
-registered in :data:`DIALECTS`; :class:`GrpcExtractor` owns only the file walk
+client stubs (consumers). The generated-stub shapes are one table in
+:mod:`.languages`; ``.proto`` keeps its own dialect because it is an IDL with a
+grammar rather than a stub shape. :class:`GrpcExtractor` owns only the file walk
 and dispatch.
 """
 
@@ -12,13 +13,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..base import ScanContext, select_files
-from .csharp import CSharpGrpcDialect
 from .dialect import GrpcDialect
-from .go import GoGrpcDialect
-from .java import JavaGrpcDialect
+from .languages import LANGUAGES, LanguageGrpcDialect
 from .proto import ProtoDialect, _extract_service_blocks
-from .python import PythonGrpcDialect
-from .typescript import TypeScriptGrpcDialect
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -32,11 +29,7 @@ if TYPE_CHECKING:
 # per file.
 DIALECTS: tuple[GrpcDialect, ...] = (
     ProtoDialect(),
-    GoGrpcDialect(),
-    JavaGrpcDialect(),
-    PythonGrpcDialect(),
-    TypeScriptGrpcDialect(),
-    CSharpGrpcDialect(),
+    *(LanguageGrpcDialect(lang) for lang in LANGUAGES),
 )
 
 

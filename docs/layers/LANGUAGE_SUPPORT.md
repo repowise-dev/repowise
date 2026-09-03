@@ -362,10 +362,12 @@ cannot check.
   parse that succeeds with the wrong meaning is worse than a skip. Component
   props are set by the parent as markup attributes and never imported by name, so
   the unused-export pass is suppressed for both.
-- **Object Pascal type kinds collapse.** `record` / `interface` / class-helper /
-  enum / type alias all report as `kind="class"`, and its `extends` vs
-  `implements` split is inferred from the `I`-prefix naming convention rather
-  than guaranteed by the language.
+- **Object Pascal's `extends`/`implements` split is a naming heuristic.**
+  `class(TBase, IFoo, IBar)` doesn't itself distinguish a base class from an
+  implemented interface; the heritage extractor infers it from the `I`-prefix
+  convention rather than a language guarantee. (`record` / `interface` /
+  class-helper / enum / type alias each report their own `SymbolKind` via
+  `refine_pascal_type_kind` — they no longer collapse to `kind="class"`.)
 - **C has no health dialect.** It shares the C++ grammar for parsing but reaches
   no health walker map, so it gets graph coverage without markers.
 - **Scala import resolution is partial**, and ScalaTest's infix DSL

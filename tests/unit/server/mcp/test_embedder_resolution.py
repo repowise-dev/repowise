@@ -283,11 +283,50 @@ def test_build_meta_clean_when_healthy(monkeypatch):
     )
     meta = build_meta(timing_ms=1.0)
     assert meta["embedder_degraded"] is False
+    assert "semantic_search" not in meta
     assert "embedder" not in meta
     assert "embedder_warning" not in meta
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ({"active": "openai", "requested": "openai", "degraded": False}, True),
+        ({"active": "mock", "requested": "mock", "degraded": False}, False),
+        ({"active": "mock", "requested": "openai", "degraded": True}, False),
+        (None, None),
+    ],
+)
+def test_semantic_search_state_is_three_valued(monkeypatch, status, expected):
+    """Telemetry needs the third state named, not inferred.
+
+    A signal that only ever reports ``False`` cannot be told apart, by anything
+    aggregating it, from one this version does not report at all — which is what
+    hid the keyless population, the larger one, behind ``embedder_degraded``.
+    Absent means "never evaluated" and stays distinct from an explicit ``False``.
+    """
+    from repowise.server.mcp_server._meta import semantic_search_state
+
+    monkeypatch.setattr(_state, "_embedder_status", status)
+    assert semantic_search_state() is expected
+
+
+def test_build_meta_marks_a_keyless_index_full_text_only(monkeypatch):
+    """The keyless install: nothing broken, but retrieval really is FTS-only."""
+    monkeypatch.setattr(
+        _state,
+        "_embedder_status",
+        {"active": "mock", "requested": "mock", "degraded": False},
+    )
+    meta = build_meta(timing_ms=1.0)
+    assert meta["embedder_degraded"] is False
+    assert meta["semantic_search"] is False
+    assert meta["embedder"] == "mock"
 
 
 def test_build_meta_omits_degraded_when_embedder_unresolved(monkeypatch):
     """Nothing resolved → the check never ran, so neither value is honest."""
     monkeypatch.setattr(_state, "_embedder_status", None)
-    assert "embedder_degraded" not in build_meta(timing_ms=1.0)
+    meta = build_meta(timing_ms=1.0)
+    assert "embedder_degraded" not in meta
+    assert "semantic_search" not in meta

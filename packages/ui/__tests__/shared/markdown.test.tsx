@@ -1,6 +1,9 @@
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
 import { Markdown } from "../../src/shared/markdown.js";
+
+const codeToHtml = vi.hoisted(() => vi.fn(async () => '<pre class="shiki"><code><span>highlighted</span></code></pre>'));
+vi.mock("shiki", () => ({ codeToHtml }));
 
 describe("Markdown", () => {
   it("renders reply body at the reading scale, not chrome sizes", () => {
@@ -57,5 +60,59 @@ describe("Markdown", () => {
     expect(th).not.toBeNull();
     expect(th!.className).toContain("font-mono");
     expect(th!.className).toContain("uppercase");
+  });
+
+  it("contains wide tables in their own responsive content lane", () => {
+    const { container } = render(
+      <Markdown content={"| File | Hash |\n|---|---|\n| src/a.ts | abcdef |"} />,
+    );
+    const table = container.querySelector("table");
+    expect(table?.className).toContain("min-w-");
+    expect(table?.parentElement?.className).toContain("overflow-x-auto");
+  });
+
+  it("labels fenced code and exposes a copy action", () => {
+    render(<Markdown content={"```ts\nconst answer = 42\n```"} streaming />);
+    expect(screen.getByText("ts")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy code" })).toBeInTheDocument();
+  });
+
+  it("keeps language-less fences as copyable block code", () => {
+    const { container } = render(<Markdown content={"```\nplain output\n```"} streaming />);
+    expect(screen.getByText("text")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy code" })).toBeInTheDocument();
+    expect(container.querySelector("pre code")?.textContent).toBe("plain output");
+  });
+
+  it("keeps incomplete streaming fences as a safe plain-code fallback", () => {
+    const { container } = render(
+      <Markdown content={"```ts\nconst unfinished ="} streaming />,
+    );
+    expect(container.querySelector("pre code")?.textContent).toContain(
+      "const unfinished =",
+    );
+    expect(container.querySelector(".shiki")).toBeNull();
+  });
+
+  it("lazy-highlights completed code and reuses the cached result", async () => {
+    const content = "```ts\nconst cached = true\n```";
+    const first = render(<Markdown content={content} />);
+    await waitFor(() => expect(first.container.querySelector(".shiki")).not.toBeNull());
+    first.unmount();
+    const second = render(<Markdown content={content} />);
+    await waitFor(() => expect(second.container.querySelector(".shiki")).not.toBeNull());
+    expect(codeToHtml).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps streaming Mermaid as stable source until the fence is complete", () => {
+    const { container } = render(<Markdown content={"```mermaid\ngraph TD; A-->"} streaming />);
+    expect(container.querySelector("pre code")?.textContent).toContain("graph TD; A-->");
+  });
+
+  it("preserves semantic nested lists, task lists, and blockquotes", () => {
+    const { container } = render(<Markdown content={"> Note\n\n- parent\n  - child\n\n- [x] done"} />);
+    expect(container.querySelector("blockquote")).not.toBeNull();
+    expect(container.querySelectorAll("ul").length).toBeGreaterThan(1);
+    expect(container.querySelector('input[type="checkbox"]')).toBeChecked();
   });
 });

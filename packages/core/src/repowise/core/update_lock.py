@@ -42,6 +42,87 @@ def update_lock_path(repo_path: Path) -> Path:
     return Path(repo_path) / ".repowise" / UPDATE_LOCK_FILENAME
 
 
+def workspace_update_lock_path(workspace_root: Path) -> Path:
+    """Path of the workspace-level single-flight update lock.
+
+    Unlike :func:`update_lock_path` (per-repo), this guards the whole
+    workspace so a rebase's N post-commit hooks coalesce into one full
+    ``update_workspace`` pass instead of N redundant ones. Lives under the
+    workspace data dir (``.repowise-workspace/``) so it is shared by every
+    member repo's update.
+    """
+    return Path(workspace_root) / ".repowise-workspace" / UPDATE_LOCK_FILENAME
+
+
+def _try_acquire_lock_at(
+    lock_path: Path,
+    target_commit: str | None,
+) -> dict[str, Any] | None:
+    """Core exclusive-create acquire against an explicit lock path.
+
+    Shared by the per-repo (:func:`try_acquire_update_lock`) and workspace
+    (:func:`update_workspace_lock`) single-flight guards — one
+    implementation for both, so the workspace guard inherits the same
+    crash/liveness/coalescing semantics as the per-repo one.
+    """
+    from repowise.core.procutils import process_create_token
+
+    payload = {
+        "pid": os.getpid(),
+        "pid_create_token": process_create_token(os.getpid()),
+        "target_commit": target_commit,
+        "started_at": time.time(),
+    }
+    data = json.dumps(payload)
+    tmp_path = lock_path.with_name(
+        f"{UPDATE_LOCK_FILENAME}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+
+    def _read_existing() -> dict[str, Any] | None:
+        return _read_lock_at(lock_path)
+
+    for _ in range(2):
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path.write_text(data, encoding="utf-8")
+            # Atomic create-with-content: the lock either doesn't exist or
+            # holds a complete payload — contenders can never read a
+            # half-written file.
+            os.link(tmp_path, lock_path)
+        except FileExistsError:
+            existing = _read_existing()
+            if existing is not None:
+                return existing
+            # Stale lock: clear it and retry the exclusive create.
+            with contextlib.suppress(OSError):
+                lock_path.unlink(missing_ok=True)
+            continue
+        except OSError:
+            return None
+        finally:
+            with contextlib.suppress(OSError):
+                tmp_path.unlink(missing_ok=True)
+        return None
+    # Both create attempts lost a race against a stale lock that was then
+    # unlinked. Rather than falling through to a bare read — which can return
+    # ``None`` ("acquired") with *no lock file on disk*, letting a caller
+    # proceed without holding the lock — make one final exclusive create.
+    # Winner: return ``None`` (owned). Loser: report the fresh winner.
+    # Still-unreadable degrades to acquired, as everywhere.
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path.write_text(data, encoding="utf-8")
+        os.link(tmp_path, lock_path)
+    except FileExistsError:
+        return _read_existing()
+    except OSError:
+        return None
+    finally:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink(missing_ok=True)
+    return None
+
+
 def try_acquire_update_lock(repo_path: Path, target_commit: str | None) -> dict[str, Any] | None:
     """Atomically acquire the update lock. ``None`` means acquired.
 
@@ -62,65 +143,94 @@ def try_acquire_update_lock(repo_path: Path, target_commit: str | None) -> dict[
     as acquired — the lock is advisory and must never block an update.
     Callers must still call ``release_update_lock`` in a finally block.
     """
-    from repowise.core.procutils import process_create_token
+    return _try_acquire_lock_at(update_lock_path(repo_path), target_commit)
 
-    lock_path = update_lock_path(repo_path)
-    payload = {
-        "pid": os.getpid(),
-        "pid_create_token": process_create_token(os.getpid()),
-        "target_commit": target_commit,
-        "started_at": time.time(),
-    }
-    data = json.dumps(payload)
-    tmp_path = lock_path.with_name(
-        f"{UPDATE_LOCK_FILENAME}.{os.getpid()}.{threading.get_ident()}.tmp"
-    )
-    for _ in range(2):
-        try:
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp_path.write_text(data, encoding="utf-8")
-            # Atomic create-with-content: the lock either doesn't exist or
-            # holds a complete payload — contenders can never read a
-            # half-written file.
-            os.link(tmp_path, lock_path)
-        except FileExistsError:
-            existing = read_update_lock(repo_path)
-            if existing is not None:
-                return existing
-            # Stale lock: clear it and retry the exclusive create.
-            with contextlib.suppress(OSError):
-                lock_path.unlink(missing_ok=True)
-            continue
-        except OSError:
-            return None
-        finally:
-            with contextlib.suppress(OSError):
-                tmp_path.unlink(missing_ok=True)
-        return None
-    # Both create attempts lost a race against a stale lock that was then
-    # unlinked. Rather than falling through to a bare ``read_update_lock``
-    # — which can return ``None`` ("acquired") with *no lock file on disk*,
-    # letting a caller proceed without holding the lock — make one final
-    # exclusive create. Winner: return ``None`` (owned). Loser: report the
-    # fresh winner. Still-unreadable degrades to acquired, as everywhere.
-    try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path.write_text(data, encoding="utf-8")
-        os.link(tmp_path, lock_path)
-    except FileExistsError:
-        return read_update_lock(repo_path)
-    except OSError:
-        return None
-    finally:
-        with contextlib.suppress(OSError):
-            tmp_path.unlink(missing_ok=True)
-    return None
+
+def update_workspace_lock(workspace_root: Path) -> dict[str, Any] | None:
+    """Acquire the workspace-level single-flight guard. ``None`` means acquired.
+
+    See :func:`try_acquire_update_lock` for the semantics; this is the same
+    guard held against ``workspace_update_lock_path`` so two concurrent
+    ``update_workspace`` runs coalesce instead of both re-indexing every
+    member.
+    """
+    return _try_acquire_lock_at(workspace_update_lock_path(workspace_root), None)
+
+
+def _release_lock_at(lock_path: Path) -> None:
+    with contextlib.suppress(OSError):
+        lock_path.unlink(missing_ok=True)
 
 
 def release_update_lock(repo_path: Path) -> None:
-    """Remove the update lock file. Safe to call if it doesn't exist."""
-    with contextlib.suppress(OSError):
-        update_lock_path(repo_path).unlink(missing_ok=True)
+    """Remove the per-repo update lock file. Safe to call if it doesn't exist."""
+    _release_lock_at(update_lock_path(repo_path))
+
+
+def release_workspace_lock(workspace_root: Path) -> None:
+    """Remove the workspace-level update lock. Safe to call if it doesn't exist."""
+    _release_lock_at(workspace_update_lock_path(workspace_root))
+
+
+def _read_lock_at(lock_path: Path) -> dict[str, Any] | None:
+    """Read a lock payload from an explicit path, applying liveness/staleness.
+
+    Mirrors :func:`read_update_lock` against an arbitrary lock path so the
+    workspace guard gets the same crash recovery: a dead or recycled owner's
+    lock is treated as absent, a live owner's is honored regardless of age.
+    """
+    from repowise.core.procutils import pid_alive, process_create_token
+
+    if not lock_path.exists():
+        return None
+    try:
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    age = lock_age_seconds(payload)
+    if age is None:
+        return None
+
+    pid = payload.get("pid")
+    if isinstance(pid, int) and pid > 0:
+        alive = pid_alive(pid)
+        if alive is False:
+            return None
+        if alive is True:
+            stored_token = payload.get("pid_create_token")
+            if isinstance(stored_token, str) and stored_token:
+                current_token = process_create_token(pid)
+                if current_token is not None and current_token != stored_token:
+                    return None
+            return payload
+
+    # Liveness unknown: fall back to the wall clock.
+    if age > UPDATE_LOCK_STALE_AFTER_SECONDS:
+        return None
+    return payload
+
+
+def read_update_lock(repo_path: Path) -> dict[str, Any] | None:
+    """Return the lock payload if present and not stale, else ``None``.
+
+    A lock is stale when its owning PID is positively dead or has been
+    recycled by an unrelated process. That probe is what stops a crashed or
+    killed update (SIGKILL, power loss — paths atexit cannot cover) from
+    blocking every later update.
+
+    An owner we can positively see running is honoured no matter how old the
+    lock is. The wall clock applies only when liveness cannot be established:
+    a payload with no usable PID (written by an older version) or a probe that
+    returned "unknown". Age on its own is not evidence that an update has
+    stopped: a full update on a large repo can outrun any ceiling worth
+    setting, and clearing the lock underneath it would put two updates on one
+    index, both writing the same state and the same page rows. A live owner
+    that has held the lock unreasonably long is surfaced to the user by the
+    callers instead (see :func:`lock_is_suspect`), which is the reporting half
+    of the same problem and cannot corrupt anything.
+    """
+    return _read_lock_at(update_lock_path(repo_path))
 
 
 def lock_age_seconds(payload: dict[str, Any] | None) -> float | None:
@@ -156,56 +266,3 @@ def format_lock_age(age: float | None) -> str:
         return f"for {int(age / 60)}m"
     return f"for {age / 3600:.1f}h"
 
-
-def read_update_lock(repo_path: Path) -> dict[str, Any] | None:
-    """Return the lock payload if present and not stale, else ``None``.
-
-    A lock is stale when its owning PID is positively dead or has been
-    recycled by an unrelated process. That probe is what stops a crashed or
-    killed update (SIGKILL, power loss — paths atexit cannot cover) from
-    blocking every later update.
-
-    An owner we can positively see running is honoured no matter how old the
-    lock is. The wall clock applies only when liveness cannot be established:
-    a payload with no usable PID (written by an older version) or a probe that
-    returned "unknown". Age on its own is not evidence that an update has
-    stopped: a full update on a large repo can outrun any ceiling worth
-    setting, and clearing the lock underneath it would put two updates on one
-    index, both writing the same state and the same page rows. A live owner
-    that has held the lock unreasonably long is surfaced to the user by the
-    callers instead (see :func:`lock_is_suspect`), which is the reporting half
-    of the same problem and cannot corrupt anything.
-    """
-    from repowise.core.procutils import pid_alive, process_create_token
-
-    lock_path = update_lock_path(repo_path)
-    if not lock_path.exists():
-        return None
-    try:
-        payload = json.loads(lock_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-
-    age = lock_age_seconds(payload)
-    if age is None:
-        return None
-
-    pid = payload.get("pid")
-    if isinstance(pid, int) and pid > 0:
-        alive = pid_alive(pid)
-        if alive is False:
-            return None
-        if alive is True:
-            stored_token = payload.get("pid_create_token")
-            # Legacy locks (pre-token) skip the identity check: liveness is
-            # all we have, and it is still better evidence than the clock.
-            if isinstance(stored_token, str) and stored_token:
-                current_token = process_create_token(pid)
-                if current_token is not None and current_token != stored_token:
-                    return None
-            return payload
-
-    # Liveness unknown: fall back to the wall clock.
-    if age > UPDATE_LOCK_STALE_AFTER_SECONDS:
-        return None
-    return payload

@@ -51,7 +51,7 @@ describe("ModelSelector shell", () => {
     expect(onActivate).toHaveBeenCalledWith("anthropic", "claude-sonnet-4-6");
   });
 
-  it("shows Add-key affordance for unconfigured providers", () => {
+  it("routes API-key configuration to Settings", () => {
     render(
       <ModelSelector
         providers={PROVIDERS}
@@ -62,6 +62,29 @@ describe("ModelSelector shell", () => {
       />,
     );
     fireEvent.click(screen.getByText("Anthropic · claude-opus-4-7"));
-    expect(screen.getByText("Add key")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Configure in Settings" })).toHaveAttribute("href", "/settings");
+    expect(screen.queryByText("Add key")).toBeNull();
+  });
+
+  it("opens above the composer with neutral model chrome", () => {
+    render(<ModelSelector providers={PROVIDERS} activeProvider="anthropic" activeModel="claude-opus-4-7" onActivate={vi.fn()} />);
+    fireEvent.click(screen.getByText("Anthropic · claude-opus-4-7"));
+    const panel = screen.getByRole("dialog", { name: "Choose conversation model" });
+    expect(panel.className).toContain("bottom-full");
+    expect(panel.className).toContain("left-0");
+    const trigger = screen.getByRole("button", { name: "Anthropic · claude-opus-4-7" });
+    expect(trigger.className).not.toContain("accent-fill");
+    expect(screen.getByText("claude-opus-4-7").closest("button")?.className).toContain("accent-secondary");
+  });
+
+  it("closes on Escape and restores focus to the model trigger", () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => { callback(0); return 1; });
+    render(<ModelSelector providers={PROVIDERS} activeProvider="anthropic" activeModel="claude-opus-4-7" onActivate={vi.fn()} />);
+    const trigger = screen.getByRole("button", { name: "Anthropic · claude-opus-4-7" });
+    fireEvent.click(trigger);
+    expect(screen.getByRole("dialog", { name: "Choose conversation model" })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Choose conversation model" })).toBeNull();
+    expect(trigger).toHaveFocus();
   });
 });

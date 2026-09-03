@@ -87,9 +87,13 @@ class ImpactedConsumer:
     symbol: str
     match_type: str
     confidence: float
+    #: The ingestion symbol id behind ``symbol``, when the contract bound to
+    #: one. ``symbol`` is a display label ("axios:GET /v1/orders"); this is what
+    #: an agent can pass to ``get_symbol`` / ``get_context``.
+    symbol_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "repo": self.repo,
             "service": self.service,
             "node_id": self.node_id,
@@ -98,6 +102,9 @@ class ImpactedConsumer:
             "match_type": self.match_type,
             "confidence": self.confidence,
         }
+        if self.symbol_id is not None:
+            d["symbol_id"] = self.symbol_id
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ImpactedConsumer:
@@ -109,6 +116,7 @@ class ImpactedConsumer:
             symbol=data.get("symbol", ""),
             match_type=data.get("match_type", "exact"),
             confidence=data.get("confidence", 0.0),
+            symbol_id=data.get("symbol_id"),
         )
 
 
@@ -125,6 +133,8 @@ class BreakingChange:
     provider_symbol: str
     provider_service: str | None
     detail: str  # human-readable one-liner
+    #: The provider handler's symbol id, when its contract bound to one.
+    provider_symbol_id: str | None = None
     field_name: str | None = None
     old_value: str | None = None
     new_value: str | None = None
@@ -148,6 +158,8 @@ class BreakingChange:
             "detail": self.detail,
             "impacted_consumers": [c.to_dict() for c in self.impacted_consumers],
         }
+        if self.provider_symbol_id is not None:
+            d["provider_symbol_id"] = self.provider_symbol_id
         if self.field_name is not None:
             d["field_name"] = self.field_name
         if self.old_value is not None:
@@ -166,6 +178,7 @@ class BreakingChange:
             provider_repo=data.get("provider_repo", ""),
             provider_file=data.get("provider_file", ""),
             provider_symbol=data.get("provider_symbol", ""),
+            provider_symbol_id=data.get("provider_symbol_id"),
             provider_service=data.get("provider_service"),
             detail=data.get("detail", ""),
             field_name=data.get("field_name"),
@@ -486,6 +499,7 @@ def _resolve_impacted(
                 node_id=node_id,
                 file=lk.consumer_file,
                 symbol=lk.consumer_symbol,
+                symbol_id=lk.consumer_symbol_id,
                 match_type=lk.match_type,
                 confidence=lk.confidence,
             )
@@ -531,7 +545,14 @@ def detect_breaking_changes(
         if prev_c is not None and curr_c is not None:
             prev_schema = prev_c.schema
             curr_schema = curr_c.schema
-            if prev_schema is not None and curr_schema is not None:
+            # Same source only. A parameter list and a .proto message describe
+            # the same endpoint at different fidelities, so diffing one against
+            # the other reports the change of parser as a change of contract.
+            if (
+                prev_schema is not None
+                and curr_schema is not None
+                and prev_schema.source == curr_schema.source
+            ):
                 raws.extend(_diff_schemas(prev_schema, curr_schema))
 
         if not raws:
@@ -550,6 +571,7 @@ def detect_breaking_changes(
                     provider_repo=rep.repo,
                     provider_file=rep.file_path,
                     provider_symbol=rep.symbol_name,
+                    provider_symbol_id=rep.symbol_id,
                     provider_service=rep.service,
                     detail=raw.detail,
                     field_name=raw.field_name,

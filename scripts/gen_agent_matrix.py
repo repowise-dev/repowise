@@ -64,13 +64,6 @@ PASTE_CONFIG_HOSTS: tuple[str, ...] = (
     "Amp",
 )
 
-#: Default-surface tools the README's curated list leaves out. ``list_repos``
-#: answers "which repos is this server serving", which is discovery rather than
-#: one of the task-shaped tools the README is selling, and a reader counting
-#: capabilities should not have it padding the number. Everything downstream of
-#: the README states the real surface instead.
-NON_FLAGSHIP_TOOLS: frozenset[str] = frozenset({"list_repos"})
-
 TIER_BLURBS: dict[str, tuple[str, str]] = {
     "full": (
         "Full",
@@ -164,7 +157,7 @@ def tool_counts() -> dict[str, int]:
         # about. It is the default surface minus the discovery utilities, and
         # it is derived here rather than typed, so a twelfth default tool moves
         # the README too. Docs keep the precise surface numbers.
-        "flagship": len(default_names - NON_FLAGSHIP_TOOLS),
+        "flagship": len([entry for entry in entries if entry.tier == "canonical"]),
         "workspace": workspace,
         # The delta is published in its own right ("adds two more"), so it is
         # derived rather than written as a literal next to a derived total.

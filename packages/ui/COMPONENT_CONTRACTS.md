@@ -1155,11 +1155,13 @@ these components only render `BlastRadiusResponse` (from
 
 ### `blast-radius/risk-score-card` — `RiskScoreCard`
 
-Coloured 0–10 gauge. Red ≥7, amber ≥4, emerald otherwise.
+Structural-impact gauge. The server-owned band is `broad`, `moderate`, or
+`localized`; the value is an uncalibrated 0–10 heuristic, not a probability.
 
 | Prop | Type | Required |
 |------|------|----------|
 | `score` | `number` (0–10) | yes |
+| `band` | `"localized" \| "moderate" \| "broad"` | no |
 
 ### `blast-radius/table-section` — `TableSection`
 
@@ -1174,8 +1176,9 @@ Card wrapper with title and "empty" placeholder.
 
 ### `blast-radius/direct-risks-table` — `DirectRisksTable`
 
-Renders `DirectRiskEntry[]`. Multiplies `risk_score` and
-`temporal_hotspot` by 10 for display (backend ships 0–1).
+Renders `DirectRiskEntry[]`. `structural_score` is the raw, unbounded
+pagerank-weighted-hotspot heuristic and is displayed in those units. Bars use
+within-change relative share only; they do not invent a 0–10 scale.
 
 | Prop | Type | Required |
 |------|------|----------|
@@ -1207,7 +1210,9 @@ Email + files-owned + percent ownership. `ownership_pct` is 0–1.
 
 ### `blast-radius/test-gaps-list` — `TestGapsList`
 
-Bullet list of files lacking adjacent test coverage.
+Compatibility list of file-level test gaps. It is not a measured-coverage
+claim; consumers use `result.test_impact` for typed recommendations, evidence
+basis, and coverage availability.
 
 | Prop | Type | Required |
 |------|------|----------|
@@ -1224,7 +1229,10 @@ Transitive Files / Co-change Warnings / Test Gaps).
 
 ### `blast-radius/blast-radius-results` — `BlastRadiusResults`
 
-Composes the full results stack: gauge + summary + the five tables.
+Composes the full results stack: gauge, summary, impact map, typed test
+recommendations with measured/inferred basis, explicit unavailable-analysis
+copy, and the compatibility tables. `test_impact` is optional in the shared
+TypeScript contract so the component remains compatible with older servers.
 
 | Prop | Type | Required |
 |------|------|----------|

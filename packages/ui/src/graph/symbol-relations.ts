@@ -50,7 +50,8 @@ const RELATION_LABELS: Record<string, Record<SymbolRelationDirection, string>> =
 const GROUP_HINTS: Record<SymbolRelationGroup["group"], string> = {
   heritage: "Inherits or implements. Not a call site.",
   wiring: "Connected by a framework, so no call site exists in the source.",
-  reference: "Named without being called, such as a handler in a dispatch table.",
+  reference:
+    "Reached without a function call: a handler named in a dispatch table, or a Rust macro invocation.",
 };
 
 export function relationLabel(

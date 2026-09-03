@@ -18,7 +18,16 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+from ..risk_semantics import (
+    ABSOLUTE_CHANGE_SCORE_HIGH,
+    ABSOLUTE_CHANGE_SCORE_MODERATE,
+    CHANGE_RISK_SCORE_MEASURES,
+    CHANGE_RISK_SCORE_UNIT,
+)
 from .features import ChangeFeatures
+
+SCORE_MEASURES = CHANGE_RISK_SCORE_MEASURES
+SCORE_UNIT = CHANGE_RISK_SCORE_UNIT
 
 # Calibrated offline (2026-05-30) on a 7-repo, 5-language slice of the corpus
 # (clap, pydantic, fd, gin, fastify, bat, chi; AG-SZZ bug-inducing commits as
@@ -54,8 +63,8 @@ _CONSTANTS: dict[str, object] = {
 # compares the feature to *the model's baseline commit* (the calibration-corpus
 # mean), NOT to this repo — so the wording is deliberately neutral and relative
 # ("more / fewer ... than baseline"), never an absolute verdict like "large".
-# The signed contribution + colour carry the risk direction, so a collinear
-# coefficient sign never makes a risk-lowering feature read like a warning. The
+# The signed contribution + colour carry the model-output direction, so a
+# collinear coefficient sign never makes a score-lowering feature a warning. The
 # shared anchor phrase ("than the model's baseline commit") is stated once by the
 # surface that renders these, so it is omitted from every individual label.
 _FEATURE_LABELS: dict[str, tuple[str, str]] = {
@@ -94,7 +103,7 @@ _UNREPORTABLE_DRIVERS = frozenset({"nf", "nd", "ns"})
 class ChangeRisk:
     """Result of scoring a change."""
 
-    score: float  # 0-10 (10 * predicted probability)
+    score: float  # 0-10 offline-calibrated model output; public supporting signal
     level: str  # absolute band; see _level
     drivers: list[RiskDriver] = field(default_factory=list)
     features: ChangeFeatures | None = None
@@ -119,16 +128,7 @@ def _sigmoid(z: float) -> float:
     return e / (1.0 + e)
 
 
-#: The unit the absolute band assumes, stated wherever the band is emitted.
-#:
-#: The constants were fit on *individual commits* (corpus baseline: 10.5 lines
-#: added, 1.7 files), so a squash-merged PR or a multi-commit range is several
-#: commits' worth of diff read against a one-commit scale and lands high by
-#: construction. The repo-relative percentile is immune to this; the band is not.
-SCORE_UNIT = "per-commit"
-
-#: What the score actually measures, stated wherever the score is emitted.
-#:
+#: What the score actually measures is centralized in ``risk_semantics``.
 #: Measured, not asserted: `la` (lines added) carries a coefficient 7.6x the next
 #: largest, and scoring by `la` alone reproduces the full score to within
 #: 0.12-0.16 points on every repo tried. Refitting at PR granularity with two
@@ -138,20 +138,19 @@ SCORE_UNIT = "per-commit"
 #: blamed by a later fix. Ranking changes by lines-added alone beats the fitted
 #: model on that benchmark. So the score is reported as what it demonstrably is —
 #: a diff-size statistic — and ``fix_history`` carries the part that is not.
-SCORE_MEASURES = "diff size and spread; not where the change lands"
 
 
 def _level(score: float) -> str:
-    """Absolute calibrated band — the fallback when no percentile is available.
+    """Absolute model-score band — the fallback when no percentile is available.
 
     Portable only across repos whose typical commit resembles the calibration
     corpus (see :data:`SCORE_UNIT`). Surfaces lead with the repo-relative
     review priority and fall back to this only when the baseline sample is
     empty or too small to rank against.
     """
-    if score >= 7.0:
+    if score >= ABSOLUTE_CHANGE_SCORE_HIGH:
         return "high"
-    if score >= 4.0:
+    if score >= ABSOLUTE_CHANGE_SCORE_MODERATE:
         return "moderate"
     return "low"
 
@@ -196,7 +195,7 @@ def score_change(features: ChangeFeatures) -> ChangeRisk:
         logit += contribution
         above, below = _FEATURE_LABELS.get(name, (name, name))
         # Label describes the feature's STATE (above/below typical); the signed
-        # contribution carries the risk direction.
+        # contribution carries the model-output direction.
         drivers.append(
             RiskDriver(
                 feature=name,

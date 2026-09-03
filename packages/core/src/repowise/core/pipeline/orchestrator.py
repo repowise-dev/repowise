@@ -40,7 +40,11 @@ from .phases.analysis import (
     _run_health_analysis,
 )
 from .phases.generation import run_generation
-from .phases.git import _run_git_indexing, drop_transient_git_signals
+from .phases.git import (
+    _run_git_indexing,
+    drop_transient_git_signals,
+    label_co_change_structure,
+)
 from .phases.ingestion import _run_ingestion, reparse_for_resume
 from .resume import ResumePhase
 from .resume.controller import ResumeController
@@ -345,6 +349,9 @@ async def run_pipeline(
                 derive_environment_facts=derive_environment_facts,
             )
             traversal_stats = None
+            # Rehydrated rows can predate the structural label, and nothing
+            # else on this path recomputes it.
+            label_co_change_structure(graph_builder, git_meta_map)
             git_metadata_list = list(git_meta_map.values())
         except Exception as exc:
             logger.warning("resume_rehydrate_failed_recomputing", error=str(exc))
@@ -370,6 +377,7 @@ async def run_pipeline(
 
         # Add co-change edges to the graph (rehydrated graphs already carry them)
         if git_meta_map:
+            label_co_change_structure(graph_builder, git_meta_map)
             graph_builder.add_co_change_edges(git_meta_map)
 
     # ---- External systems (C4 L1) ------------------------------------------

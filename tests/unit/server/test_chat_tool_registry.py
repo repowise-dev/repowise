@@ -1,45 +1,78 @@
-"""Drift guard: chat tool registry stays a documented 7-tool subset."""
+"""Chat consumes the configured MCP registry without maintaining a copy."""
 
 from __future__ import annotations
 
-from repowise.server.chat_tools import get_tool_registry
+from unittest.mock import patch
+
+import pytest
+
+from repowise.core.registry import ToolEntry
+from repowise.server import chat_tools
+from repowise.server.mcp_server import _tool_selection, ensure_full_surface
 
 
-def test_chat_tool_registry_is_the_documented_seven() -> None:
-    names = set(get_tool_registry())
-    assert names == {
-        "get_overview",
-        "get_context",
-        "get_risk",
-        "get_change_risk",
-        "get_why",
-        "search_codebase",
-        "get_dead_code",
+def test_chat_catalog_matches_the_selected_mcp_surface(tmp_path) -> None:
+    ensure_full_surface()
+    selected = _tool_selection.resolve_enabled_tools(
+        _tool_selection.mcp_tool_registry.entries(),
+        is_workspace=_tool_selection._is_workspace(str(tmp_path)),
+        override=None,
+    )
+
+    catalog = chat_tools.get_tool_catalog(str(tmp_path))
+
+    assert {tool.entry.name for tool in catalog} == selected
+
+
+def test_chat_honors_the_repository_mcp_allowlist(tmp_path) -> None:
+    ensure_full_surface()
+    with patch.object(
+        _tool_selection,
+        "_read_config_override",
+        return_value=["get_answer", "get_health"],
+    ):
+        catalog = chat_tools.get_tool_catalog(str(tmp_path))
+
+    assert [tool.entry.name for tool in catalog] == ["get_answer", "get_health"]
+
+
+def test_chat_llm_schemas_are_the_fastmcp_generated_schemas(tmp_path) -> None:
+    ensure_full_surface()
+    schemas = {
+        item["function"]["name"]: item["function"]["parameters"]
+        for item in chat_tools.get_tool_schemas_for_llm(str(tmp_path))
     }
 
-
-def test_chat_dead_code_schema_default_matches_risk_cap() -> None:
-    from repowise.core.analysis.dead_code.risk_factors import RISK_CAP_CONFIDENCE
-    from repowise.server.chat_tools import get_tool_registry
-
-    params = get_tool_registry()["get_dead_code"].parameters["properties"]["min_confidence"]
-    assert params["default"] == RISK_CAP_CONFIDENCE
+    for name, parameters in schemas.items():
+        assert parameters == _tool_selection.get_registered_tool(name).parameters
 
 
-def test_chat_get_context_include_matches_cli_blocks() -> None:
-    """Chat schema must advertise the same include blocks MCP/CLI accept.
+def test_artifact_and_evidence_metadata_come_from_registry(tmp_path) -> None:
+    catalog = {tool.entry.name: tool.entry for tool in chat_tools.get_tool_catalog(str(tmp_path))}
 
-    A stale enum that listed docs/freshness/source and omitted skeleton/health
-    made the chat model request a no-op ``source`` block and never ask for
-    skeleton or health — both of which get_context actually serves.
-    """
-    from repowise.cli.commands.context_cmd import _INCLUDE_BLOCKS
-    from repowise.server.chat_tools import get_tool_registry
+    assert catalog["get_risk"].artifact_type == "risk"
+    assert catalog["get_risk"].presentation == "risk"
+    assert catalog["get_risk"].evidence_basis == "measured"
+    assert catalog["search_codebase"].evidence_basis == "inferred"
 
-    props = get_tool_registry()["get_context"].parameters["properties"]
-    enum = props["include"]["items"]["enum"]
-    assert set(enum) == set(_INCLUDE_BLOCKS)
-    assert "compact" in props
-    assert props["compact"]["default"] is True
-    for bogus in ("docs", "freshness", "source"):
-        assert bogus not in enum
+
+@pytest.mark.asyncio
+async def test_mutating_tools_require_an_explicit_confirmation() -> None:
+    called = False
+
+    async def mutate() -> dict:
+        nonlocal called
+        called = True
+        return {"changed": True}
+
+    entry = ToolEntry(fn=mutate, name="mutate", safety="mutating")
+
+    result = await chat_tools.execute_entry(entry, {}, confirmed=False)
+
+    assert called is False
+    assert result["error_code"] == "confirmation_required"
+    assert result["requires_confirmation"] is True
+
+    result = await chat_tools.execute_entry(entry, {}, confirmed=True)
+    assert called is True
+    assert result == {"changed": True}

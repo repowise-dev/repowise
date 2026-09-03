@@ -16,6 +16,8 @@ import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from .helpers import node_text
+
 if TYPE_CHECKING:
     from tree_sitter import Node
 
@@ -412,7 +414,7 @@ def _has_export_marker(def_node: Node, src: str) -> bool:
     sibling = def_node.prev_sibling
     seen = 0
     while sibling is not None and seen < 4:
-        text = src[sibling.start_byte : sibling.end_byte]
+        text = node_text(sibling, src)
         if any(marker in text for marker in _CPP_EXPORT_MARKERS):
             return True
         sibling = sibling.prev_sibling
@@ -420,7 +422,7 @@ def _has_export_marker(def_node: Node, src: str) -> bool:
     # Also check the def_node's own leading children — some grammars
     # nest the declspec inside the function_definition.
     for child in def_node.children[:3]:
-        text = src[child.start_byte : child.end_byte]
+        text = node_text(child, src)
         if any(marker in text for marker in _CPP_EXPORT_MARKERS):
             return True
     return False
@@ -430,7 +432,7 @@ def _has_file_scope_static(def_node: Node, src: str) -> bool:
     """Return True if a ``static`` storage-class specifier appears in the leading declarators."""
     for child in def_node.children[:4]:
         if child.type == "storage_class_specifier":
-            text = src[child.start_byte : child.end_byte]
+            text = node_text(child, src)
             if "static" in text:
                 return True
     return False

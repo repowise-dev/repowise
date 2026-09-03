@@ -1,5 +1,5 @@
 /**
- * What a card's two dots mean, in words. Pure, browser-free.
+ * What a card says about itself, in words. Pure, browser-free.
  *
  * A card carries two dots and nothing on the surface named either. Worse, they
  * shared a palette: the role dot painted `--color-success` for "has an entry
@@ -15,7 +15,23 @@
  */
 
 import { bandForScore, HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
-import type { ZoomNode } from "./types";
+import type { ZoomKind, ZoomNode } from "./types";
+
+/**
+ * Human label per node kind.
+ *
+ * One record, because three surfaces name the same five kinds: the card footer
+ * the canvas draws, the hover tooltip over it, and the detail rail beside it. A
+ * reader moving between them is looking at one node, so a divergence here would
+ * read as three different things.
+ */
+export const KIND_LABEL: Record<ZoomKind, string> = {
+  system: "System",
+  layer: "Layer",
+  group: "Group",
+  folder: "Folder",
+  file: "File",
+};
 
 /**
  * Every role that applies to a node, most notable first. Empty when the node

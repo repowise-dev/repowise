@@ -1,5 +1,5 @@
 import type { StatsOrigin } from "@repowise-dev/types/stats";
-import { formatAgeDays, formatNumber } from "../lib/format";
+import { formatAgeDays, formatNumber, parseDate } from "../lib/format";
 
 /** Absolute date in UTC.
  *
@@ -8,7 +8,7 @@ import { formatAgeDays, formatNumber } from "../lib/format";
  *  it locally would show two different birthdays to two people looking at the
  *  same repo (and slip a day for anyone far enough east or west). */
 function foundingDate(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, {
+  return parseDate(iso).toLocaleDateString(undefined, {
     day: "numeric",
     month: "short",
     year: "numeric",

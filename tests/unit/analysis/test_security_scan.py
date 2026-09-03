@@ -14,6 +14,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import text
 
 from repowise.core.analysis.security_scan import SecurityScanner
@@ -31,10 +32,7 @@ CLEAN = b"""def add(a, b):
 
 
 def _fake_result(files: dict[str, bytes]):
-    parsed = [
-        SimpleNamespace(file_info=SimpleNamespace(path=p), symbols=[])
-        for p in files
-    ]
+    parsed = [SimpleNamespace(file_info=SimpleNamespace(path=p), symbols=[]) for p in files]
     return SimpleNamespace(parsed_files=parsed, source_map=dict(files))
 
 
@@ -73,9 +71,7 @@ async def _rows(sf) -> list[tuple]:
 class TestScanFile:
     def test_line_patterns_fire_on_real_source(self) -> None:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
-        findings = asyncio.run(
-            scanner.scan_file("a.py", SNIPPY.decode(), symbols=[])
-        )
+        findings = asyncio.run(scanner.scan_file("a.py", SNIPPY.decode(), symbols=[]))
         kinds = {f["kind"] for f in findings}
         assert "hardcoded_password" in kinds
         assert "pickle_loads" in kinds
@@ -87,6 +83,102 @@ class TestScanFile:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
         findings = asyncio.run(scanner.scan_file("b.py", CLEAN.decode(), symbols=[]))
         assert findings == []
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("eval(payload)\n", {"eval_call"}),
+            ("exec (payload)\n", {"exec_call"}),
+            ("eval(\n    payload\n)\n", {"eval_call"}),
+            ("builtins.eval(payload)\n", {"eval_call"}),
+            ("retrieval (payload)\n", set()),
+            ("my_eval(payload)\n", set()),
+            ("# eval(payload)\n", set()),
+            ('text = "eval(payload)"\n', set()),
+            ('"""exec(payload)"""\n', set()),
+        ],
+    )
+    def test_python_eval_exec_call_corpus(self, source: str, expected: set[str]) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("calls.py", source, symbols=[]))
+        assert {row["kind"] for row in findings if row["kind"].endswith("_call")} == expected
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("eval (payload);\n", {"eval_call"}),
+            ("window.eval(payload);\n", {"eval_call"}),
+            ("const result = `${eval(payload)}`;\n", {"eval_call"}),
+            ("retrieval (payload);\n", set()),
+            ("my_eval(payload);\n", set()),
+            ("// eval(payload)\n", set()),
+            ("/* exec(payload) */\n", set()),
+            ('const text = "eval(payload)";\n', set()),
+            # ``exec`` is not a global in JavaScript, so a bare call is a local
+            # function, and a call on a receiver is ``RegExp.prototype.exec``.
+            # Neither spawns anything; see the corpus test below.
+            ("exec\n  (payload);\n", set()),
+            ("const m = /^a(b)$/.exec(cell);\n", set()),
+            ("while ((m = re.exec(expr)) !== null) {}\n", set()),
+        ],
+    )
+    def test_fallback_eval_exec_call_corpus(self, source: str, expected: set[str]) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("calls.js", source, symbols=[]))
+        assert {row["kind"] for row in findings if row["kind"].endswith("_call")} == expected
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ('import { exec } from "child_process";\nexec(cmd);\n', {"exec_call"}),
+            ('const cp = require("child_process");\ncp.execSync(cmd);\n', {"exec_call"}),
+            (
+                'import { execFile } from "node:child_process";\nexecFile(bin, args);\n',
+                {"exec_call"},
+            ),
+            # Regex parsing in a file that also spawns: the gate is per file, so
+            # this is the residual false positive the gate cannot remove.
+            ('require("child_process");\nconst m = /a/.exec(s);\n', {"exec_call"}),
+        ],
+    )
+    def test_js_exec_is_reported_only_when_child_process_is_present(
+        self, source: str, expected: set[str]
+    ) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("spawn.ts", source, symbols=[]))
+        assert {row["kind"] for row in findings if row["kind"].endswith("_call")} == expected
+
+    def test_combined_prefilter_uses_the_same_safe_call_boundaries(self) -> None:
+        from repowise.core.analysis.security_scan import _ANY_PATTERN
+
+        assert _ANY_PATTERN.search("eval (")
+        assert _ANY_PATTERN.search("exec(")
+        assert _ANY_PATTERN.search("window.eval(")
+        assert not _ANY_PATTERN.search("retrieval (")
+        assert not _ANY_PATTERN.search("my_eval(")
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            'const API_KEY = "abc123";\n',
+            "const N8N_API_KEY = 'abc123';\n",
+            'SECRET = "abc123"\n',
+            'PASSWORD = "abc123"\n',
+        ],
+    )
+    def test_secret_patterns_are_case_insensitive(self, source: str) -> None:
+        """The constant form is how a pinned credential is usually written.
+
+        Also covers the prefilter: ``_ANY_PATTERN`` is built from the patterns'
+        source text, so a per-pattern ``re.IGNORECASE`` flag would be dropped
+        there and the line would never reach the pattern loop.
+        """
+        from repowise.core.analysis.security_scan import _ANY_PATTERN
+
+        assert _ANY_PATTERN.search(source)
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("config.ts", source, symbols=[]))
+        assert {row["kind"] for row in findings} & {"hardcoded_secret", "hardcoded_password"}
 
     def test_single_line_subprocess_shell_true_is_flagged(self) -> None:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
@@ -122,14 +214,105 @@ class TestScanFile:
     def test_spanning_pass_does_not_jump_to_later_shell_true(self) -> None:
         """A closed subprocess call must not claim a later column-0 shell=True."""
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
-        source = (
-            'subprocess.run(["ls"], capture_output=True)\n'
-            "\n"
-            "os.popen(cmd, shell=True)\n"
-        )
+        source = 'subprocess.run(["ls"], capture_output=True)\n\nos.popen(cmd, shell=True)\n'
         findings = asyncio.run(scanner.scan_file("a.py", source, symbols=[]))
         hits = [f for f in findings if f["kind"] == "subprocess_shell_true"]
         assert hits == []
+
+    # -- JS/TS patterns (#1935 Tier 1) -------------------------------------
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            # Non-literal values: a call, a variable, a member expression.
+            ("<div dangerouslySetInnerHTML={{ __html: sanitize(raw) }} />\n", True),
+            ("<div dangerouslySetInnerHTML={{ __html: markup }} />\n", True),
+            ("<div dangerouslySetInnerHTML={{ __html: props.body }} />\n", True),
+            # A SCREAMING_CASE constant is still a non-literal reference and
+            # still fires — the pattern cannot tell "this name is pinned in
+            # source" from "this name holds a request body" without
+            # dataflow. This is the corpus noise the docs page calls out,
+            # not a regression.
+            ("<div dangerouslySetInnerHTML={{ __html: DOCS_CSS }} />\n", True),
+            # A string literal is inert and must not fire. This is the case
+            # the positive-lookahead value test exists for: a naive negative
+            # lookahead excluding a quote, tried before the preceding
+            # whitespace, would let this through.
+            ('<div dangerouslySetInnerHTML={{ __html: "<b>ok</b>" }} />\n', False),
+            ("<div dangerouslySetInnerHTML={{ __html: '' }} />\n", False),
+        ],
+    )
+    def test_unsafe_inner_html_fires_on_non_literal_values(
+        self, source: str, expected: bool
+    ) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("component.tsx", source, symbols=[]))
+        assert bool([f for f in findings if f["kind"] == "unsafe_inner_html"]) is expected
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("const q = `SELECT * FROM users WHERE id = ${id}`;\n", True),
+            ("const q = `UPDATE users SET name = ${name} WHERE id = ${id}`;\n", True),
+            # The bare verb is an ordinary English word without its clause.
+            ("const msg = `Order update failed: ${status}`;\n", False),
+            ("const cls = `select-none ${active ? 'opacity-50' : ''}`;\n", False),
+            # No interpolation: a literal query is not a finding here.
+            ("const q = `SELECT * FROM users`;\n", False),
+        ],
+    )
+    def test_template_literal_sql_requires_verb_and_clause(
+        self, source: str, expected: bool
+    ) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("db.ts", source, symbols=[]))
+        assert bool([f for f in findings if f["kind"] == "template_literal_sql"]) is expected
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("const k = process.env.NEXT_PUBLIC_API_KEY;\n", True),
+            ("const k = process.env.NEXT_PUBLIC_N8N_API_KEY;\n", True),
+            ("const k = import.meta.env.VITE_SECRET;\n", True),
+            ("const k = import.meta.env.VITE_AUTH_TOKEN;\n", True),
+            # Public by design, protected by row-level security: excluded
+            # rather than flagged, per the corpus noise it made up.
+            ("const k = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;\n", False),
+            ("const url = process.env.NEXT_PUBLIC_APP_URL;\n", False),
+            ("const k = process.env.API_KEY;\n", False),  # not client-exposed
+        ],
+    )
+    def test_public_env_secret_excludes_anon_keys(self, source: str, expected: bool) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("config.ts", source, symbols=[]))
+        assert bool([f for f in findings if f["kind"] == "public_env_secret"]) is expected
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ('const f = new Function("a", "return a + 1");\n', True),
+            ("const f = new Function(body);\n", True),
+            ("const f = someFunction(a, b);\n", False),
+            ("class Function extends Base {}\n", False),
+        ],
+    )
+    def test_new_function_call(self, source: str, expected: bool) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("dynamic.ts", source, symbols=[]))
+        assert bool([f for f in findings if f["kind"] == "new_function_call"]) is expected
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("const agent = new https.Agent({ rejectUnauthorized: false });\n", True),
+            ("axios.get(url, { httpsAgent, rejectUnauthorized: false });\n", True),
+            ("const agent = new https.Agent({ rejectUnauthorized: true });\n", False),
+        ],
+    )
+    def test_reject_unauthorized_false(self, source: str, expected: bool) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("client.ts", source, symbols=[]))
+        assert bool([f for f in findings if f["kind"] == "reject_unauthorized_false"]) is expected
 
 
 class TestPersistSecurityFindings:
@@ -182,13 +365,9 @@ class TestPersistSecurityFindings:
             from repowise.core.persistence import get_session
 
             async with get_session(sf) as session:
-                await persist_security_findings(
-                    _fake_result({"a.py": SNIPPY}), session, "repo-1"
-                )
+                await persist_security_findings(_fake_result({"a.py": SNIPPY}), session, "repo-1")
             async with get_session(sf) as session:
-                await persist_security_findings(
-                    _fake_result({"a.py": CLEAN}), session, "repo-1"
-                )
+                await persist_security_findings(_fake_result({"a.py": CLEAN}), session, "repo-1")
             rows = await _rows(sf)
             await engine.dispose()
             return rows
@@ -209,9 +388,7 @@ class TestPersistSecurityFindings:
             sym = SimpleNamespace(name="auth", start_line=7)
             result = SimpleNamespace(
                 parsed_files=[
-                    SimpleNamespace(
-                        file_info=SimpleNamespace(path="auth.py"), symbols=[sym]
-                    )
+                    SimpleNamespace(file_info=SimpleNamespace(path="auth.py"), symbols=[sym])
                 ],
             )
             async with get_session(sf) as session:

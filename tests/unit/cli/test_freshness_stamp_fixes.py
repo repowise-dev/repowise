@@ -211,7 +211,8 @@ def test_freshness_self_heals_and_silences_false_stale(tmp_path):
     assert out["indexed_commit"] == head[:12]
     # HEAD matches the (self-healed) indexed commit → no false "behind" warning.
     assert "stale_warning" not in out
-    assert "live_head" not in out
+    assert out["live_head"] == head[:12]
+    assert out["index_behind"] is False
 
 
 # ---------------------------------------------------------------------------

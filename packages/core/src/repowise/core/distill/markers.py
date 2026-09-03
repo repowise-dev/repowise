@@ -18,6 +18,7 @@ _MARKER_TEMPLATE = (
 )
 
 MARKER_RE = re.compile(r"\[repowise#(?P<ref>[0-9a-f]{12}):[^\]]*\]")
+OMISSION_ID_RE = re.compile(r"^repowise#(?P<ref>[0-9a-f]{12})$")
 
 
 def render_marker(ref: str, lines_omitted: int, tokens_omitted: int) -> str:
@@ -44,3 +45,16 @@ def parse_marker_refs(text: str) -> list[str]:
 def is_valid_ref(ref: str) -> bool:
     """True when *ref* looks like a store key (12 lowercase hex chars)."""
     return bool(re.fullmatch(r"[0-9a-f]{12}", ref))
+
+
+def normalize_ref(value: str) -> str | None:
+    """Return the bare store key from any public omission-reference shape."""
+
+    candidate = value.strip()
+    if is_valid_ref(candidate):
+        return candidate
+    direct = OMISSION_ID_RE.fullmatch(candidate)
+    if direct:
+        return direct.group("ref")
+    marker = MARKER_RE.search(candidate)
+    return marker.group("ref") if marker else None

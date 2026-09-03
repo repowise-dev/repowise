@@ -1,4 +1,4 @@
-"""Tier 3 must not offer a data member as a function (bug 90).
+"""Tier 3 must not offer a data member as a function.
 
 ``_resolve_free_call``'s global-unique tier answers a bare name with any
 repo symbol carrying that name. The index it consults holds every symbol,
@@ -170,3 +170,68 @@ class TestThePredicateStaysNarrow:
         )
         assert _kinds(parsed, "doThing") == {"variable"}
         assert [e for e in _edges(parsed, tmp_path) if e[1] == "util.ts::doThing"]
+
+
+def _edges_with_imports(
+    parsed: dict[str, ParsedFile],
+    tmp_path: Path,
+    import_targets: dict[str, set[str]],
+) -> list[tuple[str, str, str]]:
+    """``_edges`` passes no imports, so the import tiers never fire there."""
+    resolver = CallResolver(parsed, import_targets, repo_path=str(tmp_path))
+    return [
+        (rc.caller_id, rc.callee_id, rc.origin)
+        for path, pf in parsed.items()
+        for rc in resolver.resolve_file(path, pf.calls)
+    ]
+
+
+class TestTheImportMergedTierRefusesTheSame:
+    """The rule is the rung's, not tier 3's.
+
+    ``import_merged`` answers a bare name from every imported file's symbols and
+    was minting the field edge at 0.85 -- above the tier that declines it. Both
+    cases declare the name TWICE, because that is the only shape where the tiers
+    disagree: tier 3 refuses an ambiguous name outright, so a single declaration
+    is refused either way and would prove nothing.
+    """
+
+    def test_an_imported_field_does_not_answer_a_bare_name(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "model.rs": (
+                    "rust",
+                    "pub struct Index {\n    pub map: Vec<usize>,\n}\n",
+                ),
+                "other.rs": (
+                    "rust",
+                    "pub struct Other {\n    pub map: Vec<u8>,\n}\n",
+                ),
+                # A BARE call, not `v.map(..)`: a call with a receiver takes
+                # the member path and never reaches this tier.
+                "caller.rs": ("rust", "pub fn run(v: u64) -> u64 {\n    map(v)\n}\n"),
+            },
+        )
+        assert _kinds(parsed, "map") == {"property"}
+        edges = _edges_with_imports(
+            parsed, tmp_path, {"caller.rs": {"model.rs"}, "model.rs": set(), "other.rs": set()}
+        )
+        assert not [e for e in edges if e[1] == "model.rs::map"]
+
+    def test_an_imported_function_still_answers(self, tmp_path: Path) -> None:
+        """Control: the tier is untouched where the answer really is callable."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "util.rs": ("rust", "pub fn render() -> u8 {\n    1\n}\n"),
+                "other.rs": ("rust", "pub fn render() -> u8 {\n    2\n}\n"),
+                "caller.rs": ("rust", "pub fn run() -> u8 {\n    render()\n}\n"),
+            },
+        )
+        edges = _edges_with_imports(
+            parsed, tmp_path, {"caller.rs": {"util.rs"}, "util.rs": set(), "other.rs": set()}
+        )
+        assert [e for e in edges if e[1] == "util.rs::render" and e[2] == "import_merged"]

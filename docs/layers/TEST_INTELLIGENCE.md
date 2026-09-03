@@ -189,19 +189,25 @@ proportion to how much of it is untested rather than only at a cliff.
 Two MCP tools carry test information, at two different granularities.
 
 **`get_risk(changed_files=[...])`** leads with a `directive` block whose
-`tests_to_run` names the tests that exercise the changed *files*. It is
-file-level and scoped to the diff itself, and capped at ten.
+`test_recommendations` names tests for the changed *files*. It is file-level,
+scoped to the diff, and capped at ten. Each row keeps its machine-readable
+`basis`, repository identity, source files, and evidence:
 
-Read `tests_to_run_basis` beside it. The two sources are not interchangeable
-and the ids alone will not tell them apart:
-
-| `tests_to_run_basis` | `tests_to_run` holds | Means |
+| Row `basis` | Recommendation holds | Means |
 |---|---|---|
-| `measured` | test node ids | the map proves these execute the changed files |
-| `inferred` | test *file* paths | the graph shows these reaching the change; candidates, run them first |
-| `none` | `[]` | neither source knows of a test. Unknown, not "untested" |
+| `measured` | test node id | the available per-test map found the test covering a changed file |
+| `inferred` | test file path | the graph shows the test reaching the change; a candidate, not coverage proof |
 
-Both forms are runnable arguments to pytest. They are never mixed in one list.
+`tests_to_run` is the compatibility id projection. It preserves the historical
+measured-first fallback and its `measured` / `inferred` / `none` scalar domain;
+new consumers use the adjacent typed rows for the additive evidence union.
+Total/emitted/truncated/omitted fields cover each exact population before its
+cap. `coverage_analysis` separately reports
+available, unavailable, partial, degraded, and stale states; an empty list under
+unavailable analysis is unknown and never means "no tests are needed".
+
+Both forms are runnable arguments to pytest. The typed list may contain both,
+but every row keeps its own basis; the legacy id list remains measured-first.
 
 **`get_change_risk(revspec=...)`** returns `impacted_tests`, computed from the
 changed *lines*, so it is a strictly narrower and more useful set:
@@ -213,7 +219,7 @@ changed *lines*, so it is a strictly narrower and more useful set:
   "tests": ["tests/test_auth.py::test_login", "..."],
   "total": 23,
   "truncated": true,
-  "missing_tests": {
+  "line_coverage": {
     "untested_changes": [{"source_file": "...", "uncovered_lines": [...]}],
     "stale_test_candidates": [...],
     "covered": [...],
@@ -223,7 +229,7 @@ changed *lines*, so it is a strictly narrower and more useful set:
 }
 ```
 
-The `missing_tests` buckets are the honest breakdown: `untested_changes` is the
+The `line_coverage` buckets are the honest breakdown: `untested_changes` is the
 strong signal (the file *is* in the map, but nothing covers the lines you
 touched), `stale_test_candidates` flags covered lines whose guarding test file is
 absent from the diff, and `no_coverage_data` means the file is simply not in the
@@ -277,11 +283,12 @@ no setup at all.
 | May produce a percentage | yes | **never** |
 | Labelled | `basis: "measured"` | `basis: "inferred"` |
 
-The two are shown side by side and are never averaged into one number. Where both
-can answer, the measured one wins outright and the graph is not consulted; the
-inferred tier only fills silence. Its error is one-sided and known, so it is sound
-as a floor ("something reaches this, do not call it untested") and unsound as a
-quantity.
+The two are shown side by side and are never averaged into one number. The
+canonical PR test-impact population evaluates both and retains their separate
+evidence; compatibility surfaces remain measured-first. Other test-intelligence
+surfaces may use inference only to fill measured silence. Inference's error is
+one-sided and known, so it is sound as a floor ("something reaches this, do not
+call it untested") and unsound as a quantity.
 
 ### The call graph leads, the import graph fills silence
 
@@ -380,11 +387,12 @@ Both tools carry an explicit discriminator alongside the list:
   summary that says "run the full suite" when it cannot. Other degraded statuses
   are `no_index` (nothing indexed yet), `unknown` (the git read failed), and
   `no_source_line_changes`. `basis` carries the same distinction in one word.
-- `get_risk` produces `tests_to_run` from a `guarding_tests` block, and the
-  `directive` lifts `tests_to_run_basis` beside it, so the two cases are
-  distinguishable without reaching into `pr_blast_radius`. `map_present` remains
-  the measured-map flag and is still available at
-  `pr_blast_radius.guarding_tests.map_present`.
+- `get_risk` and the REST blast-radius route consume one canonical
+  `test_impact` population. The directive lifts capped typed recommendations and
+  keeps `tests_to_run` as a non-contradictory compatibility projection. Coverage
+  availability, freshness, and measured-map presence remain explicit at
+  `pr_blast_radius.test_impact.coverage`; the legacy `guarding_tests` block is a
+  projection of the same rows rather than a separate derivation.
 
 Only `status: "map_present"` with an empty `tests` list means "the map exists and
 nothing in it covers this change". That is a real finding. `status: "inferred"`
@@ -427,6 +435,6 @@ Full reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-covera
 ## See also
 
 - [CODE_HEALTH.md](CODE_HEALTH.md): the coverage markers and how they deduct from the score.
-- [CHANGE_RISK.md](CHANGE_RISK.md): the risk score that `impacted_tests` rides alongside.
+- [CHANGE_RISK.md](CHANGE_RISK.md): the authoritative review percentile and supporting diff-shape score that `impacted_tests` rides alongside.
 - [MCP_TOOLS.md](../agent/MCP_TOOLS.md#get_change_risk): full parameter and response reference.
 - [CONFIG.md](../reference/CONFIG.md): the `coverage:` block.

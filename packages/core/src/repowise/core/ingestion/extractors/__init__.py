@@ -7,6 +7,7 @@ from .helpers import (
     node_text,
     refine_go_type_kind,
     refine_kotlin_class_kind,
+    refine_pascal_type_kind,
 )
 from .heritage import HERITAGE_EXTRACTORS, extract_heritage
 from .signatures import build_signature
@@ -24,4 +25,5 @@ __all__ = [
     "node_text",
     "refine_go_type_kind",
     "refine_kotlin_class_kind",
+    "refine_pascal_type_kind",
 ]

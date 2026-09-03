@@ -71,7 +71,7 @@ def _ctx(
     nloc: int = 600,
     language: str = "python",
     blame_index: BlameIndex | None = None,
-    module_map: dict[str, str] | None = None,
+    community_label_map: dict[str, str] | None = None,
 ) -> RefactoringContext:
     return RefactoringContext(
         file_path=file_path,
@@ -79,7 +79,7 @@ def _ctx(
         nloc=nloc,
         graph=g,
         blame_index=blame_index,
-        module_map=module_map or {},
+        community_label_map=community_label_map or {},
     )
 
 
@@ -371,8 +371,8 @@ def test_import_name_signal_separates_distinct_dependencies():
         _add_foreign_call(g, f"big.py::fn_{i}", "ext/b.py", "beta_dep")
     _imports(g, "big.py", "ext/a.py", ["alpha_dep"])
     _imports(g, "big.py", "ext/b.py", ["beta_dep"])
-    module_map = {"ext/a.py": "extpkg", "ext/b.py": "extpkg"}
-    out = _detect(g, "big.py", module_map=module_map)
+    community_label_map = {"ext/a.py": "extpkg", "ext/b.py": "extpkg"}
+    out = _detect(g, "big.py", community_label_map=community_label_map)
     assert len(out) == 1
     s = out[0]
     assert s.evidence["group_count"] == 2
@@ -391,8 +391,8 @@ def test_foreign_module_proxy_is_used_when_imported_names_empty():
         _add_foreign_call(g, f"big.py::fn_{i}", "ext/a.py", "alpha_dep")
     for i in range(4, 8):
         _add_foreign_call(g, f"big.py::fn_{i}", "ext/b.py", "beta_dep")
-    module_map = {"ext/a.py": "moda", "ext/b.py": "modb"}
-    out = _detect(g, "big.py", module_map=module_map)
+    community_label_map = {"ext/a.py": "moda", "ext/b.py": "modb"}
+    out = _detect(g, "big.py", community_label_map=community_label_map)
     assert len(out) == 1
     s = out[0]
     assert s.evidence["group_count"] == 2

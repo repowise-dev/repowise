@@ -25,7 +25,7 @@ For Extract Helper:
   "line_end": int}, ...], "suggested_site": {"directory": str | None},
   "duplicated_lines": int, "snippet": str | None,
   "snippet_start_line": int | None, "snippet_truncated": bool,
-  "suggested_name": str}`` lists every site of the duplicated block,
+  "suggested_name": None}`` lists every site of the duplicated block,
   where the shared helper should live, and the block itself: the anchor site's
   source
   text (identical across sites by definition, so stored once and capped at
@@ -46,10 +46,10 @@ For Extract Helper:
 For Extract Method:
 
 - ``plan`` = ``{"span": {"start": int, "end": int}, "params": [str, ...],
-  "returns": [str, ...], "suggested_name": str}`` — the lines to lift, the
-  inferred signature, and a deterministic starting name (from the slice's single
-  OUT value, else the enclosing function). Always a string; it is an editable
-  starting point and is not unique within a file.
+  "returns": [str, ...], "suggested_name": str | None}`` — the lines to lift,
+  the inferred signature, and a deterministic starting name (from the slice's
+  single informative OUT value, else absent). It is an editable starting point
+  and is not unique within a file.
 - ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` — the size and
   complexity the residual method sheds.
 - ``blast_radius`` = ``{"scope": "local"}`` — the one type whose blast radius is
@@ -81,7 +81,7 @@ For Break Cycle:
 For Split File:
 
 - ``plan`` = ``{"groups": [{"name": str | None, "symbols": [str, ...],
-  "suggested_file": str}], "residual": {"symbols": [...]} | None,
+  "suggested_file": str | None}], "residual": {"symbols": [...]} | None,
   "shim_required": bool}`` — the cohesive groups the file should split into
   (each with a suggested filename), the shared-utility ``core`` left behind,
   and whether a back-compat re-export shim is needed (false for same-package
@@ -102,8 +102,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-# Confidence buckets a detector may assign. Ordered low -> high; the surface
-# layers may filter on a ``min_confidence`` config (default: medium).
+# Confidence buckets, ordered low -> high; the surface layers filter on a
+# ``min_confidence`` config (default: medium).
+#
+# ``low`` is a floor value, not an emitted label. Censused over this repo's own
+# plan set: 835 high, 1,175 medium, **0 low** - no detector has ever produced
+# one, because a detector that cannot justify ``medium`` suppresses the plan
+# instead ("no suggestion, never a wrong one"). Both obvious fixes were
+# rejected on that evidence: emitting a real ``low`` tier would resurrect
+# exactly the spans the R1 gates suppress, and deleting the level would break
+# ``min_confidence: low``, which is the documented way to ask for no filtering
+# at all. So the level stays, and it means "no floor" rather than "a weak
+# plan". Read a detector's confidence as medium-or-high.
 CONFIDENCE_LEVELS = ("low", "medium", "high")
 
 
@@ -146,7 +156,7 @@ class RefactoringContext:
     # Populated only by the full-index path; the incremental, re-score and
     # ``repowise health`` paths leave it empty. Split File degrades to the
     # callee's file path, so the signal weakens rather than changing namespace.
-    module_map: dict[str, str] = field(default_factory=dict)
+    community_label_map: dict[str, str] = field(default_factory=dict)
     # The repo's symbol/file graph (a ``networkx.DiGraph``, typed ``Any`` to
     # avoid importing networkx into the model layer). A shared read-only
     # reference — the graph-native detectors (Move Method, Break Cycle) read

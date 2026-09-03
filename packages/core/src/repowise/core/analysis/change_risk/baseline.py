@@ -9,11 +9,26 @@ sample without duplicating the walk.
 from __future__ import annotations
 
 import subprocess
+from typing import NamedTuple
 
 import pathspec
 
 from .features import GIT_TIMEOUT_SECONDS, _git, features_from_file_changes
+from .fix_history import change_fix_density
 from .model import score_change
+
+
+class BaselineSample(NamedTuple):
+    """One sampled commit: its sha, its diff-shape score, and its file churn.
+
+    ``file_churn`` rides along so a caller can compute the commit's fix density
+    against a pressure map without a second walk — the sample is the only place
+    the sampled commits' paths exist.
+    """
+
+    sha: str
+    score: float
+    file_churn: tuple[tuple[str, int], ...]
 
 # Process-wide memo for the 200-commit baseline walk, which is the dominant cost
 # of a default get_change_risk call and is identical for every change scored
@@ -22,7 +37,7 @@ from .model import score_change
 # changes the sample (sample size, filters). Deliberately NOT keyed on the
 # target being scored: the sample is stored whole and the target's own score is
 # dropped when ranking, so two changes against the same history share one walk.
-_BASELINE_CACHE: dict[tuple, list[tuple[str, float]]] = {}
+_BASELINE_CACHE: dict[tuple, list[BaselineSample]] = {}
 # Crude bound so a long-lived MCP server that scores many distinct changes does
 # not grow the memo without limit. On overflow the whole cache is dropped
 # (correctness is unaffected; the next call just recomputes). Upgrade to an LRU
@@ -45,8 +60,8 @@ def _resolve_anchor_sha(repo_path: str, anchor: str) -> str | None:
     return sha or None
 
 
-def scores_excluding(samples: list[tuple[str, float]], excluded_ref: str) -> list[float]:
-    """Drop the target commit's own score from a sample, keeping the rest.
+def _retained(samples: list[BaselineSample], excluded_ref: str) -> list[BaselineSample]:
+    """The sample with the target commit's own entry removed.
 
     Self-exclusion is a rank-time filter, not a property of the sample, so the
     walk is cached whole and each target removes only itself. *excluded_ref* is
@@ -56,11 +71,41 @@ def scores_excluding(samples: list[tuple[str, float]], excluded_ref: str) -> lis
     short enough to prefix-match several shas will drop all of them.
     """
     if not excluded_ref:
-        return [score for _, score in samples]
+        return list(samples)
     return [
-        score
-        for sha, score in samples
-        if not (sha.startswith(excluded_ref) or excluded_ref.startswith(sha))
+        sample
+        for sample in samples
+        if not (sample.sha.startswith(excluded_ref) or excluded_ref.startswith(sample.sha))
+    ]
+
+
+def scores_excluding(samples: list[BaselineSample], excluded_ref: str) -> list[float]:
+    """Diff-shape scores of the sample, minus the target commit's own."""
+    return [sample.score for sample in _retained(samples, excluded_ref)]
+
+
+def densities_excluding(
+    samples: list[BaselineSample], excluded_ref: str, pressure: dict[str, float]
+) -> list[float]:
+    """Fix densities of the sample, minus the target commit's own.
+
+    Every sampled commit is measured against the *same* pressure map the target
+    is, so the population and the target share a unit. That map is read once at
+    the target's history ref rather than rebuilt per sampled commit: a per-commit
+    walk would cost one deep git log each, and the question being asked is where
+    this change's ground sits on today's map, not on each commit's own.
+
+    That does leave one asymmetry. The map is cut strictly before the target, so
+    the target is never credited with its own fixes, while a sampled commit is
+    measured on a map that already holds the fixes landing after it. Population
+    densities therefore read slightly high and the target's rank slightly low,
+    growing with how far the sample reaches past the half-life. Correcting it
+    means one deep walk per sampled commit, which is the cost this whole design
+    exists to avoid.
+    """
+    return [
+        change_fix_density(pressure, sample.file_churn)
+        for sample in _retained(samples, excluded_ref)
     ]
 
 
@@ -70,11 +115,13 @@ def baseline_samples(
     limit: int,
     extensions: tuple[str, ...],
     exclude_patterns: tuple[str, ...] = (),
-) -> list[tuple[str, float]]:
+) -> list[BaselineSample]:
     """Score the repo's recent commits to build a local risk distribution.
 
-    Returns ``(sha, score)`` pairs so a caller can exclude the change it is
-    ranking (see :func:`scores_excluding`) without needing a sample of its own.
+    Returns :class:`BaselineSample` rows so a caller can exclude the change it
+    is ranking (see :func:`scores_excluding`) without needing a sample of its
+    own, and can rank a fix density against the same commits
+    (see :func:`densities_excluding`).
 
     One ``git log --numstat`` call (no per-commit author lookup), so it stays
     cheap enough for a pre-merge gate. Experience is left unknown for the
@@ -98,7 +145,7 @@ def baseline_samples(
         timeout=GIT_TIMEOUT_SECONDS,
     ).stdout
 
-    samples: list[tuple[str, float]] = []
+    samples: list[BaselineSample] = []
     exclude_spec = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
     for block in out.split("\x1e"):
         lines = block.strip().split("\n")
@@ -121,7 +168,7 @@ def baseline_samples(
         if not changes:
             continue
         feats = features_from_file_changes(changes, exp=None)
-        samples.append((sha, score_change(feats).score))
+        samples.append(BaselineSample(sha, score_change(feats).score, feats.file_churn))
     return samples
 
 
@@ -131,7 +178,7 @@ def baseline_samples_cached(
     limit: int,
     extensions: tuple[str, ...],
     exclude_patterns: tuple[str, ...] = (),
-) -> list[tuple[str, float]]:
+) -> list[BaselineSample]:
     """Memoized :func:`baseline_samples`, keyed on the resolved anchor sha.
 
     Same result as :func:`baseline_samples` for the same inputs; it just skips

@@ -7,6 +7,9 @@ the façade must still expose every public name, and the decomposed
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 
 import repowise.cli.ui as ui
@@ -158,3 +161,30 @@ def test_advanced_config_allow_fast_small_repo(monkeypatch: pytest.MonkeyPatch) 
     assert result["run_mode"] == "standard"
     assert result["commit_limit"] == 1000  # <500 files -> deeper history default
     assert result["concurrency"] == 12  # <200 files -> higher concurrency default
+
+
+def test_lazy_facade_imports_no_heavy_modules() -> None:
+    """Importing the façade (or a cheap submodule) must not pull core.ingestion.
+
+    Importing ``ui.brand`` used to run the package ``__init__``, which eagerly
+    imported every interactive submodule -> ``core.ingestion`` -> networkx +
+    tree-sitter (~1.1s on a cold process), the dominant startup floor for cheap
+    commands like ``status``/``coverage`` (issue #1712). The façade is now lazy,
+    so a fresh interpreter that touches the cheap surface must not load those.
+    """
+    probe = (
+        "import sys; "
+        "from repowise.cli.ui.brand import format_bytes; "
+        "print(format_bytes(1536)); "
+        "heavy = sorted(m for m in sys.modules "
+        "if m.startswith(('repowise.core.ingestion', 'networkx', 'tree_sitter', "
+        "'lancedb', 'scipy'))); "
+        "print(heavy)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    lines = out.stdout.strip().splitlines()
+    assert lines[-2] == "1.5 KB"
+    assert lines[-1] == "[]", f"facade import pulled heavy modules: {lines[-1]}"
+

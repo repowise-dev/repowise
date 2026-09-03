@@ -108,6 +108,8 @@ class ContractConfig:
     detect_socket: bool = True
     detect_topics: bool = True
     detect_data: bool = True
+    #: A library's public API as a contract (``contract_type="code"``).
+    detect_code_api: bool = True
     manual_links: list[ManualContractLink] = field(default_factory=list)
     # Map a consumer base token or absolute host to the repo alias it targets,
     # so a ``fetch(`${API_BASE}/users`)`` whose base resolves to ``backend`` links
@@ -125,6 +127,7 @@ class ContractConfig:
             "detect_socket": self.detect_socket,
             "detect_topics": self.detect_topics,
             "detect_data": self.detect_data,
+            "detect_code_api": self.detect_code_api,
         }
         if self.manual_links:
             d["manual_links"] = [ml.to_dict() for ml in self.manual_links]
@@ -143,6 +146,7 @@ class ContractConfig:
             detect_socket=bool(data.get("detect_socket", True)),
             detect_topics=bool(data.get("detect_topics", True)),
             detect_data=bool(data.get("detect_data", True)),
+            detect_code_api=bool(data.get("detect_code_api", True)),
             manual_links=manual,
             service_bases={str(k): str(v) for k, v in data.get("service_bases", {}).items()},
             exclude_globs=[str(g) for g in data.get("exclude_globs", [])],

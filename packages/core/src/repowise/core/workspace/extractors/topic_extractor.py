@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 
-from .base import select_files
+from .base import line_at, select_files
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -271,6 +271,7 @@ class TopicExtractor:
                             symbol_name=f"{pdef.label}('{topic_name}')",
                             confidence=pdef.confidence,
                             service=None,
+                            line=line_at(content, match.start()),
                             meta={
                                 "topic": topic_name,
                                 "broker": pdef.broker,

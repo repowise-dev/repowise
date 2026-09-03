@@ -7,7 +7,7 @@ import { Input } from "../ui/input";
 import { EmptyState } from "../shared/empty-state";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
 import { AiPromptButton } from "../health/ai-prompt-button";
-import { formatRelativeTimeOrNull } from "../lib/format";
+import { formatDate, formatDateTime, formatRelativeTimeOrNull } from "../lib/format";
 import type { SecurityFinding } from "@repowise-dev/types";
 
 // One declaration of the wire shape, not a third hand-kept copy: this file's
@@ -146,7 +146,7 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
         render: (f) => (
           <span
             className="text-xs tabular-nums text-[var(--color-text-tertiary)]"
-            title={f.commit_at ? new Date(f.commit_at).toLocaleString() : undefined}
+            title={f.commit_at ? formatDateTime(f.commit_at) : undefined}
           >
             {formatRelativeTimeOrNull(f.commit_at)}
           </span>
@@ -159,7 +159,7 @@ export function SecurityFindingsTable({ findings, onSelect, onGeneratePrompt }: 
         priority: 3,
         render: (f) => (
           <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
-            {new Date(f.detected_at).toLocaleDateString()}
+            {formatDate(f.detected_at)}
           </span>
         ),
       },

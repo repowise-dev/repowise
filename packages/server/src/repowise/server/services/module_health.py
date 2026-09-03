@@ -3,10 +3,12 @@
 Per-module rollup combining ownership, churn, dead code, docs, and
 decisions. No core ingestion changes — purely composes existing tables.
 
-A "module" is the top-level directory of a file path (matches the existing
-``OwnershipEntry`` convention). For nested module views we expose
-``module_path`` as the path prefix the caller passed in, which can be
-arbitrarily deep.
+A "module" here is the top-level directory of a file path, matching the
+``OwnershipEntry`` convention the ownership surfaces already use. It is
+deliberately not ``HealthFileMetric.module``, which names the enclosing package
+boundary: this value is a rollup bucket key and travels in the URL, so the two
+answer different questions. For nested module views we expose ``module_path``
+as the path prefix the caller passed in, which can be arbitrarily deep.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from sqlalchemy import func as sa_func
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.aggregation import module_label
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DecisionRecord,
@@ -30,10 +33,9 @@ from repowise.core.persistence.models import (
     WikiSymbol,
 )
 
-
-def module_of(file_path: str) -> str:
-    parts = file_path.split("/", 1)
-    return parts[0] if len(parts) > 1 else "root"
+#: The one definition behind every ownership rollup. Not a package boundary --
+#: see the module docstring.
+top_level_module = module_label
 
 
 def _compute_health_score(
@@ -150,7 +152,7 @@ async def aggregate_modules(
     )
 
     for m in files:
-        mod = module_of(m.file_path)
+        mod = top_level_module(m.file_path)
         acc = accs[mod]
         if not acc.module_path:
             acc.module_path = mod
@@ -180,7 +182,7 @@ async def aggregate_modules(
         )
     ).all()
     for path, doc in sym_rows:
-        mod = module_of(path)
+        mod = top_level_module(path)
         acc = accs.get(mod)
         if acc is None:
             continue
@@ -197,7 +199,7 @@ async def aggregate_modules(
         )
     ).all()
     for path, lines in dead_rows:
-        mod = module_of(path)
+        mod = top_level_module(path)
         acc = accs.get(mod)
         if acc is None:
             continue

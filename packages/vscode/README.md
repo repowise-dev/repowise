@@ -16,10 +16,10 @@ Everything runs on your machine. Everything is free.
 
 Click **Analyze Change Risk** in the Source Control view and get the full picture of your uncommitted work in seconds:
 
-- A risk score for the change, with the exact factors that move it.
+- A benchmarked repo-relative review priority, with the supporting diff-shape score and exact factors that move it.
 - **The riskiest files in your change**, ranked, so you know where to focus your own review first.
 - **What is downstream**: the files that depend on what you touched.
-- **What you might have forgotten**: files that historically change together with yours but are untouched, and changed files with no associated test.
+- **What you might have forgotten**: files that historically change together with yours but are untouched, plus measured and inferred test recommendations with explicit analysis state.
 - **Who should review it**, from ownership and history, with one-click copy for your PR.
 
 While you edit, a quiet status-bar hint appears if you are missing a file that usually travels with your change. It never pops up, never interrupts, and is one click to dismiss or turn off.

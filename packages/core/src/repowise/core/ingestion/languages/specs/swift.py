@@ -50,5 +50,35 @@ SPEC = LanguageSpec(
             "Sendable",
         }
     ),
+    # Standard-library and Foundation type names, read only by the bare-name
+    # fallback: an `extension Data` adds members to Foundation's type but does
+    # not own the initializer `Data(contentsOf:)` names.
+    #
+    # Rust's rule, a name a repository plausibly declares itself stays off, is
+    # why `Result`, `Error`, `Task`, `Operation`, `Request` and `Response` are
+    # absent. `OperationQueue` came off on measurement: Alamofire declares a
+    # real `convenience init` on it and the call site invokes that one. A name
+    # match cannot see that, which is this guard's ceiling.
+    builtin_methods=frozenset(
+        {
+            # Foundation value types
+            "Data", "URL", "URLRequest", "URLResponse", "HTTPURLResponse",
+            "URLComponents", "URLQueryItem", "URLSession", "URLSessionConfiguration",
+            "UUID", "Date", "DateComponents", "DateFormatter", "ISO8601DateFormatter",
+            "NumberFormatter", "IndexPath", "IndexSet", "CharacterSet",
+            "Bundle", "Locale", "TimeZone", "Calendar", "FileManager",
+            "JSONDecoder", "JSONEncoder", "JSONSerialization",
+            "PropertyListDecoder", "PropertyListEncoder",
+            "NotificationCenter", "ProcessInfo", "RunLoop", "Thread",
+            "DispatchQueue", "DispatchGroup", "DispatchSemaphore", "DispatchTime",
+            "InputStream", "OutputStream", "Pipe",
+            "NSNumber", "NSString", "NSError", "NSNull", "NSLock", "NSRecursiveLock",
+            # Stdlib containers and scalars
+            "Array", "Dictionary", "Set", "String", "Substring", "Character",
+            "Int", "Int8", "Int16", "Int32", "Int64",
+            "UInt", "UInt8", "UInt16", "UInt32", "UInt64",
+            "Double", "Float", "Bool", "Range", "ClosedRange",
+        }
+    ),
     color_hex="#F05138",
 )

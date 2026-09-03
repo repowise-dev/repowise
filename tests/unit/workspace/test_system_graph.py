@@ -158,7 +158,9 @@ def test_socket_contract_becomes_socket_edge():
         _provider("api", "socket::/hubs/game", ctype="socket", file="api/hub.cs"),
         _consumer("unity", "socket::/hubs/game", ctype="socket", file="unity/net.cs"),
     ]
-    links = [_link("socket::/hubs/game", "api", "api/hub.cs", "unity", "unity/net.cs", ctype="socket")]
+    links = [
+        _link("socket::/hubs/game", "api", "api/hub.cs", "unity", "unity/net.cs", ctype="socket")
+    ]
     graph = build_system_graph(contracts, links, CrossRepoOverlay(), {})
     assert graph.edges[0].kind == "socket"
 
@@ -273,7 +275,14 @@ def test_system_graph_json_shape_is_locked():
     )
     data = graph.to_dict()
 
-    assert set(data) == {"version", "generated_at", "nodes", "edges", "diagnostics"}
+    assert set(data) == {
+        "version",
+        "generated_at",
+        "repo_provenance",
+        "nodes",
+        "edges",
+        "diagnostics",
+    }
     assert set(data["nodes"][0]) == {
         "id",
         "repo",
@@ -311,6 +320,9 @@ def test_system_graph_json_shape_is_locked():
         "consumers_by_layer",
         "http_consumers_unresolved",
         "http_consumer_coverage",
+        "symbol_identity",
+        "schema_coverage",
+        "code_api",
     }
 
 

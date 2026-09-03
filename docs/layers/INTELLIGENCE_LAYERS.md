@@ -227,11 +227,13 @@ Full guide, the calibration story and the head-to-head against CodeScene:
 
 ## Change Risk
 
-A calibrated 0–10 defect-risk score for **a whole commit or `base..head`
-range**, computed from the diff's shape against the live checkout, no index
-lookup, no model call. Distinct from `get_risk()`, which scores indexed files by
-path. Lead with `risk_percentile`, which ranks the change against sampled recent
-commits in the same repo.
+A deterministic live-diff assessment for **a whole commit or `base..head`
+range**, computed against the live checkout with no index lookup or model call.
+Lead with the benchmarked `risk_percentile` and `classification`, which rank the
+diff-shape score against sampled recent commits in the same repo. The supporting
+0–10 score is calibrated at single-commit granularity and is not a probability.
+Distinct from `get_risk()`, whose PR-blast value is an uncalibrated structural
+heuristic over indexed files.
 
 ```bash
 repowise risk HEAD

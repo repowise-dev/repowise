@@ -41,6 +41,16 @@ def test_unknown_model_still_falls_back() -> None:
     assert get_model_pricing("totally-made-up-model-9000") == _FALLBACK_PRICING
 
 
+def test_subscription_cli_models_are_zero_cost() -> None:
+    """A Claude subscription is not metered API spend in the runtime ledger."""
+    for model in (
+        "codex_cli/gpt-5.5",
+        "claude_cli/claude-haiku-4-5",
+        "opencode/anthropic/claude-sonnet-4-6",
+    ):
+        assert get_model_pricing(model) == {"input": 0.0, "output": 0.0}
+
+
 def test_dated_opus_variant_prices_at_opus_tier_not_sonnet_fallback() -> None:
     # An Opus session id the exact table misses (dated / future point release)
     # must resolve to the Opus tier, not the Sonnet-priced fallback — otherwise

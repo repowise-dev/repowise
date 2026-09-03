@@ -289,6 +289,29 @@ class LanguageRegistry:
                 result.setdefault(ext, pattern)
         return result
 
+    def camel_test_prefix_res_by_extension(self) -> dict[str, re.Pattern[str]]:
+        """Per-extension case-sensitive camel-boundary test-prefix regexes.
+
+        The mirror of :meth:`camel_test_res_by_extension` for languages
+        whose test-program convention names the file ``Test<Subject>``
+        rather than ``<Subject>Test``. Each language's ``test_camel_prefixes``
+        compile to one anchored pattern (``^(?:Test)(?=[A-Z])``) keyed by
+        that language's own extensions — the uppercase-boundary lookahead is
+        what keeps ``Testing.dpr`` and bare ``Test.dpr`` out.
+        """
+        result: dict[str, re.Pattern[str]] = {}
+        for spec in self._specs.values():
+            if not spec.test_camel_prefixes:
+                continue
+            # Longest-first so a longer prefix wins inside the alternation.
+            alternation = "|".join(
+                sorted(spec.test_camel_prefixes, key=lambda pfx: (-len(pfx), pfx))
+            )
+            pattern = re.compile(rf"^(?:{alternation})(?=[A-Z])")
+            for ext in spec.extensions:
+                result.setdefault(ext, pattern)
+        return result
+
     def camel_fixture_res_by_extension(self) -> dict[str, re.Pattern[str]]:
         """Per-extension case-sensitive camel-boundary fixture-suffix regexes.
 

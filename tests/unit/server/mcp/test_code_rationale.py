@@ -353,3 +353,24 @@ async def test_concept_anchor_skips_when_retrieval_already_led_with_winner(tmp_p
         Path(str(repo)), "why is the caller list capped at 50", hits
     )
     assert all(not h.get("_concept_anchored") for h in out)
+
+
+def test_mine_drops_blocks_far_below_the_best_match(tmp_path):
+    """A block clearing the term gate on generic vocabulary is not rationale."""
+    _write(
+        tmp_path,
+        "strong.py",
+        "# We project each call edge onto its two files because the graph keeps\n"
+        "# symbols and files in separate layers.\nX = 1\n",
+    )
+    _write(
+        tmp_path,
+        "weak.py",
+        "# Edges bow outward so they never cross a box.\nY = 2\n",
+    )
+    query = "why project call edge endpoints onto files graph layers symbols"
+    out = mine_rationale(str(tmp_path), ["strong.py", "weak.py"], query)
+
+    paths = {r["path"] for r in out}
+    assert "strong.py" in paths
+    assert "weak.py" not in paths

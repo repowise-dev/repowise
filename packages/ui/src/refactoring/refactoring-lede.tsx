@@ -3,13 +3,22 @@
  *
  * The surface used to open on a priority-by-effort scatter with no sentence
  * anywhere above it, which made it the only ported page with no lede. The
- * figure alone is also actively misleading here: "1,819 plans" reads as a
- * backlog you are failing at, when 96% of it is small local tidy-ups you do
- * while already in the file.
+ * figure alone is also actively misleading: "1,819 plans" reads as a backlog you
+ * are failing at, when most of it is small local tidy-ups you do while already
+ * in the file.
  *
- * So the prose carries the split, and the split is what the rest of the page is
- * organised around. It is measured, not asserted — every number below is
- * counted off the plans passed in.
+ * It counted plans until the page's unit became the opportunity, and then it
+ * counted nothing at all: the page stopped fetching the plan list, so every
+ * figure here silently read zero while the board below it showed 581 rows. The
+ * fix is not to re-fetch plans - it is to say the thing the composed unit
+ * actually knows, which is a better story anyway. Every number comes off the
+ * repository rollup the board already loads, so the lede and the list cannot
+ * disagree.
+ *
+ * The fact worth leading with changed too. It is no longer "most of this is
+ * small" - it is how much of the work is *mechanical*, and how much of it
+ * addresses what is actually wrong with the file. Both are honest and both were
+ * unsayable before composition.
  */
 
 import type { ReactNode } from "react";
@@ -18,21 +27,20 @@ import { PageLede } from "../shared/page-lede";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { formatNumber } from "../lib/format";
 import { typeMeta } from "./meta";
-import { isStructural, planPoint, STRUCTURAL_TYPES } from "./types";
-import type { RefactoringPlan, RefactoringSummary } from "@repowise-dev/types/refactoring";
+import { STRUCTURAL_TYPES } from "./types";
+import type { RefactoringOpportunityRollup } from "@repowise-dev/types/refactoring";
 
 export interface RefactoringLedeProps {
-  plans: RefactoringPlan[];
-  /** True repo totals from the paged endpoint. Older hosts may omit it. */
-  summary?: RefactoringSummary | undefined;
-  /** Files in the repo, for the "802 of 4,952 indexed" denominator. Omit and
+  /** The repository rollup. Absent or unavailable and the lede does not render. */
+  summary?: RefactoringOpportunityRollup | null | undefined;
+  /** Files in the repo, for the "581 of 4,952 indexed" denominator. Omit and
    *  the ribbon drops the comparison rather than inventing one. */
   indexedFileCount?: number | undefined;
   /** Rendered under the prose. */
   action?: ReactNode;
 }
 
-/** "46 files to split, 13 cycles to cut and 6 classes doing two jobs" — built
+/** "46 files to split, 13 cycles to cut and 6 classes doing two jobs" - built
  *  rather than interpolated so a repo with one kind does not read "and". */
 function joinPhrases(parts: string[]): string {
   if (parts.length <= 1) return parts[0] ?? "";
@@ -47,115 +55,109 @@ const STRUCTURAL_PHRASE: Record<string, (n: number) => string> = {
   move_method: (n) => `${n} method${n === 1 ? "" : "s"} living on the wrong class`,
 };
 
-export function RefactoringLede({
-  plans,
-  summary,
-  indexedFileCount,
-  action,
-}: RefactoringLedeProps) {
-  const total = summary?.total ?? plans.length;
-  const structural = plans.filter(isStructural);
-  const structuralTotal = summary?.structural_total ?? structural.length;
-  const performanceTotal =
-    summary?.performance_total ??
-    plans.filter((p) => p.refactoring_type === "performance_fix").length;
-  const local = Math.max(0, total - structuralTotal - performanceTotal);
+export function RefactoringLede({ summary, indexedFileCount, action }: RefactoringLedeProps) {
+  // No analysis is a different state from no work, and the board says which.
+  // The lede has nothing to open with either way.
+  if (!summary || summary.status !== "available") return null;
 
-  const files = summary?.files_total ?? new Set(plans.map((p) => p.file_path)).size;
-  const small =
-    summary?.small_effort_total ?? plans.filter((p) => (p.effort_bucket || "M") === "S").length;
-  const recovers =
-    summary?.health_recovery_total ?? plans.filter((p) => p.impact_delta >= 0.1).length;
-  const plottable = structural.filter((p) => planPoint(p) !== null).length;
+  const total = summary.opportunities_total;
+  const files = summary.files_total;
+  const steps = summary.steps_total;
+  const mechanical = summary.mechanical_steps_total;
+  const judgment = summary.judgment_steps_total;
 
-  const byType = new Map<string, number>();
-  if (summary) {
-    for (const item of summary.by_type) {
-      if ((STRUCTURAL_TYPES as readonly string[]).includes(item.type)) {
-        byType.set(item.type, item.count);
-      }
-    }
-  } else {
-    for (const p of structural)
-      byType.set(p.refactoring_type, (byType.get(p.refactoring_type) ?? 0) + 1);
-  }
+  const byLead = summary.by_lead_type ?? {};
+  const structuralByType = (STRUCTURAL_TYPES as readonly string[])
+    .map((type) => [type, byLead[type] ?? 0] as const)
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1]);
+  const structuralTotal = structuralByType.reduce((n, [, count]) => n + count, 0);
+  const local = Math.max(0, total - structuralTotal);
+
+  const small = summary.by_effort?.S ?? 0;
+  const smallPct = total ? Math.round((small / total) * 100) : 0;
+  const mechanicalPct = steps ? Math.round((mechanical / steps) * 100) : 0;
+
+  const primary = summary.addresses_primary_problem;
+  const addressesLead = primary?.yes ?? 0;
+  const addressesSide = primary?.no ?? 0;
+  const addressesUnknown = primary?.unknown ?? 0;
+
   const structuralPhrase = joinPhrases(
-    [...byType.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(
-        ([type, n]) => STRUCTURAL_PHRASE[type]?.(n) ?? `${n} ${typeMeta(type).label.toLowerCase()}`,
-      ),
+    structuralByType.map(
+      ([type, n]) => STRUCTURAL_PHRASE[type]?.(n) ?? `${n} ${typeMeta(type).label.toLowerCase()}`,
+    ),
   );
-
-  // The largest single recovery on the page. Quoted rather than assumed,
-  // because the ceiling is what makes "rank by health recovered" a bad idea and
-  // a reader is entitled to check the claim.
-  const bestGain =
-    summary?.best_health_gain ?? plans.reduce((m, p) => Math.max(m, p.impact_delta), 0);
-  const negligible =
-    summary?.negligible_health_total ?? plans.filter((p) => p.impact_delta < 0.5).length;
 
   const stats: RibbonStat[] = [
     {
-      label: "Files with a plan",
+      label: "Files with work",
       value: formatNumber(files),
-      sub: indexedFileCount ? `of ${formatNumber(indexedFileCount)} indexed` : undefined,
+      sub: indexedFileCount ? `of ${formatNumber(indexedFileCount)} indexed` : "one each",
+    },
+    {
+      label: "Steps to apply",
+      value: formatNumber(steps),
+      sub: `${formatNumber(mechanical)} mechanical, ${formatNumber(judgment)} judgment`,
     },
     {
       label: "Rated small effort",
-      value: total ? `${Math.round((small / total) * 100)}%` : "0%",
-      sub: `${formatNumber(small)} plan${small === 1 ? "" : "s"}`,
-    },
-    {
-      label: "Recover health",
-      value: formatNumber(recovers),
-      sub: "+0.1 or better",
+      value: total ? `${smallPct}%` : "0%",
+      sub: `${formatNumber(small)} opportunit${small === 1 ? "y" : "ies"}`,
     },
     {
       label: "Change a file's shape",
       value: formatNumber(structuralTotal),
-      sub:
-        plottable < structural.length
-          ? `${formatNumber(plottable)} measured among displayed leads`
-          : `${formatNumber(structural.length)} displayed leads`,
+      sub: structuralTotal ? "structural, and they lead the page" : "none in this repo",
     },
   ];
 
   return (
     <div className="space-y-6">
       <PageLede
-        label="Open plans"
+        label="Open opportunities"
         value={formatNumber(total)}
-        unit={files ? `across ${formatNumber(files)} file${files === 1 ? "" : "s"}` : undefined}
+        unit={files ? `one per file, across ${formatNumber(files)} file${files === 1 ? "" : "s"}` : undefined}
         layout="beside"
         action={action}
         figureFooter={
-          structuralTotal > 0 ? (
+          steps > 0 ? (
             <p className="text-caption text-[var(--color-text-tertiary)]">
-              {formatNumber(structuralTotal)} change a file&apos;s shape
-              {performanceTotal
-                ? `; ${formatNumber(performanceTotal)} address a causal performance opportunity.`
-                : ". The rest are local."}
+              {formatNumber(steps)} step{steps === 1 ? "" : "s"} in total, so most files carry more
+              than one.
             </p>
           ) : undefined
         }
       >
         <p>
           <span className="font-medium text-[var(--color-text-primary)]">
-            Most of this list is small.
+            {mechanicalPct}% of the steps are mechanical.
           </span>{" "}
-          {formatNumber(local)} plan{local === 1 ? "" : "s"} lift a slice of a long function or
-          dedupe a repeated block, and {total ? Math.round((small / total) * 100) : 0}% are rated
-          small effort. They are worth doing when you are already in the file, and they are not
-          worth a planning meeting.
+          {formatNumber(mechanical)} of {formatNumber(steps)} have every proof obligation met, so
+          they are safe to hand to an agent as written. The other {formatNumber(judgment)} change
+          where something lives or what it is called, and want a person&apos;s judgment first.
         </p>
-        {performanceTotal > 0 ? (
+        {addressesSide > 0 || addressesLead > 0 ? (
           <p>
             <span className="font-medium text-[var(--color-text-primary)]">
-              {formatNumber(performanceTotal)} performance plan
-              {performanceTotal === 1 ? "" : "s"}.
+              {formatNumber(addressesLead)} address the file&apos;s main problem.
             </span>{" "}
-            These preserve detector-native benefit even when defect-health recovery is zero.
+            {formatNumber(addressesSide)} do not - they are real work, but not the biggest cost in
+            that file
+            {addressesUnknown > 0
+              ? `, and for ${formatNumber(addressesUnknown)} no dominant problem was recorded to compare against`
+              : ""}
+            . Each row says which, so nothing here claims to fix more than it does.
+          </p>
+        ) : null}
+        {local > 0 ? (
+          <p>
+            <span className="font-medium text-[var(--color-text-primary)]">
+              Most of this list is local.
+            </span>{" "}
+            {formatNumber(local)} opportunit{local === 1 ? "y lifts" : "ies lift"} a slice of a long
+            function or tidy a repeated block, and {smallPct}% are rated small effort. They are
+            worth doing when you are already in the file, and they are not worth a planning meeting.
           </p>
         ) : null}
         {structuralTotal > 0 ? (
@@ -165,13 +167,6 @@ export function RefactoringLede({
               {structuralTotal === 1 ? "is structural" : "are structural"}.
             </span>{" "}
             {structuralPhrase}. These change how the codebase is shaped, so they lead the page.
-          </p>
-        ) : null}
-        {bestGain > 0 ? (
-          <p>
-            Health recovered tops out at +{bestGain.toFixed(1)} per plan and{" "}
-            {formatNumber(negligible)} recover under half a point, so it ranks poorly on its own.
-            The order below weighs how depended-upon the file is and how much rides along with it.
           </p>
         ) : null}
       </PageLede>

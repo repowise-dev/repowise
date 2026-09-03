@@ -72,7 +72,7 @@ export function SyncButton({
         aria-label={buttonText}
       >
         <RefreshCw
-          className={`h-3 w-3 ${state.kind === "running" ? "animate-spin" : ""}`}
+          className={`h-3 w-3 ${state.kind === "running" ? "motion-safe:animate-spin" : ""}`}
         />
         {state.kind === "running" ? "Syncing…" : buttonText}
       </button>

@@ -113,6 +113,11 @@ const ORIGINS = {
     because: "the name is in one of the imported files, and we cannot say which",
     tier: "scoped",
   },
+  scoped_name: {
+    label: "Qualified at the call site",
+    because: "the call names the class, and that class declares this method",
+    tier: "scoped",
+  },
   same_target: {
     label: "Same build target",
     because: "the target is a sibling translation unit of the same build target",

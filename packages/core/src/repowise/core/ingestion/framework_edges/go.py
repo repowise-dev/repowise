@@ -6,7 +6,9 @@ Covers the route/handler wiring that carries no import edge:
 * **stdlib ``net/http``** — ``http.HandleFunc("/path", handler)`` and
   ``mux.Handle("/path", handler)`` (same ``.HandleFunc`` / ``.Handle``
   selector shape as the router frameworks, so one regex serves both —
-  the only difference is which import gates emission).
+  the only difference is which import gates emission). The recogniser lives in
+  ``ingestion.framework_routes``, shared with the contract extractor that reads
+  the same call for its path.
 * **gRPC** — ``pb.RegisterXxxServer(s, &impl{})`` connects the registration
   site to the file defining the server implementation type.
 
@@ -19,6 +21,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from ..framework_routes import go_routes
 from ..resolvers import ResolverContext
 from .base import (
     DetectionContext,
@@ -41,11 +44,6 @@ _GO_ROUTER_PKG_PATTERNS = (
 # stdlib net/http is gated separately: its handler-registration calls share
 # the ``.HandleFunc`` / ``.Handle`` selector shape with the router frameworks.
 _GO_HTTP_PKG = "net/http"
-
-_GO_ROUTE_CALL_RE = re.compile(
-    r"\.\s*(?:GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD|HandleFunc|Handle|Any)"
-    r"\s*\(\s*[\"'][^\"']*[\"']\s*,\s*([\w.]+)"
-)
 
 # gRPC generated registration: ``pb.RegisterGreeterServer(s, &greeter{})`` or
 # ``RegisterGreeterServer(srv, impl)``. Capture the implementation argument
@@ -94,9 +92,12 @@ def _add_go_route_edges(
         if not text:
             continue
 
-        for m in _GO_ROUTE_CALL_RE.finditer(text):
-            handler = m.group(1)
-            targets = _resolve_go_handler(handler, parsed, func_to_files, class_to_file)
+        for route in go_routes(text):
+            if not route.handler:
+                continue  # an inline `func(c *gin.Context)` names nothing to link to
+            targets = _resolve_go_handler(
+                route.handler, parsed, func_to_files, class_to_file
+            )
             for target in targets:
                 if target != path and target in path_set and _add_edge_if_new(graph, path, target):
                     count += 1

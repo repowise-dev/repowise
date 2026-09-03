@@ -90,12 +90,13 @@ def is_local_model(model: str) -> bool:
 
     Both the cost ledger and the savings estimate price these at $0: no dollars
     change hands per token. Covers Ollama/LM Studio/llama.cpp model strings and
-    the agent-CLI passthrough prefixes (``codex_cli/``, ``opencode/``).
+    the agent-CLI passthrough prefixes (``codex_cli/``, ``claude_cli/``,
+    ``opencode/``).
     """
     return (
         model == "mock"
         or model.startswith(_LOCAL_MODEL_PREFIXES)
-        or model.startswith(("codex_cli/", "opencode/"))
+        or model.startswith(("codex_cli/", "claude_cli/", "opencode/"))
         # Bare Ollama tags carry no prefix — the default is plain `qwen3.5:4b`,
         # and a `family:size` tag is not a shape any hosted vendor uses.
         or (":" in model and "/" not in model)

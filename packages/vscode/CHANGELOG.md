@@ -7,6 +7,84 @@ is the minimum server version it checks against.
 This file starts at 0.7.0. Earlier releases are described in the repository's
 release history.
 
+## 0.10.0
+
+The refactoring view stops listing detector outputs and starts listing work.
+One row per file, its steps in dependency-safe order, how many of them are
+mechanical, and a lifecycle you can move it through. The health dashboard gains
+the performance lens on the same map.
+
+**Requires repowise 0.47.0 or newer.** The dashboard reads `/health/map` and the
+refactoring view reads `/refactoring/opportunities`, neither of which an earlier
+server serves, so the status bar flags an older one and asks you to upgrade with
+`pip install --upgrade repowise`.
+
+### Refactoring
+
+- A file appears once, as a composed opportunity, rather than once per finding
+  it triggered. The row carries its step count, how many steps are mechanical,
+  and whether the plan addresses what is actually costing the file most.
+- Opening a row loads its steps and evidence on demand, and the AI prompt is
+  built for the opportunity rather than for a single plan.
+- A plan the gates cannot prove behaviour-preserving is suppressed rather than
+  offered (#1984).
+- Opportunity row columns align below the narrow breakpoint, which is most of
+  the time in a side panel.
+
+### Health
+
+- The dashboard reads the health map, so the performance lens sits on the same
+  view as the rest of health instead of beside it.
+- A repeated-cost cause is named by the caller that repeats the work, not only
+  the sink that pays for it, so a shared helper no longer merges unrelated
+  workflows.
+
+### Shared UI
+
+- Loading motion moved from the box to the region, so a panel resolves as one
+  thing rather than a grid of independently twitching cards.
+- The dark overlay plane and the wells nested inside it settle, model work has
+  its own accent instead of borrowing orange and green, and the AI prompt modal
+  uses hairlines instead of a filled well.
+
+## 0.9.0
+
+Mostly a rebuild. The webviews compile the shared Repowise UI at build time, so
+two cycles of work on the graph, health and refactoring components reaches the
+extension here rather than when it was written.
+
+**Requires repowise 0.45.0 or newer.** The refactoring views read the unified
+recommendation contract that 0.45.0 introduced, so the status bar flags an
+older server and asks you to upgrade with `pip install --upgrade repowise`.
+
+### Refactoring
+
+- A performance finding links to the refactoring plan that addresses it, so a
+  slow path in the health view leads somewhere instead of ending as a note.
+- Recommendations arrive on one contract across health and refactoring, which
+  removes the cases where the same plan read differently in two views.
+
+### The graph
+
+- Call edges say how they got into the graph, so an inferred edge can be told
+  apart from a resolved one.
+- C++ scoped and chained calls resolve against their qualifier and return type,
+  a Rust macro invocation is no longer drawn as a function call, and a receiver
+  retyped by a framework decorator is typed correctly. Fewer wrong edges.
+- A subclass is no longer listed as a caller of the method it inherits.
+
+### Health
+
+- The Coverage tab is a Tests tab and answers on a repository that has never
+  ingested a coverage report, using the call graph and saying which tier
+  answered.
+- It reports how many tests reach a file rather than how many it happened to
+  list.
+- The risk panel names the diff-shape score as supporting evidence rather than
+  a verdict, and ranks fix density against commits rather than individual files.
+- The file detail page is on the design language and has its way in and out.
+- Timestamps render as UTC rather than in whatever the host machine assumed.
+
 ## 0.8.0
 
 The views are on the current design language, and the risk panel now leads with

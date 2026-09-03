@@ -1,8 +1,8 @@
 /**
  * Pure containment-tree geometry. Browser-free and unit-testable.
  *
- * The backend gives every node a `layout` rect in its parent's `[0,1]` space.
- * Composed down the tree this yields each node's **absolute world rect** inside
+ * `layout.ts` packs each parent's children into rects in that parent's `[0,1]`
+ * space. Composed down the tree this yields each node's **absolute world rect** inside
  * the root unit square. We precompute those once per scene; culling, the fade
  * `t`, hit-testing and "zoom to node" all read them, while the draw pass uses
  * the same rects to set each node's clip-and-scale transform.
@@ -30,8 +30,7 @@ const ROOT_RECT: Rect = { x: 0, y: 0, w: 1, h: 1 };
  * Each node's children are laid out client-side as an importance-weighted
  * masonry pack (see `layout.ts`) keyed off the parent's world aspect, then
  * composed into world space, so card size encodes importance and the rows
- * stagger. The backend treemap rects are intentionally ignored; unreachable
- * nodes are skipped.
+ * stagger. Nodes unreachable from the root are skipped.
  */
 export function computeWorldRects(
   nodes: Map<string, ZoomNode>,

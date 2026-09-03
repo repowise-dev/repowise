@@ -19,7 +19,7 @@ import {
   type SaveState,
 } from "@repowise-dev/ui/settings";
 
-const PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "kimi", "edenai", "opencode", "ollama", "litellm", "mock"] as const;
+const PROVIDERS = ["gemini", "openai", "anthropic", "deepseek", "kimi", "edenai", "claude_cli", "opencode", "ollama", "litellm", "mock"] as const;
 const EMBEDDERS = ["mock", "gemini", "openai", "openrouter", "edenai", "ollama"] as const;
 
 const MODEL_PLACEHOLDERS: Record<string, string> = {
@@ -29,6 +29,7 @@ const MODEL_PLACEHOLDERS: Record<string, string> = {
   deepseek: "deepseek-v4-flash",
   kimi: "kimi-for-coding",
   edenai: "mistral/mistral-small-latest",
+  claude_cli: "claude_cli/claude-haiku-4-5",
   opencode: "opencode/default",
   ollama: "qwen3.5:4b",
   litellm: "groq/llama-3.1-70b-versatile",
@@ -44,6 +45,7 @@ const PROVIDER_ENV_VARS: Record<string, { vars: string[]; installHint: string }>
   kimi: { vars: ["KIMI_API_KEY"], installHint: "pip install openai" },
   edenai: { vars: ["EDENAI_API_KEY"], installHint: "pip install openai" },
   litellm: { vars: ["LITELLM_*"], installHint: "pip install litellm" },
+  claude_cli: { vars: [], installHint: "https://claude.com/claude-code, then: claude login" },
   opencode: { vars: [], installHint: "curl -fsSL https://opencode.ai/install | bash" },
   mock: { vars: [], installHint: "No key needed" },
 };

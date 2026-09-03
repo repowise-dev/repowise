@@ -2,6 +2,40 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.48.0
+
+### Changed
+- Version bump only. No command, skill or doc change this cycle: the CLI flags
+  each command names are unchanged, `hooks.json` still mirrors
+  `claude_config.py`, and every tool named in a command or skill is one the
+  server lists. `generate_refactoring_code` is live and deliberately unreferenced.
+
+## 0.47.0
+
+### Changed
+- The `change-review` skill leads with `get_change_risk`'s `directive` and
+  `health_delta` — what the change made worse — before the percentile and the
+  diff-shape drivers, matching the reordered response (#1980). It also names
+  `directive.status: unknown` alongside `warning` as the "matched no files"
+  signal, and distinguishes the per-change directive from `get_risk`'s per-file
+  one.
+- No hook change this cycle: `hooks.json` still mirrors `claude_config.py`, and
+  every tool named in a command or skill is one the server lists.
+
+## 0.46.0
+
+### Changed
+- The `change-review` skill reads `directive.may_break` and
+  `directive.may_break_tests`. `get_risk` renamed both fields: the old names
+  asserted a certainty the structural heuristic behind them does not have
+  (#1892).
+- `/repowise:risk`, `/repowise:impacted-tests`, `/repowise:security` and the
+  plugin README state the public risk scale the way the tool now reports it,
+  and describe fix density as ranked against commits rather than against
+  individual files (#1891, #1914).
+- No hook change this cycle: `hooks.json` still mirrors `claude_config.py`, and
+  every tool named in a command or skill is one the server lists.
+
 ## 0.45.0
 
 ### Changed

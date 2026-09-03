@@ -2,11 +2,14 @@
 // Chat
 // ---------------------------------------------------------------------------
 
+import type { ChatArtifact } from "@repowise-dev/types/chat";
+
 export interface ConversationResponse {
   id: string;
   repository_id: string;
   title: string;
   message_count: number;
+  pinned?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -22,7 +25,12 @@ export interface ChatMessageResponse {
       name: string;
       arguments?: Record<string, unknown>;
       result?: Record<string, unknown>;
+      summary?: string;
+      artifact_type?: string;
+      artifact?: ChatArtifact;
     }>;
+    provider?: string;
+    model?: string;
   };
   created_at: string;
 }
@@ -40,7 +48,7 @@ export type ChatSSEEvent =
       tool_id: string;
       tool_name: string;
       summary: string;
-      artifact: { type: string; data: Record<string, unknown> };
+      artifact: ChatArtifact;
     }
-  | { type: "done"; conversation_id: string; message_id: string }
+  | { type: "done"; conversation_id: string; message_id: string; user_message_id?: string; provider?: string; model?: string }
   | { type: "error"; message: string };

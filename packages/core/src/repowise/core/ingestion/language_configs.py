@@ -39,10 +39,10 @@ class LanguageConfig:
     # Maps tree-sitter node type → our canonical SymbolKind string
     symbol_node_types: dict[str, str]
 
-    # tree-sitter node types that carry import information (doc purposes)
+    # tree-sitter node types that carry import information (descriptive metadata; not read at runtime)
     import_node_types: list[str]
 
-    # tree-sitter node types that export symbols (doc purposes)
+    # tree-sitter node types that export symbols (descriptive metadata; not read at runtime)
     export_node_types: list[str]
 
     # (name: str, modifier_texts: list[str]) → "public" | "private" | ...
@@ -62,6 +62,12 @@ class LanguageConfig:
     # what a .cpp defines, so both sides land as same-named symbols; this is
     # what tells them apart downstream (see ``Symbol.is_declaration``).
     declaration_node_types: frozenset[str] = field(default_factory=frozenset)
+
+    # Call-site node types that name a symbol without invoking it. Rust's
+    # ``foo!(..)`` expands a ``macro_rules! foo``; which symbol the name means
+    # is the same question a call asks, so these still run the call tiers, but
+    # the edge they produce is ``references`` rather than ``calls``.
+    reference_call_node_types: frozenset[str] = field(default_factory=frozenset)
 
 
 LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
@@ -152,6 +158,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=rust_visibility,
         parent_extraction="impl",
         parent_class_types=frozenset({"impl_item", "mod_item"}),
+        reference_call_node_types=frozenset({"macro_invocation"}),
     ),
     "java": LanguageConfig(
         symbol_node_types={
@@ -182,6 +189,9 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "preproc_def": "variable",  # #define MACRO value
             "preproc_function_def": "function",  # #define MACRO(x) ...
             "declaration": "function",  # forward declarations + dtor decls
+            # In-class member-function declaration; cpp.scm anchors these on
+            # the declarator, not the enclosing ``field_declaration``.
+            "function_declarator": "function",
             "alias_declaration": "type_alias",  # using X = Y;
         },
         import_node_types=["preproc_include"],
@@ -189,7 +199,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=public_by_default,
         parent_extraction="nesting",
         parent_class_types=frozenset({"class_specifier", "struct_specifier"}),
-        declaration_node_types=frozenset({"declaration"}),
+        declaration_node_types=frozenset({"declaration", "function_declarator"}),
     ),
     "c": LanguageConfig(
         symbol_node_types={
@@ -362,7 +372,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             # flagged as a follow-up, not attempted here.
             "declType": "class",
             "declProc": "function",  # signature only (interface decl / forward decl)
-            "defProc": "function",   # full definition with body
+            "defProc": "function",  # full definition with body
             # Matches C#'s choice for the same concept (property_declaration ->
             # "variable"). Rust is the one language that keeps fields under a
             # distinct "property" kind; everywhere else a field and a callable
@@ -371,7 +381,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "declProp": "variable",
         },
         import_node_types=["declUses"],
-        export_node_types=[],       # Pascal has no explicit re-export syntax
+        export_node_types=[],  # Pascal has no explicit re-export syntax
         # No pascal_visibility exists yet. Pascal visibility is per-*section*
         # (`strict private`/`protected`/`public`/`published` governs every
         # declaration until the next section keyword, i.e. extractors/

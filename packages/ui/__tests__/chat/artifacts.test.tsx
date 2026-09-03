@@ -10,6 +10,10 @@ import {
   OverviewRenderer,
   RiskReportRenderer,
   SearchResultsRenderer,
+  HealthRenderer,
+  DependencyPathRenderer,
+  CallPathRenderer,
+  SourceRenderer,
 } from "../../src/chat/artifacts.js";
 
 // Mermaid pulls in DOM measuring APIs jsdom doesn't implement; the renderer is
@@ -59,7 +63,7 @@ describe("chat artifact renderers", () => {
         data={{
           targets: [
             // Wire scores are 0–1 fractions (rank / total), not 0–100.
-            { file_path: "src/hot.ts", churn_percentile: 0.99 },
+            { file_path: "src/hot.ts", churn_percentile: 0.99, is_hotspot: true },
           ],
           global_hotspots: [{ path: "src/other.ts", churn_percentile: 0.88 }],
         }}
@@ -79,8 +83,10 @@ describe("chat artifact renderers", () => {
           targets: {
             "src/auth.py": {
               target: "src/auth.py",
-              // No is_hotspot on the MCP row — badge comes from score >= 0.75.
+              // Backend now emits is_hotspot directly; the badge trusts it
+              // rather than re-deriving from the score.
               hotspot_score: 0.91,
+              is_hotspot: true,
               risk_type: "churn-heavy",
               trend: "increasing",
             },
@@ -306,5 +312,41 @@ describe("chat artifact renderers", () => {
   it("GenericJsonRenderer pretty-prints data", () => {
     render(<GenericJsonRenderer data={{ foo: "bar" }} />);
     expect(screen.getByText(/"foo": "bar"/)).toBeInTheDocument();
+  });
+
+  it("HealthRenderer supports the real dashboard contract", () => {
+    render(<HealthRenderer data={{ mode: "dashboard", kpis: { average_health: 7.4, hotspot_health: 5.2, maintainability_average: 8.6, performance_average: 6.9 }, top_findings: [{ file_path: "src/risky.ts", reason: "Low coverage" }], worst_files: [] }} />);
+    expect(screen.getByText("7.4")).toBeInTheDocument();
+    expect(screen.getByText("5.2")).toBeInTheDocument();
+    expect(screen.getByText("8.6")).toBeInTheDocument();
+    expect(screen.getByText("6.9")).toBeInTheDocument();
+    expect(screen.getByText("src/risky.ts")).toBeInTheDocument();
+    expect(screen.getByText("Low coverage")).toBeInTheDocument();
+  });
+
+  it("HealthRenderer renders a valid KPI-only dashboard", () => {
+    render(<HealthRenderer data={{ kpis: { average_health: 7.4 } }} />);
+    expect(screen.getByText("average health")).toBeInTheDocument();
+    expect(screen.getByText("7.4")).toBeInTheDocument();
+  });
+
+  it("DependencyPathRenderer supports canonical node/relationship rows", () => {
+    render(<DependencyPathRenderer data={{ path: [{ node: "src/a.ts", relationship: "imports" }, { node: "src/b.ts", relationship: "" }] }} />);
+    expect(screen.getByText("src/a.ts")).toBeInTheDocument();
+    expect(screen.getByText("imports")).toBeInTheDocument();
+    expect(screen.queryByText("Unknown node")).not.toBeInTheDocument();
+  });
+
+  it("CallPathRenderer shows canonical traces and termination", () => {
+    render(<CallPathRenderer data={{ flows: [{ entry_point_name: "main", trace: ["main", "loadConfig"], termination: "max_depth" }] }} />);
+    expect(screen.getAllByText("main")).toHaveLength(2);
+    expect(screen.getByText("loadConfig")).toBeInTheDocument();
+    expect(screen.getByText(/Stopped:/)).toHaveTextContent("Stopped: max_depth");
+  });
+
+  it("SourceRenderer reads the canonical get_symbol file field", () => {
+    render(<SourceRenderer data={{ file: "src/index.ts", source: "export const value = 1;" }} />);
+    expect(screen.getByText("src/index.ts")).toBeInTheDocument();
+    expect(screen.getByText(/export const value/)).toBeInTheDocument();
   });
 });

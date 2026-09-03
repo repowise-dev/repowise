@@ -1255,7 +1255,7 @@ async def _incremental_page_regen(
             # level 2 and leave the repo-wide pages for a full run.
             file_pages_only=True,
         )
-        assembler = ContextAssembler(generation_config)
+        assembler = ContextAssembler(generation_config, repo_path=repo_path)
         # D3: pass the vector store (re-embed re-rendered pages) and prior pages
         # (reuse an unchanged page instead of re-billing it), matching the CLI
         # incremental path. Without these, every sync re-billed the repo-wide

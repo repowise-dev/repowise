@@ -48,10 +48,10 @@ const FEATURE_LABELS: ReadonlyArray<readonly [string, string]> = [
 
 type Tone = "low" | "medium" | "high";
 
-/** Buckets a 0-10 score into the three risk tones the palette defines. */
-function scoreTone(score: number): Tone {
-  if (score >= 6.5) return "high";
-  if (score >= 3.5) return "medium";
+/** Maps the server's authoritative absolute fallback band to presentation. */
+function fallbackBandTone(band: string | null): Tone {
+  if (band === "high") return "high";
+  if (band === "moderate") return "medium";
   return "low";
 }
 
@@ -74,10 +74,12 @@ const SECTION_IDS = {
 } as const;
 
 function scrollToSection(id: string) {
-  document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  document
+    .getElementById(id)
+    ?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-/** Formats a contribution with an explicit sign (positive raises risk). */
+/** Formats a contribution with an explicit sign (positive raises the model score). */
 function signed(value: number): string {
   return `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(2)}`;
 }
@@ -118,10 +120,12 @@ export function App({ host, repo, refreshToken }: ViewProps<"risk">) {
       .riskRange()
       .then((r) => setReport(r))
       .catch((err: unknown) =>
-        setError(err instanceof Error ? err.message : "Could not score change risk."),
+        setError(
+          err instanceof Error ? err.message : "Could not score change risk.",
+        ),
       )
       .finally(() => setLoading(false));
-    // Impact is independent: a git-less workspace still shows the risk score.
+    // Structural impact is independent: a git-less workspace still shows it.
     host.api
       .changeImpact()
       .then((r) => setImpact(r))
@@ -149,8 +153,12 @@ export function App({ host, repo, refreshToken }: ViewProps<"risk">) {
             <GitCompare className="h-4 w-4 shrink-0" />
             <span className="truncate">
               <code className="text-[var(--color-text-primary)]">{branch}</code>
-              <span className="mx-1.5 text-[var(--color-text-tertiary)]">vs</span>
-              <code className="text-[var(--color-text-primary)]">{base || "base"}</code>
+              <span className="mx-1.5 text-[var(--color-text-tertiary)]">
+                vs
+              </span>
+              <code className="text-[var(--color-text-primary)]">
+                {base || "base"}
+              </code>
             </span>
           </p>
         </div>
@@ -241,7 +249,7 @@ function ScoreHero({ report }: { report: RiskRangeReport }) {
   const ranked = percentile != null && priority != null;
   const color = ranked
     ? TONE_VAR[PRIORITY_TONE[priority] ?? "medium"]
-    : TONE_VAR[scoreTone(r.score)];
+    : TONE_VAR[fallbackBandTone(r.fallback_band)];
   return (
     <PageLede
       // Not "Change risk" again: the page's h1 two lines above already says
@@ -253,7 +261,7 @@ function ScoreHero({ report }: { report: RiskRangeReport }) {
       band={
         ranked
           ? { label: `${ordinal(percentile)} percentile`, color }
-          : { label: `${r.fallback_band ?? "unranked"} risk`, color }
+          : { label: `${r.fallback_band ?? "unranked"} absolute per-commit band`, color }
       }
       layout="beside"
       badge={
@@ -283,9 +291,11 @@ function ScoreHero({ report }: { report: RiskRangeReport }) {
       <FixHistoryNote history={r.fix_history} />
       <p className="mt-2.5 text-[var(--color-text-tertiary)]">
         Diff-size score{" "}
-        <strong className="font-semibold tabular-nums">{r.score.toFixed(1)}/10</strong> — how big
-        and spread out the change is, not where it lands. Anchored to a corpus of single commits,
-        so a range reads high by construction.
+        <strong className="font-semibold tabular-nums">
+          {r.score.toFixed(1)}/10
+        </strong>{" "}
+        — how big and spread out the change is, not where it lands. Anchored to
+        a corpus of single commits, so a range reads high by construction.
       </p>
     </PageLede>
   );
@@ -296,23 +306,39 @@ function ScoreHero({ report }: { report: RiskRangeReport }) {
  * score cannot see. Renders nothing when no touched file has fix history, which
  * is itself worth not padding out.
  */
-function FixHistoryNote({ history }: { history: RiskRangeReport["result"]["fix_history"] }) {
+function FixHistoryNote({
+  history,
+}: {
+  history: RiskRangeReport["result"]["fix_history"];
+}) {
   if (!history.available) {
-    return <p className="mt-2.5">Fix history unavailable — the git history walk failed.</p>;
+    return (
+      <p className="mt-2.5">
+        Fix history unavailable — the git history walk failed.
+      </p>
+    );
   }
   if (!history.files.length) return null;
   const [worst] = history.files;
   return (
     <p className="mt-2.5">
       These files have broken before:{" "}
-      <strong className="font-semibold text-[var(--color-text-primary)]">{worst.path}</strong> has{" "}
-      <strong className="font-semibold tabular-nums">{worst.fix_pressure.toFixed(1)}</strong>{" "}
+      <strong className="font-semibold text-[var(--color-text-primary)]">
+        {worst.path}
+      </strong>{" "}
+      has{" "}
+      <strong className="font-semibold tabular-nums">
+        {worst.fix_pressure.toFixed(1)}
+      </strong>{" "}
       recency-weighted prior fixes
-      {history.files.length > 1 ? `, and ${history.files.length - 1} more do too` : ""}
+      {history.files.length > 1
+        ? `, and ${history.files.length - 1} more do too`
+        : ""}
       {history.percentile != null ? (
         <>
           {" "}
-          — {ordinal(history.percentile)} percentile of this repo&apos;s fix-bearing files
+          — {ordinal(history.percentile)} percentile of this repo&apos;s recent
+          commits
         </>
       ) : null}
       .
@@ -333,11 +359,19 @@ function VerdictStrip({
   // `changed.length === 0` matters as well as `blast`: the impact block below
   // renders an empty state in that case, so a chip would scroll to an anchor
   // that is not on the page. The two must bail on the same condition.
-  if (!impact || !blast || impact.gitUnavailable || impact.changed.length === 0) return null;
+  if (!impact || !blast || impact.gitUnavailable || impact.changed.length === 0)
+    return null;
 
   const downstream = blast.transitive_affected.length;
   const cochanges = selectMissingCochanges(impact, cochangeFloor).length;
   const gaps = blast.test_gaps.length;
+  const testImpact = blast.test_impact;
+  const testAnalysisUnavailable =
+    !testImpact ||
+    ["unavailable", "degraded"].includes(testImpact.coverage.status);
+  const testAnalysisLimited =
+    testAnalysisUnavailable ||
+    Boolean(testImpact?.analysis.partial || testImpact?.analysis.stale);
 
   const chips: Array<{ id: string; label: string }> = [];
   if (downstream > 0) {
@@ -352,13 +386,31 @@ function VerdictStrip({
       label: `${cochanges} co-change partner${cochanges === 1 ? "" : "s"} untouched`,
     });
   }
-  if (gaps > 0) {
+  if (testAnalysisUnavailable) {
+    chips.push({
+      id: SECTION_IDS.testGaps,
+      label: "test analysis unavailable",
+    });
+  } else if (testImpact.analysis.stale || testImpact.analysis.partial) {
+    chips.push({
+      id: SECTION_IDS.testGaps,
+      label: testImpact.analysis.stale
+        ? "test evidence stale"
+        : "test analysis partial",
+    });
+  }
+  if (testImpact && testImpact.recommendations_total > 0) {
+    chips.push({
+      id: SECTION_IDS.testGaps,
+      label: `${testImpact.recommendations_total} test recommendation${testImpact.recommendations_total === 1 ? "" : "s"}`,
+    });
+  } else if (!testAnalysisLimited && gaps > 0) {
     chips.push({
       id: SECTION_IDS.testGaps,
       label:
         gaps === 1
-          ? "1 changed file has no associated test"
-          : `${gaps} changed files have no associated test`,
+          ? "no test evidence found for 1 changed file"
+          : `no test evidence found for ${gaps} changed files`,
     });
   }
   if (chips.length === 0) return null;
@@ -367,7 +419,7 @@ function VerdictStrip({
     <div className="flex flex-wrap gap-2">
       {chips.map((c) => (
         <button
-          key={c.id}
+          key={`${c.id}:${c.label}`}
           type="button"
           onClick={() => scrollToSection(c.id)}
           className="inline-flex items-center rounded-full border border-[var(--color-border-default)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-surface)]"
@@ -385,7 +437,10 @@ function RiskBreakdown({ report }: { report: RiskRangeReport }) {
   const drivers = [...r.drivers].sort(
     (a, b) => Math.abs(b.contribution) - Math.abs(a.contribution),
   );
-  const maxDriver = drivers.reduce((m, d) => Math.max(m, Math.abs(d.contribution)), 0);
+  const maxDriver = drivers.reduce(
+    (m, d) => Math.max(m, Math.abs(d.contribution)),
+    0,
+  );
   const featureRows = FEATURE_LABELS.filter(
     ([key]) => r.features[key] != null,
   ) as ReadonlyArray<readonly [string, string]>;
@@ -400,10 +455,18 @@ function RiskBreakdown({ report }: { report: RiskRangeReport }) {
           <div className="flex flex-col gap-3">
             {drivers.map((d) => {
               const raises = d.contribution >= 0;
-              const barColor = raises ? "var(--color-error)" : "var(--color-success)";
-              const pct = maxDriver > 0 ? (Math.abs(d.contribution) / maxDriver) * 100 : 0;
+              const barColor = raises
+                ? "var(--color-error)"
+                : "var(--color-success)";
+              const pct =
+                maxDriver > 0
+                  ? (Math.abs(d.contribution) / maxDriver) * 100
+                  : 0;
               return (
-                <div key={d.feature} className="flex items-center gap-3 text-[15px]">
+                <div
+                  key={d.feature}
+                  className="flex items-center gap-3 text-[15px]"
+                >
                   <span className="w-40 shrink-0 truncate text-[var(--color-text-secondary)]">
                     {d.label}
                   </span>
@@ -437,7 +500,9 @@ function RiskBreakdown({ report }: { report: RiskRangeReport }) {
                 key={key}
                 className="flex items-baseline justify-between gap-3 border-b border-[var(--color-border-default)] py-2 last:border-b-0"
               >
-                <dt className="text-[15px] text-[var(--color-text-secondary)]">{label}</dt>
+                <dt className="text-[15px] text-[var(--color-text-secondary)]">
+                  {label}
+                </dt>
                 <dd className="text-[15px] font-medium tabular-nums text-[var(--color-text-primary)]">
                   {formatFeatureValue(r.features[key] as number)}
                 </dd>
@@ -507,8 +572,25 @@ function ChangeImpact({
   const downstream = blast?.transitive_affected ?? [];
   const cochanges = selectMissingCochanges(impact, cochangeFloor);
   const testGaps = blast?.test_gaps ?? [];
+  const testImpact = blast?.test_impact;
+  const testRecommendations = testImpact?.recommendations ?? [];
+  const testAnalysisUnavailable =
+    !testImpact ||
+    ["unavailable", "degraded"].includes(testImpact.coverage.status);
+  const testAnalysisLimited =
+    testAnalysisUnavailable ||
+    Boolean(testImpact?.analysis.partial || testImpact?.analysis.stale);
+  const testAnalysisHint = !testImpact
+    ? "This older server did not provide typed test-analysis state; an empty list does not mean no tests are needed."
+    : testImpact.analysis.stale
+      ? "Coverage evidence is stale; measured recommendations may not describe the indexed commit."
+      : testImpact.analysis.degraded
+        ? "Test analysis is degraded; an empty list does not mean no tests are needed."
+        : testImpact.analysis.partial
+          ? "Test analysis is partial; recommendations may not cover every evidence input."
+          : "Recommendations keep measured coverage evidence separate from structural inference.";
   const reviewers = impact.reviewers;
-  const overall = blast?.overall_risk_score ?? null;
+  const structuralImpact = blast?.structural_impact_score ?? null;
 
   const scopeLabel =
     impact.scope === "branch" ? "uncommitted and unpushed" : "uncommitted";
@@ -518,12 +600,14 @@ function ChangeImpact({
       title="What this change touches"
       action={
         <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
-          {impact.changed.length} {scopeLabel} file{impact.changed.length === 1 ? "" : "s"}
-          {overall != null && (
+          {impact.changed.length} {scopeLabel} file
+          {impact.changed.length === 1 ? "" : "s"}
+          {structuralImpact != null && (
             <>
               {" · "}
               <span className="font-medium text-[var(--color-text-secondary)]">
-                impact {overall.toFixed(1)}/10
+                structural impact {structuralImpact.toFixed(1)}/10 (
+                {blast?.structural_impact_band}; heuristic)
               </span>
             </>
           )}
@@ -535,11 +619,15 @@ function ChangeImpact({
         <ImpactBlock
           id={SECTION_IDS.directRisks}
           icon={<Gauge className="h-4 w-4" />}
-          title="Riskiest files in this change"
-          hint="Per-file risk from history and structure. Start your review here."
+          title="Highest structural weight in this change"
+          hint="Relative pagerank-weighted hotspot heuristic. It is not a breakage probability."
         >
           {directRisks.slice(0, 10).map((f) => (
-            <DirectRiskRow key={f.path} risk={f} onOpen={() => host.openFile(f.path)} />
+            <DirectRiskRow
+              key={f.path}
+              risk={f}
+              onOpen={() => host.openFile(f.path)}
+            />
           ))}
           <MoreRow count={directRisks.length - 10} />
         </ImpactBlock>
@@ -583,15 +671,41 @@ function ChangeImpact({
         </ImpactBlock>
       )}
 
-      {testGaps.length > 0 && (
+      {(testGaps.length > 0 ||
+        testRecommendations.length > 0 ||
+        testAnalysisLimited) && (
         <ImpactBlock
           id={SECTION_IDS.testGaps}
           icon={<TestTube className="h-4 w-4" />}
-          title="Changed without a test"
-          hint="These changed files have no associated test file."
+          title="Test impact"
+          hint={testAnalysisHint}
         >
+          {testRecommendations.slice(0, 10).map((recommendation) => {
+            const path =
+              recommendation.test_file ?? recommendation.test_id.split("::")[0];
+            return (
+              <PathRow
+                key={`${recommendation.repository_id}:${recommendation.test_id}`}
+                path={path}
+                trailing={`${recommendation.basis} · ${recommendation.repository}`}
+                onOpen={() => host.openFile(path)}
+              />
+            );
+          })}
+          <MoreRow
+            count={
+              (testImpact?.recommendations_total ??
+                testRecommendations.length) -
+              Math.min(testRecommendations.length, 10)
+            }
+          />
           {testGaps.slice(0, 8).map((p) => (
-            <PathRow key={p} path={p} onOpen={() => host.openFile(p)} />
+            <PathRow
+              key={p}
+              path={p}
+              trailing="no test evidence"
+              onOpen={() => host.openFile(p)}
+            />
           ))}
           <MoreRow count={testGaps.length - 8} />
         </ImpactBlock>
@@ -653,7 +767,9 @@ function PathRow({
       className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[15px] transition-colors hover:bg-[var(--color-bg-surface)]"
     >
       <span className="min-w-0 flex-1 truncate">
-        {dir && <span className="text-[var(--color-text-tertiary)]">{dir}</span>}
+        {dir && (
+          <span className="text-[var(--color-text-tertiary)]">{dir}</span>
+        )}
         <span className="text-[var(--color-text-primary)]">{name}</span>
       </span>
       {trailing && (
@@ -666,7 +782,13 @@ function PathRow({
 }
 
 /** A clickable file row with a quiet relative risk bar and a hotspot marker. */
-function DirectRiskRow({ risk, onOpen }: { risk: RankedDirectRisk; onOpen: () => void }) {
+function DirectRiskRow({
+  risk,
+  onOpen,
+}: {
+  risk: RankedDirectRisk;
+  onOpen: () => void;
+}) {
   const name = risk.path.split("/").pop() || risk.path;
   const dir = risk.path.slice(0, risk.path.length - name.length);
   const pct = Math.min(100, Math.max(0, risk.share * 100));
@@ -678,7 +800,9 @@ function DirectRiskRow({ risk, onOpen }: { risk: RankedDirectRisk; onOpen: () =>
       className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[15px] transition-colors hover:bg-[var(--color-bg-surface)]"
     >
       <span className="min-w-0 flex-1 truncate">
-        {dir && <span className="text-[var(--color-text-tertiary)]">{dir}</span>}
+        {dir && (
+          <span className="text-[var(--color-text-tertiary)]">{dir}</span>
+        )}
         <span className="text-[var(--color-text-primary)]">{name}</span>
       </span>
       {risk.hotspot && (
@@ -691,7 +815,7 @@ function DirectRiskRow({ risk, onOpen }: { risk: RankedDirectRisk; onOpen: () =>
       )}
       <span
         className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-[var(--color-bg-elevated)]"
-        title="Risk relative to the riskiest file in this change"
+        title="Structural weight relative to the strongest file in this change"
       >
         <span
           className="block h-full rounded-full"
@@ -709,7 +833,9 @@ function DirectRiskRow({ risk, onOpen }: { risk: RankedDirectRisk; onOpen: () =>
 function MoreRow({ count }: { count: number }) {
   if (count <= 0) return null;
   return (
-    <p className="px-1.5 pt-1 text-xs text-[var(--color-text-tertiary)]">+{count} more</p>
+    <p className="px-1.5 pt-1 text-xs text-[var(--color-text-tertiary)]">
+      +{count} more
+    </p>
   );
 }
 
@@ -725,7 +851,10 @@ function Reviewers({
     const text = top
       .map((r) => (r.email ? `${r.name} <${r.email}>` : r.name))
       .join(", ");
-    host.copyText(`Suggested reviewers: ${text}`, "Reviewers copied to clipboard.");
+    host.copyText(
+      `Suggested reviewers: ${text}`,
+      "Reviewers copied to clipboard.",
+    );
   };
   const maxScore = top.reduce((m, r) => Math.max(m, r.score), 0);
 
@@ -758,7 +887,8 @@ function Reviewers({
                   {r.name}
                 </span>
                 <span className="shrink-0 text-xs text-[var(--color-text-tertiary)]">
-                  {r.recent_commits} recent commit{r.recent_commits === 1 ? "" : "s"}
+                  {r.recent_commits} recent commit
+                  {r.recent_commits === 1 ? "" : "s"}
                 </span>
               </div>
               <div className="h-1.5 overflow-hidden rounded-full bg-[var(--color-bg-elevated)]">

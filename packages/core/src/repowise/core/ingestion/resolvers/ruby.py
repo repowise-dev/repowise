@@ -67,16 +67,26 @@ def _scan_gem_metadata(ctx: ResolverContext) -> tuple[frozenset[str], tuple[str,
     names: set[str] = set()
     lib_roots: set[str] = set()
     if ctx.repo_path is not None:
-        from repowise.core.fs_walk import iter_glob
+        from repowise.core.fs_walk import glob_via
 
         repo = ctx.repo_path.resolve()
         candidates: list = []
         try:
             candidates.extend(
-                iter_glob(ctx.repo_path, "Gemfile", prune_nested_git=ctx.prune_nested_git)
+                glob_via(
+                    ctx.walk_snapshot,
+                    ctx.repo_path,
+                    "Gemfile",
+                    prune_nested_git=ctx.prune_nested_git,
+                )
             )
             candidates.extend(
-                iter_glob(ctx.repo_path, "*.gemspec", prune_nested_git=ctx.prune_nested_git)
+                glob_via(
+                    ctx.walk_snapshot,
+                    ctx.repo_path,
+                    "*.gemspec",
+                    prune_nested_git=ctx.prune_nested_git,
+                )
             )
         except OSError:
             pass

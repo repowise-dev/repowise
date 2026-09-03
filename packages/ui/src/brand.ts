@@ -45,7 +45,7 @@ export const LIGHT = {
 export const DARK = {
   bgRoot: "#0e0e0f",
   bgSurface: "#141416",
-  bgElevated: "#1c1c1f",
+  bgElevated: "#191a1c",
   bgInset: "#0a0a0b",
   textPrimary: "#f2f2f3",
   textSecondary: "#b4b4b9",

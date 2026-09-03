@@ -34,7 +34,9 @@ from repowise.server.job_executor import execute_job
 from repowise.server.mcp_server._meta import read_live_head, resolve_indexed_commit
 from repowise.server.routers._sorting import repository_sort_key
 from repowise.server.schemas import (
+    JobAcceptedResponse,
     RepoCreate,
+    RepoDeletedResponse,
     RepoResponse,
     ReposSummaryResponse,
     RepoStatsResponse,
@@ -536,7 +538,7 @@ async def update_repo(
     return RepoResponse.from_orm(repo)
 
 
-@router.delete("/{repo_id}")
+@router.delete("/{repo_id}", response_model=RepoDeletedResponse)
 async def delete_repo(
     repo_id: str,
     request: Request,
@@ -655,7 +657,7 @@ async def get_repo_stats(
     )
 
 
-def _accepted(job_id: str) -> dict:
+def _accepted(job_id: str) -> JobAcceptedResponse:
     """Standard 202 launch payload, carrying a stream token for the new job.
 
     The token lets a client stream ``/api/jobs/{id}/stream`` immediately without
@@ -663,7 +665,7 @@ def _accepted(job_id: str) -> dict:
     """
     from repowise.server.stream_auth import mint_stream_token
 
-    return {"job_id": job_id, "status": "accepted", "stream_token": mint_stream_token(job_id)}
+    return JobAcceptedResponse(job_id=job_id, stream_token=mint_stream_token(job_id))
 
 
 async def _ensure_no_active_job(session: AsyncSession, repo_id: str) -> None:
@@ -685,7 +687,7 @@ async def _ensure_no_active_job(session: AsyncSession, repo_id: str) -> None:
         )
 
 
-@router.post("/{repo_id}/sync", status_code=202)
+@router.post("/{repo_id}/sync", response_model=JobAcceptedResponse, status_code=202)
 async def sync_repo(
     repo_id: str,
     request: Request,
@@ -715,7 +717,7 @@ async def sync_repo(
     return _accepted(job.id)
 
 
-@router.post("/{repo_id}/full-resync", status_code=202)
+@router.post("/{repo_id}/full-resync", response_model=JobAcceptedResponse, status_code=202)
 async def full_resync(
     repo_id: str,
     request: Request,
@@ -870,7 +872,7 @@ def _generate_job_config(body: GenerateRequestBody) -> dict:
     return config
 
 
-@router.post("/{repo_id}/generate", status_code=202)
+@router.post("/{repo_id}/generate", response_model=JobAcceptedResponse, status_code=202)
 async def generate_pages(
     repo_id: str,
     request: Request,
@@ -1014,7 +1016,7 @@ async def generate_estimate(
     }
 
 
-@router.post("/{repo_id}/index", status_code=202)
+@router.post("/{repo_id}/index", response_model=JobAcceptedResponse, status_code=202)
 async def index_repo(
     repo_id: str,
     request: Request,

@@ -437,6 +437,8 @@ def detect_build_commands(repo_path: Path) -> dict[str, str]:
             runner = "npm run" if not (repo_path / "pnpm-lock.yaml").exists() else "pnpm"
             if (repo_path / "yarn.lock").exists():
                 runner = "yarn"
+            if (repo_path / "bun.lock").exists() or (repo_path / "bun.lockb").exists():
+                runner = "bun run"
             for key, candidates in _map.items():
                 for cand in candidates:
                     if cand in scripts:

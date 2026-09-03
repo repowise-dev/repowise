@@ -16,12 +16,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 from repowise.core.ingestion.git_indexer import GitIndexer
 from repowise.core.ingestion.git_indexer.tiers import GitIndexTier
 from repowise.core.ingestion.graph._centrality_cache import subgraph_signature
-from repowise.core.pipeline.incremental import rebuild_graph_and_git
+from repowise.core.pipeline.incremental import build_repo_graph, rebuild_graph_and_git
 
 
 def _build_git_repo(tmp_path: Path) -> None:
@@ -103,9 +104,33 @@ async def test_update_graph_converges_with_init_graph(tmp_path: Path) -> None:
 
     # The exact property the centrality cache keys on: identical file and
     # symbol subgraph signatures, so a first post-init update can hit.
-    assert subgraph_signature(init_gb.file_subgraph()) == subgraph_signature(
-        upd_gb.file_subgraph()
-    )
+    assert subgraph_signature(init_gb.file_subgraph()) == subgraph_signature(upd_gb.file_subgraph())
     assert subgraph_signature(init_gb.symbol_subgraph()) == subgraph_signature(
         upd_gb.symbol_subgraph()
+    )
+
+
+def test_dynamic_hint_failure_logs_warning_and_does_not_raise(tmp_path: Path) -> None:
+    """Dynamic hint extraction errors must log a structured warning and continue best-effort."""
+    logged_lines: list[str] = []
+
+    def capture_log(msg: str) -> None:
+        logged_lines.append(msg)
+
+    (tmp_path / "main.py").write_text("x = 1\n")
+
+    with patch(
+        "repowise.core.ingestion.dynamic_hints.HintRegistry.extract_all",
+        side_effect=RuntimeError("Simulated hint extraction crash"),
+    ):
+        _parsed_files, _source_map, graph_builder, _repo_structure, _count = build_repo_graph(
+            repo_path=tmp_path,
+            exclude_patterns=[],
+            log=capture_log,
+        )
+
+    assert graph_builder is not None
+    assert any(
+        "Dynamic hint extraction failed" in line and "missing from this update" in line
+        for line in logged_lines
     )

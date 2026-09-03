@@ -1,0 +1,2218 @@
+{
+  "opportunities": [
+    {
+      "actionability_reason": "proven_strategy",
+      "actionability_state": "plan_ready",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "serial_await_in_loop",
+      "biomarker_types": [
+        "serial_await_in_loop"
+      ],
+      "boundary_kind": "network",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "serial_await_in_loop",
+          "file_path": "src/app/fanout.py",
+          "finding_id": "finding_28eb6a8735fdf18585c6",
+          "function_name": "gather_all",
+          "line_end": 92,
+          "line_start": 90,
+          "path": [],
+          "provenance": "direct",
+          "reason": "async_serial_awaits: serial_await_in_loop at src/app/fanout.py:90 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "high",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated"
+      },
+      "fix": {
+        "rationale": "Dataflow proves that every observed loop carries no cross-iteration dependence.",
+        "safety": "proven",
+        "strategy": "parallelize_independent_awaits"
+      },
+      "intervention_symbol": null,
+      "observations_total": 1,
+      "opportunity_id": "perf2_182b2a7c053167959285",
+      "performance_model_version": 2,
+      "prerequisites": [],
+      "provenance": "direct",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 16,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [],
+      "terminal_sink": null,
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "network"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "serial_await_in_loop"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "proven_strategy",
+      "actionability_state": "plan_ready",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "resource_construction_in_loop",
+      "biomarker_types": [
+        "resource_construction_in_loop"
+      ],
+      "boundary_kind": "network",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "resource_construction_in_loop",
+          "file_path": "src/app/clients.py",
+          "finding_id": "finding_7598efa2a35d26832a2e",
+          "function_name": "each",
+          "line_end": 172,
+          "line_start": 170,
+          "path": [],
+          "provenance": "direct",
+          "reason": "resource_construction: resource_construction_in_loop at src/app/clients.py:170 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "high",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated"
+      },
+      "fix": {
+        "rationale": "Dataflow proves construction arguments and lifetime are loop invariant.",
+        "safety": "proven",
+        "strategy": "hoist_loop_invariant_resource"
+      },
+      "intervention_symbol": null,
+      "observations_total": 1,
+      "opportunity_id": "perf2_386a99aa2876c0dd31bd",
+      "performance_model_version": 2,
+      "prerequisites": [],
+      "provenance": "direct",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 16,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [],
+      "terminal_sink": null,
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "network"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "resource_construction_in_loop"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "strategy_requires_validation",
+      "actionability_state": "advisory",
+      "affected_call_sites_total": 2,
+      "affected_files_total": 1,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "db",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/entry.py",
+          "finding_id": "finding_a201efe1e1c9df9c6097",
+          "function_name": "a",
+          "line_end": 252,
+          "line_start": 250,
+          "path": [
+            "src/app/entry.py::a",
+            "src/app/entry.py::_hit",
+            "src/app/db.py::reach_sink"
+          ],
+          "provenance": "call-site",
+          "reason": "reachability_states: io_in_loop at src/app/entry.py:250 repeats work per iteration."
+        },
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/entry.py",
+          "finding_id": "finding_c7cbdc90f0dffc630671",
+          "function_name": "b",
+          "line_end": 257,
+          "line_start": 255,
+          "path": [
+            "src/app/entry.py::b",
+            "src/app/entry.py::_hit",
+            "src/app/db.py::reach_sink"
+          ],
+          "provenance": "call-site",
+          "reason": "reachability_states: io_in_loop at src/app/entry.py:255 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "medium",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "entry_reachable",
+        "leverage": "local"
+      },
+      "fix": {
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "intervention_symbol": "src/app/entry.py::_hit",
+      "observations_total": 2,
+      "opportunity_id": "perf2_0673587e7abbea99fc0b",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "batch_api_contract",
+        "result_equivalence"
+      ],
+      "provenance": "call-site",
+      "rank_factors": {
+        "affected_call_sites": 3,
+        "boundary_kind": 4,
+        "entry_reachability": 3,
+        "execution_context": 3,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 20,
+      "reliable_entry_reachability": true,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "src/app/entry.py::_hit",
+        "src/app/db.py::reach_sink"
+      ],
+      "terminal_sink": "src/app/db.py::reach_sink",
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "db"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "affected_call_sites",
+          "points": 3,
+          "value": 2
+        }
+      ]
+    },
+    {
+      "actionability_reason": "strategy_requires_validation",
+      "actionability_state": "advisory",
+      "affected_call_sites_total": 2,
+      "affected_files_total": 1,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "db",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/api.py",
+          "finding_id": "finding_7a93e35224cdbe6464f5",
+          "function_name": "list_users",
+          "line_end": 32,
+          "line_start": 30,
+          "path": [
+            "src/app/api.py::list_users",
+            "src/app/repo.py::fetch_page",
+            "src/app/db.py::execute"
+          ],
+          "provenance": "call-site",
+          "reason": "specific_shared_helper: io_in_loop at src/app/api.py:30 repeats work per iteration."
+        },
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/api.py",
+          "finding_id": "finding_b502c8ca8878ade8c752",
+          "function_name": "list_orders",
+          "line_end": 33,
+          "line_start": 31,
+          "path": [
+            "src/app/api.py::list_orders",
+            "src/app/repo.py::fetch_page",
+            "src/app/db.py::execute"
+          ],
+          "provenance": "call-site",
+          "reason": "specific_shared_helper: io_in_loop at src/app/api.py:31 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "medium",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "entry_reachable",
+        "leverage": "local"
+      },
+      "fix": {
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "intervention_symbol": "src/app/repo.py::fetch_page",
+      "observations_total": 2,
+      "opportunity_id": "perf2_89348be6c2ba0311a0e8",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "batch_api_contract",
+        "result_equivalence"
+      ],
+      "provenance": "call-site",
+      "rank_factors": {
+        "affected_call_sites": 3,
+        "boundary_kind": 4,
+        "entry_reachability": 3,
+        "execution_context": 3,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 20,
+      "reliable_entry_reachability": true,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "src/app/repo.py::fetch_page",
+        "src/app/db.py::execute"
+      ],
+      "terminal_sink": "src/app/db.py::execute",
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "db"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "affected_call_sites",
+          "points": 3,
+          "value": 2
+        }
+      ]
+    },
+    {
+      "actionability_reason": "strategy_requires_validation",
+      "actionability_state": "advisory",
+      "affected_call_sites_total": 2,
+      "affected_files_total": 1,
+      "biomarker_type": "nested_loop_with_io",
+      "biomarker_types": [
+        "io_in_loop",
+        "nested_loop_with_io"
+      ],
+      "boundary_kind": "db",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/reindex.py",
+          "finding_id": "finding_edae08cde216b8678b58",
+          "function_name": "one",
+          "line_end": 212,
+          "line_start": 210,
+          "path": [
+            "src/app/reindex.py::one",
+            "src/app/reindex.py::_write",
+            "src/app/db.py::upsert"
+          ],
+          "provenance": "call-site",
+          "reason": "cost_shape_merge: io_in_loop at src/app/reindex.py:210 repeats work per iteration."
+        },
+        {
+          "biomarker_type": "nested_loop_with_io",
+          "file_path": "src/app/reindex.py",
+          "finding_id": "finding_37906110543334a495f1",
+          "function_name": "many",
+          "line_end": 217,
+          "line_start": 215,
+          "path": [
+            "src/app/reindex.py::many",
+            "src/app/reindex.py::_write",
+            "src/app/db.py::upsert"
+          ],
+          "provenance": "call-site",
+          "reason": "cost_shape_merge: nested_loop_with_io at src/app/reindex.py:215 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "medium",
+        "amplification": "quadratic",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "local"
+      },
+      "fix": {
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "intervention_symbol": "src/app/reindex.py::_write",
+      "observations_total": 2,
+      "opportunity_id": "perf2_3d62fcebb00bdf408f2c",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "batch_api_contract",
+        "result_equivalence"
+      ],
+      "provenance": "call-site",
+      "rank_factors": {
+        "affected_call_sites": 3,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 6,
+        "provenance": 3
+      },
+      "rank_score": 19,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "src/app/reindex.py::_write",
+        "src/app/db.py::upsert"
+      ],
+      "terminal_sink": "src/app/db.py::upsert",
+      "why_ranked": [
+        {
+          "factor": "multiplier_shape",
+          "points": 6,
+          "value": "nested_loop_with_io"
+        },
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "db"
+        },
+        {
+          "factor": "affected_call_sites",
+          "points": 3,
+          "value": 2
+        }
+      ]
+    },
+    {
+      "actionability_reason": "strategy_requires_validation",
+      "actionability_state": "advisory",
+      "affected_call_sites_total": 2,
+      "affected_files_total": 1,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "db",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/sync.py",
+          "finding_id": "finding_030499578345115bf627",
+          "function_name": "sync_one",
+          "line_end": 72,
+          "line_start": 70,
+          "path": [
+            "src/app/sync.py::sync_one",
+            "src/app/sync.py::_load",
+            "src/app/db.py::query"
+          ],
+          "provenance": "call-site",
+          "reason": "same_file_db_helper: io_in_loop at src/app/sync.py:70 repeats work per iteration."
+        },
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/sync.py",
+          "finding_id": "finding_ff3e61eed3f93515485b",
+          "function_name": "sync_all",
+          "line_end": 73,
+          "line_start": 71,
+          "path": [
+            "src/app/sync.py::sync_all",
+            "src/app/sync.py::_load",
+            "src/app/db.py::query"
+          ],
+          "provenance": "call-site",
+          "reason": "same_file_db_helper: io_in_loop at src/app/sync.py:71 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "medium",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "local"
+      },
+      "fix": {
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "intervention_symbol": "src/app/sync.py::_load",
+      "observations_total": 2,
+      "opportunity_id": "perf2_af29fc10103a555c8652",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "batch_api_contract",
+        "result_equivalence"
+      ],
+      "provenance": "call-site",
+      "rank_factors": {
+        "affected_call_sites": 3,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 17,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "src/app/sync.py::_load",
+        "src/app/db.py::query"
+      ],
+      "terminal_sink": "src/app/db.py::query",
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "db"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "affected_call_sites",
+          "points": 3,
+          "value": 2
+        }
+      ]
+    },
+    {
+      "actionability_reason": "strategy_requires_validation",
+      "actionability_state": "advisory",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "blocking_io_under_lock",
+      "biomarker_types": [
+        "blocking_io_under_lock"
+      ],
+      "boundary_kind": "db",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "blocking_io_under_lock",
+          "file_path": "src/app/cache.py",
+          "finding_id": "finding_1e5678e8e33fd6960a6b",
+          "function_name": "refresh",
+          "line_end": 112,
+          "line_start": 110,
+          "path": [
+            "src/app/cache.py::refresh",
+            "src/app/db.py::write"
+          ],
+          "provenance": "call-site",
+          "reason": "single_lock_owner: blocking_io_under_lock at src/app/cache.py:110 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "medium",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated"
+      },
+      "fix": {
+        "rationale": "I/O under the lock is proven, but shared-state ordering must be validated before moving it.",
+        "safety": "advisory",
+        "strategy": "shrink_lock_scope"
+      },
+      "intervention_symbol": "src/app/cache.py::refresh",
+      "observations_total": 1,
+      "opportunity_id": "perf2_9dfe577bc9c8b799355e",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "shared_state_ordering"
+      ],
+      "provenance": "call-site",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 5,
+        "provenance": 3
+      },
+      "rank_score": 17,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "src/app/cache.py::refresh",
+        "src/app/db.py::write"
+      ],
+      "terminal_sink": "src/app/db.py::write",
+      "why_ranked": [
+        {
+          "factor": "multiplier_shape",
+          "points": 5,
+          "value": "blocking_io_under_lock"
+        },
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "db"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "strategy_requires_validation",
+      "actionability_state": "advisory",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "db",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/billing.py",
+          "finding_id": "finding_6379ce5a318505017239",
+          "function_name": "handle",
+          "line_end": 13,
+          "line_start": 11,
+          "path": [
+            "src/app/billing.py::handle",
+            "src/app/db.py::get_session"
+          ],
+          "provenance": "call-site",
+          "reason": "generic_infra_sink: io_in_loop at src/app/billing.py:11 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "medium",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "not_entry_reachable",
+        "leverage": "isolated"
+      },
+      "fix": {
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "intervention_symbol": "src/app/billing.py::handle",
+      "observations_total": 1,
+      "opportunity_id": "perf2_3d4056f8405c9313d004",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "batch_api_contract",
+        "result_equivalence"
+      ],
+      "provenance": "call-site",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 16,
+      "reliable_entry_reachability": false,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "src/app/billing.py::handle",
+        "src/app/db.py::get_session"
+      ],
+      "terminal_sink": "src/app/db.py::get_session",
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "db"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "strategy_requires_validation",
+      "actionability_state": "advisory",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "db",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/orders.py",
+          "finding_id": "finding_cad43bf01be5d5f78ee3",
+          "function_name": "handle",
+          "line_end": 12,
+          "line_start": 10,
+          "path": [
+            "src/app/orders.py::handle",
+            "src/app/db.py::get_session"
+          ],
+          "provenance": "call-site",
+          "reason": "generic_infra_sink: io_in_loop at src/app/orders.py:10 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "medium",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "not_entry_reachable",
+        "leverage": "isolated"
+      },
+      "fix": {
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "intervention_symbol": "src/app/orders.py::handle",
+      "observations_total": 1,
+      "opportunity_id": "perf2_5abe869788cb2cebf6cf",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "batch_api_contract",
+        "result_equivalence"
+      ],
+      "provenance": "call-site",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 16,
+      "reliable_entry_reachability": false,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "src/app/orders.py::handle",
+        "src/app/db.py::get_session"
+      ],
+      "terminal_sink": "src/app/db.py::get_session",
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "db"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "strategy_requires_validation",
+      "actionability_state": "advisory",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "db",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/reports.py",
+          "finding_id": "finding_aac082c5466872ab8b9b",
+          "function_name": "handle",
+          "line_end": 14,
+          "line_start": 12,
+          "path": [
+            "src/app/reports.py::handle",
+            "src/app/db.py::get_session"
+          ],
+          "provenance": "call-site",
+          "reason": "generic_infra_sink: io_in_loop at src/app/reports.py:12 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "medium",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "not_entry_reachable",
+        "leverage": "isolated"
+      },
+      "fix": {
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "intervention_symbol": "src/app/reports.py::handle",
+      "observations_total": 1,
+      "opportunity_id": "perf2_7d6b729c3f43753626f2",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "batch_api_contract",
+        "result_equivalence"
+      ],
+      "provenance": "call-site",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 16,
+      "reliable_entry_reachability": false,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "src/app/reports.py::handle",
+        "src/app/db.py::get_session"
+      ],
+      "terminal_sink": "src/app/db.py::get_session",
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "db"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "strategy_requires_validation",
+      "actionability_state": "advisory",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "db",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/job.py",
+          "finding_id": "finding_4bc7b73af1f456af57b6",
+          "function_name": "run",
+          "line_end": 202,
+          "line_start": 200,
+          "path": [
+            "src/app/job.py::run",
+            "src/app/db.py::get_session"
+          ],
+          "provenance": "call-site",
+          "reason": "context_split: io_in_loop at src/app/job.py:200 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "medium",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated"
+      },
+      "fix": {
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "intervention_symbol": "src/app/job.py::run",
+      "observations_total": 1,
+      "opportunity_id": "perf2_811bb33b8d8f9e744638",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "batch_api_contract",
+        "result_equivalence"
+      ],
+      "provenance": "call-site",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 16,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "src/app/job.py::run",
+        "src/app/db.py::get_session"
+      ],
+      "terminal_sink": "src/app/db.py::get_session",
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "db"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "strategy_requires_validation",
+      "actionability_state": "advisory",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "db",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/lone.py",
+          "finding_id": "finding_85307ceeab392a03daf6",
+          "function_name": "run",
+          "line_end": 11,
+          "line_start": 9,
+          "path": [
+            "src/app/db.py::only_sink"
+          ],
+          "provenance": "call-site",
+          "reason": "sink_without_caller: io_in_loop at src/app/lone.py:9 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "medium",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated"
+      },
+      "fix": {
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "intervention_symbol": null,
+      "observations_total": 1,
+      "opportunity_id": "perf2_f349f0c0ac6827ebfd86",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "batch_api_contract",
+        "result_equivalence"
+      ],
+      "provenance": "call-site",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 16,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "src/app/db.py::only_sink"
+      ],
+      "terminal_sink": null,
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "db"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "strategy_requires_validation",
+      "actionability_state": "advisory",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "db",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "scripts/backfill.py",
+          "finding_id": "finding_9317f3939e8ba7a1dd00",
+          "function_name": "run",
+          "line_end": 202,
+          "line_start": 200,
+          "path": [
+            "scripts/backfill.py::run",
+            "src/app/db.py::get_session"
+          ],
+          "provenance": "call-site",
+          "reason": "context_split: io_in_loop at scripts/backfill.py:200 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "tooling",
+      "facets": {
+        "actionability_confidence": "medium",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated"
+      },
+      "fix": {
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "intervention_symbol": "scripts/backfill.py::run",
+      "observations_total": 1,
+      "opportunity_id": "perf2_626e6b4848d036aede65",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "batch_api_contract",
+        "result_equivalence"
+      ],
+      "provenance": "call-site",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 2,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 15,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "scripts/backfill.py::run",
+        "src/app/db.py::get_session"
+      ],
+      "terminal_sink": "src/app/db.py::get_session",
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "db"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "provenance",
+          "points": 3,
+          "value": "call-site"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "strategy_requires_validation",
+      "actionability_state": "advisory",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "db",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/edge.py",
+          "finding_id": "finding_14ea9dfdb77b0df39e75",
+          "function_name": "run",
+          "line_end": 232,
+          "line_start": 230,
+          "path": [
+            "src/app/edge.py::run",
+            "src/app/db.py::reliable_sink"
+          ],
+          "provenance": "reliable-edge",
+          "reason": "provenance_mix: io_in_loop at src/app/edge.py:230 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "medium",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated"
+      },
+      "fix": {
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "intervention_symbol": "src/app/edge.py::run",
+      "observations_total": 1,
+      "opportunity_id": "perf2_cf3653d0149e79f7a1fb",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "batch_api_contract",
+        "result_equivalence"
+      ],
+      "provenance": "reliable-edge",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 4,
+        "provenance": 2
+      },
+      "rank_score": 15,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "src/app/edge.py::run",
+        "src/app/db.py::reliable_sink"
+      ],
+      "terminal_sink": "src/app/db.py::reliable_sink",
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "db"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "strategy_requires_validation",
+      "actionability_state": "advisory",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "db",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "tests/test_job.py",
+          "finding_id": "finding_059a3a02cba6c95befa3",
+          "function_name": "run",
+          "line_end": 202,
+          "line_start": 200,
+          "path": [
+            "tests/test_job.py::run",
+            "src/app/db.py::get_session"
+          ],
+          "provenance": "call-site",
+          "reason": "context_split: io_in_loop at tests/test_job.py:200 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "test",
+      "facets": {
+        "actionability_confidence": "medium",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated"
+      },
+      "fix": {
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "intervention_symbol": "tests/test_job.py::run",
+      "observations_total": 1,
+      "opportunity_id": "perf2_b17b10884d21aeeb4df0",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "batch_api_contract",
+        "result_equivalence"
+      ],
+      "provenance": "call-site",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 1,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 14,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "tests/test_job.py::run",
+        "src/app/db.py::get_session"
+      ],
+      "terminal_sink": "src/app/db.py::get_session",
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "db"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "provenance",
+          "points": 3,
+          "value": "call-site"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "low_evidence_confidence",
+      "actionability_state": "advisory",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "db",
+      "confidence": "low",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/guess.py",
+          "finding_id": "finding_2c964005af179686b46e",
+          "function_name": "run",
+          "line_end": 242,
+          "line_start": 240,
+          "path": [
+            "src/app/guess.py::run",
+            "src/app/db.py::guessed_sink"
+          ],
+          "provenance": "name-fallback",
+          "reason": "provenance_mix: io_in_loop at src/app/guess.py:240 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "low",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated"
+      },
+      "fix": {
+        "rationale": "The shared I/O sink is proven; no concrete batch API or result-equivalence proof is available.",
+        "safety": "advisory",
+        "strategy": "batch_or_prefetch_io"
+      },
+      "intervention_symbol": "src/app/guess.py::run",
+      "observations_total": 1,
+      "opportunity_id": "perf2_a817f9001be1d323f8a2",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "batch_api_contract",
+        "result_equivalence",
+        "reliable_call_path"
+      ],
+      "provenance": "name-fallback",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 4,
+        "provenance": 0
+      },
+      "rank_score": 13,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "src/app/guess.py::run",
+        "src/app/db.py::guessed_sink"
+      ],
+      "terminal_sink": "src/app/db.py::guessed_sink",
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "db"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "strategy_requires_validation",
+      "actionability_state": "advisory",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "membership_test_against_list_in_loop",
+      "biomarker_types": [
+        "membership_test_against_list_in_loop"
+      ],
+      "boundary_kind": null,
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "membership_test_against_list_in_loop",
+          "file_path": "src/app/filters.py",
+          "finding_id": "finding_ffe2b0bc5340930cea74",
+          "function_name": "select",
+          "line_end": 152,
+          "line_start": 150,
+          "path": [],
+          "provenance": "direct",
+          "reason": "membership_scan: membership_test_against_list_in_loop at src/app/filters.py:150 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "medium",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated"
+      },
+      "fix": {
+        "rationale": "The collection is proven list-backed; element hashability and ordering/identity use still require validation.",
+        "safety": "advisory",
+        "strategy": "replace_membership_collection"
+      },
+      "intervention_symbol": null,
+      "observations_total": 1,
+      "opportunity_id": "perf2_6b8f8be1ab10062f0a19",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "element_hashability",
+        "ordering_and_identity_use"
+      ],
+      "provenance": "direct",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 0,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 3,
+        "provenance": 3
+      },
+      "rank_score": 11,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [],
+      "terminal_sink": null,
+      "why_ranked": [
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 3,
+          "value": "membership_test_against_list_in_loop"
+        },
+        {
+          "factor": "provenance",
+          "points": 3,
+          "value": "direct"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "strategy_requires_validation",
+      "actionability_state": "advisory",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "string_concat_in_loop",
+      "biomarker_types": [
+        "string_concat_in_loop"
+      ],
+      "boundary_kind": null,
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "string_concat_in_loop",
+          "file_path": "src/app/render.py",
+          "finding_id": "finding_05e1666dc8637c4749e3",
+          "function_name": "to_csv",
+          "line_end": 162,
+          "line_start": 160,
+          "path": [],
+          "provenance": "direct",
+          "reason": "string_accumulation: string_concat_in_loop at src/app/render.py:160 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "medium",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated"
+      },
+      "fix": {
+        "rationale": "Repeated string accumulation is proven; intermediate accumulator observations still require validation.",
+        "safety": "advisory",
+        "strategy": "buffer_string_accumulation"
+      },
+      "intervention_symbol": null,
+      "observations_total": 1,
+      "opportunity_id": "perf2_e82f5ad0e9c24fe3d1a1",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "accumulator_not_observed"
+      ],
+      "provenance": "direct",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 0,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 3,
+        "provenance": 3
+      },
+      "rank_score": 11,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [],
+      "terminal_sink": null,
+      "why_ranked": [
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 3,
+          "value": "string_concat_in_loop"
+        },
+        {
+          "factor": "provenance",
+          "points": 3,
+          "value": "direct"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "no_supported_strategy",
+      "actionability_state": "investigate",
+      "affected_call_sites_total": 2,
+      "affected_files_total": 1,
+      "biomarker_type": "blocking_io_under_lock",
+      "biomarker_types": [
+        "blocking_io_under_lock"
+      ],
+      "boundary_kind": "db",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "blocking_io_under_lock",
+          "file_path": "src/app/pool.py",
+          "finding_id": "finding_0f4d6ed4b8e62ab7acec",
+          "function_name": "reaper",
+          "line_end": 132,
+          "line_start": 130,
+          "path": [
+            "src/app/pool.py::reaper",
+            "src/app/store.py::flush_all",
+            "src/app/store.py::flush"
+          ],
+          "provenance": "call-site",
+          "reason": "distinct_lock_owners: blocking_io_under_lock at src/app/pool.py:130 repeats work per iteration."
+        },
+        {
+          "biomarker_type": "blocking_io_under_lock",
+          "file_path": "src/app/pool.py",
+          "finding_id": "finding_0a1cbec352aadd5800a1",
+          "function_name": "writer",
+          "line_end": 132,
+          "line_start": 130,
+          "path": [
+            "src/app/pool.py::writer",
+            "src/app/store.py::flush_all",
+            "src/app/store.py::flush"
+          ],
+          "provenance": "call-site",
+          "reason": "distinct_lock_owners: blocking_io_under_lock at src/app/pool.py:130 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "low",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "local"
+      },
+      "fix": null,
+      "intervention_symbol": "src/app/store.py::flush_all",
+      "observations_total": 2,
+      "opportunity_id": "perf2_bb39bb7c7b9f0b1fe7a1",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "single_lock_owner"
+      ],
+      "provenance": "call-site",
+      "rank_factors": {
+        "affected_call_sites": 3,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 5,
+        "provenance": 3
+      },
+      "rank_score": 18,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "src/app/store.py::flush_all",
+        "src/app/store.py::flush"
+      ],
+      "terminal_sink": "src/app/store.py::flush",
+      "why_ranked": [
+        {
+          "factor": "multiplier_shape",
+          "points": 5,
+          "value": "blocking_io_under_lock"
+        },
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "db"
+        },
+        {
+          "factor": "affected_call_sites",
+          "points": 3,
+          "value": 2
+        }
+      ]
+    },
+    {
+      "actionability_reason": "no_supported_strategy",
+      "actionability_state": "investigate",
+      "affected_call_sites_total": 4,
+      "affected_files_total": 4,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "filesystem",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/formatter.py",
+          "finding_id": "finding_b853807b08e242e784f5",
+          "function_name": "run",
+          "line_end": 24,
+          "line_start": 22,
+          "path": [
+            "src/app/formatter.py::run",
+            "src/app/parse.py::_get_query",
+            "src/app/parse.py::_load_compiled_query"
+          ],
+          "provenance": "call-site",
+          "reason": "shared_dominator_fan_in: io_in_loop at src/app/formatter.py:22 repeats work per iteration."
+        },
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/lexer.py",
+          "finding_id": "finding_7e425174e879fb9f9d23",
+          "function_name": "run",
+          "line_end": 22,
+          "line_start": 20,
+          "path": [
+            "src/app/lexer.py::run",
+            "src/app/parse.py::_get_query",
+            "src/app/parse.py::_load_compiled_query"
+          ],
+          "provenance": "call-site",
+          "reason": "shared_dominator_fan_in: io_in_loop at src/app/lexer.py:20 repeats work per iteration."
+        },
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/linter.py",
+          "finding_id": "finding_34d631c0ff0bed50aafd",
+          "function_name": "run",
+          "line_end": 23,
+          "line_start": 21,
+          "path": [
+            "src/app/linter.py::run",
+            "src/app/parse.py::_get_query",
+            "src/app/parse.py::_load_compiled_query"
+          ],
+          "provenance": "call-site",
+          "reason": "shared_dominator_fan_in: io_in_loop at src/app/linter.py:21 repeats work per iteration."
+        },
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/resolver.py",
+          "finding_id": "finding_ef6b980a3a371a707424",
+          "function_name": "run",
+          "line_end": 25,
+          "line_start": 23,
+          "path": [
+            "src/app/resolver.py::run",
+            "src/app/parse.py::_get_query",
+            "src/app/parse.py::_load_compiled_query"
+          ],
+          "provenance": "call-site",
+          "reason": "shared_dominator_fan_in: io_in_loop at src/app/resolver.py:23 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "low",
+        "amplification": "per_iteration",
+        "change_risk": "moderate",
+        "exposure": "unknown",
+        "leverage": "shared"
+      },
+      "fix": null,
+      "intervention_symbol": "src/app/parse.py::_get_query",
+      "observations_total": 4,
+      "opportunity_id": "perf2_a445d6f2d021ddf6a425",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "batch_operation_for_boundary"
+      ],
+      "provenance": "call-site",
+      "rank_factors": {
+        "affected_call_sites": 4,
+        "boundary_kind": 2,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 16,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "src/app/parse.py::_get_query",
+        "src/app/parse.py::_load_compiled_query"
+      ],
+      "terminal_sink": "src/app/parse.py::_load_compiled_query",
+      "why_ranked": [
+        {
+          "factor": "affected_call_sites",
+          "points": 4,
+          "value": 4
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "no_supported_strategy",
+      "actionability_state": "investigate",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "resource_construction_in_loop",
+      "biomarker_types": [
+        "resource_construction_in_loop"
+      ],
+      "boundary_kind": "network",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "resource_construction_in_loop",
+          "file_path": "src/app/clients.py",
+          "finding_id": "finding_82ac8251d294a1dabcf9",
+          "function_name": "each_varying",
+          "line_end": 182,
+          "line_start": 180,
+          "path": [],
+          "provenance": "direct",
+          "reason": "resource_construction: resource_construction_in_loop at src/app/clients.py:180 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "low",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated"
+      },
+      "fix": null,
+      "intervention_symbol": null,
+      "observations_total": 1,
+      "opportunity_id": "perf2_266b6dd67d9b9e93e201",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "loop_invariant_construction_proof"
+      ],
+      "provenance": "direct",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 16,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [],
+      "terminal_sink": null,
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "network"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "resource_construction_in_loop"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "no_supported_strategy",
+      "actionability_state": "investigate",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "serial_await_in_loop",
+      "biomarker_types": [
+        "serial_await_in_loop"
+      ],
+      "boundary_kind": "network",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "serial_await_in_loop",
+          "file_path": "src/app/fanout.py",
+          "finding_id": "finding_c1f4482918ae3823bedb",
+          "function_name": "gather_seq",
+          "line_end": 97,
+          "line_start": 95,
+          "path": [],
+          "provenance": "direct",
+          "reason": "async_serial_awaits: serial_await_in_loop at src/app/fanout.py:95 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "low",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated"
+      },
+      "fix": null,
+      "intervention_symbol": null,
+      "observations_total": 1,
+      "opportunity_id": "perf2_64fbd03504c61c115894",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "loop_carried_dependence_proof"
+      ],
+      "provenance": "direct",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 4,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 16,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [],
+      "terminal_sink": null,
+      "why_ranked": [
+        {
+          "factor": "boundary_kind",
+          "points": 4,
+          "value": "network"
+        },
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "serial_await_in_loop"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "no_supported_strategy",
+      "actionability_state": "investigate",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "filesystem",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/walker.py",
+          "finding_id": "finding_2bf692d084c65fdb5995",
+          "function_name": "scan",
+          "line_end": 52,
+          "line_start": 50,
+          "path": [
+            "src/app/walker.py::scan",
+            "src/app/fsio.py::read_text"
+          ],
+          "provenance": "call-site",
+          "reason": "filesystem_fan_out: io_in_loop at src/app/walker.py:50 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "low",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated"
+      },
+      "fix": null,
+      "intervention_symbol": "src/app/walker.py::scan",
+      "observations_total": 1,
+      "opportunity_id": "perf2_19a89b391403e23aed4d",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "batch_operation_for_boundary"
+      ],
+      "provenance": "call-site",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 2,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 14,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "src/app/walker.py::scan",
+        "src/app/fsio.py::read_text"
+      ],
+      "terminal_sink": "src/app/fsio.py::read_text",
+      "why_ranked": [
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        },
+        {
+          "factor": "provenance",
+          "points": 3,
+          "value": "call-site"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "no_supported_strategy",
+      "actionability_state": "investigate",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "filesystem",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "src/app/walker.py",
+          "finding_id": "finding_aa5de561c0b650b976ac",
+          "function_name": "index",
+          "line_end": 53,
+          "line_start": 51,
+          "path": [
+            "src/app/walker.py::index",
+            "src/app/fsio.py::read_text"
+          ],
+          "provenance": "call-site",
+          "reason": "filesystem_fan_out: io_in_loop at src/app/walker.py:51 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "production",
+      "facets": {
+        "actionability_confidence": "low",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated"
+      },
+      "fix": null,
+      "intervention_symbol": "src/app/walker.py::index",
+      "observations_total": 1,
+      "opportunity_id": "perf2_68583bf925fadb4f4731",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "batch_operation_for_boundary"
+      ],
+      "provenance": "call-site",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 2,
+        "entry_reachability": 0,
+        "execution_context": 3,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 14,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [
+        "src/app/walker.py::index",
+        "src/app/fsio.py::read_text"
+      ],
+      "terminal_sink": "src/app/fsio.py::read_text",
+      "why_ranked": [
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "execution_context",
+          "points": 3,
+          "value": "production"
+        },
+        {
+          "factor": "provenance",
+          "points": 3,
+          "value": "call-site"
+        }
+      ]
+    },
+    {
+      "actionability_reason": "no_supported_strategy",
+      "actionability_state": "investigate",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "filesystem",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "docs/snippets/walk.py",
+          "finding_id": "finding_8e360766909208ee01a2",
+          "function_name": "demo",
+          "line_end": 10,
+          "line_start": 8,
+          "path": [],
+          "provenance": "direct",
+          "reason": "unclassified_context: io_in_loop at docs/snippets/walk.py:8 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "unknown",
+      "facets": {
+        "actionability_confidence": "low",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated"
+      },
+      "fix": null,
+      "intervention_symbol": null,
+      "observations_total": 1,
+      "opportunity_id": "perf2_8ffbe99d8409ad899a72",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "batch_operation_for_boundary"
+      ],
+      "provenance": "direct",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 2,
+        "entry_reachability": 0,
+        "execution_context": 1,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 12,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [],
+      "terminal_sink": null,
+      "why_ranked": [
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "provenance",
+          "points": 3,
+          "value": "direct"
+        },
+        {
+          "factor": "affected_call_sites",
+          "points": 2,
+          "value": 1
+        }
+      ]
+    },
+    {
+      "actionability_reason": "no_supported_strategy",
+      "actionability_state": "investigate",
+      "affected_call_sites_total": 1,
+      "affected_files_total": 1,
+      "biomarker_type": "io_in_loop",
+      "biomarker_types": [
+        "io_in_loop"
+      ],
+      "boundary_kind": "filesystem",
+      "confidence": "high",
+      "evidence": [
+        {
+          "biomarker_type": "io_in_loop",
+          "file_path": "bootstrap.py",
+          "finding_id": "finding_23610573a960e1c72ac3",
+          "function_name": "main",
+          "line_end": 16,
+          "line_start": 14,
+          "path": [],
+          "provenance": "direct",
+          "reason": "unclassified_context: io_in_loop at bootstrap.py:14 repeats work per iteration."
+        }
+      ],
+      "evidence_truncated": false,
+      "execution_context": "unknown",
+      "facets": {
+        "actionability_confidence": "low",
+        "amplification": "per_iteration",
+        "change_risk": "contained",
+        "exposure": "unknown",
+        "leverage": "isolated"
+      },
+      "fix": null,
+      "intervention_symbol": null,
+      "observations_total": 1,
+      "opportunity_id": "perf2_91e5b79c0937ef51ec73",
+      "performance_model_version": 2,
+      "prerequisites": [
+        "batch_operation_for_boundary"
+      ],
+      "provenance": "direct",
+      "rank_factors": {
+        "affected_call_sites": 2,
+        "boundary_kind": 2,
+        "entry_reachability": 0,
+        "execution_context": 1,
+        "multiplier_shape": 4,
+        "provenance": 3
+      },
+      "rank_score": 12,
+      "reliable_entry_reachability": null,
+      "resource_fingerprints": [],
+      "shared_path_suffix": [],
+      "terminal_sink": null,
+      "why_ranked": [
+        {
+          "factor": "multiplier_shape",
+          "points": 4,
+          "value": "io_in_loop"
+        },
+        {
+          "factor": "provenance",
+          "points": 3,
+          "value": "direct"
+        },
+        {
+          "factor": "affected_call_sites",
+          "points": 2,
+          "value": 1
+        }
+      ]
+    }
+  ]
+}

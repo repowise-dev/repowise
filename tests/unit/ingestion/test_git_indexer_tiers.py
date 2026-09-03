@@ -123,7 +123,7 @@ def test_index_file_full_consults_blame(tmp_path) -> None:
 
 
 async def test_index_repo_essential_skips_co_change(tmp_path) -> None:
-    """ESSENTIAL tier must not invoke compute_co_changes and must leave
+    """ESSENTIAL tier must not invoke the co-change walk and must leave
     co_change_partners empty, while still producing per-file metadata.
     """
     import git as gitpython
@@ -141,18 +141,18 @@ async def test_index_repo_essential_skips_co_change(tmp_path) -> None:
     co_change_seen = {"called": False}
     import repowise.core.ingestion.git_indexer.indexer as indexer_mod
 
-    orig = indexer_mod.compute_co_changes
+    orig = indexer_mod.compute_co_changes_and_entropy
 
-    def _spy(*args, **kwargs):  # pragma: no cover - should not run
+    def _spy(*args, **kwargs):
         co_change_seen["called"] = True
         return orig(*args, **kwargs)
 
-    indexer_mod.compute_co_changes = _spy
+    indexer_mod.compute_co_changes_and_entropy = _spy
     try:
         idx = GitIndexer(tmp_path, tier=GitIndexTier.ESSENTIAL)
         summary, results = await idx.index_repo("repo1")
     finally:
-        indexer_mod.compute_co_changes = orig
+        indexer_mod.compute_co_changes_and_entropy = orig
 
     assert co_change_seen["called"] is False
     assert summary.files_indexed >= 1

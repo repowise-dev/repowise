@@ -19,7 +19,10 @@ from repowise.server.mcp_server.tool_answer.bodies import (
     _build_symbol_bodies,
     _gather_body_candidates,
 )
-from repowise.server.mcp_server.tool_answer.confidence import _retrieval_quality
+from repowise.server.mcp_server.tool_answer.confidence import (
+    _degraded_confidence,
+    _retrieval_quality,
+)
 from repowise.server.mcp_server.tool_answer.evidence import (
     _drop_already_surfaced,
     _first_resolvable_id,
@@ -28,7 +31,6 @@ from repowise.server.mcp_server.tool_answer.evidence import (
 )
 from repowise.server.mcp_server.tool_answer.payload import (
     _build_best_guesses,
-    _trim_served_payload,
     _with_candidates,
 )
 from repowise.server.mcp_server.tool_answer.retrieval import (
@@ -97,14 +99,15 @@ async def _degraded_payload(
     health signals from there; the failure path used to set only the top-level
     key, so a caller watching ``_meta`` saw a normal empty answer.
 
-    ``confidence`` stays "low" and is not up for debate: it rates the synthesised
-    text, and here that text is assembled boilerplate that an agent told to cite
-    it would cite. What ``retrieval_quality`` rates instead is the retrieval,
-    which ran identically to the keyed path, so the same rule grades it here —
-    and it stays honest in the other direction, since a genuinely weak retrieval
-    still grades "weak".
+    ``confidence`` is graded by :func:`_degraded_confidence` from the retrieval
+    this payload actually served, not pinned. It rates what the caller can act on
+    without further work, which is the same thing it rates on the keyed path; the
+    boilerplate ``answer`` is why "high" is unreachable here rather than why the
+    field says nothing. ``retrieval_quality`` rates the retrieval on its own and
+    is what the grade is derived from, so the two can never disagree.
     """
     retrieval_quality = _retrieval_quality(hits, agreement_dominant)
+    confidence = _degraded_confidence(reason, retrieval_quality)
     repo_root = _repo_root(ctx)
     symbol_bodies, _served_named_body = _build_symbol_bodies(
         _gather_body_candidates(hits, "", anchor_names=question_ids or set()),
@@ -123,11 +126,16 @@ async def _degraded_payload(
     code_rationale = _drop_already_surfaced(
         await _gather_code_rationale(ctx, hits, fallback_targets, question), symbol_bodies
     )
+    citations.extend(
+        path
+        for row in code_rationale
+        if (path := row.get("path")) and path not in citations
+    )
 
     payload: dict = {
         "answer": summary,
         "citations": citations,
-        "confidence": "low",
+        "confidence": confidence,
         "retrieval_quality": retrieval_quality,
         "degraded": reason,
         "fallback_targets": fallback_targets,
@@ -166,8 +174,7 @@ async def _degraded_payload(
         **_build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
             hint=_answer_hint(
-                "low",
-                len(hits),
+                confidence,
                 degraded=reason,
                 retrieval_quality=retrieval_quality,
                 has_bodies=bool(symbol_bodies),
@@ -177,12 +184,7 @@ async def _degraded_payload(
         ),
         "degraded": reason,
     }
-    # The serve-time cuts, which this return had never been routed through. It
-    # is now the only path carrying `best_guesses` beside a populated
-    # `retrieval`, so without the drop every excerpt ships twice.
-    return _trim_served_payload(
-        _with_candidates(payload, resolved_pool if resolved_pool is not None else hits)
-    )
+    return _with_candidates(payload, resolved_pool if resolved_pool is not None else hits)
 
 
 async def _degraded_next_action(symbol_bodies: list[dict], ctx, repository, exclude_spec) -> str:

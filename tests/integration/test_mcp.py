@@ -392,7 +392,7 @@ async def test_mcp_git_intelligence_flow(mcp_env):
     assert t["last_change"]["days_ago"] == 443
 
     # Risk assessment
-    risk = await get_risk(["src/auth/login.py"])
+    risk = await get_risk(["src/auth/login.py", "src/auth/jwt.py"])
     t = risk["targets"]["src/auth/login.py"]
     assert t["hotspot_score"] == 0.95
     assert len(t["co_change_partners"]) == 1

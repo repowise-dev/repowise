@@ -42,6 +42,12 @@ CREATE TABLE IF NOT EXISTS omissions (
     kept_tokens INTEGER NOT NULL,
     access_count INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS evidence_references (
+    ref TEXT PRIMARY KEY,
+    content BLOB NOT NULL,
+    repository TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS savings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at REAL NOT NULL,
@@ -151,6 +157,9 @@ class OmissionStore:
         or ``None`` when the ref is unknown/expired. *query* filters the
         content lines exactly as in :meth:`get`.
         """
+        from repowise.core.distill.markers import normalize_ref
+
+        ref = normalize_ref(ref) or ""
         if not is_valid_ref(ref):
             return None
         row = self._conn.execute(
@@ -197,6 +206,41 @@ class OmissionStore:
                 """
             )
         self._conn.commit()
+
+    # -- machine-joinable evidence references -----------------------------
+
+    def put_evidence_reference(
+        self, ref: str, content: str, *, repository: str
+    ) -> None:
+        """Persist one exact evidence object under its canonical public id."""
+
+        blob = zlib.compress(content.encode("utf-8"))
+        self._conn.execute(
+            """
+            INSERT INTO evidence_references (ref, content, repository, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(ref) DO UPDATE SET
+                content = excluded.content,
+                repository = excluded.repository,
+                created_at = excluded.created_at
+            """,
+            (ref, blob, repository, time.time()),
+        )
+        self._conn.commit()
+
+    def get_evidence_reference(self, ref: str) -> dict[str, str] | None:
+        """Return one exact persisted evidence object, if present."""
+
+        row = self._conn.execute(
+            "SELECT content, repository FROM evidence_references WHERE ref = ?",
+            (ref,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "content": zlib.decompress(row[0]).decode("utf-8"),
+            "repository": row[1],
+        }
 
     # -- savings ledger ----------------------------------------------------
 

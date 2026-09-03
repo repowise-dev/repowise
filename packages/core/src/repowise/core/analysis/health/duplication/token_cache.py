@@ -73,6 +73,16 @@ class DuplicationTokenCache:
         except Exception as exc:
             log.debug("duplication_cache_save_failed", error=str(exc))
 
+    def release_memory(self) -> None:
+        """Drop cached representations after a full scan has persisted them.
+
+        Callers retain the kind lists they still need for collision
+        verification. The cache-owned window tuples are otherwise a second
+        repo-sized copy of the live ``WindowHash`` population.
+        """
+        self._entries.clear()
+        self._fresh.clear()
+
     # -- access ------------------------------------------------------------
 
     def get(
@@ -118,8 +128,11 @@ class DuplicationTokenCache:
         nloc: int,
         windows: list[tuple[int, int, int, int]],
     ) -> None:
-        # Interned kinds keep the pickle compact (each distinct kind is
-        # memoized once by identity) and make later equality checks cheap.
-        entry = ([sys.intern(k) for k in kinds], nloc, windows)
+        # Intern in place so the detector and cache share one kind list rather
+        # than holding two repo-sized lists of references during a full scan.
+        # Identity reuse also keeps the pickle compact and comparisons cheap.
+        for index, kind in enumerate(kinds):
+            kinds[index] = sys.intern(kind)
+        entry = (kinds, nloc, windows)
         self._entries[content_hash] = entry
         self._fresh[content_hash] = entry

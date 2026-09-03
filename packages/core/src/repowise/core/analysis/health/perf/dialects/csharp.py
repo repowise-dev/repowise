@@ -178,7 +178,7 @@ class CSharpPerfDialect(BasePerfDialect):
             "resource_construction_in_loop",
             "lock_in_loop",
             "serial_await_in_loop",
-            # Phase 7b — centrality-gated / nesting-confidence markers + the
+            # Centrality-gated / nesting-confidence markers + the
             # block-scoped lock→I/O case (``lock (x) {}`` is a held region).
             "nested_loop_with_io",
             "nested_loop_quadratic",
@@ -261,8 +261,8 @@ class CSharpPerfDialect(BasePerfDialect):
             return None
         # ``.Result`` collides hard with the ubiquitous Result-pattern
         # (Ardalis.Result / FluentResults / custom ``Result<T>`` DTOs), which is
-        # NOT a ``Task`` and does not block. Two precision-first guards (Phase-7c
-        # C# corpus: 10/12 FPs were ``Ardalis.Result.ResultStatus.X``, 1 a write):
+        # NOT a ``Task`` and does not block. Two precision-first guards (on a
+        # C# corpus, 10/12 FPs were ``Ardalis.Result.ResultStatus.X``, 1 a write):
         # NOTE: py-tree-sitter returns fresh Node wrappers per call, so compare
         # by byte span (``_same_span``), never identity.
         parent = node.parent

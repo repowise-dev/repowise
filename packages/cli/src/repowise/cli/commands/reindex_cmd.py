@@ -48,20 +48,32 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from repowise.cli.providers.embedders import build_embedder
+    from repowise.cli.providers.embedders import build_embedder, resolve_embedder_for_repo
     from repowise.core.persistence.database import create_engine, init_db
     from repowise.core.persistence.models import Page
     from repowise.core.providers.embedding.base import MockEmbedder
 
     # --- Resolve embedder ---
-    requested_embedder = embedder_name
     if embedder_name == "auto":
-        from repowise.cli.commands.init_cmd import _resolve_embedder
-
-        embedder_name = _resolve_embedder(None)
+        # Resolve through the repo, not the environment. `_resolve_embedder(None)`
+        # reads REPOWISE_EMBEDDER and API keys only, so `auto` never saw the
+        # `embedder` pin in config.yaml despite this flag's help text promising
+        # "env vars / config". A repo pinned to a keyless embedder therefore
+        # aborted with "No real embedder available", and a repo pinned to one
+        # embedder in a shell exporting a different provider's key had its table
+        # REWRITTEN by that other provider — the exact writer/reader split
+        # `resolve_embedder_for_repo` was added to prevent, and one this command
+        # is on the writing side of.
+        embedder_name = resolve_embedder_for_repo(repo_path)
 
     embedder_impl = build_embedder(embedder_name, repo_path)
-    if isinstance(embedder_impl, MockEmbedder) and requested_embedder != "mock":
+    # Guard on the RESOLVED name, not the flag. `mock` reached here two ways:
+    # asked for, or fallen back to because nothing else was configured. Only the
+    # second is an error. Now that `auto` reads the pin, `embedder: mock` in
+    # config.yaml is a third way, and it is as deliberate as passing the flag —
+    # comparing against `requested_embedder` would abort a repo that is pinned
+    # to mock on purpose.
+    if isinstance(embedder_impl, MockEmbedder) and embedder_name != "mock":
         console.print(
             "[red]No real embedder available. Set a real embedder key, configure Ollama, or pass --embedder mock for test vectors.[/red]"
         )

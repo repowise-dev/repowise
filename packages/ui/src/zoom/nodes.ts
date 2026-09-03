@@ -17,7 +17,7 @@
 import { ALERT_MAX, HEALTHY_MIN } from "@repowise-dev/types/health";
 
 import type { Rect } from "./camera";
-import { hasRole } from "./node-signals";
+import { hasRole, KIND_LABEL } from "./node-signals";
 import { ARROW_SIZE_PX, EDGE_LINE_PX } from "./constants";
 import type { EdgeRoute } from "./edges";
 import type { ZoomPalette } from "./theme";
@@ -31,15 +31,6 @@ const TEXTURE_MIN_PX = 96; // paint the paper texture once the card is big enoug
 const GLYPH_MIN_PX = 52; // draw the kind glyph beside the title once there is room
 const FOOTER_MIN_W_PX = 132; // draw the bottom signal row on cards at least this wide
 const FOOTER_MIN_H_PX = 104; // ...and at least this tall
-
-/** Human label per node kind, shown small in the card footer. */
-const KIND_LABEL: Record<ZoomKind, string> = {
-  system: "System",
-  layer: "Layer",
-  group: "Group",
-  folder: "Folder",
-  file: "File",
-};
 
 /**
  * A minimal monoline glyph per node kind, drawn into the `[x, y, s, s]` box in the

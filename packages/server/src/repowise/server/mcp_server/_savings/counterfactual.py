@@ -180,12 +180,18 @@ def _fixed_floor(tokens: int) -> Callable[[dict[str, Any]], int]:
     return _estimate
 
 
+#: Directive lists this estimator counts as "files the agent would have opened".
+#: Read by name out of the response, so a rename on the tool side undercounts
+#: silently instead of failing - test_risk.py asserts these keys still exist.
+RISK_RELATED_FILE_KEYS = ("may_break", "missing_cochanges")
+
+
 def _estimate_get_risk(result: dict[str, Any]) -> int:
     """Per assessed target + per PR blast-radius file, floored at ``RISK_FLOOR``.
 
     Each ``targets`` entry is a file whose churn/ownership/co-change history the
     agent would otherwise reconstruct from ``git log``/``git blame``. PR mode
-    adds a ``directive`` naming the files that break (``will_break``) and the
+    adds a ``directive`` naming the files that may break (``may_break``) and the
     co-change partners the diff missed — each one more file the agent would
     have had to find by hand.
     """
@@ -198,7 +204,7 @@ def _estimate_get_risk(result: dict[str, Any]) -> int:
         # Union the two lists: a file that both breaks and is a missed
         # co-change partner is still just one file the agent would open.
         related_files: set[str] = set()
-        for key in ("will_break", "missing_cochanges"):
+        for key in RISK_RELATED_FILE_KEYS:
             related = directive.get(key)
             if isinstance(related, list):
                 related_files.update(f for f in related if isinstance(f, str))

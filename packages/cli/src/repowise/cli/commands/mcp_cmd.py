@@ -119,7 +119,7 @@ def _print_network_startup(
     "all_tools",
     is_flag=True,
     default=False,
-    help="Expose every available tool, including opt-in and workspace tools.",
+    help="Expose every tool eligible in the current repository/workspace mode.",
 )
 def mcp_command(
     path: str | None,
@@ -132,8 +132,8 @@ def mcp_command(
     """Start the MCP server for editor integration.
 
     Exposes a curated set of tools for querying the repowise wiki via the MCP
-    protocol: eleven by default in single-repo mode, plus two more by default
-    in workspace mode. Four more are opt-in via ``--tools`` or the
+    protocol: ten by default in single-repo mode, plus one more by default
+    in workspace mode. Six more are opt-in via ``--tools`` or the
     ``mcp.tools`` config block. Supports stdio
     (for Claude Code, Codex, Cursor), streamable HTTP, and legacy SSE
     transports.

@@ -20,6 +20,9 @@ collected per dialect and merged by the orchestrator.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
+
+from repowise.core.ingestion.framework_routes import GroupMatch
 
 # A ``prefix="..."`` / ``prefix='...'`` keyword argument inside a constructor call.
 _PREFIX_KW_RE = re.compile(r"""prefix\s*=\s*['"]([^'"]+)['"]""")
@@ -86,3 +89,30 @@ def merge_mount_maps(maps: list[dict[str, str]]) -> dict[str, str]:
         for var, prefix in m.items():
             collected.setdefault(var, set()).add(prefix)
     return {var: next(iter(prefixes)) for var, prefixes in collected.items() if len(prefixes) == 1}
+
+
+def group_prefixes(groups: Iterable[GroupMatch]) -> dict[str, str]:
+    """Resolve each router-group variable to its transitively composed prefix.
+
+    ``api := r.Group("/api"); v1 := api.Group("/v1")`` gives ``v1 -> /api/v1``.
+    A variable with no binding (the base router) or in a cycle resolves to the
+    empty string, so a route on it keeps its literal path.
+    """
+    edges = {g.var: (g.parent, g.prefix) for g in groups}
+    resolved: dict[str, str] = {}
+
+    def resolve(var: str | None, seen: frozenset[str]) -> str:
+        if var is None:
+            return ""
+        if var in resolved:
+            return resolved[var]
+        if var not in edges or var in seen:
+            return ""
+        parent, segment = edges[var]
+        prefix = compose_prefix(resolve(parent, seen | {var}), segment)
+        resolved[var] = prefix
+        return prefix
+
+    for var in edges:
+        resolve(var, frozenset())
+    return resolved

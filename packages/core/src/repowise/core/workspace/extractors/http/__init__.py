@@ -17,12 +17,15 @@ from ..langs import PYTHON
 from .aspnet import AspNetDialect
 from .csharp_http import CSharpHttpDialect
 from .dialect import HttpDialect
+from .django import DjangoDialect
 from .express import ExpressDialect
 from .fastapi import FastApiDialect
 from .go import GoDialect
+from .jaxrs import JaxRsDialect
 from .js_clients import JsClientsDialect
 from .laravel import LaravelDialect
 from .mounts import merge_mount_maps
+from .next_app import NextAppDialect
 from .paths import normalize_http_path
 from .python_clients import PythonClientsDialect
 from .rust_axum import RustAxumDialect
@@ -34,6 +37,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from repowise.core.workspace.contracts import Contract
+    from repowise.core.workspace.repo_index import RepoIndex
 
     from ..base import SourceFile
 
@@ -46,6 +50,9 @@ PROVIDER_DIALECTS: tuple[HttpDialect, ...] = (
     GoDialect(),
     AspNetDialect(),
     RustAxumDialect(),
+    DjangoDialect(),
+    JaxRsDialect(),
+    NextAppDialect(),
 )
 
 # HTTP-client call recognisers (one client/language each).
@@ -96,8 +103,7 @@ class HttpExtractor:
         repo_alias: str = "",
         exclude: Callable[[str], bool] | None = None,
         files: Sequence[SourceFile] | None = None,
-        index: dict[str, object] | None = None,
-        content_hashes: dict[str, str] | None = None,
+        repo_index: RepoIndex | None = None,
         stats: dict[str, int] | None = None,
     ) -> list[Contract]:
         """Scan all source files in *repo_path* and return Contract instances.
@@ -108,48 +114,49 @@ class HttpExtractor:
 
         *files* is an already-walked ``(rel_path, suffix, content)`` list from
         the orchestrator's single traversal; None walks the repo directly.
-        *index* maps ``rel_path -> ParsedFile`` from the repo's parse cache. A
-        file present there gets its Python routes from the parsed decorators
-        rather than from the FastAPI text regex — a decorator node cannot carry
-        a route from a comment, and cannot lose an empty path. *content_hashes*
-        is the walk's ``rel_path -> sha256`` map, which is what proves a cached
-        parse describes the file as it is now; without it the index is unused.
+        *repo_index* is the repo's read-only symbol table. A file it has
+        symbols for gets its Python routes from the declarations above those
+        symbols rather than from the FastAPI text regex, which is what stops a
+        route in a comment becoming a contract and an empty path being lost.
 
         *stats* is an optional out-dict of counters. ``http_consumer_unresolved``
-        counts calls to a *confirmed* HTTP wrapper whose path argument could not
-        be resolved statically — real endpoint calls that were located but
-        cannot be named. They are counted rather than dropped, so a recall
-        figure built from these contracts states its own denominator.
+        counts calls to a *confirmed* HTTP wrapper, or through a variable bound
+        to an HTTP client instance, whose path argument could not be resolved
+        statically — real endpoint calls that were located but cannot be named.
+        They are counted rather than dropped, so a recall figure built from
+        these contracts states its own denominator.
         """
-        own_hashes: dict[str, str] | None = None
-        if files is None and index is not None and content_hashes is None:
-            own_hashes = content_hashes = {}
-        scanned = select_files(
-            repo_path, self.source_extensions(), exclude, files, own_hashes
-        )
+        scanned = select_files(repo_path, self.source_extensions(), exclude, files)
         mounts = self._collect_mounts(scanned)
 
-        from ..from_index import CONSUMER_INDEX_SUFFIXES, extract_http_providers, parsed_for
+        from ..from_index import (
+            CONSUMER_INDEX_SUFFIXES,
+            extract_http_providers,
+            symbols_for_content,
+        )
         from .index_clients import extract_consumers
 
         contracts: list[Contract] = []
         for rel_path, suffix, content in scanned:
-            ctx = ScanContext(repo_alias, rel_path, suffix, content, mounts)
-            # Only a parse that matches the bytes just walked supersedes the
-            # regex; a stale or missing entry leaves the dialect in charge.
-            parsed = (
-                parsed_for(index, rel_path, (content_hashes or {}).get(rel_path))
-                if suffix in PYTHON or suffix in CONSUMER_INDEX_SUFFIXES
-                else None
+            ctx = ScanContext(repo_alias, rel_path, suffix, content, mounts, repo_index)
+            # Python sits in both sets now, so one test covers the provider
+            # pass (which reads the declarations above a span) and the consumer
+            # pass (which reads the span itself).
+            indexed = suffix in CONSUMER_INDEX_SUFFIXES
+            # Only spans that can still describe this file's text supersede the
+            # regex; a missing or overrun entry leaves the dialect in charge.
+            symbols = (
+                symbols_for_content(ctx, content.count("\n") + 1) if indexed else []
             )
+            lines = content.split("\n") if symbols else []
             # Run the index pass first: it only supersedes the text dialect for
-            # a file it actually produced routes for. A parse that yielded no
+            # a file it actually produced routes for. A file that yielded no
             # decorated symbols (a grammar the parser stumbled on, a route
             # shape the queries do not capture) must not silently delete the
             # routes the regex can still see in the file's text.
             from_parse = (
-                extract_http_providers(ctx, parsed)
-                if parsed is not None and suffix in PYTHON
+                extract_http_providers(ctx, symbols, lines)
+                if symbols and suffix in PYTHON
                 else []
             )
             contracts.extend(from_parse)
@@ -157,8 +164,8 @@ class HttpExtractor:
             # Consumers, under the same per-file supersede rule: calls at the
             # sites of wrappers confirmed to reach an HTTP sink.
             consumers_from_parse: list[Contract] = []
-            if parsed is not None and suffix in CONSUMER_INDEX_SUFFIXES:
-                consumers_from_parse, unresolved = extract_consumers(ctx, parsed)
+            if symbols and suffix in CONSUMER_INDEX_SUFFIXES:
+                consumers_from_parse, unresolved = extract_consumers(ctx, symbols)
                 contracts.extend(consumers_from_parse)
                 if stats is not None and unresolved:
                     stats["http_consumer_unresolved"] = (

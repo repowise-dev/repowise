@@ -22,6 +22,7 @@ import structlog
 
 from repowise.core.analysis.kg_curation import GENERIC_ORG_SEGMENTS, dominant_segments
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES, SYMBOL_USE_EDGE_TYPES
+from repowise.core.support_paths import is_example_path
 from repowise.core.test_paths import is_test_related_path
 
 log = structlog.get_logger(__name__)
@@ -402,14 +403,27 @@ def _is_test_node(node_id: str, data: dict) -> bool:
     return is_test_related_path(node_id, data.get("language"))
 
 
+def _is_example_node(node_id: str, data: dict) -> bool:
+    """Whether a graph file node is example, demo, or benchmark code.
+
+    Derived from the path rather than a stored flag. Unlike ``is_test`` there
+    is no ``is_example`` on the node, and the path is the whole signal, so this
+    does not justify a new ``FileInfo`` field and ``GraphNode`` column.
+    """
+    return is_example_path(node_id)
+
+
 def _assign_tests_to_communities(
     test_nodes: list[str],
     prod_assignment: dict[str, int],
     graph: nx.DiGraph,
 ) -> dict[str, int]:
-    """Assign each test file to the community of a production file it links to.
+    """Assign each non-core file to the community of a file it links to.
 
-    Falls back to a catch-all "tests" community when no import link exists.
+    Falls back to a shared catch-all community when no import link exists.
+    Used for tests and for example/benchmark code alike: both are real files a
+    reader may open, but neither should shape what the production communities
+    are or what they are called.
     """
     result: dict[str, int] = {}
     next_cid = max(prod_assignment.values(), default=-1) + 1
@@ -457,13 +471,21 @@ def detect_file_communities(
     if not file_nodes:
         return {}, {}, "none"
 
-    # Separate test files from production files.  Test files are clustered
-    # separately then assigned to the community of their most-imported
-    # production file, preventing test directories from dominating labels
-    # and mixing unrelated production modules.
-    is_test = {n: _is_test_node(n, graph.nodes[n]) for n in file_nodes}
-    prod_nodes = [n for n in file_nodes if not is_test[n]]
-    test_nodes = [n for n in file_nodes if is_test[n]]
+    # Separate test and example files from production files. Both are clustered
+    # separately then assigned to the community of a production file they link
+    # to, preventing those directories from dominating labels and mixing
+    # unrelated production modules.
+    #
+    # Examples join tests here rather than being dropped: demos import across
+    # the whole system, so left in the partition they merge otherwise-distinct
+    # subsystems into one community and name it after the demo. They keep their
+    # nodes and their assignment, so nothing becomes unreachable.
+    non_core = {
+        n: _is_test_node(n, graph.nodes[n]) or _is_example_node(n, graph.nodes[n])
+        for n in file_nodes
+    }
+    prod_nodes = [n for n in file_nodes if not non_core[n]]
+    test_nodes = [n for n in file_nodes if non_core[n]]
 
     # Build undirected subgraph from production files + relevant edges
     undirected = nx.Graph()

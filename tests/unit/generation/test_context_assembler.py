@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 
 import networkx as nx
 
@@ -531,3 +532,100 @@ def test_foreign_edge_keeps_real_neighbours():
     assert is_foreign_edge("pkg/other.py::Thing", path)
     # A path that merely shares a prefix is a different file.
     assert is_foreign_edge("pkg/mod_extra.py", path)
+
+
+def test_coupled_modules_name_the_package_not_the_parent_directory(sample_config):
+    """A coupled module must be somewhere a reader can navigate to.
+
+    The parent directory of a coupled file is a location, but on a monorepo it
+    is an arbitrarily deep one that names no subsystem. The package boundary is
+    the unit the rest of the wiki groups by.
+    """
+    assembler = ContextAssembler(sample_config)
+    git_meta_map = {
+        "packages/core/pyproject.toml": {},
+        "packages/ui/package.json": {},
+        "packages/core/src/a.py": {
+            "co_change_partners_json": json.dumps(
+                [
+                    {
+                        "file_path": "packages/ui/src/deep/nested/widget.ts",
+                        "co_change_count": 5,
+                        "structural": "unexplained",
+                    }
+                ]
+            )
+        },
+    }
+
+    _, _, _, coupled_modules, _, _ = assembler._module_git_enrichment(
+        ["packages/core/src/a.py"], {"packages/core/src/a.py"}, git_meta_map
+    )
+
+    assert coupled_modules == [{"path": "packages/ui", "count": 1}]
+
+
+def test_coupled_modules_survive_a_changed_files_only_git_map(sample_config, tmp_path):
+    """An incremental run passes only the changed files' git metadata.
+
+    Deriving package roots from that map alone finds no manifest, and every
+    coupled partner then falls back to the same top-level bucket. The roots
+    come off the checkout so the answer does not depend on what changed.
+    """
+    (tmp_path / "packages" / "core").mkdir(parents=True)
+    (tmp_path / "packages" / "ui").mkdir(parents=True)
+    (tmp_path / "packages" / "core" / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "packages" / "ui" / "package.json").write_text("{}\n")
+
+    assembler = ContextAssembler(sample_config, repo_path=tmp_path)
+    changed_only = {
+        "packages/core/src/a.py": {
+            "co_change_partners_json": json.dumps(
+                [
+                    {
+                        "file_path": "packages/ui/src/deep/widget.ts",
+                        "co_change_count": 5,
+                        "structural": "unexplained",
+                    }
+                ]
+            )
+        }
+    }
+
+    _, _, _, coupled_modules, _, _ = assembler._module_git_enrichment(
+        ["packages/core/src/a.py"], {"packages/core/src/a.py"}, changed_only
+    )
+
+    assert coupled_modules == [{"path": "packages/ui", "count": 1}]
+
+
+def test_coupled_modules_exclude_pairs_the_graph_explains(sample_config):
+    """The page says these modules co-change *without* a dependency between
+    them, so a pair the graph accounts for must not be listed."""
+    assembler = ContextAssembler(sample_config)
+    git_meta_map = {
+        "packages/core/pyproject.toml": {},
+        "packages/ui/package.json": {},
+        "packages/core/src/a.py": {
+            "co_change_partners_json": json.dumps(
+                [
+                    {
+                        "file_path": "packages/ui/src/imported.ts",
+                        "co_change_count": 9,
+                        "structural": "corroborated",
+                    },
+                    {
+                        "file_path": "packages/ui/src/lockfile-ish.json",
+                        "co_change_count": 9,
+                        "structural": "not_applicable",
+                    },
+                ]
+            )
+        },
+    }
+
+    _, _, _, coupled_modules, _, _ = assembler._module_git_enrichment(
+        ["packages/core/src/a.py"], {"packages/core/src/a.py"}, git_meta_map
+    )
+
+    assert coupled_modules == []

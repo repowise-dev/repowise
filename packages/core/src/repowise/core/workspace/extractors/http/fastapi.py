@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ..base import line_at
 from ..langs import PYTHON
 from .dialect import METHODS, build_provider_contract
 from .mounts import balanced_args, compose_prefix, router_prefixes
@@ -72,7 +73,11 @@ class FastApiDialect:
             path = compose_prefix(prefixes.get(var, ""), path_raw)
             path = compose_prefix(ctx.mounts.get(var, ""), path)
             c = build_provider_contract(
-                ctx, method=method.upper(), path_raw=path, framework="fastapi"
+                ctx,
+                method=method.upper(),
+                path_raw=path,
+                framework="fastapi",
+                line=line_at(ctx.content, m.start()),
             )
             if c is not None:
                 out.append(c)

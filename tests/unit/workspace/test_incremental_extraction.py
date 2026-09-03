@@ -88,9 +88,9 @@ def extracted(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
     original_iter = base.iter_source_files
 
-    def recording_iter(repo_path, wanted, exclude, content_hashes=None):
+    def recording_iter(repo_path, wanted, exclude=None):
         seen.append(Path(repo_path).name)
-        return original_iter(repo_path, wanted, exclude, content_hashes)
+        return original_iter(repo_path, wanted, exclude)
 
     monkeypatch.setattr(base, "iter_source_files", recording_iter)
     return seen

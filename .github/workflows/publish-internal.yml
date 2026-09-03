@@ -1,11 +1,13 @@
 name: Publish internal prereleases
 
-# Publishes @repowise-dev/types and @repowise-dev/ui to GitHub Packages on
+# Publishes @repowise-dev/types, @repowise-dev/ui and @repowise-dev/api-client
+# to GitHub Packages on
 # every push to `main`, tagged as `0.0.0-internal.<short-sha>`. Downstream
 # consumers (e.g. hosted-frontend) pin to a specific SHA.
 #
 # Source package.json files declare the published names directly
-# (`@repowise-dev/types`, `@repowise-dev/ui`) but keep `private: true` and
+# (`@repowise-dev/types`, `@repowise-dev/ui`, `@repowise-dev/api-client`) but
+# keep `private: true` and
 # `version: 0.0.1`. This workflow stamps the prerelease version and
 # removes `private` only at publish time. The PyPI publish workflow
 # (`publish.yml`) only fires on `v*` tags and is unaffected.
@@ -59,8 +61,10 @@ jobs:
         run: |
           npm run type-check --workspace @repowise-dev/types
           npm run type-check --workspace @repowise-dev/ui
+          npm run type-check --workspace @repowise-dev/api-client
           npm run test --workspace @repowise-dev/types
           npm run test --workspace @repowise-dev/ui
+          npm run test --workspace @repowise-dev/api-client
 
       - name: Compute prerelease version
         id: ver
@@ -97,6 +101,29 @@ jobs:
             npm publish
           fi
 
+      # Published after ui: api-client depends on types at runtime and is
+      # built against ui, so a consumer resolving this SHA finds all three.
+      - name: Publish @repowise-dev/api-client
+        working-directory: packages/api-client
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_GITHUB_PACKAGES }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          npm pkg set version="$VERSION"
+          npm pkg set dependencies.@repowise-dev/types="$VERSION"
+          # ``./c4``, ``./graph`` and ``./hosted`` import types from ui, and the
+          # package ships raw TypeScript, so a consumer compiling it needs ui
+          # resolvable. It is a devDependency here because this repo builds
+          # against the workspace copy.
+          npm pkg delete devDependencies.@repowise-dev/ui
+          npm pkg set dependencies.@repowise-dev/ui="$VERSION"
+          npm pkg delete private
+          if npm view "@repowise-dev/api-client@$VERSION" version >/dev/null 2>&1; then
+            echo "@repowise-dev/api-client@$VERSION is already published, skipping"
+          else
+            npm publish
+          fi
+
       - name: Summary
         run: |
           {
@@ -104,11 +131,13 @@ jobs:
             echo ""
             echo "- \`@repowise-dev/types@${{ steps.ver.outputs.version }}\`"
             echo "- \`@repowise-dev/ui@${{ steps.ver.outputs.version }}\`"
+            echo "- \`@repowise-dev/api-client@${{ steps.ver.outputs.version }}\`"
             echo ""
             echo "Consumer install (hosted-frontend):"
             echo ""
             echo '```json'
             echo '"@repowise-dev/types": "${{ steps.ver.outputs.version }}",'
-            echo '"@repowise-dev/ui":    "${{ steps.ver.outputs.version }}"'
+            echo '"@repowise-dev/ui":    "${{ steps.ver.outputs.version }}",'
+            echo '"@repowise-dev/api-client": "${{ steps.ver.outputs.version }}"'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

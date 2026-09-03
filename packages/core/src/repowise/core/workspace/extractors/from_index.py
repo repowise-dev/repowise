@@ -5,26 +5,27 @@ Workspace mode re-derived route tables from raw text with regexes, running
 disk (``update.py`` indexes every stale repo, and only then calls
 ``run_cross_repo_hooks``). This module reads that parse instead.
 
-The source is the per-repo parse cache (``<repo>/.repowise/parse_cache.pkl``),
-which stores a :class:`~repowise.core.ingestion.models.ParsedFile` per file —
-symbols, their kinds, their line ranges, and ``Symbol.decorators`` holding the
-verbatim decorator text (``@router.post("")``). Reading a decorator node cannot
-pick up a route-shaped string from a comment or a docstring, and cannot lose an
-empty path, so two of the defect classes that motivated this module are gone by
-construction rather than by a better regex.
-
-**What the index does not carry.** A router's mount prefix comes from a call
-expression (``APIRouter(prefix="/x")``, ``include_router(r, prefix="/y")``), not
-from a decorator, and the cache stores extraction results rather than the tree.
-Prefix resolution therefore still reads the file text via :mod:`.http.mounts`.
-The route's *identity* is what moves onto the parse; its prefix is stitched on
-exactly as before.
-
-**Availability is not guaranteed.** :class:`ParseCache` gates every entry on
+The source is the repo's ``wiki.db`` symbol table, reached through
+:class:`~repowise.core.workspace.repo_index.RepoIndex`. It replaces the per-repo
+parse cache this module used to read: that cache gates every entry on
 ``parser_fingerprint()``, so a repo indexed by a different repowise version
-loads as empty — measured on this workspace, two of three repos. Callers must
-treat :func:`load_repo_index` returning ``None`` as "use the regex path", which
-is also the honest answer for languages with no AST tier at all.
+loads empty — measured at three of three repos on a live workspace, which left
+the whole index path inert. The database carries no such gate.
+
+**What the index carries is identity, not syntax.** A symbol row is a name, a
+kind and a line span; it holds no decorator text. A route's *identity* is the
+handler symbol that span names, and its declaration is read from the unbroken
+run of decorators immediately above the span (:func:`_decorators_above`) rather
+than from anywhere in the file. That is what stops the route-shaped prose in a
+comment — the defect class that motivated this module — from becoming a
+contract. It is a narrowing, not a proof: a docstring line beginning with ``@``
+directly above a definition would still be read as one.
+
+A router's mount prefix comes from a call expression
+(``APIRouter(prefix="/x")``, ``include_router(r, prefix="/y")``), never from a
+declaration above a handler, so prefix resolution still reads the file text via
+:mod:`.http.mounts`. The route's identity moves onto the index; its prefix is
+stitched on exactly as before.
 """
 
 from __future__ import annotations
@@ -35,13 +36,13 @@ from typing import TYPE_CHECKING
 
 from .http.dialect import build_provider_contract
 from .http.mounts import compose_prefix, router_prefixes
-from .langs import JS_TS
+from .langs import JS_TS, PYTHON
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Sequence
 
-    from repowise.core.ingestion.models import ParsedFile
     from repowise.core.workspace.contracts import Contract
+    from repowise.core.workspace.repo_index import IndexedSymbol
 
     from .base import ScanContext
 
@@ -60,8 +61,8 @@ LAYER_REGEX = "regex"
 # Decorator parsing
 # ---------------------------------------------------------------------------
 
-# A decorator's head and its first string argument, from the verbatim text the
-# parser stores. ``@router.post("")`` -> ("router.post", ""). The argument is
+# A decorator's head and its first string argument, from the verbatim text
+# above a symbol. ``@router.post("")`` -> ("router.post", ""). The argument is
 # ``*`` not ``+``: an empty path is the idiomatic collection root on a prefixed
 # router and must survive to be stitched onto that prefix.
 _DECORATOR_RE = re.compile(r"""^@([\w.]+)\s*\(\s*(?:(?P<q>['"])(?P<arg>[^'"]*)(?P=q))?""")
@@ -78,6 +79,14 @@ _METHOD_LITERAL_RE = re.compile(r"""['"]([A-Za-z]+)['"]""")
 
 _ROUTE_HEADS = frozenset({"route"})
 
+# How far above a definition the decorator walk may reach. Bounds the scan on a
+# file whose indexed spans no longer line up with its text.
+_DECORATOR_LOOKBACK = 40
+
+# Symbol kinds a route decorator can sit above. Classes are included because
+# Flask-style pluggable views decorate one, which the retired path also caught.
+_HANDLER_KINDS = frozenset({"function", "method", "class"})
+
 # The languages anything here reads decorators for. Widening this means
 # widening :func:`extract_http_providers` to match.
 INDEX_SUFFIXES = frozenset({".py"})
@@ -86,13 +95,9 @@ INDEX_SUFFIXES = frozenset({".py"})
 # languages HTTP clients are written in, so the wrapper-confirmation pass can
 # bound "this symbol's own body" to a parsed extent instead of guessing it by
 # counting braces. Kept separate from INDEX_SUFFIXES because the two passes read
-# different things off the same parse: providers read ``Symbol.decorators``,
-# consumers read line ranges.
-CONSUMER_INDEX_SUFFIXES = frozenset(JS_TS)
-
-# What :func:`load_repo_index` deserializes for both passes together. One load
-# per repo feeds both; asking for them separately would read the cache twice.
-ALL_INDEX_SUFFIXES = INDEX_SUFFIXES | CONSUMER_INDEX_SUFFIXES
+# different things off the same rows: providers read the declaration above a
+# span, consumers read the span itself.
+CONSUMER_INDEX_SUFFIXES = frozenset(JS_TS) | frozenset(PYTHON)
 
 
 def _decorator_head_and_arg(decorator: str) -> tuple[str, str | None]:
@@ -133,140 +138,151 @@ def _routes_in_decorator(decorator: str) -> list[tuple[str, str, str]]:
     return []
 
 
-# ---------------------------------------------------------------------------
-# Reading the parse cache
-# ---------------------------------------------------------------------------
+def _decorators_above(lines: list[str], start_line: int) -> list[str]:
+    """Verbatim decorator text stacked directly above a definition.
 
+    ``start_line`` is 1-indexed and names the ``def`` line: the parser takes a
+    symbol's span from the definition node, not from Python's enclosing
+    ``decorated_definition``, so any decorators sit above it.
 
-def load_repo_index(
-    repo_root: Path,
-    suffixes: frozenset[str] = INDEX_SUFFIXES,
-) -> dict[str, ParsedFile] | None:
-    """Return ``rel_path -> ParsedFile`` from the repo's parse cache.
-
-    Only entries whose path ends in one of *suffixes* are deserialized. The
-    cache holds every file the repo indexed (27 MB of pickled ``ParsedFile``
-    graphs on this repo) and only the languages read here are ever consulted,
-    so unpickling the rest would be pure memory cost — multiplied by the repos
-    running concurrently.
-
-    ``None`` when the cache is absent or unusable — a repo indexed by another
-    repowise version fails the ``parser_fingerprint`` gate and loads empty,
-    which is indistinguishable from "never indexed" and gets the same answer:
-    fall back to the regex path.
+    The run above the definition must be decorators and nothing else. Stopping
+    at the first ordinary line — not merely at a blank one — is what keeps a
+    decorated *class* from lending its route to the first method under it, and
+    a neighbouring handler from lending its route to the next.
     """
-    import pickle
-
-    from repowise.core.ingestion.parse_cache import ParseCache
-
-    cache_dir = repo_root / ".repowise"
-    if not (cache_dir / "parse_cache.pkl").is_file():
-        return None
-
-    cache = ParseCache(cache_dir)
-    try:
-        cache.load()
-    except Exception:
-        _log.debug("Parse cache unreadable for %s", repo_root, exc_info=True)
-        return None
-
-    # ParseCache exposes lookup by (FileInfo, hash) but not enumeration, and
-    # this needs the whole map. Reaching for the private dict is the coupling
-    # that buys that; log loudly rather than go dark if it ever moves.
-    entries = getattr(cache, "_entries", None)
-    if entries is None:
-        _log.warning(
-            "ParseCache no longer exposes _entries; index-backed contract "
-            "extraction is disabled and everything falls back to regex"
-        )
-        return None
-    if not entries:
-        _log.info(
-            "Parse cache for %s loaded no entries (version mismatch or empty); "
-            "contract extraction falls back to the regex path",
-            repo_root,
-        )
-        return None
-
-    out: dict[str, ParsedFile] = {}
-    for (rel_path, content_hash), blob in entries.items():
-        if not rel_path.endswith(tuple(suffixes)):
-            continue
-        try:
-            parsed = pickle.loads(blob)
-        except Exception:  # a single corrupt entry must not lose the repo
-            _log.debug("Skipping unpicklable parse-cache entry %s", rel_path)
-            continue
-        # The cache key carries the hash the entry was parsed from; keep it on
-        # the object so :func:`parsed_for` can reject a stale entry.
-        parsed.content_hash = content_hash
-        out[rel_path] = parsed
-    return out or None
+    out: list[str] = []
+    pending: list[str] = []
+    depth = 0  # unclosed parens below, so a walk inside a multi-line decorator
+    i = start_line - 2  # 0-indexed line directly above the definition
+    floor = max(0, i - _DECORATOR_LOOKBACK)
+    while i >= floor:
+        line = lines[i]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            break
+        # A line belongs to the stack only as a decorator head or as the
+        # argument list of one still open below it. Anything else is ordinary
+        # code and ends the run.
+        opened = depth + line.count(")") - line.count("(")
+        if opened <= 0 and not stripped.startswith("@"):
+            break
+        depth = opened
+        pending.append(line)
+        if depth == 0:
+            out.append("\n".join(reversed(pending)))
+            pending = []
+        i -= 1
+    return out
 
 
-def parsed_for(
-    index: dict[str, ParsedFile] | None,
-    rel_path: str,
-    content_hash: str | None,
-) -> ParsedFile | None:
-    """The parse for *rel_path*, but only if it describes the bytes on disk.
+# ---------------------------------------------------------------------------
+# Reading the index
+# ---------------------------------------------------------------------------
 
-    Parse-cache entries are keyed by content hash. An entry whose hash does not
-    match the file just walked describes an older version of it, and trusting
-    that would report routes which no longer exist (or miss ones that now do).
-    Without a hash to check against there is nothing to trust, so the caller
-    gets ``None`` and stays on the regex path.
+
+def symbols_for_content(ctx: ScanContext, line_count: int) -> list[IndexedSymbol]:
+    """This file's indexed symbols, but only if they still describe *ctx.content*.
+
+    The index carries no per-file content hash, so currency is proven against
+    the text itself. Two checks, because they catch opposite edits: a span
+    reaching past the end of the file was parsed from a longer version of it,
+    and a definition the index does not place is code added since it was
+    written. The second matters most — the index pass supersedes the text
+    dialect for a file it produced routes for, so an unseen definition would be
+    a route silently dropped rather than one merely not upgraded.
+
+    Neither catches an edit that shifts lines without changing the definition
+    set. A shifted span reads no decorator and yields no route, so the cost is
+    a miss, not a fabrication.
     """
-    if index is None or content_hash is None:
-        return None
-    parsed = index.get(rel_path)
-    if parsed is None:
-        return None
-    if parsed.content_hash != content_hash:
-        _log.debug("Parse-cache entry for %s is stale; using the regex path", rel_path)
-        return None
-    return parsed
+    if ctx.index is None:
+        return []
+    symbols = ctx.index.symbols_for_file(ctx.rel_path)
+    if any(s.end_line > line_count for s in symbols):
+        _log.debug("Indexed spans for %s overrun the file; using the regex path", ctx.rel_path)
+        return []
+    if ctx.suffix in INDEX_SUFFIXES and not _definitions_are_indexed(ctx.content, symbols):
+        _log.debug("Indexed symbols for %s miss a definition; using the regex path", ctx.rel_path)
+        return []
+    return symbols
+
+
+# A Python definition line, wherever it is indented.
+_DEF_LINE_RE = re.compile(r"^[ \t]*(?:async[ \t]+)?def[ \t]", re.MULTILINE)
+
+
+def _definitions_are_indexed(content: str, symbols: Sequence[IndexedSymbol]) -> bool:
+    """True when every ``def`` in *content* is one the index knows about.
+
+    A definition is known if a symbol starts on that line, or if it is nested
+    inside a symbol's span — the parser records a closure as part of its
+    enclosing function rather than on its own row.
+    """
+    starts = {s.start_line for s in symbols}
+    spans = [(s.start_line, s.end_line) for s in symbols]
+    for m in _DEF_LINE_RE.finditer(content):
+        line = content.count("\n", 0, m.start()) + 1
+        if line in starts:
+            continue
+        if not any(start < line <= end for start, end in spans):
+            return False
+    return True
 
 
 # ---------------------------------------------------------------------------
 # Provider extraction
 # ---------------------------------------------------------------------------
 
+
 def extract_http_providers(
     ctx: ScanContext,
-    parsed: ParsedFile,
+    symbols: Sequence[IndexedSymbol],
+    lines: list[str],
 ) -> list[Contract]:
-    """HTTP provider contracts from *parsed*'s decorated symbols.
+    """HTTP provider contracts from the decorators above *symbols*.
 
-    Routes come from ``Symbol.decorators``; the mount prefix still comes from
-    the file text (see the module docstring), so ``ctx.content`` is required.
+    *lines* is ``ctx.content`` already split; the mount prefix still comes from
+    the whole file text (see the module docstring), so ``ctx.content`` is read
+    as well.
     """
+    # Routes before prefixes: ``router_prefixes`` scans the whole file, so it
+    # is worth paying for only once a route exists to stitch a prefix onto.
+    routes = [
+        (symbol, decorator, route)
+        for symbol in symbols
+        if symbol.kind in _HANDLER_KINDS
+        for decorator in _decorators_above(lines, symbol.start_line)
+        for route in _routes_in_decorator(decorator)
+    ]
+    if not routes:
+        return []
+
     prefixes = router_prefixes(ctx.content, "APIRouter|FastAPI|Flask|Blueprint")
     known = set(prefixes) | {"app", "router", "bp", "blueprint"}
 
     out: list[Contract] = []
     seen: set[tuple[str, str]] = set()
-    for symbol in parsed.symbols:
-        # ``Symbol.decorators`` can repeat an entry (the parser appends per
-        # matching capture), so dedupe per symbol before building contracts.
-        for decorator in dict.fromkeys(symbol.decorators):
-            for var, method, raw_path in _routes_in_decorator(decorator):
-                if var not in known:
-                    continue
-                path = compose_prefix(prefixes.get(var, ""), raw_path)
-                path = compose_prefix(ctx.mounts.get(var, ""), path)
-                key = (method, path)
-                if key in seen:
-                    continue
-                seen.add(key)
-                framework = "flask" if _is_route_head(decorator) else "fastapi"
-                contract = build_provider_contract(
-                    ctx, method=method, path_raw=path, framework=framework
-                )
-                if contract is not None:
-                    contract.meta[EXTRACTION_LAYER_KEY] = LAYER_INDEX
-                    contract.meta["handler"] = symbol.name
-                    out.append(contract)
+    for symbol, decorator, (var, method, raw_path) in routes:
+        if var not in known:
+            continue
+        path = compose_prefix(prefixes.get(var, ""), raw_path)
+        path = compose_prefix(ctx.mounts.get(var, ""), path)
+        key = (method, path)
+        if key in seen:
+            continue
+        seen.add(key)
+        framework = "flask" if _is_route_head(decorator) else "fastapi"
+        contract = build_provider_contract(
+            ctx, method=method, path_raw=path, framework=framework, line=symbol.start_line
+        )
+        if contract is not None:
+            contract.meta[EXTRACTION_LAYER_KEY] = LAYER_INDEX
+            contract.meta["handler"] = symbol.name
+            # Bound here rather than by line: this path found the route *by*
+            # walking up from the handler's own span, so the symbol is known
+            # exactly and no lookahead rule needs to re-derive it.
+            contract.symbol_id = symbol.symbol_id
+            out.append(contract)
     return out
 
 

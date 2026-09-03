@@ -246,23 +246,90 @@ def test_as_markdown_leaves_plain_text_alone():
     assert as_markdown(None) == ""
 
 
-def test_signature_collapses_source_whitespace():
-    """Signatures span source lines, so raw text carries runs of indentation."""
+def test_signature_reads_as_a_declaration_not_as_source():
+    """Signatures span source lines, so raw text carries the author's layout."""
     from repowise.core.generation.page_generator.structural import signature
 
     raw = "def go(\n        a: int,\n        b: str,\n    ) -> None"
-    assert signature(raw) == "def go( a: int, b: str, ) -> None"
+    assert signature(raw) == "def go(a: int, b: str) -> None"
 
 
-def test_signature_truncates_at_an_argument_boundary_not_mid_token():
+def test_signature_closes_a_capture_that_stopped_mid_expression():
+    """A constant whose value opens a bracket is stored without its tail.
+
+    Closed rather than cut back to the declaration: the page is also the index
+    entry, so ``= re.compile(`` must not take ``re`` and ``compile`` with it.
+    """
     from repowise.core.generation.page_generator.structural import signature
 
-    raw = "def go(" + ", ".join(f"argument_number_{i}: int = 0" for i in range(20)) + ") -> None"
+    assert signature("PRUNED_DIRS: frozenset[str] = frozenset(") == (
+        "PRUNED_DIRS: frozenset[str] = frozenset(…)"
+    )
+    assert signature("ReasoningMode = Literal[") == "ReasoningMode = Literal[…]"
+    assert signature("ROW_ACTIVE =") == "ROW_ACTIVE"
+    # A value that closes is the declaration's meaning, and is kept.
+    assert signature("MAX = 64") == "MAX = 64"
+
+
+def test_signature_never_rewrites_a_declaration_that_already_fits():
+    """Under the limit, the only change may be the collapsed whitespace.
+
+    Every pass reshapes source punctuation, and a signature routinely carries
+    a regex or a path in a string literal. Rewriting inside one puts a value
+    on the page that the source does not have, and the page is what the index
+    embeds. These are real declarations from this repository.
+    """
+    from repowise.core.generation.page_generator.structural import signature
+
+    for raw in (
+        'IDENTIFIER_RE = re.compile(rb"[A-Za-z_][A-Za-z0-9_]{2,}")',
+        'filenames: tuple[str, ...] = ("Cargo.toml",)',
+        '_SPRING_CTOR_PARAM_RE = re.compile(r"([A-Z]w*)s+w+s*[,)]")',
+        'def _doc_paths(root: Path, *, patterns: tuple[str, ...] = ("*.md",)) -> list[Path]',
+    ):
+        assert signature(raw) == raw, raw
+
+
+def test_signature_reduces_a_parameter_to_its_name_not_to_a_string_it_contained():
+    """A default value holding a comma must not split into two parameters."""
+    from repowise.core.generation.page_generator.structural import signature
+
+    raw = (
+        'def render(self, template: str, sep: str = ", ", prefix: str = "(", '
+        'suffix: str = ")", indent: int = 4, width: int = 88) -> str'
+    )
+
+    assert signature(raw) == "def render(self, template, sep, prefix, suffix, indent, width) -> str"
+
+
+def test_signature_does_not_count_a_bracket_inside_a_string_literal():
+    """A character class is not an unclosed bracket."""
+    from repowise.core.generation.page_generator.structural import signature
+
+    raw = '_META_RE = re.compile(r"[|&;<>]")'
+    assert signature(raw) == raw
+
+
+def test_signature_sheds_parameter_detail_before_it_sheds_the_return_type():
+    from repowise.core.generation.page_generator.structural import signature
+
+    raw = "def go(" + ", ".join(f"argument_number_{i}: int = 0" for i in range(3)) + ") -> None"
     out = signature(raw, limit=80)
-    assert out.endswith(" …")
-    # The visible tail must be a whole parameter, never half an identifier.
-    assert not out.rstrip(" …").rstrip(",").endswith("argument_number")
-    assert "argument_number_0: int = 0" in out
+
+    # What a function returns is the half a reader is looking for, so the
+    # annotations and defaults go first and the return type survives.
+    assert out.endswith(") -> None")
+    assert "argument_number_0" in out
+    assert "int = 0" not in out
+
+
+def test_signature_falls_back_to_an_ellipsis_when_even_the_names_are_too_long():
+    from repowise.core.generation.page_generator.structural import signature
+
+    raw = "def go(" + ", ".join(f"argument_number_{i}" for i in range(40)) + ") -> None"
+    out = signature(raw, limit=60)
+
+    assert out == "def go(…) -> None"
 
 
 def test_signature_leaves_short_signatures_untouched():

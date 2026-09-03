@@ -17,7 +17,8 @@ Two complementary risk signals, use both:
   score with drivers (lines added/deleted, files, directories, subsystems,
   change entropy, author familiarity). No LLM, no network. Prefer this in-MCP
   tool; it takes a revspec and diffs server-side, so you never shell out. Lead
-  with `risk_percentile` (this change ranked against sampled recent commits),
+  with `directive` and `health_delta` — what the change actually made worse.
+  Then `risk_percentile` (this change ranked against sampled recent commits),
   summarized by `review_priority` and `classification`. `score` is calibrated
   per single commit, so a PR-sized change reads high by construction, and
   `fallback_band` appears only when there was no baseline to rank against.
@@ -33,15 +34,18 @@ Two complementary risk signals, use both:
 get_change_risk(revspec="main..HEAD")   # HEAD, a commit SHA, or base..head
 ```
 
-Read `risk_percentile` and the top drivers: a high score from large diffusion
-(many dirs/subsystems) or low author familiarity tells you where to look
-hardest. `extensions=[".py", ".ts"]` counts only certain file types;
-`exclude_patterns=["tests/"]` omits paths. A `warning` field means the revspec
-or filters matched no files, so an all-zero score there is not a clean bill of
-health. The equivalent from a terminal is `repowise risk <revspec>` (add
-`--ext .py,.ts` or `--format json`).
+Read `directive` first: `status`, a `headline` naming what got worse, the
+`reasons` behind it and `next_actions` to run. `health_delta` carries the
+findings the change introduced or resolved. Then `risk_percentile` and the top
+drivers: a high score from large diffusion (many dirs/subsystems) or low author
+familiarity tells you where to look hardest. `extensions=[".py", ".ts"]` counts
+only certain file types; `exclude_patterns=["tests/"]` omits paths. A `warning`
+field, or a `directive.status` of `unknown`, means the revspec or filters
+matched no files, so an all-zero score there is not a clean bill of health. The
+equivalent from a terminal is `repowise risk <revspec>` (add `--ext .py,.ts` or
+`--format json`).
 
-## Then drill into the directive block
+## Then drill into the per-file directive
 
 Call `get_risk` in **PR mode** by passing the changed files:
 
@@ -49,10 +53,12 @@ Call `get_risk` in **PR mode** by passing the changed files:
 get_risk(targets=<changed files>, changed_files=<same changed files>)
 ```
 
-The response carries a `directive` block — read it first, it's a few short lists:
+The response carries its own `directive` block, per file rather than per change
+(distinct from `get_change_risk`'s) — read it first, it's a few short lists:
 
-- **`will_break`** — files/symbols that depend on what changed but are *not* in
-  the diff. These are the likely breakages. Check each one.
+- **`may_break`** — files/symbols that import their way to what changed but are
+  *not* in the diff. Reachability, not a diff: it says these depend on the
+  changed files, not that the thing they use changed. Check each one.
 - **`missing_cochanges`** — files that historically change together with the
   changed files but were left untouched. Often a forgotten update.
 - **`missing_tests`** — changed code with a test gap. Flag for new/updated tests.
@@ -95,7 +101,7 @@ and a brand-new file is "unknown, run the full suite", never "no tests needed".
 ## Write the review around evidence
 
 Lead with a risk level and the `directive` findings, each tied to a concrete
-file. Distinguish **"will break"** (a dependent outside the diff) from **"worth a
+file. Distinguish **"may break"** (a dependent outside the diff) from **"worth a
 look"** (a co-change or health regression). Don't pad with findings the tools
 didn't support.
 

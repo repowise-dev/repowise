@@ -3,40 +3,53 @@
 /**
  * The Refactoring surface.
  *
- * Lede, then the structural plans as a field with the top few ranked under it,
- * then every plan as hairline rows. What used to be here was a priority-by-
- * effort quadrant over a grid of cards; both were replaced for reasons recorded
- * in `structural-map.tsx` and `plan-rows.tsx`.
+ * Lede, then the structural opportunities as a field with the top few ranked
+ * under it, then every opportunity as hairline rows. What used to be here was a
+ * priority-by-effort quadrant over a grid of cards; both were replaced for
+ * reasons recorded in `structural-map.tsx` and `opportunity-rows.tsx`.
  *
- * The list controls survive largely intact — search, sort, effort — with one
- * removal: the confidence filter no longer offers "low", because no detector
- * has ever emitted a low-confidence plan and the chip filtered to zero every
- * time it was clicked. It is built from the confidences actually present rather
- * than from the type, so it disappears entirely on a repo whose plans are all
- * one confidence.
+ * **The list's default order is the diversified queue, not worst-files-first.**
+ * Both are indexed columns, so the choice costs nothing either way and is
+ * purely about the question the page answers. This page answers "what should I
+ * do next", and the honest rank order puts eight interchangeable rows at the
+ * head: single high-confidence extractions recovering the same quantised
+ * `complex_method` deduction, tied to four decimal places and separated only by
+ * file path. Diversification breaks that tie by rotating lead cause, lead type
+ * and area, so the head reads as a set of choices rather than one choice typed
+ * out eight times. "Worst files first" is a different question - where is the
+ * damage, not what is cheap to fix - and Code Health's galaxy already answers
+ * it, so it stays available here as a named order rather than becoming the
+ * default and quietly making this a second, worse copy of that page.
+ *
+ * Filters are server-owned and single-valued, which is what the queue endpoint
+ * admits: one effort, one confidence. Chips toggle rather than accumulate, and
+ * the confidence row is built from the confidences actually present, so it
+ * disappears on a repo whose opportunities are all one confidence.
  */
 
 import * as React from "react";
 import { Search } from "lucide-react";
 
 import { Input } from "../ui/input";
+import { FilterSelect } from "../health/code-health-controls";
 import { PaginationControls } from "../shared/pagination-controls";
-import { PlanRows } from "./plan-rows";
+import { OpportunityRows } from "./opportunity-rows";
 import { RefactoringLede } from "./refactoring-lede";
 import { StartHere } from "./start-here";
 import { CONFIDENCE_LABEL } from "./meta";
-import { blastCount, isStructural } from "./types";
+import { STATUS_LABEL, TRIAGE_STATUSES } from "./opportunity";
 import type {
   Confidence,
   EffortBucket,
-  RefactoringPlan,
-  RefactoringSummary,
+  OpportunityStatus,
+  RefactoringOpportunity,
+  RefactoringOpportunityRollup,
+  RefactoringOrder,
 } from "@repowise-dev/types/refactoring";
 
 const PAGE_SIZE = 60;
 
 const EFFORTS: EffortBucket[] = ["S", "M", "L", "XL"];
-const EFFORT_RANK: Record<EffortBucket, number> = { S: 0, M: 1, L: 2, XL: 3 };
 const EFFORT_LABEL_LONG: Record<EffortBucket, string> = {
   S: "Small",
   M: "Medium",
@@ -45,58 +58,49 @@ const EFFORT_LABEL_LONG: Record<EffortBucket, string> = {
 };
 const CONFIDENCE_ORDER: Confidence[] = ["high", "medium", "low"];
 
-export type RefactoringSortKey = "canonical" | "health" | "effort" | "blast" | "file";
-
-const SORT_OPTIONS: { value: RefactoringSortKey; label: string }[] = [
-  { value: "canonical", label: "Canonical priority" },
-  { value: "health", label: "Health recovered" },
+const SORT_OPTIONS: { value: RefactoringOrder; label: string }[] = [
+  { value: "queue", label: "Recommended" },
+  { value: "rank", label: "Highest value" },
+  { value: "health", label: "Worst files first" },
   { value: "effort", label: "Effort, small first" },
-  { value: "blast", label: "Files touched" },
   { value: "file", label: "File, A to Z" },
 ];
 
+export interface RefactoringBoardServerState {
+  query: string;
+  order: RefactoringOrder;
+  /** Which triage state the list is showing. The server defaults to `open`. */
+  status: OpportunityStatus;
+  effort: EffortBucket | null;
+  confidence: Confidence | null;
+  mechanicalOnly: boolean;
+  total: number;
+  offset: number;
+  nextOffset: number | null;
+}
+
 export interface RefactoringBoardProps {
-  /** Plans for the active type filter. */
-  plans: RefactoringPlan[];
-  /** Every plan, unfiltered — the lede and Start here describe the whole repo,
-   *  not the tab you happen to be on. This is also where the per-type counts
-   *  come from, which is why the board no longer takes a `summary`: the
-   *  endpoint's summary and the plan list could disagree under a filter, and
-   *  two sources for one number is how a tab badge starts lying. */
-  allPlans?: RefactoringPlan[] | undefined;
-  /** Repo-wide totals supplied by the bounded endpoint. */
-  summary?: RefactoringSummary | undefined;
-  /** Bounded canonical structural head for Start here. */
-  structuralPlans?: RefactoringPlan[] | undefined;
-  /** Controlled server-owned filtering and paging. Omit for legacy local mode. */
-  serverState?:
-    | {
-        query: string;
-        sort: RefactoringSortKey;
-        efforts: EffortBucket[];
-        confidences: Confidence[];
-        total: number;
-        offset: number;
-        nextOffset: number | null;
-      }
-    | undefined;
-  onServerStateChange?:
-    | ((
-        change: Partial<
-          Pick<
-            NonNullable<RefactoringBoardProps["serverState"]>,
-            "query" | "sort" | "efforts" | "confidences" | "offset"
-          >
-        >,
-      ) => void)
-    | undefined;
+  /** Opportunities for the active type filter, in the server's order. */
+  opportunities: RefactoringOpportunity[];
+  /** The repository rollup the endpoint returns. Feeds the lede. */
+  summary?: RefactoringOpportunityRollup | null | undefined;
+  /** Bounded structural head for Start here, already filtered to lead types. */
+  structuralOpportunities?: RefactoringOpportunity[] | undefined;
+  serverState: RefactoringBoardServerState;
+  onServerStateChange: (change: Partial<RefactoringBoardServerState>) => void;
   indexedFileCount?: number | undefined;
-  onOpen?: ((plan: RefactoringPlan) => void) | undefined;
-  onAiPrompt?: ((plan: RefactoringPlan) => void) | undefined;
+  onOpen?: ((opportunity: RefactoringOpportunity) => void) | undefined;
+  onAiPrompt?: ((opportunity: RefactoringOpportunity) => void) | undefined;
+  onStatusChange?:
+    | ((
+        opportunity: RefactoringOpportunity,
+        status: OpportunityStatus,
+      ) => Promise<void> | void)
+    | undefined;
   fileHref?: ((path: string, line?: number | null) => string | undefined) | undefined;
   /** Jump the type filter to the structural set. */
   onSeeStructural?: (() => void) | undefined;
-  /** Hide the lede and Start here — for hosts that render their own header. */
+  /** Hide the lede and Start here - for hosts that render their own header. */
   showLede?: boolean;
   sectionTitle?: string;
   emptyTitle?: string;
@@ -104,105 +108,35 @@ export interface RefactoringBoardProps {
 }
 
 export function RefactoringBoard({
-  plans,
-  allPlans,
+  opportunities,
   summary,
-  structuralPlans,
+  structuralOpportunities,
   serverState,
   onServerStateChange,
   indexedFileCount,
   onOpen,
   onAiPrompt,
+  onStatusChange,
   fileHref,
   onSeeStructural,
   showLede = true,
-  sectionTitle = "All plans",
-  emptyTitle = "No refactoring plans",
-  emptyHint = "Plans appear here when a file is worth splitting, a cycle worth cutting, a class worth extracting, or a repeated block worth sharing.",
+  sectionTitle = "All opportunities",
+  emptyTitle = "No refactoring opportunities",
+  emptyHint = "Opportunities appear here when a file is worth splitting, a cycle worth cutting, a class worth extracting, or a long function worth breaking up.",
 }: RefactoringBoardProps) {
-  const [query, setQuery] = React.useState("");
-  const [sortKey, setSortKey] = React.useState<RefactoringSortKey>("canonical");
-  const [effortSel, setEffortSel] = React.useState<Set<EffortBucket>>(new Set());
-  const [confSel, setConfSel] = React.useState<Set<Confidence>>(new Set());
-  const [visibleCount, setVisibleCount] = React.useState(PAGE_SIZE);
-
-  const controlled = serverState !== undefined && onServerStateChange !== undefined;
-  const server = serverState ?? {
-    query: "",
-    sort: "canonical" as RefactoringSortKey,
-    efforts: [],
-    confidences: [],
-    total: plans.length,
-    offset: 0,
-    nextOffset: null,
-  };
-  const every = allPlans ?? plans;
-  const structural = React.useMemo(
-    () => structuralPlans ?? every.filter(isStructural),
-    [structuralPlans, every],
-  );
-  const activeQuery = controlled ? server.query : query;
-  const activeSort = controlled ? server.sort : sortKey;
-  const activeEfforts = controlled ? new Set(server.efforts) : effortSel;
-  const activeConfidences = controlled ? new Set(server.confidences) : confSel;
+  const [highlighted, setHighlighted] = React.useState<string | null>(null);
 
   // Only offer confidences that occur. A filter is worth building where there
   // is something to subtract from.
   const confidencesPresent = React.useMemo(() => {
-    if (controlled) return CONFIDENCE_ORDER;
-    const present = new Set(every.map((p) => p.confidence || "medium"));
-    return CONFIDENCE_ORDER.filter((c) => present.has(c));
-  }, [controlled, every]);
+    const present = new Set(opportunities.map((o) => o.confidence));
+    const active = serverState.confidence;
+    return CONFIDENCE_ORDER.filter((c) => present.has(c) || c === active);
+  }, [opportunities, serverState.confidence]);
 
-  const toggle = React.useCallback(
-    <T,>(setter: React.Dispatch<React.SetStateAction<Set<T>>>, value: T) => {
-      setter((cur) => {
-        const next = new Set(cur);
-        if (next.has(value)) next.delete(value);
-        else next.add(value);
-        return next;
-      });
-    },
-    [],
-  );
-
-  const processed = React.useMemo(() => {
-    if (controlled) return plans;
-    const q = query.trim().toLowerCase();
-    let out = plans.filter((p) => {
-      if (q && !`${p.file_path} ${p.target_symbol}`.toLowerCase().includes(q)) return false;
-      if (effortSel.size && !effortSel.has((p.effort_bucket || "M") as EffortBucket)) return false;
-      if (confSel.size && !confSel.has((p.confidence || "medium") as Confidence)) return false;
-      return true;
-    });
-    // `canonical` keeps the shared service's rank order; the rest sort a copy.
-    if (sortKey !== "canonical") {
-      out = [...out].sort((a, b) => {
-        switch (sortKey) {
-          case "health":
-            return b.impact_delta - a.impact_delta;
-          case "effort":
-            return (
-              EFFORT_RANK[(a.effort_bucket || "M") as EffortBucket] -
-              EFFORT_RANK[(b.effort_bucket || "M") as EffortBucket]
-            );
-          case "blast":
-            return blastCount(b) - blastCount(a);
-          case "file":
-            return a.file_path.localeCompare(b.file_path);
-          default:
-            return 0;
-        }
-      });
-    }
-    return out;
-  }, [controlled, plans, query, sortKey, effortSel, confSel]);
-
-  React.useEffect(() => {
-    setVisibleCount(PAGE_SIZE);
-  }, [processed]);
-
-  if ((summary?.total ?? every.length) === 0) {
+  const rollupTotal =
+    summary && summary.status === "available" ? summary.opportunities_total : null;
+  if ((rollupTotal ?? opportunities.length) === 0 && serverState.status === "open") {
     return (
       <div className="border-t border-[var(--color-border-default)] pt-10 text-center">
         <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">{emptyTitle}</h3>
@@ -214,26 +148,36 @@ export function RefactoringBoard({
   }
 
   const filtersActive =
-    activeQuery.trim() !== "" || activeEfforts.size > 0 || activeConfidences.size > 0;
-  const displayed = controlled ? processed : processed.slice(0, visibleCount);
-  const resultTotal = controlled ? server.total : processed.length;
+    serverState.query.trim() !== "" ||
+    serverState.effort !== null ||
+    serverState.confidence !== null ||
+    serverState.mechanicalOnly ||
+    serverState.status !== "open";
+  const resultTotal = serverState.total;
 
   return (
     <div className="space-y-10">
       {showLede ? (
-        <RefactoringLede plans={every} summary={summary} indexedFileCount={indexedFileCount} />
+        <RefactoringLede summary={summary} indexedFileCount={indexedFileCount} />
       ) : null}
 
-      {showLede && structural.length > 0 ? (
-        <StartHere plans={structural} onOpen={onOpen} onSeeAll={onSeeStructural} />
+      {showLede && (structuralOpportunities?.length ?? 0) > 0 ? (
+        <StartHere
+          opportunities={structuralOpportunities ?? []}
+          onOpen={onOpen}
+          onSeeAll={onSeeStructural}
+          highlightedId={highlighted}
+          onHighlight={setHighlighted}
+        />
       ) : null}
 
       <section className="space-y-4 border-t border-[var(--color-border-default)] pt-8">
         <div>
           <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">{sectionTitle}</h2>
           <p className="mt-1 max-w-[68ch] text-sm text-[var(--color-text-secondary)]">
-            Canonical priority balances benefit and leverage against cost and risk. Every plan opens
-            the same inspector with the full explanation.
+            One row is one file&apos;s work, with its steps in dependency-safe order. The
+            recommended order rotates cause and area so the head is a set of choices; every row
+            opens the same inspector with the full explanation.
           </p>
         </div>
 
@@ -241,15 +185,11 @@ export function RefactoringBoard({
           <div className="relative min-w-[220px] flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
             <Input
-              value={activeQuery}
-              onChange={(e) =>
-                controlled
-                  ? onServerStateChange?.({ query: e.target.value, offset: 0 })
-                  : setQuery(e.target.value)
-              }
-              placeholder="Search file or symbol"
+              value={serverState.query}
+              onChange={(e) => onServerStateChange({ query: e.target.value, offset: 0 })}
+              placeholder="Search by file path"
               className="pl-9"
-              aria-label="Search plans"
+              aria-label="Search opportunities by file path"
             />
           </div>
           <div className="flex items-center gap-2">
@@ -261,14 +201,9 @@ export function RefactoringBoard({
             </label>
             <select
               id="refactoring-sort"
-              value={activeSort}
+              value={serverState.order}
               onChange={(e) =>
-                controlled
-                  ? onServerStateChange?.({
-                      sort: e.target.value as RefactoringSortKey,
-                      offset: 0,
-                    })
-                  : setSortKey(e.target.value as RefactoringSortKey)
+                onServerStateChange({ order: e.target.value as RefactoringOrder, offset: 0 })
               }
               className="h-9 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 text-sm text-[var(--color-text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-accent-primary)]"
             >
@@ -281,58 +216,58 @@ export function RefactoringBoard({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-          <div className="flex items-center gap-2">
-            <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-              Effort
-            </span>
-            {EFFORTS.map((e) => (
-              <FilterChip
-                key={e}
-                active={activeEfforts.has(e)}
-                onClick={() =>
-                  controlled
-                    ? onServerStateChange?.({
-                        efforts: activeEfforts.has(e)
-                          ? server.efforts.filter((item) => item !== e)
-                          : [...server.efforts, e],
-                        offset: 0,
-                      })
-                    : toggle(setEffortSel, e)
-                }
-                label={EFFORT_LABEL_LONG[e]}
-              />
-            ))}
-          </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          {/* Selects, not chip rows. Status, effort and confidence are each a
+              single choice over a closed set, which is what a select is for -
+              three rows of chips spent a third of the page saying so, and a
+              chip row implies multi-select to anyone who has used one. The
+              mechanical filter stays a chip because it is a boolean, not a
+              choice among values. */}
+          <FilterSelect
+            label="Status"
+            value={serverState.status}
+            onChange={(v) =>
+              onServerStateChange({ status: v as OpportunityStatus, offset: 0 })
+            }
+            options={TRIAGE_STATUSES.map((o) => ({ value: o.value, label: o.label }))}
+          />
+          <FilterSelect
+            label="Effort"
+            value={serverState.effort ?? ""}
+            onChange={(v) =>
+              onServerStateChange({ effort: (v || null) as EffortBucket | null, offset: 0 })
+            }
+            options={[
+              { value: "", label: "Any" },
+              ...EFFORTS.map((e) => ({ value: e, label: EFFORT_LABEL_LONG[e] })),
+            ]}
+          />
           {confidencesPresent.length > 1 ? (
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-                Confidence
-              </span>
-              {confidencesPresent.map((c) => (
-                <FilterChip
-                  key={c}
-                  active={activeConfidences.has(c)}
-                  onClick={() =>
-                    controlled
-                      ? onServerStateChange?.({
-                          confidences: activeConfidences.has(c)
-                            ? server.confidences.filter((item) => item !== c)
-                            : [...server.confidences, c],
-                          offset: 0,
-                        })
-                      : toggle(setConfSel, c)
-                  }
-                  label={CONFIDENCE_LABEL[c]}
-                />
-              ))}
-            </div>
+            <FilterSelect
+              label="Confidence"
+              value={serverState.confidence ?? ""}
+              onChange={(v) =>
+                onServerStateChange({ confidence: (v || null) as Confidence | null, offset: 0 })
+              }
+              options={[
+                { value: "", label: "Any" },
+                ...confidencesPresent.map((c) => ({ value: c, label: CONFIDENCE_LABEL[c] })),
+              ]}
+            />
           ) : null}
+          <FilterChip
+            active={serverState.mechanicalOnly}
+            onClick={() =>
+              onServerStateChange({ mechanicalOnly: !serverState.mechanicalOnly, offset: 0 })
+            }
+            label="Has a mechanical step"
+          />
         </div>
 
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold tabular-nums text-[var(--color-text-primary)]">
-            {resultTotal.toLocaleString()} plan{resultTotal === 1 ? "" : "s"}
+            {resultTotal.toLocaleString()} {STATUS_LABEL[serverState.status].toLowerCase()}{" "}
+            opportunit{resultTotal === 1 ? "y" : "ies"}
             {filtersActive ? (
               <span className="font-normal text-[var(--color-text-tertiary)]"> matching</span>
             ) : null}
@@ -340,20 +275,16 @@ export function RefactoringBoard({
           {filtersActive ? (
             <button
               type="button"
-              onClick={() => {
-                if (controlled)
-                  onServerStateChange?.({
-                    query: "",
-                    efforts: [],
-                    confidences: [],
-                    offset: 0,
-                  });
-                else {
-                setQuery("");
-                setEffortSel(new Set());
-                setConfSel(new Set());
-                }
-              }}
+              onClick={() =>
+                onServerStateChange({
+                  query: "",
+                  status: "open",
+                  effort: null,
+                  confidence: null,
+                  mechanicalOnly: false,
+                  offset: 0,
+                })
+              }
               className="text-xs text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-text-primary)] hover:underline"
             >
               Clear filters
@@ -361,53 +292,42 @@ export function RefactoringBoard({
           ) : null}
         </div>
 
-        {processed.length === 0 ? (
+        {opportunities.length === 0 ? (
           <p className="border-t border-[var(--color-border-default)] py-10 text-center text-sm text-[var(--color-text-tertiary)]">
-            No plans match these filters.
+            {serverState.status === "open"
+              ? "No opportunities match these filters."
+              : `Nothing has been marked ${STATUS_LABEL[serverState.status].toLowerCase()} yet.`}
           </p>
         ) : (
           <>
-            <PlanRows
-              plans={displayed}
+            <OpportunityRows
+              opportunities={opportunities}
               onOpen={onOpen}
               onAiPrompt={onAiPrompt}
+              onStatusChange={onStatusChange}
               fileHref={fileHref}
+              highlightedId={highlighted}
+              onHighlight={setHighlighted}
             />
-            {!controlled && processed.length > visibleCount ? (
-              <div className="flex justify-center border-t border-[var(--color-border-default)] pt-5">
-                <button
-                  type="button"
-                  onClick={() => setVisibleCount((n) => n + PAGE_SIZE)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] px-4 py-2 text-sm font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)]"
-                >
-                  Show {Math.min(PAGE_SIZE, processed.length - visibleCount)} more
-                  <span className="tabular-nums text-[var(--color-text-tertiary)]">
-                    · {(processed.length - visibleCount).toLocaleString()} left
-                  </span>
-                </button>
-              </div>
-            ) : null}
-            {controlled ? (
-              <PaginationControls
-                offset={server.offset}
-                shown={plans.length}
-                total={server.total}
-                label="plans"
-                onPrevious={
-                  server.offset > 0
-                    ? () =>
-                        onServerStateChange?.({
-                          offset: Math.max(0, server.offset - PAGE_SIZE),
-                        })
-                    : undefined
-                }
-                onNext={
-                  server.nextOffset != null
-                    ? () => onServerStateChange?.({ offset: server.nextOffset! })
-                    : undefined
-                }
-              />
-            ) : null}
+            <PaginationControls
+              offset={serverState.offset}
+              shown={opportunities.length}
+              total={serverState.total}
+              label="opportunities"
+              onPrevious={
+                serverState.offset > 0
+                  ? () =>
+                      onServerStateChange({
+                        offset: Math.max(0, serverState.offset - PAGE_SIZE),
+                      })
+                  : undefined
+              }
+              onNext={
+                serverState.nextOffset != null
+                  ? () => onServerStateChange({ offset: serverState.nextOffset! })
+                  : undefined
+              }
+            />
           </>
         )}
       </section>

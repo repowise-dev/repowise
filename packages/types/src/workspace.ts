@@ -40,6 +40,20 @@ export interface WorkspaceContractLinkEntry {
   consumer_repo: string;
   consumer_file: string;
   consumer_symbol: string;
+  /**
+   * Service boundary the provider sits behind, when the workspace declares one.
+   * Matching skips a pair only when the repo *and* the service are the same, so
+   * this is what explains a link between two services inside one repo.
+   */
+  provider_service: string | null;
+  /** The same, for the calling side. */
+  consumer_service: string | null;
+  /**
+   * The linked contracts' symbol ids, so a caller can name the code rather than
+   * a display label. Null when that side never bound to one.
+   */
+  provider_symbol_id: string | null;
+  consumer_symbol_id: string | null;
 }
 
 export interface WorkspaceCoChangeEntry {
@@ -133,7 +147,11 @@ export interface SystemGraph {
 // ---------------------------------------------------------------------------
 
 /** Why a consumer contract never formed a cross-repo link. */
-export type UnmatchedReason = "no_provider" | "internal_only" | "unlinked";
+export type UnmatchedReason =
+  | "no_provider"
+  | "internal_only"
+  | "unlinked"
+  | "external_host";
 
 export interface RepoDiagnostics {
   repo: string;
@@ -270,6 +288,8 @@ export interface BreakingChangeConsumer {
   /** The exact consumer file that calls the changed contract. */
   file: string;
   symbol: string;
+  /** Looked-up id for `symbol`; `null` when the consumer did not resolve to one. */
+  symbol_id?: string | null;
   match_type: string;
   confidence: number;
 }
@@ -283,6 +303,8 @@ export interface BreakingChange {
   provider_repo: string;
   provider_file: string;
   provider_symbol: string;
+  /** Looked-up id for `provider_symbol`; `null` when it did not resolve to one. */
+  provider_symbol_id?: string | null;
   provider_service: string | null;
   /** System-graph node id of the changed provider. */
   provider_node_id: string;

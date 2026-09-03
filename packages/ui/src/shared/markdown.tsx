@@ -34,6 +34,7 @@ import { lazy, Suspense, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
+import { CodeFrame, HighlightedCodeBlock } from "./code-block";
 
 // Mermaid pulls a heavy renderer that is strictly client-side. Lazy-load it so
 // it never enters the chat bundle (or SSR pass) unless a reply actually contains
@@ -87,90 +88,82 @@ const SCALES: Record<MarkdownDensity, Scale> = {
   },
 };
 
-function buildComponents(s: Scale): Components {
+function buildComponents(s: Scale, streaming: boolean): Components {
+  const measure = s.body === "text-base" ? "max-w-[72ch]" : "max-w-full";
   return {
     h1: ({ children }) => (
       <h1
-        className={`${s.h1} font-semibold text-[var(--color-text-primary)]`}
+        className={`${s.h1} ${measure} font-semibold text-[var(--color-text-primary)] [overflow-wrap:anywhere]`}
       >
         {children}
       </h1>
     ),
     h2: ({ children }) => (
       <h2
-        className={`${s.h2} font-semibold text-[var(--color-text-primary)]`}
+        className={`${s.h2} ${measure} font-semibold text-[var(--color-text-primary)] [overflow-wrap:anywhere]`}
       >
         {children}
       </h2>
     ),
     h3: ({ children }) => (
       <h3
-        className={`${s.h3} font-semibold text-[var(--color-text-primary)]`}
+        className={`${s.h3} ${measure} font-semibold text-[var(--color-text-primary)] [overflow-wrap:anywhere]`}
       >
         {children}
       </h3>
     ),
     p: ({ children }) => (
       <p
-        className={`${s.body} ${s.gap} text-[var(--color-text-primary)] leading-relaxed`}
+        className={`${s.body} ${s.gap} ${measure} text-[var(--color-text-primary)] leading-relaxed [overflow-wrap:anywhere]`}
       >
         {children}
       </p>
     ),
     ul: ({ children }) => (
       <ul
-        className={`list-disc ${s.listIndent} ${s.list} ${s.gap} text-[var(--color-text-primary)]`}
+        className={`list-disc ${s.listIndent} ${s.list} ${s.gap} ${measure} text-[var(--color-text-primary)] [&.contains-task-list]:ml-0 [&.contains-task-list]:list-none`}
       >
         {children}
       </ul>
     ),
     ol: ({ children }) => (
       <ol
-        className={`list-decimal ${s.listIndent} ${s.list} ${s.gap} text-[var(--color-text-primary)]`}
+        className={`list-decimal ${s.listIndent} ${s.list} ${s.gap} ${measure} text-[var(--color-text-primary)]`}
       >
         {children}
       </ol>
     ),
-    li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-    code: ({ className, children, ...props }) => {
-      const isBlock = className?.includes("language-");
+    li: ({ children, className }) => <li className={`${className ?? ""} leading-relaxed [overflow-wrap:anywhere] [&>p]:mb-1`}>{children}</li>,
+    input: ({ type, node: _node, ...props }) => type === "checkbox" ? (
+      <input type="checkbox" disabled className="mr-2 align-middle accent-[var(--color-accent-secondary)]" {...props} />
+    ) : <input type={type} {...props} />,
+    code: ({ className, children, node: _node, ...props }) => {
+      const declaredLanguage = className?.match(/language-([^\s]+)/)?.[1];
+      const rawCode = String(children ?? "");
+      const isBlock = Boolean(declaredLanguage) || rawCode.includes("\n");
       if (isBlock) {
-        const isMermaid = className?.includes("language-mermaid");
-        const fence = `${s.block} rounded-lg bg-[var(--color-bg-inset)] border border-[var(--color-border-default)] p-4 overflow-x-auto`;
-        if (isMermaid) {
-          const chart = String(children ?? "").replace(/\n$/, "");
+        const language = declaredLanguage ?? "text";
+        const code = rawCode.replace(/\n$/, "");
+        if (language === "mermaid") {
           return (
-            <Suspense
-              fallback={
-                <pre className={fence}>
-                  <code
-                    className={`${s.code} font-mono text-[var(--color-text-primary)]`}
-                  >
-                    {chart}
-                  </code>
-                </pre>
-              }
-            >
-              <MermaidDiagram chart={chart} />
-            </Suspense>
+            <CodeFrame code={code} language={language} compact={s.body !== "text-base"}>
+              {streaming ? (
+                <pre className="m-0 min-w-max p-4"><code className="font-mono text-[var(--color-text-primary)]">{code}</code></pre>
+              ) : (
+                <Suspense fallback={<pre className="m-0 min-w-max p-4"><code className="font-mono text-[var(--color-text-primary)]">{code}</code></pre>}>
+                  <MermaidDiagram chart={code} />
+                </Suspense>
+              )}
+            </CodeFrame>
           );
         }
-        return (
-          <pre className={fence}>
-            <code
-              className={`${s.code} font-mono text-[var(--color-text-primary)]`}
-              {...props}
-            >
-              {children}
-            </code>
-          </pre>
-        );
+        return <HighlightedCodeBlock code={code} language={language} compact={s.body !== "text-base"} streaming={streaming} />;
       }
       // 0.85em, relative: Geist Mono runs wider and taller than Geist at the
       // same nominal size, so 1em mono inside 16px sans reads oversized.
       return (
         <code
-          className="rounded px-1 py-0.5 bg-[var(--color-bg-inset)] text-[var(--color-text-primary)] text-[0.85em] font-mono"
+          className="break-all whitespace-normal rounded px-1 py-0.5 bg-[var(--color-bg-inset)] text-[var(--color-text-primary)] text-[0.85em] font-mono [overflow-wrap:anywhere]"
           {...props}
         >
           {children}
@@ -180,7 +173,7 @@ function buildComponents(s: Scale): Components {
     pre: ({ children }) => <>{children}</>,
     blockquote: ({ children }) => (
       <blockquote
-        className={`${s.block} ${s.body} border-l-2 border-[var(--color-border-default)] pl-4 text-[var(--color-text-secondary)]`}
+        className={`${s.block} ${s.body} ${measure} border-l-2 border-[var(--color-border-default)] pl-4 text-[var(--color-text-secondary)] [overflow-wrap:anywhere]`}
       >
         {children}
       </blockquote>
@@ -188,7 +181,7 @@ function buildComponents(s: Scale): Components {
     a: ({ href, children }) => (
       <a
         href={href}
-        className="text-[var(--color-accent-primary)] hover:underline"
+        className="text-[var(--color-accent-primary)] underline underline-offset-2 [overflow-wrap:anywhere]"
         target="_blank"
         rel="noopener noreferrer"
       >
@@ -196,8 +189,8 @@ function buildComponents(s: Scale): Components {
       </a>
     ),
     table: ({ children }) => (
-      <div className={`${s.block} overflow-x-auto`}>
-        <table className={`${s.code} w-full border-collapse`}>{children}</table>
+      <div className={`${s.block} max-w-full overflow-x-auto overscroll-x-contain border-y border-[var(--color-border-default)]`}>
+        <table className={`${s.code} w-full min-w-[640px] border-collapse`}>{children}</table>
       </div>
     ),
     thead: ({ children }) => (
@@ -206,7 +199,7 @@ function buildComponents(s: Scale): Components {
       </thead>
     ),
     th: ({ children }) => (
-      <th className={`text-left px-3 py-2 font-normal ${MICRO_LABEL}`}>
+      <th scope="col" className={`text-left px-3 py-2.5 font-normal ${MICRO_LABEL}`}>
         {children}
       </th>
     ),
@@ -216,7 +209,7 @@ function buildComponents(s: Scale): Components {
       </tr>
     ),
     td: ({ children }) => (
-      <td className="px-3 py-2 text-[var(--color-text-primary)] tabular-nums">
+      <td className="px-3 py-2.5 align-top text-[var(--color-text-primary)] tabular-nums [overflow-wrap:anywhere]">
         {children}
       </td>
     ),
@@ -235,12 +228,14 @@ export interface MarkdownProps {
   content: string;
   /** `compact` keeps chrome sizes for narrow panels. */
   density?: MarkdownDensity;
+  /** Defers expensive code/diagram rendering until the answer is complete. */
+  streaming?: boolean;
 }
 
-export function Markdown({ content, density = "reading" }: MarkdownProps) {
+export function Markdown({ content, density = "reading", streaming = false }: MarkdownProps) {
   const components = useMemo(
-    () => buildComponents(SCALES[density]),
-    [density],
+    () => buildComponents(SCALES[density], streaming),
+    [density, streaming],
   );
   return (
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>

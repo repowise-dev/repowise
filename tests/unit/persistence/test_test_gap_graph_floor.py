@@ -97,3 +97,59 @@ async def test_a_co_change_edge_does_not_clear_a_gap(async_session):
     analyzer = PRBlastRadiusAnalyzer(async_session, repo.id)
     assert await analyzer._find_test_gaps(["src/lonely.py"]) == ["src/lonely.py"]
     assert await _check_test_gap(async_session, repo.id, "src/lonely.py") is True
+
+
+async def test_a_dispatch_named_module_is_not_a_gap_when_its_test_drops_the_prefix(
+    async_session,
+):
+    """``tool_dead_code.py`` is tested by ``test_dead_code.py``, and the graph
+    cannot say so: the test imports it through a package re-export and the
+    barrel dispatches on by name. The filename fallback is the only signal left,
+    so it has to try the stem the test is actually named for."""
+    repo = await _seed(
+        async_session,
+        [],
+        [
+            ("tests/test_dead_code.py", True),
+            ("tests/test_risk.py", True),
+            ("src/mcp/tool_dead_code.py", False),
+            ("src/mcp/get_risk.py", False),
+        ],
+    )
+    analyzer = PRBlastRadiusAnalyzer(async_session, repo.id)
+    assert await analyzer._find_test_gaps(["src/mcp/tool_dead_code.py", "src/mcp/get_risk.py"]) == []
+
+
+async def test_stripping_the_prefix_does_not_clear_an_unrelated_file(async_session):
+    """Widening the evidence must not lower the bar to "some test exists"."""
+    repo = await _seed(
+        async_session,
+        [],
+        [("tests/test_dead_code.py", True), ("src/mcp/tool_search.py", False)],
+    )
+    analyzer = PRBlastRadiusAnalyzer(async_session, repo.id)
+    assert await analyzer._find_test_gaps(["src/mcp/tool_search.py"]) == ["src/mcp/tool_search.py"]
+
+
+def test_a_stripped_stem_too_short_to_mean_anything_is_not_offered():
+    """``get_id.py`` must not be cleared by every ``test_identity.py`` around."""
+    from repowise.core.analysis.pr_blast import test_name_stems
+
+    assert test_name_stems("tool_dead_code") == [("tool_dead_code", False), ("dead_code", True)]
+    assert test_name_stems("get_id") == [("get_id", False)]
+    assert test_name_stems("service") == [("service", False)]
+
+
+async def test_a_stripped_stem_does_not_match_a_longer_word_it_prefixes(async_session):
+    """``tool_repos`` strips to ``repos``, which is a prefix of ``repository``.
+
+    The full stem keeps its substring match; a stripped one has to be named
+    exactly, or widening the evidence would quietly become "some test exists".
+    """
+    repo = await _seed(
+        async_session,
+        [],
+        [("tests/test_repository_head_commit.py", True), ("src/mcp/tool_repos.py", False)],
+    )
+    analyzer = PRBlastRadiusAnalyzer(async_session, repo.id)
+    assert await analyzer._find_test_gaps(["src/mcp/tool_repos.py"]) == ["src/mcp/tool_repos.py"]

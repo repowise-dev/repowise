@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * The row that says what the map's marks mean, plus the one control over them.
+ * The row that says what the map's marks mean, plus the controls over them.
  *
  * Chrome goes *around* a canvas, never on it, so this is a hairline row under
  * the map rather than another floating panel. It carries the two things a card
@@ -10,47 +10,65 @@
  * the two dots shared a palette, so working out one taught you the wrong thing
  * about the other.
  *
- * Why one toggle and not a verb filter. Measured on a live index, the arrows
- * carry three verbs, not the seven the label vocabulary allows: `imports`
- * 80.5%, `uses` 14.3%, `co-changes` 5.3%. `calls`, `inherits from`,
- * `implements` and `references` cannot occur at all, because the zoom map is
- * fed file-level edges and those four are symbol-level. On top of that, 89% of
- * boxes carry a single verb across every one of their relations, so a general
- * filter would do nothing on nine boxes in ten and its main visible effect
- * would be arrows vanishing.
+ * Why a verb filter now, when a single co-changes toggle was right before. The
+ * toggle was sized against a map fed file-level edges only: the arrows carried
+ * three verbs, 80.5% of them `imports`, four of the label vocabulary's seven
+ * "could not occur at all" because they are symbol-level, and 89% of boxes had
+ * one verb across every relation. A general filter would have done nothing on
+ * nine boxes in ten.
  *
- * Co-changes is the exception worth a control: files that change together
- * without importing each other, which is coupling no other view on the site
- * surfaces, and which is invisible here by default because it is drowned by
- * the imports it shares a canvas with.
+ * Projecting the symbol graph onto file pairs removed that argument rather than
+ * weakening it. The four missing verbs now occur: Ocelot draws all seven, and
+ * the share of boxes carrying more than one verb goes 48% -> 67% there and
+ * 8% -> 32% on jhipster-sample-app. "Show me what calls what, not what imports
+ * what" is a question the map can now answer, so the control earns its place.
+ *
+ * No verbs selected means every verb draws, rather than an empty canvas. A
+ * filter whose natural resting state hides everything trains people not to
+ * touch it.
  */
 
-import { CO_CHANGES } from "@repowise-dev/ui/zoom";
+import { FilterChip } from "@repowise-dev/ui/health";
+import { type VerbCount, toggleVerb } from "@repowise-dev/ui/zoom";
 import { HEALTH_BAND_LABEL } from "@repowise-dev/types/health";
 
 interface ZoomMapKeyProps {
-  /** Null = every relation draws; CO_CHANGES = only co-change relations. */
-  verb: string | null;
-  onVerbChange: (verb: string | null) => void;
-  /** Co-change relations in the whole map, so the toggle can carry its figure. */
-  coChangeCount: number;
+  /** Every verb present in the loaded map, descending by count. */
+  verbs: VerbCount[];
+  /** Files placed in the tree, and files curation left in no layer. The second
+   *  is the map's missing denominator: without it, a map short one file in
+   *  seven reads as complete. */
+  totalFiles: number;
+  unclaimedFiles: number;
+  /** Null = every relation draws; otherwise only these verbs do. */
+  selected: ReadonlySet<string> | null;
+  onSelectedChange: (verbs: ReadonlySet<string> | null) => void;
 }
 
 function Dot({ className }: { className: string }) {
   return <span aria-hidden className={`inline-block h-2 w-2 shrink-0 rounded-full ${className}`} />;
 }
 
-export function ZoomMapKey({ verb, onVerbChange, coChangeCount }: ZoomMapKeyProps) {
-  const only = verb === CO_CHANGES;
+export function ZoomMapKey({
+  verbs,
+  totalFiles,
+  unclaimedFiles,
+  selected,
+  onSelectedChange,
+}: ZoomMapKeyProps) {
+  const filtered = selected !== null;
 
   return (
     <div className="mt-3 border-t border-[var(--color-border-default)] pt-3">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-baseline sm:justify-between">
         <p className="min-w-0 text-[13px] leading-relaxed text-[var(--color-text-secondary)]">
-          {only ? (
+          {filtered ? (
             <>
-              Showing <span className="text-[var(--color-text-primary)]">co-changes only</span>:
-              files that change in the same commits without importing each other.
+              Showing{" "}
+              <span className="text-[var(--color-text-primary)]">
+                {[...selected].join(", ")}
+              </span>{" "}
+              only. Arrow weight is how many file pairs the relation covers.
             </>
           ) : (
             <>
@@ -58,25 +76,43 @@ export function ZoomMapKey({ verb, onVerbChange, coChangeCount }: ZoomMapKeyProp
               dependency covers.
             </>
           )}
+          {unclaimedFiles > 0 && (
+            /* Silence when nothing is missing: "0 not shown" is noise. */
+            <>
+              {" "}
+              {unclaimedFiles.toLocaleString()} of{" "}
+              {(totalFiles + unclaimedFiles).toLocaleString()} files are not on the map; they
+              belong to no layer.
+            </>
+          )}
         </p>
-        {/* A count on the control tells you whether it is worth a click before
-            you spend one. Only shown because it is already in the loaded map. */}
-        <button
-          type="button"
-          onClick={() => onVerbChange(only ? null : CO_CHANGES)}
-          aria-pressed={only}
-          disabled={coChangeCount === 0}
-          className={`shrink-0 self-start rounded-md border px-2.5 py-1 text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:self-auto ${
-            only
-              ? "border-[var(--color-accent-primary)] text-[var(--color-accent-primary)]"
-              : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]"
-          }`}
-        >
-          Co-changes only{" "}
-          <span className="font-mono tabular-nums text-[var(--color-text-tertiary)]">
-            {coChangeCount.toLocaleString()}
-          </span>
-        </button>
+        {verbs.length > 1 && (
+          /* Counts sit on the chips so you can tell whether one is worth a
+             click before you spend one. Already in the loaded map. */
+          <div className="flex flex-wrap items-center gap-1.5">
+            {verbs.map(({ verb, count }) => (
+              <FilterChip
+                key={verb}
+                active={selected?.has(verb) ?? false}
+                onClick={() => onSelectedChange(toggleVerb(selected, verb))}
+              >
+                {verb}{" "}
+                <span className="font-mono tabular-nums text-[var(--color-text-tertiary)]">
+                  {count.toLocaleString()}
+                </span>
+              </FilterChip>
+            ))}
+            {filtered && (
+              <button
+                type="button"
+                onClick={() => onSelectedChange(null)}
+                className="rounded-md px-2 py-1 text-xs text-[var(--color-text-secondary)] underline-offset-2 transition-colors hover:text-[var(--color-text-primary)] hover:underline"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* The dots. Health keeps the traffic light because the colours carry a

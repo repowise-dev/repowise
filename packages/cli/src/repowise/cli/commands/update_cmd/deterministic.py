@@ -179,7 +179,7 @@ def _render_pages(
 
         generator = PageGenerator(
             TemplateProvider(),
-            ContextAssembler(config),
+            ContextAssembler(config, repo_path=repo_path),
             config,
             vector_store=vector_store,
             language=config.language,

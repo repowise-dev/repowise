@@ -35,6 +35,7 @@ import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import {
   formatBytes,
   formatCost,
+  formatDateTime,
   formatLOC,
   formatNumber,
   formatRelativeTime,
@@ -92,7 +93,7 @@ export default async function OverviewPage({ params }: Props) {
   if (lastActivityAt) {
     meta.push({
       label: `synced ${formatRelativeTime(lastActivityAt)}`,
-      title: new Date(lastActivityAt).toLocaleString(),
+      title: formatDateTime(lastActivityAt),
     });
   }
 

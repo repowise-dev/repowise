@@ -1,17 +1,25 @@
 """Shared output-budget enforcement for MCP tools.
 
 Every MCP tool that trims its response to fit the transport token cap goes
-through this package instead of rolling its own silent drop. Two pieces:
+through this package instead of rolling its own silent drop. Three pieces:
 
 * :func:`truncate_to_budget` — the staged whole-response truncation strategy
-  (originally built for ``get_context``), now the reference implementation.
+  built for (and shaped by) ``get_context``'s targets/docs/symbols payload.
+* :func:`fit_to_budget` — the whole-response ceiling for tools whose payload is
+  a bag of independent blocks: sheds them in a tool-declared order until the
+  response fits.
 * :class:`OmissionCollector` — captures whatever a tool drops, persists it to
   the durable omission store, and stamps the response with a
   ``[repowise#<ref>]`` marker plus ``_meta.omitted`` so the content stays
   recoverable via ``repowise expand <ref>`` or ``get_symbol("repowise#<ref>")``.
 
-Tools that don't use the staged truncator (fixed per-list caps) use the
-collector directly at their cap sites.
+Tools with fixed per-list caps use the collector directly at their cap sites,
+under whichever whole-response ceiling they enforce.
+
+Every tool is budgeted. A tool that declares no shed order still gets the final
+size guard, so nothing reaches an agent unbounded and unflagged. The handful of
+tools needing a step of their own once shedding has settled register it through
+:mod:`._hooks` rather than being named inside the shared layer.
 """
 
 from __future__ import annotations
@@ -19,25 +27,52 @@ from __future__ import annotations
 from repowise.server.mcp_server._budget.budgeter import (
     CHAR_BUDGET,
     CHARS_PER_TOKEN,
+    FIT_HEADROOM_CHARS,
     HOST_CAP_BUDGET_FRACTION,
     HOST_MCP_TOKEN_CAP_DEFAULT,
     TOKEN_BUDGET,
     effective_char_budget,
     estimate_response_tokens,
+    fit_to_budget,
     host_token_cap,
+    over_budget,
     truncate_to_budget,
 )
-from repowise.server.mcp_server._budget.collector import OmissionCollector
+from repowise.server.mcp_server._budget.collector import OmissionCollector, cap_collection
+from repowise.server.mcp_server._budget.contracts import (
+    DEFAULT_RESPONSE_CHARS,
+    EXPANDED_RESPONSE_CHARS,
+    budgeted_tool_names,
+    enforce_response_budget,
+    resolve_response_budget_repo_root,
+)
+from repowise.server.mcp_server._budget.hooks import (
+    register_post_enforce,
+    register_post_shed,
+    registered_hook_tools,
+)
 
 __all__ = [
     "CHARS_PER_TOKEN",
     "CHAR_BUDGET",
+    "DEFAULT_RESPONSE_CHARS",
+    "EXPANDED_RESPONSE_CHARS",
+    "FIT_HEADROOM_CHARS",
     "HOST_CAP_BUDGET_FRACTION",
     "HOST_MCP_TOKEN_CAP_DEFAULT",
     "TOKEN_BUDGET",
     "OmissionCollector",
+    "budgeted_tool_names",
+    "cap_collection",
     "effective_char_budget",
+    "enforce_response_budget",
     "estimate_response_tokens",
+    "fit_to_budget",
     "host_token_cap",
+    "over_budget",
+    "register_post_enforce",
+    "register_post_shed",
+    "registered_hook_tools",
+    "resolve_response_budget_repo_root",
     "truncate_to_budget",
 ]

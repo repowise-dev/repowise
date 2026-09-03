@@ -30,10 +30,14 @@ describe("ChatMessage", () => {
     ).toBeNull();
   });
 
-  it("renders the question above the reply's body size", () => {
+  it("renders the user on the opposite side with a neutral identity surface", () => {
     render(<ChatMessage message={USER} repoId="r1" />);
+    const turn = screen.getByRole("article", { name: "You" });
+    expect(turn.className).toContain("justify-end");
+    expect(turn).toHaveAttribute("data-chat-role", "user");
+    expect(screen.getByText("You")).toBeInTheDocument();
     expect(screen.getByText("Where is auth handled?").className).toContain(
-      "text-lg",
+      "bg-[var(--color-bg-surface)]",
     );
   });
 

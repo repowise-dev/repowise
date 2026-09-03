@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ..base import line_at
 from ..langs import JAVA
 from .dialect import build_provider_contract, nearest_prefix
 
@@ -49,7 +50,13 @@ class SpringDialect:
             prefix = nearest_prefix(class_mappings, m.start())
             if prefix:
                 path_raw = prefix + "/" + path_raw.lstrip("/")
-            c = build_provider_contract(ctx, method=method, path_raw=path_raw, framework="spring")
+            c = build_provider_contract(
+                ctx,
+                method=method,
+                path_raw=path_raw,
+                framework="spring",
+                line=line_at(content, m.start()),
+            )
             if c is not None:
                 out.append(c)
         return out

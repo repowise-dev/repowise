@@ -426,7 +426,7 @@ export const GraphToolbar = memo(function GraphToolbar({
           onKeyDown={onSearchKeyDown}
           placeholder="Search nodes…"
           aria-label="Search graph nodes"
-          className="w-28 bg-transparent text-xs text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] lg:w-40"
+          className="w-full min-w-0 sm:w-28 bg-transparent text-xs text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] lg:w-40"
         />
         {searchQuery && searchMatchCount != null && searchTotalCount != null && (
           <span className="whitespace-nowrap font-mono text-[10px] tabular-nums text-[var(--color-text-tertiary)]">

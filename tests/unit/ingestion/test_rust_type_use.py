@@ -3,8 +3,8 @@
 ``rust.scm`` used to capture parameter types, return types, trait bounds,
 ``dyn``/``impl`` Trait and turbofish type arguments as ``@call.target`` /
 ``@call.site``, so ``fn take(x: MyType)`` recorded the enclosing function as
-*calling* ``MyType``. A type is not callable, so every such edge was wrong
-(bug 46). The captures now carry ``@param.type`` and resolve to ``type_use``.
+*calling* ``MyType``. A type is not callable, so every such edge was wrong.
+The captures now carry ``@param.type`` and resolve to ``type_use``.
 
 Covers:
 

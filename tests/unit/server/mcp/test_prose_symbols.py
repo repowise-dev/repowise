@@ -82,5 +82,17 @@ def test_a_saturated_term_cannot_carry_a_leaf_name_match_alone():
     assert not _corroborated(_Sym("get"), {"get": 0.25}, saturated={"get"})
 
 
+def test_generic_member_name_alone_is_weak_even_when_not_saturated():
+    assert not _corroborated(_Sym("get"), {"get": 1.0}, saturated=set())
+
+
+def test_generic_member_survives_when_owner_or_module_context_agrees():
+    assert _corroborated(
+        _Sym("get"),
+        {"get": 0.25, "omission": 1.0, "store": 1.0},
+        saturated={"get"},
+    )
+
+
 def test_no_matched_terms_is_never_corroborated():
     assert not _corroborated(_Sym("_persist_symbols"), {}, saturated=set())

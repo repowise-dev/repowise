@@ -27,23 +27,12 @@ def test_every_table_row_names_a_registered_tool():
     assert not unknown, f"tool_table.py rows for unregistered tools: {unknown}"
 
 
-def test_core_default_surface_is_documented():
-    # The single-repo default surface an agent actually sees (list_repos is
-    # workspace plumbing and deliberately has no row).
-    core = {
-        "get_answer",
-        "get_context",
-        "get_symbol",
-        "search_codebase",
-        "get_overview",
-        "get_risk",
-        "get_change_risk",
-        "get_why",
-        "get_dead_code",
-        "get_health",
-    }
-    missing = core - set(TOOL_TABLE_ROWS)
-    assert not missing, f"default-surface tools missing a table row: {missing}"
+def test_agent_table_is_exactly_the_registry_canonical_tier():
+    from repowise.server.mcp_server import ensure_full_surface
+
+    ensure_full_surface()
+    canonical = {entry.name for entry in mcp_tool_registry.entries() if entry.tier == "canonical"}
+    assert set(TOOL_TABLE_ROWS) == canonical
 
 
 def test_render_produces_one_row_per_tool():
