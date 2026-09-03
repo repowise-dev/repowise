@@ -17,9 +17,33 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy import Boolean, Column
+from sqlalchemy.dialects import postgresql, sqlite
 
 from repowise.core.persistence import create_engine, init_db
 from repowise.core.persistence.models import Base
+
+
+@pytest.mark.parametrize(
+    ("dialect", "value", "expected"),
+    [
+        (sqlite.dialect(), False, '"pinned" BOOLEAN DEFAULT 0 NOT NULL'),
+        (sqlite.dialect(), True, '"pinned" BOOLEAN DEFAULT 1 NOT NULL'),
+        (postgresql.dialect(), False, '"pinned" BOOLEAN DEFAULT false NOT NULL'),
+        (postgresql.dialect(), True, '"pinned" BOOLEAN DEFAULT true NOT NULL'),
+    ],
+)
+def test_python_boolean_defaults_use_dialect_literals(
+    dialect: object,
+    value: bool,
+    expected: str,
+) -> None:
+    """Legacy-column DDL must be accepted by both supported databases."""
+    from repowise.core.persistence.database import _add_column_ddl
+
+    column = Column("pinned", Boolean, nullable=False, default=value)
+
+    assert _add_column_ddl(column, dialect) == expected
 
 
 def _table_columns(db_path: Path, table: str) -> set[str]:

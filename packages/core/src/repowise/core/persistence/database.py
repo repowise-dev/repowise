@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import structlog
-from sqlalchemy import event, inspect
+from sqlalchemy import event, inspect, literal
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -43,6 +43,7 @@ log = structlog.get_logger(__name__)
 # progress-callback write raises "database is locked". 5s was too tight
 # for large repos. SQLite blocks (doesn't busy-loop) so this is cheap.
 _SQLITE_BUSY_TIMEOUT_MS = 30000
+
 
 def _sqlite_pragmas(busy_timeout_ms: int) -> tuple[tuple[str, str], ...]:
     """Return the pragma list to apply to a SQLite connection.
@@ -299,7 +300,7 @@ async def get_session(
             raise
 
 
-def _column_default_sql(column: object) -> str | None:
+def _column_default_sql(column: object, dialect: object) -> str | None:
     """Return a SQL literal/expression suitable for an ADD COLUMN DEFAULT.
 
     Prefers ``server_default`` (the DDL-level default that the migration
@@ -323,7 +324,15 @@ def _column_default_sql(column: object) -> str | None:
         arg = getattr(py_default, "arg", None)
         if arg is not None and not callable(arg):
             if isinstance(arg, bool):
-                return "1" if arg else "0"
+                # Boolean literals are dialect-specific: SQLite accepts 0/1,
+                # while PostgreSQL requires false/true for BOOLEAN columns.
+                # Compile the typed value instead of treating bool as int.
+                return str(
+                    literal(arg, type_=column.type).compile(  # type: ignore[attr-defined]
+                        dialect=dialect,
+                        compile_kwargs={"literal_binds": True},
+                    )
+                )
             if isinstance(arg, (int, float)):
                 return str(arg)
             if isinstance(arg, str):
@@ -346,7 +355,7 @@ def _add_column_ddl(column: object, dialect: object) -> str:
         f'"{column.name}"',  # type: ignore[attr-defined]
         column.type.compile(dialect=dialect),  # type: ignore[attr-defined]
     ]
-    default_sql = _column_default_sql(column)
+    default_sql = _column_default_sql(column, dialect)
     if default_sql is not None:
         parts.append(f"DEFAULT {default_sql}")
     if not column.nullable:  # type: ignore[attr-defined]
@@ -447,8 +456,7 @@ def _reconcile_schema(connection: object) -> None:
             _run(
                 f"{table.name}.{column.name}",
                 lambda table=table, column=column: text(
-                    f'ALTER TABLE "{table.name}" ADD COLUMN '
-                    f"{_add_column_ddl(column, dialect)}"
+                    f'ALTER TABLE "{table.name}" ADD COLUMN {_add_column_ddl(column, dialect)}'
                 ),
             )
 
