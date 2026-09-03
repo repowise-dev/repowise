@@ -213,7 +213,132 @@ _NATS_PATTERNS: list[_PatternDef] = [
     ),
 ]
 
-_ALL_PATTERNS = _KAFKA_PATTERNS + _RABBITMQ_PATTERNS + _NATS_PATTERNS
+# --- SQS ---
+
+_SQS_PATTERNS: list[_PatternDef] = [
+    # Python boto3: sqs.send_message(QueueUrl='my-queue') / sqs.sendMessage
+    _PatternDef(
+        regex=re.compile(r"""sqs\s*\.\s*send_message\s*\([^)]*QueueUrl\s*=\s*['"]([^'"]+)['"]"""),
+        role="provider",
+        broker="sqs",
+        confidence=0.8,
+        topic_group=1,
+        label="sqs.send_message",
+    ),
+    # JS AWS SDK v3: sqs.sendMessage({ QueueUrl: 'my-queue' })
+    _PatternDef(
+        regex=re.compile(r"""sqs\s*\.\s*sendMessage\s*\(\s*\{\s*QueueUrl\s*:\s*['"]([^'"]+)['"]"""),
+        role="provider",
+        broker="sqs",
+        confidence=0.8,
+        topic_group=1,
+        label="sqs.sendMessage",
+    ),
+    # JS/TS: sqs.receiveMessage({ QueueUrl: 'my-queue' })
+    _PatternDef(
+        regex=re.compile(
+            r"""sqs\s*\.\s*receiveMessage\s*\(\s*\{\s*QueueUrl\s*:\s*['"]([^'"]+)['"]"""
+        ),
+        role="consumer",
+        broker="sqs",
+        confidence=0.8,
+        topic_group=1,
+        label="sqs.receiveMessage",
+    ),
+    # Python: sqs.receive_message(QueueUrl='my-queue')
+    _PatternDef(
+        regex=re.compile(
+            r"""sqs\s*\.\s*receive_message\s*\([^)]*QueueUrl\s*=\s*['"]([^'"]+)['"]"""
+        ),
+        role="consumer",
+        broker="sqs",
+        confidence=0.8,
+        topic_group=1,
+        label="sqs.receive_message",
+    ),
+    # Generic: new SQS queue URL literal — queue name is last path segment
+    # e.g. "https://sqs.us-east-1.amazonaws.com/123456789/my-queue"
+    _PatternDef(
+        regex=re.compile(r"""https://sqs\.[^/]+/[^/]+/([^'\"/\s]+)['\"]"""),
+        role="provider",
+        broker="sqs",
+        confidence=0.7,
+        topic_group=1,
+        label="sqs-url",
+    ),
+]
+
+# --- Pub/Sub (GCP) + SNS (AWS) ---
+
+_PUBSUB_PATTERNS: list[_PatternDef] = [
+    # GCP: pubsub.topic('my-topic') / pubSub.topic("my-topic")
+    _PatternDef(
+        regex=re.compile(r"""pubsub\s*\.\s*topic\s*\(\s*['"]([^'"]+)['"]""", re.IGNORECASE),
+        role="provider",
+        broker="pubsub",
+        confidence=0.8,
+        topic_group=1,
+        label="pubsub.topic",
+    ),
+    # GCP: publisher.publish(topic='my-topic') / publisher.publish('my-topic')
+    _PatternDef(
+        regex=re.compile(r"""publisher\s*\.\s*publish\s*\([^)]*topic\s*=\s*['"]([^'"]+)['"]"""),
+        role="provider",
+        broker="pubsub",
+        confidence=0.7,
+        topic_group=1,
+        label="publisher.publish",
+    ),
+    # GCP: subscriber.subscribe('my-topic') / subscription
+    _PatternDef(
+        regex=re.compile(
+            r"""subscriber\s*\.\s*(?:subscribe|createSubscription)\s*\(\s*['"]([^'"]+)['"]"""
+        ),
+        role="consumer",
+        broker="pubsub",
+        confidence=0.7,
+        topic_group=1,
+        label="subscriber.subscribe",
+    ),
+    # AWS SNS: sns.publish({ TopicArn: 'arn:aws:sns:us-east-1:123:my-topic' })
+    # Extract last ARN segment as topic name
+    _PatternDef(
+        regex=re.compile(
+            r"""sns\s*\.\s*publish\s*\([^)]*TopicArn\s*:\s*['"][^'"]*:([^'\"/:]+)['"]"""
+        ),
+        role="provider",
+        broker="sns",
+        confidence=0.8,
+        topic_group=1,
+        label="sns.publish",
+    ),
+    # AWS SNS: sns.publish(TopicArn='arn:aws:sns:...:my-topic') Python
+    _PatternDef(
+        regex=re.compile(
+            r"""sns\s*\.\s*publish\s*\([^)]*TopicArn\s*=\s*['"][^'"]*:([^'\"/:]+)['"]"""
+        ),
+        role="provider",
+        broker="sns",
+        confidence=0.8,
+        topic_group=1,
+        label="sns.publish",
+    ),
+    # AWS SNS subscribe
+    _PatternDef(
+        regex=re.compile(
+            r"""sns\s*\.\s*subscribe\s*\([^)]*TopicArn\s*[:=]\s*['"][^'"]*:([^'\"/:]+)['"]"""
+        ),
+        role="consumer",
+        broker="sns",
+        confidence=0.7,
+        topic_group=1,
+        label="sns.subscribe",
+    ),
+]
+
+_ALL_PATTERNS = (
+    _KAFKA_PATTERNS + _RABBITMQ_PATTERNS + _NATS_PATTERNS + _SQS_PATTERNS + _PUBSUB_PATTERNS
+)
 
 
 # ---------------------------------------------------------------------------
@@ -244,9 +369,7 @@ class TopicExtractor:
         # File discovery is gitignore- and nested-repo-aware (see
         # ``iter_source_files``) so a workspace repo whose root contains nested
         # repos or large ignored trees is not scanned end-to-end.
-        for rel_path, _suffix, content in select_files(
-            repo_path, _EXTENSIONS, exclude, files
-        ):
+        for rel_path, _suffix, content in select_files(repo_path, _EXTENSIONS, exclude, files):
             for pdef in _ALL_PATTERNS:
                 for match in pdef.regex.finditer(content):
                     topic_name = match.group(pdef.topic_group).strip()
