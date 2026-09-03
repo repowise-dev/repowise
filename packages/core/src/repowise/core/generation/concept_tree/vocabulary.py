@@ -188,6 +188,17 @@ def _is_useful(term: str) -> bool:
     words = term.split()
     if not (_MIN_TERM_WORDS <= len(words) <= _MAX_TERM_WORDS):
         return False
+    # A term made entirely of separators (hyphens, underscores, spaces) contains
+    # no alphanumeric characters.  term_words() splits on [\s_\-]+ and filters
+    # empty strings, so it returns [] for "---" or "___".  Two things then break:
+    #   • term_words(c.term)[0] in extract_house_terms raises IndexError.
+    #   • phrase_pattern builds \b\b, which matches at every word boundary in the
+    #     repository, making the phantom term corroborated by every source file.
+    # Rejecting here — before either site sees the term — fixes both at once.
+    # \w is not enough: _ is a word character but is also in the word-gap
+    # splitter, so "___" has \w characters and still produces an empty word list.
+    if not any(c.isalnum() for c in term):
+        return False
     if all(w.lower() in _STOPWORDS for w in words):
         return False
     # A heading that is entirely boilerplate ("Getting Started") says nothing
@@ -609,11 +620,32 @@ def _is_name_like(term: str, *, excluded: frozenset[str]) -> bool:
     return not _PRONOUN.search(term)
 
 
+def _strip_separator_affixes(text: str) -> str:
+    """Strip leading and trailing words that contain no alphanumeric character.
+
+    ``'--- Cache Layer ---'`` → ``'Cache Layer'``.
+    ``'---'`` → ``''`` (no alphanumeric word, caller ignores empty result).
+
+    Operates on the raw heading text before :func:`_normalise`, so it sees
+    the original punctuation rather than the normalised form. Characters like
+    ``*`` and ``~`` that normalise to spaces are not alphanumeric, so they
+    are stripped here too.
+    """
+    words = text.split()
+    start = next((i for i, w in enumerate(words) if any(c.isalnum() for c in w)), None)
+    if start is None:
+        return ""
+    end = next((i for i, w in enumerate(reversed(words)) if any(c.isalnum() for c in w)), None)
+    tail = len(words) if end is None else len(words) - end
+    return " ".join(words[start:tail])
+
+
 def _expand_heading(raw: str) -> list[str]:
     """The spellings of a heading worth considering as a name.
 
     A numbered heading yields its text without the number; a "Name: gloss"
-    heading yields the name. Both are offered alongside the original, and
+    heading yields the name; a heading wrapped in separator tokens yields the
+    text between them. All are offered alongside the original, and
     :func:`_is_useful` decides which survive — a heading carrying a digit is
     rejected outright, so without stripping the enumerator a numbered section
     contributes nothing at all.
@@ -628,6 +660,15 @@ def _expand_heading(raw: str) -> list[str]:
             lead = colon.group(1).strip()
             if lead and lead not in spellings:
                 spellings.append(lead)
+    # A heading like "--- Cache Layer ---" or "* Setup *" wraps a real name in
+    # separator tokens. Strip them so the real name is offered as a candidate.
+    # The original is kept too: if the stripped form fails _is_useful the
+    # original can still pass (it won't, for a pure-separator heading, because
+    # the isalnum guard rejects it — but keeping both is the safe direction).
+    for candidate in list(spellings):
+        core = _strip_separator_affixes(candidate)
+        if core and core != candidate and core not in spellings:
+            spellings.append(core)
     return spellings
 
 

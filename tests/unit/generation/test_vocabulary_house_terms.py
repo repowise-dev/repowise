@@ -926,3 +926,82 @@ def test_excluding_scratch_does_not_cost_a_real_term(repo_with_scratch: Path) ->
     so it survives losing both leaked citations.
     """
     assert "Blast radius" in by_term(repo_with_scratch)
+
+
+# ---------------------------------------------------------------------------
+# Symbol-only headings must not crash or produce phantom terms (issue #2099)
+# ---------------------------------------------------------------------------
+#
+# A heading made entirely of hyphens, underscores, or symbols that normalise to
+# spaces passes every existing _is_useful guard but causes term_words() to return
+# []. Two things then break:
+#
+#   • extract_house_terms builds `first_words` with term_words(c.term)[0], which
+#     raises IndexError on an empty list — the crash reported in #2099.
+#   • phrase_pattern builds \b\b from an empty word list, which matches at every
+#     word boundary in the repository, so the phantom term is "corroborated" by
+#     every source file and passes the code-frequency gate silently.
+#
+# The fix is in _is_useful: reject any term that contains no alphanumeric
+# character. \w is not enough — _ is a word character but is also in the
+# word-gap splitter, so "___" still produces an empty word list.
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "## ---",       # the reported case
+        "## ___",       # underscores only — same crash; missed by a \w-only guard
+        "## -_-",       # mixed separators — same crash
+        "## * --- *",   # symbols normalise to spaces, leaving only dashes
+    ],
+)
+def test_symbol_only_heading_does_not_crash_and_produces_no_term(
+    heading: str, tmp_path: Path
+) -> None:
+    """A heading of only separators must produce no term and must not raise.
+
+    Regression for #2099: term_words() returned [] for these headings and
+    [0] on an empty list raised IndexError: list index out of range.
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "README.md").write_text(
+        f"{heading}\n\nSome content here.\n", encoding="utf-8"
+    )
+    # Must not raise — this was the crash.
+    result = extract_house_terms(root)
+    # No term whose text is purely separators should survive.
+    for term in result:
+        assert any(c.isalnum() for c in term.term), (
+            f"Separator-only term {term.term!r} reached the output"
+        )
+
+
+def test_symbol_heading_does_not_prevent_real_terms_from_being_extracted(
+    tmp_path: Path,
+) -> None:
+    """A heading wrapped in separator tokens must yield its real word, not crash.
+
+    Raghav's stated regression from the #2099 review: '## --- Setup ---' should
+    still produce 'Setup'. We use 'Cache Layer' instead of 'Setup' because
+    'setup' is in _STOPWORDS and would be filtered regardless of this fix.
+    The mechanism is the same: _expand_heading now strips separator affixes and
+    offers the inner text as an additional spelling candidate.
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    src = root / "src"
+    src.mkdir()
+    # A source file that spells the real term so it passes the code-frequency gate.
+    (src / "cache.py").write_text('"""Cache layer for the ledger."""\n', encoding="utf-8")
+    (root / "README.md").write_text(
+        "## --- Cache Layer ---\n\nCache layer speeds up access.\n",
+        encoding="utf-8",
+    )
+    result = extract_house_terms(root)
+    terms = [t.term for t in result]
+    # The real word inside the separators must be extracted.
+    assert "Cache Layer" in terms
+    # The separator-only fragments must produce no term.
+    assert "---" not in terms
