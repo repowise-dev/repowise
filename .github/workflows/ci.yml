@@ -69,6 +69,46 @@ jobs:
         run: uv run ruff check .
 
   # ---------------------------------------------------------------------------
+  # Dependency advisories — audit the exact Python and JavaScript lockfiles.
+  # Keep this independent from the test matrix: advisory results do not vary
+  # by interpreter, and one authoritative run avoids three identical queries.
+  # ---------------------------------------------------------------------------
+  dependency-audit:
+    name: Dependency advisories
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Export the complete Python lock
+        run: >-
+          uv export --frozen --all-packages --all-groups --all-extras
+          --no-emit-workspace --no-hashes
+          --output-file /tmp/repowise-requirements.txt
+
+      - name: Audit Python dependencies
+        run: >-
+          uvx --from pip-audit==2.10.1 pip-audit
+          --requirement /tmp/repowise-requirements.txt
+          --no-deps --disable-pip --strict
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: Audit JavaScript dependencies
+        run: npm audit --package-lock-only --audit-level=low
+
+  # ---------------------------------------------------------------------------
   # Integration tests (run on push to main only, slower)
   # ---------------------------------------------------------------------------
   test-integration:

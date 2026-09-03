@@ -85,7 +85,7 @@ dependencies = [
     # Vector search (LanceDB — pure Python wheel)
     "lancedb>=0.12,<1",
     # CLI
-    "click>=8.1,<9",
+    "click>=8.3.3,<9",
     "rich>=13,<14",
     "watchdog>=4,<5",
     # Server
@@ -110,8 +110,8 @@ graph-extra = [
     "graspologic>=3.4,<4",
 ]
 dev = [
-    "pytest>=8,<9",
-    "pytest-asyncio>=0.23,<1",
+    "pytest>=9.0.3,<10",
+    "pytest-asyncio>=1,<2",
     "pytest-snapshot>=0.9,<1",
     "respx>=0.21,<1",
     "time-machine>=2.14,<3",
@@ -172,8 +172,8 @@ members = [
 
 [dependency-groups]
 dev = [
-    "pytest>=8,<9",
-    "pytest-asyncio>=0.23,<1",
+    "pytest>=9.0.3,<10",
+    "pytest-asyncio>=1,<2",
     "pytest-snapshot>=0.9,<1",
     "respx>=0.21,<1",
     "time-machine>=2.14,<3",
