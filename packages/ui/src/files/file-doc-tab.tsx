@@ -8,6 +8,7 @@ interface FileDocTabProps {
   wikiPage: FileWikiPageRef | null;
   /** Server-rendered wiki content (the host renders markdown its own way). */
   docSlot?: ReactNode | undefined;
+
   /** The repository's own documents naming this file, rendered below the page. */
   referencesPanel?: ReactNode | undefined;
 }
@@ -23,8 +24,7 @@ export function FileDocTab({ wikiPage, docSlot, referencesPanel }: FileDocTabPro
           description="Repowise writes pages for the files that carry a repository's shape. Re-run the index with a wider page budget to bring this one in."
         />
         {referencesPanel}
-      </div>
-    );
+      </div>    );
   }
 
   return (
