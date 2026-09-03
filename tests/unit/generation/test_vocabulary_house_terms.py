@@ -926,3 +926,80 @@ def test_excluding_scratch_does_not_cost_a_real_term(repo_with_scratch: Path) ->
     so it survives losing both leaked citations.
     """
     assert "Blast radius" in by_term(repo_with_scratch)
+
+
+# ---------------------------------------------------------------------------
+# Symbol-only headings must not crash or produce phantom terms (issue #2099)
+# ---------------------------------------------------------------------------
+#
+# A heading made entirely of hyphens, underscores, or symbols that normalise to
+# spaces passes every existing _is_useful guard but causes term_words() to return
+# []. Two things then break:
+#
+#   • extract_house_terms builds `first_words` with term_words(c.term)[0], which
+#     raises IndexError on an empty list — the crash reported in #2099.
+#   • phrase_pattern builds \b\b from an empty word list, which matches at every
+#     word boundary in the repository, so the phantom term is "corroborated" by
+#     every source file and passes the code-frequency gate silently.
+#
+# The fix is in _is_useful: reject any term that contains no alphanumeric
+# character. \w is not enough — _ is a word character but is also in the
+# word-gap splitter, so "___" still produces an empty word list.
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "## ---",       # the reported case
+        "## ___",       # underscores only — same crash; missed by a \w-only guard
+        "## -_-",       # mixed separators — same crash
+        "## * --- *",   # symbols normalise to spaces, leaving only dashes
+    ],
+)
+def test_symbol_only_heading_does_not_crash_and_produces_no_term(
+    heading: str, tmp_path: Path
+) -> None:
+    """A heading of only separators must produce no term and must not raise.
+
+    Regression for #2099: term_words() returned [] for these headings and
+    [0] on an empty list raised IndexError: list index out of range.
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "README.md").write_text(
+        f"{heading}\n\nSome content here.\n", encoding="utf-8"
+    )
+    # Must not raise — this was the crash.
+    result = extract_house_terms(root)
+    # No term whose text is purely separators should survive.
+    for term in result:
+        assert any(c.isalnum() for c in term.term), (
+            f"Separator-only term {term.term!r} reached the output"
+        )
+
+
+def test_markdown_table_border_does_not_become_a_phantom_term(
+    tmp_path: Path,
+) -> None:
+    """A markdown table-border heading must not become a house term.
+
+    '+------------------+-----------+' passes _is_useful today because '+' is
+    not a word-gap character, so term.split() returns ['+', '+', '+'] — a
+    non-empty word list that satisfies the length gate. The alphanumeric guard
+    added for the crash fix catches this too: '+' contains no alphanumeric
+    character, so the whole string is rejected cleanly rather than surviving as
+    a phantom term whose first word is '+'.
+
+    Reported by @nail alongside the '---' crash case (#2099).
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "README.md").write_text(
+        "+------------------+-----------+\n\nSome prose here.\n",
+        encoding="utf-8",
+    )
+    result = extract_house_terms(root)
+    for term in result:
+        assert any(c.isalnum() for c in term.term), (
+            f"Symbol-only term {term.term!r} reached the output"
+        )
