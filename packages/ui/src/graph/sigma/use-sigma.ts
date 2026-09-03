@@ -618,7 +618,7 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
     const edge = viz.edge;
     graph.updateEachEdgeAttributes(
       (_edgeKey, attrs) => {
-        const color = edge[attrs.edgeKind] ?? edge.import;
+        const color = edge[attrs.edgeKind] ?? edge.internal;
         if (attrs.color === color) return attrs;
         return { ...attrs, color };
       },

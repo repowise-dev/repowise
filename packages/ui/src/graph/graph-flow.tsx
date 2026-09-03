@@ -33,6 +33,7 @@ import { useModuleFilter, filterGraphToModule } from "./use-module-filter";
 import { useGraphKeyboardShortcuts } from "./use-graph-keyboard-shortcuts";
 import { GraphToolbar, type ColorMode, type ViewMode, type LayoutMode, type GraphTheme } from "./graph-toolbar";
 import { GraphLegend } from "./graph-legend";
+import { GraphNodeFilter } from "./graph-toolbar";
 import { GraphCanvasShell } from "./graph-canvas-shell";
 import { GraphContextMenu } from "./graph-context-menu";
 import { GraphInspectionPanel } from "./graph-inspection-panel";
@@ -266,18 +267,33 @@ export function GraphFlow(props: GraphFlowProps) {
 
   const [egoDepth, setEgoDepth] = useState(0);
 
+  // How much of a found path this view cannot draw. See `handlePathFound`.
+  const [pathNotice, setPathNotice] = useState<string | null>(null);
+
+  // Both structural kinds, because the description under every file-scope
+  // reading promises "how they depend on each other". The old default was
+  // `["import", "crossCommunity"]`, and `"import"` was an unreachable
+  // classification — `classifyEdge` returned it only for an edge whose
+  // endpoint was missing from the graph, and those are dropped before they are
+  // drawn. So the default meant "cross-community only", and inside a community
+  // that hid the entire internal structure and drew only the exits.
+  //
+  // This raises the whole-repo default too, deliberately: measured on this
+  // repo's own 1,500-node graph it goes from 1,052 to 5,027 drawn edges, an
+  // average degree of 3.35, well short of a hairball and the difference
+  // between drawing 21% of the structure and all of it.
   const [visibleEdgeTypes, setVisibleEdgeTypes] = useState<Set<string>>(
-    () => new Set(["import", "crossCommunity"]),
+    () => new Set(["crossCommunity", "internal"]),
   );
 
   // Signal overlays (replaces separate view modes for dead/hot/arch).
   // Derived from the host-provided initial view mode — no URL reads here.
-  const [activeSignals, setActiveSignals] = useState<Set<Signal>>(() => {
+  const activeSignals = useMemo<Set<Signal>>(() => {
     if (initialViewMode === "dead") return new Set<Signal>(["dead"]);
     if (initialViewMode === "hotfiles") return new Set<Signal>(["hot"]);
     if (initialViewMode === "unified") return new Set<Signal>(["dead", "hot"]);
     return new Set<Signal>();
-  });
+  }, [initialViewMode]);
   const hideTests = activeSignals.has("hideTests");
 
   // Drill-down: the community whose own file graph is drawn.
@@ -383,6 +399,7 @@ export function GraphFlow(props: GraphFlowProps) {
         sigmaRef.current?.setEntryCamera(sigmaRef.current.nodeCamera(nodeId, 0.08));
       }
       setSelectedNodeId(null);
+      setPathNotice(null);
       setActiveCommunity(cid);
       openCommunityPanel(cid);
       // Files scope, since a community's members are files. A controlled host
@@ -510,11 +527,11 @@ export function GraphFlow(props: GraphFlowProps) {
   // carries as context. Drawn smaller and desaturated, so the scoped graph has
   // an edge instead of trailing off into nothing.
   const sliceBoundaryIds = useMemo(() => {
-    if (!communitySlice) return undefined;
+    if (!isInsideCommunity || !communitySlice) return undefined;
     const ids = new Set<string>();
     for (const n of communitySlice.nodes) if (n.is_boundary) ids.add(n.node_id);
     return ids.size > 0 ? ids : undefined;
-  }, [communitySlice]);
+  }, [isInsideCommunity, communitySlice]);
 
   // What actually gets built and drawn. A community replaces the payload
   // outright (it is its own graph, not a view of the capped one); a module
@@ -778,8 +795,13 @@ export function GraphFlow(props: GraphFlowProps) {
     useGraphSearch({ sigmaGraph: displayGraph, hideTests, panToNode, setSelectedNodeId });
 
   // Community filter (active communities + dimming + legend toggles)
-  const { activeCommunities, communityDimmedNodes, handleCommunityToggle, handleToggleAllCommunities } =
-    useCommunityFilter(displayGraph);
+  const {
+    activeCommunities,
+    communityDimmedNodes,
+    drawnCommunityIds,
+    handleCommunityToggle,
+    handleToggleAllCommunities,
+  } = useCommunityFilter(displayGraph);
 
   // Module groups, offered to the host's narrowing control. Derived from the
   // scope's *unfiltered* payload: the filter now removes nodes rather than
@@ -966,10 +988,23 @@ export function GraphFlow(props: GraphFlowProps) {
     (pathNodes: string[]) => {
       setHighlightedPath(new Set(pathNodes));
       setHighlightedEdges(traceToEdgeKeys(pathNodes));
+      // The path endpoint is repo-wide while the canvas may be a module filter
+      // or one community, so a path can legitimately run through files this
+      // view does not draw. `focusNode` no-ops on those, which read as the
+      // control doing nothing. Focus the first file that IS here, and say how
+      // many are not — the same courtesy the flows panel already extends.
+      const graph = drawnGraphRef.current;
+      const drawn = graph ? pathNodes.filter((id) => graph.hasNode(id)) : pathNodes;
+      const missing = pathNodes.length - drawn.length;
+      setPathNotice(
+        missing > 0
+          ? `${missing} of ${pathNodes.length} files on this path are outside the current view.`
+          : null,
+      );
       clearTimeout(focusTimerRef.current);
       focusTimerRef.current = setTimeout(() => {
-        if (pathNodes.length > 0) {
-          sigmaRef.current?.focusNode(pathNodes[0]!);
+        if (drawn.length > 0) {
+          sigmaRef.current?.focusNode(drawn[0]!);
         }
       }, 800);
     },
@@ -979,6 +1014,7 @@ export function GraphFlow(props: GraphFlowProps) {
   const handlePathClear = useCallback(() => {
     setHighlightedPath(new Set());
     setHighlightedEdges(new Set());
+    setPathNotice(null);
   }, []);
 
   const handleFitView = useCallback(() => {
@@ -1000,6 +1036,8 @@ export function GraphFlow(props: GraphFlowProps) {
     setLayoutNotice(null);
     setHighlightedPath(new Set());
     setHighlightedEdges(new Set());
+    // Measured against the graph being replaced, so it retires with it.
+    setPathNotice(null);
     setSelectedNodeId(null);
     // Back to the constellation by any route (the switcher, a legacy link):
     // the drill-down is a file-scope state and does not survive leaving it.
@@ -1018,15 +1056,6 @@ export function GraphFlow(props: GraphFlowProps) {
     setLayoutMode(mode);
     setLayoutNotice(null);
   }, [displayGraph]);
-
-  const handleSignalToggle = useCallback((signal: Signal) => {
-    setActiveSignals((prev) => {
-      const next = new Set(prev);
-      if (next.has(signal)) next.delete(signal);
-      else next.add(signal);
-      return next;
-    });
-  }, []);
 
   const handleEdgeTypeToggle = useCallback((edgeType: string) => {
     setVisibleEdgeTypes((prev) => {
@@ -1131,7 +1160,10 @@ export function GraphFlow(props: GraphFlowProps) {
         initialTo: pathTo,
         onPathFound: handlePathFound,
         onClear: handlePathClear,
-        onClose: () => setShowPathFinder(false),
+        onClose: () => {
+          setShowPathFinder(false);
+          setPathNotice(null);
+        },
       })
     : showFlows
       ? executionFlows && executionFlows.flows.length > 0
@@ -1216,10 +1248,36 @@ export function GraphFlow(props: GraphFlowProps) {
       parts.push(`Showing all ${drawn} files in this group`);
     }
     if (stubs > 0) {
-      parts.push(`plus ${stubs} outside it that they reach`);
+      // Where the faded ring is explained. It used to be said twice: here as a
+      // count and again in the description as prose about "faded nodes".
+      parts.push(
+        `plus ${stubs} faded file${stubs === 1 ? "" : "s"} outside it that they reach`,
+      );
     }
     return `${parts.join(", ")}.`;
   })();
+
+  // What the key reports. `displayGraph.size` counts every edge in the graph
+  // including the kinds the edge filter is hiding, which is how a slice showing
+  // only its exits could still claim 553 edges. Reconciles the edge filter
+  // only: the ego filter hides nodes at the canvas rather than in the graph,
+  // and reports its own count in the status row beside this.
+  const visibleEdgeCount = useMemo(() => {
+    if (!displayGraph) return 0;
+    let n = 0;
+    displayGraph.forEachEdge((_, attrs) => {
+      if (visibleEdgeTypes.has(attrs.edgeKind)) n++;
+    });
+    return n;
+  }, [displayGraph, visibleEdgeTypes]);
+
+  // Members vs the one-hop stubs around them, from the same payload the banner
+  // counts, so the two figures on screen cannot disagree.
+  const sliceCounts = useMemo(() => {
+    if (!communitySlice) return undefined;
+    const members = communitySlice.nodes.filter((n) => !n.is_boundary).length;
+    return { members, boundary: communitySlice.nodes.length - members };
+  }, [communitySlice]);
 
   const activeCommunityLabel =
     activeCommunity !== null
@@ -1238,8 +1296,13 @@ export function GraphFlow(props: GraphFlowProps) {
         ) : undefined
       }
       description={
-        isInsideCommunity && activeCommunityLabel
-          ? `The files in ${activeCommunityLabel} and how they depend on each other. Faded nodes at the edge are files outside the group that it reaches.`
+        // The breadcrumb above already names the community and carries the way
+        // out, and the narrowing select names it a third time. Prose repeating
+        // it is noise, so this says what the picture is, not what it is called.
+        isInsideCommunity
+          ? `How the files in this group depend on each other.${
+              onNodeViewDocs ? " Double-click a file to open it." : ""
+            }`
           : description
       }
       titleActions={
@@ -1247,18 +1310,8 @@ export function GraphFlow(props: GraphFlowProps) {
           {headerActions}
           <GraphToolbar
             viewMode={viewMode}
-            onViewChange={handleViewChange}
             colorMode={colorMode}
             onColorModeChange={setColorMode}
-            hideTests={hideTests}
-            onHideTestsChange={(v) => {
-              setActiveSignals(prev => {
-                const next = new Set(prev);
-                if (v) next.add("hideTests");
-                else next.delete("hideTests");
-                return next;
-              });
-            }}
             onFitView={handleFitView}
             showPathFinder={showPathFinder}
             pathFinderAvailable={Boolean(renderPathFinder)}
@@ -1290,16 +1343,16 @@ export function GraphFlow(props: GraphFlowProps) {
         </div>
       }
       banner={
-        banner || layoutNotice || sliceNotice ? (
+        banner || layoutNotice || sliceNotice || pathNotice ? (
           <div className="space-y-2">
             {banner}
-            {sliceNotice && (
+            {(sliceNotice || pathNotice) && (
               <p
                 role="status"
                 aria-live="polite"
                 className="text-[11px] text-[var(--color-text-secondary)]"
               >
-                {sliceNotice}
+                {[sliceNotice, pathNotice].filter(Boolean).join(" ")}
               </p>
             )}
             {layoutNotice && (
@@ -1327,11 +1380,31 @@ export function GraphFlow(props: GraphFlowProps) {
           <GraphLegend
             nodeCount={displayGraph?.order ?? 0}
             edgeCount={displayGraph?.size ?? 0}
+            visibleEdgeCount={visibleEdgeCount}
             colorMode={colorMode}
             viewMode={viewMode}
+            {...(isInsideCommunity && activeCommunityLabel
+              ? {
+                  scopeLabel: activeCommunityLabel,
+                  scopeCommunityId: activeCommunity ?? undefined,
+                  sliceCounts,
+                }
+              : {})}
+            nodeFilter={
+              // Withdrawn inside a community: the slice endpoint returns the
+              // whole community whatever the signal says, so the pill lit, the
+              // URL changed and the canvas did not.
+              isConstellation || isInsideCommunity ? undefined : (
+                <GraphNodeFilter
+                  viewMode={viewMode}
+                  onViewChange={handleViewChange}
+                />
+              )
+            }
             {...(communityLabels ? { communityLabels } : {})}
             onCommunityClick={openCommunityPanel}
             activeCommunities={activeCommunities ?? undefined}
+            drawnCommunityIds={drawnCommunityIds}
             onCommunityToggle={handleCommunityToggle}
             onToggleAllCommunities={handleToggleAllCommunities}
             visibleEdgeTypes={isConstellation ? undefined : visibleEdgeTypes}

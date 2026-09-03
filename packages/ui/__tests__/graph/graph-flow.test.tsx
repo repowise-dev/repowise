@@ -135,7 +135,9 @@ describe("GraphFlow shell", () => {
         fullGraph={{ nodes: [], links: [], truncated: true, dead_total: 3 }}
       />,
     );
-    fireEvent.click(screen.getByRole("radio", { name: "Dead" }));
+    // The segment carries its own total now, so the accessible name is
+    // "Dead 3" rather than "Dead".
+    fireEvent.click(screen.getByRole("radio", { name: /^Dead/ }));
     expect(screen.getByText("Dead files are outside the loaded view")).toBeTruthy();
   });
 
@@ -147,7 +149,7 @@ describe("GraphFlow shell", () => {
         fullGraph={{ nodes: [], links: [], dead_total: 0 }}
       />,
     );
-    fireEvent.click(screen.getByRole("radio", { name: "Dead" }));
+    fireEvent.click(screen.getByRole("radio", { name: /^Dead/ }));
     expect(screen.getByText("No dead files in this repo")).toBeTruthy();
   });
 
@@ -182,6 +184,7 @@ describe("GraphFlow shell", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("button", { name: "Trace" }));
     fireEvent.click(screen.getByRole("button", { name: "Execution flows" }));
     expect(screen.getByText("Execution Flows")).toBeTruthy();
 
@@ -212,6 +215,7 @@ describe("GraphFlow shell", () => {
       <GraphFlow {...baseProps} initialViewMode="full" executionFlows={flows} />,
     );
 
+    fireEvent.click(screen.getByRole("button", { name: "Trace" }));
     fireEvent.click(screen.getByRole("button", { name: "Execution flows" }));
     fireEvent.click(screen.getByText("main"));
 
@@ -445,7 +449,79 @@ describe("GraphFlow drill-down honesty", () => {
     // truncation banner is deliberately off in this scope.
     expect(
       screen.getByText(
-        "Showing the 2 most connected of 500 files in this group, plus 1 outside it that they reach.",
+        "Showing the 2 most connected of 500 files in this group, plus 1 faded file outside it that they reach.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("withdraws the All / Hot / Dead filter, which could not reach a slice", () => {
+    // The slice endpoint returns the whole community whatever the signal says,
+    // so inside one the pill lit, the URL changed, an overlay fetch fired and
+    // the canvas did not move.
+    render(
+      <GraphFlow
+        {...baseProps}
+        viewMode="full"
+        activeCommunity={3}
+        communities={communities as never}
+        communitySlice={{
+          community_id: 3,
+          member_count: 2,
+          truncated: false,
+          nodes: [member("src/a.ts"), member("src/b.ts")],
+          links: [],
+        } as never}
+      />,
+    );
+    expect(screen.queryByRole("radio", { name: /^Dead/ })).toBeNull();
+    expect(screen.queryByRole("radio", { name: /^Hot/ })).toBeNull();
+  });
+
+  it("names the community once in prose, not three times on one screen", () => {
+    render(
+      <GraphFlow
+        {...baseProps}
+        viewMode="full"
+        activeCommunity={3}
+        communities={communities as never}
+        communitySlice={{
+          community_id: 3,
+          member_count: 2,
+          truncated: false,
+          nodes: [member("src/a.ts"), member("src/b.ts")],
+          links: [],
+        } as never}
+      />,
+    );
+    // The breadcrumb names it and carries the way out; the description used to
+    // repeat the name and then explain the faded ring a second time, beside a
+    // banner already counting it. The double-click instruction is withheld
+    // because this host wired no `onNodeViewDocs` for it to reach.
+    expect(
+      screen.getByText("How the files in this group depend on each other."),
+    ).toBeTruthy();
+  });
+
+  it("only promises the double-click when the host wired somewhere to go", () => {
+    render(
+      <GraphFlow
+        {...baseProps}
+        viewMode="full"
+        activeCommunity={3}
+        communities={communities as never}
+        onNodeViewDocs={vi.fn()}
+        communitySlice={{
+          community_id: 3,
+          member_count: 2,
+          truncated: false,
+          nodes: [member("src/a.ts"), member("src/b.ts")],
+          links: [],
+        } as never}
+      />,
+    );
+    expect(
+      screen.getByText(
+        "How the files in this group depend on each other. Double-click a file to open it.",
       ),
     ).toBeTruthy();
   });

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, memo } from "react";
+import type { ReactNode } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { LANGUAGE_COLORS } from "../lib/confidence";
 import { edgeColorsForTheme } from "./sigma/constants";
@@ -9,6 +10,30 @@ import type { ColorMode, ViewMode } from "./graph-toolbar";
 
 /** Community rows shown before the key folds into a "+N" line. */
 const COMMUNITY_ROWS = 8;
+
+/**
+ * Edge kinds, in the order they are keyed.
+ *
+ * There is no "Imports" row any more. `classifyEdge` returned that kind only
+ * for an edge with an endpoint missing from the graph, and those are dropped
+ * before they are drawn — so the swatch keyed zero marks in every state, and
+ * because it was also in the default visible set, "cross-community only" read
+ * as a two-kind default.
+ */
+const EDGE_KINDS = [
+  { type: "crossCommunity", label: "Cross-community" },
+  { type: "internal", label: "Internal" },
+  { type: "dynamic", label: "Dynamic" },
+  { type: "lowConfidence", label: "Low confidence" },
+] as const;
+
+/** The same kinds, worded for a canvas holding one community. */
+const SCOPED_EDGE_KINDS = [
+  { type: "internal", label: "Within this group" },
+  { type: "crossCommunity", label: "Leaving this group" },
+  { type: "dynamic", label: "Dynamic" },
+  { type: "lowConfidence", label: "Low confidence" },
+] as const;
 
 const LANGUAGE_LEGEND = [
   { lang: "python", color: LANGUAGE_COLORS.python, label: "Python" },
@@ -109,6 +134,25 @@ interface GraphLegendProps {
     | undefined;
   /** Click a constellation row → focus that hub's camera. */
   onConstellationHubClick?: ((communityId: number) => void) | undefined;
+  /**
+   * Name of the one community being drawn, when the canvas has been drilled
+   * into. Its presence selects the scoped reading of this key.
+   */
+  scopeLabel?: string | undefined;
+  /** Members vs one-hop boundary stubs in the drawn slice. */
+  sliceCounts?: { members: number; boundary: number } | undefined;
+  /** Community id of the drawn slice, for the swatch hue. */
+  scopeCommunityId?: number | undefined;
+  /** Edges actually drawn under the current edge-type filter. Falls back to
+   *  `edgeCount`, which counts hidden ones too. */
+  visibleEdgeCount?: number | undefined;
+  /** Rendered beside the node count, so the control that changes how many
+   *  nodes are drawn sits next to the figure reporting it. */
+  nodeFilter?: ReactNode | undefined;
+  /** Communities actually on the canvas. `communityLabels` is the repo-wide
+   *  summary list, which on a capped file graph names groups no node here
+   *  belongs to; keying those offered a toggle that could not do anything. */
+  drawnCommunityIds?: Set<number> | undefined;
 }
 
 export const GraphLegend = memo(function GraphLegend({
@@ -126,6 +170,12 @@ export const GraphLegend = memo(function GraphLegend({
   graphTheme = "dark",
   constellationEntries,
   onConstellationHubClick,
+  scopeLabel,
+  sliceCounts,
+  scopeCommunityId,
+  visibleEdgeCount,
+  nodeFilter,
+  drawnCommunityIds,
 }: GraphLegendProps) {
   // Open by default: every node is painted from this key, so a collapsed one
   // ships a field of coloured circles with no way to read them.
@@ -181,20 +231,111 @@ export const GraphLegend = memo(function GraphLegend({
     );
   }
 
+  const drawnEdgeCount = visibleEdgeCount ?? edgeCount;
+
+  // Communities worth a row: the repo-wide summary, narrowed to what is on the
+  // canvas. `communityLabels` resolves before an async graph build finishes, so
+  // `drawnCommunityIds` is legitimately empty for those frames — and a key with
+  // no rows must not still offer a control that dims everything.
+  const keyedCommunities =
+    communityLabels && communityLabels.size > 0
+      ? Array.from(communityLabels.entries()).filter(
+          ([cid]) => !drawnCommunityIds || drawnCommunityIds.has(cid),
+        )
+      : null;
+  const hasCommunityRows = keyedCommunities === null || keyedCommunities.length > 0;
+
+  // Inside a community the whole-repo key describes the wrong thing. Its eight
+  // community swatches come from the repo-wide summary list in API order, so
+  // the community you drilled into is usually not even among them; its
+  // Deselect-all dims every node on the canvas including the ones you came to
+  // read; and toggling a community that is not drawn changes nothing while
+  // leaving its swatch filled. Community filtering is a whole-repo grammar, so
+  // the scoped key drops it and keys what is on the canvas — following
+  // `health/map/legend.tsx` and `system-map-legend.tsx`, where the key reads
+  // the same source the marks do.
+  if (scopeLabel) {
+    const members = sliceCounts?.members ?? nodeCount;
+    const boundary = sliceCounts?.boundary ?? 0;
+    return (
+      <div className={shellClass}>
+        <button onClick={() => setExpanded((s) => !s)} className={headerClass}>
+          <span className={countClass}>
+            {members} file{members === 1 ? "" : "s"}
+            {boundary > 0 ? ` · ${boundary} outside` : ""} &middot;{" "}
+            {drawnEdgeCount} edge{drawnEdgeCount === 1 ? "" : "s"} shown
+          </span>
+          <Chevron expanded={expanded} />
+        </button>
+        {expanded && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <div className={rowClass}>
+              <Swatch
+                color={
+                  colorMode === "community" && scopeCommunityId !== undefined
+                    ? communityFamily(scopeCommunityId).satellite
+                    : undefined
+                }
+              />
+              <span className="max-w-[14rem] truncate">{scopeLabel}</span>
+              <span className="shrink-0 tabular-nums text-[10px] text-[var(--color-text-tertiary)]">
+                {members}
+              </span>
+            </div>
+            {boundary > 0 && (
+              <div className={rowClass}>
+                {/* The faded ring was explained in prose and keyed nowhere. */}
+                <span className="h-2 w-2 shrink-0 rounded-full border border-[var(--color-text-tertiary)]" />
+                <span>Outside this group</span>
+                <span className="shrink-0 tabular-nums text-[10px] text-[var(--color-text-tertiary)]">
+                  {boundary}
+                </span>
+              </div>
+            )}
+            {onEdgeTypeToggle && visibleEdgeTypes && (
+              <>
+                <p className={groupClass}>Edges</p>
+                {SCOPED_EDGE_KINDS.map((et) => {
+                  const checked = visibleEdgeTypes.has(et.type);
+                  return (
+                    <div key={et.type} className={rowClass}>
+                      <SwatchToggle
+                        color={edgeColors[et.type]}
+                        checked={checked}
+                        label={`Toggle ${et.label} edges`}
+                        onToggle={() => onEdgeTypeToggle(et.type)}
+                      />
+                      <span className={`truncate ${checked ? "" : "opacity-45"}`}>
+                        {et.label}
+                      </span>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className={shellClass}>
       <button onClick={() => setExpanded((s) => !s)} className={headerClass}>
         <span className={countClass}>
-          {nodeCount} nodes &middot; {edgeCount} edges
+          {nodeCount} nodes &middot; {drawnEdgeCount} edges
         </span>
         <Chevron expanded={expanded} />
       </button>
+      {nodeFilter}
 
       {expanded && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <p className={groupClass}>
-            {colorMode === "language" ? "Language" : "Community"}
-          </p>
+          {(colorMode === "language" || hasCommunityRows) && (
+            <p className={groupClass}>
+              {colorMode === "language" ? "Language" : "Community"}
+            </p>
+          )}
 
           {colorMode === "language" &&
             LANGUAGE_LEGEND.map((l) => (
@@ -207,14 +348,14 @@ export const GraphLegend = memo(function GraphLegend({
               </div>
             ))}
 
-          {colorMode === "community" && (() => {
-            const all = communityLabels && communityLabels.size > 0
-              ? Array.from(communityLabels.entries())
-              : null;
+          {colorMode === "community" && hasCommunityRows && (() => {
+            const all = keyedCommunities;
             const entries = all ? all.slice(0, COMMUNITY_ROWS) : null;
             const overflow = all ? all.length - entries!.length : 0;
-            const allSelected = !activeCommunities || (entries
-              ? entries.every(([cid]) => activeCommunities.has(cid))
+            // Over every row, not the eight shown: the label read "Deselect
+            // all" while communities nine and beyond were already off.
+            const allSelected = !activeCommunities || (all
+              ? all.every(([cid]) => activeCommunities.has(cid))
               : true);
             return (
               <>
@@ -228,7 +369,10 @@ export const GraphLegend = memo(function GraphLegend({
                 )}
                 {entries
                   ? entries.map(([cid, label]) => {
-                      const color = communityFamily(cid).hub;
+                      // Satellite, not hub: file nodes are painted
+                      // `family.satellite` by use-sigma's colour pass, so the
+                      // hub hue keyed a mark this canvas never draws.
+                      const color = communityFamily(cid).satellite;
                       const checked = !activeCommunities || activeCommunities.has(cid);
                       return (
                         <div key={cid} className={rowClass}>
@@ -277,18 +421,12 @@ export const GraphLegend = memo(function GraphLegend({
           {onEdgeTypeToggle && visibleEdgeTypes && (
             <>
               <p className={groupClass}>Edges</p>
-              {([
-                { type: "import", label: "Imports", color: edgeColors.import },
-                { type: "crossCommunity", label: "Cross-community", color: edgeColors.crossCommunity },
-                { type: "internal", label: "Internal", color: edgeColors.internal },
-                { type: "dynamic", label: "Dynamic", color: edgeColors.dynamic },
-                { type: "lowConfidence", label: "Low confidence", color: edgeColors.lowConfidence },
-              ] as const).map((et) => {
+              {EDGE_KINDS.map((et) => {
                 const checked = visibleEdgeTypes.has(et.type);
                 return (
                   <div key={et.type} className={rowClass}>
                     <SwatchToggle
-                      color={et.color}
+                      color={edgeColors[et.type]}
                       checked={checked}
                       label={`Toggle ${et.label} edges`}
                       onToggle={() => onEdgeTypeToggle(et.type)}

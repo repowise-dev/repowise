@@ -94,7 +94,6 @@ export interface SigmaEdgeAttributes {
 
   // Semantic classification of the edge
   edgeKind:
-    | "import"
     | "crossCommunity"
     | "internal"
     | "dynamic"
