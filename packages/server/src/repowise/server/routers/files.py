@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+
 from repowise.core.analysis.dead_code.deletion_gate import effective_safe_to_delete
 from repowise.core.analysis.finding_registry import excluded_types
 from repowise.core.analysis.health.aggregation import NLOC_NULL_REASON
@@ -44,6 +45,7 @@ from repowise.server.routers.code_health import (
     _score_breakdown_from_findings,
 )
 from repowise.server.routers.git import _hotspot_from_row
+from repowise.server.schemas.files import PinDocResponse
 
 router = APIRouter(
     prefix="/api/repos",
@@ -228,12 +230,12 @@ async def files_index(
     }
 
 
-@router.post("/{repo_id}/files/{file_path:path}/pin-doc")
+@router.post("/{repo_id}/files/{file_path:path}/pin-doc", response_model=PinDocResponse)
 async def pin_file_doc(
     repo_id: str,
     file_path: str,
     session: AsyncSession = Depends(get_db_session),
-) -> dict:
+) -> PinDocResponse:
     """Pin a file's doc so every reindex regenerates it (issue #812).
 
     Called from the Doc tab's "Generate doc" action. A file with no page
@@ -272,7 +274,7 @@ async def pin_file_doc(
     if page is None:
         raise HTTPException(status_code=404, detail="Page not found")
     await session.commit()
-    return {"file_path": file_path, "pinned": page.pinned}
+    return PinDocResponse(file_path=file_path, pinned=page.pinned)
 
 
 @router.get("/{repo_id}/files/{file_path:path}")
