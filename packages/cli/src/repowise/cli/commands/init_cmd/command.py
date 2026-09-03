@@ -409,6 +409,25 @@ def _run_generation_phase(
 # ---------------------------------------------------------------------------
 
 
+def _interactive_gate(
+    *,
+    isatty: bool,
+    provider_name: str | None,
+    index_only: bool,
+    yes: bool,
+    resume: bool,
+) -> bool:
+    """Whether the interactive questionnaire runs.
+
+    Interactive requires a TTY, no explicit provider, docs on, and neither
+    --yes nor --resume. --resume skips the gate because the prior run
+    already answered every question and those answers are on disk
+    (config.yaml); re-asking would let a resumed run diverge from the pages
+    already written with them (issue #2098).
+    """
+    return isatty and provider_name is None and not index_only and not yes and not resume
+
+
 @click.command("init")
 @click.argument("path", required=False, default=None)
 @click.option(
@@ -948,7 +967,23 @@ def init_command(
     # ---- Interactive mode (TTY, no explicit flags) ----
     # --yes forces non-interactive even on a TTY (mirrors the workspace path),
     # so a scripted `init -y` never blocks on the mode-selection menu.
-    is_interactive = sys.stdin.isatty() and provider_name is None and not index_only and not yes
+    # --resume skips the gate too: the prior run already answered every
+    # question, and those answers are on disk (config.yaml), so re-asking
+    # would let a resumed run diverge from the pages already written with
+    # them (issue #2098).
+    is_interactive = _interactive_gate(
+        isatty=sys.stdin.isatty(),
+        provider_name=provider_name,
+        index_only=index_only,
+        yes=yes,
+        resume=resume,
+    )
+
+    if resume:
+        console.print(
+            f"[bold]Resuming[/] the previous run in {repo_path} — "
+            "reusing its answers; pass --yes to skip this notice."
+        )
 
     # Output language picked in the advanced-mode generation section; None
     # until chosen. Resolved below: flag > this > config.yaml > English.
