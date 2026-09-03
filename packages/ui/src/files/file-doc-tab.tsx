@@ -8,16 +8,25 @@ interface FileDocTabProps {
   wikiPage: FileWikiPageRef | null;
   /** Server-rendered wiki content (the host renders markdown its own way). */
   docSlot?: ReactNode | undefined;
+  /** Wire this to the host's "generate doc for this file" action — pins the
+      file so the page keeps being regenerated, then runs the single-file
+      generation job (issue #812). */
+  onGenerateDoc?: (() => void) | undefined;
 }
 
-export function FileDocTab({ wikiPage, docSlot }: FileDocTabProps) {
+export function FileDocTab({ wikiPage, docSlot, onGenerateDoc }: FileDocTabProps) {
   if (!wikiPage) {
     return (
       <EmptyState
         titleAs="h2"
         icon={<BookOpen className="h-8 w-8" />}
         title="No documentation page for this file"
-        description="Repowise writes pages for the files that carry a repository's shape. Re-run the index with a wider page budget to bring this one in."
+        description="Repowise writes pages for the files that carry a repository's shape. Generate one for just this file — it stays pinned, so every reindex keeps it in step with the code."
+        action={
+          onGenerateDoc
+            ? { label: "Generate doc", onClick: onGenerateDoc }
+            : undefined
+        }
       />
     );
   }
