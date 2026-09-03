@@ -64,6 +64,14 @@ PROVIDER_CATALOG: list[dict[str, Any]] = [
         "requires_key": True,
     },
     {
+        "id": "azure_openai",
+        "name": "Azure OpenAI",
+        "default_model": "gpt-5.6-luna",
+        "models": ["gpt-5.6-luna", "gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4"],
+        "env_keys": ["AZURE_OPENAI_API_KEY"],
+        "requires_key": True,
+    },
+    {
         "id": "openrouter",
         "name": "OpenRouter",
         "default_model": "google/gemini-3.5-flash-lite",
