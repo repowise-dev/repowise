@@ -45,6 +45,20 @@ def test_stale_selects_stale_and_expired() -> None:
     assert result.page_ids == {"file_page:tests/t.py"}
 
 
+def test_pinned_selects_hand_requested_docs_always() -> None:
+    """A pinned page's doc was asked for once and must keep being
+    regenerated regardless of the selection heuristic (issue #812). Empty
+    intent — the caller's default — still includes it."""
+    records = [
+        PageRecord("file_page:src/c.py", "file_page", "src/c.py", is_template=True),
+        PageRecord(
+            "file_page:src/pinned.py", "file_page", "src/pinned.py", is_template=True, pinned=True
+        ),
+    ]
+    result = resolve_page_selection(records, PageSelectionIntent())
+    assert result.page_ids == {"file_page:src/pinned.py"}
+
+
 def test_path_glob_matches_prefix_and_glob() -> None:
     # A bare directory prefix matches everything under it.
     result = resolve_page_selection(_records(), PageSelectionIntent(path_globs=("src",)))

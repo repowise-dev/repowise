@@ -88,6 +88,7 @@ def load_page_records(pages: list[Any]) -> list[PageRecord]:
                 target_path=p.target_path,
                 is_template=is_template,
                 freshness_status=getattr(p, "freshness_status", "fresh"),
+                pinned=bool(getattr(p, "pinned", False)),
             )
         )
     return records

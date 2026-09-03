@@ -579,6 +579,22 @@ async def get_page(session: AsyncSession, page_id: str) -> Page | None:
     return await session.get(Page, page_id)
 
 
+async def set_page_pinned(session: AsyncSession, page_id: str, pinned: bool) -> Page | None:
+    """Set the user-requested pin on a page (issue #812).
+
+    A pinned page is regenerated on every reindex regardless of the normal
+    selection heuristic, so the doc a user asked for keeps following the
+    code instead of silently disappearing again. Returns None when no such
+    page exists.
+    """
+    page = await get_page(session, page_id)
+    if page is None:
+        return None
+    page.pinned = pinned
+    await session.flush()
+    return page
+
+
 async def list_pages(
     session: AsyncSession,
     repository_id: str,
