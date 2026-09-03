@@ -119,10 +119,11 @@ def files_by_basename(
     match the ``LIKE`` arm's own default rather than holding a root file to a
     stricter rule than a nested one.
 
-    Filtering non-path nodes is left to the caller: ``node_type = 'file'`` also
-    covers resolved external packages, and ``:`` is a legal character in a
-    POSIX path, so excluding them in SQL would mean a colon test that can drop
-    a real file and manufacture a false unique.
+    Filtering non-path nodes is left to the caller: resolved external packages
+    are stored as ``external:pkg/mod`` with ``node_type='external'`` and never
+    match a basename scan, but ``:`` is a legal character in a POSIX path, so
+    excluding ``external:`` in SQL would mean a colon test that can drop a real
+    file and manufacture a false unique.
     """
     if not basename:
         return []
