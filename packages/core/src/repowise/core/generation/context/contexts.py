@@ -164,6 +164,9 @@ class SccPageContext:
     # [{"file_path": str, "symbols": [{"name": str, "signature": str, "docstring": str}]}]
     cross_imports: list[dict] = field(default_factory=list)
     # [{"from": str, "to": str}]
+    # Every member is a test file, which reads as a fixture module its siblings
+    # share rather than as a dependency knot.
+    test_only: bool = False
 
 
 @dataclass

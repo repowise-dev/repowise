@@ -164,14 +164,24 @@ ENGLISH_LABELS: dict[str, str] = {
         "this group can be loaded, tested or extracted without the rest of it."
     ),
     "cycle_id": "Cycle id",
-    "files_in_cycle": "Files in the cycle",
+    "test_cycle_overview": (
+        "{count} test files import each other in a loop, through the fixtures and helpers "
+        "they share. A test tree is built this way on purpose, so this is a cycle in the "
+        "import graph rather than debt to pay down."
+    ),
     "and_more_edges": "and {count} more edges.",
     "the_loop": "The loop",
     "where_to_break": "Where to break it",
+    "what_holds_it_together": "What holds it together",
     "decouple_ranking_description": (
         "Ranked by how many of the cycle's edges each file carries. The file at the top is "
         "the most entangled, so it is usually where an extracted interface or a moved "
         "import buys the most."
+    ),
+    "test_cycle_ranking_description": (
+        "Ranked by how many of the cycle's edges each file carries. The file at the top is "
+        "the shared fixture the rest import, so it is the one to read first to understand "
+        "how this suite is set up."
     ),
     "imports_in_cycle": "Imports in cycle",
     "imported_by": "Imported by",
@@ -313,14 +323,24 @@ LOCALIZED_LABELS: dict[str, dict[str, str]] = {
             "werden."
         ),
         "cycle_id": "Zyklus-ID",
-        "files_in_cycle": "Dateien im Zyklus",
+        "test_cycle_overview": (
+            "{count} Testdateien importieren einander in einer Schleife, über die Fixtures "
+            "und Helfer, die sie teilen. Ein Testbaum wird absichtlich so gebaut; das ist "
+            "also ein Zyklus im Importgraphen und keine abzutragende Schuld."
+        ),
         "and_more_edges": "und {count} weitere Kanten.",
         "the_loop": "Die Schleife",
         "where_to_break": "Wo sie aufgebrochen werden kann",
+        "what_holds_it_together": "Was sie zusammenhält",
         "decouple_ranking_description": (
             "Sortiert danach, wie viele Kanten des Zyklus jede Datei trägt. Die oberste "
             "Datei ist am stärksten verflochten; dort bringt eine extrahierte Schnittstelle "
             "oder ein verschobener Import gewöhnlich am meisten."
+        ),
+        "test_cycle_ranking_description": (
+            "Sortiert danach, wie viele Kanten des Zyklus jede Datei trägt. Die oberste "
+            "Datei ist das geteilte Fixture, das die übrigen importieren, und daher die, "
+            "die man zuerst liest, um den Aufbau dieser Testsuite zu verstehen."
         ),
         "imports_in_cycle": "Importe im Zyklus",
         "imported_by": "Importiert von",

@@ -365,6 +365,83 @@ def test_assemble_scc_page_cycle_description_contains_files(
         assert f in ctx.cycle_description
 
 
+def test_assemble_scc_page_drops_a_symbol_with_no_name(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    # An unnamed symbol rendered a bare "- " bullet on the page.
+    assembler = ContextAssembler(sample_config)
+    fc = assembler.assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    named = dataclasses.replace(
+        fc,
+        file_path="pkg/a.py",
+        symbols=[
+            {"name": "A", "visibility": "public"},
+            {"name": "   ", "visibility": "public"},
+        ],
+    )
+    ctx = assembler.assemble_scc_page("scc-0", ["pkg/a.py"], [named])
+    assert [s["name"] for s in ctx.member_symbols[0]["symbols"]] == ["A"]
+
+
+def test_assemble_scc_page_omits_a_file_with_nothing_public(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    # Kept, it rendered a heading with no list under it.
+    assembler = ContextAssembler(sample_config)
+    fc = assembler.assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    public = dataclasses.replace(
+        fc, file_path="pkg/a.py", symbols=[{"name": "A", "visibility": "public"}]
+    )
+    private = dataclasses.replace(
+        fc, file_path="pkg/b.py", symbols=[{"name": "_x", "visibility": "private"}]
+    )
+    ctx = assembler.assemble_scc_page("scc-0", ["pkg/a.py", "pkg/b.py"], [public, private])
+    assert [m["file_path"] for m in ctx.member_symbols] == ["pkg/a.py"]
+
+
+def test_assemble_scc_page_flags_a_cycle_that_is_only_test_files(
+    sample_config, sample_parsed_file, sample_graph, graph_metrics, sample_source_bytes
+):
+    # A conftest its siblings all import is a cycle in the import graph and
+    # nothing to go and fix, so the page has to be able to say so.
+    assembler = ContextAssembler(sample_config)
+    fc = assembler.assemble_file_page(
+        sample_parsed_file,
+        sample_graph,
+        graph_metrics["pagerank"],
+        graph_metrics["betweenness"],
+        graph_metrics["community"],
+        sample_source_bytes,
+    )
+    member = dataclasses.replace(fc, file_path="tests/unit/parser/conftest.py", symbols=[])
+
+    all_tests = assembler.assemble_scc_page(
+        "scc-0",
+        ["tests/unit/parser/conftest.py", "tests/unit/parser/test_go.py"],
+        [member],
+    )
+    assert all_tests.test_only
+
+    mixed = assembler.assemble_scc_page(
+        "scc-1", ["tests/unit/parser/conftest.py", "pkg/a.py"], [member]
+    )
+    assert not mixed.test_only
+
+
 # ---------------------------------------------------------------------------
 # assemble_repo_overview
 # ---------------------------------------------------------------------------
