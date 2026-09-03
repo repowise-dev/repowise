@@ -12,7 +12,7 @@ from sqlalchemy import select
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GenerationJob
-from repowise.server.scheduler import setup_scheduler
+from repowise.server.scheduler import _inspect_repository, setup_scheduler
 
 
 async def test_polling_fallback_launches_persisted_job(session_factory, tmp_path) -> None:
@@ -62,3 +62,22 @@ async def test_polling_fallback_launches_persisted_job(session_factory, tmp_path
         "before": "old-sha",
         "after": "new-sha",
     }
+
+
+async def test_polling_fallback_offloads_repository_inspection(session_factory, tmp_path) -> None:
+    """The scheduler must not inspect state or run Git on the event loop."""
+    async with get_session(session_factory) as session:
+        await crud.upsert_repository(
+            session,
+            name="test-repo",
+            local_path=str(tmp_path),
+        )
+
+    scheduler = setup_scheduler(session_factory)
+    polling_job = next(job for job in scheduler.get_jobs() if job.id == "polling_fallback")
+    to_thread = AsyncMock(return_value=None)
+
+    with patch("repowise.server.scheduler.asyncio.to_thread", to_thread):
+        await polling_job.func()
+
+    to_thread.assert_awaited_once_with(_inspect_repository, str(tmp_path))

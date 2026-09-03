@@ -358,9 +358,7 @@ async def execute_job(
             mode = str(config.get("mode") or "sync")
             if mode not in VALID_JOB_MODES:
                 valid_str = ", ".join(sorted(VALID_JOB_MODES))
-                raise ValueError(
-                    f"Invalid job mode '{mode}'. Expected one of: {valid_str}"
-                )
+                raise ValueError(f"Invalid job mode '{mode}'. Expected one of: {valid_str}")
 
             is_full_resync = mode == "full_resync"
             is_initial_index = mode == "initial_index"
@@ -591,7 +589,8 @@ async def execute_job(
         # mode, config) that `repowise init` would have written.
         try:
             if is_initial_index:
-                _persist_initial_index_state(
+                await asyncio.to_thread(
+                    _persist_initial_index_state,
                     Path(repo_path),
                     llm_client=llm_client,
                     # With a provider the pages are model-written ("llm"); with
@@ -610,7 +609,7 @@ async def execute_job(
                     exclude_patterns=exclude_patterns,
                 )
             else:
-                _stamp_last_sync_commit(Path(repo_path))
+                await asyncio.to_thread(_stamp_last_sync_commit, Path(repo_path))
         except Exception:
             logger.debug("state_json_update_failed", job_id=job_id, exc_info=True)
 
@@ -817,6 +816,24 @@ def _persist_initial_index_state(
         logger.debug("store_version_stamp_failed", repo_path=str(repo_path), exc_info=True)
 
     state["config_fingerprint"] = config_fingerprint(repo_path)
+    _save_state(repo_path, state)
+
+
+def _persist_generate_job_state(
+    repo_path: Path,
+    *,
+    total_pages: int,
+    remaining_templates: int,
+    pages_generated: int,
+) -> None:
+    """Persist a scoped generation's Git baseline and page metadata."""
+    head = _read_head_sha(repo_path)
+    state = _load_state(repo_path)
+    if head:
+        state["last_sync_commit"] = head
+    state["total_pages"] = total_pages
+    if remaining_templates == 0 and pages_generated and resolve_docs_mode(state) != "llm":
+        state.update(docs_mode_state_fields("llm"))
     _save_state(repo_path, state)
 
 
@@ -1086,14 +1103,13 @@ async def _run_generate_job(
     # page count, and docs_mode — which flips to "llm" only once no template page
     # remains, mirroring the CLI so a later `repowise update` reads the same mode.
     try:
-        head = _read_head_sha(repo_path)
-        state = _load_state(repo_path)
-        if head:
-            state["last_sync_commit"] = head
-        state["total_pages"] = total_pages
-        if remaining_templates == 0 and pages_generated and resolve_docs_mode(state) != "llm":
-            state.update(docs_mode_state_fields("llm"))
-        _save_state(repo_path, state)
+        await asyncio.to_thread(
+            _persist_generate_job_state,
+            repo_path,
+            total_pages=total_pages,
+            remaining_templates=remaining_templates,
+            pages_generated=pages_generated,
+        )
     except Exception:
         logger.debug("state_json_update_failed", job_id=job_id, exc_info=True)
 
@@ -1161,72 +1177,25 @@ async def _incremental_page_regen(
     be empty if nothing changed or no base ref is available).
     """
     try:
-        # Read base ref from state.json (the commit we last synced to)
-        state_path = repo_path / ".repowise" / "state.json"
-        base_ref: str | None = None
-        if state_path.is_file():
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            base_ref = state.get("last_sync_commit")
-
-        # Webhook jobs may carry explicit before/after refs
-        if not base_ref:
-            base_ref = job_config.get("before")
-
-        if not base_ref:
-            logger.info("incremental_page_regen_skipped", reason="no_base_ref")
-            return []
-
-        import subprocess as _sp
-
-        head_result = _sp.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            timeout=10,
+        plan = await asyncio.to_thread(
+            _plan_incremental_page_regen,
+            repo_path,
+            result,
+            job_config,
         )
-        if head_result.returncode != 0:
+        if plan is None:
             return []
-        head = head_result.stdout.strip()
-
-        if head == base_ref:
-            logger.info("incremental_page_regen_skipped", reason="no_new_commits")
-            return []
-
-        from repowise.core.ingestion import ChangeDetector
-        from repowise.core.ingestion.change_detector import compute_adaptive_budget
-
-        detector = ChangeDetector(repo_path)
-        file_diffs = detector.get_changed_files(base_ref, head)
-        if not file_diffs:
-            return []
-
-        cascade_budget = compute_adaptive_budget(file_diffs, result.file_count)
-        affected = detector.get_affected_pages(
-            file_diffs,
-            result.graph_builder.graph(),
-            cascade_budget,
-            pagerank=result.graph_builder.pagerank(),
-        )
-
-        if not affected.regenerate:
-            logger.info("incremental_page_regen_skipped", reason="no_affected_pages")
-            return []
+        affected_parsed, affected_source, changed_count, affected_count, cascade_budget = plan
 
         logger.info(
             "incremental_page_regen_start",
-            changed_files=len(file_diffs),
-            affected_pages=len(affected.regenerate),
+            changed_files=changed_count,
+            affected_pages=affected_count,
             cascade_budget=cascade_budget,
         )
 
         if progress:
-            progress.on_phase_start("generation", len(affected.regenerate))
-
-        # Filter parsed files to only affected ones
-        regen_set = set(affected.regenerate)
-        affected_parsed = [pf for pf in result.parsed_files if pf.file_info.path in regen_set]
-        affected_source = {p: s for p, s in result.source_map.items() if p in regen_set}
+            progress.on_phase_start("generation", affected_count)
 
         from repowise.core.generation import ContextAssembler, GenerationConfig, PageGenerator
 
@@ -1285,3 +1254,58 @@ async def _incremental_page_regen(
     except Exception as exc:
         logger.warning("incremental_page_regen_failed", error=str(exc))
         return []
+
+
+def _plan_incremental_page_regen(
+    repo_path: Path,
+    result: Any,
+    job_config: dict,
+) -> tuple[list[Any], dict[str, Any], int, int, int] | None:
+    """Build an incremental regeneration plan without blocking the event loop.
+
+    The caller runs this synchronous unit in a worker thread. Keeping the Git
+    command, GitPython-backed ``ChangeDetector``, graph ranking, and related
+    filesystem reads together avoids moving only the cheapest operation while
+    leaving the rest of change detection on the async server thread.
+    """
+    base_ref = _load_state(repo_path).get("last_sync_commit") or job_config.get("before")
+    if not base_ref:
+        logger.info("incremental_page_regen_skipped", reason="no_base_ref")
+        return None
+
+    head = _read_head_sha(repo_path)
+    if not head:
+        return None
+    if head == base_ref:
+        logger.info("incremental_page_regen_skipped", reason="no_new_commits")
+        return None
+
+    from repowise.core.ingestion import ChangeDetector
+    from repowise.core.ingestion.change_detector import compute_adaptive_budget
+
+    detector = ChangeDetector(repo_path)
+    file_diffs = detector.get_changed_files(base_ref, head)
+    if not file_diffs:
+        return None
+
+    cascade_budget = compute_adaptive_budget(file_diffs, result.file_count)
+    affected = detector.get_affected_pages(
+        file_diffs,
+        result.graph_builder.graph(),
+        cascade_budget,
+        pagerank=result.graph_builder.pagerank(),
+    )
+    if not affected.regenerate:
+        logger.info("incremental_page_regen_skipped", reason="no_affected_pages")
+        return None
+
+    regen_set = set(affected.regenerate)
+    affected_parsed = [pf for pf in result.parsed_files if pf.file_info.path in regen_set]
+    affected_source = {p: s for p, s in result.source_map.items() if p in regen_set}
+    return (
+        affected_parsed,
+        affected_source,
+        len(file_diffs),
+        len(affected.regenerate),
+        cascade_budget,
+    )
