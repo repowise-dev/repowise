@@ -55,7 +55,25 @@ def test_detect_workspace_root_uses_primary(workspace: Path) -> None:
     assert repo_alias == "repowise"
 
 
-def test_detect_workspace_non_member_uses_primary(workspace: Path) -> None:
+def test_detect_workspace_non_member_bare_dir_uses_primary(workspace: Path) -> None:
+    """A plain subdirectory (no .repowise/ of its own) is not a repo at all,
+    so containment correctly falls through to the primary."""
     _, _, repo_alias = _detect_workspace(str(workspace / "test-repos" / "microdot"))
-
     assert repo_alias == "repowise"
+
+
+def test_detect_workspace_non_member_indexed_repo_drops_to_single_repo(
+    workspace: Path,
+) -> None:
+    """A path that is itself an indexed repo (has .repowise/state.json) but
+    isn't a registered workspace member must not silently serve the
+    enclosing primary, it should drop to single-repo mode instead."""
+    nested = workspace / "test-repos" / "microdot"
+    (nested / ".repowise").mkdir(parents=True, exist_ok=True)
+    (nested / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+
+    ws_root, ws_config, repo_alias = _detect_workspace(str(nested))
+
+    assert ws_root is None
+    assert ws_config is None
+    assert repo_alias is None
