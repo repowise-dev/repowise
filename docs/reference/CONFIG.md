@@ -918,7 +918,39 @@ Anonymous usage telemetry is **enabled by default** (opt-out).
 | `REPOWISE_SKIP_EDITOR_SETUP` | Truthy value stops `init` writing to your machine-wide editor config: the Claude Code / Claude Desktop MCP entry, the Claude Code hooks, and the distill rewrite-hook offer. Same switch as `init --no-editor-setup` ([CLI_REFERENCE.md](CLI_REFERENCE.md#repowise-init-path)); the env var is the one to use for CI, sandboxes, and benchmark runs that index many repos. Project-local files (`.repowise/mcp.json`, `CLAUDE.md`, Codex config) are written either way |
 | `REPOWISE_CHANGELOG` | Override the changelog source used by the "what's new" check |
 | `REPOWISE_PARSE_WORKERS` | How many processes parse files during indexing. Defaults to your CPU count capped at 8, and never exceeds the number of files to parse. Each worker is a separate interpreter holding roughly 50 MB, so lower it on a memory-constrained machine; raising it above 8 is not measurably faster |
+| `REPOWISE_NO_SAVE_KEY` | Truthy value (`1`, `true`, `yes`) suppresses mirroring the provider API key into `.repowise/.env` during `init`. Use in CI, sandboxes, or any environment where credentials are injected at runtime and must not be written to disk. Same effect as the CLI flag `--no-save-key` |
+| `REPOWISE_MCP_NO_WATCHDOG` | Set to `1` or `true` to disable the parent-process watchdog thread started by `repowise mcp --transport stdio`. The watchdog exits the server when the MCP client process terminates abnormally (crash, force-quit, killed terminal). Disabling it is useful when client/server ancestry cannot be detected reliably or for debugging |
+| `REPOWISE_INDEX_INFORMATION_FLOOR` | Minimum character count of substantive prose a generated wiki page must contain before it is given a vector search slot. Pages below the floor are kept as link targets but excluded from semantic search vector store allocation (default: `0`, disabled) |
 
+### BLAS thread pool
+
+repowise automatically caps the BLAS thread pool before any numpy/scipy operation runs. On high-core machines, importing numpy with an uncapped pool commits ~750 MB of private memory per process — roughly 32 MB per BLAS thread — with no benefit for the sparse graph arithmetic repowise performs. Capping to 1 thread halves peak process memory with no wall-clock effect on typical repos. The cap is applied via environment variables so spawned worker processes inherit it automatically.
+
+An explicit value in the environment always wins (`os.environ.setdefault`), allowing per-process opt-outs:
+
+```bash
+OPENBLAS_NUM_THREADS=4 repowise init   # use 4 BLAS threads instead of 1
+```
+
+| Variable | Applies to | Description |
+|----------|-----------|-------------|
+| `OPENBLAS_NUM_THREADS` | OpenBLAS | Capped to `1` by repowise unless set explicitly |
+| `MKL_NUM_THREADS` | Intel MKL | Capped to `1` by repowise unless set explicitly |
+| `NUMEXPR_NUM_THREADS` | NumExpr | Capped to `1` by repowise unless set explicitly |
+| `VECLIB_MAXIMUM_THREADS` | Apple Accelerate | Capped to `1` by repowise unless set explicitly |
+
+> **Note:** `OMP_NUM_THREADS` (OpenMP) is deliberately **not** set. igraph's community-detection passes are OpenMP-parallel and genuinely benefit from multiple threads; capping OMP alongside BLAS costs ~18% extra wall clock with no additional memory saving.
+
+### Cache security & sealing
+
+repowise seals its on-disk pickle caches with an HMAC before writing and verifies the seal before loading. This prevents CWE-502 (deserialization of untrusted data): a published repo could `git add -f` attacker-crafted pickle files into `.repowise/` despite the directory being gitignored. Bare `pickle.load` on such a file executes arbitrary code; the HMAC seal rejects it with a `ValueError` instead and degrades to a full recompute.
+
+The HMAC key is machine-local (`~/.config/repowise/cache_hmac_key` by default) and is never stored next to the cache. The seal also binds a domain string (the cache filename) so a sealed file cannot be copied or renamed across cache kinds.
+
+| Variable | Description |
+|----------|-------------|
+| `REPOWISE_CACHE_HMAC_KEY` | Hex-encoded HMAC-SHA256 key (minimum 32 hex chars / 16 bytes). When set, repowise uses this key instead of reading or generating the machine-local key file. Intended for CI environments and tests where the home directory is ephemeral or shared |
+| `REPOWISE_CACHE_KEY_PATH` | Override the path to the machine-local HMAC key file (default: `$XDG_CONFIG_HOME/repowise/cache_hmac_key` or `~/.config/repowise/cache_hmac_key`) |
 ---
 
 ## Exclude patterns

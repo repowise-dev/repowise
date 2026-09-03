@@ -71,6 +71,15 @@ Cline, Windsurf, Zed, Continue, Gemini CLI, JetBrains AI Assistant, Amp.
 `print-config` takes one of the target ids above; there is no descriptor to
 name for a host at this tier, which is the point of the tier.
 
+## Slash commands (Claude Code)
+
+The `claude-code` Full-tier target ships **18 slash commands** under the
+`/repowise:` namespace — from `/repowise:init` through `/repowise:doctor`. They
+are installed as part of the Claude Code plugin and can be called directly from
+the chat input or command palette.
+
+Full command reference: [CLAUDE_CODE_COMMANDS.md](CLAUDE_CODE_COMMANDS.md).
+
 ## The MCP surface
 
 repowise registers **seventeen MCP tools**. A single-repo server advertises **ten**
