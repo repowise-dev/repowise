@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
-
 from repowise.cli.commands.update_cmd.incremental import _build_update_vector_store
 
 
