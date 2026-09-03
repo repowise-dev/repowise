@@ -58,14 +58,14 @@ describe("GraphFlow shell", () => {
   });
 
   // Uses "language" as the controlled value because it is the one that is not
-  // the default. This was "risk" until that lens was removed for painting
-  // `pagerank * 3` through unreachable thresholds; the assertion is about
-  // control flow, not about which lens, so it survives the swap unchanged.
+  // the default. Rendered in the file scope: the constellation colours hubs by
+  // family whatever colorMode says, so the control is not offered there.
   it("reflects a controlled colorMode and reports changes without self-updating", () => {
     const onColorModeChange = vi.fn();
     render(
       <GraphFlow
         {...baseProps}
+        initialViewMode="full"
         colorMode="language"
         onColorModeChange={onColorModeChange}
       />,
@@ -88,7 +88,9 @@ describe("GraphFlow shell", () => {
   });
 
   it("tracks its own colorMode when uncontrolled (seeded by initialColorMode)", () => {
-    render(<GraphFlow {...baseProps} initialColorMode="language" />);
+    render(
+      <GraphFlow {...baseProps} initialViewMode="full" initialColorMode="language" />,
+    );
 
     expect(
       screen.getByRole("button", { name: "Language" }).getAttribute("aria-pressed"),

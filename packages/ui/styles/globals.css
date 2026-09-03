@@ -275,6 +275,9 @@
      BOTH themes; aliasing them to theme-aware surfaces fixes light mode. */
   --color-bg-canvas: var(--color-bg-inset);
   --color-canvas-dot: rgba(36, 27, 44, 0.08);
+  /* Graph-paper ground under a node-link canvas. Stronger than canvas-dot,
+     which is a scatter mark: a 1px ring at that alpha is below threshold. */
+  --color-canvas-grid: rgba(36, 27, 44, 0.10);
   --color-bg-glass: rgba(255, 255, 255, 0.72);
   /* Neutral hover washes for canvas-adjacent chrome (rows, chips, stubs) —
      plum-alpha on paper, lavender-alpha on dark (same idiom as canvas-dot). */
@@ -549,6 +552,7 @@
   /* C4 / graph canvas surfaces — dark variants (the var()-derived aliases
      flip on their own; only the explicit rgbas need a dark override). */
   --color-canvas-dot: rgba(255, 255, 255, 0.05);
+  --color-canvas-grid: rgba(255, 255, 255, 0.10);
   /* Tracks --color-bg-surface. It was rgba(35,35,37,.72) — the #232325 that
      bg-surface used to be, left behind when the dark ramp moved in July 2026 —
      so every glass chip on every canvas was painting a graphite that exists

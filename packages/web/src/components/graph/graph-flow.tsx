@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import {
@@ -9,7 +9,6 @@ import {
 } from "@repowise-dev/ui/graph/graph-flow";
 import {
   useGraph,
-  useArchitectureGraph,
   useArchitectureCommunityGraph,
   useDeadCodeGraph,
   useHotFilesGraph,
@@ -56,12 +55,18 @@ export interface GraphFlowProps {
    *  Page uses this to dismiss the doc panel so the right rail stays
    *  to a single surface. */
   onCommunityPanelOpen?: (communityId: number) => void;
+  onSelectedNodeChange?: GraphFlowShellProps["onSelectedNodeChange"];
   /** Fired whenever the live scope (viewMode) changes. The page uses this to
    *  track the current scope so it can conditionally fetch the capped full
    *  graph (and gate the truncation banner) only for scopes that render it. */
   onViewModeChange?: (mode: ViewMode) => void;
   /** Fired when the node color mode changes so the page can sync the URL. */
   onColorModeChange?: GraphFlowShellProps["onColorModeChange"];
+  /** Header/rail slots, forwarded to the shared shell. */
+  description?: GraphFlowShellProps["description"];
+  headerActions?: GraphFlowShellProps["headerActions"];
+  banner?: GraphFlowShellProps["banner"];
+  rail?: GraphFlowShellProps["rail"];
 }
 
 export function GraphFlow({
@@ -78,8 +83,13 @@ export function GraphFlow({
   onNodeClick,
   onNodeViewDocs,
   onCommunityPanelOpen,
+  onSelectedNodeChange,
   onViewModeChange,
   onColorModeChange,
+  description,
+  headerActions,
+  banner,
+  rail,
 }: GraphFlowProps) {
   const router = useRouter();
   // Constellation (Knowledge Graph) is the default scope.
@@ -90,13 +100,18 @@ export function GraphFlow({
   // Currently-expanded constellation hubs (community ids). Drives the slice
   // fetch; the shell owns the actual expand/collapse interaction state.
   const [expandedHubs, setExpandedHubs] = useState<number[]>([]);
+  // Latched on first open of the flows panel. It starts closed, so this keeps a
+  // trace fetch nobody asked for off every file-scope render.
+  const [flowsRequested, setFlowsRequested] = useState(false);
+  const handleFlowsVisibilityChange = useCallback((visible: boolean) => {
+    if (visible) setFlowsRequested(true);
+  }, []);
 
   const needsFullGraph = viewMode === "full" || viewMode === "unified";
   const { graph: fullGraph, isLoading: fullLoading } = useGraph(
     needsFullGraph ? repoId : null,
     graphLimit,
   );
-  const { graph: archGraph, isLoading: archLoading } = useArchitectureGraph(null);
   // Constellation community super-graph — only fetched for the radial scope.
   const { graph: constellationGraph, isLoading: constellationLoading } =
     useArchitectureCommunityGraph(viewMode === "architecture" ? repoId : null);
@@ -115,10 +130,10 @@ export function GraphFlow({
   const { repo } = useRepo(repoId);
   const resolvedRepoName = repoName ?? repo?.name;
   const { communities } = useCommunities(repoId);
-  // Flow traces highlight file-level nodes; the constellation has none, so it
-  // skips the fetch. Dead/hot render file graphs, so flows work there too.
+  // File-level only (the constellation has no file nodes), and only once the
+  // panel that reads them has been opened.
   const { flows: executionFlowsData } = useExecutionFlows(
-    viewMode !== "architecture" ? repoId : null,
+    flowsRequested && viewMode !== "architecture" ? repoId : null,
     {
       top_n: 10,
       max_depth: 6,
@@ -127,10 +142,12 @@ export function GraphFlow({
 
   return (
     <GraphFlowShell
+      description={description}
+      headerActions={headerActions}
+      banner={banner}
+      rail={rail}
       fullGraph={fullGraph as GraphExport | undefined}
       isLoadingFullGraph={fullLoading}
-      architectureGraph={archGraph as GraphExport | undefined}
-      isLoadingArchitectureGraph={archLoading}
       constellationGraph={constellationGraph as ArchitectureGraph | undefined}
       isLoadingConstellationGraph={constellationLoading}
       constellationSlices={constellationSlices as Map<number, CommunitySlice> | undefined}
@@ -142,6 +159,7 @@ export function GraphFlow({
       isLoadingHotFilesGraph={hotLoading}
       communities={communities as CommunitySummaryItem[] | undefined}
       executionFlows={executionFlowsData as ExecutionFlows | undefined}
+      onFlowsVisibilityChange={handleFlowsVisibilityChange}
       initialViewMode={initialViewMode}
       viewMode={controlledViewMode}
       activeModule={activeModule}
@@ -163,6 +181,7 @@ export function GraphFlow({
       }
       fileHrefFor={(nodeId) => fileEntityPath(`/repos/${repoId}`, nodeId)}
       onCommunityPanelOpen={onCommunityPanelOpen}
+      onSelectedNodeChange={onSelectedNodeChange}
       renderPathFinder={(props) => (
         <PathFinderPanel
           repoId={repoId}

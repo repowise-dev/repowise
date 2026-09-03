@@ -32,6 +32,7 @@ import { useModuleFilter } from "./use-module-filter";
 import { useGraphKeyboardShortcuts } from "./use-graph-keyboard-shortcuts";
 import { GraphToolbar, type ColorMode, type ViewMode, type LayoutMode, type GraphTheme } from "./graph-toolbar";
 import { GraphLegend } from "./graph-legend";
+import { GraphCanvasShell } from "./graph-canvas-shell";
 import { GraphContextMenu } from "./graph-context-menu";
 import { GraphInspectionPanel } from "./graph-inspection-panel";
 import { GraphFlowPanel } from "./graph-flow-panel";
@@ -62,8 +63,12 @@ import { useEgoFilter } from "./sigma/use-ego-filter";
 export interface GraphFlowProps {
   fullGraph: GraphExport | undefined;
   isLoadingFullGraph: boolean;
-  architectureGraph: GraphExport | undefined;
-  isLoadingArchitectureGraph: boolean;
+  /** @deprecated Unread. The "architecture" scope draws the constellation from
+   *  {@link constellationGraph}, not a file-graph export. Kept optional so an
+   *  out-of-tree host compiles while it drops them. */
+  architectureGraph?: GraphExport | undefined;
+  /** @deprecated Unread. See {@link architectureGraph}. */
+  isLoadingArchitectureGraph?: boolean | undefined;
   /** Community super-graph for the constellation (radial Knowledge Graph) scope. */
   constellationGraph?: ArchitectureGraph | undefined;
   isLoadingConstellationGraph?: boolean;
@@ -81,6 +86,10 @@ export interface GraphFlowProps {
   isLoadingHotFilesGraph: boolean;
   communities?: CommunitySummaryItem[];
   executionFlows?: ExecutionFlows;
+  /** Fired when the flows panel opens or closes, so a host can defer fetching
+   *  {@link executionFlows} until someone asks. Optional; ignoring it keeps the
+   *  eager behaviour. */
+  onFlowsVisibilityChange?: ((visible: boolean) => void) | undefined;
   initialViewMode?: ViewMode;
   /** Controlled scope. Scope is now steered from the page's section header
    *  (`GraphScopeSwitcher`) rather than from a pill cluster on the canvas, so
@@ -129,10 +138,21 @@ export interface GraphFlowProps {
     /** Blossom this community's files on the canvas (expand affordance). */
     onExpandOnCanvas: () => void;
   }) => ReactNode;
-  /** Fired when the community detail panel transitions to open. Lets the
-   *  hosting page dismiss any competing right-rail panel (doc panel etc.)
-   *  so the right side is a single sidebar. */
+  /** Fired when the community detail panel transitions to open. */
   onCommunityPanelOpen?: (communityId: number) => void;
+  /** Fired when canvas selection changes. A host owning `rail` content tied to
+   *  a node (a doc panel) uses this to drop it once a different node is
+   *  selected, instead of masking the inspector indefinitely. */
+  onSelectedNodeChange?: ((nodeId: string | null) => void) | undefined;
+  /** One-line explanation of the current scope, shown in the header row. */
+  description?: string;
+  /** Host controls placed left of the toolbar (scope switcher, module filter). */
+  headerActions?: ReactNode;
+  /** Full-width notice above the canvas (e.g. the truncation banner). */
+  banner?: ReactNode;
+  /** Host-owned rail content, e.g. a documentation panel. Takes the rail over
+   *  the community and inspection panels; see the precedence in the render. */
+  rail?: ReactNode;
 }
 
 export function GraphFlow(props: GraphFlowProps) {
@@ -150,6 +170,7 @@ export function GraphFlow(props: GraphFlowProps) {
     isLoadingHotFilesGraph,
     communities,
     executionFlows,
+    onFlowsVisibilityChange,
     initialViewMode,
     viewMode: controlledViewMode,
     activeModule: controlledActiveModule,
@@ -166,6 +187,11 @@ export function GraphFlow(props: GraphFlowProps) {
     renderPathFinder,
     renderCommunityPanel,
     onCommunityPanelOpen,
+    onSelectedNodeChange,
+    description,
+    headerActions,
+    banner,
+    rail,
   } = props;
 
   const sigmaRef = useRef<SigmaCanvasHandle>(null);
@@ -262,6 +288,15 @@ export function GraphFlow(props: GraphFlowProps) {
     setShowFlows(false);
     setActiveFlowIdx(null);
   }, []);
+
+  // Reported from one place, not from each of the six setters that close it.
+  useEffect(() => {
+    onFlowsVisibilityChange?.(showFlows);
+  }, [showFlows, onFlowsVisibilityChange]);
+
+  useEffect(() => {
+    onSelectedNodeChange?.(selectedNodeId);
+  }, [selectedNodeId, onSelectedNodeChange]);
 
   // Community detail panel (the filter state itself lives in useCommunityFilter)
   const [communityPanelId, setCommunityPanelId] = useState<number | null>(null);
@@ -749,6 +784,9 @@ export function GraphFlow(props: GraphFlowProps) {
         }
       }
       setSelectedNodeId(nodeId);
+      // The community panel describes a hub; selecting a file replaces it in
+      // the rail rather than outranking the inspector forever.
+      setCommunityPanelId(null);
     },
     [selectedNodeId, sigmaGraph, openCommunityPanel],
   );
@@ -959,23 +997,233 @@ export function GraphFlow(props: GraphFlowProps) {
   if (isLoading || isAwaitingAsyncBuild || (isBuildingGraph && !sigmaGraph))
     return <Skeleton className="h-full w-full rounded-lg" />;
 
-  // What the top-left status panel has to say, if anything. It is one bordered
-  // panel now, so it must not render when every row inside it is empty — an
-  // empty box is worse than the four separate chips it replaced.
   const showOverlayCounts =
     !!sigmaGraph && sigmaGraph.order > 0 && (isDeadView || isHotView);
   const hasCanvasStatus =
     (isEgoActive && !!selectedNodeId) || (showOverlayCounts && !!overlayStats);
 
-  // The canvas is what the reader came for, so it sits on the page plane
-  // rather than below it (rule 8). Dark mode used to paint
-  // `--color-bg-inset`, which the July ramp move took a full step darker than
-  // the `--color-bg-root` page around it, so the graph read as a hole cut in
-  // the app. Light mode never painted anything and has always looked right;
-  // this makes dark do what light already did. Same call the knowledge-graph
-  // canvas made in `zoom/theme.ts`.
+  const inspectedFile = selectedNodeId
+    ? effectiveNodeDataMap.get(selectedNodeId)
+    : undefined;
+  const inspectedNode = selectedNodeId
+    ? (inspectedFile ?? effectiveModuleDataMap.get(selectedNodeId))
+    : undefined;
+
+  // One rail, most-explicit intent first. Path finder and flows are opened by
+  // hand, docs are asked for by name, a community panel follows a hub click,
+  // and the inspector is merely a selection. Three panels used to stack on the
+  // same edge with a host callback arbitrating between them.
+  const railContent = showPathFinder && renderPathFinder
+    ? renderPathFinder({
+        initialFrom: pathFrom,
+        initialTo: pathTo,
+        onPathFound: handlePathFound,
+        onClear: handlePathClear,
+        onClose: () => setShowPathFinder(false),
+      })
+    : showFlows
+      ? executionFlows && executionFlows.flows.length > 0
+        ? (
+          <GraphFlowPanel
+            flows={executionFlows}
+            activeFlowIdx={activeFlowIdx}
+            onSelect={handleFlowSelect}
+            onClose={handleFlowsClose}
+            missingCount={activeFlowMissingCount}
+          />
+        )
+        : (
+          // The trace fetch is deferred until this panel opens, so the first
+          // open has nothing yet. Saying so beats an empty rail.
+          <div className="p-4 text-xs text-[var(--color-text-secondary)]">
+            {executionFlows ? "No execution flows for this scope." : "Loading execution flows…"}
+          </div>
+        )
+      : rail
+        ? rail
+        : communityPanelId !== null && renderCommunityPanel
+          ? renderCommunityPanel({
+              communityId: communityPanelId,
+              onClose: () => setCommunityPanelId(null),
+              onExpandOnCanvas: () => handleConstellationHubToggle(communityPanelId),
+            })
+          : selectedNodeId && inspectedNode
+            ? (
+              <GraphInspectionPanel
+                nodeId={selectedNodeId}
+                data={inspectedNode}
+                graph={sigmaGraph}
+                allNodes={effectiveNodeDataMap}
+                communityLabel={
+                  inspectedFile
+                    ? communityLabels?.get(inspectedFile.communityId)
+                    : undefined
+                }
+                onClose={() => { setSelectedNodeId(null); }}
+                onNavigateToNode={handleInspectNavigate}
+                onViewDocs={() => { onNodeViewDocs?.(selectedNodeId); }}
+                onViewSymbols={
+                  inspectedFile && onNodeViewSymbols
+                    ? () => { onNodeViewSymbols(selectedNodeId); }
+                    : undefined
+                }
+                filePageHref={inspectedFile ? fileHrefFor?.(selectedNodeId) : undefined}
+                onFindPath={handleInspectFindPath}
+                isModuleExpanded={false}
+                egoDepth={egoDepth}
+                onEgoDepthChange={setEgoDepth}
+                egoVisibleCount={egoVisibleCount}
+              />
+            )
+            : undefined;
+
   return (
-    <div className="relative w-full h-full" style={{ touchAction: "none", ...(graphTheme === "dark" ? { background: "var(--color-bg-root)" } : {}) }} aria-label="Dependency graph">
+    <GraphCanvasShell
+      description={description}
+      titleActions={
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {headerActions}
+          <GraphToolbar
+            viewMode={viewMode}
+            onViewChange={handleViewChange}
+            colorMode={colorMode}
+            onColorModeChange={setColorMode}
+            hideTests={hideTests}
+            onHideTestsChange={(v) => {
+              setActiveSignals(prev => {
+                const next = new Set(prev);
+                if (v) next.add("hideTests");
+                else next.delete("hideTests");
+                return next;
+              });
+            }}
+            onFitView={handleFitView}
+            showPathFinder={showPathFinder}
+            pathFinderAvailable={Boolean(renderPathFinder)}
+            onTogglePathFinder={() => {
+              setShowPathFinder((s) => !s);
+              setShowFlows(false);
+              setActiveFlowIdx(null);
+            }}
+            showFlows={showFlows}
+            onToggleFlows={() => {
+              setShowFlows((s) => !s);
+              setActiveFlowIdx(null);
+              setShowPathFinder(false);
+            }}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchMatchCount={searchResults.length}
+            searchTotalCount={sigmaGraph?.order ?? 0}
+            onSearchKeyDown={handleSearchKeyDown}
+            layoutMode={layoutMode}
+            onLayoutModeChange={handleLayoutModeChange}
+            onToggleHelp={handleToggleShortcutHelp}
+            hierarchicalDisabledReason={
+              sigmaGraph && sigmaGraph.order > ELK_MAX_NODES
+                ? elkSkipReason(sigmaGraph.order)
+                : undefined
+            }
+          />
+        </div>
+      }
+      banner={
+        banner || layoutNotice ? (
+          <div className="space-y-2">
+            {banner}
+            {layoutNotice && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="flex items-center gap-2 rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-bg-elevated)] px-3 py-1.5"
+              >
+                <span className="text-[11px] text-[var(--color-text-primary)]">{layoutNotice}</span>
+                <button
+                  onClick={() => setLayoutNotice(null)}
+                  aria-label="Dismiss layout notice"
+                  className="shrink-0 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            )}
+          </div>
+        ) : undefined
+      }
+      rail={railContent}
+      footer={
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <GraphLegend
+            nodeCount={sigmaGraph?.order ?? 0}
+            edgeCount={sigmaGraph?.size ?? 0}
+            colorMode={colorMode}
+            viewMode={viewMode}
+            {...(communityLabels ? { communityLabels } : {})}
+            onCommunityClick={openCommunityPanel}
+            activeCommunities={activeCommunities ?? undefined}
+            onCommunityToggle={handleCommunityToggle}
+            onToggleAllCommunities={handleToggleAllCommunities}
+            visibleEdgeTypes={isConstellation ? undefined : visibleEdgeTypes}
+            onEdgeTypeToggle={isConstellation ? undefined : handleEdgeTypeToggle}
+            graphTheme={graphTheme}
+            constellationEntries={isConstellation ? constellationLegend : undefined}
+            onConstellationHubClick={handleConstellationHubClick}
+          />
+          {hasCanvasStatus && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              {isEgoActive && selectedNodeId ? (
+                <span className="flex items-center gap-2 text-[11px] text-[var(--color-accent-primary)]">
+                  <span role="status" aria-live="polite">
+                    Showing {egoVisibleCount} nodes within {egoDepth} hop{egoDepth === 1 ? "" : "s"} of{" "}
+                    <span className="font-mono font-medium">{selectedNodeId.split("/").pop()}</span>
+                  </span>
+                  <button
+                    onClick={() => setEgoDepth(0)}
+                    className="rounded px-1 py-0.5 text-[var(--color-text-tertiary)] underline hover:text-[var(--color-text-primary)]"
+                  >
+                    Clear
+                  </button>
+                </span>
+              ) : null}
+              {showOverlayCounts && overlayStats && (
+                <span role="status" aria-live="polite" className="flex flex-wrap items-center gap-x-3">
+                  {isDeadView && (
+                    <OverlayCountChip kind="dead" inView={overlayStats.deadInView} total={deadTotal} />
+                  )}
+                  {isHotView && (
+                    <OverlayCountChip kind="hot" inView={overlayStats.hotInView} total={hotTotal} />
+                  )}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      }
+      overlay={
+        <>
+          {ctxMenu && (
+            <GraphContextMenu
+              x={ctxMenu.x}
+              y={ctxMenu.y}
+              nodeId={ctxMenu.nodeId}
+              isModule={ctxMenu.nodeType === "moduleGroup"}
+              onViewDocs={handleCtxViewDocs}
+              onExplore={handleCtxExplore}
+              onPathFrom={handleCtxPathFrom}
+              onPathTo={handleCtxPathTo}
+            />
+          )}
+          {showShortcutHelp && (
+            <GraphShortcutHelp onClose={() => setShowShortcutHelp(false)} />
+          )}
+        </>
+      }
+    >
+      <div
+        className="relative h-full w-full"
+        style={{ touchAction: "none", ...(graphTheme === "dark" ? { background: "var(--color-bg-root)" } : {}) }}
+        aria-label="Dependency graph"
+      >
       {sigmaGraph && sigmaGraph.order > 0 ? (
         <SigmaCanvas
           ref={sigmaRef}
@@ -1013,247 +1261,13 @@ export function GraphFlow(props: GraphFlowProps) {
           />
         </div>
       ) : null}
-
-      {/* Canvas status, top-left. One panel with hairline rows, matching the
-          toolbar, the legend and the zoom controls — this corner could
-          otherwise stack four independently-bordered, independently-shadowed
-          chips (breadcrumb, expanded-modules, loading, tip, overlay counts)
-          over the diagram at once. Rendered only when it has something to
-          say, so an idle canvas carries no chrome here at all (rule 10). */}
-      {hasCanvasStatus && (
-      <div className={`absolute top-3 left-3 z-10 flex flex-col items-stretch overflow-hidden ${canvasPanelClass}`}>
-      {isEgoActive && selectedNodeId ? (
-        <div>
-          <div className={canvasRowClass}>
-            <span className="text-[10px] text-[var(--color-accent-primary)]">
-              Showing {egoVisibleCount} nodes within {egoDepth} hop{egoDepth === 1 ? "" : "s"} of{" "}
-              <span className="font-mono font-medium">{selectedNodeId.split("/").pop()}</span>
-            </span>
-            <button
-              onClick={() => setEgoDepth(0)}
-              className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] text-[10px]"
-            >
-              Clear
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      {/* Overlay coverage: how many flagged files are actually in view. The
-          totals come from the backend when it provides them; without totals
-          we still report the in-view count so the overlay never reads as
-          silently doing nothing. */}
-      {showOverlayCounts && overlayStats && (
-        <>
-          {isDeadView && (
-            <OverlayCountChip
-              kind="dead"
-              inView={overlayStats.deadInView}
-              total={deadTotal}
-            />
-          )}
-          {isHotView && (
-            <OverlayCountChip
-              kind="hot"
-              inView={overlayStats.hotInView}
-              total={hotTotal}
-            />
-          )}
-        </>
-      )}
       </div>
-      )}
-
-      {/* Layout-skipped notice: the hierarchical toggle must never look
-          active while silently doing nothing. */}
-      {layoutNotice && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex max-w-[min(28rem,calc(100vw-6rem))] items-center gap-2 rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-bg-elevated)]/95 backdrop-blur-sm px-3 py-1.5 shadow-sm"
-        >
-          <span className="text-[11px] text-[var(--color-text-primary)]">{layoutNotice}</span>
-          <button
-            onClick={() => setLayoutNotice(null)}
-            aria-label="Dismiss layout notice"
-            className="shrink-0 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-          >
-            <X className="w-3 h-3" />
-          </button>
-        </div>
-      )}
-
-      {/* Toolbar */}
-      <div className="absolute top-3 right-3 z-10">
-        <GraphToolbar
-          viewMode={viewMode}
-          onViewChange={handleViewChange}
-          colorMode={colorMode}
-          onColorModeChange={setColorMode}
-          hideTests={hideTests}
-          onHideTestsChange={(v) => {
-            setActiveSignals(prev => {
-              const next = new Set(prev);
-              v ? next.add("hideTests") : next.delete("hideTests");
-              return next;
-            });
-          }}
-          onFitView={handleFitView}
-          showPathFinder={showPathFinder}
-          pathFinderAvailable={Boolean(renderPathFinder)}
-          onTogglePathFinder={() => {
-            // Path finder and flows share the same overlay slot — opening
-            // one always closes the other.
-            setShowPathFinder((s) => !s);
-            setShowFlows(false);
-            setActiveFlowIdx(null);
-          }}
-          showFlows={showFlows}
-          onToggleFlows={() => {
-            setShowFlows((s) => !s);
-            setActiveFlowIdx(null);
-            setShowPathFinder(false);
-          }}
-          searchQuery={searchQuery}
-          onSearchChange={setSearchQuery}
-          searchMatchCount={searchResults.length}
-          searchTotalCount={sigmaGraph?.order ?? 0}
-          onSearchKeyDown={handleSearchKeyDown}
-          layoutMode={layoutMode}
-          onLayoutModeChange={handleLayoutModeChange}
-          onToggleHelp={handleToggleShortcutHelp}
-          hierarchicalDisabledReason={
-            sigmaGraph && sigmaGraph.order > ELK_MAX_NODES
-              ? elkSkipReason(sigmaGraph.order)
-              : undefined
-          }
-        />
-      </div>
-
-      {/* Path Finder. Carries the same viewport clamp as the flows panel below;
-          without it the panel runs off the side of a phone. */}
-      {showPathFinder && renderPathFinder && (
-        <div className="absolute top-14 right-3 z-10 w-[min(20rem,calc(100vw-1.5rem))]">
-          {renderPathFinder({
-            initialFrom: pathFrom,
-            initialTo: pathTo,
-            onPathFound: handlePathFound,
-            onClear: handlePathClear,
-            onClose: () => setShowPathFinder(false),
-          })}
-        </div>
-      )}
-
-      {/* Execution Flows Panel */}
-      {showFlows && executionFlows && executionFlows.flows.length > 0 && (
-        <div className="absolute top-14 right-3 z-10 w-[min(16rem,calc(100vw-1.5rem))]">
-          <GraphFlowPanel
-            flows={executionFlows}
-            activeFlowIdx={activeFlowIdx}
-            onSelect={handleFlowSelect}
-            onClose={handleFlowsClose}
-            missingCount={activeFlowMissingCount}
-          />
-        </div>
-      )}
-
-      {/* Legend — on phones the inspection bottom sheet covers this corner,
-          so yield to it instead of stacking underneath. */}
-      <div className={`absolute bottom-3 left-3 z-10 ${selectedNodeId ? "hidden sm:block" : ""}`}>
-        <GraphLegend
-          nodeCount={sigmaGraph?.order ?? 0}
-          edgeCount={sigmaGraph?.size ?? 0}
-          colorMode={colorMode}
-          viewMode={viewMode}
-          {...(communityLabels ? { communityLabels } : {})}
-          onCommunityClick={openCommunityPanel}
-          activeCommunities={activeCommunities ?? undefined}
-          onCommunityToggle={handleCommunityToggle}
-          onToggleAllCommunities={handleToggleAllCommunities}
-          visibleEdgeTypes={isConstellation ? undefined : visibleEdgeTypes}
-          onEdgeTypeToggle={isConstellation ? undefined : handleEdgeTypeToggle}
-          graphTheme={graphTheme}
-          constellationEntries={isConstellation ? constellationLegend : undefined}
-          onConstellationHubClick={handleConstellationHubClick}
-        />
-      </div>
-
-      {/* Keyboard shortcut help (toggled with ?) */}
-      {showShortcutHelp && (
-        <GraphShortcutHelp onClose={() => setShowShortcutHelp(false)} />
-      )}
-
-      {/* Context menu */}
-      {ctxMenu && (
-        <GraphContextMenu
-          x={ctxMenu.x}
-          y={ctxMenu.y}
-          nodeId={ctxMenu.nodeId}
-          isModule={ctxMenu.nodeType === "moduleGroup"}
-          onViewDocs={handleCtxViewDocs}
-          onExplore={handleCtxExplore}
-          onPathFrom={handleCtxPathFrom}
-          onPathTo={handleCtxPathTo}
-        />
-      )}
-
-      {/* Community detail panel */}
-      {communityPanelId !== null && renderCommunityPanel &&
-        renderCommunityPanel({
-          communityId: communityPanelId,
-          onClose: () => setCommunityPanelId(null),
-          onExpandOnCanvas: () => handleConstellationHubToggle(communityPanelId),
-        })}
-
-      {/* Inspection panel — works for both file and module nodes */}
-      {selectedNodeId && (() => {
-        const fileNd = effectiveNodeDataMap.get(selectedNodeId);
-        const modNd = effectiveModuleDataMap.get(selectedNodeId);
-        const nd = fileNd ?? modNd;
-        if (!nd) return null;
-        return (
-          <GraphInspectionPanel
-            nodeId={selectedNodeId}
-            data={nd}
-            graph={sigmaGraph}
-            allNodes={effectiveNodeDataMap}
-            communityLabel={fileNd ? communityLabels?.get(fileNd.communityId) : undefined}
-            onClose={() => { setSelectedNodeId(null); }}
-            onNavigateToNode={handleInspectNavigate}
-            onViewDocs={() => { onNodeViewDocs?.(selectedNodeId); }}
-            onViewSymbols={
-              fileNd && onNodeViewSymbols
-                ? () => { onNodeViewSymbols(selectedNodeId); }
-                : undefined
-            }
-            filePageHref={fileNd ? fileHrefFor?.(selectedNodeId) : undefined}
-            onFindPath={handleInspectFindPath}
-            isModuleExpanded={false}
-            egoDepth={egoDepth}
-            onEgoDepthChange={setEgoDepth}
-            egoVisibleCount={egoVisibleCount}
-          />
-        );
-      })()}
-    </div>
+    </GraphCanvasShell>
   );
 }
 
-/**
- * Chrome for the top-left status panel. Shares the toolbar / legend / zoom
- * treatment so every corner of the canvas reads as one system: one border, one
- * shadow, one blur, and hairline dividers instead of gaps between boxes.
- */
-const canvasPanelClass =
-  "rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/85 shadow-sm backdrop-blur-sm";
-
-/** One row inside that panel. `first:border-t-0` keeps the top edge clean. */
-const canvasRowClass =
-  "flex items-center gap-2 border-t border-[var(--color-border-default)] px-2.5 py-1.5 first:border-t-0";
-
-/** Small status chip captioning a dead/hot view: "12 of 37 dead files in
- *  view" when the backend supplies repo-wide totals, or just the in-view
- *  count when it doesn't. */
+/** Caption for a dead/hot view: "12 of 37 dead files in view" when the backend
+ *  supplies repo-wide totals, or just the in-view count when it does not. */
 function OverlayCountChip({
   kind,
   inView,
@@ -1266,15 +1280,13 @@ function OverlayCountChip({
   const noun = kind === "dead" ? "dead files" : "hot files";
   let text: string;
   if (total != null && inView < total) {
-    text = `${inView} of ${total} ${noun} in view — the rest are outside the loaded node set`;
+    text = `${inView} of ${total} ${noun} in view; the rest are outside the loaded node set`;
   } else if (total != null) {
     text = `Showing all ${total} ${noun}`;
   } else {
     text = `${inView} ${noun} in view`;
   }
-  return (
-    <div role="status" className={canvasRowClass}>
-      <span className="text-[10px] text-[var(--color-text-secondary)]">{text}</span>
-    </div>
-  );
+  // No role here: the footer wrapper is already the live region, and nesting
+  // one inside another gets the text announced twice.
+  return <span className="text-[11px] text-[var(--color-text-secondary)]">{text}</span>;
 }

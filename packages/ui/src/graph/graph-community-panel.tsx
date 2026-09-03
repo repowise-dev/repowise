@@ -32,7 +32,7 @@ export function GraphCommunityPanel({
   memberHref,
 }: GraphCommunityPanelProps) {
   return (
-    <div className="absolute right-0 top-0 bottom-0 w-full sm:w-[360px] border-l border-[var(--color-border-default)] bg-[var(--color-bg-surface)] z-20 flex flex-col shadow-lg shadow-black/20">
+    <div className="flex h-full min-h-0 flex-col">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border-default)]">
         <div className="min-w-0">
@@ -47,6 +47,7 @@ export function GraphCommunityPanel({
         </div>
         <button
           onClick={onClose}
+          aria-label="Close community details"
           className="p-1 rounded hover:bg-[var(--color-bg-elevated)] transition-colors"
         >
           <X className="h-4 w-4 text-[var(--color-text-tertiary)]" />

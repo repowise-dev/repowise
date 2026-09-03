@@ -6,7 +6,6 @@ import {
   EyeOff,
   Maximize,
   Route,
-  GitFork,
   Skull,
   Flame,
   Workflow,
@@ -142,31 +141,17 @@ const LAYOUT_MODES: { id: LayoutMode; icon: typeof GitBranch; label: string }[] 
   { id: "hierarchical", icon: GitBranch, label: "Hierarchical" },
 ];
 
-// The constellation (Knowledge Graph) scope is always radial — a single
-// disabled-looking indicator replaces the Force/Hierarchical toggle there.
-const RADIAL_LAYOUT: { id: LayoutMode; icon: typeof GitFork; label: string } = {
-  id: "radial",
-  icon: GitFork,
-  label: "Radial",
-};
-
 /**
- * One panel, not four.
- *
- * Scope, node filter, the layout/colour/action row and search each used to be
- * their own rounded box with its own border, its own `shadow-sm` and its own
- * `backdrop-blur-sm`, stacked down the same edge with 6px of canvas showing
- * between them. Four frames and four shadows for one control surface, over a
- * diagram the reader is trying to look past (rule 13). They are now one shell
- * with hairline dividers, sharing the legend's chrome so the two corners of
- * the canvas read as the same system.
+ * One control surface in the section header. Translucency, blur and a shadow
+ * are how chrome sits over a diagram; this lives on the page plane now, so it
+ * takes a plain hairline frame instead.
  */
 const panelClass =
-  "overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/85 shadow-sm backdrop-blur-sm";
+  "overflow-hidden rounded-lg border border-[var(--color-border-default)]";
 
 /** A divider row inside the panel. The first group omits the top hairline. */
 const groupClass =
-  "flex items-center gap-0.5 p-1 border-t border-[var(--color-border-default)] first:border-t-0";
+  "flex flex-wrap items-center gap-0.5 p-1 border-t border-[var(--color-border-default)] first:border-t-0";
 
 const itemActiveClass =
   "bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]";
@@ -273,22 +258,9 @@ export const GraphToolbar = memo(function GraphToolbar({
 
       {/* Layout · colour · actions. */}
       <div className={`${clusterVisibility} ${groupClass}`}>
+        {!isConstellation && (
         <div className="flex gap-0.5">
-          {isConstellation ? (
-            // Constellation is locked to the radial layout; show a single
-            // active indicator instead of the Force/Hierarchical toggle.
-            <button
-              key={RADIAL_LAYOUT.id}
-              disabled
-              className={`${itemClass} ${itemActiveClass} cursor-default`}
-              title={`${RADIAL_LAYOUT.label} (fixed for Communities)`}
-              aria-label={RADIAL_LAYOUT.label}
-              aria-pressed
-            >
-              <RADIAL_LAYOUT.icon className="w-3 h-3" />
-            </button>
-          ) : (
-            LAYOUT_MODES.map((m) => {
+          {LAYOUT_MODES.map((m) => {
               const Icon = m.icon;
               const isActive = layoutMode === m.id;
               const disabledReason =
@@ -309,18 +281,15 @@ export const GraphToolbar = memo(function GraphToolbar({
                   <Icon className="w-3 h-3" />
                 </button>
               );
-            })
-          )}
+          })}
         </div>
+        )}
 
-        {/* Colour-by. This control decides what every circle on the canvas
-            means, and it used to be three unlabelled icons — a palette, a
-            network and a shield — so there was no way to know whether you were
-            looking at languages, communities or risk without hovering each
-            one. Worse, Risk paints green/amber/red and Community paints
-            families that include green, amber and red: same marks, two
-            vocabularies, switched by a mystery glyph. The active mode now
-            always carries its word. */}
+        {/* Colour-by. The active mode always carries its word: unlabelled
+            glyphs gave no way to tell which vocabulary the circles were in.
+            Hidden in the constellation, where hubs are family-coloured
+            regardless of this setting. */}
+        {!isConstellation && (
         <div className="flex items-center gap-0.5 border-l border-[var(--color-border-default)] pl-1">
           <span className="hidden pl-1 pr-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] lg:inline">
             Colour
@@ -343,6 +312,7 @@ export const GraphToolbar = memo(function GraphToolbar({
             );
           })}
         </div>
+        )}
 
         {/* No theme control here. It set the *global* theme, so it did exactly
             what the app's own toggle in the header does, a few hundred pixels

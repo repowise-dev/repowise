@@ -146,21 +146,24 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
 
   return (
     <div
-      // Right panel on sm+; bottom sheet (drag handle + swipe-dismiss) below.
-      className="absolute inset-x-0 bottom-0 top-auto max-h-[70%] rounded-t-xl border-t border-[var(--color-border-default)] bg-[var(--color-bg-surface)] z-20 flex flex-col shadow-xl shadow-black/20 animate-in slide-in-from-bottom sm:slide-in-from-bottom-0 sm:slide-in-from-right duration-200 sm:inset-x-auto sm:right-0 sm:top-0 sm:bottom-0 sm:left-auto sm:w-[300px] sm:max-h-none sm:rounded-none sm:border-t-0 sm:border-l"
+      // Fills the shell's rail slot, which owns placement (sheet under lg,
+      // grid column above). Keeps the swipe-to-dismiss gesture for the sheet.
+      className="flex h-full min-h-0 flex-col"
       onTouchStart={(e) => {
         touchStartY.current = e.touches[0]?.clientY ?? null;
       }}
       onTouchEnd={(e) => {
         const start = touchStartY.current;
         touchStartY.current = null;
-        if (start == null || window.innerWidth >= 640) return;
+        // Matches the shell's rail breakpoint: above lg this is a grid column,
+        // not a sheet, so there is nothing to swipe away.
+        if (start == null || window.innerWidth >= 1024) return;
         const end = e.changedTouches[0]?.clientY ?? start;
         if (end - start > 80) onClose();
       }}
     >
       {/* Drag handle (mobile sheet only) */}
-      <div className="flex justify-center py-1.5 sm:hidden" aria-hidden>
+      <div className="flex justify-center py-1.5 lg:hidden" aria-hidden>
         <span className="h-1 w-9 rounded-full bg-[var(--color-border-default)]" />
       </div>
       {/* Header */}
@@ -176,6 +179,7 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
         </div>
         <button
           onClick={onClose}
+          aria-label="Close inspector"
           className="p-1 rounded hover:bg-[var(--color-bg-elevated)] transition-colors shrink-0"
         >
           <X className="h-4 w-4 text-[var(--color-text-tertiary)]" />

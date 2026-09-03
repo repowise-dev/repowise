@@ -93,6 +93,8 @@ const TAB_FOR_VIEW: Record<CanonicalView, string> = {
   symbols: "symbols",
 };
 
+const TAB_PANEL_ID = "architecture-tab-panel";
+
 const TABS: { id: string; label: string }[] = [
   { id: "map", label: "Map" },
   { id: "coupling", label: "Coupling" },
@@ -124,6 +126,7 @@ export default function ArchitecturePage({
   const [, setSignal] = useQueryState("signal");
   const [, setModule] = useQueryState("module");
   const [, setFocus] = useQueryState("focus");
+  const [, setNode] = useQueryState("node");
 
   // The curated layers view now lives at /knowledge-graph. `?view=layers`
   // redirects there so shared links keep working.
@@ -155,13 +158,17 @@ export default function ArchitecturePage({
   const handleTabChange = useCallback(
     (id: string) => {
       void setView(DEFAULT_VIEW_FOR_TAB[id] ?? "communities");
-      if (id !== "coupling") void setFocus(null);
+      // `?focus=` means a file path in Coupling and the literal "relationships"
+      // in Third-party, so carrying it across pins one tab's value in the
+      // other's vocabulary. Cleared on every change, not just when leaving.
+      void setFocus(null);
       if (id !== "map") {
         void setSignal(null);
         void setModule(null);
+        void setNode(null);
       }
     },
-    [setView, setFocus, setSignal, setModule],
+    [setView, setFocus, setSignal, setModule, setNode],
   );
 
   const handleScopeChange = useCallback(
@@ -178,10 +185,23 @@ export default function ArchitecturePage({
   return (
     <div className="flex h-full flex-col">
       <div className="shrink-0 px-4 pt-3 sm:px-6">
-        <ViewTabs tabs={TABS} value={activeTab} onValueChange={handleTabChange} />
+        <ViewTabs
+          tabs={TABS}
+          value={activeTab}
+          onValueChange={handleTabChange}
+          panelId={TAB_PANEL_ID}
+        />
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      {/* The panel is a flex sibling, not a ViewTabs child: the Map is a
+          full-height canvas that sizes itself from this box. */}
+      <div
+        id={TAB_PANEL_ID}
+        role="tabpanel"
+        aria-labelledby={`${TAB_PANEL_ID}-tab-${activeTab}`}
+        tabIndex={0}
+        className="min-h-0 flex-1 overflow-auto"
+      >
         {activeTab === "map" && (
           <GraphView
             repoId={repoId}

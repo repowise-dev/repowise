@@ -6,7 +6,6 @@ import { useQueryState } from "nuqs";
 import { useSearchParams } from "next/navigation";
 import { GraphFlow } from "@/components/graph/graph-flow";
 import { GraphDocPanel } from "@/components/graph/graph-doc-panel";
-import { GraphCanvasShell } from "@repowise-dev/ui/graph/graph-canvas-shell";
 import { GraphTruncationBanner } from "@repowise-dev/ui/graph/graph-truncation-banner";
 import {
   GraphScopeSwitcher,
@@ -97,8 +96,14 @@ export function GraphView({
     [setSelectedNode],
   );
 
-  // When the community panel opens from the legend, dismiss the doc panel
-  // so the two never stack on the right rail. Single-sidebar UX.
+  // The rail holds one panel, and the doc panel outranks the inspector, so a
+  // doc left open would mask every later selection. Drop it once the selection
+  // moves elsewhere.
+  const handleSelectedNodeChange = useCallback((nodeId: string | null) => {
+    setDocNodeId((prev) => (prev !== null && prev !== nodeId ? null : prev));
+  }, []);
+
+  // Opening a community also replaces the doc panel.
   const handleCommunityPanelOpen = useCallback(() => {
     setDocNodeId(null);
   }, []);
@@ -155,22 +160,18 @@ export function GraphView({
   );
 
   return (
-    <GraphCanvasShell
-      // No title. The tab above already says "Map", and the scope switcher on
-      // the right says which zoom you are at — a heading that repeats the
-      // control you just clicked spends a band of chrome saying nothing. What
-      // is left is the one line that adds something neither can: what to do
-      // with the thing you are looking at.
+    <GraphFlow
+      repoId={repoId}
+      // No title. The tab above says "Map" and the scope switcher says which
+      // zoom you are at; the one line left is what to do with what you see.
       description={
         isCommunities
-          ? "Each circle is a detected community, sized by how much code it holds. Double-click one to open it up."
+          ? "Files that depend on each other more than on the rest of the repo, detected automatically. Circle size is how much code a group holds, and the nearer the centre, the nearer an entry point. Double-click a group to see the files inside it and what they depend on."
           : "Every file and how it depends on the others. Pick two files to trace a path between them."
       }
-      titleActions={headerControls}
+      headerActions={headerControls}
       banner={
-        // Shown only when the file scope actually got capped. This line is the
-        // one place the node count is stated, and it only became true when the
-        // export stopped counting symbol nodes as files.
+        // Only when the file scope actually got capped.
         usesFullGraph && graphData?.truncated && graphData.total_node_count != null ? (
           <GraphTruncationBanner
             shown={graphData.nodes.length}
@@ -181,7 +182,7 @@ export function GraphView({
           />
         ) : undefined
       }
-      overlay={
+      rail={
         docNodeId ? (
           <GraphDocPanel
             repoId={repoId}
@@ -190,25 +191,22 @@ export function GraphView({
           />
         ) : undefined
       }
-    >
-      <GraphFlow
-        repoId={repoId}
-        // Scope is controlled: `?view=` is the single source of truth, so
-        // back/forward and shared links restore it without a remount.
-        viewMode={viewMode}
-        activeModule={activeModule}
-        // Same value the banner reports, so the caption and the canvas can
-        // never disagree about how many files are drawn.
-        graphLimit={graphLimit}
-        onModuleGroupsChange={setModuleGroups}
-        colorMode={initialColorMode ?? "community"}
-        initialSelectedNode={initialNode}
-        onNodeClick={handleNodeClick}
-        onNodeViewDocs={handleNodeViewDocs}
-        onCommunityPanelOpen={handleCommunityPanelOpen}
-        onViewModeChange={handleViewModeChange}
-        onColorModeChange={handleColorModeChange}
-      />
-    </GraphCanvasShell>
+      // Scope is controlled: `?view=` is the single source of truth, so
+      // back/forward and shared links restore it without a remount.
+      viewMode={viewMode}
+      activeModule={activeModule}
+      // Same value the banner reports, so the caption and the canvas can
+      // never disagree about how many files are drawn.
+      graphLimit={graphLimit}
+      onModuleGroupsChange={setModuleGroups}
+      colorMode={initialColorMode ?? "community"}
+      initialSelectedNode={initialNode}
+      onNodeClick={handleNodeClick}
+      onNodeViewDocs={handleNodeViewDocs}
+      onCommunityPanelOpen={handleCommunityPanelOpen}
+      onSelectedNodeChange={handleSelectedNodeChange}
+      onViewModeChange={handleViewModeChange}
+      onColorModeChange={handleColorModeChange}
+    />
   );
 }

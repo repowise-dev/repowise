@@ -22,6 +22,7 @@ import { useFA2Layout } from "./use-fa2-layout";
 import { useElkSigmaLayout } from "./use-elk-sigma-layout";
 import { SigmaControls } from "./sigma-controls";
 import { DepthRings } from "./depth-rings";
+import { CanvasGround } from "./canvas-ground";
 
 export interface SigmaCanvasProps {
   graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes> | null;
@@ -90,7 +91,7 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
       visibleEdgeTypes: props.visibleEdgeTypes,
     });
 
-    const { isRunning: isLayoutRunning, toggle: toggleLayout } = useFA2Layout({
+    const { isRunning: isLayoutRunning } = useFA2Layout({
       graph: props.graph,
       sigma,
       enabled: props.layoutMode === "force",
@@ -186,6 +187,18 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
       };
     }, [sigma, container]);
 
+    // Sigma 3 re-measures only inside its own render, and only listens on
+    // window resize. The canvas cell now changes size without the window
+    // doing so: the rail toggles the grid, the key row collapses, a banner
+    // appears. On a settled graph nothing would trigger a render, leaving
+    // stale dimensions behind the ground and the rings too.
+    useEffect(() => {
+      if (!sigma || !container || typeof ResizeObserver === "undefined") return;
+      const observer = new ResizeObserver(() => sigma.refresh());
+      observer.observe(container);
+      return () => observer.disconnect();
+    }, [sigma, container]);
+
     useImperativeHandle(ref, () => ({
       focusNode,
       fitView,
@@ -198,31 +211,22 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
       <div
         className="relative w-full h-full"
         style={
-          // For the constellation, paint the dark canvas on the wrapper and keep
-          // the sigma container transparent so the depth-ring underlay shows.
-          hasDepthRings && props.graphTheme === "dark"
-            ? { background: "var(--color-bg-root)" }
-            : undefined
+          // The plane is painted here, under the ground, so the underlays show
+          // through a transparent Sigma container. Rule 8: the canvas is the
+          // subject, so it takes the page plane rather than a well below it.
+          props.graphTheme === "dark" ? { background: "var(--color-bg-root)" } : undefined
         }
       >
+        {/* Every scope gets a ground. The rings were constellation-only, which
+            left the file graph drawing nodes on a flat plane. */}
+        <CanvasGround sigma={sigma} />
         {hasDepthRings && props.depthRingRadii && (
           <DepthRings sigma={sigma} ringRadii={props.depthRingRadii} />
         )}
         <div
           ref={containerCallback}
           className="w-full h-full relative z-[1]"
-          style={{
-            // `--color-bg-canvas` aliases `--color-bg-inset`, which the July
-            // ramp move took to #0a0a0b — darker than the page. The canvas is
-            // the subject, so it takes the page plane (rule 8), matching the
-            // knowledge-graph canvas. Light mode is unchanged: it was already
-            // transparent, which is why only dark looked wrong.
-            background:
-              !hasDepthRings && props.graphTheme === "dark"
-                ? "var(--color-bg-root)"
-                : "transparent",
-            cursor: "grab",
-          }}
+          style={{ background: "transparent", cursor: "grab" }}
         />
         <SigmaControls
           onZoomIn={zoomIn}
@@ -234,7 +238,6 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
               : undefined
           }
           isLayoutRunning={props.layoutMode === "force" ? isLayoutRunning : isElkComputing}
-          onToggleLayout={props.layoutMode === "force" ? toggleLayout : undefined}
         />
       </div>
     );

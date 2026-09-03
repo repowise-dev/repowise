@@ -7,6 +7,9 @@ import { edgeColorsForTheme } from "./sigma/constants";
 import { useCommunityFamilies } from "../shared/use-theme-tokens";
 import type { ColorMode, ViewMode } from "./graph-toolbar";
 
+/** Community rows shown before the key folds into a "+N" line. */
+const COMMUNITY_ROWS = 8;
+
 const LANGUAGE_LEGEND = [
   { lang: "python", color: LANGUAGE_COLORS.python, label: "Python" },
   { lang: "typescript", color: LANGUAGE_COLORS.typescript, label: "TypeScript" },
@@ -29,19 +32,19 @@ const LANGUAGE_LEGEND = [
  * large fraction of its content, it wants merging".
  */
 const shellClass =
-  "overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/85 text-xs shadow-sm backdrop-blur-sm";
+  "flex w-full flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-[var(--color-border-default)] pt-2 text-xs";
 
 const headerClass =
-  "flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)]";
+  "inline-flex shrink-0 items-center gap-1 rounded py-1.5 text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] sm:py-0";
 
 const countClass = "font-mono text-[10px] tabular-nums tracking-[0.04em]";
 
 const rowClass =
-  "flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[11px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]";
+  "inline-flex items-center gap-1.5 rounded px-1.5 py-1.5 text-left text-[11px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)] sm:py-0.5";
 
 /** Section label inside the key. Mono micro-label, no rule above it. */
 const groupClass =
-  "px-1.5 pt-1.5 pb-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
+  "shrink-0 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 
 function Chevron({ expanded }: { expanded: boolean }) {
   const Icon = expanded ? ChevronDown : ChevronUp;
@@ -124,10 +127,8 @@ export const GraphLegend = memo(function GraphLegend({
   constellationEntries,
   onConstellationHubClick,
 }: GraphLegendProps) {
-  // Open by default. Every node on the canvas is painted from this key, so
-  // collapsing it ships a field of coloured circles with no way to read them
-  // until the reader thinks to click a counter. The key is the cheapest thing
-  // on screen and the only one that makes the rest mean anything.
+  // Open by default: every node is painted from this key, so a collapsed one
+  // ships a field of coloured circles with no way to read them.
   const [expanded, setExpanded] = useState(true);
   const communityFamily = useCommunityFamilies();
   const edgeColors = edgeColorsForTheme(graphTheme);
@@ -147,9 +148,9 @@ export const GraphLegend = memo(function GraphLegend({
           <Chevron expanded={expanded} />
         </button>
         {expanded && (
-          <div className="space-y-px px-1.5 pb-1.5">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             {entries.length === 0 && (
-              <p className="px-1.5 py-1 text-[11px] text-[var(--color-text-tertiary)]">
+              <p className="text-[11px] text-[var(--color-text-tertiary)]">
                 No communities detected
               </p>
             )}
@@ -162,7 +163,7 @@ export const GraphLegend = memo(function GraphLegend({
                   className={rowClass}
                 >
                   <Swatch color={color} />
-                  <span className="min-w-0 flex-1 truncate">{e.label}</span>
+                  <span className="truncate max-w-[12rem]">{e.label}</span>
                   <span className="shrink-0 tabular-nums text-[10px] text-[var(--color-text-tertiary)]">
                     {e.memberCount}
                   </span>
@@ -170,13 +171,10 @@ export const GraphLegend = memo(function GraphLegend({
               );
             })}
             {overflow > 0 && (
-              <p className="px-1.5 pt-1 text-[10px] text-[var(--color-text-tertiary)]">
+              <p className="text-[10px] text-[var(--color-text-tertiary)]">
                 +{overflow} smaller not listed
               </p>
             )}
-            <p className="px-1.5 pt-1.5 text-[10px] text-[var(--color-text-tertiary)]">
-              Inner ring = entry surface
-            </p>
           </div>
         )}
       </div>
@@ -184,7 +182,7 @@ export const GraphLegend = memo(function GraphLegend({
   }
 
   return (
-    <div className={`${shellClass} min-w-[148px] max-w-[190px]`}>
+    <div className={shellClass}>
       <button onClick={() => setExpanded((s) => !s)} className={headerClass}>
         <span className={countClass}>
           {nodeCount} nodes &middot; {edgeCount} edges
@@ -193,7 +191,7 @@ export const GraphLegend = memo(function GraphLegend({
       </button>
 
       {expanded && (
-        <div className="space-y-px px-1.5 pb-1.5">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <p className={groupClass}>
             {colorMode === "language" ? "Language" : "Community"}
           </p>
@@ -202,7 +200,7 @@ export const GraphLegend = memo(function GraphLegend({
             LANGUAGE_LEGEND.map((l) => (
               <div
                 key={l.lang}
-                className="flex items-center gap-2 px-1.5 py-0.5 text-[11px] text-[var(--color-text-secondary)]"
+                className="inline-flex items-center gap-1.5 text-[11px] text-[var(--color-text-secondary)]"
               >
                 <Swatch color={l.color} />
                 <span className="truncate">{l.label}</span>
@@ -210,9 +208,11 @@ export const GraphLegend = memo(function GraphLegend({
             ))}
 
           {colorMode === "community" && (() => {
-            const entries = communityLabels && communityLabels.size > 0
-              ? Array.from(communityLabels.entries()).slice(0, 8)
+            const all = communityLabels && communityLabels.size > 0
+              ? Array.from(communityLabels.entries())
               : null;
+            const entries = all ? all.slice(0, COMMUNITY_ROWS) : null;
+            const overflow = all ? all.length - entries!.length : 0;
             const allSelected = !activeCommunities || (entries
               ? entries.every(([cid]) => activeCommunities.has(cid))
               : true);
@@ -221,7 +221,7 @@ export const GraphLegend = memo(function GraphLegend({
                 {onToggleAllCommunities && entries && (
                   <button
                     onClick={() => onToggleAllCommunities(!allSelected)}
-                    className="px-1.5 pb-0.5 text-[10px] font-medium text-[var(--color-accent-primary)] hover:underline"
+                    className="shrink-0 text-[10px] font-medium text-[var(--color-accent-primary)] hover:underline"
                   >
                     {allSelected ? "Deselect all" : "Select all"}
                   </button>
@@ -242,24 +242,34 @@ export const GraphLegend = memo(function GraphLegend({
                           ) : (
                             <Swatch color={color} />
                           )}
-                          <span
-                            className="min-w-0 flex-1 truncate"
-                            onClick={() => onCommunityClick?.(cid)}
-                          >
-                            {label}
-                          </span>
+                          {onCommunityClick ? (
+                            <button
+                              type="button"
+                              onClick={() => onCommunityClick(cid)}
+                              className="max-w-[12rem] truncate rounded hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                            >
+                              {label}
+                            </button>
+                          ) : (
+                            <span className="max-w-[12rem] truncate">{label}</span>
+                          )}
                         </div>
                       );
                     })
                   : Array.from({ length: 6 }, (_, i) => (
                       <div
                         key={i}
-                        className="flex items-center gap-2 px-1.5 py-0.5 text-[11px] text-[var(--color-text-secondary)]"
+                        className="inline-flex items-center gap-1.5 text-[11px] text-[var(--color-text-secondary)]"
                       >
                         <Swatch color={communityFamily(i).hub} />
                         <span className="truncate">Community {i + 1}</span>
                       </div>
                     ))}
+                {overflow > 0 && (
+                  <p className="text-[10px] text-[var(--color-text-tertiary)]">
+                    +{overflow} smaller not listed
+                  </p>
+                )}
               </>
             );
           })()}
@@ -283,9 +293,7 @@ export const GraphLegend = memo(function GraphLegend({
                       label={`Toggle ${et.label} edges`}
                       onToggle={() => onEdgeTypeToggle(et.type)}
                     />
-                    <span
-                      className={`min-w-0 flex-1 truncate ${checked ? "" : "opacity-45"}`}
-                    >
+                    <span className={`truncate ${checked ? "" : "opacity-45"}`}>
                       {et.label}
                     </span>
                   </div>
@@ -295,10 +303,10 @@ export const GraphLegend = memo(function GraphLegend({
           )}
 
           {viewMode !== "full" && (
-            <p className="px-1.5 pt-1.5 text-[10px] text-[var(--color-text-tertiary)]">
+            <p className="text-[10px] text-[var(--color-text-tertiary)]">
               {viewMode === "dead" && "Showing unreachable files"}
               {viewMode === "hotfiles" && "Most-committed files (30d)"}
-              {viewMode === "unified" && "Unified: community + risk signals"}
+              {viewMode === "unified" && "Dead and high-churn files"}
             </p>
           )}
         </div>
