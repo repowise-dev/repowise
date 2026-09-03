@@ -113,6 +113,9 @@ const CHUNK_SIZE = 500;
 export type FileGraphAdapterOptions = {
   signals?: { hotNodeIds?: Set<string>; deadNodeIds?: Set<string> };
   nodeCount?: number;
+  /** Nodes that are context rather than content — the one-hop stubs a community
+   *  slice carries. Drawn as the boundary of the scoped view. */
+  boundaryNodeIds?: Set<string>;
 };
 
 export function fileGraphToGraphology(
@@ -206,6 +209,12 @@ function* buildFileGraph(
       let size = getScaledNodeSize(baseSize, nodeCount);
       size *= Math.min(1 + node.pagerank * 2, 2);
 
+      const isBoundary = options?.boundaryNodeIds?.has(node.node_id) ?? false;
+      // Two thirds, so a stub reads as smaller than every member without
+      // vanishing. Colour is handled in use-sigma's colour pass, which runs
+      // after this and would otherwise overwrite anything set here.
+      if (isBoundary) size *= 0.65;
+
       const color = languageColor(node.language);
 
       const attrs: SigmaNodeAttributes = {
@@ -227,6 +236,7 @@ function* buildFileGraph(
         mass: getNodeMass("file", nodeCount),
         originalColor: color,
       };
+      if (isBoundary) attrs.isBoundary = true;
 
       // Signal data may come from two sources: explicit overlay sets
       // (legacy unified-graph flow) or enriched node payloads from Phase A.

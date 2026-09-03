@@ -100,7 +100,7 @@ function DocsSidebar({ repoId, targetPath }: { repoId: string; targetPath: strin
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs text-[var(--color-text-tertiary)]">Community</span>
           <Link
-            href={`/repos/${repoId}/architecture?view=graph&colorMode=community`}
+            href={`/repos/${repoId}/architecture?view=communities`}
             className="inline-flex items-center gap-1 truncate text-xs text-[var(--color-accent)] hover:underline"
           >
             {metrics.community_label}

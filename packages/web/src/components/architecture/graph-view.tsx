@@ -9,10 +9,11 @@ import { GraphDocPanel } from "@/components/graph/graph-doc-panel";
 import { GraphTruncationBanner } from "@repowise-dev/ui/graph/graph-truncation-banner";
 import {
   GraphScopeSwitcher,
-  ModuleFilterSelect,
+  GraphNarrowingSelect,
 } from "@repowise-dev/ui/graph/graph-scope-controls";
 import type { ModuleGroup } from "@repowise-dev/ui/graph/use-module-filter";
 import { getGraph } from "@/lib/api/graph";
+import { useCommunities } from "@/lib/hooks/use-graph";
 import type { GraphExportResponse } from "@/lib/api/types";
 
 type ViewMode = "full" | "architecture" | "dead" | "hotfiles" | "unified";
@@ -54,6 +55,11 @@ export function GraphView({
   const [, setColorModeParam] = useQueryState("colorMode");
   const [signal, setSignal] = useQueryState("signal");
   const [activeModule, setActiveModule] = useQueryState("module");
+  // The drill-down, as URL state, so "inside this community" is a link you can
+  // share and restore. Written with nuqs' default `history: "replace"`, like
+  // every other param on this page, so Back leaves the page rather than
+  // stepping out of the community — the breadcrumb and Escape are the way up.
+  const [communityParam, setCommunityParam] = useQueryState("community");
   const [docNodeId, setDocNodeId] = useState<string | null>(null);
   const [graphLimit, setGraphLimit] = useState<number | undefined>(undefined);
   const [moduleGroups, setModuleGroups] = useState<ModuleGroup[]>([]);
@@ -63,12 +69,24 @@ export function GraphView({
   const effectiveScope: Scope = initialNode ? "files" : scope;
   const viewMode = toViewMode(effectiveScope, signal);
 
+  // A non-numeric or absent `?community=` is simply "not drilled in", the same
+  // as a bad `?colorMode=`: an old link degrades, it does not error.
+  // Matched rather than coerced: `Number("")` and `Number(" ")` are both 0, so
+  // a bare `?community=` would resolve to community zero, which is a real one.
+  const activeCommunity =
+    effectiveScope === "files" && communityParam !== null && /^\d+$/.test(communityParam)
+      ? Number(communityParam)
+      : null;
+
+  const { communities } = useCommunities(repoId);
+
   // Only the unfiltered file scope renders the capped `/api/graph` payload.
   // The constellation, and each of the dead/hot signals, has its own endpoint —
   // so neither the fetch nor the truncation banner belongs to them. The banner
   // used to show under the signals too, announcing "1,500 of 3,194 files" over
-  // a canvas drawing 734 nodes that came from somewhere else entirely.
-  const usesFullGraph = effectiveScope === "files" && !signal;
+  // a canvas drawing 734 nodes that came from somewhere else entirely. An
+  // entered community brings its own payload for the same reason.
+  const usesFullGraph = effectiveScope === "files" && !signal && activeCommunity === null;
 
   const { data: graphData } = useSWR<GraphExportResponse>(
     usesFullGraph ? `graph:${repoId}:${graphLimit ?? "default"}` : null,
@@ -133,12 +151,61 @@ export function GraphView({
 
   const handleScopeChange = useCallback(
     (next: Scope) => {
-      // The module filter is a file-scope concept; carrying it into the
-      // communities view would leave a control set to something invisible.
-      if (next === "communities") void setActiveModule(null);
+      // Narrowing is a file-scope concept, so it does not survive a trip to the
+      // constellation. It does not survive a trip *back* either: a
+      // `?view=communities&community=3` link (hand-edited, or an old share)
+      // renders the constellation with the param still set, and without this
+      // clicking "Files" would drop the reader inside community 3 rather than
+      // in the file graph they asked for.
+      void setActiveModule(null);
+      void setCommunityParam(null);
+      // `?node=` forces the file scope for as long as it is set, so leaving it
+      // behind makes every later scope change a no-op. Asking for a scope is
+      // asking to stop looking at one pinned node.
+      void setSelectedNode(null);
       onScopeChange(next);
     },
-    [onScopeChange, setActiveModule],
+    [onScopeChange, setActiveModule, setCommunityParam, setSelectedNode],
+  );
+
+  // Entering or leaving a community, from the canvas (hub double-click, the
+  // panel, Escape, the breadcrumb) or from the narrowing control. Entering
+  // implies the file scope; leaving returns to the constellation the community
+  // came from, which is where a community is a thing you can see.
+  const handleActiveCommunityChange = useCallback(
+    (next: number | null) => {
+      void setCommunityParam(next === null ? null : String(next));
+      // Same reason as the scope switcher: a `?node=` left over from opening a
+      // file's docs inside the community would pin the file scope, so leaving
+      // would land on the whole-repo file graph under a "Communities" URL.
+      void setSelectedNode(null);
+      if (next !== null) {
+        void setActiveModule(null);
+        // A slice is its own payload and was never filtered to dead or hot
+        // files, so a `?signal=` carried in would caption it with counts that
+        // describe a graph nobody is looking at.
+        void setSignal(null);
+        onScopeChange("files");
+      } else {
+        onScopeChange("communities");
+      }
+    },
+    [setCommunityParam, setActiveModule, setSelectedNode, setSignal, onScopeChange],
+  );
+
+  const handleNarrowingChange = useCallback(
+    ({ module, community }: { module: string | null; community: number | null }) => {
+      // Community picks route through the same handler the canvas uses, so one
+      // door does the reconciling (drop the `?node=` pin, drop `?signal=`, keep
+      // the scope honest) however the reader asked.
+      if (community !== null) {
+        handleActiveCommunityChange(community);
+        return;
+      }
+      void setCommunityParam(null);
+      void setActiveModule(module);
+    },
+    [handleActiveCommunityChange, setCommunityParam, setActiveModule],
   );
 
   const isCommunities = effectiveScope === "communities";
@@ -147,16 +214,27 @@ export function GraphView({
     () => (
       <div className="flex flex-wrap items-center gap-2">
         {!isCommunities && (
-          <ModuleFilterSelect
-            groups={moduleGroups}
+          <GraphNarrowingSelect
+            modules={moduleGroups}
+            communities={communities}
             activeModule={activeModule}
-            onModuleChange={(next) => void setActiveModule(next)}
+            activeCommunity={activeCommunity}
+            onChange={handleNarrowingChange}
           />
         )}
         <GraphScopeSwitcher scope={effectiveScope} onScopeChange={handleScopeChange} />
       </div>
     ),
-    [isCommunities, moduleGroups, activeModule, setActiveModule, effectiveScope, handleScopeChange],
+    [
+      isCommunities,
+      moduleGroups,
+      communities,
+      activeModule,
+      activeCommunity,
+      handleNarrowingChange,
+      effectiveScope,
+      handleScopeChange,
+    ],
   );
 
   return (
@@ -195,6 +273,8 @@ export function GraphView({
       // back/forward and shared links restore it without a remount.
       viewMode={viewMode}
       activeModule={activeModule}
+      activeCommunity={activeCommunity}
+      onActiveCommunityChange={handleActiveCommunityChange}
       // Same value the banner reports, so the caption and the canvas can
       // never disagree about how many files are drawn.
       graphLimit={graphLimit}

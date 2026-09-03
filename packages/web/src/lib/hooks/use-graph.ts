@@ -119,32 +119,16 @@ export function useCommunityDetail(repoId: string | null, communityId: number | 
 }
 
 /**
- * Constellation blossom: fetch the slices for the currently expanded hubs.
- * Conditional — the key is null (no request) until at least one hub is
- * expanded. We fetch all expanded ids in one SWR keyed on the sorted id list
- * (deterministic key, no duplicate requests on re-render); each id resolves to
- * its own slice via `getCommunitySlice`. Returns a map keyed by community_id.
+ * The drill-down payload: one community's members plus the one-hop stubs that
+ * bound them. Conditional — no request until somebody enters a community.
  */
-export function useCommunitySlices(
-  repoId: string | null,
-  expandedIds: readonly number[],
-) {
-  const sorted = [...expandedIds].sort((a, b) => a - b);
-  const key =
-    repoId && sorted.length > 0
-      ? `community-slices:${repoId}:${sorted.join(",")}`
-      : null;
-  const { data, error, isLoading } = useSWR<Map<number, CommunitySliceResponse>>(
-    key,
-    async () => {
-      const slices = await Promise.all(
-        sorted.map((id) => getCommunitySlice(repoId!, id)),
-      );
-      return new Map(sorted.map((id, i) => [id, slices[i]!]));
-    },
+export function useCommunitySlice(repoId: string | null, communityId: number | null) {
+  const { data, error, isLoading } = useSWR<CommunitySliceResponse>(
+    repoId && communityId != null ? `community-slice:${repoId}:${communityId}` : null,
+    () => getCommunitySlice(repoId!, communityId!),
     SWR_OPTS,
   );
-  return { slices: data, error, isLoading };
+  return { slice: data, error, isLoading };
 }
 
 export function useGraphMetrics(repoId: string | null, nodeId: string | null) {

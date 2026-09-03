@@ -28,6 +28,19 @@ from repowise.server.services.graph_views import (
     build_architecture_graph,
     build_community_slice,
 )
+from repowise.server.services.node_signals import EMPTY_SIGNALS, collect_node_signals
+
+# How many members the detail endpoint reads to compute the community's shape
+# and state. It used to be 200, which silently disagreed with the community
+# *list* — a 587-file community reported 587 there and 200 here, and every
+# rollup below covered a third of it.
+#
+# Ceiling: a community larger than this still reports this number, and its
+# counts still cover only the top slice by PageRank. The largest community in
+# any repo indexed so far is under 600, so nothing reaches it. If one does, the
+# upgrade is a `SELECT COUNT(*)` for the true `member_count` plus an explicit
+# "counted over the top N" field, not a bigger constant.
+_MEMBER_READ_CAP = 2000
 
 router = APIRouter()
 
@@ -111,7 +124,7 @@ async def get_community_detail(
 ) -> CommunityDetailResponse:
     """Return detailed info for a single community."""
     all_members = await crud.get_community_members(
-        session, repo_id, community_id, node_type="file", limit=200
+        session, repo_id, community_id, node_type="file", limit=_MEMBER_READ_CAP
     )
     if not all_members:
         raise HTTPException(status_code=404, detail="Community not found or empty")
@@ -120,20 +133,73 @@ async def get_community_detail(
     label = community_label(top)
     cohesion = community_cohesion(top)
 
+    # State of the area, in two path-scoped reads over the same member list the
+    # shape figures above are computed from. `collect_node_signals` is the same
+    # join `build_architecture_graph` uses for the hub discs, so a community's
+    # hot/dead counts here and its disc on the canvas can never disagree.
+    member_paths = [m.node_id for m in all_members]
+    signals = await collect_node_signals(session, repo_id, member_paths)
+    hot_count = sum(1 for p in member_paths if signals.get(p, EMPTY_SIGNALS).is_hotspot)
+    dead_count = sum(1 for p in member_paths if signals.get(p, EMPTY_SIGNALS).is_dead)
+    decision_count = sum(
+        1 for p in member_paths if signals.get(p, EMPTY_SIGNALS).has_decision
+    )
+
+    # Most files owned, not most commits: ownership is denormalised onto
+    # GitMetadata.primary_owner_name and there is no per-(file, author) table to
+    # tally properly. The field name and the panel copy both say "owns".
+    owner_files: dict[str, int] = {}
+    for p in member_paths:
+        owner = signals.get(p, EMPTY_SIGNALS).primary_owner
+        if owner:
+            owner_files[owner] = owner_files.get(owner, 0) + 1
+    primary_owner: str | None = None
+    primary_owner_file_count = 0
+    if owner_files:
+        primary_owner, primary_owner_file_count = max(
+            owner_files.items(), key=lambda kv: (kv[1], kv[0])
+        )
+
+    # LOC-weighted mean over the members that carry a score, matching
+    # `rollup_health`: effective score prefers the split defect_score and falls
+    # back to the overall score, weight is max(nloc, 1), and a community where
+    # nothing is scored gets None rather than a zero it never measured.
+    health_metrics = await crud.get_health_metrics(
+        session, repo_id, file_paths=member_paths
+    )
+    weighted_sum = 0.0
+    weight = 0.0
+    scored_member_count = 0
+    for hm in health_metrics:
+        score = hm.defect_score if hm.defect_score is not None else hm.score
+        if score is None:
+            continue
+        w = float(max(hm.nloc or 1, 1))
+        weighted_sum += score * w
+        weight += w
+        scored_member_count += 1
+    health_score = round(weighted_sum / weight, 2) if weight > 0 else None
+
     members_out: list[CommunityMember] = []
     if include_members:
         for m in all_members[:member_limit]:
+            sig = signals.get(m.node_id, EMPTY_SIGNALS)
             members_out.append(
                 CommunityMember(
                     path=m.node_id,
                     pagerank=round(m.pagerank or 0.0, 6),
                     is_entry_point=m.is_entry_point,
+                    is_hotspot=sig.is_hotspot,
+                    is_dead=sig.is_dead,
                 )
             )
 
-    # Neighboring communities
-    cross_edges = await crud.get_cross_community_edges(session, repo_id, community_id)
-    # Resolve labels for neighbors
+    # Neighboring communities. `get_cross_community_edges` orders by edge count
+    # descending, so the top slice is taken *before* the label loop: it used to
+    # resolve a label for every neighbour in the repo and then keep ten.
+    cross_edges = (await crud.get_cross_community_edges(session, repo_id, community_id))[
+        :10
+    ]
     neighbor_cids = [ce["target_community_id"] for ce in cross_edges]
     neighbor_labels: dict[int, str] = {}
     for ncid in neighbor_cids:
@@ -151,7 +217,7 @@ async def get_community_detail(
             label=neighbor_labels.get(ce["target_community_id"], ""),
             cross_edge_count=ce["edge_count"],
         )
-        for ce in cross_edges[:10]
+        for ce in cross_edges
     ]
 
     return CommunityDetailResponse(
@@ -162,4 +228,11 @@ async def get_community_detail(
         members=members_out,
         truncated=len(all_members) > member_limit,
         neighboring_communities=neighbors,
+        health_score=health_score,
+        scored_member_count=scored_member_count,
+        hot_count=hot_count,
+        dead_count=dead_count,
+        decision_count=decision_count,
+        primary_owner=primary_owner,
+        primary_owner_file_count=primary_owner_file_count,
     )

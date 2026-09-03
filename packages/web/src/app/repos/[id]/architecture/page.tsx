@@ -26,6 +26,8 @@
  *   - `?view=`   communities | files | coupling | packages | symbols
  *   - `?signal=` dead | hot — which overlay is lit on the graph
  *   - `?module=` a path prefix the file scope is filtered to
+ *   - `?community=` the community the file scope is drilled into. One axis with
+ *     `?module=`: both narrow the file graph, so at most one is ever set.
  *
  * `?view=` and `?viewMode=` used to encode the same axis twice — `view=explore`
  * and `viewMode=full` both meant "the file graph", and they could disagree.
@@ -125,6 +127,7 @@ export default function ArchitecturePage({
   const [viewModeParam, setViewModeParam] = useQueryState("viewMode");
   const [, setSignal] = useQueryState("signal");
   const [, setModule] = useQueryState("module");
+  const [, setCommunity] = useQueryState("community");
   const [, setFocus] = useQueryState("focus");
   const [, setNode] = useQueryState("node");
 
@@ -165,10 +168,11 @@ export default function ArchitecturePage({
       if (id !== "map") {
         void setSignal(null);
         void setModule(null);
+        void setCommunity(null);
         void setNode(null);
       }
     },
-    [setView, setFocus, setSignal, setModule, setNode],
+    [setView, setFocus, setSignal, setModule, setCommunity, setNode],
   );
 
   const handleScopeChange = useCallback(

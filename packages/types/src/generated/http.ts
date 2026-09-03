@@ -504,12 +504,21 @@ export interface CommunityDetailResponse {
   members: CommunityMember[];
   truncated: boolean;
   neighboring_communities: NeighboringCommunity[];
+  health_score?: number | null;
+  scored_member_count?: number;
+  hot_count?: number;
+  dead_count?: number;
+  decision_count?: number;
+  primary_owner?: string | null;
+  primary_owner_file_count?: number;
 }
 
 export interface CommunityMember {
   path: string;
   pagerank: number;
   is_entry_point: boolean;
+  is_hotspot?: boolean;
+  is_dead?: boolean;
 }
 
 export interface CommunitySliceNodeResponse {

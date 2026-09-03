@@ -138,6 +138,11 @@ class CommunityMember(BaseModel):
     path: str
     pagerank: float
     is_entry_point: bool
+    #: Cross-link signals, so the panel can name *which* members are in trouble
+    #: rather than only counting them. Defaulted: an older server omits them and
+    #: the client reads "no signal", which is what an older server means.
+    is_hotspot: bool = False
+    is_dead: bool = False
 
 
 class NeighboringCommunity(BaseModel):
@@ -154,6 +159,28 @@ class CommunityDetailResponse(BaseModel):
     members: list[CommunityMember]
     truncated: bool
     neighboring_communities: list[NeighboringCommunity]
+    #: State of the area, not its shape. All additive and defaulted so a client
+    #: pinned to an older server keeps its current payload shape.
+    #:
+    #: LOC-weighted mean of the members' effective health score (0-10, higher is
+    #: better), over the members that have one. ``None`` when none do — which is
+    #: not the same as zero and must not render as a score.
+    health_score: float | None = None
+    #: How many members contributed to ``health_score``. The panel needs this to
+    #: say "over 12 of 30 files" rather than implying the whole community was
+    #: measured.
+    scored_member_count: int = 0
+    #: Members flagged by the git hotspot, dead-code and decision joins. Counted
+    #: over every member, not only the ``member_limit`` page returned above.
+    hot_count: int = 0
+    dead_count: int = 0
+    decision_count: int = 0
+    #: The person who is primary owner on the most members, and how many. Read
+    #: off the denormalised ``GitMetadata.primary_owner_name``; there is no
+    #: per-(file, author) table, so this is "most files owned", not "most
+    #: commits".
+    primary_owner: str | None = None
+    primary_owner_file_count: int = 0
 
 
 class CommunitySummaryItem(BaseModel):

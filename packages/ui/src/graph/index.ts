@@ -10,6 +10,7 @@ export * from "./node-badges";
 export * from "./graph-context-drawer";
 export * from "./graph-truncation-banner";
 export * from "./graph-canvas-shell";
+export * from "./graph-scope-breadcrumb";
 export * from "./graph-flow";
 export * from "./graph-flow-panel";
 export * from "./edge-provenance";

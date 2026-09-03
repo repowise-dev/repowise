@@ -29,7 +29,10 @@ export function SigmaControls({
     "flex h-9 w-9 sm:h-7 sm:w-7 items-center justify-center rounded-md text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]";
 
   return (
-    <div className="absolute bottom-3 right-3 z-10 flex flex-col items-end gap-1.5">
+    // `--canvas-chrome-bottom` is published by `GraphCanvasShell` when a rail
+    // is open as a bottom sheet, so these controls clear it instead of sitting
+    // underneath. Falls back to the plain inset when nothing sets it.
+    <div className="absolute bottom-[var(--canvas-chrome-bottom,0.75rem)] right-3 z-[var(--z-elevated)] flex flex-col items-end gap-1.5 transition-[bottom] duration-200 motion-reduce:transition-none">
       {isLayoutRunning && (
         <div className="flex items-center gap-1.5 whitespace-nowrap rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/85 px-2 py-1 text-[10px] text-[var(--color-accent-primary)] shadow-sm backdrop-blur-sm">
           <ActivityDot className="h-1.5 w-1.5" />

@@ -428,6 +428,17 @@ export interface UseSigmaOptions {
   graphTheme: "light" | "dark";
   hiddenNodes?: Set<string> | undefined;
   visibleEdgeTypes?: Set<string> | undefined;
+  /** Suppress the camera easings this hook drives. Read live, so a change to
+   *  the OS setting takes effect without a remount. */
+  reducedMotion?: boolean | undefined;
+}
+
+/** A camera position in Sigma's *framed* coordinate space (what
+ *  `getNodeDisplayData` returns), not raw graph coordinates. */
+export interface CameraPosition {
+  x: number;
+  y: number;
+  ratio: number;
 }
 
 export interface UseSigmaReturn {
@@ -439,6 +450,18 @@ export interface UseSigmaReturn {
   fitView: () => void;
   zoomIn: () => void;
   zoomOut: () => void;
+  /** A camera position framing `nodeId` as it sits *right now*, for handing to
+   *  {@link UseSigmaReturn.setEntryCamera} across a graph swap. */
+  nodeCamera: (nodeId: string, ratio?: number) => CameraPosition | null;
+  /**
+   * Seed where the camera *starts* on the next graph swap, consumed once.
+   *
+   * A graph swap otherwise resets the camera from wherever it happens to be,
+   * which throws away the reader's place. Drilling into a community sets this
+   * to the hub's own position, so the new scoped graph opens at the point the
+   * hub occupied and eases out to frame itself: one movement, not two pages.
+   */
+  setEntryCamera: (state: CameraPosition | null) => void;
 }
 
 export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
@@ -572,6 +595,9 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
           const family = communityFamilies(attrs.communityId);
           color = attrs.nodeType === "module" ? family.hub : family.satellite;
         }
+        // Boundary stubs are context, not content: they sit outside the
+        // community being drawn, so they recede before any signal tint.
+        if (attrs.isBoundary) color = desaturateColor(color, 0.8);
         if (attrs.isDead) color = desaturateColor(color, 0.6);
         if (attrs.isHotspot) color = tintColor(color, viz.hotspot, 0.4);
         // Decision-anchored files get a subtle warm tint so they're
@@ -802,13 +828,34 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
     };
   }, [options.container]);
 
+  // Where the camera should *start* on the next graph swap, consumed once.
+  const entryCameraRef = useRef<CameraPosition | null>(null);
+  const setEntryCamera = useCallback((state: CameraPosition | null) => {
+    entryCameraRef.current = state;
+  }, []);
+  // Read at swap time rather than closed over, so the deps below stay `[graph]`
+  // and a settings change never re-swaps the graph.
+  const reducedMotionRef = useRef(!!options.reducedMotion);
+  reducedMotionRef.current = !!options.reducedMotion;
+
   // Update graph when it changes
   useEffect(() => {
     const sigma = sigmaRef.current;
     if (!sigma || !options.graph) return;
     graphRef.current = options.graph;
     sigma.setGraph(options.graph);
-    sigma.getCamera().animatedReset({ duration: 500 });
+    const camera = sigma.getCamera();
+    const entry = entryCameraRef.current;
+    entryCameraRef.current = null;
+    // Reduced motion still resets — it is the *travel* that is suppressed, not
+    // the destination, and skipping the reset would leave the new graph framed
+    // by the old one's camera.
+    if (reducedMotionRef.current) {
+      camera.animatedReset({ duration: 0 });
+      return;
+    }
+    if (entry) camera.setState({ x: entry.x, y: entry.y, ratio: entry.ratio, angle: 0 });
+    camera.animatedReset({ duration: 500 });
   }, [options.graph]);
 
   // Label culling is a function of graph size, but the init effect above depends
@@ -842,9 +889,21 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
     if (!display) return;
     sigma.getCamera().animate(
       { x: display.x, y: display.y, ratio },
-      { duration: 400 },
+      { duration: reducedMotionRef.current ? 0 : 400 },
     );
   }, []);
+
+  const nodeCamera = useCallback(
+    (nodeId: string, ratio = 0.15): CameraPosition | null => {
+      const sigma = sigmaRef.current;
+      const graph = graphRef.current;
+      if (!sigma || !graph || !graph.hasNode(nodeId)) return null;
+      const display = sigma.getNodeDisplayData(nodeId);
+      if (!display) return null;
+      return { x: display.x, y: display.y, ratio };
+    },
+    [],
+  );
 
   const fitView = useCallback(() => {
     sigmaRef.current?.getCamera().animatedReset({ duration: 300 });
@@ -864,5 +923,7 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
     fitView,
     zoomIn,
     zoomOut,
+    nodeCamera,
+    setEntryCamera,
   };
 }

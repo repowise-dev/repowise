@@ -13,7 +13,7 @@ import {
   useDeadCodeGraph,
   useHotFilesGraph,
   useCommunities,
-  useCommunitySlices,
+  useCommunitySlice,
   useExecutionFlows,
 } from "@/lib/hooks/use-graph";
 import { useRepo } from "@/lib/hooks/use-repo";
@@ -37,6 +37,9 @@ export interface GraphFlowProps {
   viewMode?: ViewMode;
   /** Controlled module filter — the page owns it via `?module=`. */
   activeModule?: string | null;
+  /** Controlled drill-down — the page owns it via `?community=`. */
+  activeCommunity?: number | null;
+  onActiveCommunityChange?: (communityId: number | null) => void;
   /** Node cap for the full-graph fetch, stepped up by the truncation banner.
    *  Must be the SAME value the banner is reporting: this and the banner's own
    *  fetch share an SWR key, so a mismatch means the caption describes a
@@ -75,6 +78,8 @@ export function GraphFlow({
   initialViewMode,
   viewMode: controlledViewMode,
   activeModule,
+  activeCommunity,
+  onActiveCommunityChange,
   graphLimit,
   onModuleGroupsChange,
   initialColorMode,
@@ -97,9 +102,6 @@ export function GraphFlow({
     initialViewMode ?? "architecture",
   );
   const viewMode = controlledViewMode ?? viewModeState;
-  // Currently-expanded constellation hubs (community ids). Drives the slice
-  // fetch; the shell owns the actual expand/collapse interaction state.
-  const [expandedHubs, setExpandedHubs] = useState<number[]>([]);
   // Latched on first open of the flows panel. It starts closed, so this keeps a
   // trace fetch nobody asked for off every file-scope render.
   const [flowsRequested, setFlowsRequested] = useState(false);
@@ -121,11 +123,11 @@ export function GraphFlow({
   const { graph: hotGraph, isLoading: hotLoading } = useHotFilesGraph(
     viewMode === "hotfiles" ? repoId : null,
   );
-  // Member slices for expanded hubs — only fetched in the constellation scope
-  // and only while at least one hub is open (conditional SWR inside the hook).
-  const { slices: constellationSlices } = useCommunitySlices(
-    viewMode === "architecture" ? repoId : null,
-    expandedHubs,
+  // The entered community's own sub-graph. Conditional inside the hook, so no
+  // fetch happens until somebody drills in, and none survives leaving.
+  const { slice: communitySlice, isLoading: sliceLoading } = useCommunitySlice(
+    viewMode !== "architecture" && activeCommunity != null ? repoId : null,
+    activeCommunity ?? null,
   );
   const { repo } = useRepo(repoId);
   const resolvedRepoName = repoName ?? repo?.name;
@@ -150,8 +152,10 @@ export function GraphFlow({
       isLoadingFullGraph={fullLoading}
       constellationGraph={constellationGraph as ArchitectureGraph | undefined}
       isLoadingConstellationGraph={constellationLoading}
-      constellationSlices={constellationSlices as Map<number, CommunitySlice> | undefined}
-      onExpandedHubsChange={setExpandedHubs}
+      communitySlice={communitySlice as CommunitySlice | undefined}
+      isLoadingCommunitySlice={sliceLoading}
+      activeCommunity={activeCommunity}
+      onActiveCommunityChange={onActiveCommunityChange}
       {...(resolvedRepoName ? { repoName: resolvedRepoName } : {})}
       deadCodeGraph={deadGraph as GraphExport | undefined}
       isLoadingDeadCodeGraph={deadLoading}
@@ -180,6 +184,19 @@ export function GraphFlow({
         )
       }
       fileHrefFor={(nodeId) => fileEntityPath(`/repos/${repoId}`, nodeId)}
+      // The file page already carries a Health, a History and a Decisions tab
+      // for exactly this file, so the graph hands off to them rather than to a
+      // repo-wide page the reader then has to search.
+      fileHealthHrefFor={(nodeId) =>
+        `${fileEntityPath(`/repos/${repoId}`, nodeId)}?tab=health`
+      }
+      fileHistoryHrefFor={(nodeId) =>
+        `${fileEntityPath(`/repos/${repoId}`, nodeId)}?tab=history`
+      }
+      fileDecisionsHrefFor={(nodeId) =>
+        `${fileEntityPath(`/repos/${repoId}`, nodeId)}?tab=decisions`
+      }
+      deadCodeHref={`/repos/${repoId}/code-health?tab=dead-code`}
       onCommunityPanelOpen={onCommunityPanelOpen}
       onSelectedNodeChange={onSelectedNodeChange}
       renderPathFinder={(props) => (
@@ -197,7 +214,8 @@ export function GraphFlow({
           repoId={repoId}
           communityId={props.communityId}
           onClose={props.onClose}
-          onExpandOnCanvas={props.onExpandOnCanvas}
+          onEnterCommunity={props.onEnterCommunity}
+          onNeighborSelect={props.onNeighborSelect}
         />
       )}
     />

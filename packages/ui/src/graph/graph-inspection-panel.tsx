@@ -16,6 +16,8 @@ import {
   Flame,
   Skull,
   Lightbulb,
+  Activity,
+  GitCommitHorizontal,
 } from "lucide-react";
 import { ScrollArea } from "../ui/scroll-area";
 import { languageColor } from "../lib/confidence";
@@ -46,6 +48,25 @@ export interface GraphInspectionPanelProps {
   onViewSymbols?: (() => void) | undefined;
   /** Canonical file-page href — renders the primary "Open file page" action. */
   filePageHref?: string | undefined;
+  /**
+   * Where this file's evidence lives, so the graph stops being a cul-de-sac.
+   * A dependency graph is exactly where "what breaks if I change this" gets
+   * asked, and the answer is on other pages.
+   *
+   * All optional; an action is hidden when the host supplies no href. The two
+   * that describe a *finding* are gated on the node carrying it as well
+   * (`decisionsHref` on `hasDecision`, `deadCodeHref` on `isDead`) so they
+   * cannot advertise a finding that is not there. `healthHref` and
+   * `historyHref` are not gated: every file has a history tab and a health tab,
+   * which state their own emptiness. One known near-miss: `hasDecision` counts
+   * `proposed` decisions and the file page only renders its Decisions tab for
+   * *governing* ones, so a proposed-only file lands on the page without it.
+   */
+  healthHref?: string | undefined;
+  historyHref?: string | undefined;
+  decisionsHref?: string | undefined;
+  /** The dead-code findings list. Offered only for a node flagged dead. */
+  deadCodeHref?: string | undefined;
   onFindPath?: (() => void) | undefined;
   onShowEgoGraph?: (() => void) | undefined;
   onExpandModule?: (() => void) | undefined;
@@ -81,6 +102,10 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
   onViewDocs,
   onViewSymbols,
   filePageHref,
+  healthHref,
+  historyHref,
+  decisionsHref,
+  deadCodeHref,
   onFindPath,
   onShowEgoGraph,
   onExpandModule,
@@ -307,6 +332,38 @@ export const GraphInspectionPanel = memo(function GraphInspectionPanel({
           >
             <Code2 className="w-3 h-3" /> Symbols
           </button>
+        )}
+        {!isMod && healthHref && (
+          <a
+            href={healthHref}
+            className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-bg-inset)] hover:bg-[var(--color-bg-surface)] border border-[var(--color-border-default)] px-2 py-1.5 text-caption font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+          >
+            <Activity className="w-3 h-3" /> Health
+          </a>
+        )}
+        {!isMod && historyHref && (
+          <a
+            href={historyHref}
+            className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-bg-inset)] hover:bg-[var(--color-bg-surface)] border border-[var(--color-border-default)] px-2 py-1.5 text-caption font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+          >
+            <GitCommitHorizontal className="w-3 h-3" /> History
+          </a>
+        )}
+        {!isMod && decisionsHref && data.hasDecision && (
+          <a
+            href={decisionsHref}
+            className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-bg-inset)] hover:bg-[var(--color-bg-surface)] border border-[var(--color-border-default)] px-2 py-1.5 text-caption font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+          >
+            <Lightbulb className="w-3 h-3" /> Decisions
+          </a>
+        )}
+        {!isMod && deadCodeHref && data.isDead && (
+          <a
+            href={deadCodeHref}
+            className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--color-bg-inset)] hover:bg-[var(--color-bg-surface)] border border-[var(--color-border-default)] px-2 py-1.5 text-caption font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+          >
+            <Skull className="w-3 h-3" /> Dead code
+          </a>
         )}
         {onFindPath && (
           <button

@@ -199,6 +199,11 @@ export interface SliceMergeResult {
  * `nodeType:"file"` so the community-mode recolor paints them the family SOFT
  * variant automatically.
  */
+/**
+ * @deprecated No longer called. A hub double-click enters the community and
+ * hands its slice to the file-graph renderer instead of blossoming satellites
+ * on the radial layout. Kept exported for out-of-tree hosts mid-port.
+ */
 export function mergeCommunitySlice(
   graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>,
   communityId: number,

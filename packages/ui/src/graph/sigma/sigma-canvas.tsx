@@ -17,7 +17,7 @@ import type {
   GraphNode as GraphNodeResponse,
   GraphLink as GraphEdgeResponse,
 } from "@repowise-dev/types/graph";
-import { useSigmaRenderer } from "./use-sigma";
+import { useSigmaRenderer, type CameraPosition } from "./use-sigma";
 import { useFA2Layout } from "./use-fa2-layout";
 import { useElkSigmaLayout } from "./use-elk-sigma-layout";
 import { SigmaControls } from "./sigma-controls";
@@ -59,6 +59,9 @@ export interface SigmaCanvasProps {
   visibleEdgeTypes?: Set<string> | undefined;
   /** Concentric depth-ring radii (graph coords) for the constellation underlay. */
   depthRingRadii?: readonly [number, number, number] | null | undefined;
+  /** Suppress the camera easings. Honour `prefers-reduced-motion` here rather
+   *  than reading the media query inside the renderer. */
+  reducedMotion?: boolean | undefined;
 }
 
 export interface SigmaCanvasHandle {
@@ -66,6 +69,11 @@ export interface SigmaCanvasHandle {
   fitView: () => void;
   zoomIn: () => void;
   zoomOut: () => void;
+  /** Where the camera would sit to frame `nodeId` in the graph drawn *now*. */
+  nodeCamera: (nodeId: string, ratio?: number) => CameraPosition | null;
+  /** Seed the camera's starting point for the next graph swap (consumed once),
+   *  so a drill-down reads as one movement instead of a hard cut. */
+  setEntryCamera: (state: CameraPosition | null) => void;
 }
 
 export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
@@ -75,7 +83,8 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
       setContainer(node);
     }, []);
 
-    const { sigma, focusNode, fitView, zoomIn, zoomOut } = useSigmaRenderer({
+    const { sigma, focusNode, fitView, zoomIn, zoomOut, nodeCamera, setEntryCamera } =
+      useSigmaRenderer({
       container,
       graph: props.graph,
       selectedNodeId: props.selectedNodeId,
@@ -89,6 +98,7 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
       graphTheme: props.graphTheme,
       hiddenNodes: props.hiddenNodes,
       visibleEdgeTypes: props.visibleEdgeTypes,
+      reducedMotion: props.reducedMotion,
     });
 
     const { isRunning: isLayoutRunning } = useFA2Layout({
@@ -204,6 +214,8 @@ export const SigmaCanvas = forwardRef<SigmaCanvasHandle, SigmaCanvasProps>(
       fitView,
       zoomIn,
       zoomOut,
+      nodeCamera,
+      setEntryCamera,
     }));
 
     const hasDepthRings = !!props.depthRingRadii;

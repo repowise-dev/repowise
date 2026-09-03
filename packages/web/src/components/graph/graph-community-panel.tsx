@@ -9,14 +9,16 @@ interface GraphCommunityPanelWrapperProps {
   repoId: string;
   communityId: number;
   onClose: () => void;
-  onExpandOnCanvas?: (() => void) | undefined;
+  onEnterCommunity?: (() => void) | undefined;
+  onNeighborSelect?: ((communityId: number) => void) | undefined;
 }
 
 export function GraphCommunityPanel({
   repoId,
   communityId,
   onClose,
-  onExpandOnCanvas,
+  onEnterCommunity,
+  onNeighborSelect,
 }: GraphCommunityPanelWrapperProps) {
   const { community, isLoading } = useCommunityDetail(repoId, communityId);
 
@@ -26,8 +28,16 @@ export function GraphCommunityPanel({
       community={community as CommunityDetail | null | undefined}
       isLoading={isLoading}
       onClose={onClose}
-      onExpandOnCanvas={onExpandOnCanvas}
+      onEnterCommunity={onEnterCommunity}
+      onNeighborSelect={onNeighborSelect}
       memberHref={(path) => fileEntityPath(`/repos/${repoId}`, path)}
+      // Code Health's triage map takes `?file=` and opens on that row, so a hot
+      // member gets an exact destination rather than a repo-wide page.
+      healthHrefFor={(path) =>
+        `/repos/${repoId}/code-health?tab=triage&file=${encodeURIComponent(path)}`
+      }
+      deadCodeHref={`/repos/${repoId}/code-health?tab=dead-code`}
+      codeHealthHref={`/repos/${repoId}/code-health`}
     />
   );
 }

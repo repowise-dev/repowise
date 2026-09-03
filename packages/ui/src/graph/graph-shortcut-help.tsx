@@ -23,7 +23,7 @@ const GESTURES: { gesture: string; action: string }[] = [
 /** Keyboard + gesture cheatsheet, toggled with `?`. */
 export function GraphShortcutHelp({ onClose }: { onClose: () => void }) {
   return (
-    <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+    <div className="absolute inset-0 z-[var(--z-modal)] flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
       <div
         className="w-full max-w-sm rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] p-4 shadow-xl shadow-black/30"
         onClick={(e) => e.stopPropagation()}
