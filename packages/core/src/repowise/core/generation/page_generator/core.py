@@ -249,6 +249,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         only_page_ids: set[str] | None = None,
         preserved_page_ids: set[str] | None = None,
         timings: Any | None = None,
+        on_warning: Callable[[str], None] | None = None,
     ) -> list[GeneratedPage]:
         """Generate all wiki pages for a repository.
 
@@ -308,6 +309,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             only_page_ids=only_page_ids,
             preserved_page_ids=preserved_page_ids,
             timings=timings,
+            on_warning=on_warning,
         )
 
     # ------------------------------------------------------------------

@@ -169,6 +169,14 @@ async def run_generation(
         if progress:
             progress.on_phase_start(name, total)
 
+    def on_warning(text: str) -> None:
+        """Surface a generation-time degradation through the progress callback
+        so it lands in the run's warnings (persisted as ``degraded``), not
+        only in structlog — the CLI pins structlog to ERROR unless -v, so a
+        log-only warning is invisible on the path that matters (issue #1369)."""
+        if progress:
+            progress.on_message("warning", text)
+
     generator = PageGenerator(
         llm_client,
         assembler,
@@ -204,6 +212,7 @@ async def run_generation(
         only_page_ids=only_page_ids,
         preserved_page_ids=preserved_page_ids,
         timings=getattr(progress, "table", None),
+        on_warning=on_warning,
     )
 
     # Onboarding summary — count generated slots and surface which ones
