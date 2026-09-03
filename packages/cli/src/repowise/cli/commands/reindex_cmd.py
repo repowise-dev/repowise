@@ -22,7 +22,9 @@ _INPUT_TOO_LONG_RETRIES = 4
 @click.argument("path", required=False, default=None)
 @click.option(
     "--embedder",
-    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "edenai", "mock", "auto"]),
+    type=click.Choice(
+        ["gemini", "openai", "openrouter", "ollama", "edenai", "voyage", "mock", "auto"]
+    ),
     default="auto",
     help="Embedder to use. 'auto' keeps the repo's embedder, or detects one from env keys "
     "when the repo has none or only the keyless mock.",

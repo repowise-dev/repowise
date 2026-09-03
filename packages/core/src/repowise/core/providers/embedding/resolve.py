@@ -46,6 +46,10 @@ EMBEDDER_KEY_ENVS: dict[str, tuple[str, ...]] = {
     name: PROVIDER_SPECS[name].api_key_envs
     for name in _BUILTIN_EMBEDDERS
     if name in PROVIDER_SPECS and PROVIDER_SPECS[name].api_key_envs
+} | {
+    # Embedding-only backends have no ``ProviderSpec``, because they serve no
+    # chat completions, so their credential is declared here instead.
+    "voyage": ("VOYAGE_API_KEY",),
 }
 
 # Detection order when nothing names an embedder, and the env var that counts
@@ -56,6 +60,9 @@ _DETECT_SIGNALS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("openrouter", EMBEDDER_KEY_ENVS["openrouter"]),
     ("ollama", ("OLLAMA_EMBEDDING_MODEL",)),
     ("edenai", EMBEDDER_KEY_ENVS["edenai"]),
+    # Last, for the same reason as edenai: a key exported for something else
+    # must not take over from a backend the user was already resolving to.
+    ("voyage", EMBEDDER_KEY_ENVS["voyage"]),
 )
 
 

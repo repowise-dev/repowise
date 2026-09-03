@@ -150,9 +150,9 @@ def _check_folder_coverage(
     "--embedder",
     "embedder_name",
     default=None,
-    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "edenai", "mock"]),
+    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "edenai", "voyage", "mock"]),
     help=(
-        "Embedder for RAG: gemini | openai | openrouter | ollama | edenai | mock "
+        "Embedder for RAG: gemini | openai | openrouter | ollama | edenai | voyage | mock "
         "(default: auto-detect)."
     ),
 )
