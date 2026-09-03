@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from typing import TYPE_CHECKING
 
 from repowise.core.providers.embedding.base import Embedder
@@ -14,10 +16,20 @@ if TYPE_CHECKING:
 
 __all__ = ["PgVectorStore"]
 
+logger = logging.getLogger(__name__)
+
+_VECTOR_DIM_RE = re.compile(r"vector\s*\(\s*(\d+)\s*\)", re.IGNORECASE)
+
 
 def _encode(vector: list[float]) -> str:
     """Encode a vector as the pgvector literal ``"[0.1,0.2,...]"``."""
     return "[" + ",".join(str(v) for v in vector) + "]"
+
+
+def _is_dimension_mismatch_error(exc: Exception) -> bool:
+    """True if *exc* is a Postgres dimension-mismatch error."""
+    msg = str(exc).lower()
+    return "dimension" in msg and ("expected" in msg or "mismatch" in msg or "vector" in msg)
 
 
 def _summary_payload(content: object, metadata: object) -> dict:
@@ -47,6 +59,11 @@ class PgVectorStore(VectorStore):
 
     Uses raw SQL to avoid importing ``pgvector.sqlalchemy.Vector`` at module
     level (keeps the base package installable without the extra).
+
+    Dimension handling mirrors ``LanceDBVectorStore._ensure_table``: if the
+    embedder changes dimensions (e.g. MockEmbedder 8-dim → OpenAI 1536-dim or
+    Gemini 768-dim), the old vectors are unusable. LanceDB drops and recreates
+    the table; pgvector alters the column type after clearing stale embeddings.
     """
 
     persists_across_runs = True
@@ -59,18 +76,114 @@ class PgVectorStore(VectorStore):
         self._session_factory = session_factory
         self._embedder = embedder
 
+    async def _current_vector_dim(self) -> int | None:
+        """Return the current ``wiki_pages.embedding`` dimension, or ``None``.
+
+        Queries ``pg_attribute`` for the column's type. Returns ``None`` when
+        the column is absent, is a generic ``vector`` without a fixed size, or
+        the query fails (e.g. SQLite in tests).
+        """
+        from sqlalchemy.sql import text as sa_text
+
+        try:
+            async with self._session_factory() as session:
+                row = await session.execute(
+                    sa_text(
+                        "SELECT format_type(atttypid, atttypmod) "
+                        "FROM pg_attribute "
+                        "WHERE attrelid = 'wiki_pages'::regclass "
+                        "AND attname = 'embedding'"
+                    )
+                )
+                val = row.scalar()
+                if not val:
+                    return None
+                m = _VECTOR_DIM_RE.search(str(val))
+                if m:
+                    return int(m.group(1))
+                # Generic vector without dimension — typmod -1
+                return None
+        except Exception:
+            return None
+
+    async def _migrate_vector_dim(self, new_dim: int) -> None:
+        """Clear stale embeddings and alter the column to *new_dim*.
+
+        Mirrors LanceDB's drop-and-recreate: old vectors at the wrong
+        dimensionality are unusable, so they are cleared first. The alter is
+        best-effort — if it fails (e.g. SQLite, missing extension), the
+        subsequent write will surface the error.
+        """
+        from sqlalchemy.sql import text as sa_text
+
+        try:
+            async with self._session_factory() as session:
+                await session.execute(sa_text("UPDATE wiki_pages SET embedding = NULL"))
+                await session.commit()
+        except Exception as exc:
+            logger.warning("pgvector.clear_embeddings_failed", error=str(exc))
+            return
+
+        try:
+            async with self._session_factory() as session:
+                # After clearing, the column holds only NULLs, so the USING
+                # clause can safely cast to the new dimension.
+                await session.execute(
+                    sa_text(
+                        f"ALTER TABLE wiki_pages ALTER COLUMN embedding "
+                        f"TYPE vector({new_dim}) USING NULL::vector({new_dim})"
+                    )
+                )
+                await session.commit()
+                logger.warning(
+                    "pgvector.dimension_migrated",
+                    old_dim="unknown",
+                    new_dim=new_dim,
+                )
+        except Exception as exc:
+            logger.warning("pgvector.alter_dimension_failed", error=str(exc), new_dim=new_dim)
+
+    async def _ensure_dimension(self, expected_dim: int) -> None:
+        """Ensure the pgvector column matches *expected_dim*, migrating if needed."""
+        current = await self._current_vector_dim()
+        if current is not None and current != expected_dim:
+            logger.warning(
+                "pgvector.dimension_mismatch",
+                current_dim=current,
+                expected_dim=expected_dim,
+            )
+            await self._migrate_vector_dim(expected_dim)
+
     async def embed_and_upsert(self, page_id: str, text: str, metadata: dict) -> None:
         vectors = await self._embedder.embed([text])
         vec_str = _encode(vectors[0])
+        await self._ensure_dimension(len(vectors[0]))
 
         from sqlalchemy.sql import text as sa_text
 
-        async with self._session_factory() as session:
-            await session.execute(
-                sa_text("UPDATE wiki_pages SET embedding = CAST(:emb AS vector) WHERE id = :pid"),
-                {"emb": vec_str, "pid": page_id},
-            )
-            await session.commit()
+        try:
+            async with self._session_factory() as session:
+                await session.execute(
+                    sa_text(
+                        "UPDATE wiki_pages SET embedding = CAST(:emb AS vector) WHERE id = :pid"
+                    ),
+                    {"emb": vec_str, "pid": page_id},
+                )
+                await session.commit()
+        except Exception as exc:
+            if _is_dimension_mismatch_error(exc):
+                await self._migrate_vector_dim(len(vectors[0]))
+                # Retry once after migration
+                async with self._session_factory() as session:
+                    await session.execute(
+                        sa_text(
+                            "UPDATE wiki_pages SET embedding = CAST(:emb AS vector) WHERE id = :pid"
+                        ),
+                        {"emb": vec_str, "pid": page_id},
+                    )
+                    await session.commit()
+            else:
+                raise
 
     async def embed_batch(self, items: list[tuple[str, str, dict]]) -> None:
         if not items:
@@ -84,13 +197,24 @@ class PgVectorStore(VectorStore):
         # round-trip per slice.
         for chunk, texts in iter_embed_chunks(items):
             vectors = await self._embedder.embed(texts)
+            expected_dim = len(vectors[0])
+            await self._ensure_dimension(expected_dim)
             params = [
                 {"emb": _encode(vector), "pid": page_id}
                 for (page_id, _text, _meta), vector in zip(chunk, vectors, strict=True)
             ]
-            async with self._session_factory() as session:
-                await session.execute(stmt, params)
-                await session.commit()
+            try:
+                async with self._session_factory() as session:
+                    await session.execute(stmt, params)
+                    await session.commit()
+            except Exception as exc:
+                if _is_dimension_mismatch_error(exc):
+                    await self._migrate_vector_dim(expected_dim)
+                    async with self._session_factory() as session:
+                        await session.execute(stmt, params)
+                        await session.commit()
+                else:
+                    raise
 
     async def upsert_vectors(self, items: list[tuple[str, list[float], dict]]) -> bool:
         """Raw-vector counterpart of :meth:`embed_and_upsert`, same semantics:
@@ -102,6 +226,9 @@ class PgVectorStore(VectorStore):
         if not items:
             return True
 
+        expected_dim = len(items[0][1])
+        await self._ensure_dimension(expected_dim)
+
         from sqlalchemy.sql import text as sa_text
 
         stmt = sa_text("UPDATE wiki_pages SET embedding = CAST(:emb AS vector) WHERE id = :pid")
@@ -109,9 +236,18 @@ class PgVectorStore(VectorStore):
             {"emb": _encode([float(v) for v in vector]), "pid": page_id}
             for page_id, vector, _meta in items
         ]
-        async with self._session_factory() as session:
-            await session.execute(stmt, params)
-            await session.commit()
+        try:
+            async with self._session_factory() as session:
+                await session.execute(stmt, params)
+                await session.commit()
+        except Exception as exc:
+            if _is_dimension_mismatch_error(exc):
+                await self._migrate_vector_dim(expected_dim)
+                async with self._session_factory() as session:
+                    await session.execute(stmt, params)
+                    await session.commit()
+            else:
+                raise
         return True
 
     async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
