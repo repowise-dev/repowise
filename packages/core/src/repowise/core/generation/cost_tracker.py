@@ -61,9 +61,15 @@ _PRICING: dict[str, dict[str, float]] = {
     "gemini-3.1-flash-lite-preview": {"input": 0.075, "output": 0.30},
     "gemini-3-flash-preview": {"input": 0.075, "output": 0.30},
     "gemini-3.5-flash-lite": {"input": 0.25, "output": 1.50},
-    # DeepSeek
-    "deepseek-v4-flash": {"input": 0.14, "output": 0.28},
-    "deepseek-v4-pro": {"input": 1.74, "output": 3.48},
+    # DeepSeek — https://api-docs.deepseek.com/quick_start/pricing
+    "deepseek-v4-flash": {"input": 0.27, "output": 1.10},
+    "deepseek-v4-pro": {"input": 0.55, "output": 2.19},
+    "deepseek-chat": {"input": 0.27, "output": 1.10},
+    "deepseek-reasoner": {"input": 0.55, "output": 2.19},
+    # Kimi / Moonshot — https://platform.moonshot.cn/docs/pricing/chat
+    "kimi-for-coding": {"input": 0.60, "output": 2.40},
+    "kimi-k2.5": {"input": 0.60, "output": 2.40},
+    "kimi-k2.6": {"input": 0.60, "output": 2.40},
 }
 
 _FALLBACK_PRICING: dict[str, float] = {"input": 3.0, "output": 15.0}
