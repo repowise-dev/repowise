@@ -31,7 +31,7 @@ LanguageTag = Literal[
     "cpp",
     "c",
     "csharp",
-    # Razor / Blazor markup — projected to C# via sfc_source (byte-scan).
+    # Razor / Blazor markup, projected to C# via sfc_source (byte-scan).
     "razor",
     "ruby",
     "php",

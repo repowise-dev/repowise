@@ -42,7 +42,7 @@ scale, in a regulated or security-sensitive environment**:
 All of the following ship in `pip install repowise` today, free for internal use.
 
 - **[Five intelligence layers](../layers/INTELLIGENCE_LAYERS.md)**: Graph
-  (tree-sitter AST across 19 languages, two-tier dependency graph, call
+  (tree-sitter AST across 20 languages, two-tier dependency graph, call
   resolution, heritage extraction, Leiden communities, PageRank / betweenness /
   SCC), Git (hotspots, ownership, co-change pairs, bus factor, significant
   commits, contributor profiles, module health), Documentation (a wiki page per
@@ -99,17 +99,17 @@ All of the following ship in `pip install repowise` today, free for internal use
 
 ## 3. First-class language coverage
 
-Repowise parses **19 languages to a full AST** and places **35 on a five-rung
+Repowise parses **20 languages to a full AST** and places **36 on a five-rung
 ladder**, so "do you support X" gets the rung as its answer rather than a yes or a
 no. Both numbers matter and neither is worth quoting alone.
 
-The 19 are the top three rungs. At **Full tier sit 13** (Python, TypeScript,
+The 20 are the top three rungs. At **Full tier sit 13** (Python, TypeScript,
 JavaScript, Svelte, Vue, Java, Kotlin, Go, Rust, C++, **C#**, Scala, and Ruby) with
 AST parsing, import resolution, named bindings, call resolution, heritage
 extraction, multi-project workspace resolvers, framework-aware edges, per-language
 dynamic-hint extractors, and code-health markers. A further **5 at Good tier** (C,
 Swift, PHP, Dart, Object Pascal/Delphi) get all of that except the full health
-suite, and Luau is partial. SQL/dbt, shell, HTML, and the config formats are
+suite, and Luau and Razor/Blazor are partial. SQL/dbt, shell, HTML, and the config formats are
 handled by dedicated extractors on top of that.
 
 Below the AST line the ladder continues rather than stopping: **7 at Lightweight**

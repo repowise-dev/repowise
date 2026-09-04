@@ -381,7 +381,7 @@ class TestRazorOffsetInvariants:
         original = _RAZOR_COMPONENT.splitlines()
         # The @code interior (1-indexed lines 17-22) is projected verbatim.
         # The brace lines themselves are fenced to ``;`` by design, so they
-        # are excluded — the offset, not the byte, is what must survive there.
+        # are excluded: the offset, not the byte, is what must survive there.
         for index in range(16, 22):
             assert prepared[index] == original[index]
 
@@ -426,7 +426,7 @@ class TestRazorBlanking:
         assert b"Click" not in prepared
         # Attribute binding values (@orders, @SaveOrders) are not call edges
         # and are blanked with the rest of the markup. ``SaveOrdersAsync``
-        # (inside @code) legitimately survives — the bound name without the
+        # (inside @code) legitimately survives; the bound name without the
         # sigil must not.
         assert b"@SaveOrders" not in prepared
         assert b"SaveOrdersAsync" in prepared
@@ -471,6 +471,64 @@ class TestRazorComponentTags:
         src = b"@code { if (a < B) { Go(); } }\n"
         names = {name for name, _ in scan("razor", src).component_tags}
         assert names == set()
+
+    def test_tags_inside_pre_are_still_components(self) -> None:
+        # Razor gives <pre> no verbatim semantics: a component inside it
+        # renders, so the tag pass reads it like any other markup. A code
+        # sample has to be HTML-escaped to show up literally, and an escaped
+        # ``&lt;Foo`` opens no tag.
+        src = b"<pre><Foo /></pre>\n<pre>&lt;Bar /&gt;</pre>\n"
+        names = {name for name, _ in scan("razor", src).component_tags}
+        assert names == {"Foo"}
+
+
+class TestRazorComments:
+    """Commented-out code compiles to nothing, so it must mint nothing."""
+
+    def test_razor_comment_hides_code_blocks(self) -> None:
+        src = b"@* @code { void Hidden() { Go(); } } *@\n@code { void Live() { } }\n"
+        prepared = prepare_source("razor", src)
+        assert b"Hidden" not in prepared
+        assert b"Go" not in prepared
+        assert b"Live" in prepared
+
+    def test_razor_comment_hides_component_tags(self) -> None:
+        src = b"@*\n<Hidden />\n*@\n<Live />\n"
+        tags = dict(scan("razor", src).component_tags)
+        assert tags == {"Live": 4}
+
+    def test_razor_comment_keeps_offsets(self) -> None:
+        src = b"@* one\ntwo *@\n@code { var x = 1; }\n"
+        prepared = prepare_source("razor", src)
+        assert len(prepared) == len(src)
+        assert prepared.count(b"\n") == src.count(b"\n")
+        assert prepared.index(b"var x") == src.index(b"var x")
+
+    def test_unterminated_razor_comment_hides_the_rest_of_the_file(self) -> None:
+        src = b"@* forgot to close\n@code { void Hidden() { } }\n<Hidden />\n"
+        result = scan("razor", src)
+        assert result.js_spans == ()
+        assert result.component_tags == ()
+
+    def test_comment_marker_inside_a_code_block_is_not_a_comment(self) -> None:
+        # ``@*`` inside a C# string is C#, not a Razor comment; the block was
+        # already jumped over, so the tag after it is still found.
+        src = b'@code { var s = "@*"; }\n<Live />\n'
+        result = scan("razor", src)
+        assert len(result.js_spans) == 1
+        assert dict(result.component_tags) == {"Live": 2}
+
+    def test_html_comment_hides_component_tags_but_not_code(self) -> None:
+        # A component inside ``<!-- -->`` never renders, but a Razor
+        # expression inside one still runs, so only the tag pass skips it.
+        src = b"<!-- <Hidden /> @{ Run(); } -->\n<Live />\n"
+        result = scan("razor", src)
+        assert dict(result.component_tags) == {"Live": 2}
+        assert b"Run" in prepare_source("razor", src)
+
+    def test_unterminated_html_comment_hides_the_rest_of_the_tags(self) -> None:
+        src = b"<!-- open\n<Hidden />\n"
+        assert scan("razor", src).component_tags == ()
 
 
 class TestRazorDegradation:

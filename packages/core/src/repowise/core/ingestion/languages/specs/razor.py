@@ -21,7 +21,7 @@ SPEC = LanguageSpec(
     tag="razor",
     display_name="Razor",
     # Razor's own using directives (``@using X``) are not projected yet, so
-    # no import edges are emitted from these files today — the resolver
+    # no import edges are emitted from these files today, so the resolver
     # tier stays at the honest default rather than claiming C#'s full
     # resolution for edges that never exist.
     import_support="none",
@@ -37,7 +37,7 @@ SPEC = LanguageSpec(
         }
     ),
     manifest_files=_CSHARP.manifest_files,
-    # None of these declare a package — the .csproj does. Copied from the
+    # None of these declare a package; the .csproj does. Copied from the
     # csharp spec so a solution dir holding only MSBuild/NuGet settings is
     # not mistaken for a package root.
     build_config_manifests=_CSHARP.build_config_manifests,

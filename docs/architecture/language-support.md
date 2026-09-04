@@ -608,17 +608,19 @@ same clean projection the ingestion parser does.
 ### The locator registry
 
 Only step 1 differs per language, so it lives behind `_LOCATORS`, a dict of
-`Locator(grammar_module, visit, component_name)`. The blanking, fencing, caching
+`Locator(grammar_module, visit, component_name)` for a grammar-backed markup
+language, or `Locator(byte_scan, component_name)` when no grammar exists and
+the regions are found by walking the bytes. The blanking, fencing, caching
 and offset invariants are shared; adding a markup language means adding a
 `Locator`, not a second copy of the walker.
 
-| | Svelte | Vue |
-|---|---|---|
-| Grammar | `tree-sitter-svelte` | `tree-sitter-html` |
-| Expression nodes | `svelte_raw_text` under `expression` / `if_start` / `key_start` / `html_tag` | `attribute_value` inside `quoted_attribute_value`; `{{ … }}` scanned inside `text` |
-| Fence bytes | the surrounding `{` `}` | the surrounding `"` or `'` |
-| Skipped binding forms | `{#each}`, `{#await}` heads | `v-for`, `v-slot` / `#default` |
-| Non-component tags | the `svelte:*` namespace | `<KeepAlive>`, `<Transition>`, `<RouterView>`, … in either spelling |
+| | Svelte | Vue | Razor |
+|---|---|---|---|
+| Grammar | `tree-sitter-svelte` | `tree-sitter-html` | none; byte scan, projected to C# |
+| Expression nodes | `svelte_raw_text` under `expression` / `if_start` / `key_start` / `html_tag` | `attribute_value` inside `quoted_attribute_value`; `{{ … }}` scanned inside `text` | brace-matched `@code { }`, `@functions { }`, `@{ }` interiors |
+| Fence bytes | the surrounding `{` `}` | the surrounding `"` or `'` | the surrounding `{` `}` |
+| Skipped binding forms | `{#each}`, `{#await}` heads | `v-for`, `v-slot` / `#default` | `@using`, `@inject`, `@bind`, `@on*`, `@model`, inline `@expr` |
+| Non-component tags | the `svelte:*` namespace | `<KeepAlive>`, `<Transition>`, `<RouterView>`, … in either spelling | lowercase elements; anything inside `@* *@` or `<!-- -->` |
 
 There is no `tree-sitter-vue` on PyPI. The HTML grammar parses a Vue SFC cleanly
 anyway, because `<template>`, `<script>` and `<style>` are ordinary elements to

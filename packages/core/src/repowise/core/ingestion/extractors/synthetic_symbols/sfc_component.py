@@ -44,7 +44,7 @@ def _vue_name(path: PurePosixPath) -> str:
 
 def _razor_name(path: PurePosixPath) -> str:
     # Razor components are PascalCase by convention and the file *is* the
-    # component — the stem is the name, no kebab- or sigil-normalisation
+    # component, so the stem is the name; no kebab- or sigil-normalisation
     # needed (unlike SvelteKit's ``+page`` or Vue's ``back-to-top``).
     return path.stem
 

@@ -71,7 +71,7 @@ def parsed(parser: ASTParser):
 
 class TestSymbols:
     def test_the_file_itself_becomes_a_component_symbol(self, parsed) -> None:
-        # Nothing in a .razor source names the component — the filename does.
+        # Nothing in a .razor source names the component; the filename does.
         component = [s for s in parsed.symbols if s.name == "Orders"]
         assert len(component) == 1
         assert component[0].kind == "class"
@@ -84,11 +84,11 @@ class TestSymbols:
 class TestCalls:
     def test_code_block_method_calls_are_extracted(self, parsed) -> None:
         # `OrderService.SaveOrdersAsync(orders)` lives in the @code block,
-        # which is projected into C# — the call edge must survive.
+        # which is projected into C#, so the call edge must survive.
         assert "SaveOrdersAsync" in {c.target_name for c in parsed.calls}
 
     def test_markup_component_tags_become_calls(self, parsed) -> None:
-        # <RadzenDataGrid /> etc. are how Razor instantiates components —
+        # <RadzenDataGrid /> etc. are how Razor instantiates components,
         # the JSX analogue, minted from the markup by component_call_sites.
         targets = {c.target_name for c in parsed.calls}
         assert {
@@ -110,6 +110,16 @@ class TestCalls:
         assert grid.caller_symbol_id is not None
         assert grid.caller_symbol_id.endswith("::Orders")
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason="attribute-bound handlers (Click=\"@SaveOrders\") are not projected yet",
+    )
+    def test_attribute_bound_handler_carries_an_edge(self, parsed) -> None:
+        # ``Click="@SaveOrders"`` is the only reference to SaveOrders in the
+        # component. Until attribute expressions are projected it reads as
+        # unreferenced; this turns green when they are.
+        assert "SaveOrders" in {c.target_name for c in parsed.calls}
+
 
 class TestCshtml:
     def test_cshtml_files_parse_as_razor(self, parser) -> None:
@@ -130,13 +140,39 @@ class TestCshtml:
         # The component symbol comes from the filename, not the source.
         assert "Orders" in {s.name for s in result.symbols}
         # .Where lives inside the @{ } statement block, which is projected
-        # into C# — the call site must survive.
+        # into C#, so the call site must survive.
         assert "Where" in {c.target_name for c in result.calls}
-        # The @functions body is class content at C# top level (variant-A
-        # ceiling — the class wrapper is deliberately deferred), so `Count`
-        # carries no symbol today, and `@filtered.Count()` is a single
-        # expression in markup, which is not projected either.
+        # The @functions body is class content at C# top level (there is no
+        # class wrapper yet), so `Count` carries no symbol today, and
+        # `@filtered.Count()` is a single expression in markup, which is not
+        # projected either.
         assert "Count" not in {s.name for s in result.symbols}
+
+    def test_mvc_view_directives_are_blanked_and_mint_no_edge(self, parser) -> None:
+        # ``@model``, ``@Html.Partial`` and the awaited partial / view
+        # component forms are single expressions in markup, not code
+        # blocks. They are blanked like ``@inject``: no symbol, no edge.
+        src = b"""@model OrderDetailViewModel
+@using Microsoft.AspNetCore.Mvc.Localization
+
+<h1>@Model.Title</h1>
+@Html.Partial("_OrderSummary", Model.Summary)
+@await Html.PartialAsync("_OrderLines", Model.Lines)
+@await Component.InvokeAsync("Basket")
+
+@{
+    var summary = OrderFormatter.Summarise(Model.Lines);
+}
+"""
+        result = parser.parse_file(_file("Views/Order/Detail.cshtml"), src)
+        targets = {c.target_name for c in result.calls}
+        assert "Partial" not in targets
+        assert "PartialAsync" not in targets
+        assert "InvokeAsync" not in targets
+        assert "OrderDetailViewModel" not in targets
+        assert {s.name for s in result.symbols} == {"Detail"}
+        # The statement block still projects.
+        assert "Summarise" in targets
 
 
 class TestHealth:
@@ -176,7 +212,7 @@ class TestHealth:
 
     def test_perf_dialect_is_registered(self) -> None:
         # Razor reaches the perf pass as a C# buffer, so the C# dialect
-        # serves it — same alias pattern as svelte -> ts_js.
+        # serves it, the same alias pattern as svelte -> ts_js.
         from repowise.core.analysis.health.perf.dialects import PERF_DIALECTS
 
         assert "razor" in PERF_DIALECTS

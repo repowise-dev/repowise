@@ -4,7 +4,7 @@ A ``.svelte``, ``.vue`` or ``.razor`` file is more than one language in one
 file: ``<script>`` blocks hold TS/JS, the markup is a framework-flavoured
 HTML, and ``@code`` / ``@{ }`` regions hold C#. The markup grammars parse
 the file but hand each ``<script>`` body back as one opaque ``raw_text``
-node — a ``.scm`` query run against them captures no symbol, no import and
+node, so a ``.scm`` query run against them captures no symbol, no import and
 no call.
 
 So a markup grammar is used here only to *locate* the code-bearing regions:
@@ -28,7 +28,7 @@ the markup would make the dead-code pass wrong on nearly every component.
 Only the *region-location* step differs per language, so it lives behind
 :data:`_LOCATORS`; the blanking, fencing, caching and offset invariants are
 shared. Adding a markup language means adding a :class:`Locator`, not a second
-copy of the walker — grammar-backed for Svelte and Vue, byte-scanned for
+copy of the walker: grammar-backed for Svelte and Vue, byte-scanned for
 Razor, which has no usable tree-sitter grammar (see the ``razor`` locator).
 
 Binding forms are deliberately skipped rather than kept: Svelte's
@@ -145,7 +145,7 @@ class Locator(NamedTuple):
     Two shapes are supported. A **grammar-backed** locator (Svelte, Vue)
     parses the file with a tree-sitter markup grammar and ``visit`` walks
     every node. A **byte-scanned** locator (Razor) has ``grammar_module`` /
-    ``visit`` left as None and ``byte_scan`` instead walks the raw bytes —
+    ``visit`` left as None and ``byte_scan`` instead walks the raw bytes;
     there is no usable ``tree-sitter-razor`` on PyPI, and an HTML grammar
     actively mis-parses Razor (``List<Order>`` reads as an HTML element).
     Both shapes append to the same ``state`` dict and produce the same
@@ -375,6 +375,13 @@ def vue_component_name_from_stem(stem: str, parent_dir: str = "") -> str:
 # hold class-body or statement content.
 _RAZOR_BLOCK_OPENERS = (b"code", b"functions", b"{")
 
+# Razor comments hide both markup and C#. HTML comments only hide markup: a
+# Razor expression inside ``<!-- -->`` still runs, so only the tag pass skips
+# them.
+_RAZOR_COMMENT_CLOSE = b"*@"
+_HTML_COMMENT_OPEN = b"<!--"
+_HTML_COMMENT_CLOSE = b"-->"
+
 
 def _razor_byte_scan(source: bytes, state: dict) -> None:
     """Locate C# regions and component tags in ``.razor`` / ``.cshtml`` bytes.
@@ -383,35 +390,47 @@ def _razor_byte_scan(source: bytes, state: dict) -> None:
     ``@functions { ... }`` / ``@{ ... }`` interiors are projected as C#
     (brace-depth matched so nested object initialisers survive), and
     PascalCase tags (``<RadzenDataGrid>``) are recorded as component
-    instantiations. Everything else — directives, markup, attributes — is
+    instantiations. Everything else (directives, markup, attributes) is
     blanked by :func:`_blank`.
 
     Deliberate exclusions, mirroring the Svelte/Vue ceilings:
 
     * ``@@`` is the Razor escape for a literal ``@`` (``@@code`` renders
-      ``@code``) — skipped so an escaped sigil never opens a false block.
+      ``@code``), skipped so an escaped sigil never opens a false block.
     * A ``@`` that is part of a longer identifier token (``email@host``,
-      ``user@@example.com``) is not a directive — the following character
+      ``user@@example.com``) is not a directive: the following character
       must be alphabetic or ``{`` for the sigil to count.
+    * ``@* ... *@`` comments are skipped by both passes. Commented-out code
+      compiles to nothing, so a block or tag inside one would be a wrong edge.
     * ``@using X`` directives are NOT projected (Razor drops the trailing
       ``;``, which the C# grammar needs; the projection would have to
       rewrite bytes to satisfy it). The ``@inject`` / ``@bind`` /
-      ``@on*`` attribute-value forms are two-way bindings, not call edges —
-      same posture as Svelte's ``{#each}`` heads and Vue's ``v-for``.
+      ``@on*`` attribute-value forms are two-way bindings, not call edges,
+      the same posture as Svelte's ``{#each}`` heads and Vue's ``v-for``.
     """
+    comments: list[tuple[int, int]] = []
 
     # -- C# regions ----------------------------------------------------------
     # Scanned FIRST so the component-tag pass below can skip their interiors:
     # ``List<Order>`` inside a C# region is a generic type argument, not a
     # component tag, and the C# grammar (not the tag pass) owns that text.
+    # One sequential walk, so a ``@code`` inside a comment and a ``@*`` inside
+    # a C# string are each jumped over rather than matched.
     pos = 0
     while True:
         at = source.find(b"@", pos)
         if at < 0:
             break
+        following = source[at + 1 : at + 2]
         # Skip the @@ escape.
-        if at + 1 < len(source) and source[at + 1 : at + 2] == b"@":
+        if following == b"@":
             pos = at + 2
+            continue
+        if following == b"*":
+            close = source.find(_RAZOR_COMMENT_CLOSE, at + 2)
+            end = len(source) if close < 0 else close + len(_RAZOR_COMMENT_CLOSE)
+            comments.append((at, end))
+            pos = end
             continue
         rest = source[at + 1 :]
         matched = None
@@ -468,20 +487,25 @@ def _razor_byte_scan(source: bytes, state: dict) -> None:
         pos = end + 1
 
     # -- component tags: <PascalCase ...> / <PascalCase /> ------------------
-    # Skip any ``<`` inside a C# region: ``List<Order>`` is a generic type
-    # argument, ``a < b`` is a comparison — neither is markup.
-    csharp_intervals = tuple(state["spans"])
+    # Skip any ``<`` inside a C# region or a Razor comment: ``List<Order>`` is
+    # a generic type argument, ``a < b`` is a comparison, and a commented-out
+    # tag renders nothing. HTML comments are jumped over for the same reason.
+    hidden = tuple(state["spans"]) + tuple(comments)
 
-    def _inside_csharp(offset: int) -> bool:
-        return any(start <= offset < end for start, end in csharp_intervals)
+    def _is_hidden(offset: int) -> bool:
+        return any(start <= offset < end for start, end in hidden)
 
     pos = 0
     while True:
         lt = source.find(b"<", pos)
         if lt < 0:
             break
-        if _inside_csharp(lt):
+        if _is_hidden(lt):
             pos = lt + 1
+            continue
+        if source.startswith(_HTML_COMMENT_OPEN, lt):
+            close = source.find(_HTML_COMMENT_CLOSE, lt + len(_HTML_COMMENT_OPEN))
+            pos = len(source) if close < 0 else close + len(_HTML_COMMENT_CLOSE)
             continue
         name_start = lt + 1
         name_end = name_start
@@ -490,10 +514,10 @@ def _razor_byte_scan(source: bytes, state: dict) -> None:
         ):
             name_end += 1
         if name_end > name_start:
-            name = source[name_start:name_end].decode("utf-8", errors="replace")
-            if _razor_component_name(name):
+            name = _razor_component_name(source[name_start:name_end].decode("utf-8", errors="replace"))
+            if name:
                 line = source.count(b"\n", 0, lt) + 1
-                state["tags"].append((_razor_component_name(name), line))
+                state["tags"].append((name, line))
         pos = lt + 1
 
 
@@ -538,7 +562,7 @@ _LOCATORS: dict[str, Locator] = {
         visit=_vue_visit,
         component_name=_vue_component_name,
     ),
-    # Razor has no usable tree-sitter grammar on PyPI — and an HTML grammar
+    # Razor has no usable tree-sitter grammar on PyPI, and an HTML grammar
     # actively mis-parses it (``List<Order>`` reads as an HTML element). The
     # locator byte-scans instead: ``@code`` / ``@functions`` / ``@{ }``
     # interiors project as C#, PascalCase tags become component calls.
