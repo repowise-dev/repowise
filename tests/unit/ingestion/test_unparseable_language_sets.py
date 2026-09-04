@@ -68,10 +68,11 @@ def test_real_data_formats_are_in_the_set():
 def test_passthrough_code_languages_are_not_in_the_set():
     """Languages awaiting a grammar are NOT "data".
 
-    clojure/elixir/haskell are ``is_passthrough`` but real code: zero symbols
+    clojure/haskell are ``is_passthrough`` but real code: zero symbols
     there is a gap in us, not a property of the file, so they must stay
-    eligible for the analyses this set exempts.
+    eligible for the analyses this set exempts. Elixir used to sit here and
+    now parses to an AST, which is where a language in this state is headed.
     """
-    for tag in ("clojure", "elixir", "haskell"):
+    for tag in ("clojure", "haskell"):
         assert tag in REGISTRY.passthrough_languages(), tag
         assert tag not in REGISTRY.unparseable_data_languages(), tag

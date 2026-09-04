@@ -40,6 +40,34 @@ def _csharp_clean_xml_doc(text: str) -> str:
     return " ".join(body.split())
 
 
+def _elixir_attribute_doc(node: Node, src: str, names: tuple[str, ...]) -> str | None:
+    """Return the string held by ``@doc`` / ``@moduledoc``, if *node* is one.
+
+    A doc attribute is a ``unary_operator`` whose operator is ``@`` and whose
+    operand is a call to ``doc``/``moduledoc`` with a single string argument.
+    ``@doc false`` marks a function as undocumented and carries no string, so
+    it yields nothing.
+    """
+    if node.type != "unary_operator":
+        return None
+    operator = node.child_by_field_name("operator")
+    if operator is None or operator.type != "@":
+        return None
+    operand = node.child_by_field_name("operand")
+    if operand is None or operand.type != "call":
+        return None
+    target = operand.child_by_field_name("target")
+    if target is None or node_text(target, src).strip() not in names:
+        return None
+    arguments = next((c for c in operand.named_children if c.type == "arguments"), None)
+    if arguments is None:
+        return None
+    for child in arguments.named_children:
+        if child.type == "string":
+            return clean_string_literal(node_text(child, src)) or None
+    return None
+
+
 def extract_module_docstring(root: Node, src: str, lang: str) -> str | None:
     """Extract a module/file-level docstring or leading comment."""
     if lang == "python":
@@ -117,6 +145,20 @@ def extract_module_docstring(root: Node, src: str, lang: str) -> str | None:
                     return clean_jsdoc(text)
             elif child.type not in ("comment", "package_header", "import"):
                 break
+    elif lang == "elixir":
+        # @moduledoc sits inside the defmodule's do_block, not at file top.
+        for child in root.children:
+            if child.type != "call":
+                continue
+            block = next((c for c in child.named_children if c.type == "do_block"), None)
+            if block is None:
+                continue
+            for statement in block.named_children:
+                doc = _elixir_attribute_doc(statement, src, ("moduledoc",))
+                if doc:
+                    return doc
+            break
+
     elif lang == "ruby":
         lines: list[str] = []
         for child in root.children:
@@ -297,6 +339,23 @@ def extract_symbol_docstring(def_node: Node, src: str, lang: str) -> str | None:
     elif lang == "kotlin":
         # KDoc: /** ... */ block comment before declaration
         return find_preceding_block_comment(def_node, src, "/**")
+
+    elif lang == "elixir":
+        # @doc is a preceding sibling, with no AST link to the def it
+        # documents. Other attributes (@impl, @spec) may sit between the two,
+        # so walk back over attributes and stop at the first real statement.
+        parent = def_node.parent
+        if parent is None:
+            return None
+        siblings = list(parent.named_children)
+        index = next((i for i, s in enumerate(siblings) if s.id == def_node.id), -1)
+        for previous in reversed(siblings[:index]):
+            if previous.type != "unary_operator":
+                return None
+            doc = _elixir_attribute_doc(previous, src, ("doc",))
+            if doc:
+                return doc
+        return None
 
     elif lang == "ruby":
         # RDoc/YARD: # comment lines before method/class

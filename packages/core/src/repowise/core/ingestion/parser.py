@@ -45,10 +45,12 @@ from .extractors import (
     extract_module_docstring,
     extract_symbol_docstring,
     node_text,
+    refine_elixir_call_kind,
     refine_go_type_kind,
     refine_kotlin_class_kind,
     refine_pascal_type_kind,
 )
+from .extractors.bindings.elixir import elixir_import_modules
 from .extractors.bindings.python import expand_bare_relative_imports
 from .extractors.bindings.ts_js import (
     declarator_binds_callable,
@@ -81,6 +83,10 @@ from .parser_helpers import (
     _collect_error_nodes,
     _count_arguments,
     _dedupe_pascal_interface_symbols,
+    _elixir_call_is_definitional,
+    _elixir_is_template_definition,
+    _elixir_module_parent,
+    _elixir_symbol_name,
     _find_enclosing_symbol,
     _has_callable_ancestor,
     _head_type_identifier,
@@ -1232,6 +1238,15 @@ class ASTParser:
             if not name:
                 continue
 
+            if file_info.language == "elixir":
+                # A `def` inside `quote do ... end` is macro body, not a
+                # definition of the module that writes it.
+                if _elixir_is_template_definition(def_node, src):
+                    continue
+                # `defimpl Proto, for: Type` is named for the module the
+                # compiler generates, not for the protocol alone.
+                name = _elixir_symbol_name(def_node, name, src)
+
             export_type = cpp_export_type_defs.get(def_node.id)
             if export_type is not None and name != export_type.name:
                 # The ordinary struct/class query sees the same specifier, but
@@ -1296,6 +1311,14 @@ class ASTParser:
             # refine_pascal_type_kind's own docstring for the disambiguation).
             if kind == "class" and file_info.language == "pascal" and def_node.type == "declType":
                 kind = refine_pascal_type_kind(def_node)
+
+            # Elixir: every definition is a ``call``, so the node type cannot
+            # name the kind and the config maps it to a deliberately
+            # non-callable placeholder (see refine_elixir_call_kind). The
+            # keyword in the call's target is what actually says what was
+            # defined.
+            if file_info.language == "elixir" and def_node.type == "call":
+                kind = refine_elixir_call_kind(def_node, src)
 
             # Dart: a function is a ``function_signature`` whose BODY is a
             # sibling ``function_body`` node (members wrap the signature in
@@ -1467,6 +1490,12 @@ class ASTParser:
             if parent_name is None and file_info.language == "pascal" and name_nodes:
                 parent_name = _qualified_pascal_parent(name_nodes[0], src)
 
+            # Elixir: the enclosing ``defmodule`` is a ``call`` with no
+            # ``name`` field for the generic nesting walk to read, so the
+            # module name has to be dug out of its first argument.
+            if parent_name is None and file_info.language == "elixir":
+                parent_name = _elixir_module_parent(def_node, src)
+
             # A ``field_declaration`` cannot occur outside a class body, so a
             # missing parent means the class did not parse. Grammar recovery,
             # not a member function.
@@ -1584,6 +1613,7 @@ class ASTParser:
         imports: list[Import] = []
         seen_raws: set[str] = set()
         seen_pascal_units: set[str] = set()
+        seen_elixir_modules: set[str] = set()
 
         for capture_dict in matches:
             stmt_nodes = capture_dict.get("import.statement", [])
@@ -1639,6 +1669,35 @@ class ASTParser:
                             # correct value here, not a workaround: it says
                             # exactly what a Pascal `uses` clause does.
                             imported_names=["*"],
+                            is_relative=False,
+                            resolved_file=None,
+                            bindings=[],
+                            is_reexport=False,
+                        )
+                    )
+                continue
+
+            # Elixir: `alias Foo.{Bar, Baz}` names two modules in one
+            # statement, so dedup by raw statement text (below) would drop all
+            # but the first. Deduped by module path instead, which is also
+            # what makes a module aliased twice in one file one dependency.
+            if file_info.language == "elixir":
+                raw = _node_text(stmt_node, src).split("\n", 1)[0].strip()
+                directive_node = stmt_node.child_by_field_name("target")
+                directive = _node_text(directive_node, src).strip() if directive_node else ""
+                for module_path in elixir_import_modules(module_nodes[0], src):
+                    if module_path in seen_elixir_modules:
+                        continue
+                    seen_elixir_modules.add(module_path)
+                    imports.append(
+                        Import(
+                            raw_statement=raw,
+                            # `import Foo` pulls in every public function;
+                            # alias/require/use bind the module itself, which
+                            # is the same wildcard sentinel the regex tier
+                            # writes for this language.
+                            module_path=module_path,
+                            imported_names=["*"] if directive == "import" else [],
                             is_relative=False,
                             resolved_file=None,
                             bindings=[],
@@ -1877,6 +1936,13 @@ class ASTParser:
                 continue
 
             if target_name in _call_builtins:
+                continue
+
+            # Elixir: a definition head (`add(a, b)` in `def add(a, b)`) and a
+            # module attribute (`@doc "..."`) are both ``call`` nodes, and no
+            # query predicate can see the parent that tells them apart. Left
+            # in, every function in the repo would call itself.
+            if file_info.language == "elixir" and _elixir_call_is_definitional(site_node, src):
                 continue
 
             line = site_node.start_point[0] + 1

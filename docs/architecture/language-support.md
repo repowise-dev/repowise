@@ -9,8 +9,12 @@ centralised `LanguageRegistry`; per-language extraction logic lives in
 `extractors/`; per-language import resolution lives in `resolvers/`; per-language
 call-resolution strategy lives behind a seam in `call_resolver.py`. Adding a
 language means dropping one file into each relevant subpackage and registering it
-in that subpackage's dispatcher. No edits are needed to `parser.py`, `graph.py`,
-`traverser.py`, or any analysis core file.
+in that subpackage's dispatcher. No edits are needed to `graph.py`,
+`traverser.py`, or any analysis core file. `parser.py` holds a short per-language
+block for a handful of languages whose grammar shape the generic path cannot
+read (C++ qualified definitions, Dart mixins, Object Pascal out-of-line methods,
+[Elixir](#elixir)); each is a few lines calling into a helper, and a new language
+needs one only when it hits the same kind of wall.
 
 ---
 
@@ -28,7 +32,7 @@ in that subpackage's dispatcher. No edits are needed to `parser.py`, `graph.py`,
 - [Call resolution](#call-resolution) · [the strategy seam](#the-per-language-strategy-seam) · [resolution origins](#resolution-origins) · [receiver typing](#receiver-typing) · [inherited dispatch](#inherited-dispatch)
 - [The edge vocabulary](#the-edge-vocabulary)
 - [Multi-language files (the SFC pattern)](#multi-language-files-the-sfc-pattern)
-- [Per-language mechanics](#per-language-mechanics) · [GDScript / Godot](#gdscript--godot) · [VB.NET](#vbnet) · [QML](#qml) · [Flutter widget trees](#flutter-widget-trees)
+- [Per-language mechanics](#per-language-mechanics) · [Elixir](#elixir) · [GDScript / Godot](#gdscript--godot) · [VB.NET](#vbnet) · [QML](#qml) · [Flutter widget trees](#flutter-widget-trees)
 - [Optional language-specific passes](#optional-language-specific-passes)
 - [The three code-health dialect registries](#the-three-code-health-dialect-registries)
 - [Workspace contract extraction](#workspace-contract-extraction)
@@ -76,7 +80,7 @@ Extension/filename -> LanguageTag  (via LanguageRegistry)
           C/C++:  compile_commands.json include directories
           Dart:   package:/dart:/relative URIs via the pubspec name map +
                   library-name index (dotted part-of)
-          Lightweight tier (Elixir/Clojure/Haskell/Lean 4/Erlang/F#):
+          Lightweight tier (Clojure/Haskell/Lean 4/Erlang/F#):
                   regex-extracted imports vs a declared-module-name index
           dbt:    ref()/source() vs a per-project model-name index
           Other:  stem-map fallback (filename matching)
@@ -672,6 +676,37 @@ The same steps would fit Astro components; only the locator changes.
 
 The resolution shapes that are specific to one language and are not derivable
 from the recipe above.
+
+### Elixir
+
+Elixir is the one language whose grammar gives every construct the same node
+kind. `defmodule`, `def`, `defp`, `alias`, `import`, `use` and every `@attribute`
+all parse as a `call` whose `target` field is an `identifier` holding the keyword
+text, and a definition head (`add(a, b)` in `def add(a, b)`) is a `call` too.
+Three consequences the recipe above does not cover:
+
+- **`symbol_node_types` maps `call` to a non-callable placeholder kind**, refined
+  per keyword afterwards. A `def` sits inside its `defmodule`'s `do_block`, so a
+  callable mapping would make the callable-ancestor filter drop every function in
+  every module. The real kind comes from `refine_elixir_call_kind`.
+- **Parent detection cannot use the generic nesting walk**, which reads a `name`
+  field an Elixir `call` does not have. The module name is the first argument of
+  the call to `defmodule`, read by `_elixir_module_parent`.
+- **A definition head and a module attribute are dropped from the call graph
+  structurally**, in `_elixir_call_is_definitional`, because a query predicate
+  sees a node's own text and never its parent. Without it every function calls
+  itself, and every `@doc "..."` calls `doc`. A typespec attribute (`@spec`,
+  `@type`, `@callback`) also drops the calls inside it, since its body is types;
+  every other attribute keeps them, so `@endpoint Application.compile_env(...)`
+  still mints its edge. Reserved keywords are dropped by name through the spec's
+  `builtin_calls`, which is where Kernel's guards sit too.
+
+`alias Foo.{Bar, Baz}` names two modules in one statement (a `dot` over a
+`tuple`), expanded per member in `extractors/bindings/elixir.py` before the
+dedup-by-statement-text the generic path applies. No heritage is emitted: `use`
+and `@behaviour` are the nearest things Elixir has to inheritance and neither is
+one, and both already produce a module dependency through the import and
+type-reference captures.
 
 ### GDScript / Godot
 

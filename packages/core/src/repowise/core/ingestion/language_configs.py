@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from .extractors.visibility import (
     csharp_visibility,
     dart_visibility,
+    elixir_visibility,
     go_visibility,
     java_visibility,
     kotlin_visibility,
@@ -389,6 +390,27 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         parent_class_types=frozenset(
             {"class_declaration", "interface_declaration", "trait_declaration", "enum_declaration"}
         ),
+    ),
+    "elixir": LanguageConfig(
+        symbol_node_types={
+            # Elixir's one node kind for every definition. "module" is a
+            # placeholder, refined per keyword in refine_elixir_call_kind --
+            # but it must stay a NON-callable kind: a `def` sits inside its
+            # `defmodule`'s do_block, so a callable mapping here would make
+            # _has_callable_ancestor drop every function in every module.
+            "call": "module",
+        },
+        import_node_types=["call"],
+        export_node_types=[],  # every public function is exported; no syntax
+        # `defp` / `defmacrop` / `defguardp` are private; elixir.scm captures
+        # the defining keyword as @symbol.modifiers so this can read it.
+        visibility_fn=elixir_visibility,
+        parent_extraction="nesting",
+        # Deliberately empty. The generic nesting walk reads a `name` field,
+        # which an Elixir `call` does not have; the module name lives in the
+        # call's first argument, so parent detection runs through
+        # _elixir_module_parent instead.
+        parent_class_types=frozenset(),
     ),
     "pascal": LanguageConfig(
         symbol_node_types={

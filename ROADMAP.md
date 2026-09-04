@@ -34,7 +34,7 @@ Languages land on a five-rung ladder rather than a yes/no list, because "do you
 support X" has five different useful answers. Each rung is defined, with what it
 buys you, in
 [docs/layers/LANGUAGE_SUPPORT.md](docs/layers/LANGUAGE_SUPPORT.md). Today that
-ladder covers **39 languages, 22 of them parsed to a full AST**.
+ladder covers **39 languages, 23 of them parsed to a full AST**.
 
 ### New languages
 
@@ -48,7 +48,7 @@ ladder covers **39 languages, 22 of them parsed to a full AST**.
 | **Apex** | Planned | Salesforce estates, where the org is often the least documented system a company runs. Apex is Java-shaped, and Lightning Web Components are already covered as JavaScript and HTML. |
 | **Ada** | Exploring | Defense and aerospace, long-lived and thinly documented, and usually in the same estates asking about COBOL. |
 | **Objective-C** | Planned | Currently Structural, meaning history only. The grammar is mature, so this is a climb up the ladder rather than new ground. |
-| **Elixir**, **F#** | Planned | Currently Lightweight, meaning file-to-file imports. Both grammars are already on PyPI, so these are AST upgrades rather than new ground. |
+| **F#** | Planned | Currently Lightweight, meaning file-to-file imports. The grammar is already on PyPI, so this is an AST upgrade rather than new ground. |
 | **Template dialects** (Django/Jinja, ERB, Blade, Thymeleaf, Go templates) | Planned | Today they parse cleanly as HTML and yield nothing, because `{% extends "base.html" %}` is plain text to an HTML parser. A stated ceiling, not an oversight. |
 
 ### Deepening languages we already parse
@@ -61,6 +61,7 @@ ladder covers **39 languages, 22 of them parsed to a full AST**.
 | C | Planned | It shares the C++ grammar for parsing but reaches no health walker map, so it gets graph coverage without markers |
 | SQL / dbt | Planned | Column-level blast radius |
 | Object Pascal | Planned | Assertion and performance markers, a dedicated `uses` resolver |
+| Elixir | Planned | Health markers, and a call-resolution strategy so a bare-name call reaches beyond its own file |
 | Razor / Blazor | Planned | `@using` and `@inject` edges so component tags resolve through imports, `@code` members as symbols rather than call edges only |
 
 ### Need a language that is not here
