@@ -28,6 +28,7 @@ in that subpackage's dispatcher. No edits are needed to `parser.py`, `graph.py`,
 - [Call resolution](#call-resolution) · [the strategy seam](#the-per-language-strategy-seam) · [resolution origins](#resolution-origins) · [receiver typing](#receiver-typing) · [inherited dispatch](#inherited-dispatch)
 - [The edge vocabulary](#the-edge-vocabulary)
 - [Multi-language files (the SFC pattern)](#multi-language-files-the-sfc-pattern)
+- [Per-language mechanics](#per-language-mechanics) · [GDScript / Godot](#gdscript--godot) · [VB.NET](#vbnet) · [QML](#qml) · [Flutter widget trees](#flutter-widget-trees)
 - [Optional language-specific passes](#optional-language-specific-passes)
 - [The three code-health dialect registries](#the-three-code-health-dialect-registries)
 - [Workspace contract extraction](#workspace-contract-extraction)
@@ -626,12 +627,24 @@ There is no `tree-sitter-vue` on PyPI. The HTML grammar parses a Vue SFC cleanly
 anyway, because `<template>`, `<script>` and `<style>` are ordinary elements to
 it, so one dependency covers both Vue and plain HTML.
 
+Razor has no usable grammar either, and unlike Vue it cannot borrow the HTML one:
+an HTML parser reads `List<Order>` as an element. Its locator is therefore a
+**byte scan** rather than a grammar walk. It brace-matches the `@code { }`,
+`@functions { }` and `@{ }` interiors, projects them into a C# buffer at the same
+offsets, and skips Razor (`@* *@`) and HTML comments so commented-out code mints
+nothing. Everything downstream is shared: the C# queries, `LanguageConfig`,
+complexity map and perf dialect all apply verbatim, PascalCase tags mint
+component call edges, and the file becomes a symbol named after its filename. The
+ceiling is that the C# body lands at top level with no enclosing class, so
+`@code` members are call targets rather than symbols, and every directive is
+blanked, which is why a Razor file carries no import edges.
+
 **Plain HTML deliberately has no locator.** It reuses the same grammar but not
 the projection, and the distinction is the point: a projection exists to turn a
 `<script>` block into analysable TypeScript, which is worth it when that block is
 where the component lives. A plain `.html` file's inline script almost never
-carries a module import (13 of the 6162 `.html` files in the validation corpus,
-0.2%), so projecting would buy a rounding error and would mint symbols,
+carries a module import, so projecting would buy a rounding error and would mint
+symbols,
 contradicting HTML's import-only tier. Its `<script src>` / `<link href>`
 attributes are read directly in `lightweight_imports/html.py`, which is extractor
 work, not projection work. Adding a `Locator` for HTML purely for symmetry with
@@ -652,6 +665,76 @@ run the filename and the tag through the *same* normaliser, so `back-to-top.vue`
 and `<back-to-top />` cannot disagree about the name `BackToTop`.
 
 The same steps would fit Astro components; only the locator changes.
+
+---
+
+## Per-language mechanics
+
+The resolution shapes that are specific to one language and are not derivable
+from the recipe above.
+
+### GDScript / Godot
+
+`preload(...)`, `load(...)` and `extends "res://..."` resolve as absolute paths
+from the **nearest ancestor `project.godot`**, so a repo holding several Godot
+projects keeps each project's `res://` namespace separate instead of merging
+them. `.tscn` / `.tres` / `.escn`, `project.godot` and an addon's `plugin.cfg`
+are indexed as a `godot_resource` passthrough language and read with
+line-anchored regexes rather than a second grammar: an `[ext_resource]` script or
+sub-scene path becomes an import edge, `[autoload]`, `[application]
+run/main_scene` and a plugin's `script=` become entry points, and a `class_name`
+used by name in another script becomes a framework edge.
+
+A `[connection ... to="Player" method="_on_hit"]` binds to the method symbol by
+resolving the `to` node path to the script attached to that node or to its
+nearest scripted ancestor. It is refused, with no edge, when the node is absent,
+when nothing on that chain carries a script, when the script would come from
+another scene's `instance=ExtResource(...)`, or when the resolved script declares
+no such function. It is never matched on the method name alone.
+
+Two constructs the upstream grammar rejects: `$%UniqueName` (`$` and `%` are
+separate node-path forms, so the pair fails), and a bare call to a function named
+`export` or `onready` (`export()`), which the grammar still reserves at statement
+position for the GDScript 3 declaration forms. Error recovery keeps both to the
+enclosing statement.
+
+### VB.NET
+
+VB.NET shares the .NET project graph with C# rather than resolving on file stems.
+A `.vbproj` is indexed alongside the `.csproj` files, an `Imports` directive is
+matched against the namespace its owning project declares through
+`<RootNamespace>` and against the namespaces its references bring in, and the
+same-namespace and partial-class links are shared, so a VB.NET type and a C# type
+in one namespace see each other. A plain `Namespace X` in a project rooted at
+`R` is keyed as `R.X` and never as a bare `X`; only `Namespace Global.X` opts
+out of the root and is reachable under its own name. The
+never-flag globs mirror the C# ones: designer files, `AssemblyInfo`, everything
+under `My Project`, and the `ApplicationEvents` hooks. Grammar gaps remaining:
+XML literals, tuple literals used as expressions, a nested double quote inside an
+interpolation hole, an omitted argument in a call that also carries type
+arguments, and some multi-line LINQ layouts, each recovered from locally.
+
+### QML
+
+Module specs resolve against an index built from the `qmldir` manifests in the
+repo, and quoted references resolve relative to the importing file, with a
+directory import linking that directory's `qmldir`. Two refusals: a directory
+carrying no `qmldir` gets no edge rather than fanning out to its `.qml` files,
+and a module name declared by two `qmldir` files gets no edge rather than a
+guessed one.
+
+### Flutter widget trees
+
+A `build()` method returns a widget tree, so a constructor call in its body names
+a child widget. The body is read by **brace balancing** from the signature rather
+than through a fixed window, so a long `build()` keeps its tail. Two rules keep
+the edge honest: the constructed class becomes a target only when its heritage
+makes it a widget, without which any class spelled like a constructor call would
+qualify, and the name must be declared by exactly one file this one imports.
+Dart makes nothing visible across files without an import, so that requirement
+both settles a name two files declare and refuses a class that merely shadows a
+framework widget. A class reached through an `export` barrel is missed, which
+costs an edge rather than inventing one.
 
 ---
 
