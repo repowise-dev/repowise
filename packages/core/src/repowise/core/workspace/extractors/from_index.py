@@ -35,6 +35,7 @@ import re
 from typing import TYPE_CHECKING
 
 from .http.dialect import build_provider_contract
+from .http.flask import flask_file
 from .http.mounts import compose_prefix, router_prefixes
 from .langs import JS_TS, PYTHON
 
@@ -245,6 +246,11 @@ def extract_http_providers(
     the whole file text (see the module docstring), so ``ctx.content`` is read
     as well.
     """
+    # A Flask file's routes come from the Flask dialect, whose prefix rule this
+    # path cannot apply: the registration that overrides a blueprint's own
+    # prefix is keyed on a mount map only that dialect writes and reads.
+    if flask_file(ctx.content):
+        return []
     # Routes before prefixes: ``router_prefixes`` scans the whole file, so it
     # is worth paying for only once a route exists to stitch a prefix onto.
     routes = [
