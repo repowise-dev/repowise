@@ -412,6 +412,49 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         # _elixir_module_parent instead.
         parent_class_types=frozenset(),
     ),
+    "fsharp": LanguageConfig(
+        symbol_node_types={
+            # `module Foo.Bar` / `namespace Foo.Bar` head the file;
+            # `module X =` nests inside one.
+            "named_module": "module",
+            "namespace": "module",
+            "module_defn": "module",
+            # The captured node is the binding's left-hand side, not the
+            # enclosing function_or_value_defn: that one node holds every
+            # clause of a `let rec f ... and g ...` group, so capturing it
+            # would give every clause the same span. parser.py extends each
+            # symbol over its own clause and filters the nested ones.
+            "function_declaration_left": "function",
+            "value_declaration_left": "variable",
+            # A record is a named product of fields, the same concept Go and
+            # Rust spell "struct". A discriminated union is a sum type, which
+            # is what "enum" means everywhere else in this table -- a
+            # single-case union written `type Alias = string` parses as one
+            # too, and reads as an enum; the grammar offers nothing to tell
+            # the abbreviation from the union.
+            "record_type_defn": "struct",
+            "union_type_defn": "enum",
+            "enum_type_defn": "enum",
+            "delegate_type_defn": "type_alias",
+            "type_abbrev_defn": "type_alias",
+            # Classes, structs and interfaces share this node; refined by
+            # refine_fsharp_type_kind.
+            "anon_type_defn": "class",
+            "exception_definition": "class",
+            "member_defn": "method",
+        },
+        import_node_types=["import_decl"],
+        export_node_types=[],  # F# has no re-export syntax
+        # F# spells assembly scope `internal` the way Kotlin does and has no
+        # `protected` binding form, so kotlin_visibility answers both.
+        visibility_fn=kotlin_visibility,
+        parent_extraction="nesting",
+        # Deliberately empty: no F# type node carries a `name` field, so the
+        # generic walk in _find_parent would match an ancestor and then read
+        # nothing off it. The parent walk is language-gated in parser.py --
+        # see _fsharp_parent_name.
+        parent_class_types=frozenset(),
+    ),
     "pascal": LanguageConfig(
         symbol_node_types={
             # declType wraps class/record/interface/helper/enum/set/array/alias

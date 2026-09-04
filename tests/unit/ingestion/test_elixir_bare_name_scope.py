@@ -1,9 +1,13 @@
-"""Elixir bare-name call scope.
+"""Lexically scoped bare-name call resolution.
 
 A bare, receiver-less name in Elixir can only mean the caller's own module, a
 module an explicit ``import`` brought in, or Kernel. ``alias`` / ``require`` /
 ``use`` bind a module name and never a function name, so the resolver must not
 answer such a call from repo-wide uniqueness or from a non-import edge.
+
+F# is the same rule with different spelling: a bare name means the enclosing
+scope, a module the file has ``open``ed, or FSharp.Core. Both languages are in
+``_LEXICAL_BARE_NAME_LANGUAGES``, so both are exercised here.
 """
 
 from __future__ import annotations
@@ -16,11 +20,11 @@ from repowise.core.ingestion.models import FileInfo, ParsedFile
 from repowise.core.ingestion.parser import parse_file
 
 
-def _file_info(rel: str, abs_: Path) -> FileInfo:
+def _file_info(rel: str, abs_: Path, language: str = "elixir") -> FileInfo:
     return FileInfo(
         path=rel,
         abs_path=str(abs_),
-        language="elixir",
+        language=language,
         size_bytes=abs_.stat().st_size,
         git_hash="",
         last_modified=datetime.now(),
@@ -31,13 +35,15 @@ def _file_info(rel: str, abs_: Path) -> FileInfo:
     )
 
 
-def _parse_all(tmp_path: Path, files: dict[str, str]) -> dict[str, ParsedFile]:
+def _parse_all(
+    tmp_path: Path, files: dict[str, str], language: str = "elixir"
+) -> dict[str, ParsedFile]:
     out: dict[str, ParsedFile] = {}
     for rel, content in files.items():
         abs_ = tmp_path / rel
         abs_.parent.mkdir(parents=True, exist_ok=True)
         abs_.write_text(content, encoding="utf-8")
-        out[rel] = parse_file(_file_info(rel, abs_), content.encode("utf-8"))
+        out[rel] = parse_file(_file_info(rel, abs_, language), content.encode("utf-8"))
     return out
 
 
@@ -185,5 +191,69 @@ end
         assert (
             "lib/app.ex::Shop.Application::start",
             "lib/app.ex::Shop.Application::setup_region_mapping",
+            "same_file",
+        ) in edges, edges
+
+
+TOKENS = """module Acme.Tokens
+
+let parseToken (raw: string) = raw
+"""
+
+
+class TestFsharpBareNameScope:
+    def test_a_uniquely_named_function_elsewhere_is_not_the_answer(
+        self, tmp_path: Path
+    ) -> None:
+        # Nothing in Reader.fs brings `parseToken` into scope. That exactly
+        # one other file defines the name is a coincidence, not evidence.
+        files = {
+            "src/Tokens.fs": TOKENS,
+            "src/Reader.fs": """module Acme.Reader
+
+let read raw = parseToken raw
+""",
+        }
+        parsed = _parse_all(tmp_path, files, "fsharp")
+        edges = _edges(parsed, tmp_path, {})
+        assert not [e for e in edges if e[1].endswith("::parseToken")], edges
+
+    def test_an_open_module_does_answer_it(self, tmp_path: Path) -> None:
+        # The control: `open` binds every public name in the module, which is
+        # the wildcard sentinel the merged-import tier reads.
+        files = {
+            "src/Tokens.fs": TOKENS,
+            "src/Reader.fs": """module Acme.Reader
+
+open Acme.Tokens
+
+let read raw = parseToken raw
+""",
+        }
+        parsed = _parse_all(tmp_path, files, "fsharp")
+        _link(parsed, "src/Reader.fs", "Acme.Tokens", "src/Tokens.fs")
+        edges = _edges(
+            parsed, tmp_path, {"src/Reader.fs": {"src/Tokens.fs"}, "src/Tokens.fs": set()}
+        )
+        assert (
+            "src/Reader.fs::read",
+            "src/Tokens.fs::parseToken",
+            "import_merged",
+        ) in edges, edges
+
+    def test_a_same_file_bare_call_still_resolves(self, tmp_path: Path) -> None:
+        files = {
+            "src/Tokens.fs": """module Acme.Tokens
+
+let private normalise raw = raw
+
+let parseToken raw = normalise raw
+""",
+        }
+        parsed = _parse_all(tmp_path, files, "fsharp")
+        edges = _edges(parsed, tmp_path, {})
+        assert (
+            "src/Tokens.fs::parseToken",
+            "src/Tokens.fs::normalise",
             "same_file",
         ) in edges, edges

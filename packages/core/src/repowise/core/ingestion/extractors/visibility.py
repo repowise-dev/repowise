@@ -528,4 +528,7 @@ VISIBILITY_FNS: dict[str, Callable[[str, list[str]], str]] = {
     "scala": scala_visibility,
     "php": php_visibility,
     "elixir": elixir_visibility,
+    # F# has no `protected` binding form and spells assembly scope
+    # `internal`, which is exactly what kotlin_visibility answers.
+    "fsharp": kotlin_visibility,
 }

@@ -87,10 +87,13 @@ _IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin"})
 _INHERITED_LANGUAGES = frozenset({"kotlin", "python", "typescript", "swift", "csharp"})
 
 # Languages where a bare name is scoped lexically: it can only mean the
-# caller's own module, an explicit ``import``, or the prelude. ``alias`` /
-# ``require`` / ``use`` bind a module name, never a function name, so repo-wide
-# uniqueness is no evidence and only wildcard imports may merge names.
-_LEXICAL_BARE_NAME_LANGUAGES = frozenset({"elixir"})
+# caller's own module, an explicit ``import``, or the prelude. Elixir's
+# ``alias`` / ``require`` / ``use`` bind a module name, never a function name,
+# so repo-wide uniqueness is no evidence and only wildcard imports may merge
+# names. F# is the same rule with different spelling: a bare name means the
+# enclosing scope, a module the file has ``open``ed, or FSharp.Core, and
+# nothing else -- a name unique across the repo is not thereby in scope.
+_LEXICAL_BARE_NAME_LANGUAGES = frozenset({"elixir", "fsharp"})
 
 # The sentinel an import that binds a whole module's public names carries.
 _WILDCARD_IMPORTED_NAMES = ["*"]

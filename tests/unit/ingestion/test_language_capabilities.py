@@ -194,6 +194,35 @@ _PARTIAL = {
 }
 
 
+class TestAstRegistration:
+    """A non-passthrough code language must be wired all the way through.
+
+    Driving ``ASTParser`` directly in a per-language test proves the query
+    and the config, but not the registration: a spec left
+    ``is_passthrough=True``, a missing ``LANGUAGE_CONFIGS`` entry or a
+    ``scm_file`` naming a file that is not on disk all yield zero symbols
+    *silently* -- the files index, their regex-tier imports resolve, and
+    only ``symbol_count=0`` in the graph says anything is wrong.
+    """
+
+    def test_every_ast_language_has_grammar_config_and_query(self) -> None:
+        from repowise.core.ingestion.language_configs import LANGUAGE_CONFIGS
+        from repowise.core.ingestion.parser import QUERIES_DIR
+
+        code_languages = REGISTRY.code_languages()
+        for spec in REGISTRY.all_specs():
+            if spec.is_passthrough or spec.tag not in code_languages:
+                continue
+            if spec.shares_grammar_with:
+                # C reads C++'s grammar and query; it declares neither.
+                continue
+            assert spec.grammar_package, spec.tag
+            assert spec.scm_file, spec.tag
+            assert (QUERIES_DIR / spec.scm_file).is_file(), spec.tag
+            assert spec.tag in LANGUAGE_CONFIGS, spec.tag
+            assert spec.tag not in REGISTRY.unparseable_or_unknown_languages(), spec.tag
+
+
 class TestImportSupportTiers:
     def test_every_spec_declares_a_valid_tier(self) -> None:
         for spec in REGISTRY.all_specs():

@@ -55,6 +55,7 @@ dependencies = [
     "tree-sitter-gdscript>=6.1,<7",
     "tree-sitter-vb-dotnet>=0.3,<1",
     "tree-sitter-elixir>=0.3.5,<1",
+    "tree-sitter-fsharp>=0.3.11,<1",
     # Markup grammars for single-file components: these locate <script> blocks
     # and markup expressions only; the JS inside them is parsed with the
     # TypeScript grammar (see sfc_source.py). There is no tree-sitter-vue on

@@ -46,6 +46,7 @@ from .extractors import (
     extract_symbol_docstring,
     node_text,
     refine_elixir_call_kind,
+    refine_fsharp_type_kind,
     refine_go_type_kind,
     refine_kotlin_class_kind,
     refine_pascal_type_kind,
@@ -88,6 +89,11 @@ from .parser_helpers import (
     _elixir_module_parent,
     _elixir_symbol_name,
     _find_enclosing_symbol,
+    _fsharp_binding_end_line,
+    _fsharp_binding_has_params,
+    _fsharp_binding_is_nested,
+    _fsharp_parent_is_type,
+    _fsharp_parent_name,
     _has_callable_ancestor,
     _head_type_identifier,
     _is_async_node,
@@ -948,7 +954,16 @@ class ASTParser:
         grammar_tag = "tsx" if lang == "typescript" and file_info.path.endswith(".tsx") else lang
         language = _get_language(grammar_tag)
 
-        if config is None or language is None:
+        # tree-sitter-fsharp ships a second grammar (``language_signature``)
+        # for .fsi signature files, and a spec loads exactly one. Read with
+        # the implementation grammar, a signature file's ``val`` and member
+        # signatures land in ERROR recovery, which hoists whatever the
+        # recovery invents into the symbol list. The regex tier still gives
+        # these files their ``open`` imports, which is all a signature file
+        # contributes that another file does not also state.
+        signature_file = lang == "fsharp" and file_info.path.endswith(".fsi")
+
+        if config is None or language is None or signature_file:
             if config is not None and language is None and lang not in _MISSING_GRAMMAR_REPORTED:
                 # Once per language, not once per file: the fact is about the
                 # environment, and it does not become truer on the four
@@ -1293,6 +1308,25 @@ class ASTParser:
             ):
                 continue
 
+            # F#: a ``let`` nested in another binding's body has the same node
+            # shape as a top-level one, so the ancestor filter above cannot
+            # see it -- what it captures is the binding's left-hand side, and
+            # a nested binding's left-hand side has no callable ancestor
+            # either. A ``let`` inside a type body is a field and stays.
+            if file_info.language == "fsharp" and node_type in (
+                "function_declaration_left",
+                "value_declaration_left",
+            ):
+                if _fsharp_binding_is_nested(def_node):
+                    continue
+                # A value binding that carries parameter patterns beside its
+                # name is a function the grammar reparsed as a value because
+                # of its return-type annotation.
+                if node_type == "value_declaration_left" and _fsharp_binding_has_params(
+                    def_node
+                ):
+                    kind = "function"
+
             # Refine "struct" kind for Go type_spec (check if struct or interface body)
             if kind == "struct" and config.parent_extraction == "receiver":
                 kind = refine_go_type_kind(def_node, src)
@@ -1320,6 +1354,15 @@ class ASTParser:
             if file_info.language == "elixir" and def_node.type == "call":
                 kind = refine_elixir_call_kind(def_node, src)
 
+            # F# writes a class, a struct and an interface with the same
+            # ``anon_type_defn`` node; only the body says which it is.
+            if (
+                kind == "class"
+                and file_info.language == "fsharp"
+                and def_node.type == "anon_type_defn"
+            ):
+                kind = refine_fsharp_type_kind(def_node)
+
             # Dart: a function is a ``function_signature`` whose BODY is a
             # sibling ``function_body`` node (members wrap the signature in
             # ``method_signature``). Two consequences the generic path can't
@@ -1331,6 +1374,15 @@ class ASTParser:
             end_line = def_node.end_point[0] + 1
             if export_type is not None:
                 end_line = export_type.range_node.end_point[0] + 1
+            # F#: the captured node is the binding's left-hand side, so its
+            # own span stops at the parameter list. Extend it over the body
+            # (and any return-type annotation between the two) or every call
+            # in the body is attributed to whatever encloses the binding.
+            if file_info.language == "fsharp" and node_type in (
+                "function_declaration_left",
+                "value_declaration_left",
+            ):
+                end_line = _fsharp_binding_end_line(def_node)
             if file_info.language == "dart" and node_type in (
                 "function_signature",
                 "getter_signature",
@@ -1473,6 +1525,12 @@ class ASTParser:
                         break
                     ancestor = ancestor.parent
 
+            # F#: no type node carries a ``name`` field -- the name hangs off
+            # a ``type_name`` child -- so the generic walk finds the ancestor
+            # and then reads nothing off it.
+            if parent_name is None and file_info.language == "fsharp":
+                parent_name = _fsharp_parent_name(def_node, src)
+
             # C/C++ qualified definitions: ``void Foo::method() { … }``
             # carries the class as the scope of a ``qualified_identifier``
             # parent of the name node. Without this resolution, every
@@ -1502,8 +1560,12 @@ class ASTParser:
             if node_type == "function_declarator" and parent_name is None:
                 continue
 
-            # Upgrade function → method when a parent class is detected
-            if parent_name and kind == "function":
+            # Upgrade function → method when a parent class is detected.
+            # F#: a nested module is a parent too (for id uniqueness), but it
+            # is not a type, so a `let` inside one stays a function.
+            if parent_name and kind == "function" and (
+                file_info.language != "fsharp" or _fsharp_parent_is_type(def_node)
+            ):
                 kind = "method"
 
             # Build signature
@@ -1704,6 +1766,40 @@ class ASTParser:
                             is_reexport=False,
                         )
                     )
+                continue
+
+            # F#: `open Foo.Bar` binds every public name in Foo.Bar, which is
+            # the wildcard sentinel this codebase already uses -- and which
+            # the call resolver reads to decide which imports a bare name may
+            # be looked up in (F# bare names are lexically scoped).
+            # `open type Foo.Bar.Baz` binds a TYPE's static members instead,
+            # so the module the file depends on is the path holding the type.
+            if file_info.language == "fsharp":
+                raw = _node_text(stmt_node, src).strip()
+                if raw in seen_raws:
+                    continue
+                seen_raws.add(raw)
+                module_path = _node_text(module_nodes[0], src).strip()
+                if not module_path:
+                    continue
+                names: list[str] = ["*"]
+                if any(child.type == "type" for child in stmt_node.children):
+                    head, _, type_name = module_path.rpartition(".")
+                    if head:
+                        module_path, names = head, [type_name]
+                    else:
+                        names = []
+                imports.append(
+                    Import(
+                        raw_statement=raw,
+                        module_path=module_path,
+                        imported_names=names,
+                        is_relative=False,
+                        resolved_file=None,
+                        bindings=[],
+                        is_reexport=False,
+                    )
+                )
                 continue
 
             raw = _node_text(stmt_node, src).strip()
@@ -1949,6 +2045,16 @@ class ASTParser:
             receiver_name = _node_text(receiver_nodes[0], src).strip() if receiver_nodes else None
             if receiver_name and file_info.language == "php":
                 receiver_name = _normalize_php_receiver(receiver_name)
+            # F#: a dotted static path (``Path.Combine(a, b)``) collapses into
+            # one identifier node in this grammar -- there is no dot node to
+            # capture a receiver from -- so the split happens on the text.
+            # After the builtin check above, so a name is filtered as written.
+            if file_info.language == "fsharp" and receiver_name is None and "." in target_name:
+                receiver_name, _, target_name = target_name.rpartition(".")
+                receiver_name = receiver_name.strip()
+                target_name = target_name.strip()
+                if not target_name:
+                    continue
             receiver_call = (
                 _call_receiver_from_node(receiver_call_nodes[0], src)
                 if receiver_call_nodes

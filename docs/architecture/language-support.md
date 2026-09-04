@@ -13,8 +13,8 @@ in that subpackage's dispatcher. No edits are needed to `graph.py`,
 `traverser.py`, or any analysis core file. `parser.py` holds a short per-language
 block for a handful of languages whose grammar shape the generic path cannot
 read (C++ qualified definitions, Dart mixins, Object Pascal out-of-line methods,
-[Elixir](#elixir)); each is a few lines calling into a helper, and a new language
-needs one only when it hits the same kind of wall.
+[Elixir](#elixir), [F#](#f)); each is a few lines calling into a helper, and a
+new language needs one only when it hits the same kind of wall.
 
 ---
 
@@ -32,7 +32,7 @@ needs one only when it hits the same kind of wall.
 - [Call resolution](#call-resolution) · [the strategy seam](#the-per-language-strategy-seam) · [resolution origins](#resolution-origins) · [receiver typing](#receiver-typing) · [inherited dispatch](#inherited-dispatch)
 - [The edge vocabulary](#the-edge-vocabulary)
 - [Multi-language files (the SFC pattern)](#multi-language-files-the-sfc-pattern)
-- [Per-language mechanics](#per-language-mechanics) · [Elixir](#elixir) · [GDScript / Godot](#gdscript--godot) · [VB.NET](#vbnet) · [QML](#qml) · [Flutter widget trees](#flutter-widget-trees)
+- [Per-language mechanics](#per-language-mechanics) · [Elixir](#elixir) · [F#](#f) · [GDScript / Godot](#gdscript--godot) · [VB.NET](#vbnet) · [QML](#qml) · [Flutter widget trees](#flutter-widget-trees)
 - [Optional language-specific passes](#optional-language-specific-passes)
 - [The three code-health dialect registries](#the-three-code-health-dialect-registries)
 - [Workspace contract extraction](#workspace-contract-extraction)
@@ -80,7 +80,7 @@ Extension/filename -> LanguageTag  (via LanguageRegistry)
           C/C++:  compile_commands.json include directories
           Dart:   package:/dart:/relative URIs via the pubspec name map +
                   library-name index (dotted part-of)
-          Lightweight tier (Clojure/Haskell/Lean 4/Erlang/F#):
+          Lightweight tier (Clojure/Haskell/Lean 4/Erlang):
                   regex-extracted imports vs a declared-module-name index
           dbt:    ref()/source() vs a per-project model-name index
           Other:  stem-map fallback (filename matching)
@@ -707,6 +707,48 @@ dedup-by-statement-text the generic path applies. No heritage is emitted: `use`
 and `@behaviour` are the nearest things Elixir has to inheritance and neither is
 one, and both already produce a module dependency through the import and
 type-reference captures.
+
+### F#
+
+F# has no field named on any of its type nodes and no shape shared between a
+type body and a member the way Elixir shares `call` across everything, so its
+per-language block is about extending and locating rather than reclassifying:
+
+- **A `let rec f ... and g ...` group is one grammar node for every clause**, so
+  `@symbol.def` sits on each clause's left-hand side and `parser.py` extends its
+  span forward to the next clause (or the file end), stepping over a return-type
+  annotation sitting between the two. The same left-hand side node also marks a
+  binding local to another binding's body, which the generic callable-ancestor
+  filter cannot see because it looks for an ancestor's *type*, never the
+  captured node's own nesting, so `_fsharp_binding_is_nested` walks that
+  ancestry directly.
+- **Parent detection reads a `type_name` child instead of a `name` field**, in
+  `_fsharp_parent_name`, and joins every enclosing nested module into a dotted
+  owner path: one file may hold two modules each declaring the same type with
+  the same member, and a symbol id is path plus parent plus name. A nested
+  module is a parent but not a type, so the generic function-to-method
+  promotion is gated on `_fsharp_parent_is_type` to keep a `let` inside a
+  nested module a function rather than a member.
+- **A dotted static call (`Path.Combine(a, b)`) is one identifier node**, with no
+  dot node to capture a receiver from, so the receiver/target split happens on
+  the joined text after the query fires.
+
+A bare name in F# is lexically scoped, so `fsharp` joins `elixir` in
+`_LEXICAL_BARE_NAME_LANGUAGES`: the resolver refuses the repo-wide-uniqueness
+tier for one and merges names only from `open`, which carries the wildcard
+sentinel because that is what `open` binds. `open type A.B.C` names a type, so
+its module dependency is recorded as `A.B`. An unqualified call target
+beginning with a capital is dropped: F# reserves an initial capital for union
+cases, types and constructors, which share the node shape of an ordinary
+application and would otherwise bind to any same-named function.
+
+`.fsi` signature files load a second grammar (`language_signature`) that a spec
+cannot select per-file, and the implementation grammar mis-parses a signature
+body's `val` bindings into ERROR recovery, so `.fsi` is routed to the regex
+import tier instead of a symbol tree built on invented nodes. Where a project
+splits one namespace across many single-file assemblies, most `open` targets
+are ambiguous and stay unresolved by design, which puts that repo's F#
+unused-export findings at the review tier rather than the asserted one.
 
 ### GDScript / Godot
 

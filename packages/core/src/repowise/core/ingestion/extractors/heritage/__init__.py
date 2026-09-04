@@ -24,6 +24,7 @@ from ..helpers import node_text
 from .cpp import _extract_cpp_heritage
 from .csharp import _extract_csharp_heritage
 from .dart import _extract_dart_heritage
+from .fsharp import _extract_fsharp_heritage
 from .gdscript import _extract_gdscript_heritage
 from .go import _extract_go_heritage
 from .java import _extract_java_heritage
@@ -66,6 +67,7 @@ HERITAGE_EXTRACTORS: dict[str, Callable[..., None]] = {
     "pascal": _extract_pascal_heritage,
     "gdscript": _extract_gdscript_heritage,
     "vbnet": _extract_vbnet_heritage,
+    "fsharp": _extract_fsharp_heritage,
 }
 
 

@@ -136,6 +136,55 @@ def refine_pascal_type_kind(decl_type_node: Node) -> str:
     return "class"
 
 
+def fsharp_type_name(simple_type_node: Node, src: str) -> str | None:
+    """The bare name of an F# ``simple_type``, qualifier dropped.
+
+    ``inherit System.Exception()`` names the same type as ``inherit
+    Exception()`` and F# writes the type name last, so the last segment of
+    the dotted path is the name the symbol index is keyed by. Shared by the
+    heritage extractor and the type-reference head walk, which ask the same
+    question of the same node.
+    """
+    head = simple_type_node
+    if head.type == "simple_type":
+        head = next(iter(head.named_children), None)
+        if head is None:
+            return None
+    if head.type == "long_identifier":
+        idents = [c for c in head.named_children if c.type == "identifier"]
+        if not idents:
+            return None
+        head = idents[-1]
+    if head.type != "identifier":
+        return None
+    return node_text(head, src).strip() or None
+
+
+def refine_fsharp_type_kind(anon_type_defn_node: Node) -> str:
+    """Tell an F# interface apart from a class inside ``anon_type_defn``.
+
+    The grammar gives classes, structs and interfaces the same node: an
+    interface is written ``type IFoo = abstract member Bar: ...`` with no
+    constructor and nothing but abstract members. Those two facts together
+    are what F# itself compiles to an interface, so both are required; a
+    class with one abstract member and a constructor stays a class.
+    """
+    members = [
+        node
+        for child in anon_type_defn_node.named_children
+        for node in ([child] if child.type == "member_defn" else child.named_children)
+        if node.type == "member_defn"
+    ]
+    if not members:
+        return "class"
+    if any(child.type == "primary_constr_args" for child in anon_type_defn_node.named_children):
+        return "class"
+    for member in members:
+        if not any(child.type == "abstract" for child in member.children):
+            return "class"
+    return "interface"
+
+
 def clean_string_literal(text: str) -> str:
     """Strip quote characters from a Python string literal."""
     text = text.strip()

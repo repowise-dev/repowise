@@ -678,11 +678,11 @@ class TestFSharpExtraction:
             "open type System.Math\n"
             "let x = 1\n"
         )
-        assert _modules(extract_fsharp_imports(src)) == [
-            "System",
-            "MyApp.Domain",
-            "System.Math",
-        ]
+        # `open type System.Math` names a TYPE, so the module the file
+        # depends on is System, already imported by the plain `open`.
+        imports = extract_fsharp_imports(src)
+        assert _modules(imports) == ["System", "MyApp.Domain"]
+        assert [i.imported_names for i in imports] == [["*"], ["*"]]
 
 
 class TestFSharpResolution:
