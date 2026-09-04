@@ -21,21 +21,16 @@ SPEC = LanguageSpec(
     tag="razor",
     display_name="Razor",
     # Razor's own using directives (``@using X``) are not projected yet, so
-    # no import edges are emitted from these files today, so the resolver
+    # no import edges are emitted from these files today and the resolver
     # tier stays at the honest default rather than claiming C#'s full
     # resolution for edges that never exist.
     import_support="none",
     extensions=frozenset({".razor", ".cshtml"}),
     shares_grammar_with="csharp",
     scm_file="csharp.scm",
-    heritage_node_types=frozenset(
-        {
-            "class_declaration",
-            "interface_declaration",
-            "struct_declaration",
-            "record_declaration",
-        }
-    ),
+    # ``@inherits`` is blanked and the projected C# holds no type
+    # declarations, so there is nothing for a heritage extractor to read.
+    heritage_node_types=frozenset(),
     manifest_files=_CSHARP.manifest_files,
     # None of these declare a package; the .csproj does. Copied from the
     # csharp spec so a solution dir holding only MSBuild/NuGet settings is

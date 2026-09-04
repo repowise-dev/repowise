@@ -79,17 +79,19 @@ meaningless for a script invoked by name. See
 |-------|:----:|:----:|:-------:|:-----------:|:----------:|
 | File discovery & git history | ✅ | ✅ | ✅ | ✅ | ✅ |
 | AST symbol extraction | ✅ | ✅ | ✅ | — | — |
-| Import resolution | ✅ | ✅ | ✅ | file-level | — |
+| Import resolution | ✅ | ✅ | Luau | file-level | — |
 | Call graph edges | ✅ | ✅ | ✅ | — | — |
 | Heritage (extends / implements) | ✅ | ✅ | — | — | — |
 | Named bindings | ✅ | ✅ | — | — | — |
-| Code-health markers | ✅ | Dart, Pascal | — | — | — |
+| Code-health markers | ✅ | Dart, Pascal | Razor | — | — |
 | Dead code detection | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Semantic search & wiki pages | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 Scala's import resolution is partial: it shares the JVM index with Java and
 Kotlin and falls back to parsing SBT / Mill build files. Every other Full and
-Good language resolves imports outright.
+Good language resolves imports outright. On the Partial rung the two languages
+split: Luau resolves `require()` and has no health markers, Razor has C#
+health markers and no import edges yet.
 
 ---
 

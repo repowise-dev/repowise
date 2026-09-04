@@ -383,6 +383,65 @@ _HTML_COMMENT_OPEN = b"<!--"
 _HTML_COMMENT_CLOSE = b"-->"
 
 
+def _csharp_literal_end(source: bytes, index: int) -> int | None:
+    """Index just past the C# literal or comment starting at ``index``.
+
+    The brace-depth walk must not count braces inside these: a ``{`` in a
+    string would leave the block unclosed or swallow the markup after it.
+    """
+    two = source[index : index + 2]
+    if two == b"//":
+        newline = source.find(b"\n", index + 2)
+        return len(source) if newline < 0 else newline
+    if two == b"/*":
+        close = source.find(b"*/", index + 2)
+        return len(source) if close < 0 else close + 2
+
+    cursor = index
+    verbatim = False
+    # ``$`` and ``@`` may appear in either order. An interpolated literal's
+    # braces are balanced by construction, so skipping the whole literal is
+    # right for it too.
+    while source[cursor : cursor + 1] in (b"@", b"$"):
+        verbatim = verbatim or source[cursor : cursor + 1] == b"@"
+        cursor += 1
+    quote = source[cursor : cursor + 1]
+
+    if quote == b'"':
+        cursor += 1
+        while cursor < len(source):
+            byte = source[cursor : cursor + 1]
+            if verbatim:
+                if byte == b'"':
+                    if source[cursor + 1 : cursor + 2] == b'"':
+                        cursor += 2
+                        continue
+                    return cursor + 1
+                cursor += 1
+                continue
+            if byte == b"\\":
+                cursor += 2
+                continue
+            if byte == b'"':
+                return cursor + 1
+            cursor += 1
+        return len(source)
+
+    if quote == b"'" and cursor == index:
+        # A char literal is at most a few bytes (``'\u0041'``); an apostrophe
+        # in markup inside ``@{ }`` must not swallow the rest of the block.
+        probe = cursor + 1
+        while probe < len(source) and probe <= cursor + 8:
+            byte = source[probe : probe + 1]
+            if byte == b"\\":
+                probe += 2
+                continue
+            if byte == b"'":
+                return probe + 1
+            probe += 1
+    return None
+
+
 def _razor_byte_scan(source: bytes, state: dict) -> None:
     """Locate C# regions and component tags in ``.razor`` / ``.cshtml`` bytes.
 
@@ -465,6 +524,11 @@ def _razor_byte_scan(source: bytes, state: dict) -> None:
         cursor = open_brace
         while cursor < len(source):
             byte = source[cursor : cursor + 1]
+            if byte in (b'"', b"'", b"/", b"@", b"$"):
+                skip = _csharp_literal_end(source, cursor)
+                if skip is not None:
+                    cursor = skip
+                    continue
             if byte == b"{":
                 depth += 1
             elif byte == b"}":
@@ -510,11 +574,15 @@ def _razor_byte_scan(source: bytes, state: dict) -> None:
         name_start = lt + 1
         name_end = name_start
         while name_end < len(source) and (
-            source[name_end : name_end + 1].isalpha() or source[name_end : name_end + 1] == b"_"
+            source[name_end : name_end + 1].isalnum()
+            or source[name_end : name_end + 1] in (b"_", b".")
         ):
             name_end += 1
         if name_end > name_start:
-            name = _razor_component_name(source[name_start:name_end].decode("utf-8", errors="replace"))
+            # A namespace-qualified tag (``<Shared.Grid />``) instantiates the
+            # last dotted segment.
+            raw = source[name_start:name_end].decode("utf-8", errors="replace")
+            name = _razor_component_name(raw.rsplit(".", 1)[-1])
             if name:
                 line = source.count(b"\n", 0, lt) + 1
                 state["tags"].append((name, line))

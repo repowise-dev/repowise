@@ -438,6 +438,36 @@ class TestRazorBlanking:
         assert "Order" not in names
         assert "List" not in names
 
+    def test_brace_inside_a_string_does_not_break_matching(self) -> None:
+        src = b'@code { var s = "{"; }\n<Live />\n'
+        result = scan("razor", src)
+        assert len(result.js_spans) == 1
+        assert dict(result.component_tags) == {"Live": 2}
+
+    def test_brace_inside_a_verbatim_string_does_not_break_matching(self) -> None:
+        src = b'@code { var s = @"{"; }\n<Live />\n'
+        result = scan("razor", src)
+        assert len(result.js_spans) == 1
+        assert dict(result.component_tags) == {"Live": 2}
+
+    def test_brace_inside_a_char_literal_does_not_break_matching(self) -> None:
+        src = b"@code { var c = '{'; }\n<Live />\n"
+        result = scan("razor", src)
+        assert len(result.js_spans) == 1
+        assert dict(result.component_tags) == {"Live": 2}
+
+    def test_brace_inside_a_line_comment_does_not_break_matching(self) -> None:
+        src = b"@code {\n    // }\n    void Go() { }\n}\n<Live />\n"
+        result = scan("razor", src)
+        assert len(result.js_spans) == 1
+        assert dict(result.component_tags) == {"Live": 5}
+
+    def test_brace_inside_a_block_comment_does_not_break_matching(self) -> None:
+        src = b"@code {\n    /* { */\n    void Go() { }\n}\n<Live />\n"
+        result = scan("razor", src)
+        assert len(result.js_spans) == 1
+        assert dict(result.component_tags) == {"Live": 5}
+
     def test_adjacent_blocks_are_fenced(self) -> None:
         src = b"@{ var a = 1; }\n@{ var b = 2; }\n"
         prepared = prepare_source("razor", src)
@@ -466,6 +496,21 @@ class TestRazorComponentTags:
     def test_tag_line_numbers_point_at_the_original_file(self) -> None:
         tags = dict(scan("razor", _RAZOR_COMPONENT).component_tags)
         assert tags["RadzenDataGrid"] == 8
+
+    def test_namespace_qualified_tag_records_the_last_segment(self) -> None:
+        names = {name for name, _ in scan("razor", b"<Foo.Bar />\n").component_tags}
+        assert names == {"Bar"}
+
+    def test_digits_are_part_of_a_component_name(self) -> None:
+        names = {name for name, _ in scan("razor", b"<Grid2 />\n").component_tags}
+        assert names == {"Grid2"}
+
+    def test_lowercase_namespace_with_a_pascal_case_component_is_a_tag(self) -> None:
+        names = {name for name, _ in scan("razor", b"<foo.Bar />\n").component_tags}
+        assert names == {"Bar"}
+
+    def test_lowercase_last_segment_is_not_a_component(self) -> None:
+        assert scan("razor", b"<Foo.bar />\n").component_tags == ()
 
     def test_comparisons_inside_code_are_not_tags(self) -> None:
         src = b"@code { if (a < B) { Go(); } }\n"
