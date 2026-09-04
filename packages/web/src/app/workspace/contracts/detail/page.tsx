@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { ApiClientError } from "@/lib/api/client";
 import { getWorkspace, getWorkspaceContractDetail } from "@/lib/api/workspace";
-import { ContractBody, headingFor } from "./contract-body";
+import { contractHeading } from "@repowise-dev/ui/workspace/contract-facts";
+import { ContractBody } from "./contract-body";
 
 export const revalidate = 30;
 
@@ -15,7 +16,7 @@ export async function generateMetadata({ searchParams }: Props): Promise<Metadat
   if (!repo || !file || !id) return { title: "Contract" };
   try {
     const detail = await getWorkspaceContractDetail({ repo, file, id });
-    return { title: `${headingFor(detail.contract)} — Contract` };
+    return { title: `${contractHeading(detail.contract)} — Contract` };
   } catch {
     return { title: "Contract" };
   }
