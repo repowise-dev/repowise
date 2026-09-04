@@ -83,9 +83,18 @@ class RepoIndex:
     dialect may call one from the worker thread it runs in.
     """
 
-    def __init__(self, alias: str, repo_path: Path, session: AsyncSession, engine: Any) -> None:
+    def __init__(
+        self,
+        alias: str,
+        repo_path: Path,
+        session: AsyncSession,
+        engine: Any,
+        *,
+        repo_id: str = "",
+    ) -> None:
         self.alias = alias
         self.repo_path = repo_path
+        self.repo_id = repo_id
         self._session = session
         self._engine = engine
         self._by_file: dict[str, list[IndexedSymbol]] = {}
@@ -164,6 +173,11 @@ class RepoIndex:
             )
 
     # -- Public API --------------------------------------------------------
+
+    @property
+    def session(self) -> AsyncSession:
+        """The connection the index holds; reachability queries run on it too."""
+        return self._session
 
     def symbols_for_file(self, rel_path: str) -> list[IndexedSymbol]:
         """Symbols declared in *rel_path* (POSIX, repo-relative), outermost first."""
@@ -292,7 +306,7 @@ async def open_repo_index(alias: str, repo_path: Path) -> RepoIndex | None:
             ).scalar_one_or_none()
         if repo is None:
             raise LookupError(f"No repository row in {repo_path}")
-        index = RepoIndex(alias, repo_path, session, engine)
+        index = RepoIndex(alias, repo_path, session, engine, repo_id=repo.id)
         await index._load(repo.id)
         ok = True
     finally:

@@ -148,6 +148,7 @@ over data already in the database.
 from __future__ import annotations
 
 import json
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias
 
@@ -346,8 +347,14 @@ async def tests_reaching_by_tier(
     *,
     call_depth: int = DEFAULT_CALL_DEPTH,
     import_depth: int = DEFAULT_MAX_DEPTH,
+    symbol_seeds: Mapping[str, Collection[str]] | None = None,
 ) -> dict[str, ReachedBy]:
     """:func:`tests_reaching`, also saying which tier answered each target.
+
+    *symbol_seeds* narrows the call walk for the targets it names: the walk
+    enters at exactly those symbol ids rather than at every symbol the file
+    declares. Targets it does not name keep the ``defines`` lookup, and the
+    import tier stays file-level either way.
 
     The call walk runs first; the import walk is then seeded with only the
     targets it left unanswered, so the weaker tier never speaks over the
@@ -371,7 +378,9 @@ async def tests_reaching_by_tier(
 
     out: dict[str, ReachedBy] = {}
     if call_depth >= 1:
-        found = await _call_reaching(session, repo_id, seeds, test_files, call_depth)
+        found = await _call_reaching(
+            session, repo_id, seeds, test_files, call_depth, symbol_seeds=symbol_seeds
+        )
         for seed, tests in found.items():
             ordered = tuple(sorted(tests))
             out[seed] = ReachedBy(
@@ -395,6 +404,8 @@ async def _call_reaching(
     seeds: list[str],
     test_files: set[str],
     max_depth: int,
+    *,
+    symbol_seeds: Mapping[str, Collection[str]] | None = None,
 ) -> dict[str, set[str]]:
     """Tests that can execute into each seed file, walking call edges backwards.
 
@@ -402,10 +413,18 @@ async def _call_reaching(
     join symbols, so the first query resolves each seed to the symbols it
     declares, and the walk carries the seed from there.
     """
-    declared = await _edges_from(session, repo_id, seeds, ["defines"])
     origins: dict[str, set[str]] = {}
-    for seed, symbol in declared:
-        origins.setdefault(symbol, set()).add(seed)
+    # A caller that knows which symbol in the file it cares about enters there,
+    # so a test reaching an unrelated symbol in the same file does not count.
+    seeded = {seed: symbol_seeds[seed] for seed in seeds if symbol_seeds and seed in symbol_seeds}
+    for seed, symbol_ids in seeded.items():
+        for symbol in symbol_ids:
+            origins.setdefault(symbol, set()).add(seed)
+    unseeded = [seed for seed in seeds if seed not in seeded]
+    if unseeded:
+        declared = await _edges_from(session, repo_id, unseeded, ["defines"])
+        for seed, symbol in declared:
+            origins.setdefault(symbol, set()).add(seed)
     if not origins:
         return {}
 

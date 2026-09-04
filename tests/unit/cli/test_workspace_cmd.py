@@ -848,3 +848,118 @@ class TestWorkspaceCheckBreaking:
             ),
             root,
         )
+
+
+# ---------------------------------------------------------------------------
+# workspace impacted-tests
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceImpactedTests:
+    """The command's own reporting, over a canned result.
+
+    The join itself is covered in tests/unit/workspace/test_test_impact.py;
+    what matters here is that a link the join could not follow reaches the
+    reader instead of vanishing.
+    """
+
+    def _canned(self):
+        from repowise.core.workspace.test_impact import (
+            UnresolvedLink,
+            WorkspaceTestImpactResult,
+            WorkspaceTestRecommendation,
+        )
+
+        rec = WorkspaceTestRecommendation(
+            test_id="tests/api.test.ts::it_getUser",
+            test_file="tests/api.test.ts",
+            consumer_repo="frontend",
+            consumer_file="src/api.ts",
+            consumer_symbol_id="src/api.ts::getUser",
+            provider_repo="backend",
+            provider_file="app/routers/users.py",
+            contract_id="http::GET::/users",
+            contract_type="http",
+            basis="inferred",
+            via="call-graph",
+            confidence=0.9,
+            source_files=["app/routers/users.py"],
+            evidence=[{"basis": "inferred", "via": "call-graph"}],
+        )
+        unresolved = UnresolvedLink(
+            consumer_repo="frontend",
+            consumer_file="src/legacy.ts",
+            consumer_symbol_id=None,
+            provider_repo="backend",
+            provider_file="app/routers/users.py",
+            contract_id="http::POST::/users",
+            contract_type="http",
+            reason="unbound",
+            detail=None,
+        )
+        return WorkspaceTestImpactResult(
+            workspace=True,
+            recommendations=[rec],
+            recommendations_total=1,
+            recommendations_emitted=1,
+            recommendations_truncated=False,
+            recommendations_omitted=0,
+            recommendations_by_basis={"inferred": 1},
+            recommendations_by_repo={"backend": 1},
+            recommendations_by_consumer_repo={"frontend": 1},
+            unresolved=[unresolved],
+            files_analyzed=[],
+            summary={"states": {"measured": 0, "inferred": 1, "none": 0, "unresolved": 1}},
+        )
+
+    @pytest.fixture
+    def workspace(self, tmp_path, monkeypatch):
+        from repowise.core.workspace import test_impact
+
+        _make_git_repo(tmp_path / "backend")
+        _make_git_repo(tmp_path / "frontend")
+        _write_workspace_config(
+            tmp_path,
+            repos=[
+                {"path": "backend", "alias": "backend"},
+                {"path": "frontend", "alias": "frontend"},
+            ],
+        )
+        canned = self._canned()
+
+        async def _fake(root, changed, **options):
+            return canned
+
+        monkeypatch.setattr(test_impact, "workspace_test_impact_from_root", _fake)
+        return tmp_path
+
+    def test_a_link_that_could_not_be_followed_is_printed(self, runner, workspace):
+        result = runner.invoke(
+            cli,
+            [
+                "workspace",
+                "impacted-tests",
+                "backend:app/routers/users.py",
+                "--path",
+                str(workspace),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Could not determine" in result.output
+        assert "contract never bound to a symbol" in result.output
+
+    def test_list_format_prints_the_test_file(self, runner, workspace):
+        result = runner.invoke(
+            cli,
+            [
+                "workspace",
+                "impacted-tests",
+                "backend:app/routers/users.py",
+                "--path",
+                str(workspace),
+                "--format",
+                "list",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "frontend:tests/api.test.ts" in result.output

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import click
 from rich.table import Table
@@ -1439,6 +1439,44 @@ def workspace_metrics(path: str | None, fmt: str, as_json: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
+_UNRESOLVED_REASONS = {
+    "no_index": "consumer has no index",
+    "unbound": "contract never bound to a symbol",
+    "symbol_missing": "bound symbol is not in the index",
+}
+
+_EMPTY_REASONS = {
+    "no_contract_store": "there is no contract map yet; run 'repowise update --workspace'",
+    "no_matching_links": "no contract link connects the changed files to a consumer",
+    "no_changed_files": "no changed files were given",
+}
+
+
+def _unresolved_reason_text(reason: str, detail: str | None) -> str:
+    """Plain words for why a contract link could not be followed."""
+    if reason == "lookup_failed":
+        return f"lookup failed ({detail or 'unknown'})"
+    return _UNRESOLVED_REASONS.get(reason, reason)
+
+
+def _empty_explanation(result: object) -> str:
+    """Say which state produced an empty answer, never just that it is empty."""
+    summary = getattr(result, "summary", {}) or {}
+    reason = summary.get("reason")
+    if reason:
+        return f"No tests found: {_EMPTY_REASONS.get(reason, reason)}."
+    parts = []
+    reached_nothing = (summary.get("states") or {}).get("none", 0)
+    if reached_nothing:
+        parts.append(f"{reached_nothing} consumer file(s) reached by nothing")
+    unresolved = len(getattr(result, "unresolved", []) or [])
+    if unresolved:
+        parts.append(f"{unresolved} link(s) could not be determined")
+    if not parts:
+        return "No tests found: no consumer call site was analysed."
+    return f"No tests found: {', '.join(parts)}."
+
+
 @workspace_group.command("impacted-tests")
 @click.argument("changed_files", required=True, nargs=-1)
 @click.option(
@@ -1481,7 +1519,7 @@ def workspace_metrics(path: str | None, fmt: str, as_json: bool) -> None:
     multiple=True,
     help="Limit analysis to these consumer repo aliases. Repeatable.",
 )
-@format_option()
+@format_option(choices=("table", "json", "list"))
 @json_option()
 def workspace_impacted_tests(
     changed_files: tuple[str, ...],
@@ -1531,13 +1569,14 @@ def workspace_impacted_tests(
     start = resolve_repo_path(workspace_path)
     ws_root, _ = _require_workspace(start)
 
-    from repowise.core.analysis.workspace_test_impact import (
-        analyze_workspace_test_impact,
+    from repowise.core.workspace.test_impact import (
+        MAX_TESTS_PER_TARGET,
+        workspace_test_impact_from_root,
         workspace_test_impact_to_dict,
     )
 
     result = run_async(
-        analyze_workspace_test_impact(
+        workspace_test_impact_from_root(
             ws_root,
             parsed_changed,
             call_depth=call_depth,
@@ -1561,11 +1600,12 @@ def workspace_impacted_tests(
             if key not in seen:
                 seen.add(key)
                 click.echo(key)
-        return
-
-    # Table format
-    if result.recommendations_total == 0:
-        console.print("[yellow]No test recommendations found for the given changes.[/yellow]")
+        if result.unresolved:
+            click.echo(
+                f"{len(result.unresolved)} contract link(s) could not be determined; "
+                "run with --format table to see why.",
+                err=True,
+            )
         return
 
     # Group by consumer repo
@@ -1574,8 +1614,7 @@ def workspace_impacted_tests(
         by_consumer.setdefault(rec.consumer_repo, []).append(rec)
 
     console.print(f"[bold]Workspace test impact[/bold] for {len(parsed_changed)} changed file(s):")
-    parsed_changed_typed = cast(list[dict[str, str]], parsed_changed)
-    for item in parsed_changed_typed:
+    for item in parsed_changed:
         console.print(f"  [dim]{item['repo']}:{item['path']}[/dim]")
 
     for consumer_repo, recs in sorted(by_consumer.items()):
@@ -1600,13 +1639,37 @@ def workspace_impacted_tests(
             )
         console.print(table)
 
-    # Summary
+    if result.unresolved:
+        unresolved_table = Table(title="Could not determine")
+        unresolved_table.add_column("Consumer", style="cyan")
+        unresolved_table.add_column("File", style="dim")
+        unresolved_table.add_column("Contract", style="dim")
+        unresolved_table.add_column("Reason", style="yellow")
+        for link in result.unresolved:
+            unresolved_table.add_row(
+                link.consumer_repo,
+                link.consumer_file,
+                link.contract_id,
+                _unresolved_reason_text(link.reason, link.detail),
+            )
+        console.print(unresolved_table)
+
+    if result.recommendations_emitted == 0:
+        console.print(f"[yellow]{_empty_explanation(result)}[/yellow]")
+        return
+
     by_basis = result.recommendations_by_basis
     console.print(
-        f"\n[bold]{result.recommendations_total}[/bold] test recommendation(s) across "
+        f"\n[bold]{result.recommendations_emitted}[/bold] test recommendation(s) across "
         f"[bold]{len(by_consumer)}[/bold] consumer repo(s):"
     )
     if by_basis.get("measured", 0):
         console.print(f"  [green]{by_basis['measured']}[/green] from measured coverage")
     if by_basis.get("inferred", 0):
         console.print(f"  [yellow]{by_basis['inferred']}[/yellow] inferred from call/import graph")
+    if result.recommendations_truncated:
+        console.print(
+            f"  [dim]{result.recommendations_omitted} more omitted "
+            f"(cap {MAX_TESTS_PER_TARGET} per consumer and provider pair); "
+            f"use --format json for counts.[/dim]"
+        )

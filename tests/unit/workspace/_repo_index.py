@@ -11,7 +11,9 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from repowise.core.persistence.models import GraphEdge, Repository, WikiSymbol
+from repowise.core.analysis.health.coverage.model import TestCoverage
+from repowise.core.persistence.crud.analysis.coverage_map import save_test_coverage
+from repowise.core.persistence.models import GraphEdge, GraphNode, Repository, WikiSymbol
 from repowise.core.workspace.registry import open_repo_db
 from repowise.core.workspace.repo_index import RepoIndex, open_repo_index
 
@@ -28,6 +30,9 @@ async def make_repo_index(
     *,
     alias: str = "backend",
     external_edges: Sequence[tuple[str, str, list[str]]] = (),
+    graph_nodes: Sequence[tuple[str, bool]] = (),
+    graph_edges: Sequence[tuple[str, str, str]] = (),
+    coverage: Sequence[tuple[str, str, str]] = (),
 ) -> RepoIndex:
     """Persist *symbols_by_file* to ``repo``'s wiki.db and open it.
 
@@ -35,6 +40,12 @@ async def make_repo_index(
     exactly as :func:`repowise.core.persistence.crud.external_systems` does.
     *external_edges* are ``(source_file, target_node_id, imported_names)``;
     ``imported_names`` is written verbatim so a malformed payload can be tested.
+
+    The reachability substrate is optional: *graph_nodes* are
+    ``(node_id, is_test)`` file nodes, *graph_edges* are
+    ``(source, target, edge_type)`` rows, and *coverage* are
+    ``(test_id, test_file, source_file)`` triples written through
+    :func:`save_test_coverage` so a measured row exists.
     """
     (repo / ".repowise").mkdir(parents=True, exist_ok=True)
     engine, session_factory = await open_repo_db(repo)
@@ -71,6 +82,39 @@ async def make_repo_index(
                     edge_type="imports",
                     imported_names_json=json.dumps(names),
                 )
+            )
+        for node_id, is_test in graph_nodes:
+            session.add(
+                GraphNode(
+                    repository_id=_REPO_ID,
+                    node_id=node_id,
+                    node_type="file",
+                    is_test=is_test,
+                )
+            )
+        for source, target, edge_type in graph_edges:
+            session.add(
+                GraphEdge(
+                    repository_id=_REPO_ID,
+                    source_node_id=source,
+                    target_node_id=target,
+                    edge_type=edge_type,
+                )
+            )
+        if coverage:
+            await save_test_coverage(
+                session,
+                _REPO_ID,
+                [
+                    TestCoverage(
+                        test_id=test_id,
+                        file_path=source_file,
+                        covered_lines=[1],
+                        test_file=test_file,
+                    )
+                    for test_id, test_file, source_file in coverage
+                ],
+                source_format="lcov",
             )
         await session.commit()
     await engine.dispose()

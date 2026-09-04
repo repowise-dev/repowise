@@ -198,6 +198,16 @@ repowise workspace metrics                # human-readable summary
 repowise workspace metrics --json         # raw metrics JSON
 ```
 
+### `repowise workspace impacted-tests <repo:path>...`
+
+Given one or more changed provider files, list the tests in consumer repos worth running. See [Cross-Repo Test Impact](#cross-repo-test-impact).
+
+```bash
+repowise workspace impacted-tests backend:app/routers/users.py
+repowise workspace impacted-tests backend:app/routers/users.py --format list | xargs npx vitest run
+repowise workspace impacted-tests backend:app/routers/users.py --format json
+```
+
 ---
 
 ## Cross-Repo Intelligence
@@ -399,6 +409,29 @@ Use it three ways:
 - **REST**, `GET /api/workspace/breaking-changes` returns the report from the most recent update (filterable by `repo` or `severity`). Each change carries its provider, detail, and impacted consumers with both code sides.
 - **MCP**, the `get_risk` PR-mode directive gains a `breaking_changes` block listing the provider contracts that changed incompatibly in the diff's repo and the consumers they endanger, across repos.
 - **System Map**, toggle **Breaking changes** above the map: changed providers are badged with their breaking count, the consumers they endanger are badged *at risk*, and the seams between them are highlighted (additive overlay, the map stays whole). A side panel lists each change with both the provider and consumer files.
+
+---
+
+## Cross-Repo Test Impact
+
+Where the breaking-change guard answers *did this change break a consumer*, test impact answers the question you ask before you push: **I changed this provider file, which tests in the other repos should I run?** It starts from the matched contract links, so the answer is scoped to the consumers that actually call the changed code, and then walks each consumer's own index to find the tests that exercise the call site.
+
+```bash
+repowise workspace impacted-tests backend:app/routers/users.py
+```
+
+Three output formats: `table` (the default, grouped by consumer repo), `json` (the full result, including the counts below), and `list` (one `repo:test-file` per line, for piping into a test runner).
+
+Every consumer call site the walk considers ends in one of four states, and the command names the one it landed on:
+
+- **measured**, a coverage map ingested from that repo says the test actually ran the consumer code. The strongest evidence, and it only exists where coverage has been ingested.
+- **inferred**, no coverage, but the consumer's call graph or import graph reaches the call site from a test. The call graph is entered at the *symbol* the contract bound to, not the file, so a test that reaches an unrelated function in the same file is not recommended.
+- **none**, the consumer was analyzed and nothing reaches the call site. A real answer, not a failure: that code has no test guarding it.
+- **unresolved**, the join could not determine an answer. Four causes, each reported by name: the consumer repo has no index, the contract never bound to a symbol, the bound symbol is no longer in the index, or the lookup itself failed.
+
+An empty answer always says which of these produced it, so "no tests" is never ambiguous between "nothing guards this" and "we could not look". A `Could not determine` table lists the unresolved links with their reason; under `--format list` the count goes to stderr so the piped list stays clean.
+
+Per-consumer results are capped so one widely-called helper cannot flood the list; when the cap bites, the command prints how many it dropped and `--format json` carries the exact counts.
 
 ---
 
