@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from repowise.cli.helpers import console, run_async
+from repowise.core.pipeline import PhaseTimings, timed
 
 
 def _build_update_vector_store(repo_path: Any, cfg: dict) -> Any | None:
@@ -75,6 +76,7 @@ def _rebuild_graph_and_git(
     include_submodules: bool = False,
     include_nested_repos: bool = False,
     idle_decay_sink: dict[str, dict] | None = None,
+    timings: PhaseTimings | None = None,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
     """Re-traverse + parse the repo, rebuild the graph (+ framework edges), and
     re-index git metadata for the changed files.
@@ -112,6 +114,7 @@ def _rebuild_graph_and_git(
             include_nested_repos=include_nested_repos,
             idle_decay_sink=idle_decay_sink,
             log=console.print,
+            timings=timings,
         )
     )
 
@@ -191,6 +194,7 @@ def _run_partial_analysis(
     stored_git_meta: dict[str, dict] | None = None,
     stored_performance_callers: set[str] | None = None,
     repo_function_mod_p80: int | None = None,
+    timings: PhaseTimings | None = None,
 ) -> tuple[Any, Any]:
     """Run partial code-health + repo-wide dead-code analysis.
 
@@ -205,6 +209,9 @@ def _run_partial_analysis(
         run_partial_analysis,
     )
 
+    # Same row as the caller's stored reads: the table accumulates repeats.
+    with timed(timings, "analysis.stored_reads"):
+        coverage_map = run_async(load_stored_coverage_map(repo_path, log=console.print))
     return run_partial_analysis(
         repo_path,
         graph_builder,
@@ -215,6 +222,7 @@ def _run_partial_analysis(
         stored_git_meta=stored_git_meta,
         stored_performance_callers=stored_performance_callers,
         repo_function_mod_p80=repo_function_mod_p80,
-        coverage_map=run_async(load_stored_coverage_map(repo_path, log=console.print)),
+        coverage_map=coverage_map,
         log=console.print,
+        timings=timings,
     )
