@@ -331,6 +331,7 @@ async def rebuild_graph_and_git(
             co_change_sink=co_change_full,
             idle_decay_sink=idle_decay_sink,
             on_warning=log,
+            timings=timings,
         )
         git_meta_map = {m["file_path"]: m for m in updated_meta}
         label_co_change_structure(graph_builder, git_meta_map)
@@ -703,6 +704,7 @@ def run_partial_analysis(
                 _analyzer_config,
                 changed_files=_health_scope,
                 repo_function_mod_p80=repo_function_mod_p80,
+                timings=timings,
             )
             # The closure exists only to refresh interprocedural performance.
             # Preserve the historical changed-file scope for every other
@@ -1054,7 +1056,9 @@ async def persist_partial_health(session: Any, repo_id: str, report: Any) -> Non
     await snapshot_health_from_store(session, repo_id)
 
 
-async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any) -> None:
+async def persist_incremental_commits(
+    session: Any, repo_id: str, repo_path: Any, *, timings: PhaseTimings | None = None
+) -> None:
     """Capture + upsert ``git_commits`` rows for commits new since the last index.
 
     Foundation 1 only populated the per-commit table on the full orchestrator
@@ -1092,14 +1096,17 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
 
         dt = newest if newest.tzinfo is not None else newest.replace(tzinfo=UTC)
         since_ts = int(dt.timestamp())
-    rows = await asyncio.to_thread(indexer.capture_new_commit_rows, since_ts=since_ts)
-    if rows:
-        await upsert_git_commits_bulk(session, repo_id, rows)
+    with timed(timings, "persist.commits.capture"):
+        rows = await asyncio.to_thread(indexer.capture_new_commit_rows, since_ts=since_ts)
+        if rows:
+            await upsert_git_commits_bulk(session, repo_id, rows)
 
-    await reconcile_commit_experience(session, repo_id, indexer)
+    with timed(timings, "persist.commits.experience"):
+        await reconcile_commit_experience(session, repo_id, indexer)
     # Fills the commit-offset column on indexes written before it existed, so a
     # new capture never needs a re-index to become useful.
-    await reconcile_commit_offsets(session, repo_id, indexer)
+    with timed(timings, "persist.commits.offsets"):
+        await reconcile_commit_offsets(session, repo_id, indexer)
 
     # Refresh the repo-level whole-history totals so age / commit / contributor
     # counts keep growing between full re-indexes (#730). Cheap git calls, and
@@ -1108,7 +1115,8 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
     # was stored last time lets it add only the range since, and it re-proves
     # that range is safe to add before doing so.
     prior = _churn_prior(await get_repository(session, repo_id))
-    totals = await asyncio.to_thread(indexer.capture_repo_totals, prior)
+    with timed(timings, "persist.commits.totals"):
+        totals = await asyncio.to_thread(indexer.capture_repo_totals, prior)
     await update_repo_git_totals(
         session,
         repo_id,
@@ -1122,7 +1130,8 @@ async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any
         churn_anchor_sha=totals.churn_anchor_sha,
     )
 
-    await persist_incremental_fix_events(session, repo_id, indexer)
+    with timed(timings, "persist.commits.fix_events"):
+        await persist_incremental_fix_events(session, repo_id, indexer)
 
 
 def _churn_prior(repo_row: Any) -> Any:
@@ -1589,7 +1598,9 @@ async def persist_incremental_index(
 
                 try:
                     with timed(timings, "persist.commits"):
-                        await persist_incremental_commits(session, repo_id, repo_path)
+                        await persist_incremental_commits(
+                            session, repo_id, repo_path, timings=timings
+                        )
                 except Exception as exc:
                     _skip("Commit capture", exc)
 

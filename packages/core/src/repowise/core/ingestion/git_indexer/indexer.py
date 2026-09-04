@@ -381,6 +381,7 @@ class GitIndexer:
         co_change_sink: dict[str, list[dict]] | None = None,
         idle_decay_sink: dict[str, dict] | None = None,
         on_warning: Callable[[str], None] | None = None,
+        timings: Any | None = None,
     ) -> list[dict]:
         """Incremental update: re-index only changed files.
 
@@ -413,7 +414,12 @@ class GitIndexer:
         recomputes just those fields off the walks already loaded here; the
         persist path upserts them field-by-field so ownership / age / authorship
         (correct only from the full init walk) are left intact.
+
+        ``timings`` is the run's phase table; each walk below records a
+        ``rebuild.git.*`` row so a slow git step names itself.
         """
+        from repowise.core.pipeline.phase_timing import timed
+
         # The same allowlist the full index applies to the tracked-file set.
         # Without it an update wrote rows for a changed workflow file, and the
         # idle refresh minted rows for every tracked config and markup file,
@@ -454,12 +460,13 @@ class GitIndexer:
             # refresh is due, so idle files carry their own precomputed commits.
             # The git subprocess is identical either way — only the in-memory
             # bucketing set widens.
-            commit_index = load_commit_index(
-                repo,
-                self.commit_limit,
-                set(all_files) if refresh_idle else set(changed_file_paths),
-                provenance_classifier=prov_clf,
-            )
+            with timed(timings, "rebuild.git.commit_index"):
+                commit_index = load_commit_index(
+                    repo,
+                    self.commit_limit,
+                    set(all_files) if refresh_idle else set(changed_file_paths),
+                    provenance_classifier=prov_clf,
+                )
         as_of_ts = self._resolve_as_of_ts(repo, commit_index)
         get_thread_repo, close_thread_repos = self._thread_repo_pool()
 
@@ -498,7 +505,8 @@ class GitIndexer:
 
         tasks = [index_one(fp) for fp in changed_file_paths]
         try:
-            results_raw = await asyncio.gather(*tasks, return_exceptions=True)
+            with timed(timings, "rebuild.git.changed_files"):
+                results_raw = await asyncio.gather(*tasks, return_exceptions=True)
         finally:
             close_thread_repos()
 
@@ -521,9 +529,10 @@ class GitIndexer:
         # too: the walk is one subprocess regardless, and an idle file whose
         # only fix aged past the window must drop to 0 (handled below).
         try:
-            prior_defects = compute_prior_defects(
-                repo, {m["file_path"] for m in results} | set(idle_paths), as_of_ts=as_of_ts
-            )
+            with timed(timings, "rebuild.git.prior_defects"):
+                prior_defects = compute_prior_defects(
+                    repo, {m["file_path"] for m in results} | set(idle_paths), as_of_ts=as_of_ts
+                )
             for meta in results:
                 fp = meta["file_path"]
                 if fp in prior_defects.counts:
@@ -542,17 +551,18 @@ class GitIndexer:
         # the full-index path.
         if self.tier.includes_co_change and all_files:
             try:
-                co_changes, change_entropy = await loop.run_in_executor(
-                    None,
-                    compute_co_changes_and_entropy,
-                    repo,
-                    set(all_files),
-                    max(self.commit_limit, _DEFAULT_CO_CHANGE_COMMIT_LIMIT),
-                    _MAX_PARTNERS_PER_FILE,
-                    None,
-                    None,
-                    as_of_ts,
-                )
+                with timed(timings, "rebuild.git.co_change"):
+                    co_changes, change_entropy = await loop.run_in_executor(
+                        None,
+                        compute_co_changes_and_entropy,
+                        repo,
+                        set(all_files),
+                        max(self.commit_limit, _DEFAULT_CO_CHANGE_COMMIT_LIMIT),
+                        _MAX_PARTNERS_PER_FILE,
+                        None,
+                        None,
+                        as_of_ts,
+                    )
                 for meta in results:
                     fp = meta["file_path"]
                     if fp in co_changes:
@@ -570,19 +580,20 @@ class GitIndexer:
                 # arithmetic; strip to the decay keys so the field-wise upsert
                 # never clobbers full-history columns (ownership, age, authors).
                 if refresh_idle and idle_paths:
-                    idle_decay_sink.update(
-                        await asyncio.to_thread(
-                            self._compute_idle_decay,
-                            repo,
-                            idle_paths,
-                            commit_index,
-                            as_of_ts,
-                            prov_clf,
-                            co_changes,
-                            change_entropy,
-                            prior_defects,
+                    with timed(timings, "rebuild.git.idle_decay"):
+                        idle_decay_sink.update(
+                            await asyncio.to_thread(
+                                self._compute_idle_decay,
+                                repo,
+                                idle_paths,
+                                commit_index,
+                                as_of_ts,
+                                prov_clf,
+                                co_changes,
+                                change_entropy,
+                                prior_defects,
+                            )
                         )
-                    )
             except Exception as exc:
                 logger.debug("co_change_pass_failed", error=str(exc))
 

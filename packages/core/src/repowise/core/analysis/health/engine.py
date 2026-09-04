@@ -385,6 +385,7 @@ class HealthAnalyzer:
         on_step: Any | None = None,
         changed_files: set[str] | list[str] | None = None,
         repo_function_mod_p80: int | None = None,
+        timings: Any | None = None,
     ) -> HealthReport:
         """Analyze the configured parsed files.
 
@@ -403,7 +404,12 @@ class HealthAnalyzer:
         the percentile computed over the full repo (from the persisted
         ``git_function_blame`` rollup) instead. ``None`` (the default)
         computes it from the walked set as before.
+
+        *timings* is a phase table; each stage of this pass records an
+        ``analysis.health.*`` row so a slow pass names the stage.
         """
+        from repowise.core.pipeline.phase_timing import timed
+
         cfg = config or {}
         disabled: list[str] = list(cfg.get("disabled_biomarkers", ()))
         per_file_disabled: dict[str, set[str]] = cfg.get("per_file_disabled", {}) or {}
@@ -431,13 +437,14 @@ class HealthAnalyzer:
             dup_report = DuplicationReport()
         else:
             try:
-                dup_report = detect_clones(
-                    self.parsed_files,
-                    self.git_meta_map,
-                    cache_dir=self.duplication_cache_dir,
-                    source_reader=self.read_source,
-                    changed_files=changed_set,
-                )
+                with timed(timings, "analysis.health.duplication"):
+                    dup_report = detect_clones(
+                        self.parsed_files,
+                        self.git_meta_map,
+                        cache_dir=self.duplication_cache_dir,
+                        source_reader=self.read_source,
+                        changed_files=changed_set,
+                    )
                 _log_duplication_diagnostics(dup_report)
             except Exception as exc:
                 log.debug("health_duplication_failed", error=str(exc))
@@ -458,6 +465,8 @@ class HealthAnalyzer:
         # per-function modification counts ONCE before any biomarker runs.
         # The walked list is reused by the per-file biomarker stage below.
         walked: list[tuple[Any, FileComplexity]] = []
+        timings_walk = timed(timings, "analysis.health.walk")
+        timings_walk.__enter__()
         for pf in self.parsed_files:
             if changed_set is not None and pf.file_info.path not in changed_set:
                 continue
@@ -471,17 +480,20 @@ class HealthAnalyzer:
             # evaluate); see analyze_async.
             if on_step:
                 on_step(pf.file_info.path)
+        timings_walk.__exit__(None, None, None)
 
-        repo_fn_mod_p80 = (
-            repo_function_mod_p80
-            if repo_function_mod_p80 is not None
-            else _compute_repo_function_mod_p80(walked, self.git_meta_map)
-        )
-        repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
-        repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
+        with timed(timings, "analysis.health.repo_stats"):
+            repo_fn_mod_p80 = (
+                repo_function_mod_p80
+                if repo_function_mod_p80 is not None
+                else _compute_repo_function_mod_p80(walked, self.git_meta_map)
+            )
+            repo_dependents_p80 = _compute_repo_dependents_p80(self.parsed_files, self.graph)
+            repo_active_contributors = _compute_repo_active_contributors(self.git_meta_map)
 
         # Cross-function N+1: augment perf_hits before the biomarker stage.
-        self._apply_crossfn_perf(walked)
+        with timed(timings, "analysis.health.crossfn"):
+            self._apply_crossfn_perf(walked)
         # One shared dataflow service for the whole pass: the promotion pass
         # and the Extract Method detector below read the same lazily parsed
         # per-file object, so no file is parsed twice for dataflow.
@@ -489,8 +501,11 @@ class HealthAnalyzer:
         # Dataflow promotion: mark advisory perf hits whose loop is provably
         # iteration-independent (runs after the graph passes so the
         # centrality-gated nested-loop hits are present to promote).
-        apply_perf_promotions(walked, dataflow=dataflow_cache)
+        with timed(timings, "analysis.health.promotions"):
+            apply_perf_promotions(walked, dataflow=dataflow_cache)
 
+        timings_evaluate = timed(timings, "analysis.health.evaluate")
+        timings_evaluate.__enter__()
         for pf, fcx in walked:
             # Side-effect: bump Symbol.complexity_estimate when we can
             # match by enclosing line range. Symbols not matched keep
@@ -530,6 +545,7 @@ class HealthAnalyzer:
 
             if on_step:
                 on_step(pf.file_info.path)
+        timings_evaluate.__exit__(None, None, None)
 
         # KPIs are repo-wide; on an incremental run they would be biased
         # by the changed-files subset. Skip them in that case — the
@@ -540,6 +556,8 @@ class HealthAnalyzer:
         else:
             kpis = {}
 
+        timings_finalize = timed(timings, "analysis.health.finalize")
+        timings_finalize.__enter__()
         self._mark_perf_entry_reachability(findings)
         link_performance_findings(findings)
         opportunities = build_performance_opportunities(findings)
@@ -554,6 +572,7 @@ class HealthAnalyzer:
         suggestions = rank_suggestions(
             suggestions, centrality=self._refactoring_centrality(suggestions)
         )
+        timings_finalize.__exit__(None, None, None)
         return HealthReport(
             repo_id="",
             analyzed_at=datetime.now(UTC),
