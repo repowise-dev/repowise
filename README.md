@@ -473,7 +473,7 @@ the orchestrators. Full matrix and the contributor recipe:
 
 ## Supported languages
 
-**20 languages parsed to AST · 36 on a five-rung ladder · framework-aware across
+**20 languages parsed to AST · 37 on a five-rung ladder · framework-aware across
 all of them.**
 
 "Do you support X" has five useful answers, not two, so languages land on a
@@ -519,7 +519,7 @@ still doing real work rather than being ignored:
 | **Good** (5) | C · Swift · PHP · Dart · Object Pascal | All of the above except the full health suite |
 | **Partial** (2) | Luau / Roblox · Razor / Blazor | Luau: AST symbols and `require()` resolution, Rojo and `.luaurc` aware. Razor: component symbols, `@code` and component-tag call edges, C# health markers; no import resolution yet |
 | | | ⎯⎯ *tree-sitter parsing stops here; the rungs below come from git and imports* ⎯⎯ |
-| **Lightweight** (7) | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# · HTML | A real file-to-file import graph, and no symbol-level claims |
+| **Lightweight** (8) | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# · HTML · QML | A real file-to-file import graph, and no symbol-level claims |
 | **Structural** (9) | Objective-C · R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history: blame, hotspots, co-change, ownership, bug history |
 
 **Every language ships in the open-source distribution.** None is gated behind

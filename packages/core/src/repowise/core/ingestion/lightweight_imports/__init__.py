@@ -39,7 +39,7 @@ _EXTRACTORS: dict[str, ExtractorFn] = {
     "clojure": extract_clojure_imports,
     "haskell": extract_haskell_imports,
     "lean": extract_lean_imports,
-    # `import QtQuick` / `import "components"` — module specs and quoted
+    # `import QtQuick` / `import "components"`: module specs and quoted
     # relative references (see qml.py).
     "qml": extract_qml_imports,
     "erlang": extract_erlang_imports,

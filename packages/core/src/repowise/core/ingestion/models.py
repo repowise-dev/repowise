@@ -76,6 +76,8 @@ LanguageTag = Literal[
     "xaml",
     # Markup with no symbols, but <script src>/<link href> are real edges.
     "html",
+    # Lightweight: qmldir-declared module imports and quoted references.
+    "qml",
     "unknown",
 ]
 

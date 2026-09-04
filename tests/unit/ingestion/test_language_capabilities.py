@@ -202,6 +202,25 @@ class TestImportSupportTiers:
         assert REGISTRY.import_support_for("klingon") == "none"
 
 
+class TestLanguageTagParity:
+    def test_every_spec_tag_is_a_language_tag(self) -> None:
+        # EXTENSION_TO_LANGUAGE keeps only extensions whose tag is in the
+        # LanguageTag literal, so a spec whose tag is missing there is
+        # registered but never traversed: its files index as nothing while
+        # the parser tests, which bypass the traverser, stay green.
+        from repowise.core.ingestion.models import _LANGUAGE_TAG_VALUES
+
+        spec_tags = {spec.tag for spec in REGISTRY.all_specs()}
+        assert spec_tags == _LANGUAGE_TAG_VALUES
+
+    def test_every_spec_extension_is_routed(self) -> None:
+        from repowise.core.ingestion.models import EXTENSION_TO_LANGUAGE
+
+        for spec in REGISTRY.all_specs():
+            for ext in spec.extensions:
+                assert EXTENSION_TO_LANGUAGE.get(ext) == spec.tag, (spec.tag, ext)
+
+
 # ---------------------------------------------------------------------------
 # Derivation pins — constants that used to be drifting frozen literals are
 # now registry derivations; pin the relationship, not a literal.

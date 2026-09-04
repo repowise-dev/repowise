@@ -99,7 +99,7 @@ All of the following ship in `pip install repowise` today, free for internal use
 
 ## 3. First-class language coverage
 
-Repowise parses **20 languages to a full AST** and places **36 on a five-rung
+Repowise parses **20 languages to a full AST** and places **37 on a five-rung
 ladder**, so "do you support X" gets the rung as its answer rather than a yes or a
 no. Both numbers matter and neither is worth quoting alone.
 
@@ -112,8 +112,8 @@ Swift, PHP, Dart, Object Pascal/Delphi) get all of that except the full health
 suite, and Luau and Razor/Blazor are partial. SQL/dbt, shell, HTML, and the config formats are
 handled by dedicated extractors on top of that.
 
-Below the AST line the ladder continues rather than stopping: **7 at Lightweight**
-(Elixir, Clojure, Haskell, Lean 4, Erlang, F#, HTML) get a real file-to-file import
+Below the AST line the ladder continues rather than stopping: **8 at Lightweight**
+(Elixir, Clojure, Haskell, Lean 4, Erlang, F#, HTML, QML) get a real file-to-file import
 graph with no symbol-level claims, and **9 at Structural** (Objective-C, R, Zig,
 Julia, Elm, OCaml, Crystal, Nim, D) get the git intelligence layer only: blame,
 hotspots, co-change, ownership and bug history, with no parsing. Stating the rung

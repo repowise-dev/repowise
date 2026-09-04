@@ -43,6 +43,7 @@ _PROBE_PATHS = [
     "app/loading.tsx",
     "app/error.tsx",
     "app/not-found.tsx",
+    "ui/components/Button.qml",
     # Negatives — close but should NOT match.
     "src/pages.py",
     "core/router.py",
@@ -111,6 +112,12 @@ class TestShouldNeverFlag:
 
     def test_init_py_barrel(self):
         assert self._analyzer()._should_never_flag("pkg/sub/__init__.py", set())
+
+    def test_qml_component(self):
+        # Instantiated by type name and loaded by the Qt runtime, so a QML
+        # file never has a static importer to find.
+        assert self._analyzer()._should_never_flag("ui/components/Button.qml", set())
+        assert not self._analyzer()._should_never_flag("ui/components/button.js", set())
 
 
 class TestSuffixIndexEquivalence:

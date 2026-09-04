@@ -11,19 +11,19 @@ Captured forms:
 
 Two shapes with different resolution targets:
 
-1. **Module imports** — unquoted dotted identifiers (`QtQuick`,
+1. **Module imports**: unquoted dotted identifiers (`QtQuick`,
    `QtQuick.Controls`, `org.kde.kirigami`). These name a QML module, which
    is a *directory* holding a ``qmldir`` manifest (or the Qt builtins).
    The resolver maps dotted module names to local `qmldir`-declared
    modules; anything unresolved is external.
-2. **Directory / script imports** — quoted strings (`"components"`,
+2. **Directory / script imports**: quoted strings (`"components"`,
    `"js/app.js"`, `"../shared"`). These are relative references resolved
    against the importing file's directory, the same shape as the HTML
    asset resolver handles. ``import "js/app.js" as S`` is a file dependency
    with the extension present; `"components"` and `"../shared"` reference
    a directory whose ``qmldir`` declares the module.
 
-Comments are stripped before matching — QML uses ``//`` line comments and
+Comments are stripped before matching. QML uses ``//`` line comments and
 ``/* ... */`` block comments, and a quoted import inside a comment must
 never mint an edge.
 """
