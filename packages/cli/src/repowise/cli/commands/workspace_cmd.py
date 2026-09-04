@@ -1227,13 +1227,16 @@ def workspace_check(path: str | None, breaking: bool, fmt: str, as_json: bool) -
     # severity is source-compat only and must not fail a build.
     bc_report = load_breaking_change_report(ws_root) if breaking else None
     bc_ran = bc_report is not None and bc_report.ran
-    bc_changes = bc_report.changes if bc_ran and bc_report is not None else []
-    breaking_changes = [
-        c
-        for c in bc_changes
-        if c.severity == SEVERITY_BREAKING
-        and any(ic.repo != c.provider_repo for ic in c.impacted_consumers)
-    ]
+    breaking_changes = (
+        [
+            c
+            for c in bc_report.changes
+            if c.severity == SEVERITY_BREAKING
+            and any(ic.repo != c.provider_repo for ic in c.impacted_consumers)
+        ]
+        if bc_ran
+        else []
+    )
 
     if fmt == "json":
         payload = report.to_dict()
