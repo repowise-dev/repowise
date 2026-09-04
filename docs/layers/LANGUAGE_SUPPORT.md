@@ -346,6 +346,27 @@ script resolves; the two failures are the `$%UniqueName` form below.
   and `%Name` all parse. Two occurrences in the 461-file corpus, in two
   files, and error recovery keeps the damage to the enclosing statement.
 
+### VB.NET known ceilings
+
+On the 0.3.0 grammar two validation repositories parse almost clean:
+AAndyProgram/SCrawler (293 `.vb` files, 15 of which still carry a parse error)
+and Lake1059/FFmpegFreeUI (197 `.vb` files, 24 of which still carry one).
+
+- **Remaining grammar gaps**: XML literals, tuple literals used as expressions,
+  a nested double quote inside an interpolation hole, an omitted argument in a
+  call that also carries type arguments, and some multi-line LINQ layouts.
+  tree-sitter recovers from each of them, so the symbols around such a
+  construct are still read and only the construct itself is lost.
+- **Imports resolve through the .NET project graph, not a file stem.** A
+  `.vbproj` is indexed alongside the `.csproj` files, so an `Imports` directive
+  is matched against the namespace its owning project declares through
+  `<RootNamespace>` and against the namespaces that project's references bring
+  in. The same-namespace and partial-class links are shared with C#, so a
+  VB.NET type and a C# type sitting in one namespace see each other.
+- **Generated VB is treated the way generated C# is.** The `.vb` never-flag
+  globs mirror the C# ones: designer files, `AssemblyInfo`, everything under
+  `My Project`, and the `ApplicationEvents` runtime hooks.
+
 ---
 
 ## Beyond code files
