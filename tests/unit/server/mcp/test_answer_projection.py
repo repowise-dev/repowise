@@ -428,3 +428,85 @@ async def test_missing_generated_docs_can_fall_back_to_local_symbol_evidence(
     assert result["answer"]
     assert result["best_guesses"][0]["file"] == "src/auth/service.py"
     assert result["next_action_hint"]
+
+
+def _behind(**extra) -> dict:
+    return {"index_behind": True, "indexed_commit": "abc123abc123", **extra}
+
+
+def test_low_confidence_on_a_behind_index_points_at_repowise_update():
+    from repowise.server.mcp_server._meta import INDEX_BEHIND_LOW_CONFIDENCE_HINT
+    from repowise.server.mcp_server.tool_answer.projection import _hint_with_update_pointer
+
+    existing = "Low confidence. Read the listed fallback_targets to verify before answering."
+    hint = _hint_with_update_pointer(existing, "low", _behind())
+
+    assert hint == f"{existing} {INDEX_BEHIND_LOW_CONFIDENCE_HINT}"
+    assert hint.startswith(existing)
+    assert "repowise update" in hint
+    assert INDEX_BEHIND_LOW_CONFIDENCE_HINT.count("repowise update") == 1
+
+
+def test_the_pointer_is_the_whole_hint_when_there_was_none():
+    from repowise.server.mcp_server._meta import INDEX_BEHIND_LOW_CONFIDENCE_HINT
+    from repowise.server.mcp_server.tool_answer.projection import _hint_with_update_pointer
+
+    assert _hint_with_update_pointer(None, "low", _behind()) == INDEX_BEHIND_LOW_CONFIDENCE_HINT
+    assert _hint_with_update_pointer("", "low", _behind()) == INDEX_BEHIND_LOW_CONFIDENCE_HINT
+
+
+@pytest.mark.parametrize("confidence", ["high", "medium"])
+def test_confident_answers_keep_their_hint_on_a_behind_index(confidence):
+    from repowise.server.mcp_server.tool_answer.projection import _hint_with_update_pointer
+
+    assert _hint_with_update_pointer(None, confidence, _behind()) is None
+    assert _hint_with_update_pointer("Use the answer.", confidence, _behind()) == "Use the answer."
+
+
+def test_a_current_index_never_adds_the_pointer():
+    from repowise.server.mcp_server.tool_answer.projection import _hint_with_update_pointer
+
+    for freshness in ({"index_behind": False}, {}, {"indexed_commit": "abc123abc123"}):
+        assert _hint_with_update_pointer("Low confidence.", "low", freshness) == "Low confidence."
+
+
+def test_a_stale_warning_already_names_the_command_so_the_hint_is_left_alone():
+    from repowise.server.mcp_server.tool_answer.projection import _hint_with_update_pointer
+
+    freshness = _behind(stale_warning="Index is behind live HEAD, run `repowise update`.")
+
+    assert _hint_with_update_pointer("Low confidence.", "low", freshness) == "Low confidence."
+
+
+@pytest.mark.asyncio
+async def test_refresh_freshness_appends_the_pointer_to_a_low_confidence_reply(
+    setup_mcp, monkeypatch
+):
+    import repowise.server.mcp_server._meta as meta_mod
+    from repowise.server.mcp_server._meta import INDEX_BEHIND_LOW_CONFIDENCE_HINT
+    from repowise.server.mcp_server.tool_answer.projection import _refresh_freshness
+
+    monkeypatch.setattr(meta_mod, "freshness_from_repo", lambda _repo, targets=None: _behind())
+
+    low = {"confidence": "low", "citations": ["src/auth/service.py"], "_meta": {"hint": "Verify."}}
+    high = {"confidence": "high", "citations": ["src/auth/service.py"], "_meta": {"hint": "Verify."}}
+    await _refresh_freshness(low, None)
+    await _refresh_freshness(high, None)
+
+    assert low["_meta"]["index_behind"] is True
+    assert low["_meta"]["hint"] == f"Verify. {INDEX_BEHIND_LOW_CONFIDENCE_HINT}"
+    assert high["_meta"]["hint"] == "Verify."
+
+
+@pytest.mark.asyncio
+async def test_an_error_reply_never_gets_the_update_pointer(setup_mcp, monkeypatch):
+    import repowise.server.mcp_server._meta as meta_mod
+    from repowise.server.mcp_server.tool_answer.projection import _refresh_freshness
+
+    monkeypatch.setattr(meta_mod, "freshness_from_repo", lambda _repo, targets=None: _behind())
+
+    err = {"error": "question is required", "confidence": "low", "citations": [], "_meta": {}}
+    await _refresh_freshness(err, None)
+
+    assert err["_meta"]["index_behind"] is True
+    assert "hint" not in err["_meta"]

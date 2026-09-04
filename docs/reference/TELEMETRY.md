@@ -65,8 +65,8 @@ generation is used. Never exact counts, never repo or file names:
 
 Emitted by the MCP server (`repowise mcp` / `repowise serve`) so we can see
 which tools coding agents actually use and how often answers come back stale or
-degraded. Only the tool name and coarse enums/booleans — **never the question,
-query, results, paths, or repo/symbol names**:
+degraded. Only the tool name, coarse enums/booleans, and the size of the
+response, **never the question, query, results, paths, or repo/symbol names**:
 
 | Field | Example | Purpose |
 |---|---|---|
@@ -78,6 +78,11 @@ query, results, paths, or repo/symbol names**:
 | `properties.results_bucket` | `1-3`, `4-10` | Result count for searches (a range) |
 | `properties.index_behind` | `true` / `false` | How often served content is stale |
 | `properties.embedder_degraded` | `true` / `false` | How often search runs on mock vectors |
+| `properties.grounding` | `symbol_body` / `extracted` | What a confident answer rests on |
+| `properties.degraded` | `no-llm-provider` / `synthesis-failed` | Why an answer carries no synthesised prose |
+| `properties.semantic_search` | `true` / `false` | Whether retrieval had a vector leg |
+| `properties.response_chars` | `10979` | Serialised size of the response, a count only |
+| `properties.response_tokens` | `2744` | The same size as the budget's token estimate |
 
 Example `command_run` payload:
 

@@ -330,6 +330,23 @@ def _served_paths(payload: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(paths))
 
 
+def _hint_with_update_pointer(
+    hint: Any, confidence: Any, freshness: dict[str, Any]
+) -> Any:
+    """Add the update pointer to a low-confidence hint served off a behind index."""
+    if freshness.get("index_behind") is not True or confidence != "low":
+        return hint
+    # A stale_warning already names the command, so don't say it twice.
+    if freshness.get("stale_warning"):
+        return hint
+    from repowise.server.mcp_server._meta import INDEX_BEHIND_LOW_CONFIDENCE_HINT
+
+    existing = hint.strip() if isinstance(hint, str) else ""
+    if not existing:
+        return INDEX_BEHIND_LOW_CONFIDENCE_HINT
+    return f"{existing} {INDEX_BEHIND_LOW_CONFIDENCE_HINT}"
+
+
 async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
     """Scope trust metadata to evidence in the final fresh/cache projection."""
     if repo == "all":
@@ -355,6 +372,18 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
     ):
         meta.pop(key, None)
     meta.update(freshness)
+    # An error reply carries confidence "low" too, and its fault is not the
+    # index, so the pointer would only misdirect there.
+    try:
+        hint = _hint_with_update_pointer(
+            meta.get("hint"),
+            None if payload.get("error") else payload.get("confidence"),
+            freshness,
+        )
+    except Exception:
+        return
+    if hint:
+        meta["hint"] = hint
 
 
 def projected_answer(fn: Callable[..., Any]) -> Callable[..., Any]:

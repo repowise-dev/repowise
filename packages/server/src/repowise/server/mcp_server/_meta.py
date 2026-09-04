@@ -520,6 +520,13 @@ EXHAUSTIVE_SWEEP_HINT = (
     "Grep the name; that is the one job this surface does not do."
 )
 
+# Appended to a get_answer hint when the answer graded low and the index is
+# behind live HEAD; the one place holding both signals says what to do.
+INDEX_BEHIND_LOW_CONFIDENCE_HINT = (
+    "The index is behind HEAD, so run `repowise update` and ask again before "
+    "trusting a low-confidence answer."
+)
+
 
 def answer_hint(
     confidence: str,

@@ -846,6 +846,8 @@ async def _federated_search(
     # Derive confidence from RRF position
     _assign_confidence(output, "rrf_score", "confidence_score")
 
+    # No freshness here: results come from several repos at once, so there is
+    # no single indexed commit to compare a live HEAD against.
     response: dict = {"results": output, "_meta": _build_meta()}
     # Drawn from every repo's ranked list, not the merged cut: a workspace
     # search that spends its window on module pages should still be able to
