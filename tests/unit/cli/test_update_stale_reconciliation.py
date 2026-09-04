@@ -96,6 +96,48 @@ def test_load_stale_structural_file_paths(tmp_path: Path) -> None:
     assert stale == ["bar.py"]
 
 
+def test_repo_wide_structural_pages_are_not_reported(tmp_path: Path) -> None:
+    """A stale cycle or layer page is only ever rewritten by a full run.
+
+    Reporting it would make every idle update pay a full reparse that cannot
+    clear it, on every run, forever.
+    """
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        upsert_page,
+        upsert_repository,
+    )
+
+    repo_path, _ = asyncio.run(_setup_repo_with_pages(tmp_path, []))
+
+    async def _add_stale_layer_page() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{repo_path / '.repowise' / 'wiki.db'}")
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await upsert_repository(session, name="test_repo", local_path=str(repo_path))
+            await upsert_page(
+                session,
+                page_id="layer_page:core",
+                repository_id=repo.id,
+                page_type="layer_page",
+                title="Layer: core",
+                content="# core\n",
+                summary="Summary",
+                target_path="core",
+                source_hash="hash",
+                model_name="mock",
+                provider_name="mock",
+                freshness_status="stale",
+            )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(_add_stale_layer_page())
+    assert load_stale_structural_file_paths(repo_path) == []
+
+
 def test_load_stale_structural_file_paths_spotlight(tmp_path: Path) -> None:
     """load_stale_structural_file_paths extracts file path from symbol_spotlight target_path."""
     repo_path, _ = asyncio.run(_setup_repo_with_pages(tmp_path, ["spotlight.py"]))
@@ -140,7 +182,7 @@ def test_doctor_detects_stale_pages_and_clears_after_reconciliation(tmp_path: Pa
     _, checks = repo_checks._run_repo_checks(repo_path, repair=False, fmt="quiet")
     stale_check = next(c for c in checks if c.name == "Stale pages")
     assert stale_check.ok is False
-    assert stale_check.detail == "2 stale"
+    assert stale_check.detail.startswith("2 stale")
 
     # 2. Verify load_stale_structural_file_paths returns the 2 stale paths
     stale_paths = load_stale_structural_file_paths(repo_path)

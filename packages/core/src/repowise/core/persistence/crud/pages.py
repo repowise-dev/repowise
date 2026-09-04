@@ -661,40 +661,48 @@ async def get_stale_pages(
     return list(result.scalars().all())
 
 
+#: Page types a scoped ``update`` can re-render for one file. Every other
+#: structural type (cycle, layer, contract, infra) describes the whole
+#: repository and is only written by a full run, so a stale row of those types
+#: is not something an update can clear and must not make it think it can.
+_FILE_SCOPED_PAGE_TYPES = frozenset({"file_page", "symbol_spotlight"})
+
+
 async def get_stale_structural_file_paths(
     session: AsyncSession,
     repository_id: str,
 ) -> list[str]:
-    """Return file paths of structural pages currently marked stale or expired in DB for *repository_id*.
+    """File paths whose file-scoped pages are marked ``stale`` or ``expired``.
 
-    Covers file_page rows and other structural pages whose freshness_status is 'stale'
-    or 'expired'. Extracting their file paths allows update commands to reconcile
-    lingering stale structural pages even when the repo is already at HEAD.
+    Covers ``file_page`` rows (``target_path`` is the file) and
+    ``symbol_spotlight`` rows (``target_path`` is ``<file>::<symbol>``), which
+    are the two page kinds a scoped ``update`` re-renders for a file. The
+    caller feeds these paths into the same regeneration list the renderer
+    staleness path uses, so an already-stale page is reconciled even when HEAD
+    has not moved.
     """
-    from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
-
     result = await session.execute(
-        select(Page.id, Page.page_type, Page.target_path).where(
+        select(Page.target_path).where(
             Page.repository_id == repository_id,
+            Page.page_type.in_(sorted(_FILE_SCOPED_PAGE_TYPES)),
             Page.freshness_status.in_(["stale", "expired"]),
         )
     )
     stale_paths: list[str] = []
-    for pid, page_type, target_path in result:
-        if page_type in STRUCTURAL_PAGE_TYPES or page_type == "file_page":
-            if page_type == "file_page" and target_path:
-                stale_paths.append(target_path)
-            elif pid.startswith("file_page:"):
-                stale_paths.append(pid[len("file_page:") :])
-            elif target_path:
-                file_path = target_path.split("::", 1)[0]
-                if file_path:
-                    stale_paths.append(file_path)
+    for (target_path,) in result:
+        file_path = (target_path or "").split("::", 1)[0]
+        if file_path:
+            stale_paths.append(file_path)
     return list(dict.fromkeys(stale_paths))
 
 
 def load_stale_structural_file_paths(repo_path: Any) -> list[str]:
-    """Sync wrapper around _load_stale_structural_file_paths_async."""
+    """Sync entry point for :func:`_load_stale_structural_file_paths_async`.
+
+    Called from synchronous CLI code and from ``check_repo_staleness``, which
+    the async workspace update calls from inside a running loop. ``asyncio.run``
+    refuses to nest, so that one caller gets its own loop on a worker thread.
+    """
     import asyncio
     import concurrent.futures
     from pathlib import Path
@@ -714,7 +722,13 @@ def load_stale_structural_file_paths(repo_path: Any) -> list[str]:
 
 
 async def _load_stale_structural_file_paths_async(repo_path: Any) -> list[str]:
-    """Load stale structural file paths for *repo_path* from the database."""
+    """Load the stale file-scoped page paths for *repo_path* from its store.
+
+    Returns ``[]`` when no store is reachable: no configured database URL and
+    no local ``wiki.db``. A store that is reachable but fails to answer raises,
+    because reading that as "nothing is stale" would silently retire the
+    reconciliation this exists for.
+    """
     from pathlib import Path
 
     import structlog
@@ -732,7 +746,6 @@ async def _load_stale_structural_file_paths_async(repo_path: Any) -> list[str]:
     logger = structlog.get_logger(__name__)
     path_obj = Path(repo_path)
 
-    # Store reachability check: if no env DB URL is set and local wiki.db doesn't exist, return []
     if get_configured_db_url() is None and not get_repo_db_path(path_obj).exists():
         return []
 
