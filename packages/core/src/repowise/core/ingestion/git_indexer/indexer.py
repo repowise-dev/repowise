@@ -168,6 +168,7 @@ class GitIndexer:
                 commit_sink=commit_sink,
                 provenance_classifier=prov_clf,
                 trace_index=trace_index,
+                cache_dir=self._window_cache_dir(),
             )
 
             # Files the recent window never saw would each spawn a per-file
@@ -374,6 +375,15 @@ class GitIndexer:
         )
         return summary, results
 
+    def _window_cache_dir(self) -> Path | None:
+        """Where the commit-window cache lives: the index directory, once it exists.
+
+        A repository that has no ``.repowise`` yet is being probed, not
+        indexed, and gets no cache file written beside it.
+        """
+        cache_dir = self.repo_path / ".repowise"
+        return cache_dir if cache_dir.is_dir() else None
+
     async def index_changed_files(
         self,
         changed_file_paths: list[str],
@@ -466,6 +476,7 @@ class GitIndexer:
                     self.commit_limit,
                     set(all_files) if refresh_idle else set(changed_file_paths),
                     provenance_classifier=prov_clf,
+                    cache_dir=self._window_cache_dir(),
                 )
         as_of_ts = self._resolve_as_of_ts(repo, commit_index)
         get_thread_repo, close_thread_repos = self._thread_repo_pool()
