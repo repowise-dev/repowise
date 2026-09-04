@@ -29,7 +29,7 @@ DIRECT_SRC = "import httpx\n\n\ndef raw(url):\n    return httpx.get(url)\n"
 
 
 def _language(path: str) -> str:
-    return {"py": "python", "go": "go"}[path.rsplit(".", 1)[1]]
+    return {"py": "python", "go": "go", "ts": "typescript"}[path.rsplit(".", 1)[1]]
 
 
 def _build(tmp_path: Path, files: dict[str, str]):
@@ -253,3 +253,57 @@ class TestExtractorWiring:
 
     async def test_no_graph_means_no_candidates(self, tmp_path):
         assert await DecisionExtractor(repo_path=tmp_path).scan_conventions() == []
+
+
+class TestBoundInstance:
+    """The second wrapper shape: a client built once at module level."""
+
+    TS_WRAPPER = 'import axios from "axios";\n\nexport const service = axios.create({ baseURL: "/api" });\n\nexport const TIMEOUT = 5000;\n'
+
+    def _ts_repo(self, users: int, direct: int = 0, readers: int = 0) -> dict[str, str]:
+        files = {"src/utils/request.ts": self.TS_WRAPPER}
+        for i in range(users):
+            files[f"src/api/user{i}.ts"] = 'import { service } from "../utils/request";\n\nexport function load() {\n  return service.get("/u");\n}\n'
+        for i in range(direct):
+            files[f"src/api/raw{i}.ts"] = 'import axios from "axios";\n\nexport function raw() {\n  return axios.get("/u");\n}\n'
+        for i in range(readers):
+            files[f"src/api/reader{i}.ts"] = 'import { TIMEOUT } from "../utils/request";\n\nexport function wait() {\n  return TIMEOUT * 2;\n}\n'
+        return files
+
+    def test_a_called_instance_is_a_wrapper(self, tmp_path):
+        out = _scan(tmp_path, self._ts_repo(users=6, direct=1))
+
+        assert len(out) == 1
+        d = out[0]
+        assert d.title == "axios goes through src/utils/request.ts"
+        assert d.decision.startswith("6 of 7 files reach axios")
+        assert d.consequences == ["src/api/raw0.ts imports axios directly"]
+        assert "Wrapper instance src/utils/request.ts::service" in d.context
+        assert "src/api/user0.ts:4" in d.context
+
+    def test_a_setting_that_is_only_read_is_not_a_wrapper(self, tmp_path):
+        # Six files import TIMEOUT and read it; nothing calls through it.
+        files = self._ts_repo(users=0, readers=6)
+        files["src/utils/request.ts"] = 'import axios from "axios";\n\nexport const TIMEOUT = axios.defaults.timeout;\n'
+
+        assert _scan(tmp_path, files) == []
+
+    def test_readers_do_not_count_toward_the_instance(self, tmp_path):
+        out = _scan(tmp_path, self._ts_repo(users=6, readers=6))
+
+        assert len(out) == 1
+        assert out[0].decision.startswith("6 of 6 files")
+
+    def test_a_python_client_instance_is_a_wrapper(self, tmp_path):
+        files = {
+            "net/__init__.py": "",
+            "svc/__init__.py": "",
+            "net/client.py": "import httpx\n\nclient = httpx.Client(base_url='http://x')\n",
+        }
+        for i in range(6):
+            files[f"svc/user{i}.py"] = "from net.client import client\n\n\ndef load():\n    return client.get('/u')\n"
+
+        out = _scan(tmp_path, files)
+        assert len(out) == 1
+        assert "Wrapper instance net/client.py::client" in out[0].context
+        assert out[0].evidence_line == 3

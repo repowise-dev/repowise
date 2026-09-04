@@ -65,6 +65,8 @@ MAX_PROPOSALS = 10
 MAX_LISTED_EXCEPTIONS = 25
 
 _CALLABLE_KINDS = frozenset({"function", "method", "constructor"})
+#: Module-level bindings that can hold a client instance built from the library.
+_BINDING_KINDS = frozenset({"variable", "constant"})
 _EXTERNAL_PREFIX = "external:"
 _ECOSYSTEM_PREFIXES = ("gem:", "nuget:")
 
@@ -160,6 +162,50 @@ def _confirmed_callables(parsed: Any, use: _Use, text: str) -> list[Any]:
     return out
 
 
+def _call_pattern(names: tuple[str, ...] | set[str]) -> re.Pattern[str] | None:
+    """A call into one of *names*: ``name(``, ``name.member(`` or ``new name``."""
+    if not names:
+        return None
+    alt = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+    return re.compile(
+        r"(?<![\w.$])(?:" + alt + r")\s*(?:\.\s*[\w$]+\s*)*\(|new\s+(?:" + alt + r")(?![\w$])"
+    )
+
+
+def _confirmed_bindings(parsed: Any, use: _Use, text: str) -> list[Any]:
+    """Module-level bindings whose own initializer calls into the library.
+
+    The second wrapper shape: ``service = axios.create()``, ``client =
+    httpx.Client()``, an exported ``fetch`` built over undici. A binding that
+    merely names the library (``TIMEOUT = httpx.Timeout(5)``) also matches
+    here; what separates a client from a setting is whether importers call
+    it, which :func:`_calling_importers` decides.
+    """
+    pattern = _call_pattern(use.local_names)
+    if pattern is None:
+        return []
+    suffix = Path(parsed.file_info.path).suffix
+    lines = mask_source(text, suffix, strings=True).split("\n")
+    out = []
+    for sym in parsed.symbols:
+        if sym.kind not in _BINDING_KINDS or sym.parent_name:
+            continue
+        span = "\n".join(lines[max(sym.start_line - 1, 0) : max(sym.end_line, sym.start_line)])
+        if pattern.search(span):
+            out.append(sym)
+    return out
+
+
+def _first_call_line(text: str, suffix: str, name: str) -> int | None:
+    """Line of the first call through *name* in *text*, or None when it is only read."""
+    pattern = _call_pattern((name,))
+    if pattern is None:
+        return None
+    masked = mask_source(text, suffix, strings=True)
+    m = pattern.search(masked)
+    return masked.count("\n", 0, m.start()) + 1 if m else None
+
+
 def _inbound_calls(graph: nx.DiGraph, symbol_id: str, own_file: str) -> list[tuple[str, int | None]]:
     """``(caller file, first call line)`` for calls into *symbol_id* from other files."""
     if symbol_id not in graph:
@@ -195,6 +241,35 @@ def _reaches(graph: nx.DiGraph, importer: str, wrapper: str, names: set[str]) ->
     if not imported or "*" in imported:
         return True  # the module as a whole; the callable is reachable through it
     return any(n in names for n in imported)
+
+
+def _calling_importers(
+    graph: nx.DiGraph,
+    importers: set[str],
+    wrapper: str,
+    name: str,
+    parsed_by_path: dict[str, Any],
+    source_map: dict[str, bytes] | None,
+    repo_path: Path,
+) -> dict[str, int | None]:
+    """Importers that bind *name* from *wrapper* and call it: ``{file: line}``.
+
+    A setting is read; a client is called. Reading each importer once,
+    bounded to the files that already import the wrapper, is what tells the
+    two apart without a vocabulary of constructors per library.
+    """
+    out: dict[str, int | None] = {}
+    for f in sorted(importers):
+        imported = graph[f][wrapper].get("imported_names") or []
+        if name not in imported:
+            continue
+        text = _file_text(f, source_map, repo_path)
+        if text is None:
+            continue
+        line = _first_call_line(text, Path(f).suffix, name)
+        if line is not None:
+            out[f] = line
+    return out
 
 
 def _is_test(graph: nx.DiGraph, path: str) -> bool:
@@ -238,24 +313,38 @@ def _candidates_for(
         text = _file_text(wrapper, source_map, repo_path)
         if text is None:
             continue
-        confirmed = _confirmed_callables(parsed, uses[wrapper][package], text)
-        if not confirmed:
-            continue
-        # The symbol other files call most is the entry point the convention
-        # names; a tie falls to the earliest declaration.
-        ranked = sorted(
-            ((sym, _inbound_calls(graph, sym.id, wrapper)) for sym in confirmed),
-            key=lambda pair: (-len(pair[1]), pair[0].start_line),
-        )
-        symbol, sites = ranked[0]
-        # A file reaches the library through the wrapper only if it imports
-        # one of the confirmed callables, the class holding one, or the module
-        # whole, or calls one. Importing the file for an unrelated helper is
-        # not reaching the library.
-        names = {s.name for s in confirmed} | {s.parent_name for s in confirmed if s.parent_name}
-        callers = {f for _sym, sites_ in ranked for f, _line in sites_}
-        through = {f for f in importers if _reaches(graph, f, wrapper, names) or f in callers}
+        use = uses[wrapper][package]
+        confirmed = _confirmed_callables(parsed, use, text)
+        symbol = None
+        sites: list[tuple[str, int | None]] = []
+        through: set[str] = set()
+        if confirmed:
+            # The symbol other files call most is the entry point the
+            # convention names; a tie falls to the earliest declaration.
+            ranked = sorted(
+                ((sym, _inbound_calls(graph, sym.id, wrapper)) for sym in confirmed),
+                key=lambda pair: (-len(pair[1]), pair[0].start_line),
+            )
+            symbol, sites = ranked[0]
+            # A file reaches the library through the wrapper only if it
+            # imports one of the confirmed callables, the class holding one,
+            # or the module whole, or calls one. Importing the file for an
+            # unrelated helper is not reaching the library.
+            names = {s.name for s in confirmed} | {s.parent_name for s in confirmed if s.parent_name}
+            callers = {f for _sym, sites_ in ranked for f, _line in sites_}
+            through = {f for f in importers if _reaches(graph, f, wrapper, names) or f in callers}
         if len(through) < MIN_THROUGH:
+            # Second shape: a client instance built at module level and
+            # called by its importers. Only importers that call it count.
+            for binding in _confirmed_bindings(parsed, use, text):
+                calling = _calling_importers(
+                    graph, importers, wrapper, binding.name, parsed_by_path, source_map, repo_path
+                )
+                if len(calling) > len(through):
+                    symbol = binding
+                    through = set(calling)
+                    sites = sorted(calling.items())
+        if symbol is None or len(through) < MIN_THROUGH:
             continue
         out.append(
             _Candidate(
@@ -295,8 +384,9 @@ def _record(candidate: _Candidate) -> ExtractedDecision:
         sample = ", ".join(f"{f}:{line}" if line else f for f, line in sites)
     else:
         sample = ", ".join(sorted(candidate.through)[:3])
+    what = "instance" if candidate.symbol.kind in _BINDING_KINDS else "symbol"
     context = (
-        f"Wrapper symbol {candidate.symbol.id} at {candidate.wrapper}:"
+        f"Wrapper {what} {candidate.symbol.id} at {candidate.wrapper}:"
         f"{candidate.symbol.start_line}. Sample call sites: {sample}."
     )
     quote = "; ".join([decision, *consequences])
