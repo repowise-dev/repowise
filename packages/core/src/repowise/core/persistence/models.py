@@ -298,6 +298,11 @@ class GraphNode(Base):
         # Audited for the LIMIT-without-ORDER-BY hazard 0046 records — every
         # ``node_type``-filtered query in the tree that limits also orders.
         Index("ix_graph_nodes_repo_type", "repository_id", "node_type"),
+        # Nothing covered ``file_path``, so "the symbols these few files own" —
+        # what a changed-file read asks — walked the whole table instead of
+        # seeking. Additive, so ``_reconcile_schema`` creates it on existing
+        # databases at the next ``init_db``.
+        Index("ix_graph_nodes_repo_file", "repository_id", "file_path"),
     )
 
 

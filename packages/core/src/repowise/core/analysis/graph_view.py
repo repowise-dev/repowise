@@ -17,7 +17,7 @@ from typing import Any, Protocol
 from ..ingestion.languages import REGISTRY
 from ..ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 
-__all__ = ["HasEdge", "ImportEdgeView"]
+__all__ = ["HasEdge", "ImportEdgeView", "can_carry_dependency"]
 
 
 def _language_of(path: str) -> str:
@@ -26,6 +26,24 @@ def _language_of(path: str) -> str:
     return REGISTRY.from_filename(name) or REGISTRY.from_extension(
         PurePosixPath(name).suffix.lower()
     )
+
+
+def can_carry_dependency(path: str, language: str | None = None) -> bool:
+    """Whether an absent edge at *path* would mean anything.
+
+    ``pyproject.toml`` and ``README.md`` are both ingested and both become
+    nodes, yet no resolver can ever emit an edge for them, so "no edge found"
+    is a fact about the language rather than about the repository. The registry
+    grades this per language as ``import_support``; ``"none"`` is the generic
+    stem-lookup fallback, which is not a mechanism a finding can rest on.
+
+    *language* is optional because it is not always recorded: a node
+    synthesised for a dynamic edge target carries none and persistence drops
+    null columns on rehydrate. The path answers the same question.
+    """
+    if not isinstance(language, str) or not language:
+        language = _language_of(path)
+    return REGISTRY.import_support_for(language) != "none"
 
 
 class HasEdge(Protocol):
@@ -90,17 +108,10 @@ class ImportEdgeView:
         return kind if kind in FILE_DEPENDENCY_EDGE_TYPES else None
 
     def can_carry_dependency(self, path: str) -> bool:
-        """Whether an absent edge at *path* would mean anything.
+        """Whether an absent edge at *path* would mean anything, per the graph.
 
-        Being a node is not enough. ``pyproject.toml`` and ``README.md`` are
-        both ingested and both become nodes, yet no resolver can ever emit an
-        edge for them, so "no edge found" is a fact about the language rather
-        than about the repository. The registry already grades this per
-        language as ``import_support``; ``"none"`` is the generic stem-lookup
-        fallback, which is not a mechanism a finding can rest on.
-
-        A file the parser never saw fails here too: a lockfile in a blocked
-        directory has no edge to look for either.
+        Being a node is not enough, and a file the parser never saw fails here
+        too: a lockfile in a blocked directory has no edge to look for either.
         """
         g = self._graph
         if g is None:
@@ -109,10 +120,4 @@ class ImportEdgeView:
             attrs = g.nodes[path]
         except Exception:
             return False
-        language = attrs.get("language")
-        if not isinstance(language, str):
-            # Not every node carries the attribute: a node synthesised for a
-            # dynamic edge target has none, and persistence drops null
-            # columns on rehydrate. The path answers the same question.
-            language = _language_of(path)
-        return REGISTRY.import_support_for(language) != "none"
+        return can_carry_dependency(path, attrs.get("language"))

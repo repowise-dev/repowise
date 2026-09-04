@@ -9,7 +9,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import click
 from rich.console import Console
@@ -43,6 +43,11 @@ from repowise.core.update_lock import (
 from repowise.core.update_lock import (
     try_acquire_update_lock as try_acquire_update_lock,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 T = TypeVar("T")
 
@@ -198,6 +203,38 @@ def get_db_url_for_repo(repo_path: Path) -> str:
     from repowise.core.persistence.database import resolve_db_url
 
     return resolve_db_url(repo_path)
+
+
+@contextlib.asynccontextmanager
+async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, str] | None]:
+    """Open the repo-local store, yielding ``(session, repo_id)`` or ``None``.
+
+    A scoring or scanning command must never fail because the index is absent,
+    stale or locked, so every storage error yields ``None`` instead.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+
+    if not (root / REPOWISE_DIR / "wiki.db").is_file():
+        yield None
+        return
+    # The stack keeps the session open across the yield and disposes the engine
+    # on the way out, whether the caller left the block or raised inside it.
+    async with contextlib.AsyncExitStack() as stack:
+        opened: tuple[AsyncSession, str] | None = None
+        try:
+            engine = create_engine(get_db_url_for_repo(root))
+            stack.push_async_callback(engine.dispose)
+            factory = create_session_factory(engine)
+            session = await stack.enter_async_context(get_session(factory))
+            repo = await get_repository_by_path(session, str(root))
+            if repo is not None:
+                opened = (session, repo.id)
+        except (SQLAlchemyError, OSError, LookupError):
+            opened = None
+        yield opened
 
 
 #: Busy timeout for the reconcile's own connection. The engine default is 30s,
