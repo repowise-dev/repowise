@@ -110,6 +110,24 @@ def diff_snapshots(history: list[Any]) -> TrendSummary:
     return summary
 
 
+def hotspot_trend(history: list[Any]) -> str | None:
+    """``"improving"``, ``"stable"`` or ``"declining"`` for the hotspot KPI.
+
+    Compared over the same window the declining alert uses, so the two never
+    disagree. ``None`` with fewer than two snapshots: one reading is not a
+    trend, and a surface should say nothing rather than print "stable".
+    """
+    if len(history) < 2:
+        return None
+    baseline = history[max(0, len(history) - 1 - DECLINE_LOOKBACK)]
+    delta = float(history[-1].hotspot_health) - float(baseline.hotspot_health)
+    if delta <= -DECLINE_THRESHOLD:
+        return "declining"
+    if delta >= DECLINE_THRESHOLD:
+        return "improving"
+    return "stable"
+
+
 def _declining_alerts(history: list[Any]) -> list[TrendAlert]:
     """``Declining Health`` — current is ≥ threshold below snapshot N-5."""
     if len(history) <= DECLINE_LOOKBACK:

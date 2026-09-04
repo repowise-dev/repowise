@@ -48,6 +48,7 @@ from .file_reachability import (
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 from .name_occurrences import IDENTIFIER_RE, clamp_unverified_absence
 from .risk_factors import (
+    NO_GIT_SIGNAL_CONFIDENCE,
     RISK_CAP_CONFIDENCE,
     SAFE_CONFIDENCE_THRESHOLD,
     path_risk_factors,
@@ -964,14 +965,21 @@ class DeadCodeAnalyzer:
         dynamic_patterns: tuple[str, ...],
     ) -> DeadCodeFindingData | None:
         """Create an unreachable file finding with confidence scoring."""
-        git_meta = self.git_meta_map.get(node, {})
+        git_meta = self.git_meta_map.get(node)
+        # No row at all is not "no commits in 90 days": that rung is for a
+        # file git has data on. Scored below the deletion-ready threshold and
+        # said so in the evidence, on every path that builds this map.
+        no_git_signal = not git_meta
+        git_meta = git_meta or {}
         commit_90d = git_meta.get("commit_count_90d", 0)
         last_commit = git_meta.get("last_commit_at")
         age_days = git_meta.get("age_days")
         primary_owner = git_meta.get("primary_owner_name")
 
         # _is_old uses strict >, so pass days-1 to get >= semantics.
-        if commit_90d == 0 and last_commit and self._is_old(last_commit, days=364):
+        if no_git_signal:
+            confidence = NO_GIT_SIGNAL_CONFIDENCE
+        elif commit_90d == 0 and last_commit and self._is_old(last_commit, days=364):
             confidence = 1.0  # Untouched for a year+ — very likely dead
         elif commit_90d == 0 and last_commit and self._is_old(last_commit, days=179):
             confidence = 0.9
@@ -1008,7 +1016,9 @@ class DeadCodeAnalyzer:
             safe = False
 
         evidence = ["in_degree=0 (no files import this)"]
-        if commit_90d == 0:
+        if no_git_signal:
+            evidence.append("No git history recorded for this file")
+        elif commit_90d == 0:
             evidence.append("No commits in last 90 days")
         if self._dynamic_import_files and confidence <= RISK_CAP_CONFIDENCE:
             evidence.append("Package uses dynamic imports or runtime-resolved edges")

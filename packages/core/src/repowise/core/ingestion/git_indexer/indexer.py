@@ -414,6 +414,14 @@ class GitIndexer:
         persist path upserts them field-by-field so ownership / age / authorship
         (correct only from the full init walk) are left intact.
         """
+        # The same allowlist the full index applies to the tracked-file set.
+        # Without it an update wrote rows for a changed workflow file, and the
+        # idle refresh minted rows for every tracked config and markup file,
+        # which the health pass then scored: a store grew rows a fresh index
+        # never has.
+        changed_file_paths = [fp for fp in changed_file_paths if not _should_skip_index(fp)]
+        if all_files:
+            all_files = {fp for fp in all_files if not _should_skip_index(fp)}
         repo = self._get_repo()
         if repo is None:
             return []

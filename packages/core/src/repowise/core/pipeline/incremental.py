@@ -800,10 +800,11 @@ def run_partial_analysis(
         #
         # When the read FAILED, this run knows strictly less than the index it
         # would be overwriting: every file outside the change set would be
-        # scored against an empty dict, which reads as "no commits" and stores
-        # 0.7 with ``safe_to_delete=True`` however active the file is. So it
-        # speaks only for the files it re-indexed this run, which is the
-        # behavior this path had before it was widened.
+        # scored with no git row, which the analyzer holds below the
+        # deletion-ready threshold, so a verdict a full index scored at 1.0
+        # would be written back as an unscored 0.5. So it speaks only for the
+        # files it re-indexed this run, which is the behavior this path had
+        # before it was widened.
         dead_code_report.authoritative_paths = (
             None if stored_git_meta is not None else frozenset(git_meta_map)
         )
@@ -1046,6 +1047,11 @@ async def persist_partial_health(session: Any, repo_id: str, report: Any) -> Non
         from repowise.core.persistence.crud import upsert_git_function_blame_bulk
 
         await upsert_git_function_blame_bulk(session, repo_id, fn_blame_rows)
+    # The store now holds the merged repository, so the snapshot describes the
+    # whole of it, not this run's changed files.
+    from repowise.core.pipeline.persist import snapshot_health_from_store
+
+    await snapshot_health_from_store(session, repo_id)
 
 
 async def persist_incremental_commits(session: Any, repo_id: str, repo_path: Any) -> None:
