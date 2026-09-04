@@ -69,3 +69,19 @@ def test_resolve_all_returns_the_external_key_without_probing() -> None:
     ctx = _ctx()
     targets = resolve_python_import_all(_imp("requests", ["adapters", "Session"]), "app.py", ctx)
     assert targets == ("external:requests",)
+
+
+def test_stem_fallback_never_lands_on_a_non_python_file() -> None:
+    ctx = ResolverContext(
+        path_set={"app.py", "baselines/httpx.json", "vendor/httpx.py"},
+        stem_map={"httpx": ["baselines/httpx.json", "vendor/httpx.py"]},
+        graph=nx.DiGraph(),
+    )
+    assert resolve_python_import("httpx", "app.py", ctx) == "vendor/httpx.py"
+
+    only_fixture = ResolverContext(
+        path_set={"app.py", "baselines/httpx.json"},
+        stem_map={"httpx": ["baselines/httpx.json"]},
+        graph=nx.DiGraph(),
+    )
+    assert resolve_python_import("httpx", "app.py", only_fixture) == "external:httpx"

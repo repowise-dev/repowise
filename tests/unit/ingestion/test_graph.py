@@ -338,12 +338,12 @@ class TestStemDisambiguation:
         b.add_file(_parsed("__init__.py"))
         b.add_file(_parsed("main.py", imports=[_imp("anything")]))
         b.build()  # must not raise
-        # No import edge — stem "anything" is unresolvable
+        # The stem "anything" resolves to no file, so it lands on an external node.
         import_edges = [
             (u, v) for u, v, d in b.graph().edges(data=True)
             if d.get("edge_type") == "imports"
         ]
-        assert len(import_edges) == 0
+        assert import_edges == [("main.py", "external:anything")]
 
     def test_go_stem_collision_prefers_parent_match(self) -> None:
         """Go: `import .../calculator` prefers calculator/calculator.go
