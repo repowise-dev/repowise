@@ -284,6 +284,11 @@ export interface ChangeHealthDeltaData {
     | "rules_mismatch"
     | "stale_baseline";
   explanation: string;
+  /**
+   * How the two sides were compared, e.g. `both_sides_analyzed` /
+   * `not_compared`. Open on the wire: the producer types it as a plain string.
+   */
+  basis: string;
   introduced: number;
   worsened: number;
   resolved: number;

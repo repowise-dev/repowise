@@ -30,6 +30,7 @@ from repowise.core.persistence.models import (
     Repository,
     WikiSymbol,
 )
+from repowise.server.mcp_server._basis import basis_cache_key, call_resolution_basis
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._helpers import (
     LIKE_ESCAPE,
@@ -861,6 +862,15 @@ async def _resolve_one_target(
                 collector,
                 label=f"{target} :: docs.used_by beyond cap={_MAX_USED_BY}",
             )
+            # No users found says nothing on its own until the reader knows how
+            # much of this language's call graph the resolver actually bound.
+            if not docs.get("used_by"):
+                docs["used_by_basis"] = await call_resolution_basis(
+                    session,
+                    repo_id,
+                    getattr(sym, "language", None),
+                    cache_key=basis_cache_key(repository),
+                )
             # Candidates
             if len(sym_matches) > 1:  # type: ignore[possibly-undefined]
                 docs["candidates"] = filter_dicts_by_key(

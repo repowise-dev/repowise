@@ -251,7 +251,12 @@ async def test_perf_rank_is_absent_from_every_other_dimension(setup_mcp, perf_fi
     would read as "measured, and it is nothing"."""
     from repowise.server.mcp_server import get_health
 
-    result = await get_health(include=["biomarkers"], limit=50)
+    # Naming the dimension, because the impact-ranked list leaves it out by
+    # default: every performance finding scores zero impact, so a ranking by
+    # impact is not where it belongs.
+    result = await get_health(
+        include=["biomarkers", "defect", "maintainability", "performance"], limit=50
+    )
     by_dim = {}
     for f in result["findings"]:
         by_dim.setdefault(f["dimension"], []).append(f)

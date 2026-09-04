@@ -237,6 +237,8 @@ export function OpportunityDrawer({
               </p>
             ) : null}
 
+            <MapLink adapter={adapter} opportunity={current} />
+
             <Section title="What the evidence shows">
               <dl className="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2">
                 <Field label="Context" value={contextLabel(current.execution_context)} />
@@ -361,7 +363,7 @@ export function OpportunityDrawer({
             <button
               type="button"
               onClick={() => onAgentHandoff(current, plan.verified)}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--color-accent-fill)] px-3.5 py-2 text-sm font-semibold text-[var(--color-text-on-accent)] transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--color-model)] px-3.5 py-2 text-sm font-semibold text-[var(--color-text-on-model)] transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
             >
               <Sparkles className="h-4 w-4" aria-hidden="true" />
               {plan.verified ? "Copy the plan for an agent" : "Copy an agent handoff"}
@@ -370,5 +372,31 @@ export function OpportunityDrawer({
         </div>
       ) : null}
     </AdaptivePanel>
+  );
+}
+
+/**
+ * Where this cause sits on the one map.
+ *
+ * A link rather than a second canvas: the galaxy already exists, it already
+ * knows how to guarantee a file a node, and drawing a small copy of it here
+ * would put two fields with two geometries on one screen.
+ */
+function MapLink({
+  adapter,
+  opportunity,
+}: {
+  adapter: PerformanceViewAdapter;
+  opportunity: PerformanceOpportunity;
+}) {
+  const href = adapter.mapHref?.(opportunity.opportunity_id, opportunity.file_path);
+  if (!href || !opportunity.file_path) return null;
+  return (
+    <a
+      href={href}
+      className="inline-block rounded text-sm font-medium text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+    >
+      Show this cause on the map
+    </a>
   );
 }

@@ -3051,7 +3051,7 @@ wheels = [
 
 [[package]]
 name = "repowise"
-version = "0.46.0"
+version = "0.48.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -3084,6 +3084,7 @@ dependencies = [
     { name = "tree-sitter-c-sharp" },
     { name = "tree-sitter-cpp" },
     { name = "tree-sitter-dart" },
+    { name = "tree-sitter-gdscript" },
     { name = "tree-sitter-go" },
     { name = "tree-sitter-html" },
     { name = "tree-sitter-java" },
@@ -3099,6 +3100,7 @@ dependencies = [
     { name = "tree-sitter-svelte" },
     { name = "tree-sitter-swift" },
     { name = "tree-sitter-typescript" },
+    { name = "tree-sitter-vb-dotnet" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "watchdog" },
 ]
@@ -3179,6 +3181,7 @@ requires-dist = [
     { name = "tree-sitter-c-sharp", specifier = ">=0.23,<1" },
     { name = "tree-sitter-cpp", specifier = ">=0.23,<1" },
     { name = "tree-sitter-dart", specifier = ">=0.1,<1" },
+    { name = "tree-sitter-gdscript", specifier = ">=6.1,<7" },
     { name = "tree-sitter-go", specifier = ">=0.23,<1" },
     { name = "tree-sitter-html", specifier = ">=0.23,<1" },
     { name = "tree-sitter-java", specifier = ">=0.23,<1" },
@@ -3194,6 +3197,7 @@ requires-dist = [
     { name = "tree-sitter-svelte", specifier = ">=1,<2" },
     { name = "tree-sitter-swift", specifier = ">=0.0.1" },
     { name = "tree-sitter-typescript", specifier = ">=0.23,<1" },
+    { name = "tree-sitter-vb-dotnet", specifier = ">=0.3,<1" },
     { name = "types-networkx", marker = "extra == 'dev'", specifier = ">=3.3,<4" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<1" },
     { name = "watchdog", specifier = ">=4,<5" },
@@ -4034,6 +4038,17 @@ wheels = [
 ]
 
 [[package]]
+name = "tree-sitter-gdscript"
+version = "6.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d5/61/d681398e5551b27b3ae32026665392f41f8ca2764847acecc727312e462e/tree_sitter_gdscript-6.1.0.tar.gz", hash = "sha256:33c4406a47ca5e3c436849d2a9b878a161b6f4fda305cf5620f60abebf5acf9e", size = 107803, upload-time = "2026-09-04T09:04:59.03Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f4/2c/eab1b3890a99c85f97638b55d9d5745746fb3afc4b392e2363c7f8ed7d03/tree_sitter_gdscript-6.1.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:c588efba0ae4e1aa385caadcc19b3854b1270a855337ba5e4df1da4bbf5c38d1", size = 52192, upload-time = "2026-09-04T09:04:55.645Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/96/f724d35e7dcb443f6c8b3bb73e8a211d96abed8d829078511cfa9af8b2b6/tree_sitter_gdscript-6.1.0-cp39-abi3-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:85558120e50ee87b6847bb81273f7a5c8fadcbc7d4ee531701f8ed403d8de33c", size = 76616, upload-time = "2026-09-04T09:04:56.771Z" },
+    { url = "https://files.pythonhosted.org/packages/34/10/58b1ad211163473162648a96be4ed3c25d98dfc1b2f846802b99e540424d/tree_sitter_gdscript-6.1.0-cp39-abi3-win_amd64.whl", hash = "sha256:b2b87ea4cf21b3c33a00406840936f073b0db344ac46215f88edb8f72c72c761", size = 51341, upload-time = "2026-09-04T09:04:57.985Z" },
+]
+
+[[package]]
 name = "tree-sitter-go"
 version = "0.25.0"
 source = { registry = "https://pypi.org/simple" }
@@ -4264,6 +4279,17 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/7f/cb/f57b149d7beed1a85b8266d0c60ebe4c46e79c9ba56bc17b898e17daf88e/tree_sitter_typescript-0.23.2-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:8d4f0f9bcb61ad7b7509d49a1565ff2cc363863644a234e1e0fe10960e55aea0", size = 340245, upload-time = "2024-11-11T02:36:06.473Z" },
     { url = "https://files.pythonhosted.org/packages/8b/ab/dd84f0e2337296a5f09749f7b5483215d75c8fa9e33738522e5ed81f7254/tree_sitter_typescript-0.23.2-cp39-abi3-win_amd64.whl", hash = "sha256:3f730b66396bc3e11811e4465c41ee45d9e9edd6de355a58bbbc49fa770da8f9", size = 278015, upload-time = "2024-11-11T02:36:07.631Z" },
     { url = "https://files.pythonhosted.org/packages/9f/e4/81f9a935789233cf412a0ed5fe04c883841d2c8fb0b7e075958a35c65032/tree_sitter_typescript-0.23.2-cp39-abi3-win_arm64.whl", hash = "sha256:05db58f70b95ef0ea126db5560f3775692f609589ed6f8dd0af84b7f19f1cbb7", size = 274052, upload-time = "2024-11-11T02:36:09.514Z" },
+]
+
+[[package]]
+name = "tree-sitter-vb-dotnet"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/04/a1/95f99d291163cab128f86e6303268f50c37856bcf7dc361435f752549a48/tree_sitter_vb_dotnet-0.3.0.tar.gz", hash = "sha256:6e7178a8cf7c34b8ba07aa3914bef5475f4eafd348cdd393ff3ebfc7cb41ae61", size = 1049419, upload-time = "2026-09-04T10:33:34.645Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/68/22/d209d8bce9148d50e17190b8c3fb7909fa51d65ed41a83efb7d99f4aa180/tree_sitter_vb_dotnet-0.3.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:ad7dcf05170b429a07f05f78a2f0f5d3d46fc6174b8a7c90eec7cbfb980fca76", size = 326738, upload-time = "2026-09-04T10:33:30.602Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/69/d089c1f8e12ce743d41546650ca9a479bf99ea0eb74652ccd8939b198a4b/tree_sitter_vb_dotnet-0.3.0-cp310-abi3-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:7d2a2c6670c9f5917b3606e8a44045d1b508fc3258ede9f31a9b3a75f704dc99", size = 325760, upload-time = "2026-09-04T10:33:31.896Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/19/4edabceed5aaa9f0390bae115bd7a68f8e3b4fbe3c893c1e79bf060ec0a1/tree_sitter_vb_dotnet-0.3.0-cp310-abi3-win_amd64.whl", hash = "sha256:f5615797aa1c5d98f1906eeda5ad3a78667069bd51b78ddf143118aaff57801e", size = 307980, upload-time = "2026-09-04T10:33:33.195Z" },
 ]
 
 [[package]]

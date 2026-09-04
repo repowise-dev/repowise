@@ -132,6 +132,12 @@ Truncated skeleton blocks are replaced in place by a `[repowise#<ref>: ...]`
 marker; everything else is captured into one combined document per response.
 A response that would still oversize sheds whole blocks, in an order each tool
 declares cheapest-loss-first, and reports `truncated: true` alongside the refs.
+
+Every tool is budgeted. Most declare their own shed order; the rest meet a
+final size guard that trims the largest blocks and records what it took. Either
+way no response is returned unbounded and unflagged, and
+`_meta.response_budget` reports the ceiling that applied and the size delivered
+under it.
 Resolve refs with `repowise expand <ref>` from a shell, or
 `get_symbol("repowise#<ref>")` from any MCP client. See
 [DISTILL.md](DISTILL.md) for the full reversibility model.
@@ -141,17 +147,21 @@ Resolve refs with `repowise expand <ref>` from a shell, or
 | Field | When present |
 |-------|--------------|
 | `timing_ms` | Tool wall-time |
-| `hint` | A short, conservative follow-up suggestion |
+| `hint` | A short, conservative follow-up suggestion. On a `get_answer` reply that graded `low` while the index is behind live HEAD, it says to run `repowise update` and ask again before trusting the answer |
 | `cached` | Only when `true` |
 | `index_age_days` | Days since the last `repowise update` |
 | `indexed_commit` | Short (12-char) SHA the index was built against |
-| `live_head` | Only when it differs from `indexed_commit` |
+| `live_head` | Short (12-char) SHA of the current checkout, whenever `.git/HEAD` is readable. Equal to `indexed_commit` when the index is current |
 | `stale_warning` | Only on a real signal: HEAD mismatch **that actually changed files**, or age over ~90 days when git is unreachable. Two commits with identical trees (an empty commit, a no-op merge) report `index_behind` with no warning |
 | `index_behind` | Whenever the live-vs-indexed comparison ran: `true` if HEAD has moved (alongside `stale_warning` when served content actually changed), `false` if the commits match. Absent means the comparison could not run (no git, or a repo-level tool that serves no file content) |
 | `embedder_degraded` | Whenever an embedder is resolved, `true` or `false`. Absent means none was initialised |
 | `embedder`, `embedder_warning` | Only when the embedder fell back to a mock/degraded mode |
+| `response_budget` | Always: `limit_chars` (the ceiling that applied), `tier` (`default` or `expanded`, chosen by whether the call passed an expansion argument), `serialized_chars` (the size delivered) |
+| `scope_hint` | `get_context` and `get_answer`, when knowledge-graph layers exist that contain none of the served paths: one sentence naming up to three of them with file counts, so an agent knows which areas the answer did not touch |
+| `complete` | When the response served whole units: how many symbol bodies (bounds verified against the live file) or whole files, and that they need not be re-opened. Sliced bodies and partial ranges are never counted |
+| `state` | Only when something fired: `degraded` plus `degraded_reasons` mapping each contributing key to its reason (a synthesis reason string, the retrieval legs that broke), `partial`, `truncated`. A coarse roll-up of the response's own flags |
 
-Silence on `stale_warning` means the index is current; don't infer staleness from its absence. `list_repos`, `get_architecture`, `get_blast_radius`, and `get_conformance` don't carry a freshness envelope at all.
+Silence on `stale_warning` means the index is current; don't infer staleness from its absence. `list_repos`, `get_architecture`, `get_blast_radius`, and `get_conformance` don't carry a freshness envelope at all. Neither does `search_codebase` when a workspace call merges results from several repos, since there is no single indexed commit to compare.
 
 ---
 
@@ -237,22 +247,51 @@ One-call RAG: retrieves over the wiki, gates synthesis on confidence, and return
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `question` | string | Yes | Natural language question about the codebase |
+| `scope` | string | No | Repository-relative path prefix to restrict retrieval to |
+| `include` | list[string] | No | `["evidence"]` returns the expanded projection: no confidence-keyed trimming, and a larger response budget |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 
-**Returns:** A synthesized answer with file/symbol citations and a confidence label (`high`, `medium`, `low`). High-confidence answers can be cited directly. Low-confidence answers return ranked wiki candidates instead, with the page excerpt served on the highest-scoring few; the rest carry path, title and summary, and one follow-up call opens any of them.
+**Returns:** A synthesized answer with file/symbol citations, a `confidence`
+label (`high`, `medium`, `low`) rating the prose, and a `retrieval_quality`
+label (`high`, `partial`, `weak`) rating the evidence under it. Every grade
+returns an answer; what changes is how much evidence rides along with it.
+A `high` answer can be cited directly and sheds `retrieval`, `best_guesses`,
+`candidates` and `fallback_targets`, keeping one quote and, when the answer is
+not already grounded, one symbol body. A `medium` answer keeps one body, two
+quotes and the top two evidence rows. A `low` answer keeps two bodies and the
+top three evidence rows, and `fallback_targets` appears only when nothing else
+was served. Read the rows the reply names rather than calling `search_codebase`
+again. `include=["evidence"]` skips this trimming entirely.
+
+When synthesis cannot run at all, no provider resolvable or the call failed, the
+response carries a top-level `degraded` naming the reason, is built from
+retrieval and mined rationale with no LLM involved, and keeps the fullest
+evidence shape whatever it graded. It also raises `_meta.state.degraded`.
+`confidence` there is graded from the retrieval actually served, not from the
+missing prose: on `no-llm-provider` it is `medium` unless `retrieval_quality` is
+`weak`, in which case `low`. Any other reason, a configured provider whose call
+failed, stays `low`, because a retry can still produce a real answer. `high` is
+unreachable on this path, since the `answer` string is assembled boilerplate.
+
+`_meta.complete` names the symbol bodies served whole from live source, with
+bounds checked against the file; do not re-open those. `_meta.scope_hint` names
+up to three knowledge-graph layers holding none of the served paths, so an agent
+knows which areas the answer did not touch. When an answer grades `low` and the
+index is behind live HEAD, `_meta.hint` says to run `repowise update` and ask
+again before trusting it.
 
 Two path-bearing blocks, with different jobs:
 
 | Field | Job | Confidence-gated? |
 |-------|-----|-------------------|
 | `retrieval` | **Evidence.** Enriched hits (summary, snippet, key symbols) to re-read when the prose needs checking. Shrinks as confidence rises, because a trustworthy answer needs less of it. | Yes |
-| `candidates` | **Navigation.** The ranked shortlist of files retrieval resolved, one `{path, lines?}` entry each, up to 20. | No |
+| `candidates` | **Navigation.** The ranked shortlist of files retrieval resolved, one `{path, lines?}` entry each, up to 20. | Shape-gated: the default projection drops it at every confidence |
 
-`candidates` is present whenever retrieval resolved anything, including on high-confidence answers where `retrieval` is deliberately empty. It is where to look next; it is not evidence that the answer is right.
+`candidates` is built whenever retrieval resolved anything, including on high-confidence answers where `retrieval` is deliberately empty, but the default projection drops it; ask for it with `include=["evidence"]`. It is where to look next; it is not evidence that the answer is right.
 
 **Retrieval legs:** three, fused by Reciprocal Rank Fusion: full-text and vector search over wiki pages, plus the structural symbol index. The symbol leg is keyed on the content words of the question rather than on whether it happens to carry an identifier-shaped token, so "how does an incremental update persist symbols" reaches the same rows as `_persist_symbols`. It exists because a generated file page renders only the *public* symbol table: a private helper or a local name is not in the text the other two legs index.
 
-**When to use:** First call on any code question. Collapses search, read, and reason into one round-trip. If confidence is low, follow up with `search_codebase` to discover candidate pages.
+**When to use:** First call on any code question. Collapses search, read, and reason into one round-trip. On a low grade, start from the evidence rows the reply already carries; reach for `search_codebase` only when `retrieval_quality` is `weak`.
 
 **Example call:**
 
@@ -271,7 +310,7 @@ The workhorse tool. Returns docs, symbols, ownership, freshness, and community m
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `targets` | list[string] | Yes | File paths, module names, or symbol IDs. Batch multiple targets in one call. Symbol ids take the same `"path/to/file.py::Name"` form `get_symbol` accepts, with the same `::` / `.` / `/` separator normalisation, so an id from either tool works in the other. |
-| `include` | list[string] | No | Additional data to include: `"full_doc"` (full wiki markdown), `"callers"` (who calls this, symbol targets), `"callees"` (what this calls, symbol targets), `"ownership"` (primary owner, bus factor, contributor count), `"last_change"` (last commit date + author), `"metrics"` (PageRank, betweenness, percentiles), `"community"` (cluster membership + neighbors), `"decisions"` (full decision records; default returns titles only), `"skeleton"` (file targets only; the file with bodies elided: every signature, imports, and the bodies of the most central symbols, token-budgeted; typically ~15% of the full file's tokens) |
+| `include` | list[string] | No | Additional data to include: `"full_doc"` (full wiki markdown), `"callers"` (who calls this, symbol targets), `"callees"` (what this calls, symbol targets), `"ownership"` (primary owner, bus factor, contributor count), `"last_change"` (last commit date + author), `"metrics"` (PageRank, betweenness, percentiles), `"community"` (cluster membership + neighbors), `"decisions"` (full decision records; default returns titles only), `"skeleton"` (file targets only; the file with bodies elided: every signature, imports, and the bodies of the most central symbols, token-budgeted; typically ~15% of the full file's tokens). An empty `callers`, `callees` or `used_by` list sits beside a `*_basis` object: the language, how many call edges the index resolved for it, the share of those that are guesses, and a note that unbound call sites are not counted, so an empty list means no resolved edge, not proof of none |
 | `compact` | boolean | No | Default `true`. Set `false` for full structure block and importer list. |
 | `repo` | string | No | *(workspace only)* Target repo alias, or `"all"` |
 
@@ -577,6 +616,18 @@ the same distinction in one word: `measured`, `inferred`, or absent. Build the
 measured map with `coverage run --contexts=test` followed by
 `repowise coverage add`.
 
+In workspace mode the response also carries `cross_repo`, and every
+`cross_repo.consumers[]` row gains a `tests` block: a `state` (`measured`,
+`inferred`, `none` or `unresolved`), up to five `tests_to_run` rows carrying
+`test_file`, `test_id`, `basis`, `via` and `confidence`, `total` and
+`truncated` for the overflow (the tail goes to the omission store), and
+`unresolved_reason` / `unresolved_detail` when the join could not be followed.
+Only `tests_to_run` is capped at five; `total` is the true number of tests
+found for that consumer, so `truncated: true` means `total` minus five went to
+the omission store. `unresolved_reason: "lookup_failed"` is the state every row
+lands in when the join itself failed, as opposed to one link that could not be
+followed, and `unresolved_detail` names what failed.
+
 > **Output-schema change.** `impacted_tests.tests` is now
 > `impacted_tests.tests_to_run`, matching `get_risk`'s directive.
 
@@ -642,13 +693,21 @@ Architectural decision intelligence. Falls back to git archaeology when no decis
 **Modes:**
 
 1. **NL search**: pass a question, optionally anchored to `targets`: `get_why(query="why JWT over sessions?")` -> searches decision records.
-2. **Path-based**: pass a file path as `query`: `get_why(query="src/auth/service.ts")` -> returns decisions governing that file plus its origin story.
+2. **Path-based**: pass a file path as `query`: `get_why(query="src/auth/service.ts")` -> returns three lanes, `decisions` (accepted, governing), `candidates` (nobody accepted them) and `history` (accepted and since replaced), plus the file's origin story.
 3. **Health dashboard**: no `query`: `get_why()` -> stale decisions, conflicts, ungoverned hotspots.
 4. **Reference lookup**: pass `id`: `get_why(id="ev_...")` -> the exact evidence and supporting decision in one call.
 
 **Returns:** Matching decision records with title, rationale, alternatives considered, affected files, staleness score. Health mode returns stale decisions, conflicts, and ungoverned hotspots.
 
 `answer_basis` names the strongest lane the response rests on: `decision`, `episode`, `rationale`, `archaeology`, or `documentation`. Only `decision` is a ruling; the rest are evidence to weigh. Absent when no lane was served, and on the health dashboard.
+
+**The lane a record is in decides whether it binds you, and path mode puts it in one.** `decisions` holds accepted records: somebody accepted each in a recorded event naming the reason, the scope, the evidence and the accepter, so treat them as constraints. `candidates` holds records something inferred and nobody has agreed to; read them as hints and never as rules, and note the `candidates_note` beside them says so too. Nothing produces an acceptance except an explicit `repowise decision confirm` or a committed ADR that says it is accepted, so a candidate that has recurred across fifty sessions is still a candidate.
+
+Do not read the lane off `status`. That column is a projection kept in step for readers that predate the split, and a record can carry `status: "active"` with no acceptance behind it at all. An accepted record instead carries a `currency`: `active` (still describes its code), `needs_review` (its files have moved, and it still binds), `uncheckable` (it names nothing, so nothing can check it), `superseded` or `dismissed`. A candidate carries `review_state: "open"` and no `currency`.
+
+Path mode's `alignment` counts the lanes separately and they sum to `governing_count`, which is every record naming the file: `active_count` is what governs it, `deprecated_count` what was accepted and withdrawn, `uncheckable_count` what was accepted but names nothing, `candidate_count` what is merely awaiting review. `score` is derived from `active_count` alone, so a file with `active_count: 0` is ungoverned however many candidates name it.
+
+The `candidates` and `history` lanes are capped at three rows each and shed first under response-budget pressure, so an absent lane means the budget was tight, not that it was empty. `get_overview`, `get_risk` directives and `get_answer` serve accepted records only; a candidate reaches none of them as an instruction.
 
 **When to use:** Before architectural changes, understand existing intent and constraints. After changes, record new decisions.
 
@@ -686,7 +745,7 @@ Unreachable code, unused exports, unused internals, and zombie packages, sorted 
 | `no_unused_exports` | boolean | No | Exclude `unused_export` findings (default `false`) |
 | `finding_id` | string | No | Resolve an emitted stable finding `id` directly in one call |
 
-**Returns:** Dead code findings grouped by confidence tier (high >= 0.8, medium, low). Each finding includes: file path, kind, confidence score, line count, and cleanup impact estimate. In workspace mode, confidence is lowered on findings other repos still import.
+**Returns:** Dead code findings grouped by confidence tier (high >= 0.8, medium, low). Each finding includes: file path, kind, confidence score, line count, and cleanup impact estimate. In workspace mode, confidence is lowered on findings other repos still import. `summary.call_resolution_basis` lists, per language, how many call edges the index resolved and what share are guesses, which is the graph the findings rest on.
 
 **When to use:** Cleanup tasks, not a targeted fix. Conservative by design: `safe_only` excludes dynamically-loaded patterns and framework-decorated functions.
 
@@ -719,6 +778,8 @@ get_health(include=["trend"], only=["trend"])
 get_health(include=["accuracy"], only=["accuracy"])
 get_health(include=["coverage"], only=["coverage"])
 get_health(include=["performance","refactoring"], only=["performance_opportunities","refactoring_plans"])
+get_health(include=["refactoring"], only=["refactoring_opportunities"], limit=6)
+get_health(opportunity_id="refop2_...")
 ```
 
 **Parameters:**
@@ -727,14 +788,20 @@ get_health(include=["performance","refactoring"], only=["performance_opportuniti
 |-----------|------|----------|-------------|
 | `targets` | list[string] | No | File paths, or `module:foo` to expand a module's file set. Empty means dashboard mode. |
 | `include` | list[string] | No | Opt-in blocks (default response stays lean): `"biomarkers"` (findings in dashboard mode), `"refactoring"` (structured, graph-aware refactoring plans; see below), `"trend"` (snapshot diff + declining / predicted-decline alerts), `"coverage"`, `"accuracy"` (the "does the score find the bugs?" stat, dashboard mode), `"signals"` (per-file process / people / topology signals, targeted mode), `"churn_complexity"` (churn x complexity quadrant points, dashboard mode), and a dimension name (`"performance"` / `"defect"` / `"maintainability"`) to filter findings to that pillar. |
-| `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode`, `_meta`, `unresolved`, `known_modules` and each kept list's `*_total` sibling always survive. The three `include` **block** names work as aliases: `biomarkers`→`findings`, `accuracy`→`defect_accuracy`, `refactoring`→`refactoring_plans`. The `include` **dimension** names (`performance`, `defect`, `maintainability`) do not — they filter rows inside several blocks and have no single key to resolve to, so they land in `unknown_only_keys`. Nor does `signals`, which merges into `metrics[].signals` — in targeted mode, where `signals` applies, name `metrics` instead. |
+| `only` | list[string] | No | Keep just these top-level keys. `include` adds blocks, `only` subtracts them. `mode`, `_meta`, `unresolved`, `known_modules` and each kept list's `*_total` sibling always survive. The three `include` **block** names work as aliases: `biomarkers`→`findings`, `accuracy`→`defect_accuracy`, `refactoring`→`refactoring_plans`. Note that `refactoring_plans` is the raw
+per-detector list and is now **opt-in**: `include=["refactoring"]` leads with
+`refactoring_opportunities`, the composed unit, and emitting both would ship two
+representations of the same work in one response. The `include` **dimension** names (`performance`, `defect`, `maintainability`) do not — they filter rows inside several blocks and have no single key to resolve to, so they land in `unknown_only_keys`. Nor does `signals`, which merges into `metrics[].signals` — in targeted mode, where `signals` applies, name `metrics` instead. |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 | `limit` | int | No | Max rows in **every** ranked list (default 20, capped at 50). `0` means no rows; the `*_total` siblings still report the true counts. |
 | `finding_id` | string | No | Resolve an emitted stable health-finding `id` directly in one call. |
 | `plan_id` | string | No | Resolve an emitted stable refactoring-plan `id` directly in one call. |
-| `opportunity_id` | string | No | Resolve a performance opportunity `id` directly. Mutually exclusive with the two above; passing more than one returns `mode: "conflict"` naming them rather than answering about whichever was checked first. |
+| `opportunity_id` | string | No | Resolve one opportunity `id` directly. The prefix picks the pillar: `perf...` is a performance cause, `refop...` a composed refactoring. Mutually exclusive with the two above; passing more than one returns `mode: "conflict"` naming them rather than answering about whichever was checked first. |
+| `refactoring_type` / `refactoring_confidence` / `refactoring_effort` | string | No | Queue filters over the same read model and vocabulary the REST route uses. An unrecognized value is reported back in `ignored_arguments` rather than silently narrowing to nothing. |
+| `refactoring_view` | string | No | Named ordering for `refactoring_opportunities`. `diversified` (default) round-robins the rank order over cause, refactoring type and area, because the ranked head is a genuine run of ties; `canonical` is the published rank order verbatim, ties and all; `file_spread` asked for one row per file, which a composed opportunity satisfies by construction, so it resolves onto the diversified order. Both older values keep working. It also selects the legacy `refactoring_plans` list's view, where `diversified` resolves to that list's historical `canonical` default. |
+| `cursor` | int | No | Zero-based offset into a ranked collection; the `recovery` block names the exact next call. |
 | `performance_view` | string | No | `detail` (default) or `summary`. `summary` keeps identity, counts and plan state and drops the explanatory fields. |
-| `performance_context` | string | No | `production` / `tooling` / `test` / `unknown` / `all`. |
+| `performance_context` | string | No | `production` (default) / `tooling` / `test` / `unknown` / `all`. The summary block is scoped to the same context as the queue; `repository_total` stays the count over every context. |
 | `performance_boundary` | string | No | `db` / `network` / `filesystem` / `subprocess` / `lock` / `none`. |
 | `performance_confidence` | string | No | Evidence confidence: `high` / `medium` / `low`. Fix safety and actionability are separate facets. |
 | `performance_sort` | string | No | `rank` (default) / `leverage` / `observations`. |
@@ -774,7 +841,10 @@ does not have an error report.
 `_meta.health_analysis` explicitly labels the result as stored analysis,
 states that the call did not recompute it, distinguishes index/live-Git facts
 from source-byte verification, and gives the exact commit-then-update refresh
-precondition. `_meta.health_analyzed_at` dates the health pass, which is separate from
+precondition. Its `status` is `available`, `provenance_unknown` (metrics exist
+but no row recorded the commit they were computed against, with `reason:
+"analysis_commit_not_recorded"`), or `unavailable` (no stored analysis at all).
+`provenance_unknown` is a gap in attribution, not a failed analysis. `_meta.health_analyzed_at` dates the health pass, which is separate from
 indexing and can lag it, and `_meta.health_analyzed_commit` says which commit
 those scores were computed against. The incremental update path rescores only
 the files that changed, so the metrics table can hold rows from several passes
@@ -787,10 +857,11 @@ five ranked lists compose: `include=['refactoring']` on a mid-size repo lands
 near the host's tool-result cap, past which the host rejects the whole result
 and you get nothing. Pair `include` with `only` —
 `get_health(include=['refactoring'], only=['refactoring_plans'])` is the call
-`directive.plan_via` names. Anything that would still overflow is trimmed
-longest-ranked-list-first and reported in `_meta.truncated_to_fit`
-(`{block: rows_dropped}`), never silently; the `*_total` siblings still describe
-what was there, and re-requesting one block with `only` recovers it.
+`directive.plan_via` names. Anything that would still overflow is shed in the order this tool declares,
+never silently: the response carries `truncated: true`, the `*_total` /
+`*_emitted` / `*_reduced_reason` siblings describe what was there, and
+`_meta.omitted` names refs that restore the dropped rows. Re-requesting one
+block with `only` also recovers it.
 
 **Test material is bucketed, not hidden.** Every metric row carries `is_test`
 (distinct from `has_test_file`: "is this file a test" vs "is this file tested").
@@ -866,7 +937,26 @@ The opt-in enrichments:
 - **`churn_complexity`** returns `churn_complexity` points (one per recently-changed
   file: 90-day commit count, max CCN, NLOC, score, churn percentile): the
   refactor zone where volatility and tangle collide.
-- **`refactoring`** returns ranked, structured refactoring plans (not template
+- **`refactoring`** returns `refactoring_opportunities`: one composed unit per
+  file, carrying the diagnosis it leads with (`lead_biomarker`), whether it
+  actually addresses that diagnosis (`addresses_primary_problem`, tri-state -
+  `null` means no dominant finding was recorded, which is not `false`), its
+  ordered `steps` with a `mechanical` / `judgment` `applicability` each, and
+  counts for the evidence behind it. Ordered by `refactoring_view`. A step
+  carrying `relocated_by` names an earlier step that moves its symbol to another
+  file: locate the symbol again before applying it, because the step's own
+  `file_path` and span describe where the symbol was.
+  `get_health(opportunity_id="refop...")` returns the full ordered steps, the
+  member plan payloads, the validation profile and structured `next_actions`;
+  `only=["refactoring_evidence"]` plus `cursor` pages the evidence.
+- **`refactoring_directive`** rides on a bare `get_health()`: one opportunity,
+  what it addresses, and the exact `opportunity_id` call that opens it. One
+  primary-key read; it never touches the queue. **`refactoring_summary`**
+  (`only=["refactoring_summary"]`) is the rollup by type, effort, confidence,
+  lifecycle and mechanical-vs-judgment, with facets.
+- **`refactoring_plans`** is the raw per-detector list, unchanged and still
+  addressable by `plan_id`, but **opt-in**: name it in `only` to get it. It
+  returns ranked, structured refactoring plans (not template
   strings): `extract_class` (the cohesion `groups` to split into), `extract_helper`
   (clone `occurrences` + `suggested_site`), `move_method` (`{method, from_class,
   to_class}`), and `break_cycle` (the import `cut_edges`). Each plan carries its
@@ -959,7 +1049,7 @@ materialized the analysis yet, or did so under an older model.
 ```
 get_health()                                                  # the lead
 get_health(include=["performance"], only=["performance_summary"])
-get_health(include=["performance"], only=["performance_opportunities"], performance_context="production")
+get_health(include=["performance"], only=["performance_opportunities"], performance_context="all")
 get_health(opportunity_id="perf2_...")                        # the cause, its plan, its evidence
 get_health(opportunity_id="perf2_...", only=["performance_evidence"], cursor=3)
 ```
@@ -1010,6 +1100,11 @@ path weight, not a breakage probability), each with `distance` (hops),
 `structural` (a real dependency vs co-change only), and the edge kinds that
 carried the impact; plus `impact_score_semantics`, `impacted_repos`,
 `structural_count` / `behavioral_count`, `total_impacted`, and unresolved targets.
+
+Each `symbol_targets[].consumers[]` row also carries a `tests` block of the same
+shape as `get_change_risk`'s: which tests in that consumer repo guard the
+symbol's contracts, capped at five with the tail in the omission store, and a
+named reason when a link could not be followed.
 
 **When to use:** Before changing a high-fan-out provider, see who structurally
 consumes it across repo boundaries. Structural reach outweighs historical

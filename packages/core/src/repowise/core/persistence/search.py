@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.sql import text
@@ -66,6 +67,31 @@ PAGE_FTS_DDL = (
     "CREATE VIRTUAL TABLE IF NOT EXISTS page_fts "
     "USING fts5(page_id UNINDEXED, title, content, summary, target_path)"
 )
+
+_PAGE_FTS_INSERT_SQL = (
+    "INSERT INTO page_fts(page_id, title, content, summary, target_path) "
+    "VALUES (:pid, :title, :content, :summary, :target_path)"
+)
+
+# SQLite allows 999 host parameters per statement by default.
+_ID_CHUNK = 500
+
+
+async def _delete_page_ids(conn: Any, page_ids: Sequence[str]) -> None:
+    """Delete the rows for *page_ids* on an already-open connection.
+
+    Takes the connection rather than opening one so a caller that also
+    inserts can put both halves in the same transaction.
+    """
+    for start in range(0, len(page_ids), _ID_CHUNK):
+        chunk = page_ids[start : start + _ID_CHUNK]
+        placeholders = ", ".join(f":p{i}" for i in range(len(chunk)))
+        params = {f"p{i}": pid for i, pid in enumerate(chunk)}
+        await conn.execute(
+            text(f"DELETE FROM page_fts WHERE page_id IN ({placeholders})"),
+            params,
+        )
+
 
 # An indexed row whose page is gone from ``wiki_pages``. Counting and deleting
 # share the predicate so the number reported is exactly the number removed.
@@ -368,47 +394,68 @@ class FullTextSearch:
 
         A page below the information floor is not indexed, and any row it
         already had is deleted. Ten places write this index, so the decision
-        lives here rather than at each of them — one that skipped the check
-        would keep re-admitting the pages the others exclude, and nothing
-        would report the disagreement. The page itself is untouched: it stays
-        in ``wiki_pages`` and stays a valid link target.
+        lives in :meth:`index_many` rather than at each of them — one that
+        skipped the check would keep re-admitting the pages the others
+        exclude, and nothing would report the disagreement. The page itself is
+        untouched: it stays in ``wiki_pages`` and stays a valid link target.
         """
-        if summary is None or target_path is None:
-            self._warn_missing_index_fields(page_id, summary, target_path)
-            summary = summary if summary is not None else ""
-            target_path = target_path if target_path is not None else ""
+        await self.index_many([(page_id, title, content, summary, target_path)])
 
-        indexable = meets_information_floor(content)
-        if not indexable:
-            self._count_skipped_below_floor(page_id, content)
+    async def index_many(
+        self,
+        pages: Sequence[tuple[str, str, str, str | None, str | None]],
+    ) -> None:
+        """Add or replace many pages in a single transaction.
 
-        if self._dialect == "sqlite":
-            async with self._engine.begin() as conn:
-                # FTS5 does not support UPDATE; use DELETE + INSERT. The delete
-                # runs either way: a page that has fallen below the floor since
-                # its last index must lose the row it had, or the exclusion
-                # only ever applies to pages that never existed.
-                await conn.execute(
-                    text("DELETE FROM page_fts WHERE page_id = :pid"),
-                    {"pid": page_id},
-                )
-                if not indexable:
-                    return
-                await conn.execute(
-                    text(
-                        "INSERT INTO page_fts(page_id, title, content, summary, target_path) "
-                        "VALUES (:pid, :title, :content, :summary, :target_path)"
-                    ),
-                    {
-                        "pid": page_id,
-                        "title": title,
-                        "content": content,
-                        "summary": summary,
-                        "target_path": target_path,
-                    },
-                )
-        # PostgreSQL: the GIN index on wiki_pages is maintained automatically
-        # by the database as rows are inserted/updated via the CRUD layer.
+        Each entry is ``(page_id, title, content, summary, target_path)`` and
+        gets exactly the semantics :meth:`index` documents, floor exclusion
+        included — this is the one implementation and :meth:`index` is the
+        single-page call into it. What changes is the transaction count:
+        indexing a wiki a page at a time costs one commit per page, which on a
+        few thousand pages is most of what persisting the index takes.
+
+        A page id repeated inside *pages* keeps its last entry, which is what
+        the per-page loop this replaces would have left on disk.
+        """
+        if not pages:
+            return
+
+        # The accounting runs on every dialect, because a call site that
+        # forgets a field or writes a page too thin to index is wrong wherever
+        # it runs, and only these counters say so.
+        #
+        # FTS5 has no UPDATE, so a write is DELETE + INSERT. Every id is
+        # deleted and only the qualifying ones are re-inserted: a page that
+        # has fallen below the floor since its last index has to lose the row
+        # it had, or the exclusion only ever applies to pages that never
+        # existed.
+        deletions: dict[str, None] = {}
+        insertions: dict[str, dict[str, str]] = {}
+        for page_id, title, content, summary, target_path in pages:
+            deletions[page_id] = None
+            if summary is None or target_path is None:
+                self._warn_missing_index_fields(page_id, summary, target_path)
+            if meets_information_floor(content):
+                insertions[page_id] = {
+                    "pid": page_id,
+                    "title": title,
+                    "content": content,
+                    "summary": summary or "",
+                    "target_path": target_path or "",
+                }
+            else:
+                self._count_skipped_below_floor(page_id, content)
+                insertions.pop(page_id, None)
+
+        if self._dialect != "sqlite":
+            # PostgreSQL: the GIN index on wiki_pages is maintained
+            # automatically as rows are written through the CRUD layer.
+            return
+
+        async with self._engine.begin() as conn:
+            await _delete_page_ids(conn, list(deletions))
+            if insertions:
+                await conn.execute(text(_PAGE_FTS_INSERT_SQL), list(insertions.values()))
 
     def _count_skipped_below_floor(self, page_id: str, content: str) -> None:
         """Record a page held out of the index, and name the first few."""
@@ -475,17 +522,8 @@ class FullTextSearch:
         if not page_ids:
             return
         if self._dialect == "sqlite":
-            # Chunk to stay under SQLite's default 999-parameter limit per statement.
-            chunk_size = 500
             async with self._engine.begin() as conn:
-                for start in range(0, len(page_ids), chunk_size):
-                    chunk = page_ids[start : start + chunk_size]
-                    placeholders = ", ".join(f":p{i}" for i in range(len(chunk)))
-                    params = {f"p{i}": pid for i, pid in enumerate(chunk)}
-                    await conn.execute(
-                        text(f"DELETE FROM page_fts WHERE page_id IN ({placeholders})"),
-                        params,
-                    )
+                await _delete_page_ids(conn, page_ids)
         # PostgreSQL: rows deleted via CASCADE automatically remove from GIN index.
 
     async def list_indexed_ids(self) -> set[str]:

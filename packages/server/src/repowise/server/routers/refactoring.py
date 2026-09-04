@@ -25,7 +25,25 @@ from repowise.core.analysis.health.refactoring.recommendations import (
     hydrate_recommendations,
 )
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.analysis.refactoring import ALLOWED_STATUSES
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.schemas import (
+    RefactoringOpportunitiesResponse,
+    RefactoringOpportunityDetailResponse,
+    RefactoringOpportunityStatusResponse,
+    RefactoringPlanStatusResponse,
+    RefactoringRollupResponse,
+)
+from repowise.server.services.refactoring_health import (
+    CANONICAL_ORDERS,
+    CANONICAL_VIEWS,
+    DEFAULT_VIEW,
+    RefactoringHealthService,
+    parse_query,
+)
+
+_STEPS_PER_ROW = 3
+"""Steps carried on a queue row; the detail call pages the rest."""
 
 router = APIRouter(
     prefix="/api/repos",
@@ -370,6 +388,178 @@ async def _local_repo_path(session: AsyncSession, repo_id: str) -> Path:
     return repo_path
 
 
+# ---------------------------------------------------------------------------
+# Composed opportunities. Thin adapters: filtering, ordering, paging, facets
+# and detail all live in ``services/refactoring_health.py``, which the MCP
+# surface reads through as well, so the two cannot answer differently.
+# ---------------------------------------------------------------------------
+
+
+def _service(session: AsyncSession, repo_id: str) -> RefactoringHealthService:
+    return RefactoringHealthService(session, repo_id, repo_id)
+
+
+@router.get(
+    "/{repo_id}/refactoring/opportunities",
+    response_model=RefactoringOpportunitiesResponse,
+    # ``ignored_arguments`` is only present when the query dropped something;
+    # a default would put an empty object on every response.
+    response_model_exclude_unset=True,
+)
+async def get_refactoring_opportunities(
+    repo_id: str,
+    refactoring_type: str | None = Query(
+        None, description="Lead refactoring type, or several comma-separated"
+    ),
+    status: str = Query(
+        "open", description="open | acknowledged | resolved | false_positive"
+    ),
+    confidence: str | None = Query(None, description="low | medium | high"),
+    effort: str | None = Query(None, description="S | M | L | XL"),
+    file_path: str | None = Query(None, description="One repo-relative file path"),
+    search: str | None = Query(None, description="Substring of the file path"),
+    mechanical: bool = Query(False, description="Only opportunities with a mechanical step"),
+    view: str = Query(DEFAULT_VIEW, description=" | ".join(CANONICAL_VIEWS)),
+    order: str | None = Query(None, description=" | ".join(CANONICAL_ORDERS)),
+    step_preview: int = Query(
+        _STEPS_PER_ROW,
+        ge=0,
+        le=20,
+        description="Steps inlined per row. 0 for a list that renders counts only.",
+    ),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """One page of composed opportunities, with facets and the rollup.
+
+    ``step_preview`` defaults to three, which is what an agent reading the queue
+    wants. A product list that renders the step *counts* and opens a drawer for
+    the rest asks for zero: the steps are most of the row's bytes and none of
+    its pixels.
+    """
+    query, ignored = parse_query(
+        lead_type=refactoring_type,
+        status=status,
+        confidence=confidence,
+        effort=effort,
+        mechanical=mechanical,
+        file_paths=[file_path] if file_path else None,
+        search=search,
+        view=view,
+        order=order,
+        limit=limit,
+        offset=offset,
+    )
+    page = await _service(session, repo_id).page(
+        query,
+        steps_per_item=step_preview if step_preview > 0 else None,
+        with_facets=True,
+        with_summary=True,
+    )
+    body: dict[str, Any] = {
+        "items": page.items,
+        "total": page.total,
+        "offset": page.offset,
+        "has_more": page.next_offset is not None,
+        "next_offset": page.next_offset,
+        "facets": page.facets,
+        "summary": page.summary,
+    }
+    if ignored:
+        body["ignored_arguments"] = ignored
+    return body
+
+
+@router.get("/{repo_id}/refactoring/summary", response_model=RefactoringRollupResponse)
+async def get_refactoring_rollup(
+    repo_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """The repository rollup and its one lead, by primary key."""
+    service = _service(session, repo_id)
+    return {"summary": await service.summary(), "directive": await service.directive()}
+
+
+@router.get(
+    "/{repo_id}/refactoring/opportunities/{opportunity_id}",
+    response_model=RefactoringOpportunityDetailResponse,
+    response_model_exclude_unset=True,
+)
+async def get_refactoring_opportunity_detail(
+    repo_id: str,
+    opportunity_id: str,
+    step_limit: int = Query(20, ge=0, le=200),
+    step_offset: int = Query(0, ge=0),
+    evidence_limit: int = Query(8, ge=0, le=200),
+    evidence_offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """One opportunity: its ordered steps, evidence, validation and plans."""
+    detail = await _service(session, repo_id).detail(
+        opportunity_id,
+        step_limit=step_limit,
+        step_offset=step_offset,
+        evidence_limit=evidence_limit,
+        evidence_offset=evidence_offset,
+    )
+    if not detail.get("resolved"):
+        raise HTTPException(status_code=404, detail="Unknown opportunity id")
+    return detail
+
+
+class RefactoringOpportunityStatusUpdate(BaseModel):
+    """The finding-triage vocabulary, applied to a whole opportunity."""
+
+    status: str = Field(..., description="open | acknowledged | resolved | false_positive")
+
+
+@router.patch(
+    "/{repo_id}/refactoring/opportunities/{opportunity_id}/status",
+    response_model=RefactoringOpportunityStatusResponse,
+)
+async def update_refactoring_opportunity_state(
+    repo_id: str,
+    opportunity_id: str,
+    payload: RefactoringOpportunityStatusUpdate,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """Record a decision about one opportunity, and so about all of its steps.
+
+    One request rather than one per step: the transition is applied to every
+    member plan through the same owner the plan route uses, and the
+    opportunity's own state is the rollup of what those plans then say.
+    """
+    if payload.status not in ALLOWED_STATUSES:
+        raise HTTPException(status_code=400, detail=f"invalid status: {payload.status}")
+    result = await crud.update_refactoring_opportunity_status(
+        session, repo_id, opportunity_id, payload.status
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=404, detail=f"refactoring opportunity not found: {opportunity_id}"
+        )
+    row, updated = result
+    if not updated:
+        # The opportunity exists but none of its steps could be written, so
+        # nothing was decided. Saying 200 here would report the caller's own
+        # request back to them as the stored state.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"refactoring opportunity {opportunity_id} has no resolvable steps to "
+                "transition; re-index the repository and try again"
+            ),
+        )
+    await session.commit()
+    return {
+        "opportunity_id": row.opportunity_id,
+        "status": row.status,
+        "steps_updated": updated,
+        "status_changed_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
 @router.get("/{repo_id}/refactoring/settings", response_model=RefactoringSettings)
 async def get_refactoring_settings(
     repo_id: str,
@@ -436,6 +626,44 @@ async def get_refactoring_plan(
         raise HTTPException(status_code=404, detail=f"refactoring plan not found: {suggestion_id}")
     recommendation = (await hydrate_recommendations(session, repo_id, [row]))[0]
     return _to_response(recommendation.as_dict())
+
+
+class RefactoringStatusUpdate(BaseModel):
+    """Same shape and vocabulary as health finding triage — one triage system."""
+
+    status: str = Field(..., description="open | acknowledged | resolved | false_positive")
+
+
+@router.patch(
+    "/{repo_id}/refactoring/{suggestion_id}/status",
+    response_model=RefactoringPlanStatusResponse,
+)
+async def update_refactoring_plan_status(
+    repo_id: str,
+    suggestion_id: str,
+    payload: RefactoringStatusUpdate,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """Record a decision about one plan.
+
+    ``false_positive`` also suppresses the plan on every later analysis, which
+    is how a wrong suggestion stops coming back instead of being re-emitted.
+    """
+    if payload.status not in ALLOWED_STATUSES:
+        raise HTTPException(status_code=400, detail=f"invalid status: {payload.status}")
+    row = await crud.update_refactoring_suggestion_status(
+        session, repo_id, suggestion_id, payload.status
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"refactoring plan not found: {suggestion_id}")
+    await session.commit()
+    return {
+        "id": row.id,
+        "public_id": row.public_id,
+        "status": row.status,
+        "status_reason": row.status_reason,
+        "status_changed_at": row.status_changed_at.isoformat() if row.status_changed_at else None,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -7,14 +7,12 @@
  * pieces so web and hosted render the same view.
  */
 
-import { useCallback } from "react";
 import type { ReactNode } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import {
   TriageView,
   type CodeHealthAdapter,
   type CodeHealthOverlay,
-  type HealthPillar,
 } from "@repowise-dev/ui/health";
 import { fileEntityPath, symbolEntityPath } from "@repowise-dev/ui/shared/entity";
 import {
@@ -25,7 +23,7 @@ import {
   getHealthCoverage,
   updateFindingStatus,
   type HealthTrendResponse,
-  type HealthFilesResponse,
+  type HealthMapFeed,
 } from "@/lib/api/code-health";
 import { HealthFileDrawerHost } from "@/components/health/health-file-drawer-host";
 
@@ -35,8 +33,11 @@ export function TriageTab({
   overlay = "health",
   onOverlayChange,
   lenses,
-  mapFiles,
+  mapFeed,
   overlayLoading,
+  selectedPath,
+  onSelectPath,
+  highlightPaths,
   hotspotsSlot,
   trendSlot,
 }: {
@@ -48,36 +49,20 @@ export function TriageTab({
   onOverlayChange?: (overlay: CodeHealthOverlay) => void;
   /** Lenses offered in the switcher, including any the page joined in. */
   lenses?: CodeHealthOverlay[];
-  /** Map files fetched once at the page level (shared across overlays). */
-  mapFiles?: HealthFilesResponse;
+  /** The bounded field, fetched once at the page level and shared by lenses. */
+  mapFeed?: HealthMapFeed;
   /** The active lens's per-file signal is still loading (e.g. churn). */
   overlayLoading?: boolean;
+  /** Selection, URL-synced by the page so a link can open one file. */
+  selectedPath?: string | null;
+  onSelectPath?: (path: string | null) => void;
+  /** Extra paths to mark, for a link into one opportunity's files. */
+  highlightPaths?: string[];
   /** Sections composed by the page and rendered under the map. */
   hotspotsSlot?: ReactNode;
   trendSlot?: ReactNode;
 }) {
   const router = useRouter();
-  const searchParams = useSearchParams();
-
-  // Pillar is URL-synced (?pillar=) so the Overview + KPI tiles can deep-link
-  // straight into a single dimension's findings.
-  const rawPillar = searchParams.get("pillar");
-  const pillar: HealthPillar =
-    rawPillar === "defect" ||
-    rawPillar === "maintainability" ||
-    rawPillar === "performance"
-      ? rawPillar
-      : "all";
-  const onPillarChange = useCallback(
-    (next: HealthPillar) => {
-      const sp = new URLSearchParams(searchParams.toString());
-      if (next === "all") sp.delete("pillar");
-      else sp.set("pillar", next);
-      const qs = sp.toString();
-      router.replace(qs ? `?${qs}` : "?", { scroll: false });
-    },
-    [router, searchParams],
-  );
 
   const prefix = `/repos/${id}`;
   const adapter: CodeHealthAdapter = {
@@ -92,8 +77,13 @@ export function TriageTab({
     fileHref: (path) => fileEntityPath(prefix, path),
     symbolHref: (symbolId) => symbolEntityPath(prefix, symbolId),
     navigate: (href) => router.push(href),
-    renderFileDrawer: ({ filePath, onClose }) => (
-      <HealthFileDrawerHost repoId={id} filePath={filePath} onClose={onClose} />
+    renderFileDrawer: ({ filePath, onClose, lens }) => (
+      <HealthFileDrawerHost
+        repoId={id}
+        filePath={filePath}
+        onClose={onClose}
+        {...(lens ? { lens } : {})}
+      />
     ),
   };
 
@@ -104,10 +94,11 @@ export function TriageTab({
       overlay={overlay}
       onOverlayChange={onOverlayChange}
       lenses={lenses}
-      mapFiles={mapFiles}
+      mapFeed={mapFeed}
       overlayLoading={overlayLoading}
-      pillar={pillar}
-      onPillarChange={onPillarChange}
+      selectedPath={selectedPath}
+      onSelectPath={onSelectPath}
+      highlightPaths={highlightPaths}
       hotspotsSlot={hotspotsSlot}
       trendSlot={trendSlot}
     />

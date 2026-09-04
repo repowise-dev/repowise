@@ -18,10 +18,12 @@ import {
 import { healthBandTextColor, type Severity } from "../health/tokens";
 import { FileTrendChart } from "../health/file-trend-chart";
 import { FileSignalsPanel } from "../health/file-signals-panel";
+import { FindingOpportunityLink } from "../health/file-opportunity";
 import { StatRibbon, type RibbonStat } from "../stats/stat-ribbon";
 import { SeverityMark } from "../health/severity-mark";
 import { formatNumber } from "../lib/format";
 import type { FileDetailHealth, FunctionBlameRow } from "@repowise-dev/types/files";
+import type { RefactoringOpportunity } from "@repowise-dev/types/refactoring";
 import { FileSection, Fig } from "./file-section";
 
 export type FindingStatus = "open" | "acknowledged" | "resolved" | "false_positive";
@@ -44,6 +46,15 @@ interface FileHealthTabProps {
   partnerHref?: ((path: string) => string) | undefined;
   /** Build a symbol-page href for a function row. */
   symbolHref?: ((symbolId: string) => string) | undefined;
+  /**
+   * The file's composed refactoring opportunity. This is the surface a reader is
+   * on once they have decided which file they care about, so it is the most
+   * natural place to hand them the plan - and it was the one with no link at
+   * all. Findings whose cause the opportunity does not address get none, so the
+   * page never offers a plan for a problem the plan does not answer.
+   */
+  opportunity?: RefactoringOpportunity | null | undefined;
+  refactoringOpportunityHref?: ((opportunityId: string) => string) | undefined;
 }
 
 /** Collapsed finding-card height guess; cards expand and are measured live. */
@@ -68,6 +79,8 @@ export function FileHealthTab({
   onFindingStatusChange,
   partnerHref,
   symbolHref,
+  opportunity,
+  refactoringOpportunityHref,
 }: FileHealthTabProps) {
   const [statusOverride, setStatusOverride] = useState<Record<string, FindingStatus>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
@@ -255,6 +268,11 @@ export function FileHealthTab({
                     biomarkerType={f.biomarker_type}
                     details={f.details as BiomarkerDetailsRecord | null}
                     onPartnerHref={partnerHref}
+                  />
+                  <FindingOpportunityLink
+                    opportunity={opportunity}
+                    biomarkerType={f.biomarker_type}
+                    href={refactoringOpportunityHref}
                   />
                   {onFindingStatusChange && (
                     // One control, four states — a segmented selector for a

@@ -94,6 +94,7 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
     body_container = _unwrap_container(body, lmap.block_kinds)
 
     def_lines, use_lines = _var_lines(analysis.def_use)
+    hoisted = _hoisted_bindings(def_lines, use_lines)
     decision_kinds = (
         lmap.branch_kinds
         | lmap.loop_kinds
@@ -127,10 +128,17 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
         if n >= _MIN_STMTS:
             dec_prefix = [0]
             jump_prefix = [0]
+            # Named-nested-function count rides the same prefix sums, for the
+            # same reason: the check is a subtree walk, and asking it per
+            # candidate span would put the O(n^2 * subtree) cost straight back.
+            nested_prefix = [0]
             for st in stmts:
                 d, jmp = _span_metrics([st], decision_kinds, jump_kinds, scope_kinds)
                 dec_prefix.append(dec_prefix[-1] + d)
                 jump_prefix.append(jump_prefix[-1] + (1 if jmp else 0))
+                nested_prefix.append(
+                    nested_prefix[-1] + (1 if _holds_a_named_nested_function([st], lmap) else 0)
+                )
         for i in range(n):
             for j in range(i, n):
                 evaluated += 1
@@ -162,6 +170,10 @@ def find_extractions(analysis: FunctionAnalysis, lmap: LanguageNodeMap) -> list[
                 if len(params) > _MAX_PARAMS or len(returns) > _MAX_RETURNS:
                     continue
                 if not _outs_definitely_assigned(span, returns, def_lines, lmap):
+                    continue
+                if any(s <= first_def <= e and first_use < s for first_def, first_use in hoisted):
+                    continue
+                if nested_prefix[j + 1] > nested_prefix[i]:
                     continue
                 if loop is not None and not _loop_carry_free(
                     span, loop, s, e, def_lines, use_lines, lmap
@@ -241,6 +253,70 @@ def _infer_in_out(
                 if not redefined:
                     returns.append(var)
     return tuple(params), tuple(returns)
+
+
+def _holds_a_named_nested_function(span: list[Node], lmap: LanguageNodeMap) -> bool:
+    """True when the span contains a nested function that binds its own name.
+
+    Def/use is computed per function and deliberately does not descend into a
+    nested scope, so a sibling closure's call to such a helper is invisible
+    here. Lifting the declaration out of the scope moves the binding away from
+    those callers, and nothing in the facts would show it.
+
+    A named nested function exists to be called from elsewhere in its scope, so
+    the safe answer is to refuse rather than to guess at its callers. An
+    anonymous lambda bound to a local is a value and stays governed by the
+    ordinary IN/OUT rules. Measured on this repo's ranked head:
+    ``vscode/src/features/changeIntel.ts::registerChangeIntel`` offered its whole
+    ``render`` declaration while a sibling closure called it.
+    """
+    kinds = lmap.function_kinds
+    if not kinds:
+        return False
+    for st in span:
+        stack = [st]
+        while stack:
+            node = stack.pop()
+            if node.type in kinds and node.child_by_field_name("name") is not None:
+                return True
+            stack.extend(node.children)
+    return False
+
+
+def _hoisted_bindings(
+    def_lines: dict[str, list[int]],
+    use_lines: dict[str, list[int]],
+) -> list[tuple[int, int]]:
+    """First-definition lines of names the function reads before defining them.
+
+    A read before the only definition of a name can only work by hoisting: a
+    JS/TS ``function foo()`` declaration is visible from the top of its scope,
+    so code above it calls it. A span holding that definition cannot be lifted -
+    an OUT cannot express it, because the value has to exist *before* the span
+    runs, not after - so :func:`find_extractions` refuses any span containing
+    one of these lines.
+
+    Returns ``(first_def, first_use)`` pairs. A span refuses when its range holds
+    a ``first_def`` whose ``first_use`` sits *above* the span: the earlier read
+    has no earlier definition to answer it, so the span holds the only one.
+    A read that sits inside the span, before the definition, is a different
+    shape and is left to the loop-carried gate.
+
+    Computed once per function because the shape is rare (usually no name
+    qualifies at all), and asking per candidate span meant walking every
+    variable thousands of times. Both lists are sorted by :func:`_var_lines`,
+    so the first entry of each is the earliest.
+
+    Measured on this repo's ranked head:
+    ``vscode/src/features/changeIntel.ts::registerChangeIntel`` offered its whole
+    ``render`` declaration as a span while ``render(partners)`` sat above it.
+    """
+    hoisted: list[tuple[int, int]] = []
+    for var, defs in def_lines.items():
+        uses = use_lines.get(var)
+        if defs and uses and uses[0] < defs[0]:
+            hoisted.append((defs[0], uses[0]))
+    return sorted(hoisted)
 
 
 def _outs_definitely_assigned(
@@ -385,19 +461,32 @@ def _loop_carry_free(
 ) -> bool:
     """True when a span nested in *loop* carries no state between iterations.
 
-    Two shapes are refused. A variable the span writes that is also read
-    earlier in the same loop is loop-carried: the helper would see this
-    iteration's value where the loop sees the previous one. And a call on a
-    name the loop header reads mutates the state the loop iterates over
-    (``entries.remove(entry)`` inside ``for entry in entries``), which an
-    IN/OUT signature cannot express at all.
+    Two shapes are refused. A variable the span writes that the loop also reads
+    without the span having written it first is loop-carried: that read takes
+    the previous iteration's value, and lifting the write into a helper whose
+    result is discarded silently drops it.
+
+    The read does not have to sit above the span. ``clojure.py::_spec_namespaces``
+    reads ``expect_ns`` and then writes it, both inside one candidate span, in a
+    ``while`` loop: textually the read precedes the write, so nothing follows
+    the span to make the variable an OUT, and the state machine breaks on the
+    next iteration. Testing only for reads above the span missed it, so the test
+    is "read with no in-span write before it", which subsumes the old one.
+
+    Also refused: a call on a name the loop header reads, which mutates the
+    state the loop iterates over (``entries.remove(entry)`` inside
+    ``for entry in entries``), and which an IN/OUT signature cannot express.
     """
     loop_start = loop.start_point[0] + 1
     for var, lines in def_lines.items():
-        if not any(s <= ln <= e for ln in lines):
+        in_span_writes = [ln for ln in lines if s <= ln <= e]
+        if not in_span_writes:
             continue
-        if any(loop_start <= ln < s for ln in use_lines.get(var, [])):
-            return False
+        for read in use_lines.get(var, []):
+            if not loop_start <= read <= e:
+                continue
+            if not any(write < read for write in in_span_writes):
+                return False
 
     carried = _loop_header_names(loop, lmap)
     if not carried:

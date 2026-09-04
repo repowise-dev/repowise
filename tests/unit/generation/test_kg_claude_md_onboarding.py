@@ -116,7 +116,12 @@ class TestClaudeMdKGSection:
         # a response shape the agent sees rarely, and it was cut for size; the
         # load-bearing clause is what has to stay reachable.
         assert "`verified: true`" in rendered
-        assert "never re-read those lines" in rendered
+        assert "never re-read them" in rendered
+        # `confidence` rates the prose; a low grade points at the evidence the
+        # reply already named rather than at a second round-trip.
+        assert "`fallback_targets` or `best_guesses`" in rendered
+        # An empty call-graph list is never served without the basis beside it.
+        assert "`*_basis`" in rendered
         # Pre-edit framing: the mandatory Read of edit targets is conceded.
         assert "raw Read of any file you will Edit" in rendered
         # The tool table renders from the single-source module.

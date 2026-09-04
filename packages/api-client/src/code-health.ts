@@ -9,6 +9,8 @@ import type {
   HealthFilesQuery,
   HealthFilesResponse,
   HealthFinding,
+  HealthMapFeed,
+  HealthMapQuery,
   HealthCoverageResponse,
   TestsReachingFile,
   HealthFileBreakdownResponse,
@@ -40,6 +42,12 @@ export type {
   HealthFilesQuery,
   HealthFilesResponse,
   HealthFinding,
+  HealthMapFeed,
+  HealthMapModuleRollup,
+  HealthMapOmissions,
+  HealthMapPerformance,
+  HealthMapQuery,
+  HealthMapSelection,
   HealthModuleRow,
   HealthOverviewResponse,
   HealthTrendResponse,
@@ -101,6 +109,7 @@ export async function getPerformanceOpportunities(
       actionability: opts.actionability,
       view: opts.view,
       sort: opts.sort,
+      file_paths: opts.file_paths?.length ? opts.file_paths.join(",") : undefined,
       limit: opts.limit,
       offset: opts.offset,
     },
@@ -128,6 +137,23 @@ export async function getPerformanceOpportunityFindings(
     `/api/repos/${repoId}/health/performance-opportunities/${encodeURIComponent(opportunityId)}/findings`,
     { limit: opts.limit, offset: opts.offset },
   );
+}
+
+/**
+ * The bounded field the code-health map draws.
+ *
+ * Distinct from {@link listHealthFiles}, which is an inventory page: this one
+ * chooses its rows so the caller's selection and the repository's performance
+ * causes are guaranteed a node, and states what the cap left out.
+ */
+export async function getHealthMap(
+  repoId: string,
+  opts: HealthMapQuery = {},
+): Promise<HealthMapFeed> {
+  return apiGet<HealthMapFeed>(`/api/repos/${repoId}/health/map`, {
+    cap: opts.cap,
+    active: opts.active?.length ? opts.active.join(",") : undefined,
+  });
 }
 
 export async function listHealthFiles(

@@ -45,7 +45,7 @@ log = structlog.get_logger(__name__)
 # output without changing any template's bytes: new context fields, a changed
 # helper, a reordered section. Template edits are picked up automatically
 # (their source is hashed), so this is only for the cases hashing cannot see.
-STRUCTURAL_GENERATION_VERSION = "1"
+STRUCTURAL_GENERATION_VERSION = "2"
 
 # Keyless stub templates live one directory down so their filenames can match
 # the prompt templates they stand in for.
@@ -143,22 +143,380 @@ def dedent_body(text: str) -> str:
 
 
 def signature(value: object, limit: int = 120) -> str:
-    """Render a symbol signature for a table cell without cutting mid-token.
+    """Format a captured signature so it reads as a declaration, not as source.
 
-    Signatures are captured across source lines, so collapsing whitespace is
-    needed before anything else or the cell fills with runs of indentation.
-    When one is still too long we cut back to the last argument boundary, so
-    the reader sees a whole parameter list prefix rather than half an
-    identifier.
+    A signature is captured verbatim across source lines, so it arrives with
+    the author's line breaks and indentation in it, and sometimes without its
+    tail: a constant whose value opens a bracket on the next line is stored as
+    ``PRUNED_DIRS: frozenset[str] = frozenset(``.
+
+    Three passes, cheapest first. Collapse the whitespace. Close the brackets
+    an unfinished capture left open. Then, if it is still too long, shorten the
+    parameter list to bare names and keep the return annotation — slicing the
+    string instead cuts the annotation off, and what a function returns is the
+    half a reader is looking for.
     """
     text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    text = _tidy_punctuation(text)
+    text = _normalize_params(text)
+    text = _close_unfinished_capture(text)
     if len(text) <= limit:
         return text
-    head = text[:limit]
-    cut = max(head.rfind(", "), head.rfind("("))
+    shortened = _names_only_params(text)
+    if shortened is not None and len(shortened) <= limit:
+        return shortened
+    head, params, tail = _split_params(text) or (text, None, "")
+    if params is not None and len(head) + len(tail) + 3 <= limit:
+        return f"{head}…){tail}"
+    cut = text[:limit].rfind(", ")
     if cut > limit // 3:
-        head = head[: cut + 1]
-    return head.rstrip().rstrip(",") + " …"
+        return text[:cut] + " …"
+    return text[: limit - 1].rstrip().rstrip(",") + "…"
+
+
+def _code_spans(text: str) -> list[tuple[bool, str]]:
+    """*text* split into (is_code, chunk), where a string literal is not code.
+
+    Every rewrite below reshapes source punctuation, and a signature routinely
+    carries a regex or a path in a string literal: ``re.compile(r"[|&;]")``,
+    ``("Cargo.toml",)``. Reshaping inside one corrupts a value the page then
+    states as fact, so the passes see only what is outside the quotes.
+    """
+    out: list[tuple[bool, str]] = []
+    buf: list[str] = []
+    quote = ""
+    escaped = False
+    for ch in text:
+        if escaped:
+            escaped = False
+            buf.append(ch)
+            continue
+        if ch == "\\":
+            escaped = True
+            buf.append(ch)
+        elif quote:
+            buf.append(ch)
+            if ch == quote:
+                out.append((False, "".join(buf)))
+                buf = []
+                quote = ""
+        elif ch in _QUOTES:
+            if buf:
+                out.append((True, "".join(buf)))
+            buf = [ch]
+            quote = ch
+        else:
+            buf.append(ch)
+    if buf:
+        out.append((not quote, "".join(buf)))
+    return out
+
+
+_QUOTES = "\"'"
+
+# The spacing a multi-line declaration leaves behind once it is collapsed onto
+# one line. Nothing here removes a comma: a trailing one is cosmetic in a
+# parameter list and load-bearing in ``("Cargo.toml",)``, so the parameter list
+# normalises its own and every other bracket group is left as written.
+_SPACING_RULES = (
+    (re.compile(r"\(\s+"), "("),
+    (re.compile(r"\s+\)"), ")"),
+    (re.compile(r"\[\s+"), "["),
+    (re.compile(r"\s+\]"), "]"),
+    (re.compile(r"\s+,"), ","),
+)
+
+
+def _tidy_punctuation(text: str) -> str:
+    """Undo the spacing a multi-line signature leaves once it is collapsed."""
+    out = []
+    for is_code, chunk in _code_spans(text):
+        if is_code:
+            for pattern, repl in _SPACING_RULES:
+                chunk = pattern.sub(repl, chunk)
+        out.append(chunk)
+    return "".join(out)
+
+
+def _close_unfinished_capture(text: str) -> str:
+    """Close the brackets a capture that stopped mid-expression left open.
+
+    A constant whose value opens a bracket on the next source line is stored
+    as ``PRUNED_DIRS: frozenset[str] = frozenset(``, which renders as a broken
+    fragment. Closing it reads as a declaration and, unlike cutting the
+    initializer off, keeps every token; the page is the index entry.
+    """
+    if text.endswith("="):
+        return text[:-1].rstrip()
+    unclosed = _unclosed_brackets(text)
+    if not unclosed:
+        return text
+    return text + "\u2026" + "".join(_CLOSERS[ch] for ch in reversed(unclosed))
+
+
+_CLOSERS = {"(": ")", "[": "]", "{": "}"}
+
+
+def _unclosed_brackets(text: str) -> list[str]:
+    """The still-open brackets of *text*, outermost first, quotes excluded."""
+    stack: list[str] = []
+    for is_code, chunk in _code_spans(text):
+        if not is_code:
+            continue
+        for ch in chunk:
+            if ch in _CLOSERS:
+                stack.append(ch)
+            elif ch in ")]}" and stack and _CLOSERS[stack[-1]] == ch:
+                stack.pop()
+    return stack
+
+
+def _split_params(text: str) -> tuple[str, str, str] | None:
+    """Split ``head(``, the parameter list, and the trailing ``) -> T``."""
+    depth = 0
+    open_at = -1
+    index = 0
+    for is_code, chunk in _code_spans(text):
+        if not is_code:
+            index += len(chunk)
+            continue
+        for offset, ch in enumerate(chunk):
+            if ch in "([{":
+                if depth == 0 and ch == "(" and open_at < 0:
+                    open_at = index + offset
+                depth += 1
+            elif ch in ")]}":
+                depth -= 1
+                if depth == 0 and open_at >= 0:
+                    close_at = index + offset
+                    return (
+                        text[: open_at + 1],
+                        text[open_at + 1 : close_at],
+                        text[close_at + 1 :],
+                    )
+        index += len(chunk)
+    return None
+
+
+def _split_top_level(params: str) -> list[str]:
+    """*params* split on the commas that separate one parameter from the next.
+
+    Depth- and quote-aware, so neither ``dict[str, int]`` nor ``sep = ", "``
+    splits. A lambda default is the one shape this cannot see through, since
+    its comma really is at depth zero; :func:`_names_only_params` then refuses
+    the signature rather than printing a name it cannot vouch for.
+    """
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    for is_code, chunk in _code_spans(params):
+        if not is_code:
+            current.append(chunk)
+            continue
+        for ch in chunk:
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth -= 1
+            if ch == "," and depth == 0:
+                parts.append("".join(current))
+                current = []
+                continue
+            current.append(ch)
+    parts.append("".join(current))
+    return [p for p in (part.strip() for part in parts) if p]
+
+
+def _normalize_params(text: str) -> str:
+    """Rejoin a callable's parameter list, dropping a magic trailing comma.
+
+    Only where the bracket group is a parameter list. A group that follows an
+    ``=`` is a value, and ``filenames: tuple[str, ...] = ("Cargo.toml",)`` is a
+    one-tuple that becomes a plain string if that comma goes.
+    """
+    split = _split_params(text)
+    if split is None:
+        return text
+    head, params, tail = split
+    if "=" in "".join(c for is_code, c in _code_spans(head) if is_code):
+        return text
+    return f"{head}{', '.join(_split_top_level(params))}){tail}"
+
+
+def _names_only_params(text: str) -> str | None:
+    """The same signature with each parameter reduced to its name.
+
+    ``root: Path | str`` becomes ``root``, ``*, prune_dirs: frozenset[str] =
+    PRUNED_DIRS`` becomes ``*, prune_dirs``. Returns None when there is no
+    parameter list, or when a parameter does not reduce to something shaped
+    like a name: eliding the whole list is better than printing an identifier
+    the signature never declared.
+    """
+    split = _split_params(text)
+    if split is None:
+        return None
+    head, params, tail = split
+    names = [_param_name(part) for part in _split_top_level(params)]
+    if not names or not all(_NAME_RE.fullmatch(name) for name in names):
+        return None
+    return f"{head}{', '.join(names)}){tail}"
+
+
+_NAME_RE = re.compile(r"[*/]{0,2}[A-Za-z_$][\w$]*|[*/]{1,2}")
+
+
+def _param_name(param: str) -> str:
+    """The declared name of one parameter, without annotation or default."""
+    text = param.strip()
+    if text in {"*", "**", "/"}:
+        return text
+    consumed = 0
+    for is_code, chunk in _code_spans(text):
+        if not is_code:
+            break
+        cut = min((chunk.find(c) for c in ":=" if c in chunk), default=-1)
+        if cut >= 0:
+            return text[: consumed + cut].strip()
+        consumed += len(chunk)
+    return text.strip()
+
+
+def datestamp(value: object) -> str:
+    """A date, as ``YYYY-MM-DD``, from whatever git metadata carries.
+
+    Dates only, never "three days ago": a page's bytes are its reuse key, and
+    a relative date would move every one of them every day.
+    """
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    return text[:10]
+
+
+def is_public_api(symbol: Mapping[str, Any]) -> bool:
+    """Whether a public symbol is API a caller would reach for.
+
+    Two kinds of name are public to the parser and are not an API. A dunder is
+    the language talking to itself, and ``__all__`` in particular is metadata
+    *about* the API rather than part of it. A module-level ``variable`` with no
+    capital in its name is module state — ``log``, ``logger``, ``router``, and
+    Alembic's ``revision`` / ``down_revision`` are 771 of the 878 such symbols
+    in this repository, and not one of them is something another file calls.
+    The type aliases that share the kind (``SourceFile``, ``ReasoningMode``)
+    keep their capitals and stay.
+
+    Demoted, not dropped: the caller still names them on the page, so the
+    identifier stays in ``content`` for the index.
+    """
+    name = str(symbol.get("name") or "")
+    if name.startswith("__") and name.endswith("__"):
+        return False
+    if symbol.get("kind") == "variable" and not symbol.get("parent_name"):
+        return any(c.isupper() for c in name)
+    return True
+
+
+def api_symbols(symbols: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """The public symbols that belong in the API table."""
+    return [s for s in symbols if s.get("visibility") == "public" and is_public_api(s)]
+
+
+def internal_symbols(symbols: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """The public symbols the API table leaves out, in declaration order."""
+    return [s for s in symbols if s.get("visibility") == "public" and not is_public_api(s)]
+
+
+# A prose line rather than a table cell, so it can carry a whole constructor.
+# The table's 120 is what keeps a column readable; here the only reason to cut
+# is a generated signature long enough to be the page.
+_DECLARATION_LIMIT = 400
+
+
+def declarations(symbols: Iterable[Mapping[str, Any]]) -> list[str]:
+    """How to spell symbols the API table leaves out, one string each.
+
+    The signature rather than the name, because the name alone would take the
+    rest of the declaration out of ``content``: ``log`` on its own drops
+    ``structlog``, ``get_logger`` and ``__name__`` from the page, and the page
+    is the index entry. Falls back to the name for a symbol the parser
+    captured no signature for, and appends it where the signature somehow does
+    not spell it, so no name can go missing either way.
+    """
+    out: list[str] = []
+    for symbol in symbols:
+        name = str(symbol.get("name") or "")
+        declared = signature(symbol.get("signature") or "", _DECLARATION_LIMIT)
+        if not declared:
+            declared = name
+        elif name and name not in declared:
+            declared = f"{name}: {declared}"
+        if declared:
+            out.append(declared)
+    return out
+
+
+def code_span(text: str) -> str:
+    """*text* as a markdown code span, fenced long enough to contain it.
+
+    A single backtick fence ends at the first backtick inside it, and 47 of
+    this repository's own signatures carry one — a regex matching a fence, for
+    instance. Markdown's own rule is a longer fence, which keeps the bytes
+    exactly as captured rather than escaping them into something else.
+    """
+    body = str(text)
+    longest = max((len(run) for run in re.findall(r"`+", body)), default=0)
+    fence = "`" * (longest + 1)
+    pad = " " if body.startswith("`") or body.endswith("`") else ""
+    return f"{fence}{pad}{body}{pad}{fence}"
+
+
+def group_paths(paths: Iterable[str], limit: int = 25) -> list[dict[str, Any]]:
+    """Group file paths under their directory, busiest directory first.
+
+    A flat list of twenty-five import paths is the same twenty-five strings a
+    reader could get from grep. Grouped, the shape of the dependency shows: of
+    the thirty-seven files importing ``fs_walk``, nine are import resolvers.
+
+    Every path is carried through whole, because the page is also the index
+    entry: a directory heading with basenames under it would drop the strings
+    a question matches on.
+    """
+    grouped: dict[str, list[str]] = {}
+    for path in list(paths)[:limit]:
+        directory = path.rsplit("/", 1)[0] if "/" in path else "."
+        grouped.setdefault(directory, []).append(path)
+    return sorted(
+        ({"directory": d, "paths": p} for d, p in grouped.items()),
+        key=lambda g: (-len(g["paths"]), g["directory"]),
+    )
+
+
+def register_filters(env: Any) -> None:
+    """Register every filter the deterministic templates use on *env*.
+
+    One function rather than a list repeated at each call site: a template
+    that reaches for a filter the caller forgot raises at render time, and the
+    callers are the generator and four test fixtures.
+    """
+    for name, fn in (
+        ("oneline", oneline),
+        ("as_markdown", as_markdown),
+        ("signature", signature),
+        # Page shaping the templates cannot express: the split between
+        # declared API and module bookkeeping, the grouping of a dependency
+        # list, and a date out of a git metadata value.
+        ("api_symbols", api_symbols),
+        ("internal_symbols", internal_symbols),
+        ("declarations", declarations),
+        ("code_span", code_span),
+        ("group_paths", group_paths),
+        ("datestamp", datestamp),
+    ):
+        env.filters.setdefault(name, fn)
 
 
 _TEMPLATES_DIR = Path(__file__).parent.parent / "templates"

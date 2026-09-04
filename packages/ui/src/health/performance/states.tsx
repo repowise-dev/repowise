@@ -4,6 +4,7 @@ import { AlertTriangle, Gauge, Info } from "lucide-react";
 import type { PerformanceOpportunitySummary } from "@repowise-dev/types/health";
 
 import { EmptyState } from "../../shared/empty-state";
+import { Skeleton, SkeletonRegion } from "../../ui/skeleton";
 
 /**
  * Every state the queue can be in other than "here are the rows". They are
@@ -15,18 +16,15 @@ import { EmptyState } from "../../shared/empty-state";
 
 export function QueueSkeleton() {
   return (
-    <div className="space-y-8" aria-busy="true">
-      <div className="h-32 animate-pulse rounded bg-[var(--color-bg-surface)]" />
-      <div className="h-10 animate-pulse rounded bg-[var(--color-bg-surface)]" />
+    <SkeletonRegion className="space-y-8" label="Loading performance opportunities">
+      <Skeleton className="h-32 rounded" />
+      <Skeleton className="h-10 rounded" />
       <div className="space-y-px">
         {[0, 1, 2, 3, 4].map((row) => (
-          <div key={row} className="h-[86px] animate-pulse bg-[var(--color-bg-surface)]" />
+          <Skeleton key={row} className="h-[86px] rounded-none" />
         ))}
       </div>
-      <span className="sr-only" role="status">
-        Loading performance opportunities
-      </span>
-    </div>
+    </SkeletonRegion>
   );
 }
 
@@ -78,8 +76,8 @@ export function FilteredEmpty({ onClear }: { onClear: () => void }) {
         No opportunities match these filters
       </h3>
       <p className="mx-auto mt-2 max-w-[60ch] text-sm text-[var(--color-text-tertiary)]">
-        The counts beside each filter come from the whole repository, so a combination can still
-        be empty.
+        The counts beside each filter already account for the other active filters. This
+        combination may come from a restored view state that no longer matches the index.
       </p>
       <button
         type="button"
@@ -143,5 +141,41 @@ export function IgnoredArgumentsNotice({ ignored }: { ignored: Record<string, st
       ))}
       , so that filter was not applied. The counts below describe the unfiltered result.
     </Notice>
+  );
+}
+
+/**
+ * A link named a cause this index cannot resolve.
+ *
+ * Says which id, because the link is shareable and the reader may be holding
+ * it somewhere else, and offers the queue rather than leaving the page looking
+ * like it simply ignored them.
+ */
+export function LinkedCauseUnavailable({
+  opportunityId,
+  detail,
+  onDismiss,
+}: {
+  opportunityId: string;
+  detail: string | null;
+  onDismiss: () => void;
+}) {
+  return (
+    <p
+      role="status"
+      className="flex flex-wrap items-baseline gap-x-2 border-l-2 border-[var(--color-warning)] py-1.5 pl-3 text-sm text-[var(--color-text-secondary)]"
+    >
+      <span>
+        The link named <span className="break-all font-mono">{opportunityId}</span>, which this
+        index does not hold.{detail ? ` ${detail}` : ""} The queue below is unfiltered.
+      </span>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="rounded text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+      >
+        Dismiss
+      </button>
+    </p>
   );
 }

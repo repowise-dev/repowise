@@ -24,7 +24,9 @@ from .elixir import SPEC as _ELIXIR
 from .elm import SPEC as _ELM
 from .erlang import SPEC as _ERLANG
 from .fsharp import SPEC as _FSHARP
+from .gdscript import SPEC as _GDSCRIPT
 from .go import SPEC as _GO
+from .godot_resource import SPEC as _GODOT_RESOURCE
 from .graphql import SPEC as _GRAPHQL
 from .haskell import SPEC as _HASKELL
 from .html import SPEC as _HTML
@@ -45,7 +47,9 @@ from .pascal import SPEC as _PASCAL
 from .php import SPEC as _PHP
 from .proto import SPEC as _PROTO
 from .python import SPEC as _PYTHON
+from .qml import SPEC as _QML
 from .r import SPEC as _R
+from .razor import SPEC as _RAZOR
 from .ruby import SPEC as _RUBY
 from .rust import SPEC as _RUST
 from .scala import SPEC as _SCALA
@@ -57,6 +61,7 @@ from .terraform import SPEC as _TERRAFORM
 from .toml import SPEC as _TOML
 from .typescript import SPEC as _TYPESCRIPT
 from .unknown import SPEC as _UNKNOWN
+from .vbnet import SPEC as _VBNET
 from .vue import SPEC as _VUE
 from .xaml import SPEC as _XAML
 from .yaml import SPEC as _YAML
@@ -88,11 +93,19 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _KOTLIN,
     _RUBY,
     _CSHARP,
+    # Must follow _CSHARP: shares_grammar_with resolves against the registry
+    # built so far, so csharp's grammar has to be loaded first. Razor/Blazor
+    # markup (.razor, .cshtml) projects its C# regions (``@code`` / ``@{ }``
+    # blocks) into a C# buffer via ``sfc_source``, exactly as svelte/vue
+    # project into TypeScript.
+    _RAZOR,
     _PHP,
     _SWIFT,
     _SCALA,
     _DART,
     _PASCAL,
+    _GDSCRIPT,
+    _VBNET,
     # -----------------------------------------------------------------
     # Config / data / markup languages (passthrough — no AST)
     # -----------------------------------------------------------------
@@ -119,6 +132,11 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     # emits ``dynamic_uses`` edges to bound C# types. Registered here so
     # that the traverser surfaces a file node these edges can attach to.
     _XAML,
+    # Godot scenes/resources and project.godot. Data, so never reported as
+    # dead, but a Godot script is attached to a scene rather than imported
+    # by another script, so these files carry nearly every inbound edge the
+    # .gd graph has. See the spec's docstring.
+    _GODOT_RESOURCE,
     # -----------------------------------------------------------------
     # Extra languages — git blame coverage only (passthrough + is_code)
     # These exist so git_indexer tracks their history even though
@@ -135,6 +153,7 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _ELM,
     _HASKELL,
     _LEAN,
+    _QML,
     _OCAML,
     _FSHARP,
     _CRYSTAL,

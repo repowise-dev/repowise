@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -121,3 +121,30 @@ class ChatMessageResponse(BaseModel):
             content=content,
             created_at=obj.created_at,  # type: ignore[attr-defined]
         )
+
+
+class ChatArtifactEnvelope(BaseModel):
+    """One completed tool call, as stored inside a chat message.
+
+    ``data`` and ``evidence`` stay open: ``data`` is the raw result of
+    whichever MCP tool ran (a different shape per tool) and ``evidence`` is
+    derived from it, so closing either would turn tool variance into a 500.
+    """
+
+    id: str
+    version: int = 1
+    type: str
+    tool_name: str
+    title: str
+    presentation: str
+    data: dict[str, Any] = {}
+    evidence: dict[str, Any] = {}
+    pinned: bool = False
+    #: Absent on rows written before the envelope carried one; the legacy
+    #: normalizer backfills every other key but not this.
+    created_at: str | None = None
+
+
+class ConversationDetailResponse(BaseModel):
+    conversation: ConversationResponse
+    messages: list[ChatMessageResponse] = []

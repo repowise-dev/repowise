@@ -12,6 +12,11 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.analysis.decision_semantic_match import DECISION_VECTOR_PREFIX
+from repowise.core.analysis.decisions.lifecycle import is_governing, status_rank
+from repowise.core.persistence.crud.authority import (
+    decision_currencies,
+    resolve_decision_id,
+)
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     DecisionEdge,
@@ -28,6 +33,7 @@ from repowise.server.mcp_server._budget import (
     cap_collection,
     fit_to_budget,
     over_budget,
+    register_post_shed,
 )
 from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
 from repowise.server.mcp_server._episodes import bank_overflow, episode_evidence
@@ -102,6 +108,18 @@ def _stamp_answer_basis(result: dict) -> dict:
     elif result.get("related_documentation"):
         result["answer_basis"] = "documentation"
     return result
+
+
+def _restamp_answer_basis(result: dict, _collector: OmissionCollector) -> None:
+    """Re-derive the basis after shedding.
+
+    The basis names a lane, and a lane the budget pass emptied must not leave
+    the claim standing.
+    """
+    _stamp_answer_basis(result)
+
+
+register_post_shed("get_why", _restamp_answer_basis)
 
 
 @mcp.tool(
@@ -197,6 +215,15 @@ async def _why_reference(
     ctx, repository, records, _target_git = await _load_corpus(repo, None)
     async with get_session(ctx.session_factory) as session:
         await _attach_decision_evidence(session, records)
+        # This tool tells callers to hold onto the ids it emits, so an id quoted
+        # from an earlier session may name a decision that has since moved.
+        # Follow the alias for one that no longer matches anything live; a live
+        # id is left alone, so a merged candidate still answers about itself.
+        stale_decision_id = not reference_id.startswith("ev_") and not any(
+            record.id == reference_id for record in records
+        )
+        if stale_decision_id:
+            reference_id = await resolve_decision_id(session, reference_id) or reference_id
 
     payload = {
         "decisions": [
@@ -503,6 +530,12 @@ async def _why_health_dashboard(repo: str | None) -> dict:
 #: Governing records kept, best-first. Past ~8 the tail is review-queue noise.
 _MAX_PATH_DECISIONS = 8
 
+#: Candidates inlined beside a path's decisions. Deliberately far below the
+#: decisions cap: this lane exists so a reader knows a queue is there and can
+#: go and work it, not so they can work it from inside a get_why response. A
+#: live index carries 380 candidates, and a hot path can be named by dozens.
+_MAX_PATH_CANDIDATES = 3
+
 #: Paths kept per record. The array answers "how wide is this decision", which
 #: a head plus a total answers as well as 241 paths do.
 _MAX_AFFECTED_FILES = 10
@@ -518,9 +551,10 @@ _MAX_COMMIT_TEXT_CHARS = 320
 #: ``omission_marker`` + ``_meta.omitted`` *after* the last size check.
 _COLLECTOR_HEADROOM_CHARS = 600
 
-#: Sort order for governing records: what governs beats what was proposed
-#: beats what is retired; then confidence; then freshness.
-_PATH_STATUS_ORDER = {"active": 0, "proposed": 1, "deprecated": 2, "superseded": 3}
+# Ranking uses ``status_rank`` from lifecycle. The local table this file kept
+# had drifted from it: it ranked ``deprecated`` ahead of ``superseded`` while
+# the list endpoint ranked them the other way, so a record moved position
+# depending on which surface was asked.
 
 
 # --- Search-mode caps -------------------------------------------------------
@@ -581,7 +615,7 @@ _MAX_HEALTH_UNGOVERNED = 8
 
 def _path_decision_sort_key(d: Any) -> tuple[int, float, float]:
     return (
-        _PATH_STATUS_ORDER.get(d.status, 4),
+        status_rank(d.status),
         -(d.confidence or 0.0),
         d.staleness_score or 0.0,
     )
@@ -770,10 +804,12 @@ def _fit_path_response(
     1. Drop ``origin_story.linked_decisions``, which re-inlines each record's
        title, rationale and matched commits — all of it already in
        ``decisions``.
-    2. Drop governing records from the tail, all the way to none if it comes
+    2. Drop the candidate lane whole. A candidate is a review request, and a
+       response that cannot afford the rules it must not spend on the queue.
+    3. Drop governing records from the tail, all the way to none if it comes
        to that. They are sorted best-first, so the tail is review-queue noise,
        and an empty list plus a marker beats a rejected response.
-    3. Trim the fallback blocks the ungoverned branch adds (``code_rationale``,
+    4. Trim the fallback blocks the ungoverned branch adds (``code_rationale``,
        then ``git_archaeology``) to a tail, dropping them whole only if that is
        not enough, then ``origin_story``. What survives — mode, path,
        alignment, ``_meta`` — is bounded.
@@ -819,7 +855,23 @@ def _fit_path_response(
     # ``episodes[]`` floors at one row, so the whole-block entry behind it is
     # what still empties the lane before the decisions loop below. Trimming
     # first is why mild pressure costs rows: this served 0 of 20.
-    _shed("origin_story.linked_decisions", "episodes[]", "episodes")
+    # Candidates first of everything: they are the one lane whose whole
+    # purpose is to be reviewed later, so under pressure they are the cheapest
+    # thing in the response to lose. Their note goes with them, because a
+    # sentence counting candidates that are no longer in the payload is worse
+    # than no sentence.
+    _shed(
+        "origin_story.linked_decisions",
+        "history[]",
+        "history",
+        "candidates[]",
+        "candidates",
+    )
+    for lane_key in ("candidates", "history"):
+        if not result_data.get(lane_key):
+            result_data.pop(f"{lane_key}_note", None)
+
+    _shed("episodes[]", "episodes")
 
     decisions: list = result_data.get("decisions") or []
     while decisions and _over():
@@ -895,35 +947,68 @@ async def _why_path(query: str, repo: str | None) -> dict:
             if query in json.loads(d.affected_files_json)
             or query in json.loads(d.affected_modules_json)
         ]
+        # The authority split, and the only test that makes it: a record with
+        # no acceptance row is a candidate whatever its status column says.
+        # Computed over every record in the repository, because the sibling
+        # coverage inside alignment reads records this path did not match.
+        currencies = await decision_currencies(session, repository.id, all_decisions)
+
         # Rank before capping, so the 8 that survive are the 8 that govern —
         # not whichever 8 the table scan happened to yield first.
         matched.sort(key=_path_decision_sort_key)
         lineage_by_id = await _lineage_for_records(session, matched, all_decisions)
-        governing = []
-        for rank, d in enumerate(matched):
+        governing: list[dict] = []
+        candidates: list[dict] = []
+        retired: list[dict] = []
+        for d in matched:
             # Walk supersedes/refines back to roots so the answer is a
             # lineage chain (sessions → JWT → OAuth2), not a flat list.
             lineage = lineage_by_id.get(d.id, [])
             entry = _governing_decision_entry(
                 d, json.loads(d.affected_files_json), lineage, collector
             )
-            # Ask git whether the top record still holds — and only the top
-            # one. The query is ~60 ms, which is affordable once inside an MCP
-            # call and is not affordable eight times; the record ranked first
-            # is the one a reader acts on. Everything below it keeps the
-            # stored proportion, which needed no subprocess to compute.
-            if rank == 0:
-                sentence = await asyncio.to_thread(
-                    describe_decision_currency,
-                    ctx.path,
-                    created_at=d.created_at,
-                    nodes=json.loads(d.affected_files_json or "[]"),
-                )
-                if sentence:
-                    entry["still_true"] = sentence
-            governing.append(entry)
+            currency = currencies.get(d.id)
+            if currency is None:
+                # Never accepted. It goes in its own lane, labelled, rather
+                # than into the list an agent reads as the rules for this file.
+                entry["review_state"] = "open"
+                candidates.append(entry)
+                continue
+            entry["currency"] = currency
+            if is_governing(currency):
+                governing.append(entry)
+            else:
+                # Accepted once and withdrawn since. Not a rule and not a
+                # review request, so it gets a third lane rather than being
+                # dropped: on a file whose only record was superseded, dropping
+                # it left the answer with nothing to say about the one thing
+                # anybody had ever decided there.
+                retired.append(entry)
 
-        origin_story = _build_origin_story(query, git_meta, governing)
+        # Ask git whether the top governing record still holds — and only the
+        # top one. The query is ~60 ms, which is affordable once inside an MCP
+        # call and is not affordable eight times; the record ranked first is
+        # the one a reader acts on. Everything below it keeps the stored
+        # proportion, which needed no subprocess to compute. A candidate never
+        # gets the check: it is not something anyone should be acting on.
+        if governing:
+            top = next(d for d in matched if d.id == governing[0]["id"])
+            sentence = await asyncio.to_thread(
+                describe_decision_currency,
+                ctx.path,
+                created_at=top.created_at,
+                nodes=json.loads(top.affected_files_json or "[]"),
+            )
+            if sentence:
+                governing[0]["still_true"] = sentence
+
+        # Every lane: the origin story is history, and a commit that matches a
+        # candidate's or a retired record's title is still the commit that
+        # explains the file. It is evidence, not instruction, so nothing here
+        # needs the authority test.
+        origin_story = _build_origin_story(
+            query, git_meta, governing + candidates + retired
+        )
 
         result_data: dict[str, Any] = {
             "mode": "path",
@@ -933,22 +1018,39 @@ async def _why_path(query: str, repo: str | None) -> dict:
             # Alignment is scored over every matching record, not just the
             # ones that survived the cap — it is a coverage number, and
             # capping its input would make a well-governed hotspot look thin.
-            # It reads only status/staleness/title, so the cheap projection is
-            # the whole of what it needs.
+            # It reads the id, the title and the acceptance map, so the cheap
+            # projection is the whole of what it needs.
             "alignment": _compute_alignment(
                 query,
-                [
-                    {
-                        "title": d.title,
-                        "status": d.status,
-                        "staleness_score": d.staleness_score,
-                    }
-                    for d in matched
-                ],
+                [{"id": d.id, "title": d.title} for d in matched],
                 all_decisions,
+                currencies,
             ),
         }
-        # --- Fallback: git archaeology when no decisions found ---
+        if candidates:
+            # Named, counted and separated from the rules. An agent reading
+            # this must be able to tell a request to review something from an
+            # instruction to follow it, without parsing a status string.
+            result_data["candidates"] = candidates
+            result_data["candidates_note"] = (
+                f"{len(candidates)} candidate(s) mention this path and none of them "
+                "govern it. Nobody has accepted them, so they are a review "
+                "request, not a rule. Accept one with "
+                "`repowise decision confirm <id> --scope <path>`."
+            )
+
+        if retired:
+            # Named as history, never as a rule. A reader asking why a file
+            # looks the way it does is owed "this was decided and then
+            # replaced", which is the sentence a dropped record cannot say.
+            result_data["history"] = retired
+            result_data["history_note"] = (
+                f"{len(retired)} decision(s) governing this path were accepted "
+                "and have since been superseded or withdrawn. They are history, "
+                "not rules."
+            )
+
+        # --- Fallback: git archaeology when no accepted decision governs ---
         if not governing:
             result_data["git_archaeology"] = await _git_archaeology_fallback(
                 query,
@@ -1005,6 +1107,16 @@ async def _why_path(query: str, repo: str | None) -> dict:
             collector,
             label=f"path decisions beyond cap={_MAX_PATH_DECISIONS}",
         )
+        for lane_key in ("candidates", "history"):
+            if result_data.get(lane_key):
+                cap_collection(
+                    result_data,
+                    lane_key,
+                    result_data[lane_key],
+                    _MAX_PATH_CANDIDATES,
+                    collector,
+                    label=f"path {lane_key} beyond cap={_MAX_PATH_CANDIDATES}",
+                )
         return _fit_path_response(result_data, ctx.path, collector=collector)
 
 
@@ -1068,7 +1180,7 @@ def _score_keyword_matches(
             (
                 -score,
                 -_score_decision(d, set(terms), target_set),
-                _PATH_STATUS_ORDER.get(d.status, 4),
+                status_rank(d.status),
                 d,
             )
         )
@@ -1869,7 +1981,7 @@ async def _git_archaeology_fallback(
     # --- Layer 3: Live git log (when local repo exists) ---
     git_log_results = []
     local_path = getattr(repository, "local_path", None)
-    if local_path and (Path(local_path) / ".git").is_dir():
+    if local_path and (Path(local_path) / ".git").exists():
         git_log_results = await _run_git_log(local_path, file_path, stem)
     result["git_log"] = git_log_results
 

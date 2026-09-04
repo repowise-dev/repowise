@@ -11,47 +11,19 @@ import { VerificationBadge } from "./verification-badge";
 import { DecisionStatusMark } from "./decision-status-mark";
 import { describeRecordStaleness } from "./decision-staleness";
 import { stripMarkdown } from "../lib/format";
+import {
+  DECISION_SOURCES,
+  DECISION_STATUSES,
+  DECISION_STATUS_LABELS,
+  decisionSourceLabel,
+  isRetiredDecisionSource,
+} from "@repowise-dev/types/decisions";
 import type {
   DecisionRecord,
   DecisionStatus,
   DecisionSource,
   DecisionScope,
 } from "@repowise-dev/types/decisions";
-
-// The engine emits more sources than the four the type union names: a live
-// index carries comment / pr / adr / session as well. Unmapped values used
-// to fall through raw, so one column mixed "Docs" with "pr". The retired
-// entries below stay in the map so an old row still renders a label; see
-// RETIRED_SOURCES for why they are not offered as filters.
-const SOURCE_LABEL: Record<string, string> = {
-  inline_marker: "Marker",
-  git_archaeology: "Git history",
-  readme_mining: "Docs",
-  cli: "Manual",
-  comment: "Comment",
-  pr: "Pull request",
-  adr: "ADR",
-  changelog: "Changelog",
-  session: "Session",
-};
-
-// Sources the engine no longer emits and whose rows were purged with them.
-// Mirrors `RETIRED_SOURCES` in `analysis/decisions/provenance.py`; a record
-// carrying one of these cannot exist, so offering it as a filter is a control
-// that cannot act. Note `code_comment` is retired and `comment` is not: they
-// are different values and a live index still carries the second.
-const RETIRED_SOURCES = new Set(["code_comment", "readme_mining", "changelog"]);
-
-/**
- * `source` is an unconstrained string on the wire, so a plain index into the
- * map reaches `Object.prototype`: a row sourced `toString` would hand a
- * function to `localeCompare` and throw inside the sort comparator.
- */
-function sourceLabel(source: string): string {
-  return Object.hasOwn(SOURCE_LABEL, source)
-    ? (SOURCE_LABEL[source] as string)
-    : source;
-}
 
 export type DecisionStatusFilter = DecisionStatus | "all";
 export type DecisionSourceFilter = DecisionSource | "all";
@@ -116,19 +88,21 @@ export function DecisionsTable({
   // server round trip on the whole store, so the two live sources could not
   // be reached at all and the retired one could only empty the table.
   //
-  // Built from the label map rather than from the loaded rows on purpose: the
-  // rows are one page of fifty, so a source that happens not to appear on
-  // page one would become unselectable, which is the same defect wearing a
-  // dynamic coat. Anything present but unmapped is unioned in so a source the
-  // engine adds is reachable before this map learns its name.
+  // Built from the shared source list rather than from the loaded rows on
+  // purpose: the rows are one page of fifty, so a source that happens not to
+  // appear on page one would become unselectable, which is the same defect
+  // wearing a dynamic coat. Anything present but unlisted is unioned in so a
+  // source the engine adds is reachable before this build learns its name.
   const sourceOptions = [
     ...new Set([
-      ...Object.keys(SOURCE_LABEL).filter((s) => !RETIRED_SOURCES.has(s)),
+      ...DECISION_SOURCES,
       ...(decisions ?? []).map((d) => d.source).filter(Boolean),
     ]),
   ]
-    .filter((s) => !RETIRED_SOURCES.has(s))
-    .sort((a, b) => sourceLabel(a).localeCompare(sourceLabel(b)));
+    .filter((s) => !isRetiredDecisionSource(s))
+    .sort((a, b) =>
+      decisionSourceLabel(a).localeCompare(decisionSourceLabel(b)),
+    );
 
   const columns: ResponsiveColumn<DecisionRecord>[] = [
     {
@@ -185,7 +159,7 @@ export function DecisionsTable({
       header: "Source",
       priority: 3,
       cellClassName: "text-[var(--color-text-secondary)]",
-      render: (d) => sourceLabel(d.source),
+      render: (d) => decisionSourceLabel(d.source),
     },
     // Scope, Confidence and Trust all left this row. Scope is `cross-module`
     // on three quarters of a live index and confidence is source rank times
@@ -288,14 +262,16 @@ export function DecisionsTable({
           className="w-full sm:w-auto rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
         >
           <option value="all">All statuses</option>
-          <option value="active">Active</option>
-          <option value="proposed">Proposed</option>
-          <option value="deprecated">Deprecated</option>
-          {/* Dismissed records are excluded from every default listing, so
-              without this option a dismissal is a one-way door: nothing in the
-              UI could show what had been dismissed, or undo one. */}
-          <option value="dismissed">Dismissed</option>
-          <option value="superseded">Superseded</option>
+          {/* From the shared ladder, so a status the engine adds is reachable
+              without editing this list. Dismissed is in it: dismissed records
+              are excluded from every default listing, so without the option a
+              dismissal would be a one-way door with nothing in the UI able to
+              show what had been dismissed, or undo one. */}
+          {DECISION_STATUSES.map((s) => (
+            <option key={s} value={s}>
+              {DECISION_STATUS_LABELS[s]}
+            </option>
+          ))}
         </select>
         <select
           value={filters.source}
@@ -308,7 +284,7 @@ export function DecisionsTable({
           <option value="all">All sources</option>
           {sourceOptions.map((s) => (
             <option key={s} value={s}>
-              {sourceLabel(s)}
+              {decisionSourceLabel(s)}
             </option>
           ))}
         </select>

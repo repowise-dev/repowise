@@ -12,8 +12,17 @@ so callers meaning "written to illustrate the subject" want the former.
 from __future__ import annotations
 
 from pathlib import PurePosixPath
+from typing import Literal
 
-__all__ = ["is_example_path", "is_support_path"]
+__all__ = [
+    "CONFIG_EXTENSIONS",
+    "DOC_EXTENSIONS",
+    "FilePopulation",
+    "file_population",
+    "is_doc_or_config_path",
+    "is_example_path",
+    "is_support_path",
+]
 
 
 # Example/demo/benchmark directories: documentation-by-code and support
@@ -60,6 +69,40 @@ def is_example_path(path: str) -> bool:
     example tree can dominate a community's label.
     """
     return _has_dir_token(path, EXAMPLE_DIR_TOKENS)
+
+
+# Shared with the knowledge graph's node classifier.
+CONFIG_EXTENSIONS = frozenset(
+    {
+        ".yaml", ".yml", ".toml", ".json", ".env", ".ini", ".cfg", ".conf",
+        ".properties", ".xml",
+    }
+)
+DOC_EXTENSIONS = frozenset({".md", ".mdx", ".rst", ".txt", ".adoc"})
+
+
+def is_doc_or_config_path(path: str) -> bool:
+    """Whether *path* is documentation or configuration rather than code."""
+    ext = PurePosixPath(path).suffix.lower()
+    return ext in CONFIG_EXTENSIONS or ext in DOC_EXTENSIONS
+
+
+FilePopulation = Literal["production", "test", "example", "doc"]
+
+
+def file_population(path: str, *, is_test: bool) -> FilePopulation:
+    """Which population a file belongs to, for surfaces that hide non-production.
+
+    Disjoint, in precedence order: ``tests/data/x.json`` is a test, not a doc.
+    *is_test* is the flag ingestion stored; the path rules cover the other two.
+    """
+    if is_test:
+        return "test"
+    if is_example_path(path):
+        return "example"
+    if is_doc_or_config_path(path):
+        return "doc"
+    return "production"
 
 
 def is_support_path(path: str) -> bool:

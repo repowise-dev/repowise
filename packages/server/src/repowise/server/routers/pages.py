@@ -21,6 +21,7 @@ from repowise.core.persistence import crud
 from repowise.core.persistence.models import _now_utc
 from repowise.server.deps import get_db_session, verify_api_key
 from repowise.server.schemas import (
+    JobAcceptedResponse,
     PageResponse,
     PageSummaryResponse,
     PageVersionResponse,
@@ -233,7 +234,7 @@ async def update_page_notes(
     return PageResponse.from_orm(page)
 
 
-@router.post("/lookup/regenerate", status_code=202)
+@router.post("/lookup/regenerate", response_model=JobAcceptedResponse, status_code=202)
 async def regenerate_page_by_query(
     request: Request,
     page_id: str = Query(..., description="Page ID"),

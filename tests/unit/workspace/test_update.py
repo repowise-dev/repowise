@@ -441,6 +441,91 @@ class TestUpdateWorkspace:
 
 
 # ---------------------------------------------------------------------------
+# Workspace-level single-flight (issue #1831)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceSingleFlight:
+    def test_concurrent_run_defers_to_owner(self, tmp_path: Path) -> None:
+        """A workspace update that finds another workspace update already in
+        flight must defer (skipped_reason=\"in_flight\") instead of running a
+        redundant full pass over every member."""
+        repo = _make_git_repo(tmp_path, "backend")
+        old_head = get_head_commit(repo)
+        _write_state(repo, old_head)
+        _add_commit(repo, "new.txt")
+
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="backend", alias="backend", last_commit_at_index=old_head)],
+            default_repo="backend",
+        )
+        ws_config.save(tmp_path)
+
+        from repowise.core.update_lock import update_workspace_lock
+
+        # Simulate another workspace update already in flight (same process).
+        assert update_workspace_lock(tmp_path) is None
+        try:
+            mock_result = RepoUpdateResult(alias="backend", updated=True, file_count=1, symbol_count=1)
+
+            async def _run():
+                with patch(
+                    "repowise.core.workspace.update.update_single_repo_index",
+                    new_callable=AsyncMock,
+                    return_value=mock_result,
+                ):
+                    return await update_workspace(tmp_path, ws_config)
+
+            import asyncio
+            results = asyncio.run(_run())
+            # No repo should have been updated — the whole pass deferred.
+            assert len(results) == 1
+            assert results[0].updated is False
+            assert results[0].skipped_reason == "in_flight"
+            # The running owner should pick up the deferred head via the
+            # pending marker written by the defereer.
+            pending = (tmp_path / "backend" / ".repowise" / ".update.pending")
+            assert pending.exists()
+            assert pending.read_text(encoding="utf-8") == get_head_commit(tmp_path / "backend")
+        finally:
+            from repowise.core.update_lock import release_workspace_lock
+
+            release_workspace_lock(tmp_path)
+
+    def test_lock_released_after_pass(self, tmp_path: Path) -> None:
+        """update_workspace must release the workspace lock after a successful
+        pass so the next hook-triggered invocation can take over."""
+        repo = _make_git_repo(tmp_path, "backend")
+        old_head = get_head_commit(repo)
+        _write_state(repo, old_head)
+        _add_commit(repo, "new.txt")
+
+        ws_config = WorkspaceConfig(
+            repos=[RepoEntry(path="backend", alias="backend", last_commit_at_index=old_head)],
+            default_repo="backend",
+        )
+        ws_config.save(tmp_path)
+
+        mock_result = RepoUpdateResult(alias="backend", updated=True, file_count=1, symbol_count=1)
+
+        from repowise.core.update_lock import workspace_update_lock_path
+
+        async def _run():
+            with patch(
+                "repowise.core.workspace.update.update_single_repo_index",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ):
+                return await update_workspace(tmp_path, ws_config)
+
+        import asyncio
+        asyncio.run(_run())
+
+        # The workspace lock was created during the pass and released at the end.
+        assert not workspace_update_lock_path(tmp_path).exists()
+
+
+# ---------------------------------------------------------------------------
 # Cross-repo hooks placeholder
 # ---------------------------------------------------------------------------
 

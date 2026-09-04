@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from repowise.core.analysis.decision_provenance import compute_confidence, rank_for_source
 from repowise.core.persistence.crud import bulk_upsert_decisions, list_decision_evidence
+from repowise.core.persistence.crud.authority import latest_acceptance
 from repowise.core.persistence.models import DecisionRecord
 from tests.unit.persistence.helpers import insert_repo
 
@@ -18,6 +19,9 @@ def _adr_dict(title="Use PostgreSQL for storage"):
         "source": "adr",
         "status": "active",
         "evidence_file": "docs/adr/0001-postgres.md",
+        # A committed ADR is a tracked authoritative artifact, so it can accept
+        # its own decision — but only if it says what the decision governs.
+        "affected_files": ["src/storage/db.py"],
         "confidence": 0.9,
         "verification": "exact",
         "source_quote": "Use PostgreSQL as the primary datastore",
@@ -65,6 +69,13 @@ async def test_two_sources_merge_into_one_record_with_two_evidence_rows(async_se
     assert rec.source == "adr"
     assert rec.decision == "Use PostgreSQL as the primary datastore"
     assert rec.status == "active"
+
+    # ``active`` is a projection of an acceptance, never a status extraction
+    # wrote on its own: the ADR file is recorded as the accepter.
+    acceptance = await latest_acceptance(async_session, rec.id)
+    assert acceptance is not None
+    assert acceptance.artifact == "docs/adr/0001-postgres.md"
+    assert acceptance.accepter == ""
 
     # Strongest evidence verification wins; confidence reflects corroboration.
     assert rec.verification == "exact"
@@ -120,3 +131,23 @@ async def test_distinct_decisions_stay_separate(async_session):
     )
     rows = await _decision_rows(async_session, repo.id)
     assert len(rows) == 2
+
+
+async def test_scopeless_adr_stays_a_candidate(async_session):
+    """An ADR that names no code cannot be accepted, so it does not govern.
+
+    Acceptance requires a scope, and the ADR is the accepter here; a document
+    that says what to do but not where it applies has not said enough to bind
+    future work, and reading it as ``active`` would put it in front of an agent
+    as an instruction nobody can check.
+    """
+    repo = await insert_repo(async_session)
+    scopeless = _adr_dict()
+    scopeless.pop("affected_files")
+
+    await bulk_upsert_decisions(async_session, repo.id, [scopeless])
+
+    rows = await _decision_rows(async_session, repo.id)
+    assert len(rows) == 1
+    assert rows[0].status == "proposed"
+    assert await latest_acceptance(async_session, rows[0].id) is None

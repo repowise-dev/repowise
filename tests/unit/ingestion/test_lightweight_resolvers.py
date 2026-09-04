@@ -93,6 +93,11 @@ class TestDispatch:
             "sql",
             # <script src>/<link href>; AST-backed, unlike its siblings here.
             "html",
+            # import QtQuick / import "components" (regex tier, #727).
+            "qml",
+            # Godot .tscn/.tres/.escn + project.godot + plugin.cfg. The only
+            # member at import_support="full" -- see the package docstring.
+            "godot_resource",
         } == LIGHTWEIGHT_IMPORT_LANGUAGES
 
     def test_other_language_returns_empty(self) -> None:

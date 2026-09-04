@@ -59,13 +59,43 @@ def test_json_includes_move_and_break_plans(capsys):
     ]
 
 
-def test_markdown_renders_both_sections(capsys):
+def test_markdown_renders_both_plans_as_opportunity_steps(capsys):
+    """The organizing principle is the file, not the refactoring type.
+
+    Type-grouped sections meant a file needing a split and two extractions
+    appeared three times in three places. The per-type detail is unchanged and
+    now renders under the step it belongs to.
+    """
     _render_refactoring_targets([], [], [_move_method(), _break_cycle()], fmt="md")
     text = capsys.readouterr().out
-    assert "## Move Method plans" in text
-    assert "C.envious" in text and "`T (t.py)`" in text
-    assert "## Break Cycle plans" in text
+    assert "## Refactoring opportunities" in text
+    assert "## Move Method plans" not in text
+    assert "## Break Cycle plans" not in text
+    # Every step says which kind of change it is, and keeps its own detail.
+    assert "move_method **C.envious**" in text and "`T (t.py)`" in text
+    assert "break_cycle **cycle[2]: b.py->a.py**" in text
     assert "invert b.py -> a.py" in text
+    assert "judgment" in text
+
+
+def test_markdown_states_the_unknown_primary_problem_rather_than_denying_it(capsys):
+    """Tri-state. With no findings supplied the answer is unknown, not "no"."""
+    _render_refactoring_targets([], [], [_move_method()], fmt="md")
+    text = capsys.readouterr().out
+    assert "no dominant problem recorded" in text
+    assert "does not address" not in text
+
+
+def test_json_carries_the_opportunities_beside_the_plans(capsys):
+    _render_refactoring_targets([], [], [_move_method(), _break_cycle()], fmt="json")
+    out = json.loads(capsys.readouterr().out)
+    opportunities = out["refactoring_opportunities"]
+    assert {o["file_path"] for o in opportunities} == {"a.py", "c.py"}
+    assert all(o["opportunity_id"].startswith("refop") for o in opportunities)
+    # The step ids are the plan ids, so the CLI and the server address one thing.
+    step_ids = [s["plan_id"] for o in opportunities for s in o["steps"]]
+    assert all(pid.startswith("refac") for pid in step_ids)
+    assert all(o["addresses_primary_problem"] is None for o in opportunities)
 
 
 def _extract_helper(suggested_site: dict) -> RefactoringSuggestion:
@@ -118,3 +148,33 @@ def test_helper_site_falls_back_when_a_legacy_row_has_no_directory(capsys):
     legacy = _extract_helper({"module": "ui", "directory": None})
     _render_refactoring_targets([], [], [legacy], fmt="md")
     assert "near `ui`" in capsys.readouterr().out
+
+
+def _extract_method(i: int) -> RefactoringSuggestion:
+    """One plan per file, so composition yields one step per file."""
+    return RefactoringSuggestion(
+        refactoring_type="extract_method",
+        file_path=f"m{i}.py",
+        target_symbol=f"f{i}",
+        line_start=10,
+        line_end=30,
+        plan={"span": {"start": 10, "end": 30}, "suggested_name": f"_f{i}_part"},
+        evidence={"ccn_removed": 6, "slice_nloc": 20},
+        impact_delta=float(i),
+        effort_bucket="S",
+        blast_radius={"scope": "local"},
+        confidence="high",
+    )
+
+
+def test_a_step_whose_plan_falls_outside_the_limit_still_renders(capsys):
+    """Composition runs over every suggestion; the plan list is truncated.
+
+    So a step can outrank its own plan's detail, and the detail lookup hands
+    the renderer an empty dict. It used to dereference that and raise
+    ``KeyError: 'refactoring_type'``, taking the whole command down.
+    """
+    suggestions = [_extract_method(i) for i in range(25)]
+    for fmt in ("console", "md"):
+        _render_refactoring_targets([], [], suggestions, fmt=fmt, limit=3)
+        assert capsys.readouterr().out

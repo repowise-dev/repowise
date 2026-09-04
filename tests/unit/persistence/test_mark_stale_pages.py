@@ -65,3 +65,43 @@ async def test_missing_pages_and_empty_input_are_noops(async_session):
 
     assert await mark_stale_pages(async_session, repo.id, []) == 0
     assert await mark_stale_pages(async_session, repo.id, ["src/never_indexed.py"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_cascade_spanning_several_chunks_counts_them_all(async_session):
+    """More paths than one chunk, so the batched UPDATE has to accumulate.
+
+    This does not reproduce the bind-variable cap. SQLite has allowed 32766
+    variables since 3.32, so the unchunked version passed it too. What it pins
+    is the arithmetic the shared path introduces: three batches of 500, with a
+    rowcount summed across them rather than taken from the last one.
+    """
+    repo = await insert_repo(async_session)
+    paths = [f"src/mod{i}.py" for i in range(1200)]  # > _STALE_ID_CHUNK (500)
+    for path in paths:
+        await _seed_page(async_session, repo.id, path)
+
+    marked = await mark_stale_pages(async_session, repo.id, paths)
+    await async_session.commit()
+
+    assert marked == len(paths)
+    assert len(await get_stale_pages(async_session, repo.id)) == len(paths)
+
+
+@pytest.mark.asyncio
+async def test_a_generator_of_paths_is_accepted(async_session):
+    """The signature takes any iterable, matching ``mark_page_ids_stale``.
+
+    The old ``if not paths`` early-return would have been wrong for a lazy
+    iterable, since a generator is always truthy. Widening the annotation
+    without moving that check would have traded one inconsistency for a subtler
+    one. The shared path materializes before it tests.
+    """
+    repo = await insert_repo(async_session)
+    await _seed_page(async_session, repo.id, "src/a.py")
+
+    marked = await mark_stale_pages(async_session, repo.id, (p for p in ["src/a.py"]))
+    await async_session.commit()
+
+    assert marked == 1
+    assert await mark_stale_pages(async_session, repo.id, (p for p in [])) == 0

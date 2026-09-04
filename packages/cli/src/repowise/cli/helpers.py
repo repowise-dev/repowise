@@ -14,6 +14,7 @@ from typing import Any, Literal, TypeVar
 import click
 from rich.console import Console
 
+from repowise.cli.errors import reasoned_error
 from repowise.cli.output import resolve_console_width
 from repowise.core.reasoning import (
     ReasoningMode,
@@ -21,7 +22,7 @@ from repowise.core.reasoning import (
 from repowise.core.reasoning import (
     resolve_reasoning as resolve_core_reasoning,
 )
-from repowise.core.repo_config import CONFIG_FILENAME, load_repo_config
+from repowise.core.repo_config import CONFIG_FILENAME, RepoConfigError, load_repo_config
 
 # Update lock — coordinates concurrent `repowise update` invocations and lets
 # the augment hook suppress stale-wiki warnings while a refresh is in flight.
@@ -605,8 +606,19 @@ def head_commit_ts(repo_path: Path) -> float | None:
 
 
 def load_config(repo_path: Path) -> dict[str, Any]:
-    """Load ``.repowise/config.yaml`` or return an empty dict if absent."""
-    return load_repo_config(repo_path)
+    """Load ``.repowise/config.yaml`` or return an empty dict if absent.
+
+    A broken config is surfaced as a warning (to stderr, so ``--format json``
+    stays parseable) and degrades to an empty dict rather than crashing the
+    command or silently using defaults — issue #852: configuration errors must
+    be visible, not swallowed. Callers keep their current behaviour either
+    way; the warning is the fix.
+    """
+    try:
+        return load_repo_config(repo_path)
+    except RepoConfigError as exc:
+        err_console.print(f"[yellow]Warning:[/yellow] {exc}")
+        return {}
 
 
 def resolve_reasoning(
@@ -617,7 +629,7 @@ def resolve_reasoning(
     try:
         return resolve_core_reasoning(reasoning, config)
     except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise reasoned_error(str(exc), reason="invalid_reasoning") from exc
 
 
 def resolve_max_file_pages(
@@ -946,14 +958,10 @@ def resolve_provider(
             # as a raw traceback that escaped every caller's handler —
             # OLLAMA_BASE_URL=http://localhost:abc makes httpx raise
             # InvalidURL, which killed `init` outright.
-            # Imported here, not at module scope: the telemetry spool imports
-            # this module back for the global config dir.
-            from repowise.cli.platform import telemetry
-
-            telemetry.add_command_outcome(failure_reason="provider_setup_failed")
-            raise click.ClickException(
+            raise reasoned_error(
                 f"Could not set up the {name} provider: {exc}. Check its "
-                "settings in your environment and .repowise/config.yaml."
+                "settings in your environment and .repowise/config.yaml.",
+                reason="provider_setup_failed",
             ) from exc
 
     if provider_name is not None:
@@ -975,10 +983,9 @@ def resolve_provider(
         if provider_credentials_present(candidate):
             return _build(candidate)
 
-    from repowise.cli.platform import telemetry
-
-    telemetry.add_command_outcome(failure_reason="no_provider_configured")
-    raise click.ClickException(
+    # Not fatal on every path: `init` catches this and renders a template wiki
+    # instead, so the reason must not be recorded until it ends a command.
+    raise reasoned_error(
         "No provider configured. Use --provider, set REPOWISE_PROVIDER, "
         "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / "
         "OLLAMA_BASE_URL / GEMINI_API_KEY / GOOGLE_API_KEY / DEEPSEEK_API_KEY / "
@@ -986,7 +993,8 @@ def resolve_provider(
         "REPOWISE_PROVIDER=claude_cli to use an "
         "authenticated Claude Code subscription, REPOWISE_PROVIDER=codex_cli to use "
         "an authenticated Codex CLI subscription, or REPOWISE_PROVIDER=opencode "
-        "to use opencode."
+        "to use opencode.",
+        reason="no_provider_configured",
     )
 
 

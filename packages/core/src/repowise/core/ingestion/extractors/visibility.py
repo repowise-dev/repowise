@@ -100,6 +100,27 @@ def csharp_visibility(_name: str, modifier_texts: list[str]) -> str:
     return "internal"
 
 
+def vbnet_visibility(_name: str, modifier_texts: list[str]) -> str:
+    """VB.NET visibility: Public/Private/Protected/Friend (internal).
+
+    VB.NET's default access for a top-level type is ``Friend`` (assembly
+    scope), which maps to C#'s ``internal``; nested types under a parent
+    default to the parent's scope. ``Protected Friend`` is reported as
+    protected, the narrower of the two halves, matching how
+    ``csharp_visibility`` above reports ``protected internal``.
+    """
+    combined = " ".join(modifier_texts).lower()
+    if "private" in combined:
+        return "private"
+    if "protected" in combined:
+        return "protected"
+    if "friend" in combined:
+        return "internal"
+    if "public" in combined:
+        return "public"
+    return "internal"
+
+
 def swift_visibility(_name: str, modifier_texts: list[str]) -> str:
     """Swift visibility — public/private/fileprivate/internal/open."""
     combined = " ".join(modifier_texts).lower()

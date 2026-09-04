@@ -181,6 +181,8 @@ export interface SymbolBodyGraph {
   relations?: SymbolRelationGroup<SymbolBodyCall>[];
   pagerank_percentile?: number | null;
   betweenness_percentile?: number | null;
+  /** False when the symbol appeared after the last exact centrality scoring. */
+  betweenness_scored?: boolean;
   community_label?: string | null;
   entry_point_score?: number | null;
 }

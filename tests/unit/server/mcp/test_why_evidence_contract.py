@@ -16,6 +16,21 @@ from repowise.server.mcp_server._why_evidence import (
 )
 from repowise.server.mcp_server.tool_why import _rank_keyword_matches
 
+
+def _row_by_id(result: dict, decision_id: str) -> dict:
+    """The row for *decision_id*, from whichever lane the response put it in.
+
+    Path mode splits accepted decisions from candidates, so a record's lane
+    depends on whether anybody has accepted it. Its public reference must not:
+    that is the contract these tests exist to hold.
+    """
+    for lane in ("decisions", "candidates"):
+        for row in result.get(lane) or []:
+            if row["id"] == decision_id:
+                return row
+    raise AssertionError(f"{decision_id} is in no lane of {sorted(result)}")
+
+
 _A = "a" * 40
 _B = "b" * 40
 _C = "c" * 40
@@ -393,8 +408,8 @@ async def test_persisted_evidence_rows_accrete_into_the_public_decision(
 
     result = await get_why("why is JWT used for authentication")
     path_result = await get_why("src/auth/service.py")
-    decision = next(row for row in result["decisions"] if row["id"] == "dec1")
-    path_decision = next(row for row in path_result["decisions"] if row["id"] == "dec1")
+    decision = _row_by_id(result, "dec1")
+    path_decision = _row_by_id(path_result, "dec1")
 
     assert {ref["provenance"] for ref in decision["evidence_refs"]} == {
         "human_decision",
@@ -471,7 +486,7 @@ async def test_every_single_repository_query_mode_keeps_the_exact_public_referen
         await get_why(targets=["src/auth/service.py"]),
     ]
     for result in calls:
-        decision = next(row for row in result["decisions"] if row["id"] == "dec1")
+        decision = _row_by_id(result, "dec1")
         assert decision["source"] == "readme_mining"
         assert decision["provenance"] == "historical"
         assert decision["evidence_refs"] == [expected]

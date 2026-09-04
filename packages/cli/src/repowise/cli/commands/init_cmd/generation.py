@@ -259,6 +259,7 @@ def run_repo_generation(
     resume: bool,
     verbose: bool,
     test_run: bool = False,
+    timings: Any | None = None,
 ) -> list[Any]:
     """Generate wiki pages for one repo and enrich its knowledge graph.
 
@@ -275,7 +276,12 @@ def run_repo_generation(
     ``verbose`` controls only console output: the single-repo flow prints the
     page count + KG status; the workspace flow stays quiet and prints its own
     per-repo summary.
+
+    ``timings`` is the run's :class:`PhaseTimings` table. Generation owns its
+    own progress bar, so without it the phases here land nowhere.
     """
+    from repowise.core.pipeline import PhaseTimingRecorder, timed
+
     from ._generation_persist import run_generation_with_persistence
 
     if verbose:
@@ -325,7 +331,9 @@ def run_repo_generation(
     result.preserved_page_ids = preserved_page_ids
 
     with Progress(*columns, console=console) as gen_progress:
-        gen_callback = RichProgressCallback(gen_progress, console)
+        gen_callback: Any = RichProgressCallback(gen_progress, console)
+        if timings is not None:
+            gen_callback = PhaseTimingRecorder(gen_callback, timings)
         generated_pages = run_async(
             run_generation_with_persistence(
                 repo_path=repo_path,
@@ -437,13 +445,14 @@ def run_repo_generation(
     # A deterministic run has no model to ask, and the skeleton's structural
     # layers stand on their own.
     if not deterministic:
-        _enrich_knowledge_graph(
-            result=result,
-            provider=provider,
-            gen_config=gen_config,
-            generated_pages=generated_pages,
-            verbose=verbose,
-        )
+        with timed(timings, "generation.kg_enrich"):
+            _enrich_knowledge_graph(
+                result=result,
+                provider=provider,
+                gen_config=gen_config,
+                generated_pages=generated_pages,
+                verbose=verbose,
+            )
         flush_cost_tracker(cost_tracker)
 
     # What the run actually spent, for the completion panel. The user was shown

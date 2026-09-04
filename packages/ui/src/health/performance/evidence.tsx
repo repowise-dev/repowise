@@ -5,6 +5,7 @@ import useSWR from "swr";
 import type { HealthFinding, PerformanceOpportunityEvidence } from "@repowise-dev/types/health";
 
 import { PaginationControls } from "../../shared/pagination-controls";
+import { Skeleton, SkeletonRegion } from "../../ui/skeleton";
 import type { PerformanceViewAdapter } from "./adapter";
 
 /**
@@ -71,7 +72,9 @@ export function RawObservations({
             </p>
           ) : null}
           {isLoading && !data ? (
-            <div className="h-24 animate-pulse rounded bg-[var(--color-bg-surface)]" />
+            <SkeletonRegion label="Loading observations">
+              <Skeleton className="h-24 rounded" />
+            </SkeletonRegion>
           ) : (
             <ul className="divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
               {rows.map((row, index) => (

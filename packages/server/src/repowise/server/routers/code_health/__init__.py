@@ -20,6 +20,7 @@ from . import (
     coverage_routes,  # noqa: F401
     files_routes,  # noqa: F401
     findings_routes,  # noqa: F401
+    map_routes,  # noqa: F401
     overview_routes,  # noqa: F401
     performance_routes,  # noqa: F401
     refactoring_routes,  # noqa: F401

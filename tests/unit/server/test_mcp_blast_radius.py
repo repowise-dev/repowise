@@ -310,6 +310,15 @@ async def test_symbol_target_names_the_consuming_symbol(workspace_state):
             "match_type": "exact",
             "confidence": 0.8,
             "symbol_id": "client.ts::fetchUsers",
+            # No consumer index is open here, so the link is reported unfollowed.
+            "tests": {
+                "state": "unresolved",
+                "tests_to_run": [],
+                "total": 0,
+                "truncated": False,
+                "unresolved_reason": "no_index",
+                "unresolved_detail": None,
+            },
         }
     ]
     assert blocks[0]["consumers_truncated"] == 0

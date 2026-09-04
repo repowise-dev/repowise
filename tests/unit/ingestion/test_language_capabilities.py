@@ -101,7 +101,7 @@ class TestParityGoldens:
         camel = REGISTRY.camel_test_res_by_extension()
         assert set(camel) == {
             ".java", ".kt", ".kts", ".scala", ".cs", ".swift", ".php",
-            ".hs", ".lhs",
+            ".hs", ".lhs", ".vb",
         }
         assert camel[".java"].pattern == r"(?<=[a-z0-9])(?:Tests|Test|IT)$"
         assert camel[".scala"].pattern == r"(?<=[a-z0-9])(?:Suite|Spec|Test)$"
@@ -143,6 +143,12 @@ _FULL = {
     # dart promoted with the tree-sitter grammar (the regex tier stays as
     # the no-grammar fallback).
     "dart",
+    # res:// is an absolute path from the nearest project.godot, so GDScript
+    # import targets resolve exactly rather than through a stem guess.
+    "gdscript",
+    # .tscn/.tres/.escn, project.godot and plugin.cfg name their dependencies
+    # with the same res:// paths and share the same resolver.
+    "godot_resource",
     "go",
     "java",
     "javascript",
@@ -160,6 +166,9 @@ _FULL = {
     # vue components project to TypeScript through the same SFC pass as
     # svelte, so their <script> imports are ordinary ESM.
     "vue",
+    # vbnet resolves Imports through the same DotNetProjectIndex as csharp:
+    # .vbproj / .sln parsing and a RootNamespace-aware namespace map.
+    "vbnet",
 }
 _PARTIAL = {
     "luau",
@@ -179,6 +188,9 @@ _PARTIAL = {
     # rather than full because template dialects (Django, Jinja, Go templates,
     # ERB, Handlebars) are invisible to an HTML grammar and yield nothing.
     "html",
+    # import QtQuick / import "components": module specs via the qmldir
+    # index, quoted references relative to the importing file (#727).
+    "qml",
 }
 
 
@@ -197,6 +209,25 @@ class TestImportSupportTiers:
 
     def test_unknown_language_reports_none(self) -> None:
         assert REGISTRY.import_support_for("klingon") == "none"
+
+
+class TestLanguageTagParity:
+    def test_every_spec_tag_is_a_language_tag(self) -> None:
+        # EXTENSION_TO_LANGUAGE keeps only extensions whose tag is in the
+        # LanguageTag literal, so a spec whose tag is missing there is
+        # registered but never traversed: its files index as nothing while
+        # the parser tests, which bypass the traverser, stay green.
+        from repowise.core.ingestion.models import _LANGUAGE_TAG_VALUES
+
+        spec_tags = {spec.tag for spec in REGISTRY.all_specs()}
+        assert spec_tags == _LANGUAGE_TAG_VALUES
+
+    def test_every_spec_extension_is_routed(self) -> None:
+        from repowise.core.ingestion.models import EXTENSION_TO_LANGUAGE
+
+        for spec in REGISTRY.all_specs():
+            for ext in spec.extensions:
+                assert EXTENSION_TO_LANGUAGE.get(ext) == spec.tag, (spec.tag, ext)
 
 
 # ---------------------------------------------------------------------------

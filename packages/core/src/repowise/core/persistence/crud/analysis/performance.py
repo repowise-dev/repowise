@@ -14,7 +14,7 @@ for the same reason - they can no longer describe the current tree.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -517,6 +517,97 @@ async def performance_facet_counts(
         )
     )
     return [tuple(row) for row in result.all()]
+
+
+_ACTIONABILITY_STATES = ("plan_ready", "advisory", "investigate")
+"""The states a rollup breaks down. Named, so a fourth cannot vanish silently."""
+
+
+class PerformanceFileRollup(NamedTuple):
+    """One file's open performance burden, folded from the grouped counts."""
+
+    file_path: str
+    opportunities: int
+    observations: int
+    plan_ready: int
+    advisory: int
+    investigate: int
+    best_rank: int
+    """Lowest ``rank_position`` on the file, so a map can rank files by cause."""
+
+
+async def performance_file_rollups(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    file_paths: tuple[str, ...] | None = None,
+) -> list[PerformanceFileRollup]:
+    """Per-file burden for every file carrying an open opportunity.
+
+    One indexed aggregate over ``(repository_id, status, file_path)`` returning
+    at most three rows per file rather than one per observation, so a caller
+    that needs the whole repository still pays a grouped scan and not a
+    per-file query. Ordered best-rank first, which is the order a bounded map
+    feed admits files in.
+    """
+    where = _predicates(
+        repository_id,
+        contexts=None,
+        boundary=None,
+        confidence=None,
+        actionability=None,
+        file_paths=file_paths,
+    )
+    result = await session.execute(
+        select(
+            PerformanceOpportunity.file_path,
+            PerformanceOpportunity.actionability_state,
+            func.count(),
+            func.sum(PerformanceOpportunity.observations_total),
+            func.min(PerformanceOpportunity.rank_position),
+        )
+        .where(*where)
+        .group_by(
+            PerformanceOpportunity.file_path,
+            PerformanceOpportunity.actionability_state,
+        )
+    )
+    folded: dict[str, dict[str, int]] = {}
+    for path, state, count, observations, best_rank in result.all():
+        if not path:
+            continue
+        row = folded.setdefault(
+            path,
+            {
+                "opportunities": 0,
+                "observations": 0,
+                "plan_ready": 0,
+                "advisory": 0,
+                "investigate": 0,
+                "best_rank": best_rank or 0,
+            },
+        )
+        row["opportunities"] += int(count or 0)
+        row["observations"] += int(observations or 0)
+        if state in _ACTIONABILITY_STATES:
+            row[state] += int(count or 0)
+        row["best_rank"] = min(row["best_rank"], int(best_rank or 0))
+    rollups = [
+        PerformanceFileRollup(
+            file_path=path,
+            opportunities=row["opportunities"],
+            observations=row["observations"],
+            plan_ready=row["plan_ready"],
+            advisory=row["advisory"],
+            investigate=row["investigate"],
+            best_rank=row["best_rank"],
+        )
+        for path, row in folded.items()
+    ]
+    # Best rank first, then path, so the order a cap is applied against is
+    # total and does not move between two reads of the same store.
+    rollups.sort(key=lambda r: (r.best_rank, r.file_path))
+    return rollups
 
 
 async def get_performance_plan_rows(

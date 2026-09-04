@@ -812,8 +812,16 @@ export function createHostedProvider(config: HostedProviderConfig): HostedProvid
       }),
     getRefactoringPlan: (repoId, planId) =>
       snapGet(repoId, `/refactoring/${encodeURIComponent(planId)}`),
-    getPerformanceOpportunities: (repoId, opts = {}) =>
-      snapGet(repoId, "/health/performance-opportunities", opts),
+    getPerformanceOpportunities: (repoId, opts = {}) => {
+      // The file scope is the one list-valued member of the query, and the
+      // parameter helper takes scalars, so it goes over the wire the way the
+      // route reads it rather than as an array the serializer would drop.
+      const { file_paths, ...rest } = opts;
+      return snapGet(repoId, "/health/performance-opportunities", {
+        ...rest,
+        ...(file_paths?.length ? { file_paths: file_paths.join(",") } : {}),
+      });
+    },
     getPerformanceOpportunityFindings: (repoId, opportunityId, opts = {}) =>
       snapGet(
         repoId,

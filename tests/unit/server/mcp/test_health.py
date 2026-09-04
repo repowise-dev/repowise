@@ -21,13 +21,22 @@ async def test_get_health_dashboard(setup_mcp, health_data):
     assert result["mode"] == "dashboard"
     assert result["kpis"]["file_count"] == 2
     assert result["kpis"]["worst_performer_path"] == "src/auth/service.py"
-    # Two leads, both first: the defect one and the performance pillar's own,
-    # which carries no defect impact and so never competed for the first.
-    assert list(result)[:3] == ["directive", "performance_directive", "mode"]
+    # Three leads, all first: the defect one, and one per pillar that carries
+    # no defect impact and so never competed for it.
+    assert list(result)[:4] == [
+        "directive",
+        "refactoring_directive",
+        "performance_directive",
+        "mode",
+    ]
     assert "high_leverage_files" in result
     assert "worst_files" not in result
     assert result["secondary_rankings"]["worst_files"]["total"] == 2
-    assert result["secondary_rankings"]["top_findings"]["total"] == 4
+    # Three, not four: the impact ranking carries defect and maintainability
+    # work. The performance finding scores zero impact by construction, and a
+    # row that cannot rank is not a rank. It leads the response instead, in
+    # `performance_directive`.
+    assert result["secondary_rankings"]["top_findings"]["total"] == 3
     assert "omitted" not in result["_meta"]
 
 
@@ -116,8 +125,9 @@ async def test_get_health_dashboard_surfaces_maintainability(setup_mcp, health_d
     assert worst["maintainability_score"] == 6.0
     assert worst["performance_score"] == 9.0
     # Findings are tagged with their home pillar so they can be filtered.
+    # Performance is not in the impact ranking: it has no impact to rank by.
     dims = {f["dimension"] for f in result["top_findings"]}
-    assert dims == {"defect", "maintainability", "performance"}
+    assert dims == {"defect", "maintainability"}
 
 
 @pytest.mark.asyncio
@@ -129,8 +139,10 @@ async def test_get_health_dashboard_surfaces_performance(setup_mcp, health_data)
     # Repo-level KPI headline for the performance pillar.
     # NLOC-weighted: (9.0*200 + 10.0*50) / 250 = 9.2.
     assert result["kpis"]["performance_average"] == 9.2
-    # The perf finding carries its boundary kind + cross-function reachability path.
-    perf = [f for f in result["top_findings"] if f["dimension"] == "performance"]
+    # The perf finding carries its boundary kind + cross-function reachability
+    # path. Asked for by name, because the impact ranking above excludes it.
+    ranked = await get_health(include=["performance"], only=["top_findings"])
+    perf = [f for f in ranked["top_findings"] if f["dimension"] == "performance"]
     assert len(perf) == 1
     details = perf[0]["details"]
     assert details["boundary_kind"] == "db"
@@ -179,10 +191,16 @@ async def test_get_health_dashboard_surfaces_leverage(setup_mcp, health_data):
 
 @pytest.mark.asyncio
 async def test_get_health_refactoring_capped_and_leverage_ranked(setup_mcp, health_data):
-    """refactoring_plans is bounded by limit and reports the honest total."""
+    """refactoring_plans is bounded by limit and reports the honest total.
+
+    Named explicitly: ``include=["refactoring"]`` leads with the composed
+    opportunity queue, and the raw plan list is the opt-in projection.
+    """
     from repowise.server.mcp_server import get_health
 
-    result = await get_health(include=["refactoring"], limit=5)
+    result = await get_health(
+        include=["refactoring"], only=["refactoring_plans"], limit=5
+    )
     assert "refactoring_plans" in result
     assert len(result["refactoring_plans"]) <= 5
     # Honest truncation signal is always present when refactoring is requested.
@@ -278,9 +296,14 @@ def test_validation_profiles_deduplicate_without_dropping_commands_or_target_tes
 
 
 @pytest.mark.asyncio
-async def test_target_freshness_uses_only_the_requested_health_rows(
-    setup_mcp, health_data, session
-):
+async def test_freshness_is_a_repository_fact_in_every_mode(setup_mcp, health_data, session):
+    """Whether the analysis recorded its commit cannot depend on the mode asked.
+
+    Each mode used to compute "latest analysed row" over whatever rows it was
+    reporting on, so a call scoped to an older file reported that file's commit
+    as the repository's, and a detail call could read ``available`` at the same
+    instant the dashboard read ``degraded``. The block is repository-wide now.
+    """
     from datetime import UTC, datetime
 
     from sqlalchemy import select
@@ -304,10 +327,17 @@ async def test_target_freshness_uses_only_the_requested_health_rows(
     by_path["src/db/models.py"].analyzed_commit = "b" * 40
     await session.flush()
 
-    result = await get_health(targets=["src/auth/service.py"], only=["metrics"])
-    assert result["_meta"]["health_analyzed_at"].startswith("2025-01-01")
-    assert result["_meta"]["health_analyzed_commit"] == "a" * 12
-    assert "health_analyzed_commits_distinct" not in result["_meta"]
+    scoped = await get_health(targets=["src/auth/service.py"], only=["metrics"])
+    dashboard = await get_health(only=["kpis"])
+    for meta in (scoped["_meta"], dashboard["_meta"]):
+        # The repository's newest analysed row, not the scoped file's.
+        assert meta["health_analyzed_at"].startswith("2026-01-01")
+        assert meta["health_analyzed_commit"] == "b" * 12
+        assert meta["health_analyzed_commits_distinct"] == 2
+    assert (
+        scoped["_meta"]["health_analysis"]["status"]
+        == dashboard["_meta"]["health_analysis"]["status"]
+    )
 
 
 @pytest.mark.asyncio
@@ -542,11 +572,11 @@ async def test_get_health_findings_capped_with_honest_total(setup_mcp, health_da
 
     result = await get_health(targets=["src/auth/service.py"], limit=2)
     assert len(result["findings"]) == 2
-    assert result["findings_total"] == 4
+    assert result["findings_total"] == 3
 
     dash = await get_health(only=["top_findings"], limit=2)
     assert len(dash["top_findings"]) == 2
-    assert dash["top_findings_total"] == 4
+    assert dash["top_findings_total"] == 3
 
 
 @pytest.mark.asyncio
@@ -872,7 +902,7 @@ async def test_get_health_biomarkers_block_is_capped(setup_mcp, health_data):
     result = await get_health(include=["biomarkers"], limit=2)
     assert len(result["findings"]) == 2
     # The cap is visible rather than inferred from the length.
-    assert result["findings_total"] == 4
+    assert result["findings_total"] == 3
     # Impact-ordered, so the cap keeps the findings worth reading.
     impacts = [f["health_impact"] for f in result["findings"]]
     assert impacts == sorted(impacts, reverse=True)
@@ -890,11 +920,11 @@ async def test_get_health_totals_survive_the_cap(setup_mcp, health_data):
 
     capped = await get_health(only=["top_findings"], limit=1)
     assert len(capped["top_findings"]) == 1
-    assert capped["top_findings_total"] == 4
+    assert capped["top_findings_total"] == 3
 
     scoped = await get_health(targets=["src/auth/service.py"], limit=1)
     assert len(scoped["findings"]) == 1
-    assert scoped["findings_total"] == 4
+    assert scoped["findings_total"] == 3
 
 
 @pytest.mark.asyncio
@@ -1358,10 +1388,12 @@ async def test_test_findings_get_their_own_bucket(setup_mcp, health_data_with_te
     assert all(f["file_path"] != "tests/test_service.py" for f in result["top_findings"])
     assert result["top_findings"][0]["file_path"] == "src/auth/service.py"
 
-    # Nothing is lost: the two buckets partition the whole open set.
+    # Nothing that ranks is lost: the two buckets partition the impact-ranked
+    # set, which is defect and maintainability work. The fixture's performance
+    # finding is in neither, because it carries no impact to rank by.
     assert result["test_findings_total"] == 2
-    assert result["top_findings_total"] == 4
-    assert result["top_findings_total"] + result["test_findings_total"] == 6
+    assert result["top_findings_total"] == 3
+    assert result["top_findings_total"] + result["test_findings_total"] == 5
 
 
 @pytest.mark.asyncio
@@ -1378,7 +1410,7 @@ async def test_each_bucket_is_capped_against_its_own_population(setup_mcp, healt
     result = await get_health(only=["top_findings", "test_findings"], limit=2)
     assert len(result["top_findings"]) == 2
     assert len(result["test_findings"]) == 2
-    assert result["top_findings_total"] == 4
+    assert result["top_findings_total"] == 3
 
 
 @pytest.mark.asyncio
@@ -1583,9 +1615,14 @@ async def test_refactoring_plans_spread_across_files(setup_mcp, health_data, ses
         ],
     )
 
-    plans = (await get_health(include=["refactoring"], limit=4, refactoring_view="file_spread"))[
-        "refactoring_plans"
-    ]
+    plans = (
+        await get_health(
+            include=["refactoring"],
+            only=["refactoring_plans"],
+            limit=4,
+            refactoring_view="file_spread",
+        )
+    )["refactoring_plans"]
     assert len(plans) == 4
     # Both files are represented rather than the worst file owning the list.
     assert len({p["file_path"] for p in plans}) == 2
@@ -1619,7 +1656,9 @@ async def test_refactoring_spread_is_exhaustive_when_one_file_has_them_all(
         ],
     )
 
-    plans = (await get_health(include=["refactoring"], limit=4))["refactoring_plans"]
+    plans = (
+        await get_health(include=["refactoring"], only=["refactoring_plans"], limit=4)
+    )["refactoring_plans"]
     assert len(plans) == 4
     assert {p["file_path"] for p in plans} == {"src/auth/service.py"}
 
@@ -2010,7 +2049,9 @@ async def test_meta_omits_the_commit_when_no_row_records_one(setup_mcp, health_d
         "source_bytes_verified": False,
     }
     analysis = meta["health_analysis"]
-    assert analysis["status"] == "degraded"
+    # Usable metrics with no recorded commit: a provenance gap, not a failed
+    # capability, which is what ``degraded`` means everywhere else on the wire.
+    assert analysis["status"] == "provenance_unknown"
     assert analysis["reason"] == "analysis_commit_not_recorded"
     assert analysis["refresh"] == {
         "command": "repowise update",
@@ -2250,3 +2291,23 @@ async def test_every_growing_collection_has_total_and_emitted_counts(
             assert_counted(child)
 
     assert_counted(result)
+
+
+@pytest.mark.asyncio
+async def test_the_ranked_findings_leave_performance_out_but_asking_returns_it(
+    setup_mcp, health_data
+):
+    """A ranking by impact is not a place to put rows that carry none.
+
+    Every performance finding scores zero impact by construction, so in a mixed
+    list it sorts below every defect row and reads as a tail rather than as a
+    different unit. The dimension answers through its own blocks, and naming it
+    in ``include`` still returns the rows.
+    """
+    from repowise.server.mcp_server import get_health
+
+    default = await get_health(only=["top_findings"])
+    assert all(f["dimension"] != "performance" for f in default["top_findings"])
+
+    asked = await get_health(include=["performance"], only=["top_findings"])
+    assert any(f["dimension"] == "performance" for f in asked["top_findings"])

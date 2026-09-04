@@ -3,10 +3,16 @@ import { cn } from "../lib/cn";
 import { Card, CardContent } from "../ui/card";
 
 export interface MetricCardProps {
-  label: string;
+  /**
+   * Usually a string. Typed as a node so a loading placeholder can pass a
+   * `Skeleton` and get this component's real height rather than guessing at
+   * it (see `StatGridSkeleton`).
+   */
+  label: React.ReactNode;
   value: React.ReactNode;
-  /** One-line context rendered beneath the value. */
-  description?: string;
+  /** One-line context rendered beneath the value. Node, so a placeholder can
+   *  pass a `Skeleton` and reserve the real line. */
+  description?: React.ReactNode;
   /**
    * Signed change indicator. `positive` is a good-vs-bad flag (drives
    * success/error colouring), not up-vs-down. Set `neutral` to render the

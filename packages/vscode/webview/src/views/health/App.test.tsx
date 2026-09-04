@@ -2,11 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import type {
   ChurnComplexityResponse,
-  HealthFilesResponse,
+  HealthMapFeed,
   HealthOverviewResponse,
   HealthTrendResponse,
 } from "@repowise-dev/types/health";
 import { OVERLAY_SPECS } from "@repowise-dev/ui/health/code-health-map";
+import { scoreBand, scoreTextColor } from "@repowise-dev/ui/health/tokens";
 import type { WebviewHost } from "../../runtime/rpc";
 import { App } from "./App";
 
@@ -45,10 +46,24 @@ const overview: HealthOverviewResponse = {
   top_findings: [],
 };
 
-const files: HealthFilesResponse = {
-  total: 128,
-  offset: 0,
-  limit: 2000,
+const files: HealthMapFeed = {
+  cap: 2000,
+  shown: 2,
+  eligible_total: 128,
+  repository_total: 130,
+  selection: {
+    basis: "active_then_performance_then_nloc",
+    active_requested: [],
+    active_shown: [],
+    active_missing: [],
+    performance_shown: 0,
+    performance_eligible: 0,
+    nloc_shown: 2,
+  },
+  omitted: { files: 126, performance_files: 0, opportunities: 0, observations: 0 },
+  recovery: {},
+  modules: [],
+  performance: null,
   files: [
     {
       file_path: "src/worst.py",
@@ -124,7 +139,7 @@ function makeHost(): { host: WebviewHost; openFile: ReturnType<typeof vi.fn> } {
   const host = {
     api: {
       healthOverview: () => Promise.resolve(overview),
-      healthFiles: () => Promise.resolve(files),
+      healthMap: () => Promise.resolve(files),
       healthTrend: () => Promise.resolve(trend),
       churnComplexity: () => Promise.resolve(churn),
     },
@@ -160,7 +175,7 @@ describe("Health dashboard", () => {
     expect(screen.getByText("demo-repo")).toBeTruthy();
   });
 
-  it("paints a focused file's score the colour the map paints the same file", async () => {
+  it("bands a focused file's score the way the map bands the same file", async () => {
     const { host } = makeHost();
     render(
       <App
@@ -172,23 +187,28 @@ describe("Health dashboard", () => {
     );
 
     const figure = await screen.findByText("7.6");
-    const mapFill = OVERLAY_SPECS.health.fill(
-      files.files.find((f) => f.file_path === "src/mid.py")!,
-    );
+    const file = files.files.find((f) => f.file_path === "src/mid.py")!;
 
     // The contradiction this replaced: the panel called 7.6 green while the
-    // canvas beside it coloured the same node amber. A passing render test
-    // would not have caught that, so assert against the map's own fill table
-    // rather than against a colour written out here a third time.
-    expect(mapFill).toBe("var(--color-caution)");
-    expect(figure.className).toContain(mapFill);
+    // canvas beside it coloured the same node amber.
+    //
+    // The two are no longer the same colour value, and must not be asserted to
+    // be. Inking text and filling a disc are different jobs, so the map paints
+    // from the canvas ramp and the panel from the semantic one. What may never
+    // differ is the band beneath both, which is what this pins: the map fills
+    // the node token for this file's band, and the figure carries the ink that
+    // the same band function gives the same score.
+    const band = scoreBand(file.score);
+    expect(band).toBe("fair");
+    expect(OVERLAY_SPECS.health.fill(file)).toBe(`var(--color-node-${band})`);
+    expect(figure.className).toContain(scoreTextColor(file.score));
   });
 
   it("shows an error panel when the host fails", async () => {
     const host = {
       api: {
         healthOverview: () => Promise.reject(new Error("server down")),
-        healthFiles: () => Promise.resolve(files),
+        healthMap: () => Promise.resolve(files),
         healthTrend: () => Promise.resolve(trend),
         churnComplexity: () => Promise.resolve(churn),
       },

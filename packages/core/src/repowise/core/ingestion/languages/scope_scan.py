@@ -57,6 +57,7 @@ def emit_scope_edges(
     plan: Callable[[str, str], FileScope | None],
     *,
     skip_names: frozenset[str],
+    ident_re: re.Pattern[str] = _TYPE_IDENT_RE,
 ) -> int:
     """Scan *files* for implicit scope references and add ``imports`` edges.
 
@@ -64,6 +65,8 @@ def emit_scope_edges(
     the caller's, since nothing here depends on it. *plan* returns the scopes
     visible to one file, or ``None`` to skip the file entirely. *skip_names*
     is the language's stdlib/default-import set, checked before every tier.
+    *ident_re* overrides the candidate-identifier shape for a language whose
+    type names are not reliably capitalised ASCII.
 
     Returns the number of edges added.
 
@@ -81,7 +84,7 @@ def emit_scope_edges(
 
         # target file → (referenced names, hint of the tier that answered)
         found: dict[str, tuple[list[str], str]] = {}
-        for ident in sorted(set(_TYPE_IDENT_RE.findall(text))):
+        for ident in sorted(set(ident_re.findall(text))):
             if ident in skip_names or ident in scope.shadowed:
                 continue
             for tier in scope.tiers:

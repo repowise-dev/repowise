@@ -215,6 +215,7 @@ class ResolvedCall:
     line: int  # call site line number (for diagnostics)
     origin: ResolutionOrigin  # which strategy below produced it
     edge_type: CallSiteEdgeType = "calls"  # carried through from the CallSite
+    supplied_props: frozenset[str] | None = None  # prop names supplied in JSX element (None if unknown/spread)
 
 
 def _same_translation_unit(decl_file: str, def_file: str) -> bool:
@@ -1035,10 +1036,15 @@ class CallResolver:
 
         # --- Method call with receiver: receiver.method() ---
         if call.receiver_name:
-            return self._resolve_member_call(file_path, call, caller_id)
+            return self._with_props(self._resolve_member_call(file_path, call, caller_id), call)
 
         # --- Free function call: function() ---
-        return self._resolve_free_call(file_path, call, caller_id)
+        return self._with_props(self._resolve_free_call(file_path, call, caller_id), call)
+
+    def _with_props(self, res: ResolvedCall | None, call: CallSite) -> ResolvedCall | None:
+        if res is not None and call.supplied_props is not None:
+            return replace(res, supplied_props=call.supplied_props)
+        return res
 
     def _resolve_return_typed_chain(
         self,

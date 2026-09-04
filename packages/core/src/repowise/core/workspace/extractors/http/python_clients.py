@@ -1,13 +1,14 @@
-"""Python HTTP consumer dialect — ``requests`` and ``httpx``."""
+"""Python HTTP consumer dialect: ``requests`` and ``httpx``."""
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
-from ..base import line_at
 from ..langs import PYTHON
-from .dialect import METHODS, build_consumer_contract
+from .client_calls import PYTHON_SYNTAX, ClientCallMatch, consumer_contracts, matches_in
+from .dialect import METHODS
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -21,20 +22,13 @@ _REQUESTS_RE = re.compile(
 )
 
 
+def requests_calls(content: str) -> Iterator[ClientCallMatch]:
+    yield from matches_in(content, _REQUESTS_RE, client="requests", url_group=2, method_group=1)
+
+
 class PythonClientsDialect:
     name = "python-clients"
     extensions = PYTHON
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        out: list[Contract] = []
-        for m in _REQUESTS_RE.finditer(ctx.content):
-            c = build_consumer_contract(
-                ctx,
-                method=m.group(1).upper(),
-                url=m.group(2),
-                client="requests",
-                line=line_at(ctx.content, m.start()),
-            )
-            if c is not None:
-                out.append(c)
-        return out
+        return consumer_contracts(ctx, requests_calls(ctx.content), PYTHON_SYNTAX)

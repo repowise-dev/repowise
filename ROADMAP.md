@@ -34,14 +34,13 @@ Languages land on a five-rung ladder rather than a yes/no list, because "do you
 support X" has five different useful answers. Each rung is defined, with what it
 buys you, in
 [docs/layers/LANGUAGE_SUPPORT.md](docs/layers/LANGUAGE_SUPPORT.md). Today that
-ladder covers **35 languages, 19 of them parsed to a full AST**.
+ladder covers **39 languages, 22 of them parsed to a full AST**.
 
 ### New languages
 
 | Language | Status | Why it is on the list |
 |---|---|---|
 | **COBOL** | **In development** | Asked for by enterprises with mainframe estates evaluating repowise. The codebases that most need an institutional-memory layer are often the ones whose authors have already retired. |
-| **VB.NET** | Planned | Large, long-lived line-of-business estates, usually sitting beside the C# we already treat at Full tier. |
 | **PL/SQL** | Planned | We already parse SQL through sqlglot. Packages, procedures and triggers are where the business logic actually lives. |
 | **ABAP** | Exploring | The same argument as COBOL, in SAP estates. |
 | **RPG / AS400** | Exploring | Named alongside COBOL often enough to track. |
@@ -62,6 +61,7 @@ ladder covers **35 languages, 19 of them parsed to a full AST**.
 | C | Planned | It shares the C++ grammar for parsing but reaches no health walker map, so it gets graph coverage without markers |
 | SQL / dbt | Planned | Column-level blast radius |
 | Object Pascal | Planned | Assertion and performance markers, a dedicated `uses` resolver |
+| Razor / Blazor | Planned | `@using` and `@inject` edges so component tags resolve through imports, `@code` members as symbols rather than call edges only |
 
 ### Need a language that is not here
 

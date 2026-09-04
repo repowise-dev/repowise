@@ -181,6 +181,7 @@ def coverage_add(
             # --- Per-file aggregate coverage (lcov / cobertura / clover / json).
             agg_matched = 0
             unmapped = 0
+            mapping_partial = False
             if agg_paths:
                 resolved, errors = build_coverage_map(
                     repo_path,
@@ -198,6 +199,7 @@ def coverage_add(
                 # for the one run where every single one of them was.
                 skipped = resolved.unmatched + resolved.ambiguous
                 unmapped = len(skipped)
+                mapping_partial = resolved.mapping_partial
                 if resolved.files:
                     await save_coverage_files(
                         session,
@@ -205,6 +207,7 @@ def coverage_add(
                         resolved.files,
                         source_format=resolved.source_format or "lcov",
                         ingested_commit_sha=head_sha,
+                        mapping_partial=mapping_partial,
                     )
                     agg_matched = resolved.matched
                     console.print(
@@ -216,6 +219,14 @@ def coverage_add(
                         console.print(
                             f"[yellow]{len(skipped)} report file(s) did not map to the "
                             f"repo tree[/yellow] (e.g. {sample})."
+                        )
+                    if mapping_partial:
+                        console.print(
+                            "[red]More than half the report did not map to the repo "
+                            "tree.[/red] The stored coverage describes only a fragment "
+                            "of the repository — fix [cyan]coverage.strip_prefix[/cyan] "
+                            "or [cyan]coverage.path_prefix[/cyan] in "
+                            ".repowise/config.yaml and re-run."
                         )
 
             # --- Per-test map, from any report that carries contexts.
@@ -271,6 +282,16 @@ def coverage_add(
             if strict and unmapped:
                 console.print(
                     f"[red]--strict: {unmapped} report file(s) did not map to the repo tree.[/red]"
+                )
+                return False
+            if mapping_partial:
+                console.print(
+                    "[red]Coverage ingest was partial: more than half the report did "
+                    "not map to the repo tree.[/red] The stored numbers describe only "
+                    "the mapped fragment, not the repository. Fix "
+                    "[cyan]coverage.strip_prefix[/cyan] / [cyan]coverage.path_prefix[/cyan] "
+                    "in .repowise/config.yaml and re-run — this run exits non-zero so "
+                    "scripts cannot mistake a fragment for complete coverage."
                 )
                 return False
             console.print(
@@ -371,10 +392,17 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                 line_pct = summary.get("line_coverage_pct")
                 branch_pct = summary.get("branch_coverage_pct")
                 lines_str = f"{line_pct:.1f}%" if line_pct is not None else "n/a"
+                partial = summary.get("mapping_partial")
+                partial_suffix = (
+                    " [red](partial: stored numbers cover a fragment of the repo "
+                    "— fix coverage.strip_prefix and re-ingest)[/red]"
+                    if partial
+                    else ""
+                )
                 console.print(
                     f"[bold]Coverage[/bold] ({summary.get('source_format') or 'lcov'})\n"
                     f"  Files:  {summary['file_count']}\n"
-                    f"  Lines:  {lines_str}"
+                    f"  Lines:  {lines_str}{partial_suffix}"
                 )
                 if branch_pct is not None:
                     console.print(f"  Branch: {branch_pct:.1f}%")

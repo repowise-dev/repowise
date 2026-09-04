@@ -189,6 +189,11 @@ class EdgesMixin:
             go_modules=go_modules,
             has_sfc_files=any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
             parsed_files=self._parsed_files,
+            # Same reason ``build()`` passes it: a handler that scans file text
+            # (the Godot ``class_name`` one covers every ``.gd`` in the repo)
+            # reads the bytes ingestion already has instead of a second pass
+            # over the tree. Empty unless ``set_source_map`` was called.
+            source_map=self._source_map,
         )
 
         count = add_framework_edges(self._graph, self._parsed_files, ctx, tech_stack)

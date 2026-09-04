@@ -22,6 +22,12 @@ export interface ViewTabsProps {
   onValueChange: (id: string) => void;
   /** The active panel, rendered below the tab row. */
   children?: React.ReactNode;
+  /** Id of a panel the host renders itself, for layouts where the panel cannot
+   *  be a child (a full-height canvas that must be a flex sibling). The host
+   *  puts `role="tabpanel"`, this id and `tabIndex={0}` on that container, and
+   *  labels it `aria-labelledby={`${panelId}-tab-${activeTabId}`}` — tab ids are
+   *  derived from this value so the host can name them without a callback. */
+  panelId?: string;
   className?: string;
 }
 
@@ -35,13 +41,20 @@ export function ViewTabs({
   value,
   onValueChange,
   children,
+  panelId: externalPanelId,
   className,
 }: ViewTabsProps) {
   // Stable id base so each tab can be aria-labelled to the shared panel and
   // the panel can point back at the active tab.
   const baseId = React.useId();
-  const tabId = (id: string) => `${baseId}-tab-${id}`;
-  const panelId = `${baseId}-panel`;
+  // Derived from the host's panelId when it owns the panel, so the two sides
+  // agree on ids without threading a callback.
+  const tabId = (id: string) => `${externalPanelId ?? baseId}-tab-${id}`;
+  // Only claim a panel we can actually point at: an internal one when children
+  // were given, otherwise the host's. With neither, `aria-controls` is dropped
+  // rather than left dangling on an element that does not exist.
+  const ownsPanel = children != null;
+  const panelId = ownsPanel ? `${baseId}-panel` : externalPanelId;
   const tabRefs = React.useRef<Record<string, HTMLButtonElement | null>>({});
 
   // Keep the active tab in view even though the scrollbar is hidden — it can
@@ -87,7 +100,7 @@ export function ViewTabs({
               type="button"
               role="tab"
               aria-selected={active}
-              aria-controls={panelId}
+              {...(panelId ? { "aria-controls": panelId } : {})}
               tabIndex={active ? 0 : -1}
               onClick={() => onValueChange(tab.id)}
               className={cn(
@@ -115,9 +128,11 @@ export function ViewTabs({
           );
         })}
       </div>
-      <div id={panelId} role="tabpanel" aria-labelledby={tabId(value)} tabIndex={0}>
-        {children}
-      </div>
+      {ownsPanel && (
+        <div id={panelId} role="tabpanel" aria-labelledby={tabId(value)} tabIndex={0}>
+          {children}
+        </div>
+      )}
     </div>
   );
 }

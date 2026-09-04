@@ -5,6 +5,7 @@ import { Gauge } from "lucide-react";
 import type { HealthFinding } from "@repowise-dev/types/health";
 
 import { EmptyState } from "../../shared/empty-state";
+import { Skeleton, SkeletonRegion } from "../../ui/skeleton";
 import { BiomarkerList } from "../biomarker-list";
 import type { PerformanceViewAdapter } from "./adapter";
 
@@ -21,7 +22,12 @@ export function LegacyPerformanceFindings({ adapter }: { adapter: PerformanceVie
     () => adapter.listFindings({ dimension: "performance", limit: 100 }),
     { revalidateOnFocus: false },
   );
-  if (isLoading) return <div className="h-72 animate-pulse rounded bg-[var(--color-bg-surface)]" />;
+  if (isLoading)
+    return (
+      <SkeletonRegion label="Loading performance findings">
+        <Skeleton className="h-72 rounded" />
+      </SkeletonRegion>
+    );
   if (error || !data?.length) {
     return (
       <EmptyState

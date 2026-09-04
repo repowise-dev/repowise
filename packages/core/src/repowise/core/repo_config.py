@@ -2,10 +2,25 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any
 
 CONFIG_FILENAME = "config.yaml"
+
+#: Named here rather than imported from the manifest module, which imports yaml
+#: and the analysis package; this file is on the cheap config path.
+MANIFEST_BASENAME = "decisions.yaml"
+
+
+class RepoConfigError(ValueError):
+    """A repo-local ``.repowise/config.yaml`` or ``.env`` could not be parsed.
+
+    Raised instead of leaking the raw parser exception so callers can
+    distinguish \"no config file\" (a normal empty dict) from \"the config file
+    is broken\" (something the user must fix). The message names the file and
+    the underlying parse error.
+    """
 
 
 def get_repowise_dir(repo_path: Path | str) -> Path:
@@ -24,7 +39,12 @@ def load_repo_config(repo_path: Path | str) -> dict[str, Any]:
         import yaml  # type: ignore[import-untyped]
 
         result = yaml.safe_load(text) or {}
-        if isinstance(result, dict) and isinstance(result.get("reasoning"), bool):
+        if not isinstance(result, dict):
+            raise RepoConfigError(
+                f"Could not parse {config_path}: expected a YAML mapping, "
+                f"got {type(result).__name__}"
+            )
+        if isinstance(result.get("reasoning"), bool):
             raw_reasoning = _read_flat_scalar(text, "reasoning")
             if raw_reasoning:
                 result["reasoning"] = raw_reasoning
@@ -37,6 +57,13 @@ def load_repo_config(repo_path: Path | str) -> dict[str, Any]:
                 key, _, value = line.partition(":")
                 result[key.strip()] = value.strip()
         return result
+    except Exception as exc:
+        # A broken config must never be silently treated as "no config": the
+        # user's provider/model/coverage settings would silently vanish and
+        # every run would use defaults. Name the file and the parse error.
+        raise RepoConfigError(
+            f"Could not parse {config_path}: {exc}"
+        ) from exc
 
 
 def save_repo_config(repo_path: Path | str, config: dict[str, Any]) -> None:
@@ -46,15 +73,36 @@ def save_repo_config(repo_path: Path | str, config: dict[str, Any]) -> None:
     unrelated keys are preserved; this writer just serializes the final dict.
     Key order is preserved and flow style is block style, to match the files the
     CLI writes.
+
+    The write is atomic: serialize to a sibling temp file, fsync, then
+    ``os.replace``. A crash or a serializer failure part-way leaves the previous
+    bytes intact rather than a truncated config, which every reader would take
+    for "no provider, no coverage settings, defaults everywhere".
     """
+    import os
+    import tempfile
+
     import yaml  # type: ignore[import-untyped]
 
     cfg_dir = get_repowise_dir(repo_path)
     cfg_dir.mkdir(parents=True, exist_ok=True)
-    (cfg_dir / CONFIG_FILENAME).write_text(
-        yaml.dump(config, default_flow_style=False, sort_keys=False),
-        encoding="utf-8",
-    )
+    target = cfg_dir / CONFIG_FILENAME
+    payload = yaml.dump(config, default_flow_style=False, sort_keys=False)
+
+    fd, tmp_name = tempfile.mkstemp(dir=str(cfg_dir), prefix=".config.", suffix=".tmp")
+    try:
+        # No explicit newline: the previous writer used the platform default,
+        # and config_fingerprint hashes raw bytes, so pinning LF here would
+        # move the fingerprint of every existing Windows config on first save.
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
 
 
 def config_fingerprint(repo_path: Path | str) -> str:
@@ -106,8 +154,11 @@ def load_repo_env(repo_path: Path | str) -> dict[str, str]:
     result: dict[str, str] = {}
     try:
         text = env_file.read_text(encoding="utf-8")
-    except OSError:
-        return {}
+    except OSError as exc:
+        # The file exists (we checked above) but cannot be read — a
+        # permission problem, not "no env file". Silent {} would resolve
+        # every provider as unconfigured with no explanation.
+        raise RepoConfigError(f"Could not read {env_file}: {exc}") from exc
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -207,6 +258,50 @@ def save_repo_env_key(
         os.chmod(env_file, 0o600)
     except OSError:
         pass
+
+
+def ensure_manifest_tracked(repo_path: Path | str) -> bool:
+    """Let ``.repowise/decisions.yaml`` be committed. Returns whether it changed.
+
+    The manifest is the only thing under ``.repowise/`` meant to travel with the
+    repository, and a ``.repowise/`` rule blocks it: git does not descend into an
+    excluded directory, so a negation for a file inside one never fires.
+
+    The existing rule is left in place and three anchored lines are appended
+    after it. Rewriting ``.repowise/`` to ``.repowise/*`` would look equivalent
+    and is not: the first has no internal slash and so matches a ``.repowise``
+    directory at *any* depth, while the second is anchored to this file's own
+    directory. That rewrite would un-ignore every nested ``.repowise/`` in the
+    tree, which is how a fixture's session database gets committed.
+    """
+    from repowise.core.fsutils import atomic_write_text
+
+    gitignore = Path(repo_path) / ".gitignore"
+    if not gitignore.exists():
+        return False
+
+    # Read as bytes: text mode translates CRLF away, and the line ending is
+    # exactly what has to survive here. Rewriting a CRLF .gitignore as LF turns
+    # one appended rule into a whole-file diff for every contributor on the
+    # platform this project mostly runs on.
+    raw = gitignore.read_bytes()
+    content = raw.decode("utf-8", errors="replace")
+    lines = content.splitlines()
+    if f"!/.repowise/{MANIFEST_BASENAME}" in {line.strip() for line in lines}:
+        return False
+
+    newline = "\r\n" if b"\r\n" in raw else "\n"
+    addition = [
+        "",
+        "# repowise: the decisions manifest is meant to be committed",
+        "!/.repowise/",
+        "/.repowise/*",
+        f"!/.repowise/{MANIFEST_BASENAME}",
+    ]
+    atomic_write_text(
+        gitignore, newline.join([*lines, *addition]) + newline, newline=""
+    )
+    return True
 
 
 def _ensure_env_gitignored(repo_path: Path | str) -> None:

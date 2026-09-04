@@ -110,6 +110,7 @@ def build_repo_graph(
         _read_sources,
         _split_cached,
     )
+    from repowise.core.workspace.update import get_head_commit
 
     fi_and_bytes = _read_sources(file_infos, None)
     parse_cache, cached_hits, to_parse = _split_cached(Path(repo_path), fi_and_bytes, None)
@@ -121,6 +122,7 @@ def build_repo_graph(
         repo_path,
         exclude_patterns=exclude_patterns,
         centrality_cache_dir=Path(repo_path) / ".repowise",
+        head_commit=get_head_commit(Path(repo_path)),
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
     )
@@ -645,9 +647,6 @@ def run_partial_analysis(
         _health_analyzer = HealthAnalyzer(
             graph_builder.graph(),
             git_meta_map=git_meta_map,
-            # Only centrality-gated performance reads this merged map. Other
-            # health signals keep the established change-scoped git semantics.
-            performance_git_meta_map={**(stored_git_meta or {}), **git_meta_map},
             parsed_files=parsed_files,
             duplication_cache_dir=Path(repo_path) / ".repowise",
             repo_root=repo_path,
@@ -909,26 +908,6 @@ def _carry_forward_kg_enrichment(kg: Any, prior_kg: Any) -> None:
         kg.tour = prior_kg.tour
 
 
-async def _analyzed_commit(session: Any, repo_id: str) -> str | None:
-    """Live HEAD of the repo being updated, for stamping health rows.
-
-    Read off disk rather than from ``Repository.head_commit``: the health pass
-    just scored the working tree, and the stored column is written by a
-    different step whose ordering relative to this one is not guaranteed.
-    ``None`` on any failure — an unstamped row reads as "not recorded", which
-    is honest, while a wrong sha would not be.
-    """
-    from repowise.core.persistence.models import Repository
-    from repowise.core.workspace.update import get_head_commit
-
-    try:
-        repo = await session.get(Repository, repo_id)
-        local_path = getattr(repo, "local_path", None) if repo else None
-        return get_head_commit(Path(local_path)) if local_path else None
-    except Exception:
-        return None
-
-
 async def persist_partial_health(session: Any, repo_id: str, report: Any) -> None:
     """Upsert health findings + metrics for the changed-files subset.
 
@@ -939,10 +918,12 @@ async def persist_partial_health(session: Any, repo_id: str, report: Any) -> Non
     """
     from repowise.core.persistence.crud import (
         finalize_performance_opportunities,
+        finalize_refactoring_opportunities,
         upsert_health_findings,
         upsert_health_metrics,
         upsert_refactoring_suggestions,
     )
+    from repowise.core.pipeline.persist import _analyzed_commit
 
     changed_paths = sorted(
         set(getattr(report, "authoritative_paths", None) or ())
@@ -978,8 +959,9 @@ async def persist_partial_health(session: Any, repo_id: str, report: Any) -> Non
                 dimension="performance",
             )
         # Refactoring suggestions for the changed files only (unchanged files
-        # keep theirs). Scoped delete-then-insert across the full changed-file
-        # set, so a file that became clean has its stale suggestions removed.
+        # keep theirs). Scoped reconciliation across the full changed-file set,
+        # so a file that became clean has its plans resolved rather than left
+        # standing, and a plan that survived the edit keeps its id.
         if changed_paths:
             await upsert_refactoring_suggestions(
                 session,
@@ -1002,6 +984,12 @@ async def persist_partial_health(session: Any, repo_id: str, report: Any) -> Non
             repo_id,
             analyzed_commit=analyzed_commit,
             plan_policy=getattr(report, "performance_plan_policy", None),
+        )
+        # Repository-wide, like the queue above and for the same reason: an
+        # opportunity folds a file's plans, and a file this run did not touch
+        # can still lose one when a cross-file plan elsewhere resolves.
+        await finalize_refactoring_opportunities(
+            session, repo_id, analyzed_commit=analyzed_commit
         )
     # Per-function blame rollup for the changed files (keeps git_function_blame
     # current between full indexes; FULL git tier only — empty otherwise).
@@ -1646,6 +1634,7 @@ async def persist_incremental_index(
             except Exception as exc:
                 _skip("Decision purge", exc)
 
+            pruned = 0
             # Drop file-scoped rows for files that have actually been deleted.
             # Without this an incremental update tombstones the deleted file's
             # page and leaves everything else: graph nodes, edges, metrics,
@@ -1700,6 +1689,35 @@ async def persist_incremental_index(
                         degraded.append(refusal)
             except Exception as exc:
                 _skip("Deleted-file prune", exc)
+
+            # The prune deletes the health findings of files that are gone, and
+            # the performance and refactoring queues are materialized from those
+            # findings. Without this they keep serving a cause whose evidence was
+            # removed a moment ago, on a file the store no longer claims exists.
+            # After the prune for the same reason the prune runs last: only now
+            # is the surviving finding set final.
+            if pruned:
+                try:
+                    from repowise.core.persistence.crud import (
+                        finalize_performance_opportunities,
+                        finalize_refactoring_opportunities,
+                    )
+                    from repowise.core.pipeline.persist import _analyzed_commit
+
+                    analyzed_commit = await _analyzed_commit(session, repo_id)
+                    await finalize_performance_opportunities(
+                        session,
+                        repo_id,
+                        analyzed_commit=analyzed_commit,
+                        plan_policy=getattr(
+                            partial_health_report, "performance_plan_policy", None
+                        ),
+                    )
+                    await finalize_refactoring_opportunities(
+                        session, repo_id, analyzed_commit=analyzed_commit
+                    )
+                except Exception as exc:
+                    _skip("Queue rebuild after prune", exc)
 
         # After the session closes: on SQLite the full-text index shares the
         # database file, so writing to it while the session holds a write lock

@@ -38,9 +38,22 @@ def test_shared_boundary_surfaces_degraded_partial_and_truncated_states():
 
     assert result["_meta"]["state"] == {
         "degraded": True,
+        # The umbrella bool cannot say which capability failed, so the reasons
+        # behind it travel with it: the synthesis reason and the broken legs,
+        # not just the names of the keys holding them.
+        "degraded_reasons": {
+            "degraded": "no-provider",
+            "retrieval_degraded": ["vector"],
+        },
         "partial": True,
         "truncated": True,
     }
+
+
+def test_degraded_reasons_are_absent_when_nothing_degraded():
+    result = _meta.finalize_trust_envelope({"_meta": {"members_truncated": 2}})
+
+    assert result["_meta"]["state"] == {"truncated": True}
 
 
 def test_persisted_analysis_metadata_omits_unknowns_and_preserves_commits():

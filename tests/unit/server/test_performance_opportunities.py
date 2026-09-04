@@ -89,6 +89,25 @@ async def _page(client: AsyncClient, repo_id: str, **params) -> dict:
     ).json()
 
 
+async def test_naming_no_context_asks_about_production(
+    client: AsyncClient, app
+) -> None:
+    """Most of what the analysis finds is not production code.
+
+    A caller that names no context is asking what to fix, so the default view
+    is the code that ships. Everything else stays one argument away and keeps
+    its count in the facets and in ``repository_total``.
+    """
+    repo_id, opportunity_id = await _seed(app, client)
+    body = await _page(client, repo_id)
+
+    assert body["total"] == 1
+    assert body["items"][0]["opportunity_id"] == opportunity_id
+    assert body["summary"]["repository_total"] == 2
+    assert "ignored_arguments" not in body
+    assert {entry["value"] for entry in body["facets"]["context"]} == {"production", "test"}
+
+
 async def test_opportunities_are_grouped_bounded_and_split_by_context(
     client: AsyncClient, app
 ) -> None:
@@ -101,10 +120,18 @@ async def test_opportunities_are_grouped_bounded_and_split_by_context(
     assert page["items"][0]["confidence"] == "medium"
     assert page["items"][0]["plan_status"] == "available"
     assert page["items"][0]["plan_id"]
-    assert page["summary"]["total"] == 2
-    assert page["summary"]["context"] == {"production": 1, "test": 1}
+    # The headline describes the context on screen, so it cannot state a
+    # number the queue under it contradicts. The census survives beside it.
+    assert page["summary"]["total"] == 1
+    assert page["summary"]["repository_total"] == 2
+    assert page["summary"]["context"] == {"production": 1}
     assert page["summary"]["with_plan_total"] == 1
     assert page["summary"]["status"] == "current"
+
+    every = await _page(client, repo_id, context="all", limit=1)
+    assert every["summary"]["total"] == 2
+    assert every["summary"]["repository_total"] == 2
+    assert every["summary"]["context"] == {"production": 1, "test": 1}
 
     test_page = await _page(client, repo_id, context="test")
     assert test_page["total"] == 1
@@ -184,10 +211,16 @@ async def test_the_retired_context_spelling_still_answers_but_is_never_echoed(
 async def test_an_unrecognized_filter_value_is_reported_not_read_as_no_data(
     app, client: AsyncClient
 ) -> None:
-    """Silently emptying the queue would look like a clean repository."""
+    """Silently emptying the queue would look like a clean repository.
+
+    An unrecognized value is named and then treated as absent, which is what
+    every other ignored filter does, so it reads as the default view rather
+    than as an empty one.
+    """
     repo_id, _ = await _seed(app, client)
     body = await _page(client, repo_id, context="staging", boundary="pigeon")
-    assert body["total"] == 2
+    assert body["total"] == 1
+    assert body["items"][0]["execution_context"] == "production"
     assert body["ignored_arguments"] == {
         "performance_context": "staging",
         "performance_boundary": "pigeon",
@@ -311,3 +344,29 @@ async def test_a_page_costs_the_page_not_the_repository(app, client: AsyncClient
     assert page["total"] == 2
     assert len(page["items"]) == 1
     assert page["summary"]["total"] == 2
+
+
+async def test_the_queue_scopes_to_one_file_on_the_server(app, client):
+    """A file surface asks about one file rather than filtering a page.
+
+    The drawer that opens from the map's performance lens needs this file's
+    causes and no others. Narrowing a page it already received would show
+    whatever survived the cap, which is not the same question.
+    """
+    repo_id, _ = await _seed(app, client)
+    whole = await _page(client, repo_id, context="all")
+    # Scope to whichever file the grouping named as the place to intervene: the
+    # column is the intervention site, not every file the evidence touches.
+    target = whole["items"][0]["file_path"]
+    scoped = await _page(client, repo_id, context="all", file_paths=target)
+    assert scoped["total"] >= 1
+    assert {item["file_path"] for item in scoped["items"]} == {target}
+    # The whole queue is larger, so the scope is doing the work and not the cap.
+    assert whole["total"] > scoped["total"]
+
+
+async def test_a_file_with_no_cause_scopes_to_an_empty_queue(app, client):
+    repo_id, _ = await _seed(app, client)
+    page = await _page(client, repo_id, context="all", file_paths="src/nothing-here.py")
+    assert page["total"] == 0
+    assert page["items"] == []

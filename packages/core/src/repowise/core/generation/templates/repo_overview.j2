@@ -1,16 +1,31 @@
-You are generating a high-level overview for the repository `{{ ctx.repo_name }}`.
+You are generating the front page of the wiki for `{{ ctx.repo_name }}`. It is
+the first page anyone opens, so it has to answer "what is this and how is it
+put together" before it answers anything else.
 
 ## Repository Summary
 
 **Name:** `{{ ctx.repo_name }}`{% if ctx.is_monorepo %} (monorepo){% endif %} | **Files:** {{ ctx.total_files }} | **LOC:** {{ ctx.total_loc }}{% if ctx.circular_dependency_count > 0 %} | **Circular deps:** {{ ctx.circular_dependency_count }}{% endif %}
 
-The first sentence of your ## Project Summary section is what every downstream
-agent (RAG, semantic search, onboarding) anchors on. Make it answer "what does
-this repository do, end-to-end?" using concrete pipeline vocabulary — name the
-inputs the repo consumes, the transformation stages, and the artifacts produced.
-Do NOT open with stats or package counts; those belong further down.
+{% if ctx.prose_digest %}
+## What the project says about itself
 
-## Packages
+The headings and opening sentences of this repository's own README, verbatim.
+Use this for **vocabulary, framing and what the product is for**: the names the
+project gives its own parts are the names this page should use.
+
+Do **not** take a path, a count, a package name or a file listing from it. Those
+arrive below, from the code as it is today, and are the only versions of those
+facts that are true. A README says what someone meant to build; everything under
+"Structural facts" is what is actually there.
+
+{{ ctx.prose_digest }}
+{% endif %}
+
+## Structural facts
+
+Derived from this run. Authoritative for every path, count and name.
+
+### Packages
 {% for pkg in ctx.package_stats %}
 - **{{ pkg.name }}** (`{{ pkg.path }}`, {{ pkg.files }} files{% if pkg.languages %}, {{ pkg.languages | join(", ") }}{% endif %})
 {% else %}
@@ -25,23 +40,26 @@ not repeat it and do not write a package list of your own.
 
 What that table cannot state is what each package is *for*, which is a
 judgement about the code rather than a count. Give each package one clause of
-role inside the Architecture section, in the vocabulary this repository uses:
-what it owns and who calls it. "The engine." "The bridge to the editor." Not
-"holds TypeScript files."
+role in the Architecture section, in the vocabulary this repository uses: what
+it owns and who calls it. "The engine." "The bridge to the editor." Not "holds
+TypeScript files."
 {% endif %}
 
-## Entry Points
-{% for ep in ctx.entry_points %}
-- `{{ ep }}`
-{% endfor %}
-
-## Top Files by PageRank
-{% for item in ctx.top_files_by_pagerank %}
-- `{{ item.path }}` (score: {{ "%.4f"|format(item.score) }})
-{% endfor %}
+{% if ctx.entry_points or ctx.top_files_by_pagerank %}
+### Where the weight is
+Evidence for what to call central. **Do not print any of these paths.** A table
+of file paths is something the reader can get from `ls`; what they cannot get is
+which parts matter and why, which is what these are for.
+{% if ctx.entry_points %}
+Entry points: {% for ep in ctx.entry_points[:10] %}`{{ ep }}`{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+{% if ctx.top_files_by_pagerank %}
+Most depended-upon, by PageRank over the import graph: {% for item in ctx.top_files_by_pagerank[:10] %}`{{ item.path }}`{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+{% endif %}
 
 {% if repo_git_summary is defined and repo_git_summary %}
-## Codebase health signals
+### Codebase health signals
 - **Hotspots:** {{ repo_git_summary.hotspot_count }} files are high-churn AND high-complexity
 - **Stable core:** {{ repo_git_summary.stable_count }} files unchanged in 90+ days
 - **Most changed (90d):** {{ repo_git_summary.top_churn_files[:3] | join(', ') }}
@@ -49,7 +67,7 @@ what it owns and who calls it. "The engine." "The bridge to the editor." Not
 {% endif %}
 
 {% if ctx.communities %}
-## Architectural Communities
+### Architectural Communities
 The codebase organizes into these architectural clusters (detected via dependency analysis):
 {% for c in ctx.communities %}
 - **{{ c.label or "Community " ~ c.id }}** — {{ c.size }} files (cohesion: {{ c.cohesion }})
@@ -57,7 +75,7 @@ The codebase organizes into these architectural clusters (detected via dependenc
 {% endif %}
 
 {% if ctx.external_systems %}
-## External Systems
+### External Systems
 Third-party libraries, services, and tools the repository depends on:
 {% for sys in ctx.external_systems[:25] %}
 - `{{ sys.name }}`{% if sys.category and sys.category != 'library' %} *({{ sys.category }})*{% endif %}{% if sys.ecosystem %} — {{ sys.ecosystem }}{% endif %}
@@ -65,7 +83,7 @@ Third-party libraries, services, and tools the repository depends on:
 {% endif %}
 
 {% if ctx.decision_records %}
-## Key Architectural Decisions
+### Key Architectural Decisions
 Use these to ground the "why" of the project — do not invent rationale beyond what is listed.
 {% for dr in ctx.decision_records[:8] %}
 - **{{ dr.title }}** — {{ dr.decision }}{% if dr.rationale %} *(Why: {{ dr.rationale }})*{% endif %}
@@ -73,18 +91,41 @@ Use these to ground the "why" of the project — do not invent rationale beyond 
 {% endif %}
 
 {% if ctx.execution_flows %}
-## Primary Execution Flows
+### Primary Execution Flows
 Key entry points and their execution paths:
 {% for f in ctx.execution_flows %}
 - `{{ f.entry_point }}` (score: {{ f.score }}{% if f.trace_length %}, {{ f.trace_length }} steps{% endif %})
 {% endfor %}
 {% endif %}
 
-Generate a complete wiki page following the sections above.
+---
 
-LENGTH: at most 450 words of prose across the whole page. Tables, lists and
-code do not count against that, so put enumerable facts — packages, entry
-points, languages — in a table or a list rather than describing them in
-sentences. Say each thing once: the reader has the architecture page and the
-per-module pages for depth, and a sentence that restates a heading is a
-sentence they read twice.
+## What to write
+
+Exactly these three sections, in this order, and nothing else. Two tables and a
+diagram are inserted after you write — what this repository calls its own
+capabilities, the package table, and the architecture map — so leave room for
+them by not writing them yourself.
+
+**## Project Summary** — one paragraph. What this is, what it is for, and who
+uses it, in the project's own vocabulary. The first sentence is what every
+downstream agent (RAG, semantic search, onboarding) anchors on, so make it
+answer "what does this repository do, end-to-end?": the inputs it consumes, the
+stages it puts them through, the artifacts it produces. Do not open with stats
+or package counts.
+
+**## Architecture** — how the parts fit together. One clause of role per
+package, per the rule above, plus how work actually moves through them. This is
+where the structural facts earn their place: name the clusters, say what the
+cycles mean, say where the weight sits. Name no more than a handful of paths,
+and only where the path *is* the point.
+
+**## Key concepts** — five to seven of them, each a named idea this project
+works in, one sentence each, as a bulleted list. A concept is something the
+project has a word for and a reader has to learn: a layer, a store, a scoring
+model, a class of artifact. Not a package, not a directory, not a file. Take the
+names from the project's own words above wherever it has them.
+
+LENGTH: at most 450 words of prose across the whole page. Say each thing once:
+the reader has the architecture page and the per-module pages for depth, and a
+sentence that restates a heading is a sentence they read twice.
