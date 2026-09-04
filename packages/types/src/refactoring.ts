@@ -170,7 +170,38 @@ export interface OpportunityEvidence {
   summary: Record<string, unknown>;
 }
 
-export type OpportunityStatus = "open" | "acknowledged" | "resolved";
+/**
+ * The triage vocabulary, shared with health findings so Code Health has one
+ * triage system. An opportunity's state is rolled up from its member steps;
+ * ``false_positive`` is reached only when every step is one, so a single wrong
+ * step never dismisses the work the others still describe.
+ */
+export type OpportunityStatus =
+  | "open"
+  | "acknowledged"
+  | "resolved"
+  | "false_positive";
+
+/** The state a person can ask for. Same vocabulary, named for the write side. */
+export type RefactoringTriageStatus = OpportunityStatus;
+
+/** ``PATCH .../refactoring/opportunities/{id}/status``. */
+export interface RefactoringOpportunityStatusUpdate {
+  opportunity_id: string;
+  status: OpportunityStatus;
+  /** The member plans the transition was applied to. */
+  steps_updated: number;
+  status_changed_at: string | null;
+}
+
+/** ``PATCH .../refactoring/{id}/status``, one step. */
+export interface RefactoringPlanStatusUpdate {
+  id: string;
+  public_id: string | null;
+  status: OpportunityStatus;
+  status_reason: string | null;
+  status_changed_at: string | null;
+}
 
 export interface RefactoringOpportunity {
   /** ``refop<model>_<digest>`` over the member plan ids. */
@@ -200,6 +231,10 @@ export interface RefactoringOpportunity {
   queue_position: number;
   rank_factors: Record<string, number>;
   why_ranked: Array<{ factor: string; value: number }>;
+  /** Lines in the lead file. Absent when the store predates the figure. */
+  file_nloc?: number;
+  /** Files importing the lead file. Absent when the store predates the figure. */
+  dependents?: number;
   steps?: OpportunityStep[];
   steps_total?: number;
   steps_emitted?: number;
@@ -260,6 +295,13 @@ export interface RefactoringOpportunityDetailResolved extends RefactoringOpportu
 
 /** Named orderings for the queue. ``diversified`` is the default. */
 export type RefactoringView = "diversified" | "canonical" | "file_spread";
+
+/**
+ * Named orderings. ``queue`` is the diversified default; ``rank`` is the honest
+ * tied order; ``health`` is the explicit worst-files-first view. All are indexed
+ * columns, so none costs a sort.
+ */
+export type RefactoringOrder = "queue" | "rank" | "health" | "effort" | "file";
 
 /** No stored analysis: the counts genuinely do not exist, so none are present. */
 export interface RefactoringRollupUnavailable {

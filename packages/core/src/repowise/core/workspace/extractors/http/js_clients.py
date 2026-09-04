@@ -1,20 +1,21 @@
 """JavaScript / TypeScript HTTP consumer dialect.
 
 Covers direct ``fetch`` / ``axios`` calls plus wrapper calls whose first
-argument is a concrete URL literal — e.g. ``fetchJSON(`${BASE}/path`, { method:
+argument is a concrete URL literal, e.g. ``fetchJSON(`${BASE}/path`, { method:
 "POST" })``. Wrapper detection is signal-gated (the callee name looks HTTP-ish,
 or the call carries a ``method:`` option) so ordinary `/`-prefixed string
-arguments — router navigation, i18n keys — are not mistaken for service calls.
+arguments, router navigation and i18n keys, are not mistaken for service calls.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
-from ..base import line_at
 from ..langs import JS_TS
-from .dialect import METHODS, build_consumer_contract, method_from_callee
+from .client_calls import JS_SYNTAX, ClientCallMatch, consumer_contracts, literal_span, matches_in
+from .dialect import METHODS
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -52,71 +53,55 @@ _METHOD_OPT_RE = re.compile(r"""method\s*:\s*['"](\w+)['"]""")
 _WRAPPER_SKIP = frozenset({"fetch", "if", "for", "while", "switch", "catch", "return"})
 
 
+def fetch_calls(content: str) -> Iterator[ClientCallMatch]:
+    """``fetch(url, { method })`` rows first, then plain ``fetch(url)`` as GET.
+
+    A URL that appears with an explicit method anywhere in the file is not
+    re-emitted as a GET.
+    """
+    yield from matches_in(content, _FETCH_METHOD_RE, client="fetch", url_group=1, method_group=2)
+    method_urls = {m.group(1) for m in _FETCH_METHOD_RE.finditer(content)}
+    for m in _FETCH_RE.finditer(content):
+        if m.group(1) in method_urls:
+            continue
+        yield ClientCallMatch(
+            client="fetch", url=literal_span(content, m, 1), offset=m.start(), callee="fetch"
+        )
+
+
+def axios_calls(content: str) -> Iterator[ClientCallMatch]:
+    yield from matches_in(content, _AXIOS_RE, client="axios", url_group=2, method_group=1)
+
+
+def wrapper_calls(content: str) -> Iterator[ClientCallMatch]:
+    """``fetchJSON(`${BASE}/path`, { method: "POST" })`` and its relatives."""
+    for m in _WRAPPER_CALL_RE.finditer(content):
+        callee = m.group(1)
+        if callee in _WRAPPER_SKIP:
+            continue
+        nl = content.find("\n", m.end())
+        window = content[m.end() :] if nl == -1 else content[m.end() : nl]
+        method_opt = _METHOD_OPT_RE.search(window)
+        # Require an HTTP signal: an HTTP-ish callee name or a method option.
+        if not (_HTTP_NAME_RE.search(callee) or method_opt):
+            continue
+        # No `method:` option: the callee name is the only verb evidence there
+        # is, and `apiPost`/`apiDelete` carry it.
+        yield ClientCallMatch(
+            client="wrapper",
+            url=literal_span(content, m, 2),
+            offset=m.start(),
+            callee=callee,
+            method=method_opt.group(1).upper() if method_opt else None,
+            confidence=0.65,
+        )
+
+
 class JsClientsDialect:
     name = "js-clients"
     extensions = JS_TS
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-        out: list[Contract] = []
-
-        def emit(
-            *, method: str, url: str, client: str, line: int, confidence: float = 0.75
-        ) -> None:
-            c = build_consumer_contract(
-                ctx, method=method, url=url, client=client, line=line, confidence=confidence
-            )
-            if c is not None:
-                out.append(c)
-
-        # fetch() with an explicit method.
-        for m in _FETCH_METHOD_RE.finditer(content):
-            emit(
-                method=m.group(2).upper(),
-                url=m.group(1),
-                client="fetch",
-                line=line_at(content, m.start()),
-            )
-
-        # fetch() without a method → GET, skipping URLs already matched above.
-        method_urls = {m.group(1) for m in _FETCH_METHOD_RE.finditer(content)}
-        for m in _FETCH_RE.finditer(content):
-            url = m.group(1)
-            if url in method_urls:
-                continue
-            emit(method="GET", url=url, client="fetch", line=line_at(content, m.start()))
-
-        # axios.<method>()
-        for m in _AXIOS_RE.finditer(content):
-            emit(
-                method=m.group(1).upper(),
-                url=m.group(2),
-                client="axios",
-                line=line_at(content, m.start()),
-            )
-
-        # Wrapper calls — fetchJSON(`${BASE}/path`, { method: "POST" }) etc.
-        for m in _WRAPPER_CALL_RE.finditer(content):
-            callee = m.group(1)
-            if callee in _WRAPPER_SKIP:
-                continue
-            nl = content.find("\n", m.end())
-            window = content[m.end() :] if nl == -1 else content[m.end() : nl]
-            method_opt = _METHOD_OPT_RE.search(window)
-            # Require an HTTP signal: an HTTP-ish callee name or a method option.
-            if not (_HTTP_NAME_RE.search(callee) or method_opt):
-                continue
-            # No `method:` option: the callee name is the only verb evidence
-            # there is, and `apiPost`/`apiDelete` carry it.
-            method = (
-                method_opt.group(1).upper() if method_opt else method_from_callee(callee)
-            )
-            emit(
-                method=method,
-                url=m.group(2),
-                client="wrapper",
-                line=line_at(content, m.start()),
-                confidence=0.65,
-            )
-
-        return out
+        matches = [*fetch_calls(content), *axios_calls(content), *wrapper_calls(content)]
+        return consumer_contracts(ctx, matches, JS_SYNTAX)

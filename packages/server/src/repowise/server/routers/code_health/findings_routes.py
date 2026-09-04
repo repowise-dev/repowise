@@ -8,13 +8,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
+from repowise.server.schemas import (
+    HealthFindingResponse,
+    HealthFindingWithSymbolResponse,
+)
 
 from ._router import router
 from .loaders import _attach_symbol_ids
 from .serializers import _finding_to_dict
 
 
-@router.get("/api/repos/{repo_id}/health/findings")
+@router.get(
+    "/api/repos/{repo_id}/health/findings",
+    response_model=list[HealthFindingWithSymbolResponse],
+)
 async def list_health_findings(
     repo_id: str,
     biomarker_type: str | None = Query(None),
@@ -53,7 +60,10 @@ class FindingStatusUpdate(BaseModel):
 _ALLOWED_STATUSES = {"open", "acknowledged", "resolved", "false_positive"}
 
 
-@router.patch("/api/repos/{repo_id}/health/findings/{finding_id}")
+@router.patch(
+    "/api/repos/{repo_id}/health/findings/{finding_id}",
+    response_model=HealthFindingResponse,
+)
 async def update_finding_status(
     repo_id: str,
     finding_id: str,

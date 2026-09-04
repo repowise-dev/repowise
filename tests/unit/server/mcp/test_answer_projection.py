@@ -322,6 +322,15 @@ async def test_no_llm_and_failed_legs_remain_compact_and_actionable(
     )
 
     assert result["degraded"] == expected_degraded
+    # The grade, through the real tool rather than the payload builder: derived
+    # from the retrieval on the no-provider path, and pinned low when a
+    # configured provider failed and a retry could still answer properly.
+    if expected_degraded == "synthesis-failed":
+        assert result["confidence"] == "low"
+    else:
+        expected = "low" if result["retrieval_quality"] == "weak" else "medium"
+        assert result["confidence"] == expected
+    assert result["confidence"] != "high"
     assert result["answer"]
     assert result["next_action_hint"]
     assert result.get("best_guesses") or result.get("symbol_bodies") or result.get("retrieval")

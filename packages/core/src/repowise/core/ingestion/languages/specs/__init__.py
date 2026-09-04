@@ -24,6 +24,7 @@ from .elixir import SPEC as _ELIXIR
 from .elm import SPEC as _ELM
 from .erlang import SPEC as _ERLANG
 from .fsharp import SPEC as _FSHARP
+from .gdscript import SPEC as _GDSCRIPT
 from .go import SPEC as _GO
 from .graphql import SPEC as _GRAPHQL
 from .haskell import SPEC as _HASKELL
@@ -45,7 +46,9 @@ from .pascal import SPEC as _PASCAL
 from .php import SPEC as _PHP
 from .proto import SPEC as _PROTO
 from .python import SPEC as _PYTHON
+from .qml import SPEC as _QML
 from .r import SPEC as _R
+from .razor import SPEC as _RAZOR
 from .ruby import SPEC as _RUBY
 from .rust import SPEC as _RUST
 from .scala import SPEC as _SCALA
@@ -88,11 +91,18 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _KOTLIN,
     _RUBY,
     _CSHARP,
+    # Must follow _CSHARP: shares_grammar_with resolves against the registry
+    # built so far, so csharp's grammar has to be loaded first. Razor/Blazor
+    # markup (.razor, .cshtml) projects its C# regions (``@code`` / ``@{ }``
+    # blocks) into a C# buffer via ``sfc_source``, exactly as svelte/vue
+    # project into TypeScript.
+    _RAZOR,
     _PHP,
     _SWIFT,
     _SCALA,
     _DART,
     _PASCAL,
+    _GDSCRIPT,
     # -----------------------------------------------------------------
     # Config / data / markup languages (passthrough — no AST)
     # -----------------------------------------------------------------
@@ -135,6 +145,7 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _ELM,
     _HASKELL,
     _LEAN,
+    _QML,
     _OCAML,
     _FSHARP,
     _CRYSTAL,

@@ -11,6 +11,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
+from repowise.core.analysis.health.aggregation import module_rollups as _module_rollups
 from repowise.core.analysis.health.churn_complexity import churn_complexity_points
 from repowise.core.analysis.health.complexity.languages import LANGUAGE_MAPS
 from repowise.core.analysis.health.coverage import decay_since, measurement_ref
@@ -21,6 +22,7 @@ from repowise.core.analysis.health.grading import distribution as health_distrib
 from repowise.core.analysis.health.models import primary_finding
 from repowise.core.analysis.health.perf.coverage import PerfCoverage, coverage_for_metrics
 from repowise.core.analysis.health.perf.opportunity_rank import observation_rank
+from repowise.core.analysis.health.ranking import deduction_by_path, sort_metrics_worst_first
 from repowise.core.analysis.health.refactoring.recommendations import (
     Recommendation,
     build_recommendations,
@@ -44,7 +46,6 @@ from repowise.core.persistence.crud import (
     get_test_file_paths,
     list_health_snapshots,
     load_coverage_for_repo,
-    sort_metrics_worst_first,
 )
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -54,7 +55,11 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._budget import (
+    OmissionCollector,
+    register_post_enforce,
+    register_post_shed,
+)
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -162,6 +167,7 @@ async def _performance_blocks(
     one of the three does not pay for the other two.
     """
     page = None
+    query = None
     ignored: dict[str, str] = {}
     if included:
         # The lede quotes only the first row and no evidence, so a projection
@@ -186,7 +192,13 @@ async def _performance_blocks(
         )
     return _PerformanceBlocks(
         page=page,
-        summary=await service.summary() if included and wants("performance_summary") else None,
+        summary=(
+            # Scoped to the same context as the queue beside it, so two blocks
+            # in one answer cannot state totals that contradict each other.
+            await service.summary(query.contexts if query else None)
+            if included and wants("performance_summary")
+            else None
+        ),
         # The bare dashboard lead: one primary-key read of the current summary
         # row, so it does not grow with the repository and never touches the
         # queue.
@@ -833,39 +845,6 @@ def _serialize_coverage_row(row: Any, *, covered_lines: bool = True) -> dict[str
     return out
 
 
-def _module_rollups(metrics: list[HealthFileMetric]) -> list[dict[str, Any]]:
-    """NLOC-weighted module rollups derived from ``HealthFileMetric.module``.
-
-    One row per module; ``None`` modules are dropped. Sorted by health
-    ascending so the worst modules surface first — matches the per-file
-    ordering and what the dashboard already expects.
-    """
-    buckets: dict[str, list[HealthFileMetric]] = {}
-    for m in metrics:
-        if m.module:
-            buckets.setdefault(m.module, []).append(m)
-    out: list[dict[str, Any]] = []
-    for name, rows in buckets.items():
-        total_nloc = sum(max(r.nloc, 1) for r in rows)
-        if total_nloc:
-            avg = sum(r.score * max(r.nloc, 1) for r in rows) / total_nloc
-        else:
-            avg = sum(r.score for r in rows) / len(rows)
-        worst = min(rows, key=lambda r: r.score)
-        out.append(
-            {
-                "module": name,
-                "file_count": len(rows),
-                "nloc": sum(r.nloc for r in rows),
-                "average_health": round(avg, 2),
-                "worst_performer_path": worst.file_path,
-                "worst_performer_score": round(worst.score, 2),
-            }
-        )
-    out.sort(key=lambda r: r["average_health"])
-    return out
-
-
 def _unresolved_targets(
     *,
     file_targets: list[str],
@@ -1066,6 +1045,60 @@ def _refactoring_plans_status(
     }
 
 
+def _prune_orphaned_validation_profiles(
+    result: dict[str, Any], collector: OmissionCollector
+) -> None:
+    """Drop profiles whose plan the response budget removed.
+
+    A validation profile only means anything next to the plan referencing it,
+    so leaving one behind after its plan is shed hands the agent an id that
+    resolves to nothing.
+    """
+    plans = result.get("refactoring_plans")
+    profiles = result.get("validation_profiles")
+    if not isinstance(plans, list) or not isinstance(profiles, list):
+        return
+    referenced = {
+        plan.get("validation_profile_id")
+        for plan in plans
+        if isinstance(plan, dict) and plan.get("validation_profile_id")
+    }
+    kept = [
+        profile
+        for profile in profiles
+        if isinstance(profile, dict) and profile.get("id") in referenced
+    ]
+    dropped = [profile for profile in profiles if profile not in kept]
+    if not dropped:
+        return
+    collector.add("validation_profiles no longer referenced after response budgeting", dropped)
+    result["validation_profiles"] = kept
+    result["validation_profiles_emitted"] = len(kept)
+    result["validation_profiles_reduced_reason"] = "response_budget"
+    result["truncated"] = True
+
+
+def _reconcile_plan_status(result: dict[str, Any]) -> None:
+    """Keep plan availability honest after the final budget mutates collections."""
+    status = result.get("refactoring_plans_status")
+    plans = result.get("refactoring_plans")
+    if not isinstance(status, dict) or status.get("state") != "available":
+        return
+    if plans is not None and (not isinstance(plans, list) or plans):
+        return
+    if not result.get("refactoring_plans_total", 0):
+        return
+    status.update(
+        state="available_not_emitted",
+        reason="response_budget",
+        message="Plans exist but were removed by the final response budget.",
+    )
+
+
+register_post_shed("get_health", _prune_orphaned_validation_profiles)
+register_post_enforce("get_health", _reconcile_plan_status)
+
+
 def _attach_health_analysis_meta(
     meta: dict[str, Any], metrics: list[HealthFileMetric]
 ) -> None:
@@ -1090,7 +1123,7 @@ async def _attach_repository_analysis_meta(
     the analysis, but every detail mode used to answer it from the rows it
     happened to be reporting on. A ``plan_id`` call scoped to a file whose row
     carries a commit said ``available`` at the same instant the dashboard said
-    ``degraded (analysis_commit_not_recorded)`` from the repo-wide latest row,
+    ``provenance_unknown (analysis_commit_not_recorded)`` from the repo-wide row,
     and the reverse when the scoped file was the one missing it. Three bounded
     aggregates, so agreeing costs no scan.
     """
@@ -1135,7 +1168,12 @@ def _write_health_analysis_meta(
     metrics = has_metrics
     analyzed = latest_at is not None
     commits_count = distinct_commits
-    status = "available" if latest_commit else "degraded" if metrics else "unavailable"
+    # Metrics without a recorded commit are usable but unattributable: a
+    # provenance gap, not degradation. ``degraded`` is reserved tool-wide for a
+    # capability that failed or was unavailable.
+    status = (
+        "available" if latest_commit else "provenance_unknown" if metrics else "unavailable"
+    )
     analysis: dict[str, Any] = {
         "status": status,
         "source": "stored_health_analysis",
@@ -1929,18 +1967,14 @@ async def get_health(
         # Deliberately ``lead_rows`` (the unfiltered open set) rather than
         # ``emitted``: asking to *see* one dimension must not restate which
         # files the repo's worst are.
-        deduction_by_path: dict[str, float] = {}
-        for f in lead_rows:
-            deduction_by_path[f.file_path] = deduction_by_path.get(f.file_path, 0.0) + float(
-                f.health_impact or 0.0
-            )
+        deductions = deduction_by_path(lead_rows)
         # Rebound rather than kept beside a sorted copy, and above every reader.
-        # ``kpis``, the module rollup, the leverage view and the churn quadrant
-        # all reduce with ``min()`` or a stable sort, which resolve ties by
-        # *input* order — so leaving them on the raw list would have one
-        # response name one file as the worst performer while the
-        # ``worst_files`` list printed below it led with another.
-        all_metrics = sort_metrics_worst_first(all_metrics, deduction_by_path)
+        # ``kpis``, the leverage view and the churn quadrant all reduce with
+        # ``min()`` or a stable sort, which resolve ties by *input* order — so
+        # leaving them on the raw list would have one response name one file as
+        # the worst performer while the ``worst_files`` list printed below it
+        # led with another. The module rollup takes the map itself.
+        all_metrics = sort_metrics_worst_first(all_metrics, deductions)
         metric_rows = (
             [m for m in all_metrics if m.file_path in set(effective_targets)]
             if scoped
@@ -2224,7 +2258,7 @@ async def get_health(
                 row["signals"] = signals_by_path[m.file_path]
             metric_payload.append(row)
         module_rollup = _module_rollups(
-            [m for m in all_metrics if m.module in set(module_targets)]
+            [m for m in all_metrics if m.module in set(module_targets)], deductions
         )
         result: dict[str, Any] = {
             "mode": "targets",
@@ -2314,7 +2348,7 @@ async def get_health(
         # round-trip. ``by_leverage`` is built above, before the leads.
         # Same serializer as worst_files, so every row carries
         # weighted_deficit for the caller to sort on further.
-        all_modules = _module_rollups(all_metrics)
+        all_modules = _module_rollups(all_metrics, deductions)
         gap = _gap_analysis(all_metrics)
         result = {
             # Lead with the call, not the data. Every block below ranks and
@@ -2440,6 +2474,9 @@ async def get_health(
             result["defect_accuracy"] = compute_defect_accuracy(
                 all_metrics,
                 [_serialize_finding(f, reference_repository) for f in accuracy_rows],
+                # The same map ``all_metrics`` was ranked with, so the stat
+                # measures exactly the ``worst_files`` this response printed.
+                deductions=deductions,
             )
 
     if "biomarkers" in include_set and "findings" not in result:
@@ -2855,8 +2892,8 @@ async def get_health(
     analyzed_source = metric_rows if scoped else all_metrics
     if scoped:
         # Scoped calls used to answer repository freshness from the caller's own
-        # files, which is how the same repo read ``available`` and ``degraded``
-        # in the same second depending on which mode answered.
+        # files, so one repo read two different statuses in the same second
+        # depending on which mode answered.
         await _attach_repository_analysis_meta(session, repository, result["_meta"])
     else:
         _attach_health_analysis_meta(result["_meta"], analyzed_source)

@@ -14,6 +14,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 if TYPE_CHECKING:
     from ....analysis.health.perf.coverage import PerfCoverage
 
+from ....analysis.health.finding_identity import finding_public_id
+
+# The comparator is pure and lives with the health read models; only the SQL
+# that feeds it belongs here. Re-imported rather than moved out of reach: the
+# crud surface is where the MCP tool and the tests already read it from.
+from ....analysis.health.ranking import (
+    deduction_by_path,
+    sort_metrics_worst_first,
+    worst_metric,
+)
+from ....analysis.health.rows import detail_map
 from ...models import (
     GraphNode,
     HealthFileMetric,
@@ -33,14 +44,6 @@ def _health_finding_row_kwargs(finding: Any, repository_id: str) -> dict:
     every path or by none. ``public_id`` is stamped here because this is the
     one place every persisted finding passes through.
     """
-    # Deferred: the analysis package imports persistence, so a module-level
-    # import here would close the cycle.
-
-    # Deferred: the analysis package imports persistence, so importing it at
-    # module level here would close the cycle.
-    from ....analysis.health.finding_identity import finding_public_id
-    from ....analysis.health.rows import detail_map
-
     if hasattr(finding, "biomarker_type"):
         severity = finding.severity
         data = {
@@ -401,30 +404,6 @@ async def get_deduction_by_path(
     return totals
 
 
-def sort_metrics_worst_first(rows: list[Any], deduction_by_path: dict[str, float]) -> list[Any]:
-    """Order per-file metrics worst-first: ``(score asc, deduction desc, path)``.
-
-    ``score`` alone cannot rank the band that matters. It clamps at 1.0, so on
-    a real repo dozens of files tie there and any list sorted on score alone
-    comes back in whatever order the DB happened to return — path order, in
-    practice. That put this repo's single worst file (12.9 points of deduction)
-    at position 27 of a list capped at 20.
-
-    ``total_deduction`` is the pre-clamp magnitude, so it keeps ranking below
-    the floor: a -25 file sorts above a -9 file that prints the same 1.0. The
-    trailing ``file_path`` makes the order total, so a page boundary is stable
-    across requests instead of shuffling two equal rows.
-
-    Shared with the MCP ``get_health`` tool, which builds its own deduction map
-    from findings it has already loaded rather than re-querying. One comparator
-    so REST, MCP and hosted cannot drift into three different "worst files".
-    """
-    return sorted(
-        rows,
-        key=lambda m: (m.score, -deduction_by_path.get(m.file_path, 0.0), m.file_path),
-    )
-
-
 async def get_health_metrics(
     session: AsyncSession,
     repository_id: str,
@@ -568,7 +547,6 @@ async def get_health_summary(
         avg = sum(m.score * max(m.nloc, 1) for m in metrics) / total_nloc
     else:
         avg = sum(m.score for m in metrics) / len(metrics)
-    worst = min(metrics, key=lambda r: r.score)
 
     # Maintainability headline: NLOC-weighted average over the per-file
     # maintainability scores (skipping rows that predate the split / lack one).
@@ -614,6 +592,14 @@ async def get_health_summary(
 
     if findings is None:
         findings = await get_health_findings(session, repository_id)
+
+    # Ranked with the same key as ``get_health_metrics``, off the findings this
+    # function already holds. Previously a plain ``min`` on the score, which
+    # agreed with the worst-files list only because every caller happened to
+    # pass an already-ranked list — a floor tie made the headline and the list
+    # under it disagree the moment one did not.
+    worst = worst_metric(metrics, deduction_by_path(findings))
+
     by_dim: dict[str, int] = {}
     for finding in findings:
         dim = finding.dimension or "defect"

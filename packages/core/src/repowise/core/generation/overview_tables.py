@@ -33,8 +33,14 @@ CAPABILITY_TABLE_HEADING = "## What it does"
 
 # The heading plus everything up to the next heading of the same or higher
 # level. Anchored at a line start so a mention inside prose is not a match.
+#
+# The provenance footer carries no heading, only a horizontal rule, so it is a
+# terminator too. Without it a section that is last on the page runs to the end
+# and the replacement eats the footer — which is what happened the moment the
+# deterministic overview stopped rendering a path table below its packages.
+_SECTION_END = r"(?=^#{1,2}[ \t]|^---[ \t]*$|\Z)"
 _PACKAGE_SECTION_RE = re.compile(
-    r"^##[ \t]+Packages[ \t]*\n(?:.*?)(?=^#{1,2}[ \t]|\Z)",
+    r"^##[ \t]+Packages[ \t]*\n(?:.*?)" + _SECTION_END,
     re.MULTILINE | re.DOTALL,
 )
 
@@ -99,7 +105,7 @@ MAX_CAPABILITY_ROWS = 6
 _MAX_CAPABILITY_DEFINITION = 160
 
 _CAPABILITY_SECTION_RE = re.compile(
-    r"^##[ \t]+What it does[ \t]*\n(?:.*?)(?=^#{1,2}[ \t]|\Z)",
+    r"^##[ \t]+What it does[ \t]*\n(?:.*?)" + _SECTION_END,
     re.MULTILINE | re.DOTALL,
 )
 

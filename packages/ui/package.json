@@ -70,6 +70,8 @@
     "./overview": "./src/overview/index.ts",
     "./overview/*": "./src/overview/*.tsx",
     "./workspace": "./src/workspace/index.ts",
+    "./workspace/contract-facts": "./src/workspace/contract-facts.ts",
+    "./workspace/contract-type-label": "./src/workspace/contract-type-label.ts",
     "./workspace/system-map": "./src/workspace/system-map/index.ts",
     "./workspace/dsm": "./src/workspace/dsm/index.ts",
     "./workspace/*": "./src/workspace/*.tsx",

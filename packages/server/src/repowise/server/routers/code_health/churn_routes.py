@@ -8,12 +8,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.health.churn_complexity import churn_complexity_points
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
+from repowise.server.schemas import ChurnComplexityResponse
 
 from ._router import router
 from .serializers import _churn_complexity_to_dict
 
 
-@router.get("/api/repos/{repo_id}/health/churn-complexity")
+@router.get(
+    "/api/repos/{repo_id}/health/churn-complexity",
+    response_model=ChurnComplexityResponse,
+)
 async def churn_complexity(
     repo_id: str,
     # The ceiling has to clear the code-health map's file window (2,000), not

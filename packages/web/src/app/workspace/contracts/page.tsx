@@ -13,6 +13,7 @@ import {
   getWorkspaceContracts,
   getWorkspaceDiagnostics,
 } from "@/lib/api/workspace";
+import { BreakingChangesSection } from "./breaking-changes-section";
 import { ContractFilters } from "./contract-filters";
 import { ContractsTable } from "./contracts-table";
 
@@ -66,6 +67,13 @@ export default async function ContractsPage({ searchParams }: Props) {
   // after the filters run, so picking a type would leave the select holding
   // only the type already picked.
   const byType = workspace?.contract_summary?.by_type ?? null;
+  // Alias to indexed repo id, so the breaking-change rows can link a symbol or
+  // a file into the repo that owns it. Repos that were never indexed have no
+  // id and are left out; their references render as plain text.
+  const repoIds: Record<string, string> = {};
+  for (const repo of workspace?.repos ?? []) {
+    if (repo.repo_id) repoIds[repo.alias] = repo.repo_id;
+  }
 
   const rows = data?.contracts ?? [];
   const links = data?.links ?? [];
@@ -158,6 +166,13 @@ export default async function ContractsPage({ searchParams }: Props) {
 
       <StatRibbon stats={ribbon} />
 
+      <OverviewSection
+        title="Breaking changes"
+        description="Provider contracts that changed in the most recent workspace update, and the consumers linked to them. Breaking first, then warnings."
+      >
+        <BreakingChangesSection repoIds={repoIds} />
+      </OverviewSection>
+
       {links.length > 0 && (
         <OverviewSection
           title="Matched links"
@@ -187,7 +202,7 @@ export default async function ContractsPage({ searchParams }: Props) {
             }
           />
         ) : (
-          <ContractsTable contracts={rows} />
+          <ContractsTable contracts={rows} links={links} repoIds={repoIds} />
         )}
       </OverviewSection>
 

@@ -26,9 +26,12 @@ export interface GraphDocPanelProps {
   isLoading: boolean;
   /** Truthy when no doc page exists for this node. */
   error?: unknown;
-  /** Href for the "open full page" external-link icon. Provided by consumer. */
+  /** Href for the file's own page. Also the empty state's way out: that page
+   *  renders history, health, symbols and graph position for a file with no
+   *  written documentation, so it is a real destination rather than a
+   *  consolation link. */
   fullPageHref?: string;
-  /** Href for the "browse all docs" fallback link inside the empty state. */
+  /** Href for the docs reading surface, offered when there is no file page. */
   browseDocsHref?: string;
   onClose: () => void;
 }
@@ -49,7 +52,7 @@ export function GraphDocPanel({
   }, [nodeId]);
 
   return (
-    <div className="absolute top-0 right-0 z-20 h-full w-[min(400px,calc(100vw-1.5rem))] flex flex-col bg-[var(--color-bg-surface)] border-l border-[var(--color-border-default)] shadow-2xl shadow-black/30">
+    <div className="flex h-full min-h-0 flex-col">
       {/* Header */}
       <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--color-border-default)] shrink-0">
         <FileText className="h-4 w-4 text-[var(--color-accent-primary)] shrink-0" />
@@ -75,6 +78,7 @@ export function GraphDocPanel({
             size="sm"
             variant="ghost"
             onClick={onClose}
+            aria-label="Close documentation"
             className="h-6 w-6 p-0"
           >
             <X className="h-3.5 w-3.5" />
@@ -112,16 +116,35 @@ export function GraphDocPanel({
         {Boolean(error) && !isLoading && (
           <div className="flex flex-col items-center justify-center h-32 gap-2 px-6 text-center">
             <AlertCircle className="h-5 w-5 text-[var(--color-text-tertiary)]" />
-            <p className="text-xs text-[var(--color-text-tertiary)]">
-              No documentation found for this file.
+            {/* Same words as the file page's own empty state
+                (`files/file-doc-tab.tsx`), because one absence should not have
+                two vocabularies. "Not found" also read as a failure; a file
+                with no extracted symbols that is neither an entry point nor a
+                hotspot is deliberately not given a page. */}
+            <p className="text-xs font-medium text-[var(--color-text-secondary)]">
+              No documentation page for this file
             </p>
-            {browseDocsHref && (
+            <p className="text-[11px] text-[var(--color-text-tertiary)]">
+              Repowise writes pages for the files that carry a repository&apos;s
+              shape. Everything else it knows about this one is still on the
+              file&apos;s own page.
+            </p>
+            {fullPageHref ? (
               <a
-                href={browseDocsHref}
+                href={fullPageHref}
                 className="text-xs text-[var(--color-accent-primary)] hover:underline"
               >
-                Browse all docs
+                Open the file page
               </a>
+            ) : (
+              browseDocsHref && (
+                <a
+                  href={browseDocsHref}
+                  className="text-xs text-[var(--color-accent-primary)] hover:underline"
+                >
+                  Browse all docs
+                </a>
+              )
             )}
           </div>
         )}

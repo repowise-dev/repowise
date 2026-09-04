@@ -76,6 +76,10 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/default.tsx",
     # Nuxt route pages
     "*/pages/*.vue",
+    # ---- Qt / QML ---------------------------------------------------
+    # Instantiated by type name and loaded by the runtime (qrc, Loader,
+    # qmlRegisterType), so a QML file never has a static importer.
+    "*.qml",
     # ---- .NET / C# conventions --------------------------------------
     # Implicit / generated / framework-loaded files that have no
     # static importers by design.

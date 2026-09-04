@@ -21,6 +21,7 @@ from repowise.core.persistence.database import (
 )
 from repowise.core.persistence.search import FullTextSearch
 from repowise.core.persistence.vector_store import InMemoryVectorStore
+from repowise.core.platform.telemetry import GROUP_LEAF_TYPES_ATTR
 from repowise.core.providers.embedding.base import KeylessEmbedder
 from repowise.server.mcp_server import _state
 
@@ -648,30 +649,28 @@ def _configure_transport_security(host: str) -> None:
     )
 
 
-def _run_transport(transport: str) -> None:
-    """Run the server, raising the cause of a task-group failure rather than the group.
+def group_leaves(exc: BaseException, *, _depth: int = 0) -> list[BaseException]:
+    """Every non-group exception inside *exc*, outermost group flattened.
 
     ``mcp.run`` drives an anyio event loop, and anyio reports a child task's
     failure as an ``ExceptionGroup`` wrapping the real exception. Anything that
-    reads the outermost class then learns only that *a* task failed: the CLI
-    records the wrapper's name as the error type, so a missing dependency, a
-    permission problem and a closed pipe are indistinguishable after the fact.
-    Unwrap to the first leaf and raise that, so the layers above name the real
-    error. A group holding several distinct failures loses the siblings, which
-    is worth it to stop losing the cause entirely.
+    reads the outermost class learns only that *a* task failed: a missing
+    dependency, a permission problem and a closed pipe are indistinguishable
+    after the fact.
+
+    Returns the whole leaf set rather than the first one. The caller still
+    *raises* the first, because an exception can only be one thing, but the
+    siblings are what say whether a crash is one fault or several — a question
+    the single-leaf unwrap could not be asked, since it discarded them before
+    anything could look. A group that is empty, or nested past
+    :data:`_MAX_GROUP_DEPTH`, yields itself: no leaf is a worse answer than an
+    honest wrapper.
     """
-    try:
-        mcp.run(transport=transport)
-    except BaseExceptionGroup as group:
-        leaf: BaseException = group
-        for _ in range(_MAX_GROUP_DEPTH):
-            if not isinstance(leaf, BaseExceptionGroup) or not leaf.exceptions:
-                break
-            leaf = leaf.exceptions[0]
-        # A cancelled run is how a client-initiated shutdown looks, not a fault.
-        if isinstance(leaf, Exception):
-            _log.error("MCP server (%s) stopped: %r", transport, leaf, exc_info=leaf)
-        raise leaf from group
+    if not isinstance(exc, BaseExceptionGroup) or _depth >= _MAX_GROUP_DEPTH:
+        return [exc]
+    if not exc.exceptions:
+        return [exc]
+    return [leaf for child in exc.exceptions for leaf in group_leaves(child, _depth=_depth + 1)]
 
 
 def run_mcp(
@@ -686,50 +685,76 @@ def run_mcp(
     ``tools`` overrides which tools are advertised (see
     :func:`repowise.server.mcp_server._tool_selection.apply_tool_selection`);
     when omitted, the ``mcp.tools`` config block is honoured.
+
+    A task-group failure is unwrapped over the whole body, not around ``mcp.run``
+    alone: surface construction and transport security run outside that call, and
+    a group raised by either escaped with its wrapper class intact. Every leaf is
+    logged, and the first is re-raised carrying the class names of all of them in
+    :data:`GROUP_LEAF_TYPES_ATTR`. That is what lets the layer recording the
+    outcome say whether one fault or several killed the server, without reaching
+    back in here to re-derive it.
     """
-    _state._repo_path = repo_path
-    from repowise.server.mcp_server import ensure_full_surface
-    from repowise.server.mcp_server._tool_selection import apply_tool_selection
+    try:
+        _state._repo_path = repo_path
+        from repowise.server.mcp_server import ensure_full_surface
+        from repowise.server.mcp_server._tool_selection import apply_tool_selection
 
-    ensure_full_surface()
-    apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+        ensure_full_surface()
+        apply_tool_selection(mcp, repo_path=repo_path, override=tools)
 
-    if transport == "sse":
-        mcp.settings.host = host
-        mcp.settings.port = port
-        _configure_transport_security(host)
-        if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
-            _log.warning(
-                "SECURITY WARNING: MCP server (sse) is binding to %s without "
-                "REPOWISE_API_KEY. All tools are unauthenticated and "
-                "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
-                host,
+        if transport == "sse":
+            mcp.settings.host = host
+            mcp.settings.port = port
+            _configure_transport_security(host)
+            if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
+                _log.warning(
+                    "SECURITY WARNING: MCP server (sse) is binding to %s without "
+                    "REPOWISE_API_KEY. All tools are unauthenticated and "
+                    "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
+                    host,
+                )
+            mcp.run(transport="sse")
+        elif transport == "streamable-http":
+            mcp.settings.host = host
+            mcp.settings.port = port
+            _configure_transport_security(host)
+            if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
+                _log.warning(
+                    "SECURITY WARNING: MCP server (streamable-http) is binding to %s without "
+                    "REPOWISE_API_KEY. All tools are unauthenticated and "
+                    "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
+                    host,
+                )
+            mcp.run(transport="streamable-http")
+        else:
+            # stdout is the JSON-RPC channel on stdio, so every log line written
+            # there arrives at the client as a malformed protocol frame. Move the
+            # log sinks to stderr before anything can log.
+            from repowise.server.mcp_server._stdio_logging import route_logging_to_stderr
+
+            route_logging_to_stderr()
+            # stdio servers are spawned per-session by the MCP client; when the
+            # client dies abnormally the stdio loop doesn't exit (and Windows
+            # never kills children), leaking servers that hold wiki.db handles.
+            # The watchdog exits this process once the client is gone.
+            from repowise.server.mcp_server._watchdog import start_parent_watchdog
+
+            start_parent_watchdog()
+            mcp.run(transport="stdio")
+    except BaseExceptionGroup as group:
+        leaves = group_leaves(group)
+        for leaf in leaves:
+            # A cancelled run is how a client-initiated shutdown looks, not a fault.
+            if isinstance(leaf, Exception):
+                _log.error("MCP server (%s) stopped: %r", transport, leaf, exc_info=leaf)
+        first = leaves[0]
+        # Best effort: a leaf class with __slots__ refuses the attribute, and the
+        # sibling names are not worth losing the exception over.
+        with contextlib.suppress(AttributeError, TypeError):
+            setattr(
+                first,
+                GROUP_LEAF_TYPES_ATTR,
+                tuple(sorted({type(leaf).__name__ for leaf in leaves})),
             )
-        _run_transport("sse")
-    elif transport == "streamable-http":
-        mcp.settings.host = host
-        mcp.settings.port = port
-        _configure_transport_security(host)
-        if host in ("0.0.0.0", "::") and not os.environ.get("REPOWISE_API_KEY"):
-            _log.warning(
-                "SECURITY WARNING: MCP server (streamable-http) is binding to %s without "
-                "REPOWISE_API_KEY. All tools are unauthenticated and "
-                "network-accessible. Set REPOWISE_API_KEY or bind to 127.0.0.1.",
-                host,
-            )
-        _run_transport("streamable-http")
-    else:
-        # stdout is the JSON-RPC channel on stdio, so every log line written
-        # there arrives at the client as a malformed protocol frame. Move the
-        # log sinks to stderr before anything can log.
-        from repowise.server.mcp_server._stdio_logging import route_logging_to_stderr
+        raise first from group
 
-        route_logging_to_stderr()
-        # stdio servers are spawned per-session by the MCP client; when the
-        # client dies abnormally the stdio loop doesn't exit (and Windows
-        # never kills children), leaking servers that hold wiki.db handles.
-        # The watchdog exits this process once the client is gone.
-        from repowise.server.mcp_server._watchdog import start_parent_watchdog
-
-        start_parent_watchdog()
-        _run_transport("stdio")

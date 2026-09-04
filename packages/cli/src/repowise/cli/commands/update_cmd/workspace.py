@@ -265,6 +265,9 @@ def _workspace_update(
     )
 
 
+_BREAKING_DETAIL_LINES = 3
+
+
 def _print_breaking_changes(ws_root: Path, started_at: datetime) -> None:
     """One line naming the contracts this update broke, if any.
 
@@ -309,6 +312,19 @@ def _print_breaking_changes(ws_root: Path, started_at: datetime) -> None:
         + (f", plus {others} non-breaking" if others else "")
         + ". [dim]repowise workspace check[/dim]"
     )
+    # Name a few of them, so the count is actionable without a second command.
+    # Capped: this runs at the end of an update, and `workspace check` is the
+    # place that lists every one.
+    for change in gating[:_BREAKING_DETAIL_LINES]:
+        hit = sorted(
+            {ic.repo for ic in change.impacted_consumers if ic.repo != change.provider_repo}
+        )
+        console.print(
+            f"  [dim]{escape(change.contract_id)}[/dim]  "
+            f"{escape(change.provider_repo)} -> {escape(', '.join(hit))}"
+        )
+    if len(gating) > _BREAKING_DETAIL_LINES:
+        console.print(f"  [dim]and {len(gating) - _BREAKING_DETAIL_LINES} more[/dim]")
 
 
 def _workspace_docs_update(

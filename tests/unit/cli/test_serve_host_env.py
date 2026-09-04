@@ -31,6 +31,13 @@ def stub_serve(monkeypatch) -> dict:
     # No real sockets: the port probe is not what these tests are about.
     monkeypatch.setattr(serve_cmd, "_find_free_port", lambda _host, port, _label: port)
     monkeypatch.delenv("REPOWISE_API_KEY", raising=False)
+    # The command auto-detects `./.repowise/wiki.db` and assigns
+    # REPOWISE_DB_URL straight onto os.environ. Under CliRunner the cwd is the
+    # developer's own checkout, and a raw assignment outlives the test, so
+    # every later test that indexes a tmp_path repo wrote into it. Setting the
+    # variable here skips that branch and hands the cleanup to monkeypatch,
+    # exactly as REPOWISE_HOST is handled below.
+    monkeypatch.setenv("REPOWISE_DB_URL", "sqlite+aiosqlite:///:memory:")
     # setenv, not delenv: the command assigns REPOWISE_HOST, and only a
     # monkeypatch that recorded the variable will unset it again afterwards.
     monkeypatch.setenv("REPOWISE_HOST", "127.0.0.1")

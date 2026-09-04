@@ -7,8 +7,11 @@
 
     Written for retrieval as much as for reading: the page names its own
     symbols, its neighbours' file paths and its layer in full, because those
-    are the identifiers a question embeds near. Nobody reads a file page end
-    to end, so where readability and retrieval disagree, retrieval wins.
+    are the identifiers a question embeds near. Where readability and
+    retrieval disagree, retrieval wins and the reader personas in
+    ``docs/reader-persona.ts`` decide what a reader is shown — a section is
+    hidden client-side rather than dropped here, since dropping it would take
+    it out of the index with it.
 
     Every section below the Overview is conditional. A heading with nothing
     under it costs a reader a stop and puts the same stock sentence into the
@@ -18,30 +21,123 @@
     ``_extract_summary`` reads it back as the summary shown in search results
     and the wiki list.
 -#}
-{%- set public_syms = ctx.symbols | selectattr("visibility", "equalto", "public") | list -%}
+{%- set api_syms = ctx.symbols | api_symbols -%}
+{%- set other_syms = ctx.symbols | internal_symbols -%}
+{%- set git = ctx.git_metadata or {} -%}
 # {{ ctx.file_path }}
 
 ## {{ labels.overview }}
 
-{% if ctx.docstring %}{{ ctx.docstring | as_markdown }}{% else %}`{{ ctx.file_path }}` {{ labels.is_a }} {{ ctx.language }} {% if ctx.is_entry_point %}{{ labels.entry_point }} {% endif %}{% if ctx.is_test %}{{ labels.test }} {% endif %}{{ labels.source_file }}{% if ctx.kg_layer_name %} {{ labels.in_layer.format(layer=ctx.kg_layer_name) }}{% endif %}{% if ctx.community_label %}, {{ labels.part_of_module_cluster_intro.format(community=ctx.community_label) }}{% endif %}.{% endif %}
-{%- if public_syms %}
-{%- set symbol_word = labels.public_symbol_plural if public_syms | length != 1 else labels.public_symbol_singular %}
+{% if ctx.docstring %}{{ ctx.docstring | as_markdown }}{% else %}{% if ctx.kg_node_summary %}{{ ctx.kg_node_summary | oneline }} {% endif %}`{{ ctx.file_path }}` {{ labels.is_a }} {{ ctx.language }} {% if ctx.is_entry_point %}{{ labels.entry_point }} {% endif %}{% if ctx.is_test %}{{ labels.test }} {% endif %}{{ labels.source_file }}{% if ctx.kg_layer_name %} {{ labels.in_layer.format(layer=ctx.kg_layer_name) }}{% endif %}{% if ctx.community_label %}, {{ labels.part_of_module_cluster_intro.format(community=ctx.community_label) }}{% endif %}.{% endif %}
+{%- if api_syms %}
+{%- set symbol_word = labels.public_symbol_plural if api_syms | length != 1 else labels.public_symbol_singular %}
 
-{% if ctx.dependencies %}{{ labels.exposes_symbols_and_depends.format(symbol_count=public_syms | length, symbol_word=symbol_word, file_count=ctx.dependencies | length, file_word=labels.other_file_plural if ctx.dependencies | length != 1 else labels.other_file_singular) }}{% else %}{{ labels.exposes_symbols.format(symbol_count=public_syms | length, symbol_word=symbol_word) }}{% endif %}
+{% if ctx.dependencies %}{{ labels.exposes_symbols_and_depends.format(symbol_count=api_syms | length, symbol_word=symbol_word, file_count=ctx.dependencies | length, file_word=labels.other_file_plural if ctx.dependencies | length != 1 else labels.other_file_singular) }}{% else %}{{ labels.exposes_symbols.format(symbol_count=api_syms | length, symbol_word=symbol_word) }}{% endif %}
+{%- endif %}
+{#- What the history knows and the code cannot say.
+
+    All of this was assembled already and thrown away at render time. That a
+    file has been fixed twice and moves with ``incremental.py`` is something a
+    reader acts on; twenty-five import paths are something they could have got
+    from grep.
+
+    Every clause is conditional on the number behind it, so a repository with
+    no git history renders no heading rather than a row of zeroes. Dates are
+    absolute, never "three days ago": the rendered bytes are this page's reuse
+    key, and a relative date would restate every page in the wiki daily.
+-#}
+{%- set history = [] -%}
+{%- set commits = git.get("commit_count_total") or 0 -%}
+{%- if commits -%}
+{%- set _ = history.append(labels.history_commits.format(total=commits, commit_word=labels.commit_plural if commits != 1 else labels.commit_singular, recent=git.get("commit_count_90d") or 0)) -%}
+{%- if git.get("last_commit_at") -%}
+{%- set _ = history.append(labels.history_last_commit.format(date=git.get("last_commit_at") | datestamp)) -%}
+{%- endif -%}
+{#- The column is written on either scale depending on the producer, the
+    same normalisation ``health/biomarkers/developer_congestion.py`` applies.
+    Unnormalised, a 0-100 source renders "at 8500% of commits". -#}
+{%- if git.get("primary_owner_name") and git.get("primary_owner_commit_pct") -%}
+{%- set owner_pct = git.get("primary_owner_commit_pct") -%}
+{%- set _ = history.append(labels.history_owner.format(owner=git.get("primary_owner_name"), pct=(owner_pct if owner_pct > 1.0 else owner_pct * 100) | round | int)) -%}
+{%- endif -%}
+{#- Suppressed when it exceeds the commit total: the two are counted over
+    different windows, and a file whose fix count outruns its own log is one
+    that has been moved, so the fixes belong to a path this page no longer
+    describes. -#}
+{%- if git.get("prior_defect_count") and git.get("prior_defect_count") <= commits -%}
+{%- set _ = history.append(labels.history_fixes.format(count=git.get("prior_defect_count"))) -%}
+{%- endif -%}
+{%- if git.get("is_hotspot") -%}
+{%- set _ = history.append(labels.history_hotspot) -%}
+{%- elif git.get("is_stable") -%}
+{%- set _ = history.append(labels.history_stable) -%}
+{%- endif -%}
+{%- endif -%}
+{%- if history %}
+
+## {{ labels.history }}
+
+{{ history | join(" ") }}
+{%- endif %}
+{%- if ctx.co_change_pages %}
+
+## {{ labels.changes_with }}
+
+{{ labels.changes_with_intro }}
+{% for cc in ctx.co_change_pages %}
+- `{{ cc.path }}` — {{ labels.changes_with_entry.format(count=cc.commits, commit_word=labels.commit_plural if cc.commits != 1 else labels.commit_singular) }}{% if cc.last %} ({{ labels.last_together.format(date=cc.last | datestamp) }}){% endif %}
+{%- endfor %}
+{%- endif %}
+{%- if ctx.decision_records %}
+
+## {{ labels.decisions_heading }}
+{% for dr in ctx.decision_records[:3] %}
+- **{{ dr.title | oneline(80) }}** — {{ dr.decision | oneline }}{% if dr.rationale %} *({{ dr.rationale | oneline(120) }})*{% endif %}
+{%- endfor %}
+{%- endif %}
+{#- The declared surface, and the names that are public to the parser without
+    being anything a caller reaches for.
+
+    ``log``, ``__all__`` and ``__init__`` made the table read as a symbol dump
+    rather than as an API. They are declared under it instead of dropped, with
+    their signatures and not just their names: ``content`` is also the index
+    entry, and ``log`` alone would take ``structlog``, ``get_logger`` and
+    ``__name__`` out of it. A constructor keeps its parameter list this way
+    too, which the class's own row does not carry.
+-#}
+{%- if api_syms or other_syms %}
 
 ## {{ labels.public_api }}
+{%- if api_syms %}
 
 | {{ labels.symbol }} | {{ labels.kind }} | {{ labels.signature }} |
 | --- | --- | --- |
-{%- for s in public_syms %}
+{%- for s in api_syms %}
 | `{{ s.name }}` | {{ s.kind }} | {{ (s.signature or "") | signature | replace("|", "\\|") }} |
 {%- endfor %}
 {%- endif %}
+{%- if other_syms %}
+
+{{ labels.also_defined.format(names=other_syms | declarations | map("code_span") | join(", ")) }}
+{%- endif %}
+{%- endif %}
+{#- Dependency lists, grouped by the directory each path sits in.
+
+    Flat, these were twenty-five strings in graph order — the same twenty-five
+    a reader could have got from grep, and nothing about their shape. Grouped,
+    the shape shows: of the files importing ``fs_walk``, nine are import
+    resolvers. Each path is still printed whole, because dropping a directory
+    prefix from a bullet would drop it from the index.
+-#}
 {%- if ctx.dependencies %}
 
 ## {{ labels.depends_on }}
-{% for dep in ctx.dependencies[:25] %}
+{%- for group in ctx.dependencies | group_paths %}
+
+**`{{ group.directory }}`**
+{% for dep in group.paths %}
 - `{{ dep }}`
+{%- endfor %}
 {%- endfor %}
 {%- if ctx.dependencies | length > 25 %}
 
@@ -53,8 +149,12 @@ _{{ labels.and_more.format(count=ctx.dependencies | length - 25) }}_
 ## {{ labels.used_by }}
 
 {{ labels.imported_by_files.format(count=ctx.dependents | length, file_word=labels.file_plural if ctx.dependents | length != 1 else labels.file_singular) }}
-{% for dep in ctx.dependents[:25] %}
+{%- for group in ctx.dependents | group_paths %}
+
+**`{{ group.directory }}`**
+{% for dep in group.paths %}
 - `{{ dep }}`
+{%- endfor %}
 {%- endfor %}
 {%- if ctx.dependents | length > 25 %}
 
@@ -68,7 +168,7 @@ _{{ labels.and_more.format(count=ctx.dependents | length - 25) }}_
 {{ labels.part_of_module_cluster.format(community=ctx.community_label) }}
 {%- endif %}
 {%- if ctx.kg_layer_name %}
-**{{ labels.layer }}:** {{ ctx.kg_layer_name }}{% if ctx.kg_layer_role %} | **{{ labels.role }}:** {{ ctx.kg_layer_role }}{% endif %}
+**{{ labels.layer }}:** {{ ctx.kg_layer_name }}{% if ctx.kg_layer_role %} | **{{ labels.role }}:** {% if ctx.kg_layer_role == "entry_point" %}{{ labels.role_entry_point }}{% elif ctx.kg_layer_role == "edge_connector" %}{{ labels.role_boundary }}{% else %}{{ labels.role_internal }}{% endif %}{% endif %}
 {%- endif %}
 {%- endif %}
 {#- Question-shaped text, built from structure rather than prose.
@@ -81,7 +181,7 @@ _{{ labels.and_more.format(count=ctx.dependents | length - 25) }}_
 
     A question is emitted only where the page can answer it. A question whose
     answer is not below it puts the words of a promise into the index and then
-    breaks it, which is the failure this block exists to avoid. Last on the
+    breaks it, which is the failure this block exists to avoid. Low on the
     page so it cannot become the summary ``_extract_summary`` reads back.
 
     Built as a list and capped, because a fully-connected file qualifies for
@@ -89,9 +189,9 @@ _{{ labels.and_more.format(count=ctx.dependents | length - 25) }}_
     question-shaped text and starts being padding on every page in the corpus.
 -#}
 {%- set questions = [] -%}
-{%- if public_syms -%}
+{%- if api_syms -%}
 {%- set _ = questions.append(labels.question_exports.format(path=ctx.file_path)) -%}
-{%- set _ = questions.append(labels.question_where_defined.format(symbol=public_syms[0].name)) -%}
+{%- set _ = questions.append(labels.question_where_defined.format(symbol=api_syms[0].name)) -%}
 {%- endif -%}
 {%- if ctx.dependents -%}
 {%- set _ = questions.append(labels.question_what_imports.format(path=ctx.file_path)) -%}

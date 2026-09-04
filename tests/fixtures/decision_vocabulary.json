@@ -1,0 +1,77 @@
+{
+  "_comment": "Generated from the Python decision vocabulary. Checked by tests/unit/analysis/test_decision_vocabulary_contract.py and by packages/types/__tests__/decisions-vocabulary.test.ts, so a source, status, currency, lane or preset added on one side fails on the other.",
+  "sources": [
+    "adr",
+    "cli",
+    "comment",
+    "commit",
+    "git_archaeology",
+    "inline_marker",
+    "llm_inferred",
+    "pr",
+    "session"
+  ],
+  "retired_sources": [
+    "code_comment",
+    "readme_mining",
+    "changelog"
+  ],
+  "statuses": [
+    "active",
+    "proposed",
+    "superseded",
+    "deprecated",
+    "dismissed"
+  ],
+  "currencies": [
+    "active",
+    "needs_review",
+    "uncheckable",
+    "superseded",
+    "dismissed"
+  ],
+  "stored_currencies": [
+    "active",
+    "needs_review",
+    "superseded",
+    "dismissed"
+  ],
+  "candidate_review_states": [
+    "open",
+    "accepted",
+    "merged",
+    "needs_split",
+    "dismissed"
+  ],
+  "acceptance_actions": [
+    "accepted",
+    "reaffirmed",
+    "merged",
+    "superseded",
+    "dismissed",
+    "returned_to_review"
+  ],
+  "capture_sources": [
+    "inline_marker",
+    "git_archaeology",
+    "adr",
+    "pr",
+    "comment",
+    "session",
+    "session_discovery"
+  ],
+  "presets": [
+    "default",
+    "off",
+    "local_only",
+    "balanced",
+    "full"
+  ],
+  "review_lanes": [
+    "active",
+    "candidates",
+    "needs_review",
+    "uncheckable",
+    "history"
+  ]
+}

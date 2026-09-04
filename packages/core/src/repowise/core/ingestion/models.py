@@ -31,6 +31,8 @@ LanguageTag = Literal[
     "cpp",
     "c",
     "csharp",
+    # Razor / Blazor markup, projected to C# via sfc_source (byte-scan).
+    "razor",
     "ruby",
     "php",
     "swift",
@@ -39,6 +41,7 @@ LanguageTag = Literal[
     "luau",
     "dart",
     "pascal",
+    "gdscript",
     # Passthrough code languages (no AST parser yet — empty ParsedFile,
     # files enter the graph via the generic resolver). Before these tags
     # existed the traverser silently skipped such files as unknown, so e.g.
@@ -74,6 +77,8 @@ LanguageTag = Literal[
     "xaml",
     # Markup with no symbols, but <script src>/<link href> are real edges.
     "html",
+    # Lightweight: qmldir-declared module imports and quoted references.
+    "qml",
     "unknown",
 ]
 
@@ -287,6 +292,7 @@ class CallSite:
     # and cpp has none -- a scoped call must stay on the free-call path.
     scope_name: str | None = None
     edge_type: CallSiteEdgeType = "calls"  # see ``CallSiteEdgeType``
+    supplied_props: set[str] | None = None  # prop names supplied in JSX element (None if unknown/spread)
 
 
 HeritageKind = Literal["extends", "implements", "trait_impl", "mixin"]

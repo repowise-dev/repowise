@@ -22,7 +22,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._budget import OmissionCollector, fit_to_budget
+from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -158,9 +158,6 @@ async def _get_dead_code_all_repos(
     }
     apply_limit_note(result_ws)
     result_ws["_meta"] = _build_meta()
-    collector = OmissionCollector("get_dead_code")
-    fit_to_budget(result_ws, _WORKSPACE_SHED_ORDER, collector)
-    collector.attach(result_ws)
     return result_ws
 
 
@@ -219,14 +216,6 @@ async def _load_git_meta_map(session: Any, repository_id: Any, findings: list) -
     )
     return {g.file_path: g for g in git_res.scalars().all()}
 
-
-# Cheapest loss first; all three are re-derivable from the findings. ``impact``
-# leads because the rollups were explicitly asked for via group_by.
-_SHED_ORDER: tuple[str, ...] = ("impact", "by_directory", "by_owner")
-
-# The workspace shape has no rollups; past the impact estimate only the tiers
-# themselves are left.
-_WORKSPACE_SHED_ORDER: tuple[str, ...] = ("impact",)
 
 _TIER_DESC_HIGH = (
     "High confidence (>=0.8): No references found in the codebase. "
@@ -459,7 +448,6 @@ async def get_dead_code(
 
     result["_meta"] = _build_meta(repository=repository)
     attach_ignored_arguments(result, ignored)
-    fit_to_budget(result, _SHED_ORDER, collector)
     collector.attach(result)
     return result
 

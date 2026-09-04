@@ -89,6 +89,26 @@ class RepoResponse(BaseModel):
         )
 
 
+class RepoDeletedResponse(BaseModel):
+    """What a repository delete removed, for the confirmation toast."""
+
+    ok: bool = True
+    deleted_pages: int = 0
+
+
+class JobAcceptedResponse(BaseModel):
+    """The 202 payload every background-job launch returns.
+
+    ``stream_token`` authorizes ``/api/jobs/{job_id}/stream`` directly, so a
+    client can attach without a second round-trip or an API key in the query
+    string.
+    """
+
+    job_id: str
+    status: str = "accepted"
+    stream_token: str
+
+
 class RepoSummaryRow(BaseModel):
     """One repository's headline figures, for the multi-repo dashboard.
 

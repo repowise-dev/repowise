@@ -98,7 +98,7 @@ export function AiPromptModal({
       <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-[var(--color-accent-primary)]" />
+            <Sparkles className="h-4 w-4 text-[var(--color-model)]" />
             {title}
             {filePath ? (
               <span className="ml-2 text-xs font-mono font-normal text-[var(--color-text-tertiary)] truncate max-w-[260px]">
@@ -110,26 +110,35 @@ export function AiPromptModal({
         </DialogHeader>
 
         <div className="space-y-4">
-          <div className="space-y-2">
-            <p className="font-mono text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
-              Target agent
-            </p>
-            <div className="w-fit">
-              <ViewToggle
-                value={flavor}
-                options={FLAVORS.map((f) => ({ value: f.value, label: f.label }))}
-                onChange={setFlavor}
-              />
+          {/* Full-bleed hairlines rather than a bordered, filled well. The
+              prompt is the thing you opened this to read, not an object you
+              can select or act on, so it does not earn a container — and a
+              second plane inside a floating panel is one plane too many. The
+              rules run to the modal's edge (`-mx-6` against its `p-6`) so they
+              read as the page's section dividers do, rather than as a box that
+              happens to have lost its sides. */}
+          <div className="-mx-6 divide-y divide-[var(--color-border-default)] border-y border-[var(--color-border-default)]">
+            <div className="space-y-2 px-6 py-4">
+              <p className="font-mono text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                Target agent
+              </p>
+              <div className="w-fit">
+                <ViewToggle
+                  value={flavor}
+                  options={FLAVORS.map((f) => ({ value: f.value, label: f.label }))}
+                  onChange={setFlavor}
+                />
+              </div>
+              <p className="text-xs leading-snug text-[var(--color-text-tertiary)]">
+                {FLAVORS.find((f) => f.value === flavor)?.hint}
+              </p>
             </div>
-            <p className="text-xs leading-snug text-[var(--color-text-tertiary)]">
-              {FLAVORS.find((f) => f.value === flavor)?.hint}
-            </p>
-          </div>
 
-          <div className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-inset)] max-h-[420px] overflow-y-auto">
-            <pre className="px-3 py-2 font-mono text-xs leading-relaxed text-[var(--color-text-primary)] whitespace-pre-wrap break-words">
-              {prompt}
-            </pre>
+            <div className="max-h-[420px] overflow-y-auto px-6 py-4">
+              <pre className="font-mono text-xs leading-relaxed text-[var(--color-text-primary)] whitespace-pre-wrap break-words">
+                {prompt}
+              </pre>
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-tertiary)]">
@@ -145,7 +154,7 @@ export function AiPromptModal({
                 "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors " +
                 (copied
                   ? "bg-[var(--color-success)] text-[var(--color-text-inverse)]"
-                  : "bg-[var(--color-accent-primary)] text-[var(--color-bg-surface)] hover:opacity-90")
+                  : "bg-[var(--color-model)] text-[var(--color-text-on-model)] hover:bg-[var(--color-model-hover)]")
               }
             >
               {copied ? (

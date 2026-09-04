@@ -402,6 +402,7 @@ async def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     uniquely had, so it moved here and the page retired; its id redirects.
     """
     from ..architecture_mermaid import build_overview_mermaid
+    from ..context.readme_digest import readme_digest
     from ..overview_tables import select_capabilities
 
     gen = run.gen
@@ -457,6 +458,12 @@ async def build_level6_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
                     # going unmentioned.
                     parsed_files=run.parsed_files,
                     capabilities=capabilities,
+                    # The only natural-language input the front page gets.
+                    # Framing and vocabulary; the structural fields above stay
+                    # the authority on paths, counts and package names.
+                    prose_digest=(
+                        readme_digest(Path(run.repo_path)) if run.repo_path else ""
+                    ),
                 ),
             )
         )

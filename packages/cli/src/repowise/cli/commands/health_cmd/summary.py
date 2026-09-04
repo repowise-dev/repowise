@@ -101,8 +101,13 @@ def _render_defect_accuracy_line(report: Any) -> None:
     """
     try:
         from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
+        from repowise.core.analysis.health.ranking import deduction_by_path
 
-        stat = compute_defect_accuracy(report.metrics, report.findings)
+        stat = compute_defect_accuracy(
+            report.metrics,
+            report.findings,
+            deductions=deduction_by_path(report.findings),
+        )
     except Exception:
         return
     if not stat:

@@ -8,6 +8,7 @@ than by wall clock.
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -627,3 +628,278 @@ async def test_a_capped_queue_says_why_it_was_capped(client, app):
     assert result["refactoring_opportunities_reduced_reason"] == "limit"
     assert result["recovery"]["refactoring_opportunities"]["remaining"] == 17
     del repo_id
+
+
+# ---------------------------------------------------------------------------
+# Triage: the opportunity transition
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_one_request_triages_every_step_of_an_opportunity(client, app):
+    """An opportunity has no lifecycle of its own, so the transition writes the
+    steps and reads the rollup back. One request, not one per step."""
+    repo_id = await _seed(client, app, files=3)
+    page = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    oid = page["items"][0]["opportunity_id"]
+    detail = (
+        await client.get(f"/api/repos/{repo_id}/refactoring/opportunities/{oid}")
+    ).json()
+    step_ids = [s["plan_id"] for s in detail["steps"]]
+
+    res = await client.patch(
+        f"/api/repos/{repo_id}/refactoring/opportunities/{oid}/status",
+        json={"status": "acknowledged"},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "acknowledged"
+    assert body["steps_updated"] == len(step_ids)
+
+    async with app.state.session_factory() as session:
+        for plan_id in step_ids:
+            row = await crud.get_refactoring_suggestion(session, repo_id, plan_id)
+            assert row is not None and row.status == "acknowledged"
+
+    # And the stored column moved with it, so the indexed read agrees without
+    # waiting for the next index.
+    refreshed = (
+        await client.get(f"/api/repos/{repo_id}/refactoring/opportunities/{oid}")
+    ).json()
+    assert refreshed["status"] == "acknowledged"
+
+
+@pytest.mark.asyncio
+async def test_a_dismissed_opportunity_reads_back_as_dismissed_not_resolved(client, app):
+    """``false_positive`` and ``resolved`` are different claims - the work was
+    never real against the work is done - so a person who chooses one must not
+    be shown the other."""
+    repo_id = await _seed(client, app, files=3)
+    page = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    oid = page["items"][0]["opportunity_id"]
+
+    res = await client.patch(
+        f"/api/repos/{repo_id}/refactoring/opportunities/{oid}/status",
+        json={"status": "false_positive"},
+    )
+    assert res.status_code == 200
+    assert res.json()["status"] == "false_positive"
+
+
+@pytest.mark.asyncio
+async def test_a_triaged_opportunity_leaves_the_open_queue(client, app):
+    repo_id = await _seed(client, app, files=4)
+    page = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    before = page["total"]
+    oid = page["items"][0]["opportunity_id"]
+
+    await client.patch(
+        f"/api/repos/{repo_id}/refactoring/opportunities/{oid}/status",
+        json={"status": "resolved"},
+    )
+    after = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    assert after["total"] == before - 1
+    assert oid not in {item["opportunity_id"] for item in after["items"]}
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_status_is_refused_rather_than_stored(client, app):
+    repo_id = await _seed(client, app, files=2)
+    page = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    oid = page["items"][0]["opportunity_id"]
+    res = await client.patch(
+        f"/api/repos/{repo_id}/refactoring/opportunities/{oid}/status",
+        json={"status": "wontfix"},
+    )
+    assert res.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_opportunity_id_is_a_404(client, app):
+    repo_id = await _seed(client, app, files=2)
+    res = await client.patch(
+        f"/api/repos/{repo_id}/refactoring/opportunities/refop2_nope/status",
+        json={"status": "resolved"},
+    )
+    assert res.status_code == 404
+
+
+def test_the_rollup_rule_separates_dismissed_from_done():
+    """The pure rule, over member states alone. One step someone called a false
+    positive must not resolve the work the others still describe."""
+    from repowise.core.analysis.health.refactoring.opportunity import roll_up_status
+
+    assert roll_up_status([]) == "open"
+    assert roll_up_status(["open", "resolved"]) == "open"
+    assert roll_up_status(["acknowledged", "resolved"]) == "acknowledged"
+    assert roll_up_status(["resolved", "resolved"]) == "resolved"
+    # Mixed: some done, one wrong. The work as a whole is done.
+    assert roll_up_status(["resolved", "false_positive"]) == "resolved"
+    # All wrong: the opportunity itself was the false positive.
+    assert roll_up_status(["false_positive", "false_positive"]) == "false_positive"
+
+
+@pytest.mark.asyncio
+async def test_the_board_can_search_by_path_fragment(client, app):
+    """The board's search box. A residual filter over the open set, which is
+    what makes it a substring rather than an index seek."""
+    repo_id = await _seed(client, app, files=6)
+    page = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    sample = page["items"][0]["file_path"]
+    fragment = sample.rsplit("/", 1)[-1][:4]
+
+    hit = (
+        await client.get(
+            f"/api/repos/{repo_id}/refactoring/opportunities", params={"search": fragment}
+        )
+    ).json()
+    assert hit["total"] >= 1
+    assert all(fragment in item["file_path"] for item in hit["items"])
+
+    miss = (
+        await client.get(
+            f"/api/repos/{repo_id}/refactoring/opportunities",
+            params={"search": "zzz_no_such_path"},
+        )
+    ).json()
+    assert miss["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_several_lead_types_come_back_in_one_request(client, app):
+    """The board's Structural tab is four types, and it must not cost four
+    round trips."""
+    repo_id = await _seed(client, app, files=8)
+    body = (
+        await client.get(
+            f"/api/repos/{repo_id}/refactoring/opportunities",
+            params={"refactoring_type": "split_file,break_cycle"},
+        )
+    ).json()
+    assert body.get("ignored_arguments", {}) == {}
+    assert all(
+        item["lead_refactoring_type"] in {"split_file", "break_cycle"} for item in body["items"]
+    )
+
+    # A misspelling inside the list is still named rather than narrowing the
+    # result to the members that happened to be spelled right.
+    noisy = (
+        await client.get(
+            f"/api/repos/{repo_id}/refactoring/opportunities",
+            params={"refactoring_type": "split_file,nonsense"},
+        )
+    ).json()
+    assert noisy["ignored_arguments"]["refactoring_type"] == "nonsense"
+
+
+@pytest.mark.asyncio
+async def test_a_row_can_be_asked_for_without_its_steps(client, app):
+    """The product list renders step counts, not steps. Asking for the steps is
+    most of the page's bytes and none of its pixels."""
+    repo_id = await _seed(client, app, files=6)
+    with_steps = (
+        await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")
+    ).json()
+    without = (
+        await client.get(
+            f"/api/repos/{repo_id}/refactoring/opportunities", params={"step_preview": 0}
+        )
+    ).json()
+
+    assert any("steps" in item for item in with_steps["items"])
+    assert all("steps" not in item for item in without["items"])
+    # The counts a row actually renders survive.
+    assert all("step_count" in item for item in without["items"])
+    assert len(json.dumps(without)) < len(json.dumps(with_steps))
+
+
+@pytest.mark.asyncio
+async def test_the_field_can_place_every_structural_opportunity(client, app):
+    """The structural field plots file size against reach, and those are file
+    facts the opportunity row has to carry: without them it could only plot the
+    handful of files the bounded plan head happened to include."""
+    repo_id = await _seed(client, app, files=6)
+    body = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    figured = [
+        item
+        for item in body["items"]
+        if isinstance(item.get("file_nloc"), int) and isinstance(item.get("dependents"), int)
+    ]
+    assert figured, "the finalizer records the file's size and reach onto the row"
+
+
+@pytest.mark.asyncio
+async def test_a_dismissal_survives_the_next_index(client, app):
+    """A person's decision is not restated by the writer.
+
+    Both terminal states mean "nobody composes this again", so the reconciler
+    sees a dismissed opportunity exactly as it sees a completed one: absent.
+    Reading that absence as "resolved" would quietly turn "this was never real"
+    into "this got done", and the next index would do it silently.
+    """
+    repo_id = await _seed(client, app, files=3)
+    page = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    oid = page["items"][0]["opportunity_id"]
+
+    await client.patch(
+        f"/api/repos/{repo_id}/refactoring/opportunities/{oid}/status",
+        json={"status": "false_positive"},
+    )
+    async with app.state.session_factory() as session:
+        await crud.finalize_refactoring_opportunities(session, repo_id)
+        await session.commit()
+        row = await crud.get_refactoring_opportunity(session, repo_id, oid)
+        assert row is not None
+        assert row.status == "false_positive"
+
+
+@pytest.mark.asyncio
+async def test_an_acknowledgement_survives_the_next_index(client, app):
+    """Acknowledged is outstanding work someone picked up, so it stays composed
+    and the rollup keeps saying so."""
+    repo_id = await _seed(client, app, files=3)
+    page = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    oid = page["items"][0]["opportunity_id"]
+
+    await client.patch(
+        f"/api/repos/{repo_id}/refactoring/opportunities/{oid}/status",
+        json={"status": "acknowledged"},
+    )
+    async with app.state.session_factory() as session:
+        await crud.finalize_refactoring_opportunities(session, repo_id)
+        await session.commit()
+        row = await crud.get_refactoring_opportunity(session, repo_id, oid)
+        assert row is not None
+        assert row.status == "acknowledged"
+
+
+@pytest.mark.asyncio
+async def test_a_transition_that_writes_nothing_is_not_reported_as_success(client, app):
+    """The rollup of an empty set is ``open``.
+
+    So an opportunity whose steps are missing or whose plan ids no longer
+    resolve would otherwise answer "dismiss this" with a stored ``open`` and an
+    HTTP 200 - the caller's own request handed back as the state, with the one
+    thing they asked for the one thing that did not happen.
+    """
+    repo_id = await _seed(client, app, files=3)
+    page = (await client.get(f"/api/repos/{repo_id}/refactoring/opportunities")).json()
+    oid = page["items"][0]["opportunity_id"]
+
+    async with app.state.session_factory() as session:
+        row = await crud.get_refactoring_opportunity(session, repo_id, oid)
+        assert row is not None
+        row.details_json = json.dumps({"steps": []})
+        await session.commit()
+
+    res = await client.patch(
+        f"/api/repos/{repo_id}/refactoring/opportunities/{oid}/status",
+        json={"status": "false_positive"},
+    )
+    assert res.status_code == 409
+
+    async with app.state.session_factory() as session:
+        row = await crud.get_refactoring_opportunity(session, repo_id, oid)
+        assert row is not None
+        # Untouched, rather than silently reset to open.
+        assert row.status == "open"

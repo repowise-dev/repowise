@@ -1226,10 +1226,11 @@ class TestPackageScanPruning:
         pkg = self._pkg(tmp_path, "node_modules/\n")  # dist/ deliberately tracked
         dist = pkg / "dist"
         dist.mkdir()
-        # Outnumber the one real source rather than tie with it: `walk_repo`
-        # does not sort dirnames, so on a tie `max(counts, key=...)` returns
-        # whichever language the filesystem happened to yield first. That made
-        # this pass locally and fail on CI.
+        # Outnumber the one real source rather than tie with it, so this test
+        # asserts pruning and not tie-breaking. Ties are now resolved by name
+        # (see test_an_exact_language_tie_does_not_depend_on_walk_order); before
+        # that they followed filesystem order, which is what made this pass
+        # locally and fail on CI.
         for i in range(5):
             (dist / f"chunk{i}.js").write_text("var a=1;\n", encoding="utf-8")
 
@@ -1240,6 +1241,49 @@ class TestPackageScanPruning:
         pruned, _ = _scan_package_dir(pkg, tmp_path, is_pruned=tv.dir_chain_skipped)
         assert unpruned == "javascript"
         assert pruned == "typescript"
+
+    def test_an_exact_language_tie_does_not_depend_on_walk_order(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A tie must resolve the same way whatever order the filesystem yields.
+
+        counts is built in walk order and walk_repo does not sort
+        dirnames, so a bare max returned whichever tied language came
+        first — machine-dependent, and unstable on one machine as unrelated
+        files are added. Drive both orders through the same package and require
+        one answer.
+        """
+        # Built by hand rather than via _pkg: that helper ships a src/index.ts,
+        # which makes typescript win outright and there is no tie left to test.
+        (tmp_path / ".gitignore").write_text("", encoding="utf-8")
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "package.json").write_text('{"name": "p"}', encoding="utf-8")
+        (pkg / "a.js").write_text("var a=1;\n", encoding="utf-8")
+        (pkg / "b.ts").write_text("const b: number = 1;\n", encoding="utf-8")
+
+        # ``_scan_package_dir`` imports walk_repo inside the function body, so
+        # the patch has to land on the source module, not on the traverser.
+        from repowise.core import fs_walk
+
+        real_walk = fs_walk.walk_repo
+
+        def walk_in(order: list[str]):
+            def _walk(directory, **kwargs):
+                for dirpath, dirnames, filenames in real_walk(directory, **kwargs):
+                    known = [f for f in order if f in filenames]
+                    rest = [f for f in filenames if f not in order]
+                    yield dirpath, dirnames, known + rest
+
+            return _walk
+
+        monkeypatch.setattr(fs_walk, "walk_repo", walk_in(["a.js", "b.ts"]))
+        js_first, _ = _scan_package_dir(pkg, tmp_path, is_pruned=_never_pruned)
+
+        monkeypatch.setattr(fs_walk, "walk_repo", walk_in(["b.ts", "a.js"]))
+        ts_first, _ = _scan_package_dir(pkg, tmp_path, is_pruned=_never_pruned)
+
+        assert js_first == ts_first
 
     def test_a_package_with_nothing_indexed_reports_unknown(self, tmp_path: Path) -> None:
         """The one shape where the answer gets smaller rather than sharper."""

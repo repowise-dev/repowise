@@ -129,6 +129,7 @@ def _persist_health(repo_path: object, *, report: object) -> None:
         save_health_metrics,
         save_health_snapshot,
     )
+    from repowise.core.workspace.update import get_head_commit
 
     async def _do() -> None:
         url = get_db_url_for_repo(repo_path)
@@ -145,7 +146,12 @@ def _persist_health(repo_path: object, *, report: object) -> None:
                 return
             repo_id = repo.id
 
-            await save_health_metrics(session, repo_id, list(getattr(report, "metrics", []) or []))
+            await save_health_metrics(
+                session,
+                repo_id,
+                list(getattr(report, "metrics", []) or []),
+                analyzed_commit=get_head_commit(repo_path),
+            )
             findings = list(getattr(report, "findings", []) or [])
             if findings:
                 await save_health_findings(session, repo_id, findings)

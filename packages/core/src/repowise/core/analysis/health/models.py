@@ -52,10 +52,11 @@ def primary_finding(findings: Sequence[Any]) -> Any | None:
 
     Extracted because the rule was written out four times - the MCP file leads,
     the REST work queue, the code-health serializers and the CLI table - and
-    only the MCP copy remembered the continuous exclusion. The MCP copy and the
-    refactoring composition layer read this one; the other three still hold
-    their own, and adopting it would change what they lead with, which is a
-    surface decision rather than a refactor. See the plan's Backlog.
+    only the MCP copy remembered the continuous exclusion. All four read this
+    one now. Adopting it did change what three of them lead with, which is why
+    it was a surface decision rather than a refactor: on the dogfood index 134
+    of 3,011 files moved, and every one of them had been led by
+    ``coverage_gradient``.
     """
     from .biomarkers.registry import continuous_biomarkers
 
@@ -122,6 +123,9 @@ class HealthReport:
     # to the ``coverage_files`` table. Empty when no coverage was ingested.
     coverage_files: list[Any] = field(default_factory=list)
     coverage_format: str | None = None
+    # True when the ingested coverage report mapped fewer than half its files
+    # to the repo tree (#1746); carried so the persister can stamp the rows.
+    coverage_mapping_partial: bool = False
     # Incremental writers replace all dimensions only for ``authoritative_paths``.
     # ``performance_authoritative_paths`` may be wider: the bounded execution
     # closure whose performance rows/plans were recomputed for full parity.

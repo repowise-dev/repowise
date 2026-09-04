@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repowise"
-version = "0.46.0"
+version = "0.48.0"
 description = "The codebase intelligence layer for your AI coding agent — dependency graph, git history, dead code, decisions, and code health, exposed over MCP"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -52,6 +52,7 @@ dependencies = [
     "tree-sitter-pascal>=0.11,<1",
     "tree-sitter-luau>=1.2,<2",
     "tree-sitter-bash>=0.23,<1",
+    "tree-sitter-gdscript>=6.1,<7",
     # Markup grammars for single-file components: these locate <script> blocks
     # and markup expressions only; the JS inside them is parsed with the
     # TypeScript grammar (see sfc_source.py). There is no tree-sitter-vue on

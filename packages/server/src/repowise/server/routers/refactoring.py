@@ -27,6 +27,13 @@ from repowise.core.analysis.health.refactoring.recommendations import (
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.refactoring import ALLOWED_STATUSES
 from repowise.server.deps import get_db_session, verify_api_key
+from repowise.server.schemas import (
+    RefactoringOpportunitiesResponse,
+    RefactoringOpportunityDetailResponse,
+    RefactoringOpportunityStatusResponse,
+    RefactoringPlanStatusResponse,
+    RefactoringRollupResponse,
+)
 from repowise.server.services.refactoring_health import (
     CANONICAL_ORDERS,
     CANONICAL_VIEWS,
@@ -392,34 +399,63 @@ def _service(session: AsyncSession, repo_id: str) -> RefactoringHealthService:
     return RefactoringHealthService(session, repo_id, repo_id)
 
 
-@router.get("/{repo_id}/refactoring/opportunities")
+@router.get(
+    "/{repo_id}/refactoring/opportunities",
+    response_model=RefactoringOpportunitiesResponse,
+    # ``ignored_arguments`` is only present when the query dropped something;
+    # a default would put an empty object on every response.
+    response_model_exclude_unset=True,
+)
 async def get_refactoring_opportunities(
     repo_id: str,
-    refactoring_type: str | None = Query(None, description="Filter by lead refactoring type"),
+    refactoring_type: str | None = Query(
+        None, description="Lead refactoring type, or several comma-separated"
+    ),
+    status: str = Query(
+        "open", description="open | acknowledged | resolved | false_positive"
+    ),
     confidence: str | None = Query(None, description="low | medium | high"),
     effort: str | None = Query(None, description="S | M | L | XL"),
     file_path: str | None = Query(None, description="One repo-relative file path"),
+    search: str | None = Query(None, description="Substring of the file path"),
     mechanical: bool = Query(False, description="Only opportunities with a mechanical step"),
     view: str = Query(DEFAULT_VIEW, description=" | ".join(CANONICAL_VIEWS)),
     order: str | None = Query(None, description=" | ".join(CANONICAL_ORDERS)),
+    step_preview: int = Query(
+        _STEPS_PER_ROW,
+        ge=0,
+        le=20,
+        description="Steps inlined per row. 0 for a list that renders counts only.",
+    ),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    """One page of composed opportunities, with facets and the rollup."""
+    """One page of composed opportunities, with facets and the rollup.
+
+    ``step_preview`` defaults to three, which is what an agent reading the queue
+    wants. A product list that renders the step *counts* and opens a drawer for
+    the rest asks for zero: the steps are most of the row's bytes and none of
+    its pixels.
+    """
     query, ignored = parse_query(
         lead_type=refactoring_type,
+        status=status,
         confidence=confidence,
         effort=effort,
         mechanical=mechanical,
         file_paths=[file_path] if file_path else None,
+        search=search,
         view=view,
         order=order,
         limit=limit,
         offset=offset,
     )
     page = await _service(session, repo_id).page(
-        query, steps_per_item=_STEPS_PER_ROW, with_facets=True, with_summary=True
+        query,
+        steps_per_item=step_preview if step_preview > 0 else None,
+        with_facets=True,
+        with_summary=True,
     )
     body: dict[str, Any] = {
         "items": page.items,
@@ -435,7 +471,7 @@ async def get_refactoring_opportunities(
     return body
 
 
-@router.get("/{repo_id}/refactoring/summary")
+@router.get("/{repo_id}/refactoring/summary", response_model=RefactoringRollupResponse)
 async def get_refactoring_rollup(
     repo_id: str,
     session: AsyncSession = Depends(get_db_session),
@@ -445,7 +481,11 @@ async def get_refactoring_rollup(
     return {"summary": await service.summary(), "directive": await service.directive()}
 
 
-@router.get("/{repo_id}/refactoring/opportunities/{opportunity_id}")
+@router.get(
+    "/{repo_id}/refactoring/opportunities/{opportunity_id}",
+    response_model=RefactoringOpportunityDetailResponse,
+    response_model_exclude_unset=True,
+)
 async def get_refactoring_opportunity_detail(
     repo_id: str,
     opportunity_id: str,
@@ -466,6 +506,58 @@ async def get_refactoring_opportunity_detail(
     if not detail.get("resolved"):
         raise HTTPException(status_code=404, detail="Unknown opportunity id")
     return detail
+
+
+class RefactoringOpportunityStatusUpdate(BaseModel):
+    """The finding-triage vocabulary, applied to a whole opportunity."""
+
+    status: str = Field(..., description="open | acknowledged | resolved | false_positive")
+
+
+@router.patch(
+    "/{repo_id}/refactoring/opportunities/{opportunity_id}/status",
+    response_model=RefactoringOpportunityStatusResponse,
+)
+async def update_refactoring_opportunity_state(
+    repo_id: str,
+    opportunity_id: str,
+    payload: RefactoringOpportunityStatusUpdate,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """Record a decision about one opportunity, and so about all of its steps.
+
+    One request rather than one per step: the transition is applied to every
+    member plan through the same owner the plan route uses, and the
+    opportunity's own state is the rollup of what those plans then say.
+    """
+    if payload.status not in ALLOWED_STATUSES:
+        raise HTTPException(status_code=400, detail=f"invalid status: {payload.status}")
+    result = await crud.update_refactoring_opportunity_status(
+        session, repo_id, opportunity_id, payload.status
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=404, detail=f"refactoring opportunity not found: {opportunity_id}"
+        )
+    row, updated = result
+    if not updated:
+        # The opportunity exists but none of its steps could be written, so
+        # nothing was decided. Saying 200 here would report the caller's own
+        # request back to them as the stored state.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"refactoring opportunity {opportunity_id} has no resolvable steps to "
+                "transition; re-index the repository and try again"
+            ),
+        )
+    await session.commit()
+    return {
+        "opportunity_id": row.opportunity_id,
+        "status": row.status,
+        "steps_updated": updated,
+        "status_changed_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
 
 
 @router.get("/{repo_id}/refactoring/settings", response_model=RefactoringSettings)
@@ -542,7 +634,10 @@ class RefactoringStatusUpdate(BaseModel):
     status: str = Field(..., description="open | acknowledged | resolved | false_positive")
 
 
-@router.patch("/{repo_id}/refactoring/{suggestion_id}/status")
+@router.patch(
+    "/{repo_id}/refactoring/{suggestion_id}/status",
+    response_model=RefactoringPlanStatusResponse,
+)
 async def update_refactoring_plan_status(
     repo_id: str,
     suggestion_id: str,

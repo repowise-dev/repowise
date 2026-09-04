@@ -36,6 +36,7 @@ const data: RiskReportArtifactData = {
   health_delta: {
     status: "available",
     explanation: "Compared 3 changed files on both sides.",
+    basis: "both_sides_analyzed",
     introduced: 1,
     worsened: 0,
     resolved: 2,

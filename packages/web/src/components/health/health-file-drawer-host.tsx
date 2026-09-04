@@ -9,6 +9,10 @@ import {
   getPerformanceOpportunities,
   updateFindingStatus,
 } from "@/lib/api/code-health";
+import {
+  getFileOpportunity,
+  refactoringOpportunityHref,
+} from "@/lib/api/file-opportunity";
 import { useFileBreakdown } from "./use-file-breakdown";
 
 /** Causes listed for one file. A file with more than this is its own queue. */
@@ -40,13 +44,28 @@ export function HealthFileDrawerHost({
       getPerformanceOpportunities(repoId, {
         file_paths: [filePath as string],
         limit: FILE_CAUSE_LIMIT,
+        // Every context. The reader opened this one file, so the question is
+        // what was found in it, not whether it is production code.
+        context: "all",
       }),
     { revalidateOnFocus: false },
+  );
+
+  // The file's one refactoring opportunity, so a finding in this drawer can
+  // reach the plan the same analysis wrote for it. Unconditional, unlike the
+  // performance causes above: this is one indexed lookup, and the link is the
+  // drawer's only route out to the plan.
+  const { data: opportunity } = useSWR(
+    filePath ? `file-opportunity:${repoId}:${filePath}` : null,
+    () => getFileOpportunity(repoId, filePath as string),
+    { revalidateOnFocus: false, shouldRetryOnError: false },
   );
 
   return (
     <HealthFileDrawer
       open={filePath !== null}
+      opportunity={opportunity}
+      refactoringOpportunityHref={(id) => refactoringOpportunityHref(repoId, id)}
       onClose={onClose}
       loading={isLoading}
       metric={data?.metric ?? null}

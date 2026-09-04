@@ -37,7 +37,11 @@ import type { RiskRangeResponse } from "@repowise-dev/api-client/risk";
 import type { ReviewerSuggestion } from "@repowise-dev/api-client/types";
 import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
 import type { ArchitectureView } from "@repowise-dev/ui/c4";
-import type { RefactoringPlan, RefactoringTargets } from "@repowise-dev/types/refactoring";
+import type {
+  RefactoringOpportunityDetail,
+  RefactoringOpportunityPage,
+  RefactoringPlan,
+} from "@repowise-dev/types/refactoring";
 import type { AiPromptFlavor } from "@repowise-dev/ui/health/ai-prompt-builder";
 
 /** Every editor-tab webview panel the extension can open. */
@@ -148,7 +152,13 @@ export interface HostApi {
   hotFilesGraph(): Promise<HotFilesGraphResponse>;
   executionFlows(): Promise<ExecutionFlowsResponse>;
   // Refactoring
-  refactoringTargets(filePath?: string): Promise<RefactoringTargets>;
+  /** The composed unit the web board and the agent contract both speak. */
+  refactoringOpportunities(filePath?: string): Promise<RefactoringOpportunityPage>;
+  refactoringOpportunity(opportunityId: string): Promise<RefactoringOpportunityDetail>;
+  refactoringOpportunityPrompt(
+    opportunityId: string,
+    flavor: AiPromptFlavor,
+  ): Promise<string>;
   refactoringPlan(suggestionId: string): Promise<RefactoringPlan>;
   /** Built host-side so the prompt matches the CodeLens copy path exactly. */
   refactoringPrompt(suggestionId: string, flavor: AiPromptFlavor): Promise<string>;

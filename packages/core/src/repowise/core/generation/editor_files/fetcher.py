@@ -261,14 +261,21 @@ class EditorFileDataFetcher:
         return hotspots
 
     async def _get_decisions(self) -> list[DecisionSummary]:
-        """Active decision records, least-stale first."""
+        """Accepted decision records, least-stale first.
+
+        An agent reads this block as instructions, so it is the surface where
+        the candidate/decision distinction matters most: acceptance, not a
+        status string a recurrence check wrote, is what earns a line here.
+        """
         from repowise.core.exclusion import build_exclude_spec, decision_is_excluded
+        from repowise.core.persistence.crud.authority import accepted_predicate
 
         result = await self._session.execute(
             select(DecisionRecord)
             .where(
                 DecisionRecord.repository_id == self._repo_id,
                 DecisionRecord.status == "active",
+                accepted_predicate(),
             )
             .order_by(DecisionRecord.staleness_score.asc())
             # Over-fetch: records anchored entirely in excluded paths (vendored

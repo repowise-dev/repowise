@@ -271,7 +271,7 @@ export default async function OverviewPage({ params }: Props) {
     {
       label: "Languages",
       value: formatNumber(summary.languages.length),
-      href: `${base}/architecture?view=graph&colorMode=language`,
+      href: `${base}/architecture?view=files&colorMode=language`,
     },
   );
 
@@ -441,7 +441,7 @@ export default async function OverviewPage({ params }: Props) {
           title="Composition"
           action={
             <SectionLink
-              href={`${base}/architecture?view=graph&colorMode=language`}
+              href={`${base}/architecture?view=files&colorMode=language`}
               LinkComponent={Link}
             >
               Open the graph

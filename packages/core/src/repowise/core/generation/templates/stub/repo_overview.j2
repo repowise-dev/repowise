@@ -35,19 +35,6 @@
 {% endfor %}
 {% endif %}
 
-{% if ctx.entry_points %}
-## Entry Points
-Start here when reading the codebase.
-{# Capped: a monorepo where every UI folder has an index.ts produces 75 of
-   these, and a 75-item wall is not a place to start reading. #}
-{% for ep in ctx.entry_points[:15] %}
-- `{{ ep }}`
-{% endfor %}
-{%- if ctx.entry_points | length > 15 %}
-- ...and {{ ctx.entry_points | length - 15 }} more.
-{% endif %}
-{% endif %}
-
 {% if ctx.execution_flows %}
 ## Primary Execution Flows
 {% for f in ctx.execution_flows %}
@@ -63,14 +50,10 @@ Groups of files that depend on each other far more than on the rest of the repo.
 {% endfor %}
 {% endif %}
 
-{% if ctx.top_files_by_pagerank %}
-## Most Central Files
-Ranked by PageRank over the import graph: the files most of the codebase ultimately depends on.
-{% for item in ctx.top_files_by_pagerank %}
-- `{{ item.path }}` ({{ "%.4f"|format(item.score) }})
-{% endfor %}
-{% endif %}
-
+{# Two path tables used to sit above: the entry points and the highest-PageRank
+   files. Both are lists a reader can produce with `ls` and neither says what
+   the file is for. The summary sentence still names the first few entry points
+   in a sentence, which is where a path is worth reading. #}
 {# A repository-wide percentage breakdown of languages told the reader nothing
    they could act on — "python 57.2%" is not a fact anyone navigates by. The
    package table names the languages per package, which is, and the summary

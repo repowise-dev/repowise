@@ -43,6 +43,18 @@ PerformanceContext = Literal["production", "tooling", "test", "unknown", "all"]
 CANONICAL_CONTEXTS = ("production", "tooling", "test", "unknown")
 """The whole vocabulary. ``all`` is every one of them, never a subset."""
 
+DEFAULT_CONTEXT: PerformanceContext = "production"
+"""What a caller that names no context is asking about.
+
+Measured on a 17-repository corpus: 56.5% of opportunities are outside
+production code, and the markers concentrated there are the ones that fail
+hand-labelling. Test fixtures, benchmark harnesses, CI scripts and mocks are
+real code, but "this benchmark repeats work" is a fact about a benchmark, not
+performance work someone should schedule. Defaulting to production makes the
+first answer the one a reader can act on; every other context stays one
+selection away and is counted in ``repository_total`` either way.
+"""
+
 _DEPRECATED_CONTEXTS = {"production_tooling": frozenset({"production", "tooling"})}
 """Accepted for one compatibility window and never emitted as canonical.
 
@@ -87,7 +99,7 @@ class PerformanceQuery:
     unrecognized value is reported rather than silently read as "no results".
     """
 
-    context: PerformanceContext = "all"
+    context: PerformanceContext = DEFAULT_CONTEXT
     boundary: str | None = None
     confidence: str | None = None
     actionability: str | None = None
@@ -162,11 +174,13 @@ def parse_query(
         ignored[name] = value
         return None
 
-    resolved_context: PerformanceContext = "all"
+    resolved_context: PerformanceContext = DEFAULT_CONTEXT
     if context:
         if context in CANONICAL_CONTEXTS or context == "all" or context in _DEPRECATED_CONTEXTS:
             resolved_context = context  # type: ignore[assignment]
         else:
+            # Named, so the caller learns the value was not understood, then
+            # treated as absent like every other unrecognized filter.
             ignored["performance_context"] = context
     return (
         PerformanceQuery(
@@ -250,7 +264,7 @@ class PerformanceHealthService:
             offset=query.offset,
             next_offset=emitted if emitted < total else None,
             facets=await self._facets(query) if with_facets else {},
-            summary=await self.summary() if with_summary else {},
+            summary=await self.summary(query.contexts) if with_summary else {},
         )
 
     async def _evidence_for(
@@ -337,13 +351,27 @@ class PerformanceHealthService:
 
     # -- headline ----------------------------------------------------------
 
-    async def summary(self) -> dict[str, Any]:
-        """The compact rollup, from the one-row current summary.
+    async def summary(self, contexts: frozenset[str] | None = None) -> dict[str, Any]:
+        """The compact rollup, over *contexts* when one is selected.
 
         Reads by primary key, so a bare dashboard pays one statement for its
-        performance headline however large the repository is.
+        performance headline however large the repository is. Selecting a
+        context costs one more aggregate and rewrites the counts to describe
+        that context, because a headline that counted the whole repository
+        beside a queue that showed one slice of it would state a number the
+        list below it contradicts.
+
+        ``repository_total`` survives every scoping, so the census of what was
+        analyzed is never the thing a filter hides.
         """
-        return _summary_of(await get_performance_summary(self._session, self._repository_id))
+        base = _summary_of(await get_performance_summary(self._session, self._repository_id))
+        if base["status"] == "unavailable":
+            return base
+        base["repository_total"] = base["total"]
+        if contexts is None:
+            return base
+        grouped = await performance_facet_counts(self._session, self._repository_id)
+        return _rescope(base, grouped, contexts)
 
     async def directive(self) -> dict[str, Any]:
         """One bounded next action for a bare dashboard call.
@@ -519,6 +547,43 @@ class PerformanceHealthService:
                 "rationale": details.get("fix_rationale") or "",
             },
         }
+
+
+def _rescope(
+    base: dict[str, Any],
+    grouped: list[tuple[str, str | None, str, str, str, int]],
+    contexts: frozenset[str],
+) -> dict[str, Any]:
+    """Recount one stored rollup over *contexts*, from the facet aggregate.
+
+    The same grouped counts the filter control is drawn from, summed a second
+    way. Deriving the scoped headline here keeps one materialized row as the
+    only stored rollup: a per-context rollup would be four more rows to write,
+    version and keep honest for a number two sums recover exactly.
+    """
+    actionability: dict[str, int] = {}
+    context: dict[str, int] = {}
+    boundary: dict[str, int] = {}
+    total = 0
+    with_plan = 0
+    for execution_context, boundary_kind, _confidence, state, plan_state, count in grouped:
+        if execution_context not in contexts:
+            continue
+        total += count
+        actionability[state] = actionability.get(state, 0) + count
+        context[execution_context] = context.get(execution_context, 0) + count
+        key = boundary_kind or "none"
+        boundary[key] = boundary.get(key, 0) + count
+        if plan_state == "available":
+            with_plan += count
+    return {
+        **base,
+        "total": total,
+        "actionability": actionability,
+        "context": context,
+        "boundary": boundary,
+        "with_plan_total": with_plan,
+    }
 
 
 def _summary_of(row: Any) -> dict[str, Any]:

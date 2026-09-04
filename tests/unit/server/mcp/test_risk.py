@@ -66,6 +66,43 @@ async def test_get_risk_global_hotspots_exclude_targets(setup_mcp):
 
 
 @pytest.mark.asyncio
+async def test_get_risk_normalizes_target_path(setup_mcp):
+    """#1279: git_metadata row lookup must survive non-POSIX target forms.
+
+    Callers hand paths over with backslashes, a leading ``./``, or a trailing
+    separator. get_risk matches git_metadata.file_path by exact equality, so
+    each of these previously missed the row and reported the "no git metadata
+    available" card (hotspot_score=0 / primary_owner=None / empty partners)
+    even though the row exists.
+    """
+    from repowise.server.mcp_server import get_risk
+
+    for target in ("src\\auth\\service.py", "./src/auth/service.py", "src/auth/service.py/"):
+        result = await get_risk([target])
+        # Response stays keyed by the caller's exact string.
+        t = result["targets"][target]
+        assert t["hotspot_score"] == 0.92, target
+        assert t["primary_owner"] == "Alice", target
+        assert len(t["co_change_partners"]) == 2, target
+        assert "no git metadata available" not in t["risk_summary"], target
+        # Trend: 30d=3, 90d=8 → stable.
+        assert t["trend"] == "stable", target
+
+
+@pytest.mark.asyncio
+async def test_get_risk_repo_absolute_target_path(setup_mcp):
+    """A repo-absolute target is made repo-relative before the lookup (#1279)."""
+    from repowise.server.mcp_server import get_risk
+
+    abs_target = "/tmp/test-repo/src/auth/service.py"
+    result = await get_risk([abs_target])
+    t = result["targets"][abs_target]
+    assert t["hotspot_score"] == 0.92
+    assert t["primary_owner"] == "Alice"
+    assert len(t["co_change_partners"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_get_risk_no_git_metadata(setup_mcp):
     from repowise.server.mcp_server import get_risk
 
@@ -77,6 +114,26 @@ async def test_get_risk_no_git_metadata(setup_mcp):
     # Impact surface and risk_type still computed from graph data
     assert "risk_type" in t
     assert "impact_surface" in t
+
+
+@pytest.mark.parametrize(
+    ("raw", "repo_root", "expected"),
+    [
+        ("src/auth/service.py", None, "src/auth/service.py"),
+        ("src\\auth\\service.py", None, "src/auth/service.py"),
+        ("./src/auth/service.py", None, "src/auth/service.py"),
+        ("src/auth/service.py/", None, "src/auth/service.py"),
+        ("src//auth//service.py", None, "src/auth/service.py"),
+        (".github/workflows/ci.yml", None, ".github/workflows/ci.yml"),
+        ("./.github/workflows/ci.yml", None, ".github/workflows/ci.yml"),
+        (".claude/TRIAGE.md", None, ".claude/TRIAGE.md"),
+        ("/tmp/test-repo/src/auth/service.py", "/tmp/test-repo", "src/auth/service.py"),
+    ],
+)
+def test_normalize_target_path(raw, repo_root, expected):
+    from repowise.server.mcp_server.tool_risk.assessment import normalize_target_path
+
+    assert normalize_target_path(raw, repo_root=repo_root) == expected
 
 
 @pytest.mark.asyncio
@@ -351,6 +408,9 @@ def test_classify_bus_factor_unknown_team_size_keeps_behaviour():
         ("lib/user.dart", "test/user_test.dart"),
         ("lib/user.ex", "test/user_test.exs"),
         ("src/user.rs", "tests/user_test.rs"),
+        ("lib/user.rb", "spec/user_spec.rb"),
+        ("src/user.cr", "spec/user_spec.cr"),
+        ("lib/user.rb", "test/test_user.rb"),
     ],
 )
 def test_health_filename_heuristic_supports_suffix_test_conventions(source, test):

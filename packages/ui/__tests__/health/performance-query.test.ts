@@ -11,14 +11,12 @@ import {
 } from "../../src/health/performance/query";
 
 describe("performance filter state", () => {
-  it("serializes only what differs from the default", () => {
-    expect(serializeFilters(INITIAL_FILTERS)).toBe("");
-    const narrowed = withFilter(
-      withFilter(INITIAL_FILTERS, "context", "production"),
-      "boundary",
-      "db",
-    );
-    expect(serializeFilters(narrowed)).toBe("context=production&boundary=db");
+  it("serializes only what differs from the default, and always the context", () => {
+    // Context is written even at its default so a shared link keeps meaning
+    // the context it was shared in, whatever the default becomes later.
+    expect(serializeFilters(INITIAL_FILTERS)).toBe("context=production");
+    const narrowed = withFilter(withFilter(INITIAL_FILTERS, "context", "all"), "boundary", "db");
+    expect(serializeFilters(narrowed)).toBe("context=all&boundary=db");
   });
 
   it("round trips every field through a query string", () => {
@@ -35,7 +33,7 @@ describe("performance filter state", () => {
 
   it("drops a value the vocabulary does not contain instead of forwarding it", () => {
     const parsed = parseFilters("context=production_tooling&actionability=nonsense&offset=-3");
-    expect(parsed.context).toBe("all");
+    expect(parsed.context).toBe("production");
     expect(parsed.actionability).toBeNull();
     expect(parsed.offset).toBe(0);
   });
@@ -61,7 +59,13 @@ describe("performance filter state", () => {
 
   it("omits a narrowing parameter that is not set rather than sending an empty one", () => {
     const query = toQuery(INITIAL_FILTERS, { limit: 20 });
-    expect(query).toEqual({ context: "all", view: "detail", sort: "rank", limit: 20, offset: 0 });
+    expect(query).toEqual({
+      context: "production",
+      view: "detail",
+      sort: "rank",
+      limit: 20,
+      offset: 0,
+    });
     expect("boundary" in query).toBe(false);
   });
 

@@ -164,3 +164,23 @@ def test_churn_complexity_to_dict_wire_shape() -> None:
         "score": 3.4,
         "churn_percentile": 92.0,
     }
+
+
+def test_the_badge_response_model_keeps_schema_version() -> None:
+    """Shields renders "invalid response" without it, so the model must carry it.
+
+    The route builds the payload as a plain dict, so a model that omitted this
+    key would drop it silently and break every embedded badge.
+    """
+    from repowise.server.schemas import HealthBadgeResponse
+
+    label, message, color, band = _badge_fields(9.0)
+    body = {
+        "schemaVersion": 1,
+        "label": label,
+        "message": message,
+        "color": color,
+        "band": band,
+    }
+
+    assert HealthBadgeResponse.model_validate(body).model_dump() == body

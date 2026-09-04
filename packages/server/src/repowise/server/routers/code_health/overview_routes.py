@@ -7,16 +7,21 @@ from datetime import datetime
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.health.aggregation import (
+    biomarker_breakdown,
+    module_rollups,
+    severity_breakdown,
+)
 from repowise.core.analysis.health.defect_accuracy import compute_defect_accuracy
 from repowise.core.analysis.health.grading import band_for
 from repowise.core.analysis.health.grading import distribution as health_distribution
+from repowise.core.analysis.health.ranking import deduction_by_path
 from repowise.core.analysis.health.scoring import hotspot_health
 from repowise.core.persistence import crud
 from repowise.server.deps import get_db_session
 from repowise.server.mcp_server._meta import resolve_indexed_commit
 
 from ._router import router
-from .aggregation import _biomarker_breakdown, _module_rollups, _severity_breakdown
 from .loaders import _attach_symbol_ids
 from .serializers import _finding_to_dict, _leads_by_file, _metric_to_dict
 
@@ -88,7 +93,7 @@ async def health_overview(
     summary = {
         **summary,
         "hotspot_health": hotspot_health_value,
-        "severity_breakdown": _severity_breakdown(findings),
+        "severity_breakdown": severity_breakdown(findings),
         "band": band_for(float(avg)) if avg is not None else None,
     }
     distribution = health_distribution(metric_dicts)
@@ -101,9 +106,15 @@ async def health_overview(
     # metrics — so ``metric_dicts`` above serves, no second conversion — and
     # only the ``prior_defect`` findings, so converting the other ~90% (which
     # means a ``json.loads`` of every ``details_json``) was pure waste.
+    # Summed over every open finding, not the ``prior_defect`` slice below: a
+    # ranking needs each file's whole depth, or the floor-tied band comes out in
+    # a different order than the worst-files list beside it. Folded once and
+    # shared with the module rollup.
+    deductions = deduction_by_path(findings)
     defect_accuracy = compute_defect_accuracy(
         metric_dicts,
         [_finding_to_dict(f) for f in findings if f.biomarker_type == "prior_defect"],
+        deductions=deductions,
     )
 
     # Ranked by health impact, so performance is out: its findings score zero
@@ -122,8 +133,8 @@ async def health_overview(
         "defect_accuracy": defect_accuracy,
         "files": metric_dicts[:limit],
         "top_findings": top_findings,
-        "modules": _module_rollups(metrics),
-        "biomarkers": _biomarker_breakdown(findings),
+        "modules": module_rollups(metrics, deductions),
+        "biomarkers": biomarker_breakdown(findings),
         "meta": {
             "last_indexed_at": last_indexed_at,
             # Prefer state.json's last_sync_commit over a possibly-stale DB row
@@ -145,4 +156,8 @@ async def health_modules(
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
     metrics = await crud.get_health_metrics(session, repo_id)
-    return {"modules": _module_rollups(metrics)}
+    # One grouped aggregate, the same one the ranking above it runs. Without it
+    # a module whose files all sit at the score floor would name its worst
+    # performer by path rather than by how deep each file actually is.
+    deductions = await crud.get_deduction_by_path(session, repo_id)
+    return {"modules": module_rollups(metrics, deductions)}

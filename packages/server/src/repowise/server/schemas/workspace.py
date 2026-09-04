@@ -330,6 +330,9 @@ class WorkspaceBreakingChange(BaseModel):
     provider_repo: str
     provider_file: str
     provider_symbol: str
+    #: Looked-up id for the changed provider symbol; ``None`` when the
+    #: contract did not resolve to one.
+    provider_symbol_id: str | None = None
     provider_service: str | None = None
     provider_node_id: str = ""
     detail: str

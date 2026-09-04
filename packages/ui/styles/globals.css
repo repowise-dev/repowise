@@ -73,6 +73,10 @@
   --color-bg-elevated: #fbf4ee;
   --color-bg-overlay: #ffffff;
   --color-bg-inset: #f4eae1;
+  /* A well measured from the overlay plane rather than from root. Light mode
+     needs no separate value: overlay is white, so the same warm inset already
+     recesses correctly inside a dialog. See the dark block for why it exists. */
+  --color-bg-inset-on-overlay: #f4eae1;
 
   /* Borders — plum-tinted hairlines */
   --color-border-default: rgba(88, 67, 108, 0.12);
@@ -93,6 +97,22 @@
   --color-accent-hover: #824f10;
   --color-accent-muted: rgba(245, 149, 32, 0.12);
   --color-accent-secondary: #58436c;
+
+  /* Model work — the plum accent doing one named job.
+     `--color-accent-secondary` is also a qualitative chart slot (donut wedges,
+     sigma edge kinds, the category ramp), so it is aliased here rather than
+     used directly: a Generate button and a donut wedge should not be the same
+     token even while they are the same hue, and this is the seam to split them
+     at if the two ever need to diverge.
+
+     Foreground is `--color-text-inverse`, NOT `--color-text-on-accent`. The
+     latter is dark in both themes because it was tuned for the orange fill;
+     on light-mode plum it lands at 1.92:1, a hard AA failure. `text-inverse`
+     flips with the theme and clears AA on both (8.63:1 light, 6.81:1 dark). */
+  --color-model: var(--color-accent-secondary);
+  --color-text-on-model: var(--color-text-inverse);
+  --color-model-hover: var(--color-plum-600);
+  --color-model-muted: color-mix(in srgb, var(--color-accent-secondary) 14%, transparent);
 
   /* Accent ramp — the one sanctioned way to colour a proportion: ordered
      shares of a whole (a stacked bar, a histogram, an area chart), stepped
@@ -255,6 +275,9 @@
      BOTH themes; aliasing them to theme-aware surfaces fixes light mode. */
   --color-bg-canvas: var(--color-bg-inset);
   --color-canvas-dot: rgba(36, 27, 44, 0.08);
+  /* Graph-paper ground under a node-link canvas. Stronger than canvas-dot,
+     which is a scatter mark: a 1px ring at that alpha is below threshold. */
+  --color-canvas-grid: rgba(36, 27, 44, 0.10);
   --color-bg-glass: rgba(255, 255, 255, 0.72);
   /* Neutral hover washes for canvas-adjacent chrome (rows, chips, stubs) —
      plum-alpha on paper, lavender-alpha on dark (same idiom as canvas-dot). */
@@ -399,12 +422,27 @@
      three panels, recessed between two lighter ones — a trench, which is the
      opposite of how a reading UI should stack. And near-black gives the accent
      and the semantic colours somewhere to go: the same #f59520 that looked
-     muddy on graphite carries on this ground. */
+     muddy on graphite carries on this ground.
+
+     Elevated and overlay used to sit at #1c1c1f and #26262a. Overlay four
+     steps clear of root made every dialog and the chat dock read as a light
+     grey card floating on a near-black app rather than as the same material
+     lifted. They are compressed here so the ramp still climbs monotonically
+     but a modal reads as a raised plane, not a different palette.
+
+     `inset` stays below root: a code well recessed into the page is correct,
+     and that is where most of them are. It is wrong only when the well is
+     nested inside a floating panel, where dropping from overlay to #0a0a0b is
+     a cliff and the box reads as pure black. `inset-on-overlay` is that same
+     recess measured from the overlay plane instead of from root; dialogs
+     repoint `--color-bg-inset` at it so a well inside a modal sits just under
+     the modal rather than under the page. */
   --color-bg-root: #0e0e0f;
   --color-bg-surface: #141416;
-  --color-bg-elevated: #1c1c1f;
-  --color-bg-overlay: #26262a;
+  --color-bg-elevated: #191a1c;
+  --color-bg-overlay: #1f1f23;
   --color-bg-inset: #0a0a0b;
+  --color-bg-inset-on-overlay: #141417;
 
   /* Neutral hairlines so card / sidebar / table edges read on the gray base.
      Lighter than before: the same alpha reads considerably louder against
@@ -428,6 +466,10 @@
   --color-accent-hover: #f7a94d;
   --color-accent-muted: rgba(245, 149, 32, 0.16);
   --color-accent-secondary: #a98fc4;
+  /* Plum is dark in light mode and light in dark mode, so its hover step has
+     to move the opposite way. `model` and `model-muted` derive through var()
+     and need no override; see the light block for the family. */
+  --color-model-hover: var(--color-plum-200);
 
   /* Accent ramp — see the light block. Steeper here: mixing toward #0a0a0b
      loses luminance fast, so the same percentages would bottom out invisible. */
@@ -492,7 +534,7 @@
      These are literals rather than var() references because the canvas
      renderer reads them into WebGL, but they have to move with the surface
      ramp or the cards float above a ground that has dropped beneath them. */
-  --color-zoom-card-fill: #1c1c1f; /* leaf card (bg-elevated) */
+  --color-zoom-card-fill: #191a1c; /* leaf card (bg-elevated) */
   --color-zoom-card-fill-2: #141416; /* container card (bg-surface) */
   --color-zoom-card-text: #f2f2f3;
   --color-zoom-card-border: rgba(255, 255, 255, 0.10);
@@ -510,6 +552,7 @@
   /* C4 / graph canvas surfaces — dark variants (the var()-derived aliases
      flip on their own; only the explicit rgbas need a dark override). */
   --color-canvas-dot: rgba(255, 255, 255, 0.05);
+  --color-canvas-grid: rgba(255, 255, 255, 0.10);
   /* Tracks --color-bg-surface. It was rgba(35,35,37,.72) — the #232325 that
      bg-surface used to be, left behind when the dark ramp moved in July 2026 —
      so every glass chip on every canvas was painting a graphite that exists

@@ -126,6 +126,10 @@ jobs:
       - name: Test api-client
         run: npm run test --workspace @repowise-dev/api-client
 
+      # Compiles the generated HTTP contract too, which nothing else imports yet.
+      - name: Type check types
+        run: npm run type-check --workspace @repowise-dev/types
+
       - name: Test types
         run: npm run test --workspace @repowise-dev/types
 

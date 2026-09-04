@@ -441,8 +441,26 @@ def opportunity_status(
     Resolved only when every step is; one step a person marked a false positive
     does not resolve the work the others still describe. An unknown plan id
     reads as ``open``, because a step nobody has triaged is outstanding.
+
+    ``false_positive`` needs every step to be one. It is reported separately
+    from ``resolved`` because the two are different claims - the work was done
+    against the work was never real - and a surface offering the four triage
+    states has to be able to read back the state a person chose.
     """
-    states = {plan_status.get(step.plan_id, "open") for step in opportunity.steps}
+    return roll_up_status(plan_status.get(step.plan_id, "open") for step in opportunity.steps)
+
+
+def roll_up_status(step_states: Iterable[str]) -> str:
+    """The rollup rule itself, over the member states alone.
+
+    Split out so the transition writer, which holds stored rows rather than
+    composed objects, applies the same rule instead of restating it.
+    """
+    states = set(step_states)
+    if not states:
+        return "open"
+    if states == {"false_positive"}:
+        return "false_positive"
     if states <= {"resolved", "false_positive"}:
         return "resolved"
     if states <= {"acknowledged", "resolved", "false_positive"}:
@@ -461,4 +479,5 @@ __all__ = [
     "opportunity_kernel",
     "opportunity_public_id",
     "opportunity_status",
+    "roll_up_status",
 ]

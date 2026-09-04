@@ -66,6 +66,16 @@ _MAX_TOP_FILES = 20
 # public surface.
 _MAX_CONCEPT_ROWS = 40
 
+# The graph gives every file a synthetic symbol that owns its module-scope
+# calls. It is not a caller anyone can look up, and the importer list already
+# covers import-time use.
+_MODULE_SCOPE_NODE = "__module__"
+
+# How many co-change partners a file page names. Past a handful the list
+# stops being "and this other thing moves with it" and becomes a second,
+# weaker dependency table.
+_MAX_CO_CHANGE_PARTNERS = 5
+
 # The module page's "Class hierarchy" section: how many classes it shows, and
 # how many any one file may contribute so a single dense file cannot fill it.
 _MAX_KEY_CLASSES = 10
@@ -360,6 +370,21 @@ class ContextAssembler:
         # Generation depth
         depth = self._select_generation_depth(path, git_meta, pagerank.get(path, 0.0))
 
+        # Files this one changes with in history and does not import. The
+        # partners the graph already explains are dropped: they are the paths
+        # the page lists under "Depends on" two sections down, and a section
+        # that repeats them says nothing. Decoded here rather than in the
+        # template because the indexer persists them as a JSON cell.
+        co_change_pages = [
+            {
+                "path": partner.file_path,
+                "commits": partner.support,
+                "last": partner.last_co_change or "",
+            }
+            for partner in parse_partners((git_meta or {}).get("co_change_partners_json"))
+            if partner.structural == STRUCTURAL_UNEXPLAINED and partner.support > 0
+        ][:_MAX_CO_CHANGE_PARTNERS]
+
         # Graph intelligence: call graph, heritage, community metadata
         call_graph_entries = extract_call_graph(path, graph, symbol_index)
         heritage_entries = extract_heritage(path, graph, symbol_index)
@@ -388,6 +413,7 @@ class ContextAssembler:
             parse_errors=parsed.parse_errors,
             estimated_tokens=used,
             git_metadata=git_meta,
+            co_change_pages=co_change_pages,
             dead_code_findings=dead_code_findings or [],
             depth=depth,
             dependency_summaries=dep_summaries,
@@ -432,6 +458,8 @@ class ContextAssembler:
         else:
             callers = []
 
+        call_sites = _resolved_call_sites(symbol, graph)
+
         # Extract source body for the symbol
         source_body = None
         if source_bytes and symbol.start_line and symbol.end_line:
@@ -454,6 +482,7 @@ class ContextAssembler:
             complexity_estimate=symbol.complexity_estimate,
             callers=callers,
             source_body=source_body,
+            call_sites=call_sites,
         )
 
     # ------------------------------------------------------------------
@@ -762,6 +791,7 @@ class ContextAssembler:
         external_systems: list[dict] | None = None,
         decision_records: list[dict] | None = None,
         parsed_files: list[ParsedFile] | None = None,
+        prose_digest: str = "",
     ) -> RepoOverviewContext:
         """Assemble context for the repo_overview template."""
         # Top files sorted by PageRank descending, path breaking ties. Leaf
@@ -895,6 +925,7 @@ class ContextAssembler:
             external_systems=external_systems or [],
             decision_records=decision_records or [],
             package_stats=package_stats,
+            prose_digest=prose_digest,
         )
 
     # ------------------------------------------------------------------
@@ -1123,3 +1154,53 @@ def _symbol_to_dict(symbol: Symbol) -> dict[str, Any]:
         "start_line": symbol.start_line,
         "end_line": symbol.end_line,
     }
+
+
+def _resolved_call_sites(symbol: Symbol, graph: Any) -> list[dict]:
+    """Calls the resolver actually resolved to *symbol*, most confident first.
+
+    A spotlight's ``callers`` list is the files importing the defining module,
+    which for a constant like ``PRUNED_DIRS`` means thirty-seven files that
+    may never touch it. The call graph knows better wherever the resolver
+    reached a verdict, and ``Symbol.id`` is the graph's own node key, so this
+    is an in-edge scan on one node rather than a walk.
+
+    Uncapped: the template slices what it prints and reports the true total,
+    the way the importer list already does. A count that was silently the cap
+    would tell a reader with nine hundred callers that it had twenty-five.
+
+    Empty when nothing resolved, which is the common case for data and for
+    dynamically dispatched languages — the template then keeps the honest
+    import-level wording.
+    """
+    try:
+        if symbol.id not in graph:
+            return []
+        scored: list[tuple[float, dict]] = []
+        for source, _, edata in graph.in_edges(symbol.id, data=True):
+            if edata.get("edge_type") != "calls":
+                continue
+            data = graph.nodes.get(source, {})
+            if data.get("name") == _MODULE_SCOPE_NODE:
+                continue
+            scored.append(
+                (
+                    float(edata.get("confidence") or 0.0),
+                    {
+                        "caller": data.get("name", source),
+                        "caller_file": data.get("file_path", ""),
+                    },
+                )
+            )
+    except Exception:
+        return []
+    scored.sort(key=lambda s: (-s[0], s[1]["caller_file"], s[1]["caller"]))
+    seen: set[tuple[str, str]] = set()
+    unique: list[dict] = []
+    for _, site in scored:
+        key = (site["caller_file"], site["caller"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(site)
+    return unique

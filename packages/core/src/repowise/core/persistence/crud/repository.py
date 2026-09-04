@@ -10,12 +10,13 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
     GenerationJob,
     Page,
+    PageVersion,
     Repository,
     WebhookEvent,
     _new_uuid,
@@ -193,10 +194,18 @@ async def delete_repository(session: AsyncSession, repo_id: str) -> bool:
 
     NOTE: The caller should clean up the FTS index *before* calling this,
     since the CASCADE will delete Page rows and we lose the page IDs.
+
+    ``PageVersion`` is swept explicitly first. Its ``page_id`` foreign key is
+    declared without ``ondelete="CASCADE"``, so the cascade that removes the
+    repository's ``Page`` rows leaves the snapshots pointing at rows that no
+    longer exist and SQLite aborts the whole statement with ``FOREIGN KEY
+    constraint failed``. The pipeline's page-pruning paths already pre-delete
+    snapshots for exactly this reason; deletion is the one path that did not.
     """
     repo = await session.get(Repository, repo_id)
     if repo is None:
         return False
+    await session.execute(delete(PageVersion).where(PageVersion.repository_id == repo_id))
     await session.delete(repo)
     await session.flush()
     return True

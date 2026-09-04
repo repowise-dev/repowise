@@ -347,8 +347,6 @@ async def detect_supersessions_and_conflicts(
     if not touched_ids or vector_store is None:
         return summary
 
-    from datetime import UTC, datetime
-
     from repowise.core.persistence.decision_graph import upsert_decision_edge
     from repowise.core.persistence.models import DecisionRecord
 
@@ -426,9 +424,7 @@ async def detect_supersessions_and_conflicts(
                 if edge is not None:
                     summary["supersedes"] += 1
                     if conf >= autoflip_confidence and older.status in ("active", "proposed"):
-                        older.status = "superseded"
-                        older.superseded_by = newer.id
-                        older.updated_at = datetime.now(UTC)
+                        await _retire(session, older, successor_id=newer.id)
                         summary["flipped"] += 1
             else:
                 # Two active decisions contradict, neither clearly reverses the
@@ -447,8 +443,6 @@ async def detect_supersessions_and_conflicts(
 
     await session.flush()
     return summary
-
-
 _CONTRADICTION_SYSTEM = (
     "You judge whether two architectural decisions contradict each other. "
     "Answer with a single word: CONTRADICT or COMPATIBLE."
@@ -705,8 +699,7 @@ async def run_update_evolution(
         kind = verdict["verdict"]
         if kind == "superseded":
             if dec.status in ("active", "proposed"):
-                dec.status = "superseded"
-                dec.updated_at = now
+                await _retire(session, dec)
             regen.update(governed)
             result["superseded"] += 1
         elif kind == "amended":
@@ -726,3 +719,38 @@ async def run_update_evolution(
 
     await session.flush()
     return result
+
+
+async def _retire(session, record, *, successor_id: str | None = None) -> None:
+    """Mark a record superseded, recording the withdrawal if it was accepted.
+
+    An accepted decision's authority lives in the acceptance log, so retiring it
+    by writing the status column alone would leave the log still saying it
+    governs — and the tracked manifest would keep exporting it as current.
+    A candidate has no authority to withdraw, so it only moves status.
+    """
+    import contextlib
+    from datetime import UTC, datetime
+
+    from repowise.core.persistence.crud.authority import (
+        AcceptanceRefusedError,
+        is_accepted,
+        record_acceptance,
+    )
+
+    if await is_accepted(session, record.id):
+        # A record that lost the evidence its acceptance rested on cannot log
+        # the withdrawal; the retirement itself still applies.
+        with contextlib.suppress(AcceptanceRefusedError):
+            await record_acceptance(
+                session,
+                record,
+                action="superseded",
+                currency="superseded",
+                accepter="evolution",
+                note="a later commit reversed this decision",
+            )
+    record.status = "superseded"
+    if successor_id is not None:
+        record.superseded_by = successor_id
+    record.updated_at = datetime.now(UTC)

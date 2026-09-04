@@ -55,8 +55,15 @@ export function ContextTabs({
   const contexts: PerformanceExecutionContext[] = collapsed
     ? ["production", "test"]
     : CONTEXT_ORDER;
+  // `total` is the unscoped repository_total; `counts` is facets.context,
+  // which the server has already narrowed by every other active filter.
+  // Badge "All" with the sum of the (narrowed) context facet so it agrees
+  // with what clicking it actually returns. Fall back to `total` only when
+  // the server sends no facets.context at all (a server predating context
+  // scoping, which also won't send a narrowed repository_total).
+  const scopedTotal = counts?.reduce((sum, entry) => sum + entry.total, 0) ?? total;
   const tabs = [
-    { id: "all", label: "All", badge: total },
+    { id: "all", label: "All", badge: scopedTotal },
     ...contexts.map((context) => ({
       id: context,
       label:
@@ -99,7 +106,7 @@ function SingleValueFact({ facet, only }: { facet: PerformanceFacetKey; only: Pe
       <span className="text-[var(--color-text-secondary)]">
         {facetValueLabel(facet, only.value)}
       </span>{" "}
-      <span className="tabular-nums">on all {only.total.toLocaleString()}</span>
+      <span className="tabular-nums">on {only.total.toLocaleString()} matching</span>
     </p>
   );
 }
@@ -205,4 +212,3 @@ export function ContextHint({ context }: { context: PerformanceContextFilter }) 
     </p>
   );
 }
-

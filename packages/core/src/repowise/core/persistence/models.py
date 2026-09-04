@@ -12,10 +12,12 @@ repowise.core.ingestion.models.Symbol in files that import from both modules.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -32,8 +34,39 @@ def _new_uuid() -> str:
     return uuid4().hex
 
 
+#: The source a decision carries when nothing names one. Shared by the column
+#: default and by the id derivation, which has to agree with it.
+DEFAULT_DECISION_SOURCE = "cli"
+
+
 def _now_utc() -> datetime:
     return datetime.now(UTC)
+
+
+def _derive_decision_id_default(context: Any) -> str:
+    """Derive a ``DecisionRecord`` id from the row being inserted.
+
+    The two callers that build a record explicitly derive the id already. This
+    catches every other construction path, so a record cannot reach the store
+    with a random id merely because it was created somewhere neither covers.
+
+    Imported inside the function because the derivation lives beside the dedupe
+    query it has to agree with, in a module that imports this one. It runs at
+    flush time, by which point both modules are loaded.
+    """
+    from .crud.decisions import derive_decision_id
+
+    params = context.get_current_parameters()
+    # Column defaults are applied in column order and ``id`` comes first, so a
+    # record that left ``source`` to its default has not been given one yet.
+    # This and the column read the same constant, so neither the column order
+    # nor the default's spelling can make them disagree.
+    return derive_decision_id(
+        params["repository_id"],
+        params.get("title") or "",
+        source=params.get("source") or DEFAULT_DECISION_SOURCE,
+        evidence_file=params.get("evidence_file"),
+    )
 
 
 class Base(DeclarativeBase):
@@ -226,11 +259,18 @@ class GraphNode(Base):
     is_entry_point: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     pagerank: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     betweenness: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # The commit ``betweenness`` was last actually computed at. Betweenness is
+    # reused across small structural changes, so a node that appeared since the
+    # last scoring holds the ``0.0`` default unmeasured; NULL keeps that apart
+    # from a symbol genuinely on no shortest path. Same "omitted reads as not
+    # recorded" contract as ``analyzed_commit``. The other metrics on this row
+    # are recomputed every run and need no stamp.
+    betweenness_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
     community_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     community_meta_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     # Symbol-level fields (null for file nodes)
     kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
     qualified_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     start_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -449,7 +489,7 @@ class WikiSymbol(Base):
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
     # "{path}::{name}" — the ingestion Symbol.id field
     symbol_id: Mapped[str] = mapped_column(Text, nullable=False)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
     qualified_name: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     signature: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -460,7 +500,7 @@ class WikiSymbol(Base):
     is_async: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     complexity_estimate: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     language: Mapped[str] = mapped_column(String(32), nullable=False, default="")
-    parent_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    parent_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -835,16 +875,21 @@ class DecisionRecord(Base):
         ),
     )
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    id: Mapped[str] = mapped_column(
+        String(32), primary_key=True, default=_derive_decision_id_default
+    )
     repository_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
     )
 
     # Core content
     title: Mapped[str] = mapped_column(Text, nullable=False)
+    # Legacy currency projection, kept so readers that predate the entity split
+    # keep working. Authority itself lives in ``DecisionAcceptance``: a record
+    # with no acceptance row is a candidate whatever this column says.
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="proposed"
-    )  # proposed | active | deprecated | superseded
+    )  # proposed | active | deprecated | superseded | dismissed
     context: Mapped[str] = mapped_column(Text, nullable=False, default="")
     decision: Mapped[str] = mapped_column(Text, nullable=False, default="")
     rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -859,7 +904,7 @@ class DecisionRecord(Base):
 
     # Provenance
     source: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="cli"
+        String(32), nullable=False, default=DEFAULT_DECISION_SOURCE
     )  # git_archaeology | inline_marker | adr | pr | comment | session | cli
     evidence_file: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -1030,6 +1075,160 @@ class DecisionNodeLink(Base):
     )
 
 
+class DecisionAcceptance(Base):
+    """The event that turned a candidate into a governing decision.
+
+    A ``DecisionRecord`` row is a *candidate* until it has one of these. That is
+    the structural separation between the two entities: nothing in the record
+    itself says "accepted", so a decision read is a join onto this table and a
+    candidate cannot be reached through it. Recurrence, confidence and model
+    verdicts write records; only an explicit action or a tracked authoritative
+    artifact writes acceptances.
+
+    Append-only. Reaffirming, superseding, dismissing and returning a decision
+    to review each add a row rather than editing one, so the authority history
+    survives every later action. The highest ``seq`` for a decision is its
+    current authority; ``currency`` on that row is its product state.
+
+    The CHECK constraints are the acceptance contract, enforced by the database
+    rather than by whichever caller happens to be writing: a reason, a scope, an
+    evidence reference, and an accepter or artifact identity.
+    """
+
+    __tablename__ = "decision_acceptances"
+    __table_args__ = (
+        UniqueConstraint("decision_id", "seq", name="uq_decision_acceptance_seq"),
+        CheckConstraint("reason <> ''", name="ck_acceptance_reason"),
+        CheckConstraint("scope_json NOT IN ('', '[]')", name="ck_acceptance_scope"),
+        CheckConstraint("evidence_json NOT IN ('', '[]')", name="ck_acceptance_evidence"),
+        CheckConstraint("accepter <> '' OR artifact <> ''", name="ck_acceptance_identity"),
+        CheckConstraint(
+            "currency IN ('active', 'needs_review', 'uncheckable', 'superseded', 'dismissed')",
+            name="ck_acceptance_currency",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("repositories.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    decision_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("decision_records.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    #: Per-decision monotone counter. Ordering by timestamp alone ties when two
+    #: actions land in the same transaction, and the tie decides who governs.
+    seq: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    #: accepted | reaffirmed | superseded | dismissed | returned_to_review | merged
+    action: Mapped[str] = mapped_column(String(24), nullable=False, default="accepted")
+    currency: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    #: The rationale, or the explicit reason a constraint has none.
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Scope and evidence snapshotted at acceptance time: what the accepter
+    #: actually agreed to, not what a later re-extraction rewrote it into.
+    scope_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    evidence_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    #: Exactly one is set. ``artifact`` is a tracked, version-controlled path,
+    #: the only accepter that is not a person.
+    accepter: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    artifact: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+
+class DecisionCandidateMeta(Base):
+    """Review state for a ``DecisionRecord`` that has not been accepted.
+
+    One row per candidate, holding what review needs and a decision does not:
+    where the claim came from, how well it was grounded, whether it bundles two
+    choices, and whether it has already been rejected. Split out rather than
+    widened onto ``decision_records`` so the two entities do not share a column
+    set, and so ``review_state`` is never confused with a decision's currency.
+
+    ``dismissed`` here is the tombstone that survives re-extraction.
+    """
+
+    __tablename__ = "decision_candidate_meta"
+    __table_args__ = (
+        CheckConstraint(
+            "review_state IN ('open', 'accepted', 'merged', 'needs_split', 'dismissed')",
+            name="ck_candidate_review_state",
+        ),
+        Index("ix_candidate_meta_repo_state", "repository_id", "review_state"),
+    )
+
+    decision_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("decision_records.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    repository_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("repositories.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    review_state: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    #: Review ordering hint, highest first. Derived, never a promotion gate.
+    review_priority: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    #: The grounding verdict the extraction lane recorded, as JSON.
+    grounding_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    #: Which extraction produced it, so a bad vintage can be found later.
+    extractor_version: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    #: The lane that raised it (``session_discovery`` and the deterministic
+    #: miner both store ``source="session"``; this is what tells them apart).
+    lane: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    needs_split: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    scope_unresolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: Set when review folded this candidate into another record.
+    merged_into: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    dismissed_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    first_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    last_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+
+class DecisionAlias(Base):
+    """A retired decision id that still resolves to a live record.
+
+    Merging a candidate into a decision, and superseding one decision with
+    another, both leave an id in circulation: in a manifest someone committed,
+    in an agent's notes, in a link. The alias keeps it resolving instead of
+    failing to find anything, which is what makes merge and supersede safe to
+    perform.
+    """
+
+    __tablename__ = "decision_aliases"
+
+    alias_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    repository_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("repositories.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    decision_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("decision_records.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    reason: Mapped[str] = mapped_column(String(32), nullable=False, default="merged")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+
 class Conversation(Base):
     """A chat conversation for a repository."""
 
@@ -1145,7 +1344,7 @@ class DeadCodeFinding(Base):
         String(32), nullable=False
     )  # unreachable_file, unused_export, etc.
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
-    symbol_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    symbol_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     symbol_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -1189,7 +1388,7 @@ class HealthFinding(Base):
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
     biomarker_type: Mapped[str] = mapped_column(String(64), nullable=False)
     severity: Mapped[str] = mapped_column(String(16), nullable=False)
-    function_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    function_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     line_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     line_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     details_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
@@ -1256,7 +1455,7 @@ class RefactoringSuggestion(Base):
     )
     refactoring_type: Mapped[str] = mapped_column(String(32), nullable=False)
     file_path: Mapped[str] = mapped_column(Text, nullable=False)
-    target_symbol: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    target_symbol: Mapped[str] = mapped_column(Text, nullable=False, default="")
     line_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     line_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     plan_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
@@ -1650,6 +1849,11 @@ class CoverageFile(Base):
     branch_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     covered_lines_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     total_coverable_lines: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # True when the ingest that wrote these rows mapped fewer than half of the
+    # report's files to the repo tree (severe path-mapping loss). The rows are
+    # still written — a partial report is better than none — but consumers
+    # must not present the subset's aggregate as repository-wide coverage.
+    mapping_partial: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )

@@ -68,7 +68,7 @@ describe("PerformanceView queue", () => {
     render(<PerformanceView adapter={adapter()} />);
     await rows();
     expect(screen.queryByLabelText("Evidence confidence")).toBeNull();
-    expect(screen.getByText("on all 7")).toBeTruthy();
+    expect(screen.getByText("on 7 matching")).toBeTruthy();
   });
 
   it("states the rendered scope, the filtered total, and the repository total", async () => {
@@ -80,7 +80,7 @@ describe("PerformanceView queue", () => {
       .getAllByRole("status")
       .map((node) => node.textContent ?? "")
       .find((text) => text.includes("opportunities"));
-    expect(scope).toContain("7 opportunities");
+    expect(scope).toContain("7 production opportunities");
     expect(scope).toContain("848a8f1");
   });
 
@@ -138,7 +138,15 @@ describe("PerformanceView states", () => {
   });
 
   it("distinguishes an analyzed empty repository from an unanalyzed one", async () => {
-    const empty = page({ items: [], total: 0, has_more: false, next_offset: null });
+    // Empty in every context, not merely outside the one on screen, so the
+    // answer is that nothing was found rather than that a filter hid it.
+    const empty = page({
+      items: [],
+      total: 0,
+      has_more: false,
+      next_offset: null,
+      summary: { ...page().summary, total: 0, repository_total: 0 },
+    });
     render(
       <PerformanceView adapter={adapter({ getPerformanceOpportunities: async () => empty })} />,
     );

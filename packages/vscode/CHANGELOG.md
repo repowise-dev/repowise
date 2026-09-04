@@ -7,6 +7,46 @@ is the minimum server version it checks against.
 This file starts at 0.7.0. Earlier releases are described in the repository's
 release history.
 
+## 0.10.0
+
+The refactoring view stops listing detector outputs and starts listing work.
+One row per file, its steps in dependency-safe order, how many of them are
+mechanical, and a lifecycle you can move it through. The health dashboard gains
+the performance lens on the same map.
+
+**Requires repowise 0.47.0 or newer.** The dashboard reads `/health/map` and the
+refactoring view reads `/refactoring/opportunities`, neither of which an earlier
+server serves, so the status bar flags an older one and asks you to upgrade with
+`pip install --upgrade repowise`.
+
+### Refactoring
+
+- A file appears once, as a composed opportunity, rather than once per finding
+  it triggered. The row carries its step count, how many steps are mechanical,
+  and whether the plan addresses what is actually costing the file most.
+- Opening a row loads its steps and evidence on demand, and the AI prompt is
+  built for the opportunity rather than for a single plan.
+- A plan the gates cannot prove behaviour-preserving is suppressed rather than
+  offered (#1984).
+- Opportunity row columns align below the narrow breakpoint, which is most of
+  the time in a side panel.
+
+### Health
+
+- The dashboard reads the health map, so the performance lens sits on the same
+  view as the rest of health instead of beside it.
+- A repeated-cost cause is named by the caller that repeats the work, not only
+  the sink that pays for it, so a shared helper no longer merges unrelated
+  workflows.
+
+### Shared UI
+
+- Loading motion moved from the box to the region, so a panel resolves as one
+  thing rather than a grid of independently twitching cards.
+- The dark overlay plane and the wells nested inside it settle, model work has
+  its own accent instead of borrowing orange and green, and the AI prompt modal
+  uses hairlines instead of a filled well.
+
 ## 0.9.0
 
 Mostly a rebuild. The webviews compile the shared Repowise UI at build time, so

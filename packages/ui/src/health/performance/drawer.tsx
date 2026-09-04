@@ -363,7 +363,7 @@ export function OpportunityDrawer({
             <button
               type="button"
               onClick={() => onAgentHandoff(current, plan.verified)}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--color-accent-fill)] px-3.5 py-2 text-sm font-semibold text-[var(--color-text-on-accent)] transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--color-model)] px-3.5 py-2 text-sm font-semibold text-[var(--color-text-on-model)] transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
             >
               <Sparkles className="h-4 w-4" aria-hidden="true" />
               {plan.verified ? "Copy the plan for an agent" : "Copy an agent handoff"}

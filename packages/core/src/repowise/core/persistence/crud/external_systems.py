@@ -11,6 +11,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...analysis.external_systems.links import (
+    EXTERNAL_NODE_PREFIX,
+    declaration_name_candidates,
+)
 from ..models import (
     ExternalSystem,
     GraphNode,
@@ -114,7 +118,8 @@ async def link_graph_nodes_to_external_systems(
     """
     if not name_to_id:
         return 0
-    prefix = "external:"
+
+    prefix = EXTERNAL_NODE_PREFIX
     result = await session.execute(
         select(GraphNode).where(
             GraphNode.repository_id == repository_id,
@@ -124,9 +129,12 @@ async def link_graph_nodes_to_external_systems(
     updated = 0
     for node in result.scalars():
         suffix = node.node_id[len(prefix) :]
-        # Try exact and ecosystem-shaped package candidates in priority order.
         sys_id = next(
-            (name_to_id[name] for name in _external_name_candidates(suffix) if name in name_to_id),
+            (
+                name_to_id[name]
+                for name in declaration_name_candidates(suffix)
+                if name in name_to_id
+            ),
             None,
         )
         if node.external_system_id != sys_id:
@@ -136,47 +144,38 @@ async def link_graph_nodes_to_external_systems(
     return updated
 
 
-def _external_name_candidates(external_name: str) -> tuple[str, ...]:
-    """Return declaration names to try, ordered from precise to broad.
-
-    Resolver output is ecosystem-shaped (npm subpaths, Rust ``::`` paths,
-    Python dotted modules). Keeping normalization in this small pure function
-    makes another ecosystem a local extension without another graph traversal.
-    """
-    candidates = [external_name]
-    if external_name.startswith("@"):
-        parts = external_name.split("/")
-        if len(parts) >= 2:
-            candidates.append("/".join(parts[:2]))
-    for separator in ("::", ".", "/"):
-        if separator in external_name:
-            candidates.append(external_name.split(separator, 1)[0])
-    return tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
-
-
 def build_external_system_link_map(
     systems: list[dict],
     id_map: dict[tuple[str, str], int],
 ) -> dict[str, int | None]:
-    """Build exact/prefixed link keys while preserving name ambiguity."""
-    links: dict[str, int | None] = {}
-    name_ecosystems: dict[str, str] = {}
-    for system in systems:
-        name = system.get("name", "")
-        declared_in = system.get("declared_in", "")
-        ecosystem = system.get("ecosystem", "")
-        system_id = id_map.get((name, declared_in))
-        if not name or system_id is None:
-            continue
-        if ecosystem:
-            links.setdefault(f"{ecosystem}:{name}", system_id)
-        previous_ecosystem = name_ecosystems.get(name)
-        if previous_ecosystem is None:
-            name_ecosystems[name] = ecosystem
-            links[name] = system_id
-        elif previous_ecosystem != ecosystem:
-            links[name] = None
-    return links
+    """Build exact/prefixed link keys while preserving name ambiguity.
+
+    The ambiguity rule itself lives in ``analysis.external_systems.links`` and
+    is shared with the plain-record path, so the stored ``external_system_id``
+    and a link built without a database cannot disagree about what resolves.
+    Declarations whose row was not persisted are dropped before indexing: they
+    have no id to resolve to, and letting one poison a bare name would refuse a
+    target the old map linked.
+    """
+    from repowise.core.analysis.external_systems.links import build_declaration_index
+
+    persisted = [
+        system
+        for system in systems
+        if system.get("name")
+        and id_map.get((system.get("name", ""), system.get("declared_in", ""))) is not None
+    ]
+    # First row wins per identity, matching the insertion order the map is built in.
+    first_id: dict[tuple[str, str], int] = {}
+    for system in persisted:
+        identity = (system.get("ecosystem", ""), system.get("name", ""))
+        first_id.setdefault(
+            identity, id_map[(system.get("name", ""), system.get("declared_in", ""))]
+        )
+    return {
+        key: (None if identity is None else first_id.get(identity))
+        for key, identity in build_declaration_index(persisted).items()
+    }
 
 
 async def list_external_systems(session: AsyncSession, repository_id: str) -> list[ExternalSystem]:

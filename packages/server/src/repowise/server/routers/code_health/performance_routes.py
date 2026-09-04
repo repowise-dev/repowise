@@ -56,7 +56,13 @@ def _item(item: dict[str, Any]) -> dict[str, Any]:
 @router.get("/api/repos/{repo_id}/health/performance-opportunities")
 async def list_performance_opportunities(
     repo_id: str,
-    context: str = Query("all"),
+    context: str | None = Query(
+        None,
+        description=(
+            "Execution context to scope to: production, tooling, test, unknown "
+            "or all. Defaults to production."
+        ),
+    ),
     boundary: str | None = Query(None),
     confidence: str | None = Query(None),
     actionability: str | None = Query(None),

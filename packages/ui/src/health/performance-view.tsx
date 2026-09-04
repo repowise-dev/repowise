@@ -152,8 +152,13 @@ export function PerformanceView({
   if (!data) return null;
 
   const { summary, facets } = data;
+  // A server that predates context scoping sends no repository_total, and its
+  // total is already the repository-wide count.
+  const repositoryTotal = summary.repository_total ?? summary.total;
   const narrowed = narrowingCount(filters);
-  const filtered = narrowed > 0 || filters.context !== "all";
+  // A repository with nothing in any context is clear, not filtered: offering
+  // to widen a selection that is hiding nothing would misread the answer.
+  const filtered = (narrowed > 0 || filters.context !== "all") && repositoryTotal > 0;
 
   if (summary.status === "unavailable") return <UnavailableQueue summary={summary} />;
 
@@ -225,7 +230,7 @@ export function PerformanceView({
         <ContextTabs
           value={filters.context}
           facets={facets}
-          total={summary.total}
+          total={repositoryTotal}
           collapsed={!capabilities.canonicalContexts}
           onChange={(context: PerformanceContextFilter) =>
             apply(withFilter(filters, "context", context))
@@ -246,7 +251,7 @@ export function PerformanceView({
 
         <ScopeLine
           filteredTotal={data.total}
-          repositoryTotal={summary.total}
+          repositoryTotal={repositoryTotal}
           context={filters.context}
           narrowed={narrowed}
           analyzedCommit={summary.analyzed_commit}

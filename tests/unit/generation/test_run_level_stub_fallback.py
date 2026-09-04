@@ -55,9 +55,13 @@ class _RecordingJobSystem:
         self.completed: list[str] = []
         self.failed: list[tuple[str, str]] = []
         self.levels: list[int] = []
+        self.flushes = 0
 
     def update_level(self, job_id, level):
         self.levels.append(level)
+
+    def flush(self, job_id):
+        self.flushes += 1
 
     def complete_page(self, job_id, page_id):
         self.completed.append(page_id)
@@ -85,6 +89,7 @@ def _run_level() -> tuple[list[GeneratedPage], _RecordingJobSystem, _RecordingSt
             on_page_ready=None,
             vector_store=store,
             completed_page_summaries={},
+            timings=None,
         )
         return await _GenerationRun.run_level(
             run,
@@ -100,6 +105,13 @@ def test_stub_fallback_is_recorded_as_a_failed_page() -> None:
     _pages, jobs, _store = _run_level()
 
     assert jobs.failed == [("module_page:lost", "upstream 529 overloaded")]
+
+
+def test_a_finished_level_flushes_its_checkpoint() -> None:
+    """Page completions buffer, so the level boundary has to make them durable."""
+    _pages, jobs, _store = _run_level()
+
+    assert jobs.flushes == 1
 
 
 def test_stub_fallback_is_not_recorded_as_completed() -> None:

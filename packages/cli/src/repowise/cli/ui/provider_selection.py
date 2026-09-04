@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
 
+from repowise.cli.errors import reasoned_error
 from repowise.cli.ui.brand import BRAND, BRAND_STYLE, OK, VALUE, WARN
 from repowise.cli.ui.env_persistence import _save_key_to_dotenv
 from repowise.cli.ui.openai_compatible import (
@@ -651,12 +652,13 @@ def _select_reasoning_mode(
         try:
             requested = normalize_reasoning(reasoning_flag)
         except ValueError as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise reasoned_error(str(exc), reason="invalid_reasoning") from exc
         if requested not in choices:
             supported = ", ".join(choices)
-            raise click.ClickException(
+            raise reasoned_error(
                 f"reasoning={requested!r} is not supported by model "
-                f"{selected.model!r}. Supported reasoning modes: {supported}."
+                f"{selected.model!r}. Supported reasoning modes: {supported}.",
+                reason="unsupported_reasoning",
             )
         return requested
 

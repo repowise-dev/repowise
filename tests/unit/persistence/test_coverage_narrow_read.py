@@ -115,3 +115,31 @@ async def test_summary_weights_branch_coverage_over_rows_that_have_it(
     assert summary["covered_lines"] == 6
     assert summary["total_lines"] == 15
     assert summary["branch_coverage_pct"] == 10.0
+
+
+async def test_summary_defaults_mapping_partial_false_for_legacy_ingests(
+    async_session, repo
+) -> None:
+    """Rows written before the flag existed must read as complete, not partial."""
+    summary = await get_coverage_summary(async_session, repo.id)
+
+    assert summary["mapping_partial"] is False
+
+
+async def test_summary_reports_mapping_partial_when_ingest_was_fragment(
+    async_session, tmp_path
+) -> None:
+    """Issue #1746: a partial ingest stamps every row, and the summary surfaces
+    it so consumers don't present the mapped subset as repository coverage."""
+    r = await upsert_repository(async_session, name="partial", local_path=str(tmp_path))
+    await save_coverage_files(
+        async_session,
+        r.id,
+        _FILES,
+        source_format="lcov",
+        mapping_partial=True,
+    )
+
+    summary = await get_coverage_summary(async_session, r.id)
+    assert summary["mapping_partial"] is True
+    assert summary["file_count"] == 2
