@@ -87,8 +87,11 @@ def test_relative_package_import_fans_out() -> None:
     assert targets == ("pkg/sub/__init__.py", "pkg/sub/handlers.py")
 
 
-def test_unresolvable_import_returns_empty() -> None:
-    imp = _imp("nonexistent", ["thing"])
+def test_unresolvable_relative_import_returns_empty() -> None:
+    # A relative miss is a repo-local miss and stays unresolved. An absolute
+    # miss becomes an ``external:`` target instead; see
+    # ``test_python_resolver_external.py``.
+    imp = _imp(".nonexistent", ["thing"], relative=True)
     assert resolve_python_import_all(imp, "app.py", _ctx(PATHS)) == ()
 
 

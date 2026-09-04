@@ -73,7 +73,16 @@ def resolve_python_import(module_path: str, importer_path: str, ctx: ResolverCon
 
     # Stem-only fallback
     stem = module_path.split(".")[-1].lower()
-    return ctx.stem_lookup(stem)
+    hit = ctx.stem_lookup(stem)
+    if hit:
+        return hit
+
+    # Nothing in the repo defines this module, so register it the way every
+    # other language resolver does: the packages tab and the import counts can
+    # only see a third-party or stdlib dependency if the miss becomes a node.
+    # Stdlib is included on purpose, as Go and TypeScript already do, and
+    # io_kind.py seeds stdlib names for exactly this consumer.
+    return ctx.add_external_node(module_path)
 
 
 def resolve_python_import_all(
