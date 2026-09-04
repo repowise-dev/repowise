@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -21,6 +21,26 @@ _VALID_JOB_STATUSES = frozenset(
 )
 
 _BATCH_SIZE = 500  # max rows per INSERT to stay under SQLite's parameter limit
+
+# A running/pending GenerationJob's `updated_at` is a liveness heartbeat:
+# update_job_status() stamps it on every write, and JobProgressCallback calls
+# it roughly every 1-5s during real work (throttled, batched every 5 items)
+# and unconditionally at every phase boundary. A row that hasn't been touched
+# in this long is presumed abandoned by a crashed or killed process rather
+# than genuinely still working between writes — long enough that one slow
+# phase item (a large LLM call retried under rate-limit backoff) can't cross
+# it, short enough that a real crash doesn't block new syncs on the repo for
+# long. Both the startup stale-job sweep and the active-job concurrency guard
+# key off this instead of trusting `status` alone (issue: a second server
+# process's restart, in a multi-worker deployment sharing one DB, must not be
+# able to invalidate a job another live process is still actually running).
+JOB_HEARTBEAT_STALE_AFTER = timedelta(minutes=5)
+
+
+def job_heartbeat_cutoff(*, now: datetime | None = None) -> datetime:
+    """Timestamp before which a running/pending job's `updated_at` means the
+    process that owned it is presumed dead, not merely between writes."""
+    return (now or datetime.now(UTC)) - JOB_HEARTBEAT_STALE_AFTER
 
 
 def _finding_file_path(finding: Any) -> str | None:

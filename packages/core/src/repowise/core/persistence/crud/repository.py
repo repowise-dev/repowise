@@ -22,7 +22,7 @@ from ..models import (
     _new_uuid,
     _now_utc,
 )
-from ._shared import _VALID_JOB_STATUSES
+from ._shared import _VALID_JOB_STATUSES, job_heartbeat_cutoff
 
 # ---------------------------------------------------------------------------
 # Repository CRUD
@@ -251,6 +251,28 @@ async def upsert_generation_job(
 async def get_generation_job(session: AsyncSession, job_id: str) -> GenerationJob | None:
     """Return a GenerationJob by primary key, or None."""
     return await session.get(GenerationJob, job_id)
+
+
+async def has_active_job(session: AsyncSession, repository_id: str) -> bool:
+    """True if *repository_id* has a pending/running job with a live heartbeat.
+
+    A job counts as live only if its ``updated_at`` heartbeat is fresher than
+    :func:`job_heartbeat_cutoff` — see that function's docstring. This is the
+    per-repo concurrency guard every job-launching endpoint calls before
+    starting a new pipeline run: a job abandoned by a crashed process (no
+    heartbeat) must not block new syncs forever, and — the case that matters
+    most — a job a *different, still-live* server process is actually running
+    must never be mistaken for abandoned just because *this* process (or a
+    sibling worker sharing the same database) restarted.
+    """
+    result = await session.execute(
+        select(GenerationJob.id)
+        .where(GenerationJob.repository_id == repository_id)
+        .where(GenerationJob.status.in_(("pending", "running")))
+        .where(GenerationJob.updated_at >= job_heartbeat_cutoff())
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
 
 
 async def update_job_status(
