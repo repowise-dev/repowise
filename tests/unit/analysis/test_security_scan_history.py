@@ -174,7 +174,7 @@ async def test_history_gate_excludes_code_smells_by_default(session: AsyncSessio
 
 async def test_history_secrets_only_scan_skips_non_secret_patterns(session: AsyncSession) -> None:
     """scan_history with defaults only persists secret findings."""
-    content = "password = 'hunter2'\neval(open('x'))\nos.system('ls')\n"
+    content = "password = 'super_secret_password_123'\neval(open('x'))\nos.system('ls')\n"
     scanner = HistorySecurityScanner(session, "repo-1")
     scanner._list_commits = lambda *a, **k: [("abc123", "2026-01-01T00:00:00+00:00")]  # type: ignore[assignment]
     scanner._unique_blobs = lambda *a, **k: {"blob1": "src/secret.py"}  # type: ignore[assignment]
@@ -197,7 +197,7 @@ async def test_history_secrets_only_scan_skips_non_secret_patterns(session: Asyn
 
 async def test_history_unique_blob_scanned_once(session: AsyncSession) -> None:
     """Identical content across two commits is scanned once, attributed to first."""
-    content = "api_key = 'LEAKED'\n"
+    content = "api_key = 'LEAKED_SECRET_KEY_12345'\n"
     scanner = HistorySecurityScanner(session, "repo-1")
     reads = {"n": 0}
 
@@ -347,7 +347,9 @@ async def test_history_default_skips_test_fixtures_and_placeholders(
 async def test_all_patterns_lifts_the_noise_gate(session: AsyncSession, secret_repo: Path) -> None:
     """The filtering is the default's promise, not a hard exclusion."""
     (secret_repo / "tests").mkdir(exist_ok=True)
-    (secret_repo / "tests" / "test_client.py").write_text('password = "fixture-value"\n')
+    (secret_repo / "tests" / "test_client.py").write_text(
+        'password = "super_secret_real_password_99"\n'
+    )
     _git(secret_repo, "add", ".")
     _git(secret_repo, "commit", "-m", "add fixture")
 
