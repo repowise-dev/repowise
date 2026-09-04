@@ -285,6 +285,68 @@ class _Candidate:
     through: set[str]
     direct: set[str]
     call_sites: list[tuple[str, int | None]]
+    #: What the counts are counts of: "files", or "packages" for languages
+    #: whose imports name a package directory.
+    unit: str = "files"
+    #: The direct importers as files, for the record's scope; equals
+    #: ``direct`` when the unit is files.
+    direct_files: set[str] | None = None
+
+
+def _package_dir(path: str) -> str:
+    parent = path.rpartition("/")[0]
+    return parent or "."
+
+
+def _package_candidate(
+    graph: nx.DiGraph,
+    package: str,
+    io_kind: str,
+    wrapper: str,
+    parsed: Any,
+    use: _Use,
+    text: str,
+    direct_files: set[str],
+) -> _Candidate | None:
+    """The package-level shape for Go and Java.
+
+    An import there names a package directory and the builder fans the edge
+    out to every file in it, so a file-level import count would say every
+    file in an importing package reaches the library. Packages are the unit
+    instead, and a package reaches the library through the wrapper only when
+    one of its files calls a confirmed callable: the call edges are symbol
+    level and carry no fan-out.
+    """
+    confirmed = _confirmed_callables(parsed, use, text)
+    if not confirmed:
+        return None
+    own = _package_dir(wrapper)
+    direct_pkgs = {_package_dir(f) for f in direct_files} - {own}
+    ranked = sorted(
+        ((sym, _inbound_calls(graph, sym.id, wrapper)) for sym in confirmed),
+        key=lambda pair: (-len(pair[1]), pair[0].start_line),
+    )
+    symbol, sites = ranked[0]
+    caller_pkgs = {
+        _package_dir(f)
+        for _sym, sites_ in ranked
+        for f, _line in sites_
+        if not _is_test(graph, f)
+    }
+    through = caller_pkgs - direct_pkgs - {own}
+    if len(through) < MIN_THROUGH:
+        return None
+    return _Candidate(
+        package=package,
+        io_kind=io_kind,
+        wrapper=wrapper,
+        symbol=symbol,
+        through=through,
+        direct=direct_pkgs,
+        call_sites=sites,
+        unit="packages",
+        direct_files={f for f in direct_files if _package_dir(f) != own},
+    )
 
 
 def _candidates_for(
@@ -299,9 +361,25 @@ def _candidates_for(
 ) -> list[_Candidate]:
     """Every confirmed wrapper of *package* that clears the minimum count."""
     out: list[_Candidate] = []
+    by_package_dir: dict[str, _Candidate] = {}
     for wrapper in sorted(direct_files):
         parsed = parsed_by_path.get(wrapper)
-        if parsed is None or parsed.file_info.language in UNIT_FANOUT_LANGUAGES:
+        if parsed is None:
+            continue
+        if parsed.file_info.language in UNIT_FANOUT_LANGUAGES:
+            text = _file_text(wrapper, source_map, repo_path)
+            if text is None:
+                continue
+            candidate = _package_candidate(
+                graph, package, io_kind, wrapper, parsed, uses[wrapper][package], text, direct_files
+            )
+            if candidate is None:
+                continue
+            # Two files of one package are one wrapper; keep the wider one.
+            key = _package_dir(wrapper)
+            prior = by_package_dir.get(key)
+            if prior is None or len(candidate.through) > len(prior.through):
+                by_package_dir[key] = candidate
             continue
         importers = {
             f
@@ -357,7 +435,7 @@ def _candidates_for(
                 call_sites=sites,
             )
         )
-    return out
+    return [*out, *by_package_dir.values()]
 
 
 def _record(candidate: _Candidate) -> ExtractedDecision:
@@ -366,13 +444,15 @@ def _record(candidate: _Candidate) -> ExtractedDecision:
     through = len(candidate.through)
     direct = len(candidate.direct)
     exceptions = sorted(candidate.direct)
+    unit = candidate.unit
     decision = (
-        f"{through} of {through + direct} files reach {candidate.package} through "
+        f"{through} of {through + direct} {unit} reach {candidate.package} through "
         f"{candidate.wrapper}; {direct} import it directly."
     )
+    basis = "call edges" if unit == "packages" else "import edges"
     rationale = (
-        "Counted from import edges, excluding test files and the wrapper's own file. "
-        f"Threshold: at least {MIN_THROUGH} files through the wrapper and at most one "
+        f"Counted from {basis}, excluding test files and the wrapper's own {unit[:-1]}. "
+        f"Threshold: at least {MIN_THROUGH} {unit} through the wrapper and at most one "
         f"direct importer per {MIN_RATIO}."
     )
     consequences = [f"{path} imports {candidate.package} directly" for path in exceptions]
@@ -390,7 +470,8 @@ def _record(candidate: _Candidate) -> ExtractedDecision:
         f"{candidate.symbol.start_line}. Sample call sites: {sample}."
     )
     quote = "; ".join([decision, *consequences])
-    affected_files = [candidate.wrapper, *exceptions][:20]
+    direct_files = sorted(candidate.direct_files if candidate.direct_files is not None else exceptions)
+    affected_files = [candidate.wrapper, *direct_files][:20]
     return ExtractedDecision(
         title=f"{candidate.package} goes through {candidate.wrapper}",
         context=context,

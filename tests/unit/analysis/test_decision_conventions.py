@@ -29,7 +29,7 @@ DIRECT_SRC = "import httpx\n\n\ndef raw(url):\n    return httpx.get(url)\n"
 
 
 def _language(path: str) -> str:
-    return {"py": "python", "go": "go", "ts": "typescript"}[path.rsplit(".", 1)[1]]
+    return {"py": "python", "go": "go", "ts": "typescript", "mod": "go"}[path.rsplit(".", 1)[1]]
 
 
 def _build(tmp_path: Path, files: dict[str, str]):
@@ -55,7 +55,7 @@ def _build(tmp_path: Path, files: dict[str, str]):
         )
         parsed_files.append(parse_file(info, raw))
         source_map[rel] = raw
-    builder = GraphBuilder()
+    builder = GraphBuilder(repo_path=tmp_path)
     for pf in parsed_files:
         builder.add_file(pf)
     builder.build()
@@ -69,6 +69,47 @@ def _repo(through: int = 6, direct: int = 1, **extra: str) -> dict[str, str]:
     for i in range(direct):
         files[f"svc/raw{i}.py"] = DIRECT_SRC
     files.update(extra)
+    return files
+
+
+GO_CLIENT = '''package client
+
+import "net/http"
+
+func Get(u string) (*http.Response, error) {
+	return http.Get(u)
+}
+
+func Other() int {
+	return 1
+}
+'''
+
+GO_CALLER = '''package svc
+
+import "example.com/x/client"
+
+func F() {
+	client.Get("u")
+}
+'''
+
+GO_RAW = '''package raw
+
+import "net/http"
+
+func R() {
+	http.Get("u")
+}
+'''
+
+
+def _go_repo(callers: int, direct: int) -> dict[str, str]:
+    files = {"go.mod": "module example.com/x\n\ngo 1.22\n", "client/client.go": GO_CLIENT}
+    for i in range(callers):
+        files[f"svc{i}/main.go"] = GO_CALLER
+    for i in range(direct):
+        files[f"raw{i or ''}/raw.go"] = GO_RAW
     return files
 
 
@@ -213,14 +254,33 @@ class TestHazards:
         out = scan_conventions(graph, parsed, source_map, tmp_path)
         assert out[0].decision.endswith("; 0 import it directly.")
 
-    def test_a_go_file_is_never_a_wrapper_candidate(self, tmp_path):
-        files = {
-            "client/client.go": 'package client\n\nimport "net/http"\n\nfunc Get(u string) {\n\thttp.Get(u)\n}\n',
-        }
+    def test_a_go_wrapper_is_counted_by_package(self, tmp_path):
+        files = _go_repo(callers=6, direct=1)
+
+        out = _scan(tmp_path, files)
+        assert len(out) == 1
+        d = out[0]
+        assert d.title == "net/http goes through client/client.go"
+        assert d.decision == "6 of 7 packages reach net/http through client/client.go; 1 import it directly."
+        assert d.consequences == ["raw imports net/http directly"]
+        assert d.affected_files == ["client/client.go", "raw/raw.go"]
+        assert "call edges" in d.rationale
+        assert "svc0/main.go:" in d.context
+
+    def test_a_go_package_importing_the_wrapper_without_calling_it_does_not_reach(self, tmp_path):
+        files = _go_repo(callers=0, direct=0)
         for i in range(6):
-            files[f"svc{i}/main.go"] = 'package svc\n\nimport "example.com/x/client"\n\nfunc F() {\n\tclient.Get("u")\n}\n'
+            files[f"svc{i}/main.go"] = GO_CALLER.replace("client.Get(\"u\")", "client.Other()")
 
         assert _scan(tmp_path, files) == []
+
+    def test_two_go_files_in_one_package_are_one_wrapper(self, tmp_path):
+        files = _go_repo(callers=6, direct=0)
+        files["client/more.go"] = GO_CLIENT.replace("Get(u string) (*http.Response, error)", "Post(u string) (*http.Response, error)").replace("http.Get(u)", "http.Post(u, \"\", nil)")
+
+        out = _scan(tmp_path, files)
+        assert len(out) == 1
+        assert out[0].decision.startswith("6 of 6 packages")
 
 
 class TestOnlyAPersonAccepts:
