@@ -16,6 +16,7 @@ import {
   getHotFilesGraph,
   getZoomMap,
 } from "@/lib/api/graph";
+import type { GraphPopulation } from "@repowise-dev/types/graph";
 import type {
   ArchitectureGraphResponse,
   CallersCalleesResponse,
@@ -30,6 +31,16 @@ import type {
 } from "@/lib/api/types";
 
 const SWR_OPTS = { revalidateOnFocus: false, revalidateOnReconnect: false };
+
+/** The population flags as a key fragment and as query params. */
+function populationKey(p?: GraphPopulation): string {
+  return p ? `${+p.tests}${+p.examples}${+p.docs}` : "000";
+}
+function populationParams(p?: GraphPopulation) {
+  return p
+    ? { include_tests: p.tests, include_examples: p.examples, include_docs: p.docs }
+    : undefined;
+}
 
 export function useZoomMap(
   repoId: string | null,
@@ -60,10 +71,13 @@ export function useGraph(repoId: string | null, limit?: number) {
  * Conditional SWR: only fetched when a repoId is given (the wrapper gates it
  * to the constellation scope).
  */
-export function useArchitectureCommunityGraph(repoId: string | null) {
+export function useArchitectureCommunityGraph(
+  repoId: string | null,
+  population?: GraphPopulation,
+) {
   const { data, error, isLoading } = useSWR<ArchitectureGraphResponse>(
-    repoId ? `arch-community:${repoId}` : null,
-    () => getArchitecture(repoId!),
+    repoId ? `arch-community:${repoId}:${populationKey(population)}` : null,
+    () => getArchitecture(repoId!, 2, populationParams(population)),
     SWR_OPTS,
   );
   return { graph: data, error, isLoading };
@@ -100,19 +114,25 @@ export function useHotFilesGraph(repoId: string | null, days = 30, limit = 25) {
 // Graph Intelligence
 // ---------------------------------------------------------------------------
 
-export function useCommunities(repoId: string | null) {
+export function useCommunities(repoId: string | null, population?: GraphPopulation) {
   const { data, error, isLoading } = useSWR<CommunitySummaryItem[]>(
-    repoId ? `communities:${repoId}` : null,
-    () => getCommunities(repoId!),
+    repoId ? `communities:${repoId}:${populationKey(population)}` : null,
+    () => getCommunities(repoId!, populationParams(population)),
     SWR_OPTS,
   );
   return { communities: data, error, isLoading };
 }
 
-export function useCommunityDetail(repoId: string | null, communityId: number | null) {
+export function useCommunityDetail(
+  repoId: string | null,
+  communityId: number | null,
+  population?: GraphPopulation,
+) {
   const { data, error, isLoading } = useSWR<CommunityDetailResponse>(
-    repoId && communityId !== null ? `community:${repoId}:${communityId}` : null,
-    () => getCommunityDetail(repoId!, communityId!),
+    repoId && communityId !== null
+      ? `community:${repoId}:${communityId}:${populationKey(population)}`
+      : null,
+    () => getCommunityDetail(repoId!, communityId!, populationParams(population)),
     SWR_OPTS,
   );
   return { community: data, error, isLoading };
@@ -122,10 +142,16 @@ export function useCommunityDetail(repoId: string | null, communityId: number | 
  * The drill-down payload: one community's members plus the one-hop stubs that
  * bound them. Conditional — no request until somebody enters a community.
  */
-export function useCommunitySlice(repoId: string | null, communityId: number | null) {
+export function useCommunitySlice(
+  repoId: string | null,
+  communityId: number | null,
+  population?: GraphPopulation,
+) {
   const { data, error, isLoading } = useSWR<CommunitySliceResponse>(
-    repoId && communityId != null ? `community-slice:${repoId}:${communityId}` : null,
-    () => getCommunitySlice(repoId!, communityId!),
+    repoId && communityId != null
+      ? `community-slice:${repoId}:${communityId}:${populationKey(population)}`
+      : null,
+    () => getCommunitySlice(repoId!, communityId!, populationParams(population)),
     SWR_OPTS,
   );
   return { slice: data, error, isLoading };

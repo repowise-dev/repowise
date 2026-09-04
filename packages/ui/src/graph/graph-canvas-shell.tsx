@@ -120,7 +120,9 @@ export function GraphCanvasShell({
               // still yields to the context menu and the help modal.
               "absolute inset-x-0 bottom-0 z-[var(--z-dropdown)] flex max-h-[70%] flex-col overflow-hidden",
               "rounded-t-xl border-t border-[var(--color-border-default)] bg-[var(--color-bg-surface)] shadow-xl shadow-black/20",
-              "lg:static lg:max-h-none lg:rounded-none lg:border-t-0 lg:border-l lg:shadow-none",
+              // `h-0 min-h-full`: fill the row without contributing to its
+              // height, so a tall panel scrolls instead of stretching the canvas.
+              "lg:static lg:h-0 lg:min-h-full lg:max-h-none lg:rounded-none lg:border-t-0 lg:border-l lg:shadow-none",
             )}
           >
             {rail}

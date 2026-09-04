@@ -19,8 +19,13 @@ import type { SigmaNodeAttributes, SigmaEdgeAttributes } from "./types";
 import { EDGE_COLORS } from "./constants";
 import { computeRadialLayout, hubSizeFromMembers } from "./radial-layout";
 
+/** Pseudo community id of the "not grouped" disc. Never a real community. */
+export const UNCLUSTERED_COMMUNITY_ID = -2;
+export const UNCLUSTERED_NODE_ID = "__unclustered__";
+
 /** Stable hub node id derived from the community id. */
 export function hubNodeId(communityId: number): string {
+  if (communityId === UNCLUSTERED_COMMUNITY_ID) return UNCLUSTERED_NODE_ID;
   return `__community__${communityId}`;
 }
 
@@ -123,6 +128,33 @@ export function architectureToGraphology(
       docCoveragePct: node.doc_coverage_pct,
       languages: node.languages ?? [],
       hasDecision: node.has_decision,
+      forceLabel: true,
+      zIndex: 2,
+      originalColor: PLACEHOLDER_HUB_COLOR,
+    });
+  }
+
+  // The files no community claims, as one disc past the outer ring at six
+  // o'clock: outside the ranking, so it is not passed to the radial layout.
+  const unclustered = arch.unclustered;
+  if (unclustered && unclustered.file_count > 0) {
+    result.addNode(UNCLUSTERED_NODE_ID, {
+      x: layout.core.x,
+      y: layout.core.y + layout.ringRadii[2] * 1.18,
+      size: hubSizeFromMembers(unclustered.file_count),
+      color: PLACEHOLDER_HUB_COLOR,
+      label: "NOT GROUPED",
+      nodeType: "hub",
+      fullPath: "",
+      language: "",
+      communityId: UNCLUSTERED_COMMUNITY_ID,
+      pagerank: 0,
+      betweenness: 0,
+      isTest: false,
+      isEntryPoint: false,
+      hasDoc: false,
+      symbolCount: 0,
+      memberCount: unclustered.file_count,
       forceLabel: true,
       zIndex: 2,
       originalColor: PLACEHOLDER_HUB_COLOR,

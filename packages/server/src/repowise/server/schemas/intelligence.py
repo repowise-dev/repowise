@@ -154,8 +154,14 @@ class NeighboringCommunity(BaseModel):
 class CommunityDetailResponse(BaseModel):
     community_id: int
     label: str
+    #: Decays with size; kept for older clients. The panel reads ``conductance``.
     cohesion: float
+    #: ``cut / (2 * intra + cut)`` over production members, lower is tighter.
+    #: ``None`` on an older index or when nothing is linked.
+    conductance: float | None = None
+    #: Members in the requested population; every count below is over them.
     member_count: int
+    hidden_member_count: int = 0
     members: list[CommunityMember]
     truncated: bool
     neighboring_communities: list[NeighboringCommunity]
@@ -187,7 +193,9 @@ class CommunitySummaryItem(BaseModel):
     community_id: int
     label: str
     cohesion: float
+    conductance: float | None = None
     member_count: int
+    hidden_member_count: int = 0
     top_file: str
 
 

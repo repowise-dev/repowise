@@ -25,6 +25,7 @@ import type {
   CommunitySummaryItem,
   ArchitectureGraph,
   CommunitySlice,
+  GraphPopulation,
 } from "@repowise-dev/types/graph";
 
 type ViewMode = "full" | "architecture" | "dead" | "hotfiles" | "unified";
@@ -40,6 +41,10 @@ export interface GraphFlowProps {
   /** Controlled drill-down — the page owns it via `?community=`. */
   activeCommunity?: number | null;
   onActiveCommunityChange?: (communityId: number | null) => void;
+  /** Which non-production files the community views count — the page owns it
+   *  via `?show=`. */
+  population?: GraphPopulation | undefined;
+  onPopulationChange?: ((next: GraphPopulation) => void) | undefined;
   /** Node cap for the full-graph fetch, stepped up by the truncation banner.
    *  Must be the SAME value the banner is reporting: this and the banner's own
    *  fetch share an SWR key, so a mismatch means the caption describes a
@@ -80,6 +85,8 @@ export function GraphFlow({
   activeModule,
   activeCommunity,
   onActiveCommunityChange,
+  population,
+  onPopulationChange,
   graphLimit,
   onModuleGroupsChange,
   initialColorMode,
@@ -116,7 +123,7 @@ export function GraphFlow({
   );
   // Constellation community super-graph — only fetched for the radial scope.
   const { graph: constellationGraph, isLoading: constellationLoading } =
-    useArchitectureCommunityGraph(viewMode === "architecture" ? repoId : null);
+    useArchitectureCommunityGraph(viewMode === "architecture" ? repoId : null, population);
   const { graph: deadGraph, isLoading: deadLoading } = useDeadCodeGraph(
     viewMode === "dead" ? repoId : null,
   );
@@ -128,10 +135,11 @@ export function GraphFlow({
   const { slice: communitySlice, isLoading: sliceLoading } = useCommunitySlice(
     viewMode !== "architecture" && activeCommunity != null ? repoId : null,
     activeCommunity ?? null,
+    population,
   );
   const { repo } = useRepo(repoId);
   const resolvedRepoName = repoName ?? repo?.name;
-  const { communities } = useCommunities(repoId);
+  const { communities } = useCommunities(repoId, population);
   // File-level only (the constellation has no file nodes), and only once the
   // panel that reads them has been opened.
   const { flows: executionFlowsData } = useExecutionFlows(
@@ -156,6 +164,8 @@ export function GraphFlow({
       isLoadingCommunitySlice={sliceLoading}
       activeCommunity={activeCommunity}
       onActiveCommunityChange={onActiveCommunityChange}
+      population={population}
+      onPopulationChange={onPopulationChange}
       {...(resolvedRepoName ? { repoName: resolvedRepoName } : {})}
       deadCodeGraph={deadGraph as GraphExport | undefined}
       isLoadingDeadCodeGraph={deadLoading}
@@ -213,6 +223,7 @@ export function GraphFlow({
         <GraphCommunityPanel
           repoId={repoId}
           communityId={props.communityId}
+          population={population}
           onClose={props.onClose}
           onEnterCommunity={props.onEnterCommunity}
           onNeighborSelect={props.onNeighborSelect}

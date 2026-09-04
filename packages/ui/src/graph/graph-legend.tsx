@@ -134,6 +134,8 @@ interface GraphLegendProps {
     | undefined;
   /** Click a constellation row → focus that hub's camera. */
   onConstellationHubClick?: ((communityId: number) => void) | undefined;
+  /** Files in no community, keyed as its own row outside the ranking. */
+  constellationUnclustered?: { count: number; onClick?: (() => void) | undefined } | undefined;
   /**
    * Name of the one community being drawn, when the canvas has been drilled
    * into. Its presence selects the scoped reading of this key.
@@ -170,6 +172,7 @@ export const GraphLegend = memo(function GraphLegend({
   graphTheme = "dark",
   constellationEntries,
   onConstellationHubClick,
+  constellationUnclustered,
   scopeLabel,
   sliceCounts,
   scopeCommunityId,
@@ -224,6 +227,20 @@ export const GraphLegend = memo(function GraphLegend({
               <p className="text-[10px] text-[var(--color-text-tertiary)]">
                 +{overflow} smaller not listed
               </p>
+            )}
+            {constellationUnclustered && constellationUnclustered.count > 0 && (
+              <button
+                type="button"
+                onClick={constellationUnclustered.onClick}
+                className={rowClass}
+                title="Files with no dependency on the rest of the repo"
+              >
+                <Swatch color="var(--color-text-tertiary)" />
+                <span>Not grouped</span>
+                <span className="shrink-0 tabular-nums text-[10px] text-[var(--color-text-tertiary)]">
+                  {constellationUnclustered.count}
+                </span>
+              </button>
             )}
           </div>
         )}

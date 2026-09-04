@@ -74,8 +74,15 @@ export interface GraphExport {
 export interface ArchitectureNode {
   community_id: number;
   label: string;
+  /** Decays with size; kept for older servers. Read `conductance` instead. */
   cohesion: number;
+  /** Share of this group's dependency volume that leaves it, lower is tighter.
+   *  Absent or null on an older index. */
+  conductance?: number | null;
+  /** Members in the requested population; every figure is over them. */
   member_count: number;
+  /** Members the population filter left out. */
+  hidden_member_count?: number;
   top_file: string;
   avg_pagerank: number;
   hotspot_count: number;
@@ -91,9 +98,39 @@ export interface ArchitectureEdge {
   edge_count: number;
 }
 
+/** Which non-production files a community view counts. All off = production only. */
+export interface GraphPopulation {
+  tests: boolean;
+  examples: boolean;
+  docs: boolean;
+}
+
+export const PRODUCTION_ONLY: GraphPopulation = { tests: false, examples: false, docs: false };
+
+/** What the map is counting. Category totals are always reported. */
+export interface PopulationBreakdown {
+  total: number;
+  visible: number;
+  tests?: number;
+  examples?: number;
+  docs?: number;
+  include_tests?: boolean;
+  include_examples?: boolean;
+  include_docs?: boolean;
+}
+
+/** Visible files in no drawn community. `files` is the head by PageRank. */
+export interface UnclusteredFiles {
+  file_count: number;
+  files?: string[];
+}
+
 export interface ArchitectureGraph {
   nodes: ArchitectureNode[];
   edges: ArchitectureEdge[];
+  /** Both absent on an older server. */
+  population?: PopulationBreakdown | null;
+  unclustered?: UnclusteredFiles | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +148,7 @@ export interface CommunitySlice {
   community_id: number;
   member_count: number;
   truncated?: boolean;
+  hidden_member_count?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -354,8 +392,14 @@ export interface NeighboringCommunity {
 export interface CommunityDetail {
   community_id: number;
   label: string;
+  /** Decays with size; kept for older servers. The panel reads `conductance`. */
   cohesion: number;
+  /** Share of this group's dependency volume that leaves it, lower is tighter.
+   *  Absent or null on an older index. */
+  conductance?: number | null;
+  /** Members in the requested population; every count is over them. */
   member_count: number;
+  hidden_member_count?: number;
   members: CommunityMember[];
   truncated: boolean;
   neighboring_communities: NeighboringCommunity[];
@@ -383,7 +427,9 @@ export interface CommunitySummaryItem {
   community_id: number;
   label: string;
   cohesion: number;
+  conductance?: number | null;
   member_count: number;
+  hidden_member_count?: number;
   top_file: string;
 }
 

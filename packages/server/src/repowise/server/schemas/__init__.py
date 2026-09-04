@@ -145,6 +145,8 @@ from .graph import (
     ModuleGraphResponse,
     ModuleNodeResponse,
     NodeSearchResult,
+    PopulationBreakdown,
+    UnclusteredFiles,
 )
 from .health import (
     CoordinatorHealthResponse,
@@ -430,6 +432,7 @@ __all__ = [
     "PageSummaryResponse",
     "PageVersionResponse",
     "Paginated",
+    "PopulationBreakdown",
     "ProviderEntry",
     "ProviderStatusResponse",
     "ProviderValidationResponse",
@@ -460,6 +463,7 @@ __all__ = [
     "SymbolNodeSummary",
     "SymbolResponse",
     "TransitiveEntry",
+    "UnclusteredFiles",
     "UpdateMcpToolsRequest",
     "VersionResponse",
     "WebhookResponse",

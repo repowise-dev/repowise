@@ -16,6 +16,7 @@ import {
   languageColor,
 } from "./constants";
 import { resolveToken, useCommunityFamilies, useThemeVersion } from "../../shared/use-theme-tokens";
+import { UNCLUSTERED_COMMUNITY_ID } from "./constellation-adapter";
 
 // ---- Color helpers (kept minimal — avoid regex in hot paths) ----
 
@@ -177,7 +178,10 @@ function makeDrawNodeHover(theme: VizPalette): NodeLabelDrawingFunction {
       const lines: string[] = [];
       if (extra.nodeType === "hub") {
         const members = (extra.memberCount as number) ?? 0;
-        lines.push(`${members} file${members === 1 ? "" : "s"} · ${docPct}% documented`);
+        // The "not grouped" disc carries no coverage figure.
+        const coverage =
+          typeof extra.docCoveragePct === "number" ? ` · ${docPct}% documented` : "";
+        lines.push(`${members} file${members === 1 ? "" : "s"}${coverage}`);
         const langs = ((extra.languages as string[]) ?? []).slice(0, 3).join(", ");
         if (langs) lines.push(langs);
       } else {
@@ -550,6 +554,7 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
     if (!graph || graph.order === 0) return;
     const cm = options.colorMode;
     const coreColor = resolveToken("--color-bg-inset", "#141415");
+    const unclusteredColor = resolveToken("--color-text-tertiary", "#7c7c82");
     graph.updateEachNodeAttributes(
       (_node, attrs) => {
         let color: string;
@@ -557,7 +562,11 @@ export function useSigmaRenderer(options: UseSigmaOptions): UseSigmaReturn {
         // the active colorMode — the radial view *is* the community view. The
         // repo-core is a dark plum disc; its halo borrows the soft canvas dot.
         if (attrs.nodeType === "hub") {
-          const family = communityFamilies(attrs.communityId);
+          // The "not grouped" disc is no family: it is painted neutral.
+          const family =
+            attrs.communityId === UNCLUSTERED_COMMUNITY_ID
+              ? { hub: unclusteredColor, satellite: unclusteredColor }
+              : communityFamilies(attrs.communityId);
           color = family.hub;
           const haloColor = family.satellite || family.hub;
           const labelInk = discInkFor(color);

@@ -28,6 +28,8 @@
  *   - `?module=` a path prefix the file scope is filtered to
  *   - `?community=` the community the file scope is drilled into. One axis with
  *     `?module=`: both narrow the file graph, so at most one is ever set.
+ *   - `?show=` which non-production files the community views count
+ *     (`tests,examples,docs`); absent means production only.
  *
  * `?view=` and `?viewMode=` used to encode the same axis twice — `view=explore`
  * and `viewMode=full` both meant "the file graph", and they could disagree.
@@ -128,6 +130,7 @@ export default function ArchitecturePage({
   const [, setSignal] = useQueryState("signal");
   const [, setModule] = useQueryState("module");
   const [, setCommunity] = useQueryState("community");
+  const [, setShow] = useQueryState("show");
   const [, setFocus] = useQueryState("focus");
   const [, setNode] = useQueryState("node");
 
@@ -169,10 +172,11 @@ export default function ArchitecturePage({
         void setSignal(null);
         void setModule(null);
         void setCommunity(null);
+        void setShow(null);
         void setNode(null);
       }
     },
-    [setView, setFocus, setSignal, setModule, setCommunity, setNode],
+    [setView, setFocus, setSignal, setModule, setCommunity, setShow, setNode],
   );
 
   const handleScopeChange = useCallback(

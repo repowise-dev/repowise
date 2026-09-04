@@ -96,6 +96,8 @@ export function GraphCommunityPanel({
             // read as a summary.
             <p className="text-[11px] text-[var(--color-text-secondary)]">
               {community.member_count} files, grouped automatically
+              {(community.hidden_member_count ?? 0) > 0 &&
+                ` · ${community.hidden_member_count} hidden by the file filter`}
             </p>
           )}
         </div>
@@ -352,13 +354,21 @@ function FactGrid({
       ),
       tip: "Members named by a recorded architectural decision.",
     },
-    {
-      label: "Cohesion",
-      value: <FactValue>{(community.cohesion * 100).toFixed(1)}%</FactValue>,
-      // "depend on", not "import": the edge set behind this is every file
-      // dependency kind, so "import" would understate what counted.
-      tip: "The share of possible file pairs in this group that actually depend on each other. It drops as a group grows, so it compares groups of similar size rather than a group against the repo.",
-    },
+    // Conductance where the index has it; the old density is the fallback for
+    // an index that predates it, since it decays with size.
+    community.conductance != null
+      ? {
+          label: "Stays inside",
+          value: (
+            <FactValue>{Math.round((1 - community.conductance) * 100)}%</FactValue>
+          ),
+          tip: "The share of this group's file dependencies that stay inside it rather than reaching another group. Higher is tighter, and it does not fall as a group grows.",
+        }
+      : {
+          label: "Cohesion",
+          value: <FactValue>{(community.cohesion * 100).toFixed(1)}%</FactValue>,
+          tip: "The share of possible file pairs in this group that actually depend on each other. It drops as a group grows, so it compares groups of similar size rather than a group against the repo.",
+        },
   ];
 
   if (owner) {
@@ -376,10 +386,11 @@ function FactGrid({
     });
   }
 
-  // Cohesion is 1.0 for a single-file community by definition, so a one-file
-  // group would show a perfect score beside a tooltip about pairs.
+  // A one-file group has no pairs and nothing inside to stay in.
   const visible =
-    community.member_count <= 1 ? cells.filter((c) => c.label !== "Cohesion") : cells;
+    community.member_count <= 1
+      ? cells.filter((c) => c.label !== "Cohesion" && c.label !== "Stays inside")
+      : cells;
 
   return (
     <dl className="grid grid-cols-2 border-y border-[var(--color-border-default)]">

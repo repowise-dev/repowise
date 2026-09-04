@@ -108,13 +108,17 @@ export interface ArchitectureEdgeResponse {
 export interface ArchitectureGraphResponse {
   nodes: ArchitectureNodeResponse[];
   edges: ArchitectureEdgeResponse[];
+  population?: PopulationBreakdown | null;
+  unclustered?: UnclusteredFiles | null;
 }
 
 export interface ArchitectureNodeResponse {
   community_id: number;
   label: string;
   cohesion: number;
+  conductance?: number | null;
   member_count: number;
+  hidden_member_count?: number;
   top_file: string;
   avg_pagerank: number;
   hotspot_count?: number;
@@ -500,7 +504,9 @@ export interface CommunityDetailResponse {
   community_id: number;
   label: string;
   cohesion: number;
+  conductance?: number | null;
   member_count: number;
+  hidden_member_count?: number;
   members: CommunityMember[];
   truncated: boolean;
   neighboring_communities: NeighboringCommunity[];
@@ -547,13 +553,16 @@ export interface CommunitySliceResponse {
   community_id: number;
   member_count: number;
   truncated?: boolean;
+  hidden_member_count?: number;
 }
 
 export interface CommunitySummaryItem {
   community_id: number;
   label: string;
   cohesion: number;
+  conductance?: number | null;
   member_count: number;
+  hidden_member_count?: number;
   top_file: string;
 }
 
@@ -2019,6 +2028,23 @@ export interface Paginated_SymbolResponse_ {
   next_offset?: number | null;
 }
 
+/**
+ * What the map is counting.
+ *
+ * Every count in the payload is over ``visible``. The category totals are
+ * reported whether or not included, so a client can offer "show tests (N)".
+ */
+export interface PopulationBreakdown {
+  total: number;
+  visible: number;
+  tests?: number;
+  examples?: number;
+  docs?: number;
+  include_tests?: boolean;
+  include_examples?: boolean;
+  include_docs?: boolean;
+}
+
 /** One provider in the catalog, as the settings picker renders it. */
 export interface ProviderEntry {
   id: string;
@@ -2562,6 +2588,16 @@ export interface TestRecommendation {
 export interface TransitiveEntry {
   path: string;
   depth: number;
+}
+
+/**
+ * Visible files below ``min_members``; almost all have no dependency edge.
+ *
+ * ``files`` is the head by PageRank, capped.
+ */
+export interface UnclusteredFiles {
+  file_count: number;
+  files?: string[];
 }
 
 /**

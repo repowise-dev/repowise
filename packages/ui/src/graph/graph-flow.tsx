@@ -39,19 +39,26 @@ import { GraphContextMenu } from "./graph-context-menu";
 import { GraphInspectionPanel } from "./graph-inspection-panel";
 import { GraphFlowPanel } from "./graph-flow-panel";
 import { GraphShortcutHelp } from "./graph-shortcut-help";
+import { GraphPopulationControl } from "./graph-population-control";
+import { GraphUnclusteredPanel } from "./graph-unclustered-panel";
 import type {
   GraphExport,
   ExecutionFlows,
   CommunitySummaryItem,
   ArchitectureGraph,
   CommunitySlice,
+  GraphPopulation,
 } from "@repowise-dev/types/graph";
 import { SigmaCanvas, type SigmaCanvasHandle } from "./sigma/sigma-canvas";
 import {
   fileGraphToGraphology,
   fileGraphToGraphologyAsync,
 } from "./sigma/graphology-adapter";
-import { architectureToGraphology, hubNodeId } from "./sigma/constellation-adapter";
+import {
+  architectureToGraphology,
+  hubNodeId,
+  UNCLUSTERED_COMMUNITY_ID,
+} from "./sigma/constellation-adapter";
 import { computeRadialLayout } from "./sigma/radial-layout";
 import { ELK_MAX_NODES, elkSkipReason } from "./sigma/use-elk-sigma-layout";
 import type { SigmaNodeAttributes, SigmaEdgeAttributes } from "./sigma/types";
@@ -87,6 +94,11 @@ export interface GraphFlowProps {
    *  stubs. Fetched by the host in response to {@link onActiveCommunityChange}. */
   communitySlice?: CommunitySlice | undefined;
   isLoadingCommunitySlice?: boolean | undefined;
+  /** Which non-production files the community views count. Controlled by the
+   *  host, which fetches with it. The control renders only when both are
+   *  supplied. */
+  population?: GraphPopulation | undefined;
+  onPopulationChange?: ((next: GraphPopulation) => void) | undefined;
   /** Repo name for the constellation core label. */
   repoName?: string;
   deadCodeGraph: GraphExport | undefined;
@@ -182,6 +194,8 @@ export function GraphFlow(props: GraphFlowProps) {
     constellationGraph,
     isLoadingConstellationGraph,
     activeCommunity: controlledActiveCommunity,
+    population,
+    onPopulationChange,
     onActiveCommunityChange,
     communitySlice,
     isLoadingCommunitySlice,
@@ -367,6 +381,11 @@ export function GraphFlow(props: GraphFlowProps) {
   // unified single-click grammar (expansion is reserved for double-click).
   const handleConstellationHubClick = useCallback(
     (cid: number) => {
+      if (cid === UNCLUSTERED_COMMUNITY_ID) {
+        // Not a community: the host is not told, so it never fetches one.
+        setCommunityPanelId(cid);
+        return;
+      }
       const nodeId = hubNodeId(cid);
       setSelectedNodeId(nodeId);
       sigmaRef.current?.focusNode(nodeId, HUB_FOCUS_RATIO);
@@ -911,6 +930,13 @@ export function GraphFlow(props: GraphFlowProps) {
       if (selectedNodeId === nodeId) return;
       if (nodeType === "hub" && displayGraph?.hasNode(nodeId)) {
         const cid = displayGraph.getNodeAttribute(nodeId, "communityId");
+        // The "not grouped" disc is a list, not a community: it opens its panel
+        // without being selected, since selection dims everything it does not
+        // link to, which is everything.
+        if (cid === UNCLUSTERED_COMMUNITY_ID) {
+          setCommunityPanelId(cid);
+          return;
+        }
         if (typeof cid === "number" && cid >= 0) {
           setSelectedNodeId(nodeId);
           sigmaRef.current?.focusNode(nodeId, HUB_FOCUS_RATIO);
@@ -1213,7 +1239,17 @@ export function GraphFlow(props: GraphFlowProps) {
         )
       : rail
         ? rail
-        : communityPanelId !== null && renderCommunityPanel
+        : communityPanelId === UNCLUSTERED_COMMUNITY_ID && constellationGraph?.unclustered
+          ? (
+            <GraphUnclusteredPanel
+              unclustered={constellationGraph.unclustered}
+              onClose={() => setCommunityPanelId(null)}
+              fileHrefFor={fileHrefFor}
+            />
+          )
+        : communityPanelId !== null &&
+            communityPanelId !== UNCLUSTERED_COMMUNITY_ID &&
+            renderCommunityPanel
           ? renderCommunityPanel({
               communityId: communityPanelId,
               onClose: () => setCommunityPanelId(null),
@@ -1282,6 +1318,10 @@ export function GraphFlow(props: GraphFlowProps) {
         `plus ${stubs} faded file${stubs === 1 ? "" : "s"} outside it that they reach`,
       );
     }
+    const hidden = communitySlice.hidden_member_count ?? 0;
+    if (hidden > 0) {
+      parts.push(`${hidden} more hidden by the file filter`);
+    }
     return `${parts.join(", ")}.`;
   })();
 
@@ -1314,6 +1354,13 @@ export function GraphFlow(props: GraphFlowProps) {
       titleActions={
         <div className="flex flex-wrap items-center justify-end gap-2">
           {headerActions}
+          {population && onPopulationChange && (isConstellation || isInsideCommunity) && (
+            <GraphPopulationControl
+              population={population}
+              breakdown={constellationGraph?.population}
+              onChange={onPopulationChange}
+            />
+          )}
           <GraphToolbar
             viewMode={viewMode}
             colorMode={colorMode}
@@ -1418,6 +1465,14 @@ export function GraphFlow(props: GraphFlowProps) {
             graphTheme={graphTheme}
             constellationEntries={isConstellation ? constellationLegend : undefined}
             onConstellationHubClick={handleConstellationHubClick}
+            constellationUnclustered={
+              isConstellation && constellationGraph?.unclustered
+                ? {
+                    count: constellationGraph.unclustered.file_count,
+                    onClick: () => handleConstellationHubClick(UNCLUSTERED_COMMUNITY_ID),
+                  }
+                : undefined
+            }
           />
           {hasCanvasStatus && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">

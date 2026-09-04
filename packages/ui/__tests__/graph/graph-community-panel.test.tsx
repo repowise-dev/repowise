@@ -313,3 +313,36 @@ describe("GraphCommunityPanel truthfulness", () => {
     expect(screen.getByText("82.0%")).toBeTruthy();
   });
 });
+
+describe("GraphCommunityPanel population and shape", () => {
+  it("reads conductance as the share that stays inside, and says what is hidden", () => {
+    render(
+      <GraphCommunityPanel
+        communityId={7}
+        community={{ ...sampleCommunity, conductance: 0.28, hidden_member_count: 393 }}
+        isLoading={false}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Stays inside")).toBeTruthy();
+    expect(screen.getByText("72%")).toBeTruthy();
+    expect(screen.queryByText("Cohesion")).toBeNull();
+    expect(
+      screen.getByText("3 files, grouped automatically · 393 hidden by the file filter"),
+    ).toBeTruthy();
+  });
+
+  it("falls back to cohesion on an index without conductance", () => {
+    render(
+      <GraphCommunityPanel
+        communityId={7}
+        community={sampleCommunity}
+        isLoading={false}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Cohesion")).toBeTruthy();
+    expect(screen.getByText("82.0%")).toBeTruthy();
+    expect(screen.queryByText("Stays inside")).toBeNull();
+  });
+});

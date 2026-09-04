@@ -15,6 +15,7 @@ import type { ModuleGroup } from "@repowise-dev/ui/graph/use-module-filter";
 import { getGraph } from "@/lib/api/graph";
 import { useCommunities } from "@/lib/hooks/use-graph";
 import type { GraphExportResponse } from "@/lib/api/types";
+import { PRODUCTION_ONLY, type GraphPopulation } from "@repowise-dev/types/graph";
 
 type ViewMode = "full" | "architecture" | "dead" | "hotfiles" | "unified";
 type ColorMode = "language" | "community";
@@ -23,6 +24,17 @@ type Scope = "communities" | "files";
 // `?colorMode=risk` links predate the removal of that lens; an unlisted value
 // falls through to the "community" default rather than erroring.
 const VALID_COLOR_MODES = new Set<ColorMode>(["language", "community"]);
+
+/** `?show=tests,docs` ↔ the population flags. Absent or empty = production only. */
+const POPULATION_KEYS = ["tests", "examples", "docs"] as const;
+function parsePopulation(raw: string | null): GraphPopulation {
+  const on = new Set((raw ?? "").split(",").map((s) => s.trim()));
+  return { tests: on.has("tests"), examples: on.has("examples"), docs: on.has("docs") };
+}
+function serializePopulation(p: GraphPopulation): string | null {
+  const on = POPULATION_KEYS.filter((k) => p[k]);
+  return on.length ? on.join(",") : null;
+}
 
 /** Scope + signal → the canvas's internal ViewMode. The overlay wins, because
  *  dead/hot are only ever drawn on the file graph. */
@@ -60,6 +72,17 @@ export function GraphView({
   // every other param on this page, so Back leaves the page rather than
   // stepping out of the community — the breadcrumb and Escape are the way up.
   const [communityParam, setCommunityParam] = useQueryState("community");
+  const [showParam, setShowParam] = useQueryState("show");
+  const population = useMemo<GraphPopulation>(
+    () => (showParam ? parsePopulation(showParam) : PRODUCTION_ONLY),
+    [showParam],
+  );
+  const handlePopulationChange = useCallback(
+    (next: GraphPopulation) => {
+      void setShowParam(serializePopulation(next));
+    },
+    [setShowParam],
+  );
   const [docNodeId, setDocNodeId] = useState<string | null>(null);
   const [graphLimit, setGraphLimit] = useState<number | undefined>(undefined);
   const [moduleGroups, setModuleGroups] = useState<ModuleGroup[]>([]);
@@ -78,7 +101,12 @@ export function GraphView({
       ? Number(communityParam)
       : null;
 
-  const { communities } = useCommunities(repoId);
+  // The whole-repo file graph is not population-filtered, so its labels and
+  // narrowing list are not either.
+  const { communities } = useCommunities(
+    repoId,
+    effectiveScope === "communities" || activeCommunity !== null ? population : undefined,
+  );
 
   // Only the unfiltered file scope renders the capped `/api/graph` payload.
   // The constellation, and each of the dead/hot signals, has its own endpoint —
@@ -275,6 +303,8 @@ export function GraphView({
       activeModule={activeModule}
       activeCommunity={activeCommunity}
       onActiveCommunityChange={handleActiveCommunityChange}
+      population={population}
+      onPopulationChange={handlePopulationChange}
       // Same value the banner reports, so the caption and the canvas can
       // never disagree about how many files are drawn.
       graphLimit={graphLimit}

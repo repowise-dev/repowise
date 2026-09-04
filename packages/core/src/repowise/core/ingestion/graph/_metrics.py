@@ -265,7 +265,10 @@ class MetricsMixin:
         from repowise.core.analysis.communities import detect_file_communities
 
         try:
-            assignment, info, algo = detect_file_communities(self._graph)
+            repo_path = getattr(self, "_repo_path", None)
+            assignment, info, algo = detect_file_communities(
+                self._graph, repo_name=repo_path.name if repo_path else None
+            )
             self._community_cache = assignment
             self._community_info_cache = info
             self._community_algo = algo
