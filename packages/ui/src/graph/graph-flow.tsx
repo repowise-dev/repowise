@@ -1132,6 +1132,34 @@ export function GraphFlow(props: GraphFlowProps) {
     setCtxMenu(null);
   }, [ctxMenu, setCtxMenu]);
 
+  // Both of these are read far below, next to the key they feed. They are
+  // declared here because the skeleton branch that follows returns early, and a
+  // hook after it does not run on the loading pass — which changes the hook
+  // count between renders and takes the whole canvas down.
+
+  // What the key reports. `displayGraph.size` counts every edge in the graph
+  // including the kinds the edge filter is hiding, which is how a slice showing
+  // only its exits could still claim 553 edges. Reconciles the edge filter
+  // only: the ego filter hides nodes at the canvas rather than in the graph,
+  // and reports its own count in the status row beside this.
+  const visibleEdgeCount = useMemo(() => {
+    if (!displayGraph) return 0;
+    let n = 0;
+    displayGraph.forEachEdge((_, attrs) => {
+      if (visibleEdgeTypes.has(attrs.edgeKind)) n++;
+    });
+    return n;
+  }, [displayGraph, visibleEdgeTypes]);
+
+  // Members vs the one-hop stubs around them, from the same payload the banner
+  // counts, so the two figures on screen cannot disagree.
+  const sliceCounts = useMemo(() => {
+    if (!communitySlice) return undefined;
+    const members = communitySlice.nodes.filter((n) => !n.is_boundary).length;
+    return { members, boundary: communitySlice.nodes.length - members };
+  }, [communitySlice]);
+
+  // No hooks below this line.
   if (
     (isLoading || isAwaitingAsyncBuild || isBuildingGraph) &&
     !displayGraph
@@ -1256,28 +1284,6 @@ export function GraphFlow(props: GraphFlowProps) {
     }
     return `${parts.join(", ")}.`;
   })();
-
-  // What the key reports. `displayGraph.size` counts every edge in the graph
-  // including the kinds the edge filter is hiding, which is how a slice showing
-  // only its exits could still claim 553 edges. Reconciles the edge filter
-  // only: the ego filter hides nodes at the canvas rather than in the graph,
-  // and reports its own count in the status row beside this.
-  const visibleEdgeCount = useMemo(() => {
-    if (!displayGraph) return 0;
-    let n = 0;
-    displayGraph.forEachEdge((_, attrs) => {
-      if (visibleEdgeTypes.has(attrs.edgeKind)) n++;
-    });
-    return n;
-  }, [displayGraph, visibleEdgeTypes]);
-
-  // Members vs the one-hop stubs around them, from the same payload the banner
-  // counts, so the two figures on screen cannot disagree.
-  const sliceCounts = useMemo(() => {
-    if (!communitySlice) return undefined;
-    const members = communitySlice.nodes.filter((n) => !n.is_boundary).length;
-    return { members, boundary: communitySlice.nodes.length - members };
-  }, [communitySlice]);
 
   const activeCommunityLabel =
     activeCommunity !== null

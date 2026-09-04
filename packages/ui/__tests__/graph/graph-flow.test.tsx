@@ -592,3 +592,44 @@ describe("GraphFlow drill-down honesty", () => {
     expect(screen.queryByText(/dead files/)).toBeNull();
   });
 });
+
+describe("GraphFlow hook order", () => {
+  it("keeps the same hooks on the loading pass and the loaded one", () => {
+    // The loading branch returns a skeleton before the render body, so a hook
+    // declared below it does not run on that pass. React then sees the hook
+    // count change on the next render and takes the whole canvas down with
+    // "change in the order of Hooks called by GraphFlow" — recoverable only by
+    // a page refresh.
+    const errors: unknown[][] = [];
+    const spy = vi
+      .spyOn(console, "error")
+      .mockImplementation((...args: unknown[]) => {
+        errors.push(args);
+      });
+    try {
+      const { rerender } = render(
+        <GraphFlow {...baseProps} viewMode="full" isLoadingFullGraph={true} />,
+      );
+      rerender(
+        <GraphFlow
+          {...baseProps}
+          viewMode="full"
+          isLoadingFullGraph={false}
+          fullGraph={
+            {
+              nodes: [fileNode("src/a.ts", "typescript")],
+              links: [],
+            } as never
+          }
+        />,
+      );
+      const hookComplaint = errors.find((e) =>
+        String(e[0] ?? "").includes("order of Hooks"),
+      );
+      expect(hookComplaint).toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
