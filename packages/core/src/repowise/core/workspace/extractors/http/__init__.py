@@ -21,13 +21,18 @@ from .django import DjangoDialect
 from .express import ExpressDialect
 from .fastapi import FastApiDialect
 from .go import GoDialect
+from .go_clients import GoClientsDialect
+from .java_clients import JavaClientsDialect
 from .jaxrs import JaxRsDialect
 from .js_clients import JsClientsDialect
+from .kotlin_clients import KotlinClientsDialect
 from .laravel import LaravelDialect
 from .mounts import merge_mount_maps
 from .next_app import NextAppDialect
 from .paths import normalize_http_path
+from .php_clients import PhpClientsDialect
 from .python_clients import PythonClientsDialect
+from .ruby_clients import RubyClientsDialect
 from .rust_axum import RustAxumDialect
 from .rust_clients import RustClientsDialect
 from .spring import SpringDialect
@@ -61,6 +66,11 @@ CONSUMER_DIALECTS: tuple[HttpDialect, ...] = (
     PythonClientsDialect(),
     CSharpHttpDialect(),
     RustClientsDialect(),
+    GoClientsDialect(),
+    RubyClientsDialect(),
+    JavaClientsDialect(),
+    KotlinClientsDialect(),
+    PhpClientsDialect(),
 )
 
 

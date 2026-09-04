@@ -296,7 +296,8 @@ def _parse_literal(text: str, syntax: UrlSyntax) -> tuple[str, str, str] | None:
 
 
 def _interpolates(prefix: str, quote: str, syntax: UrlSyntax) -> bool:
-    return quote in syntax.template_quotes or any(
+    # A triple quote interpolates when its single form does (Kotlin raw strings).
+    return quote[0] in syntax.template_quotes or any(
         p in syntax.template_prefixes.lower() for p in prefix
     )
 
@@ -418,20 +419,20 @@ def resolve_url(
         if folded is not None:
             return folded
     if _NAME_RE.fullmatch(text):
-        # A bare name. Its folded value is a literal by construction, so one
-        # step always reaches the text.
+        # A bare name. Its value resolved without constants when it was
+        # recorded, so this step cannot reach another bare name.
         const = _lookup(text, constants)
-        parsed = _parse_literal(const, syntax) if const is not None else None
-        if parsed is not None:
-            return _literal_text(parsed, syntax, constants)
+        if const is not None:
+            return resolve_url(const, syntax, constants)
     return None
 
 
 def string_constants(content: str, syntax: UrlSyntax, code: str | None = None) -> dict[str, str]:
-    """Names *content* assigns exactly once, to one string literal.
+    """Names *content* assigns exactly once, to a URL expression that resolves.
 
-    The value is the literal's raw text with its prefix, so an interpolating
-    literal keeps its interpolations for :func:`resolve_url` to fold.
+    The value is the right-hand side's raw text, so an interpolating literal,
+    a format call or a concatenation keeps its parts for :func:`resolve_url`
+    to fold at the call site.
 
     *code*, when given, is *content* with comments and string bodies blanked at
     the same offsets. Assignments are located in it and their values read from
@@ -448,7 +449,7 @@ def string_constants(content: str, syntax: UrlSyntax, code: str | None = None) -
             rhs = syntax.assignment_strip.sub("", rhs).strip()
         # A second assignment retires the name whatever it assigns: the reader
         # cannot tell which one reaches the call site.
-        seen[name] = None if name in seen or _parse_literal(rhs, syntax) is None else rhs
+        seen[name] = None if name in seen or resolve_url(rhs, syntax) is None else rhs
     return {name: text for name, text in seen.items() if text is not None}
 
 
@@ -464,16 +465,23 @@ def consumer_contracts(
     *,
     constants: dict[str, str] | None = None,
     path_only: bool = False,
+    rooted_only: bool = False,
 ) -> list[Contract]:
     """Consumer contracts for *matches*, resolving each URL through *syntax*.
 
     *path_only* drops a URL with no ``/`` in it. It is for recognisers whose
     receiver is ambiguous, so a map's ``.get("key")`` never becomes a route.
+
+    *rooted_only* drops a URL that is neither absolute nor rooted. A client
+    with a configured base composes ``"some/path"`` onto it, so the path the
+    request reaches has a prefix this layer cannot see.
     """
     out: list[Contract] = []
     for m in matches:
         url = resolve_url(m.url, syntax, constants)
         if url is None or (path_only and "/" not in url):
+            continue
+        if rooted_only and "://" not in url and not url.startswith(("//", "/", "${")):
             continue
         method = m.method or method_from_callee(m.callee)
         c = build_consumer_contract(
@@ -586,6 +594,7 @@ GO_SYNTAX = UrlSyntax(
 RUBY_SYNTAX = UrlSyntax(
     template_quotes='"',
     interpolation=re.compile(r"#\{([^{}]+)\}"),
+    unwrap_heads=("URI.parse", "URI"),
     concat="+",
     assignment=re.compile(
         r"^[ \t]*(?P<name>[A-Za-z_]\w*)[ \t]*=[ \t]*(?P<rhs>[^\n]+)$", re.MULTILINE

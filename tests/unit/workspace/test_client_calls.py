@@ -52,6 +52,7 @@ class TestLiterals:
             (RUBY_SYNTAX, "'#{not_interpolated}'", "#{not_interpolated}"),
             (KOTLIN_SYNTAX, '"$TEST_SERVER/echo_query"', "${TEST_SERVER}/echo_query"),
             (KOTLIN_SYNTAX, '"${server.url}/x"', "${server.url}/x"),
+            (KOTLIN_SYNTAX, '"""$BASE/raw"""', "${BASE}/raw"),
             (PHP_SYNTAX, '"$base/users/{$id}"', "${base}/users/${id}"),
             (PHP_SYNTAX, "'$literal/x'", "$literal/x"),
         ],
@@ -124,8 +125,9 @@ class TestConstantFolding:
     def test_go_short_declaration(self):
         content = 'u := fmt.Sprintf("%s/x", base)\nresp, err := http.Get(u)\n'
         constants = string_constants(content, GO_SYNTAX)
-        # A format call is not a literal, so the name does not fold.
-        assert constants == {}
+        # A format call bound once folds at the call site like a literal.
+        assert resolve_url("u", GO_SYNTAX, constants) == "${x}/x"
+        assert resolve_url("other", GO_SYNTAX, constants) is None
         content = 'const liveReloadSourceURL = "https://example.com/livereload.js"\n'
         constants = string_constants(content, GO_SYNTAX)
         assert resolve_url("liveReloadSourceURL", GO_SYNTAX, constants) == (
@@ -224,6 +226,15 @@ class TestConsumerContracts:
     def test_an_unresolved_url_emits_nothing(self):
         rows = [ClientCallMatch(client="w", url="u", offset=0, paren_offset=1, method="GET")]
         assert consumer_contracts(self._ctx("f(u)"), rows, GO_SYNTAX) == []
+
+    def test_rooted_only_drops_a_base_relative_path(self):
+        rows = [
+            ClientCallMatch(client="w", url='"some/path"', offset=0, paren_offset=1, method="GET"),
+            ClientCallMatch(client="w", url='"/rooted"', offset=0, paren_offset=1, method="GET"),
+            ClientCallMatch(client="w", url='"${b}/x"', offset=0, paren_offset=1, method="GET"),
+        ]
+        got = consumer_contracts(self._ctx("x", ".js"), rows, JS_SYNTAX, rooted_only=True)
+        assert [c.contract_id for c in got] == ["http::GET::/rooted", "http::GET::/x"]
 
     def test_path_only_drops_a_key_lookup(self):
         rows = [
