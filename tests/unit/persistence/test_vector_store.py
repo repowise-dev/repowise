@@ -7,6 +7,8 @@ LanceDB-specific tests are skipped if lancedb is not installed.
 
 from __future__ import annotations
 
+import logging
+
 import math
 
 import pytest
@@ -483,6 +485,7 @@ async def test_lancedb_embed_batch_isolates_failed_chunk(tmp_path):
 @pytest.mark.asyncio
 async def test_lancedb_list_page_ids_handles_corrupt_store(tmp_path, mock_embedder, caplog):
     """A damaged LanceDB table must not crash resume generation."""
+    caplog.set_level(logging.WARNING, logger="repowise.core.persistence.vector_store.lancedb_store")
     pytest.importorskip("lancedb")
     from repowise.core.persistence.vector_store import LanceDBVectorStore
 
