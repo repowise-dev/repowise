@@ -510,3 +510,164 @@ async def test_an_error_reply_never_gets_the_update_pointer(setup_mcp, monkeypat
 
     assert err["_meta"]["index_behind"] is True
     assert "hint" not in err["_meta"]
+
+
+_KEY_SYMBOL_BODY = 'def check():\n    """Return True."""\n    return True\n'
+
+
+def _raw_with_key_symbols(key_symbols: list[dict]) -> dict:
+    return {
+        "answer": "Use AuthService.check.",
+        "citations": ["src/auth/service.py"],
+        "confidence": "medium",
+        "retrieval_quality": "partial",
+        "symbol_bodies": [
+            {
+                "path": "src/auth/service.py",
+                "name": "check",
+                "lines": [10, 20],
+                "source": _KEY_SYMBOL_BODY,
+            }
+        ],
+        "retrieval": [
+            {
+                "path": "src/auth/service.py",
+                "summary": "the auth service",
+                "key_symbols": key_symbols,
+            }
+        ],
+    }
+
+
+def test_a_key_symbol_repeating_a_served_body_keeps_only_its_name_and_lines():
+    raw = _raw_with_key_symbols(
+        [
+            {
+                "name": "check",
+                "kind": "function",
+                "signature": "check()",
+                "start_line": 10,
+                "end_line": 20,
+                "source_excerpt": _KEY_SYMBOL_BODY,
+                "docstring": "Return True.",
+            }
+        ]
+    )
+
+    payload = project_answer_payload(raw, question="how does auth work")
+
+    row = payload["retrieval"][0]
+    assert row["path"] == "src/auth/service.py"
+    assert row["key_symbols"] == [
+        {
+            "name": "check",
+            "kind": "function",
+            "signature": "check()",
+            "start_line": 10,
+            "end_line": 20,
+        }
+    ]
+
+
+def test_a_key_symbol_inside_the_served_line_range_loses_its_text():
+    raw = _raw_with_key_symbols(
+        [
+            {
+                "name": "check",
+                "kind": "function",
+                "start_line": 12,
+                "end_line": 15,
+                "source_excerpt": "12: def check():  # as indexed, not as read",
+                "docstring": "Returns true when the token is valid.",
+            }
+        ]
+    )
+
+    payload = project_answer_payload(raw, question="how does auth work")
+
+    entry = payload["retrieval"][0]["key_symbols"][0]
+    assert "source_excerpt" not in entry and "docstring" not in entry
+    assert entry["name"] == "check" and entry["start_line"] == 12
+
+
+def test_key_symbols_served_nowhere_else_keep_their_text():
+    raw = _raw_with_key_symbols(
+        [
+            {
+                "name": "later",
+                "kind": "function",
+                "start_line": 90,
+                "end_line": 99,
+                "source_excerpt": "def later(): pass",
+                "docstring": "Runs after.",
+            }
+        ]
+    )
+    raw["retrieval"].append(
+        {
+            "path": "src/auth/middleware.py",
+            "summary": "the middleware",
+            "key_symbols": [
+                {
+                    "name": "reject",
+                    "kind": "function",
+                    "start_line": 10,
+                    "end_line": 20,
+                    "source_excerpt": "def reject(): pass",
+                    "docstring": "Rejects a missing token.",
+                }
+            ],
+        }
+    )
+
+    payload = project_answer_payload(raw, question="how does auth work")
+
+    outside = payload["retrieval"][0]["key_symbols"][0]
+    other_file = payload["retrieval"][1]["key_symbols"][0]
+    assert outside["source_excerpt"] == "def later(): pass"
+    assert outside["docstring"] == "Runs after."
+    assert other_file["source_excerpt"] == "def reject(): pass"
+    assert other_file["docstring"] == "Rejects a missing token."
+
+
+def test_key_symbol_dedupe_never_mutates_the_raw_payload():
+    raw = _raw_with_key_symbols(
+        [
+            {
+                "name": "check",
+                "kind": "function",
+                "start_line": 10,
+                "end_line": 20,
+                "source_excerpt": _KEY_SYMBOL_BODY,
+                "docstring": "Return True.",
+            }
+        ]
+    )
+    before = copy.deepcopy(raw)
+
+    project_answer_payload(raw, question="how does auth work")
+
+    assert raw == before
+
+
+def test_the_expanded_projection_dedupes_key_symbols_too():
+    raw = _raw_with_key_symbols(
+        [
+            {
+                "name": "check",
+                "kind": "function",
+                "start_line": 10,
+                "end_line": 20,
+                "source_excerpt": _KEY_SYMBOL_BODY,
+                "docstring": "Return True.",
+            }
+        ]
+    )
+
+    expanded = project_answer_payload(
+        raw, question="how does auth work", include=["evidence"]
+    )
+
+    entry = expanded["retrieval"][0]["key_symbols"][0]
+    assert "source_excerpt" not in entry and "docstring" not in entry
+    assert entry["name"] == "check"
