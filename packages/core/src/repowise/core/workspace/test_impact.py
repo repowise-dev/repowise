@@ -5,7 +5,7 @@ with each consumer repo's test reachability, to answer "given a change in
 provider repo X, which tests in consumer repos Y and Z should I run?".
 
 The join enters the consumer's call graph at the contract's
-``consumer_symbol_id`` rather than at the consumer file, so a test that reaches
+``consumer_symbol_id`` instead of at the consumer file, so a test that reaches
 an unrelated symbol in the same file is not recommended. A link that cannot be
 followed is reported as an unresolved row with a reason, never dropped: an
 empty answer always says which state produced it.
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -39,6 +39,9 @@ _BASIS_ORDER = {"measured": 0, "inferred": 1}
 
 _TIER_PRIORITY = {"call-graph": 0, "import-graph": 1}
 
+# The call walk enters at the bound symbol; the import fallback only knows files.
+_ENTRY_BY_TIER = {"call-graph": "symbol", "import-graph": "file"}
+
 __all__ = [
     "MAX_TESTS_PER_TARGET",
     "UnresolvedLink",
@@ -60,9 +63,8 @@ class WorkspaceTestRecommendation:
     consumer_file: str
     consumer_symbol_id: str | None
     provider_repo: str
-    provider_file: str
-    contract_id: str
-    contract_type: str
+    contract_ids: list[str]
+    contract_types: list[str]
     basis: str  # "measured" | "inferred"
     via: str  # "coverage-map" | "call-graph" | "import-graph"
     confidence: float
@@ -135,6 +137,36 @@ def _recommendation_sort_key(rec: WorkspaceTestRecommendation) -> tuple:
     )
 
 
+def _signal_rank(rec: WorkspaceTestRecommendation) -> tuple[int, int]:
+    return (_BASIS_ORDER.get(rec.basis, 99), _TIER_PRIORITY.get(rec.via, 99))
+
+
+def _merge_recommendations(
+    first: WorkspaceTestRecommendation, second: WorkspaceTestRecommendation
+) -> WorkspaceTestRecommendation:
+    """Fold two rows for the same test and repo pair into one.
+
+    The row keeps the strongest signal but every contract and provider file it
+    guards, so a reader sees the whole reason the test is on the list.
+    """
+    strongest, weaker = (
+        (first, second) if _signal_rank(first) <= _signal_rank(second) else (second, first)
+    )
+    return replace(
+        strongest,
+        consumer_file=min(first.consumer_file, second.consumer_file),
+        consumer_symbol_id=min(
+            (s for s in (first.consumer_symbol_id, second.consumer_symbol_id) if s),
+            default=None,
+        ),
+        contract_ids=sorted(set(first.contract_ids) | set(second.contract_ids)),
+        contract_types=sorted(set(first.contract_types) | set(second.contract_types)),
+        confidence=max(first.confidence, second.confidence),
+        source_files=sorted(set(first.source_files) | set(second.source_files)),
+        evidence=[*strongest.evidence, *weaker.evidence],
+    )
+
+
 def _unresolved_for(link: ContractLink, reason: str, detail: str | None = None) -> UnresolvedLink:
     return UnresolvedLink(
         consumer_repo=link.consumer_repo,
@@ -164,7 +196,6 @@ def _file_row(
     state: str,
     measured_count: int = 0,
     inferred_count: int = 0,
-    inferred_total: int = 0,
     via: str | None = None,
 ) -> dict[str, Any]:
     return {
@@ -173,7 +204,6 @@ def _file_row(
         "state": state,
         "measured_tests_count": measured_count,
         "inferred_tests_count": inferred_count,
-        "inferred_tests_total": inferred_total,
         "via": via,
         "provider_repos": sorted({lk.provider_repo for lk in links}),
         "contract_ids": sorted({lk.contract_id for lk in links}),
@@ -223,10 +253,13 @@ async def _analyze_consumer(
     files = sorted(bound)
     measured: dict[str, list[dict[str, Any]]] = {}
     reached: dict[str, Any] = {}
+    # A pass that fails takes down only its own signal; whatever the other pass
+    # found, and the links already classified, still reach the caller.
+    failures: list[str] = []
     if files:
         session = repo_index.session
-        try:
-            if include_measured:
+        if include_measured:
+            try:
                 rows = await tests_covering_files(session, repo_index.repo_id, set(files))
                 for path, covering in rows.items():
                     measured[path] = [
@@ -239,25 +272,40 @@ async def _analyze_consumer(
                         }
                         for row in covering
                     ]
-            if include_inferred:
-                reached = await tests_reaching_by_tier(
+            except Exception as exc:
+                failures.append(f"measured: {type(exc).__name__}")
+        if include_inferred:
+            try:
+                # Two walks so each link is credited only with what reaches its
+                # own symbol: the call tier is keyed by symbol id, and the import
+                # tier, which only knows files, runs for the files no symbol answered.
+                symbol_ids = sorted({sid for path in files for sid in seeds[path]})
+                by_symbol = await tests_reaching_by_tier(
                     session,
                     repo_index.repo_id,
-                    files,
+                    symbol_ids,
                     call_depth=call_depth,
-                    import_depth=import_depth,
-                    symbol_seeds={path: seeds[path] for path in files},
+                    import_depth=0,
+                    symbol_seeds={sid: {sid} for sid in symbol_ids},
                 )
-        except Exception as exc:
-            return _ConsumerOutcome(
-                unresolved=[
-                    _unresolved_for(lk, "lookup_failed", type(exc).__name__) for lk in links
-                ],
-                files_analyzed=[
-                    _file_row(alias, path, group, state="unresolved")
-                    for path, group in by_file.items()
-                ],
-            )
+                unanswered = [
+                    path for path in files if not any(sid in by_symbol for sid in seeds[path])
+                ]
+                by_file_reached = await tests_reaching_by_tier(
+                    session,
+                    repo_index.repo_id,
+                    unanswered,
+                    call_depth=0,
+                    import_depth=import_depth,
+                )
+                reached = {**by_file_reached, **by_symbol}
+            except Exception as exc:
+                failures.append(f"inferred: {type(exc).__name__}")
+
+    if failures:
+        detail = "; ".join(failures)
+        for group in bound.values():
+            out.unresolved.extend(_unresolved_for(lk, "lookup_failed", detail) for lk in group)
 
     for path, group in by_file.items():
         links_for_file = bound.get(path, [])
@@ -272,9 +320,8 @@ async def _analyze_consumer(
                         consumer_file=path,
                         consumer_symbol_id=link.consumer_symbol_id,
                         provider_repo=link.provider_repo,
-                        provider_file=_norm(link.provider_file),
-                        contract_id=link.contract_id,
-                        contract_type=link.contract_type,
+                        contract_ids=[link.contract_id],
+                        contract_types=[link.contract_type],
                         basis="measured",
                         via="coverage-map",
                         confidence=link.confidence,
@@ -284,49 +331,61 @@ async def _analyze_consumer(
                                 "basis": "measured",
                                 "source_file": _norm(link.provider_file),
                                 "via": "coverage-map",
+                                "contract_id": link.contract_id,
+                                # Coverage rows are recorded per file, not per symbol.
+                                "entry": "file",
                                 "source_format": entry.get("source_format"),
                             }
                         ],
                     )
                 )
 
-        hit = reached.get(path)
-        # The walk trims its own list per target; the join caps per consumer
-        # and provider pair below and reports the cut, so start from all of them.
-        reached_tests = list(hit.all_tests or hit.tests) if hit else []
-        if reached_tests:
-            for link in links_for_file:
-                for test_id in reached_tests:
-                    out.recommendations.append(
-                        WorkspaceTestRecommendation(
-                            test_id=test_id,
-                            test_file=test_id.split("::", 1)[0],
-                            consumer_repo=alias,
-                            consumer_file=path,
-                            consumer_symbol_id=link.consumer_symbol_id,
-                            provider_repo=link.provider_repo,
-                            provider_file=_norm(link.provider_file),
-                            contract_id=link.contract_id,
-                            contract_type=link.contract_type,
-                            basis="inferred",
-                            via=hit.via,
-                            confidence=link.confidence,
-                            source_files=[_norm(link.provider_file)],
-                            evidence=[
-                                {
-                                    "basis": "inferred",
-                                    "source_file": _norm(link.provider_file),
-                                    "via": hit.via,
-                                }
-                            ],
-                        )
+        file_tests: set[str] = set()
+        file_via: str | None = None
+        for link in links_for_file:
+            # A link's own symbol answers first; the file-level import tier
+            # only speaks for files no symbol answered.
+            hit = reached.get(link.consumer_symbol_id or "") or reached.get(path)
+            if hit is None:
+                continue
+            # The walk trims its own list per target; the join caps per consumer
+            # and provider pair below and reports the cut, so start from all of them.
+            reached_tests = list(hit.all_tests or hit.tests)
+            file_tests.update(reached_tests)
+            if file_via is None or _TIER_PRIORITY.get(hit.via, 99) < _TIER_PRIORITY.get(file_via, 99):
+                file_via = hit.via
+            for test_id in reached_tests:
+                out.recommendations.append(
+                    WorkspaceTestRecommendation(
+                        test_id=test_id,
+                        test_file=test_id.split("::", 1)[0],
+                        consumer_repo=alias,
+                        consumer_file=path,
+                        consumer_symbol_id=link.consumer_symbol_id,
+                        provider_repo=link.provider_repo,
+                        contract_ids=[link.contract_id],
+                        contract_types=[link.contract_type],
+                        basis="inferred",
+                        via=hit.via,
+                        confidence=link.confidence,
+                        source_files=[_norm(link.provider_file)],
+                        evidence=[
+                            {
+                                "basis": "inferred",
+                                "source_file": _norm(link.provider_file),
+                                "via": hit.via,
+                                "contract_id": link.contract_id,
+                                "entry": _ENTRY_BY_TIER.get(hit.via, "file"),
+                            }
+                        ],
                     )
+                )
 
         if measured_tests:
             state = "measured"
-        elif reached_tests:
+        elif file_tests:
             state = "inferred"
-        elif links_for_file:
+        elif links_for_file and not failures:
             state = "none"
         else:
             state = "unresolved"
@@ -337,9 +396,8 @@ async def _analyze_consumer(
                 group,
                 state=state,
                 measured_count=len(measured_tests),
-                inferred_count=len(reached_tests),
-                inferred_total=hit.total if hit else 0,
-                via=hit.via if hit else None,
+                inferred_count=len(file_tests),
+                via=file_via,
             )
         )
     return out
@@ -379,6 +437,8 @@ async def analyze_workspace_test_impact(
         "total_contract_links": len(links),
         "relevant_contract_links": 0,
         "states": {"measured": 0, "inferred": 0, "none": 0, "unresolved": 0},
+        # A caller that turned a pass off should see that in the answer.
+        "passes": {"measured": include_measured, "inferred": include_inferred},
     }
     if not changed_by_provider:
         summary["reason"] = "no_changed_files"
@@ -439,14 +499,9 @@ async def analyze_workspace_test_impact(
 
     seen: dict[tuple, WorkspaceTestRecommendation] = {}
     for rec in raw:
-        key = (rec.test_id, rec.consumer_repo, rec.provider_repo, rec.contract_id)
+        key = (rec.test_id, rec.consumer_repo, rec.provider_repo)
         existing = seen.get(key)
-        if existing is not None and _BASIS_ORDER.get(rec.basis, 99) >= _BASIS_ORDER.get(
-            existing.basis, 99
-        ):
-            existing.evidence.extend(rec.evidence)
-        else:
-            seen[key] = rec
+        seen[key] = _merge_recommendations(existing, rec) if existing is not None else rec
 
     deduplicated = sorted(seen.values(), key=_recommendation_sort_key)
 
@@ -458,11 +513,11 @@ async def analyze_workspace_test_impact(
             capped.append(rec)
             counts[pair] += 1
 
-    by_basis: dict[str, int] = defaultdict(int)
+    by_basis: dict[str, int] = {"measured": 0, "inferred": 0}
     by_repo: dict[str, int] = defaultdict(int)
     by_consumer_repo: dict[str, int] = defaultdict(int)
     for rec in capped:
-        by_basis[rec.basis] += 1
+        by_basis[rec.basis] = by_basis.get(rec.basis, 0) + 1
         by_repo[rec.provider_repo] += 1
         by_consumer_repo[rec.consumer_repo] += 1
 
@@ -478,7 +533,7 @@ async def analyze_workspace_test_impact(
         recommendations_emitted=len(capped),
         recommendations_truncated=len(capped) < len(deduplicated),
         recommendations_omitted=len(deduplicated) - len(capped),
-        recommendations_by_basis=dict(by_basis),
+        recommendations_by_basis=by_basis,
         recommendations_by_repo=dict(by_repo),
         recommendations_by_consumer_repo=dict(by_consumer_repo),
         unresolved=unresolved,
@@ -503,7 +558,15 @@ async def workspace_test_impact_from_root(
             }
         )
     ws_config = WorkspaceConfig.load(root)
-    index = await open_workspace_index(ws_config, root)
+    changed_repos = {entry.get("repo") for entry in changed_files if entry.get("repo")}
+    # Only consumers of a changed repo can survive the join, and the primary
+    # repo holds the largest symbol table while never being a consumer here.
+    consumers = {
+        link.consumer_repo
+        for link in store.contract_links
+        if link.provider_repo in changed_repos
+    }
+    index = await open_workspace_index(ws_config, root, aliases=consumers)
     try:
         return await analyze_workspace_test_impact(
             index, store.contract_links, changed_files, **options
@@ -524,9 +587,8 @@ def workspace_test_impact_to_dict(result: WorkspaceTestImpactResult) -> dict[str
                 "consumer_file": r.consumer_file,
                 "consumer_symbol_id": r.consumer_symbol_id,
                 "provider_repo": r.provider_repo,
-                "provider_file": r.provider_file,
-                "contract_id": r.contract_id,
-                "contract_type": r.contract_type,
+                "contract_ids": r.contract_ids,
+                "contract_types": r.contract_types,
                 "basis": r.basis,
                 "via": r.via,
                 "confidence": r.confidence,

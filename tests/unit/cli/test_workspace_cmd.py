@@ -877,14 +877,21 @@ class TestWorkspaceImpactedTests:
             consumer_file="src/api.ts",
             consumer_symbol_id="src/api.ts::getUser",
             provider_repo="backend",
-            provider_file="app/routers/users.py",
-            contract_id="http::GET::/users",
-            contract_type="http",
+            contract_ids=["http::GET::/users"],
+            contract_types=["http"],
             basis="inferred",
             via="call-graph",
             confidence=0.9,
             source_files=["app/routers/users.py"],
-            evidence=[{"basis": "inferred", "via": "call-graph"}],
+            evidence=[
+                {
+                    "basis": "inferred",
+                    "via": "call-graph",
+                    "entry": "symbol",
+                    "contract_id": "http::GET::/users",
+                    "source_file": "app/routers/users.py",
+                }
+            ],
         )
         unresolved = UnresolvedLink(
             consumer_repo="frontend",
@@ -904,16 +911,29 @@ class TestWorkspaceImpactedTests:
             recommendations_emitted=1,
             recommendations_truncated=False,
             recommendations_omitted=0,
-            recommendations_by_basis={"inferred": 1},
+            recommendations_by_basis={"measured": 0, "inferred": 1},
             recommendations_by_repo={"backend": 1},
             recommendations_by_consumer_repo={"frontend": 1},
             unresolved=[unresolved],
             files_analyzed=[],
-            summary={"states": {"measured": 0, "inferred": 1, "none": 0, "unresolved": 1}},
+            summary={
+                "states": {"measured": 0, "inferred": 1, "none": 0, "unresolved": 1},
+                "passes": {"measured": True, "inferred": True},
+            },
         )
 
-    @pytest.fixture
-    def workspace(self, tmp_path, monkeypatch):
+    def _empty(self):
+        """What the command gets when the workspace has no contract map yet."""
+        from repowise.core.workspace.test_impact import WorkspaceTestImpactResult
+
+        return WorkspaceTestImpactResult(
+            summary={
+                "reason": "no_contract_store",
+                "passes": {"measured": True, "inferred": True},
+            }
+        )
+
+    def _install(self, tmp_path, monkeypatch, canned):
         from repowise.core.workspace import test_impact
 
         _make_git_repo(tmp_path / "backend")
@@ -925,13 +945,20 @@ class TestWorkspaceImpactedTests:
                 {"path": "frontend", "alias": "frontend"},
             ],
         )
-        canned = self._canned()
 
         async def _fake(root, changed, **options):
             return canned
 
         monkeypatch.setattr(test_impact, "workspace_test_impact_from_root", _fake)
         return tmp_path
+
+    @pytest.fixture
+    def workspace(self, tmp_path, monkeypatch):
+        return self._install(tmp_path, monkeypatch, self._canned())
+
+    @pytest.fixture
+    def empty_workspace(self, tmp_path, monkeypatch):
+        return self._install(tmp_path, monkeypatch, self._empty())
 
     def test_a_link_that_could_not_be_followed_is_printed(self, runner, workspace):
         result = runner.invoke(
@@ -963,3 +990,55 @@ class TestWorkspaceImpactedTests:
         )
         assert result.exit_code == 0, result.output
         assert "frontend:tests/api.test.ts" in result.output
+
+    def test_the_table_names_the_contracts_and_the_provider_files(
+        self, runner, workspace
+    ):
+        result = runner.invoke(
+            cli,
+            [
+                "workspace",
+                "impacted-tests",
+                "backend:app/routers/users.py",
+                "--path",
+                str(workspace),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        flattened = " ".join(result.output.split())
+        assert "http::GET::/users" in flattened
+        assert "Provider Files" in flattened
+        assert "app/routers/users.py" in flattened
+
+    def _split_runner(self):
+        """A runner that keeps stderr out of ``stdout``.
+
+        ``mix_stderr`` exists on click 8.1 and was removed in 8.2, where the
+        two streams are already separate.
+        """
+        import inspect
+
+        from click.testing import CliRunner
+
+        if "mix_stderr" in inspect.signature(CliRunner.__init__).parameters:
+            return CliRunner(mix_stderr=False)
+        return CliRunner()
+
+    def test_list_format_explains_an_empty_answer_on_stderr(self, empty_workspace):
+        """A pipeline reading stdout must never get silence with exit 0."""
+        result = self._split_runner().invoke(
+            cli,
+            [
+                "workspace",
+                "impacted-tests",
+                "backend:app/routers/users.py",
+                "--path",
+                str(empty_workspace),
+                "--format",
+                "list",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert result.stdout.strip() == ""
+        assert "No tests found" in result.stderr
+        assert "contract map" in result.stderr

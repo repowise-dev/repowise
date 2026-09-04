@@ -352,8 +352,9 @@ async def tests_reaching_by_tier(
     """:func:`tests_reaching`, also saying which tier answered each target.
 
     *symbol_seeds* narrows the call walk for the targets it names: the walk
-    enters at exactly those symbol ids rather than at every symbol the file
-    declares. Targets it does not name keep the ``defines`` lookup, and the
+    enters at exactly those symbol ids instead of at every symbol the file
+    declares. A target it does not name, or names with no ids, keeps the
+    ``defines`` lookup, and the
     import tier stays file-level either way.
 
     The call walk runs first; the import walk is then seeded with only the
@@ -416,7 +417,13 @@ async def _call_reaching(
     origins: dict[str, set[str]] = {}
     # A caller that knows which symbol in the file it cares about enters there,
     # so a test reaching an unrelated symbol in the same file does not count.
-    seeded = {seed: symbol_seeds[seed] for seed in seeds if symbol_seeds and seed in symbol_seeds}
+    # An empty entry names no symbol, so that file is unseeded and keeps the
+    # ``defines`` lookup; treating it as seeded would silence the file entirely.
+    seeded = {
+        seed: symbol_seeds[seed]
+        for seed in seeds
+        if symbol_seeds and symbol_seeds.get(seed)
+    }
     for seed, symbol_ids in seeded.items():
         for symbol in symbol_ids:
             origins.setdefault(symbol, set()).add(seed)

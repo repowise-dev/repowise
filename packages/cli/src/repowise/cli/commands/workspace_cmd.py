@@ -1468,13 +1468,16 @@ def _empty_explanation(result: object) -> str:
     parts = []
     reached_nothing = (summary.get("states") or {}).get("none", 0)
     if reached_nothing:
-        parts.append(f"{reached_nothing} consumer file(s) reached by nothing")
+        parts.append(f"{reached_nothing} consumer file(s) the requested passes found nothing for")
     unresolved = len(getattr(result, "unresolved", []) or [])
     if unresolved:
         parts.append(f"{unresolved} link(s) could not be determined")
+    passes = summary.get("passes") or {}
+    disabled = [name for name in ("measured", "inferred") if passes.get(name) is False]
+    suffix = "".join(f" ({name} pass disabled)" for name in disabled)
     if not parts:
-        return "No tests found: no consumer call site was analysed."
-    return f"No tests found: {', '.join(parts)}."
+        return f"No tests found: no consumer call site was analysed.{suffix}"
+    return f"No tests found: {', '.join(parts)}.{suffix}"
 
 
 @workspace_group.command("impacted-tests")
@@ -1533,7 +1536,7 @@ def workspace_impacted_tests(
     fmt: str,
     as_json: bool,
 ) -> None:
-    """Cross-repository test impact analysis — which downstream tests to run.
+    """Cross-repository test impact: which downstream tests to run.
 
     Given a list of changed files in provider repositories (format: repo:path),
     returns the test files in consumer repositories that cover those changes,
@@ -1546,7 +1549,7 @@ def workspace_impacted_tests(
     Output format:
         - table (default): human-readable grouped by consumer repo
         - json: full machine-readable result
-        - list: test file paths only, one per line (for piping to pytest)
+        - list: one repo:path line per test file
     """
     configure_cli_logging()
     fmt = resolve_format(fmt, as_json)
@@ -1600,6 +1603,9 @@ def workspace_impacted_tests(
             if key not in seen:
                 seen.add(key)
                 click.echo(key)
+        if not seen:
+            # A pipeline reading stdout must never get silence with exit 0.
+            click.echo(_empty_explanation(result), err=True)
         if result.unresolved:
             click.echo(
                 f"{len(result.unresolved)} contract link(s) could not be determined; "
@@ -1623,7 +1629,7 @@ def workspace_impacted_tests(
         table.add_column("Basis", style="yellow")
         table.add_column("Via", style="dim")
         table.add_column("Provider Repo", style="cyan")
-        table.add_column("Provider File", style="dim")
+        table.add_column("Provider Files", style="dim")
         table.add_column("Contract", style="dim")
         table.add_column("Confidence", justify="right")
 
@@ -1633,8 +1639,8 @@ def workspace_impacted_tests(
                 rec.basis,
                 rec.via,
                 rec.provider_repo,
-                rec.provider_file,
-                rec.contract_id,
+                ", ".join(rec.source_files),
+                ", ".join(rec.contract_ids),
                 f"{rec.confidence:.2f}",
             )
         console.print(table)

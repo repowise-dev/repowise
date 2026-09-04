@@ -204,7 +204,7 @@ Given one or more changed provider files, list the tests in consumer repos worth
 
 ```bash
 repowise workspace impacted-tests backend:app/routers/users.py
-repowise workspace impacted-tests backend:app/routers/users.py --format list | xargs npx vitest run
+repowise workspace impacted-tests backend:app/routers/users.py --target-repo frontend --format list | cut -d: -f2- | xargs npx vitest run
 repowise workspace impacted-tests backend:app/routers/users.py --format json
 ```
 
@@ -425,13 +425,13 @@ Three output formats: `table` (the default, grouped by consumer repo), `json` (t
 Every consumer call site the walk considers ends in one of four states, and the command names the one it landed on:
 
 - **measured**, a coverage map ingested from that repo says the test actually ran the consumer code. The strongest evidence, and it only exists where coverage has been ingested.
-- **inferred**, no coverage, but the consumer's call graph or import graph reaches the call site from a test. The call graph is entered at the *symbol* the contract bound to, not the file, so a test that reaches an unrelated function in the same file is not recommended.
+- **inferred**, no coverage, but the consumer's call graph or import graph reaches the call site from a test. The call graph is entered at the *symbol* the contract bound to, not the file, so a test that reaches an unrelated function in the same file is not recommended. The import fallback only knows files, so it is entered at the file; every row says which it was, in the `entry` field of its evidence.
 - **none**, the consumer was analyzed and nothing reaches the call site. A real answer, not a failure: that code has no test guarding it.
 - **unresolved**, the join could not determine an answer. Four causes, each reported by name: the consumer repo has no index, the contract never bound to a symbol, the bound symbol is no longer in the index, or the lookup itself failed.
 
-An empty answer always says which of these produced it, so "no tests" is never ambiguous between "nothing guards this" and "we could not look". A `Could not determine` table lists the unresolved links with their reason; under `--format list` the count goes to stderr so the piped list stays clean.
+An empty answer always says which of these produced it, so "no tests" is never ambiguous between "nothing guards this" and "we could not look". That holds in every format: the `table` format prints a `Could not determine` table listing the unresolved links with their reason, `json` carries the states and the unresolved rows, and `list` writes the explanation and the unresolved count to stderr so the piped list on stdout stays clean.
 
-Per-consumer results are capped so one widely-called helper cannot flood the list; when the cap bites, the command prints how many it dropped and `--format json` carries the exact counts.
+Results are capped per consumer and provider pair so one widely-called helper cannot flood the list; when the cap bites, the command prints how many it dropped and `--format json` carries the exact counts.
 
 ---
 
