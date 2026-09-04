@@ -662,6 +662,79 @@ precision on this repo's frozen judgments, which is enough to count fixes and
 not enough to accuse one commit of causing them. The block is absent entirely
 on an index with no fix history.
 
+In workspace mode the response also holds `cross_repo`, built from the artifacts
+of the last `repowise update --workspace` rather than from a graph traversal. It
+appears when the commit touches a file that provides a contract some other repo
+consumes, or when the breaking-change report attributes a break to one of the
+changed files. `consumers[]` names each link with its `provider_file`, the
+consumer's `repo`, `file` and `contract_id`, the `contract_type` and the
+`match_type` that joined them, plus `provider_symbol_id` and `symbol_id` when the
+link is symbol-level; `consumer_repos` lists the other repos in one place.
+`breaking_changes[]` carries the `contract_id`, `type`, `kind`, `severity`,
+`detail`, `provider_file` and `impacted_repos` of each contract that changed
+incompatibly. `breaking_changes_available` says whether a detection pass ran at
+all, so an empty list reads as silence rather than as an all-clear, and
+`breaking_changes_as_of` stamps that half only. `consumers` is capped at ten and
+`breaking_changes` at five, with `consumers_truncated` and
+`breaking_changes_truncated` counting what the caps left out; the block answers
+whether this commit crosses a repo boundary, and `get_blast_radius` is the tool
+for the full traversal. It is absent outside workspace mode, without contract
+artifacts, and when the commit touches no published file.
+
+`branch_overlap` names the other open branches editing the files this change
+edits. It is git-only, so it appears whether or not the repo is indexed; an index
+only orders the shared files and adds the history rows. `base` and `current` name
+the two ends of the comparison, and each `branches[]` entry carries the branch
+name, `ahead` and `behind` commit counts, `last_commit` (the date), and `files[]`.
+Every file row states its `basis` in words, either `same file` or
+`co-change pair, N of M commits`, the second carrying the `partner` file of this
+change it pairs with and appearing only under a branch that already shares a file
+directly, at most three per branch. `scanned`, `total` and `truncated` report the
+branch scan itself, which is bounded to the newest 50 branches by committer date.
+There is no score and no percentage in the block. `branches` is capped at five and
+each entry's `files` at ten, both through the shared response budget: a capped
+list gains `<key>_total`, `<key>_emitted`, `<key>_truncated`, `<key>_omitted` and
+`<key>_reduced_reason` beside it, and the omitted rows go to the omission store,
+so on `branches_truncated` or `files_truncated` the response carries an
+`omission_marker` and `repowise expand <ref>` returns the rest. `truncated` is a
+different fact: it reports the branch scan bound, not a cap. The block is absent when the change has
+no counted files, when no other branch edits a shared file, and when the scan
+exceeds its 20-second ceiling or git cannot answer.
+
+`change_shape.independent_changes` says when the diff is several changes rather
+than one. It groups the changed files by connectivity, over index edges (imports,
+calls, type references, framework and dynamic edges), stored co-change pairs, and,
+when `revspec` is a `base..head` range, the files each commit of that range
+touched, which links them to each other. A single commit and uncommitted work
+carry no commit evidence, so only a range reads it. Only a changed file that is in
+the index, is not a test, and is written in a language whose resolver can emit an
+import edge is eligible to be grouped: docs, config and data files are never in a
+group, not even through a co-change pair, and tests never join or connect one.
+`count` is the number of groups; each `groups[]` entry lists its `files` and its
+`bridging_files`, the files that alone hold the group together, where moving one
+out would split it (named only for groups of three or more files, and most often
+the file two commits of the range share). `ungrouped_files` carries every changed
+file left out of the grouping, and `summary` names the reasons in those terms:
+docs, config, tests, files not in the index, or files it has never linked. `basis` states in words
+what was actually checked, and its sentence changes with the subject: it names a
+shared commit alongside the import, call, type reference and co-change pair when
+the commits of a range were read, and omits it when there were none to read. Under
+either wording it is a claim about this index and not about the code. There is no
+separate key saying which sentence you got; the sentence itself says it.
+`ungrouped_files` is capped at ten through the shared response budget, so a capped
+list gains `ungrouped_files_total`, `_emitted`, `_truncated`, `_omitted` and
+`_reduced_reason` beside it and the omitted names go to the omission store,
+recoverable with `repowise expand <ref>`; nothing else in the block is capped. The
+block needs an index and is absent without one, and it is absent whenever the diff
+is one change: fewer than two changed files, fewer than two of them eligible to be
+grouped, or fewer than two groups surviving. Under a response over budget it is
+the first thing shed, ahead of the rest of `change_shape`; `branch_overlap` sheds
+after `prior_fixes` and before `cross_repo`.
+
+The freshness envelope is scoped to the files this change edits, whether or not
+the repo is indexed: `branch_overlap` reads files on other branches, and that
+never widens what the response is about.
+
 **When to use:** Before merging a commit or PR range, especially when you need
 to assess the change itself rather than the risk of an already-indexed file.
 

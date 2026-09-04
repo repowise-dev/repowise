@@ -199,7 +199,7 @@ Full guide: **[docs/agent/DISTILL.md →](docs/agent/DISTILL.md)**
 
 ## Know what's dangerous before you merge
 
-Three deterministic signals, all computed from the graph and git history, no LLM:
+Four deterministic signals, all computed from the graph and git history, no LLM:
 
 - **Change risk.** Score any commit or `base..HEAD` range **0-10** from the shape of
   the diff, ranked against your repo's own recent commits. PR mode returns directives
@@ -213,6 +213,12 @@ Three deterministic signals, all computed from the graph and git history, no LLM
   tests reach a file and which ones a diff actually exercises, from the call graph,
   with or without a coverage report.
   ([reference →](docs/layers/TEST_INTELLIGENCE.md))
+- **Change coordination.** Which other open branches edit the files you are editing,
+  every row saying why it is listed (`same file`, or a co-change pair with the commit
+  counts behind it), and whether the diff in front of you is one change or several
+  groups the index links nothing between. Both stay quiet when there is nothing to
+  report. `repowise overlap` and `repowise risk`.
+  ([reference →](docs/layers/CHANGE_RISK.md#branch-overlap))
 
 Plus the free **[Repowise PR Bot](#the-pr-bot)**, which puts all of it on every pull
 request. Zero LLM calls.
