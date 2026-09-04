@@ -461,6 +461,10 @@ async def _lifespan(server: FastMCP):
         await _cancel_task(_warm_task)
         _state._lancedb_ready = None
         _state._cross_repo_enricher = None
+        # The test-impact join holds its own session per consumer repo.
+        from repowise.server.mcp_server._test_impact import close_test_impact_indexes
+
+        await close_test_impact_indexes()
         await registry.close()
         _state._registry = None
         _state._workspace_root = None

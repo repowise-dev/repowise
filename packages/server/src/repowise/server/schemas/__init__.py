@@ -270,7 +270,11 @@ from .workspace import (
     WorkspaceSystemEdge,
     WorkspaceSystemGraphResponse,
     WorkspaceSystemNode,
+    WorkspaceTestImpactFile,
+    WorkspaceTestImpactResponse,
+    WorkspaceTestRecommendation,
     WorkspaceUnmatchedConsumer,
+    WorkspaceUnresolvedLink,
 )
 from .zoom import (
     ZoomMapResponse,
@@ -497,7 +501,11 @@ __all__ = [
     "WorkspaceSystemEdge",
     "WorkspaceSystemGraphResponse",
     "WorkspaceSystemNode",
+    "WorkspaceTestImpactFile",
+    "WorkspaceTestImpactResponse",
+    "WorkspaceTestRecommendation",
     "WorkspaceUnmatchedConsumer",
+    "WorkspaceUnresolvedLink",
     "ZoomMapResponse",
     "ZoomMetricsResponse",
     "ZoomNodeResponse",

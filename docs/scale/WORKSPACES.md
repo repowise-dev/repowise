@@ -433,6 +433,12 @@ An empty answer always says which of these produced it, so "no tests" is never a
 
 Results are capped per consumer and provider pair so one widely-called helper cannot flood the list; when the cap bites, the command prints how many it dropped and `--format json` carries the exact counts.
 
+Use it three ways:
+
+- **CLI**, `repowise workspace impacted-tests <repo:path>...`, the command above.
+- **REST**, `GET /api/workspace/test-impact?repo=<alias>&file=<path>`. Repeat `file` for several changed files in the same repo. The response carries the same result the command prints: `recommendations` (each with its consumer repo and file, the bound `consumer_symbol_id`, `basis`, `via`, `confidence` and the contract ids that produced it), `unresolved` with a reason per link, `files_analyzed` with the state each landed on, and the `summary` counts.
+- **Web UI**, a provider contract's page (`/workspace/contracts/detail`) ends in a **Tests to run** section: the tests grouped by consumer repo, each marked measured or inferred and saying whether the coverage map, the call graph or the import graph found it, and a **Could not determine** list naming the consumer file and the reason. A consumer contract has no such section, since tests are found on the consumer side.
+
 ---
 
 ## Architecture Conformance

@@ -5,8 +5,13 @@ import type {
   WorkspaceContractEntry,
   WorkspaceContractLinkEntry,
 } from "@/lib/api/types";
-import type { ContractSchema, SchemaField } from "@repowise-dev/types/workspace";
+import type {
+  ContractSchema,
+  SchemaField,
+  WorkspaceTestImpactResponse,
+} from "@repowise-dev/types/workspace";
 import { contractTypeLabel } from "@repowise-dev/ui/workspace/contract-type-label";
+import { ContractTestsSection } from "@repowise-dev/ui/workspace/contract-tests-section";
 import {
   asContractSchema,
   contractHeading,
@@ -36,9 +41,12 @@ interface Props {
   detail: WorkspaceContractDetail;
   /** Repo alias to indexed repo id. A never-indexed repo has no entry. */
   repoIds: Record<string, string>;
+  /** Consumer tests guarding this contract. Providers only; null otherwise. */
+  testImpact?: WorkspaceTestImpactResponse | null;
+  testImpactError?: string | null;
 }
 
-export function ContractBody({ detail, repoIds }: Props) {
+export function ContractBody({ detail, repoIds, testImpact, testImpactError }: Props) {
   const { contract, links, unmatched_reason: unmatchedReason } = detail;
   const isProvider = contract.role === "provider";
   const schema = asContractSchema(detail.contract_schema);
@@ -109,6 +117,12 @@ export function ContractBody({ detail, repoIds }: Props) {
         links={links}
         unmatchedReason={unmatchedReason}
         repoIds={repoIds}
+      />
+
+      <ContractTestsSection
+        result={testImpact ?? null}
+        contractId={contract.contract_id}
+        error={testImpactError ?? null}
       />
 
       <SchemaSection contract={contract} schema={schema} />

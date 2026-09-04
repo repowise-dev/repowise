@@ -4,6 +4,7 @@ export * from "./co-change-table";
 export * from "./contract-drawer";
 export * from "./contract-facts";
 export * from "./contract-links-table";
+export * from "./contract-tests-section";
 export * from "./contract-type-badge";
 export * from "./cross-repo-summary";
 export * from "./package-deps-table";

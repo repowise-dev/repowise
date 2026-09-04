@@ -591,6 +591,13 @@ the same distinction in one word: `measured`, `inferred`, or absent. Build the
 measured map with `coverage run --contexts=test` followed by
 `repowise coverage add`.
 
+In workspace mode the response also carries `cross_repo`, and every
+`cross_repo.consumers[]` row gains a `tests` block: a `state` (`measured`,
+`inferred`, `none` or `unresolved`), up to five `tests_to_run` rows carrying
+`test_file`, `test_id`, `basis`, `via` and `confidence`, `total` and
+`truncated` for the overflow (the tail goes to the omission store), and
+`unresolved_reason` / `unresolved_detail` when the join could not be followed.
+
 > **Output-schema change.** `impacted_tests.tests` is now
 > `impacted_tests.tests_to_run`, matching `get_risk`'s directive.
 
@@ -1063,6 +1070,11 @@ path weight, not a breakage probability), each with `distance` (hops),
 `structural` (a real dependency vs co-change only), and the edge kinds that
 carried the impact; plus `impact_score_semantics`, `impacted_repos`,
 `structural_count` / `behavioral_count`, `total_impacted`, and unresolved targets.
+
+Each `symbol_targets[].consumers[]` row also carries a `tests` block of the same
+shape as `get_change_risk`'s: which tests in that consumer repo guard the
+symbol's contracts, capped at five with the tail in the omission store, and a
+named reason when a link could not be followed.
 
 **When to use:** Before changing a high-fan-out provider, see who structurally
 consumes it across repo boundaries. Structural reach outweighs historical

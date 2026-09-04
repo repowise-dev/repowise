@@ -226,6 +226,13 @@ export type {
   NodeArchitectureRole,
   NodeRole,
   ArchitectureType,
+  WorkspaceTestRecommendation,
+  WorkspaceUnresolvedLink,
+  WorkspaceTestImpactFile,
+  WorkspaceTestImpactResponse,
+  TestImpactBasis,
+  TestImpactState,
+  TestImpactUnresolvedReason,
 } from "@repowise-dev/types";
 
 import type {

@@ -48,6 +48,7 @@ from repowise.server.mcp_server._helpers import (
     resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._test_impact import cross_repo_tests, tests_block_for
 
 log = structlog.get_logger(__name__)
 
@@ -210,7 +211,11 @@ async def get_change_risk(
         prior_fixes = await _prior_fixes_block(ctx, changed)
         if prior_fixes is not None:
             payload["prior_fixes"] = prior_fixes
-        cross_repo = _cross_repo_block(getattr(ctx, "alias", ""), sorted(changed))
+        alias = getattr(ctx, "alias", "")
+        # The join needs an open index per consumer repo, so it runs once for
+        # the whole change and the block distributes its rows.
+        impact = await cross_repo_tests(alias, sorted(changed))
+        cross_repo = _cross_repo_block(alias, sorted(changed), impact, collector)
         if cross_repo is not None:
             payload["cross_repo"] = cross_repo
     except BaseException:
@@ -472,7 +477,12 @@ def _has_contract_data() -> bool:
     return bool(enricher is not None and getattr(enricher, "has_contract_data", False))
 
 
-def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | None:
+def _cross_repo_block(
+    alias: str,
+    changed_files: list[str],
+    impact: Any = None,
+    collector: OmissionCollector | None = None,
+) -> dict[str, Any] | None:
     """What this commit does to consumers in other repos, or ``None``.
 
     A commit that changes a published signature is the same class of fact as
@@ -575,8 +585,24 @@ def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | 
             summary += "; the last workspace update found no break in them."
         else:
             summary += "; no breaking-change report has been built for them."
+        shown = consumers[:_CROSS_REPO_CONSUMER_LIMIT]
+        if impact is not None:
+            for i, row in enumerate(shown):
+                row["tests"] = tests_block_for(
+                    impact,
+                    row.get("repo") or "",
+                    row.get("file") or "",
+                    row.get("contract_id") or "",
+                    collector,
+                    f"cross_repo.consumers[{i}].tests.tests_to_run",
+                )
+            test_files = {rec.test_file for rec in impact.recommendations}
+            summary += (
+                f" {len(test_files)} consumer test file(s) to run, "
+                f"{len(impact.unresolved)} link(s) could not be determined."
+            )
         return {
-            "consumers": consumers[:_CROSS_REPO_CONSUMER_LIMIT],
+            "consumers": shown,
             "consumers_truncated": max(0, len(consumers) - _CROSS_REPO_CONSUMER_LIMIT),
             "consumer_repos": repos,
             "breaking_changes": breaking,

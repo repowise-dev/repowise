@@ -14,9 +14,11 @@ from typing import Any
 
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import _is_workspace_mode
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import persisted_analysis_meta as _analysis_meta
+from repowise.server.mcp_server._test_impact import cross_repo_tests, tests_block_for
 
 #: How many impacted services the MCP response carries inline. The full set is
 #: available via the REST endpoint / the map; here we keep the agent payload
@@ -88,7 +90,10 @@ async def get_blast_radius(
     # Only targets the node/alias resolver rejected are tried as symbol ids, so
     # a string that already names a node keeps its existing meaning.
     _, unresolved = resolve_targets(graph, targets)
-    symbol_targets, effective = _resolve_symbol_targets(enricher, graph, targets, unresolved)
+    collector = OmissionCollector("get_blast_radius", repo_root=_state._repo_path)
+    symbol_targets, effective = await _resolve_symbol_targets(
+        enricher, graph, targets, unresolved, collector
+    )
     result = cross_repo_blast_radius(
         graph,
         effective,
@@ -144,6 +149,7 @@ async def get_blast_radius(
     }
     if symbol_targets:
         payload["symbol_targets"] = symbol_targets
+    collector.attach(payload)
     return payload
 
 
@@ -167,11 +173,12 @@ def _graph_node_for(nodes_by_repo: dict[str, list[Any]], contract: dict[str, Any
     return best
 
 
-def _resolve_symbol_targets(
+async def _resolve_symbol_targets(
     enricher: Any,
     graph: Any,
     targets: list[str],
     unresolved: list[str],
+    collector: OmissionCollector | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Expand symbol-id targets into graph nodes plus their symbol-level consumers.
 
@@ -202,6 +209,21 @@ def _resolve_symbol_targets(
             for lk in enricher.get_contract_links_by_provider_symbol(raw)
             if lk.get("provider_repo") in set(repos)
         ]
+        # One join per provider repo, over the files that repo publishes this
+        # symbol from; the consumer rows below pick their own repo's result.
+        by_provider: dict[str, list[str]] = defaultdict(list)
+        for c in contracts:
+            if c.get("repo") and c.get("file_path"):
+                by_provider[c["repo"]].append(c["file_path"])
+        impacts = (
+            {
+                repo: await cross_repo_tests(repo, sorted(set(files)))
+                for repo, files in sorted(by_provider.items())
+            }
+            # A symbol with no consumers has nothing to join, so nothing opens.
+            if links
+            else {}
+        )
         consumers = [
             {
                 "provider_repo": link.get("provider_repo"),
@@ -216,6 +238,22 @@ def _resolve_symbol_targets(
             }
             for link in links[:_SYMBOL_CONSUMER_LIMIT]
         ]
+        tests_total = 0
+        unresolved_total = 0
+        for j, (row, link) in enumerate(zip(consumers, links, strict=False)):
+            impact = impacts.get(link.get("provider_repo") or "")
+            if impact is None:
+                continue
+            row["tests"] = tests_block_for(
+                impact,
+                row.get("repo") or "",
+                row.get("file") or "",
+                row.get("contract_id") or "",
+                collector,
+                f"symbol_targets[{len(blocks)}].consumers[{j}].tests.tests_to_run",
+            )
+            tests_total += row["tests"]["total"]
+            unresolved_total += 1 if row["tests"]["unresolved_reason"] else 0
         block: dict[str, Any] = {
             "symbol_id": raw,
             "nodes": nodes,
@@ -224,6 +262,11 @@ def _resolve_symbol_targets(
             "consumer_count": len(links),
             "consumers_truncated": max(0, len(links) - len(consumers)),
         }
+        if any("tests" in row for row in consumers):
+            block["tests_summary"] = (
+                f"tests to run: {tests_total} across {len(consumers)} consumer(s), "
+                f"{unresolved_total} unresolved"
+            )
         # Symbol ids are repo-relative, so one id can name two symbols.
         if len(repos) > 1:
             block["ambiguous_in_repos"] = repos
