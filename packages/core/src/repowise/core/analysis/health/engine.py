@@ -386,6 +386,7 @@ class HealthAnalyzer:
         changed_files: set[str] | list[str] | None = None,
         repo_function_mod_p80: int | None = None,
         timings: Any | None = None,
+        duplication_files: set[str] | None = None,
     ) -> HealthReport:
         """Analyze the configured parsed files.
 
@@ -407,6 +408,12 @@ class HealthAnalyzer:
 
         *timings* is a phase table; each stage of this pass records an
         ``analysis.health.*`` row so a slow pass names the stage.
+
+        *duplication_files* narrows the clone detector's incremental splice to
+        the files whose bytes changed. It defaults to *changed_files*, which on
+        an update also carries the performance closure: files re-walked for
+        their call paths, whose tokens did not move and whose clone pairs are
+        already in the persisted index.
         """
         from repowise.core.pipeline.phase_timing import timed
 
@@ -443,7 +450,11 @@ class HealthAnalyzer:
                         self.git_meta_map,
                         cache_dir=self.duplication_cache_dir,
                         source_reader=self.read_source,
-                        changed_files=changed_set,
+                        changed_files=(
+                            set(duplication_files)
+                            if duplication_files is not None
+                            else changed_set
+                        ),
                     )
                 _log_duplication_diagnostics(dup_report)
             except Exception as exc:

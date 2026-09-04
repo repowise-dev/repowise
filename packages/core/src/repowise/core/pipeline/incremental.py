@@ -604,6 +604,31 @@ async def load_stored_coverage_map(
         return {}
 
 
+def _performance_only_config(config: dict | None, performance_only: set[str]) -> dict | None:
+    """Disable every non-performance detector on the closure's files.
+
+    The closure adds files whose call paths reach a changed sink. Only their
+    performance findings survive the filter below; every other detector's
+    output for them is computed and discarded, and on a central helper the
+    closure runs to hundreds of files. The walk still covers them, because the
+    performance detectors read it.
+    """
+    if not performance_only:
+        return config
+    from repowise.core.analysis.health.biomarkers import registered_biomarkers
+    from repowise.core.analysis.health.scoring import dimensions_for
+
+    non_performance = {
+        b.name for b in registered_biomarkers() if "performance" not in dimensions_for(b.name)
+    }
+    out = dict(config or {})
+    per_file = {k: set(v) for k, v in (out.get("per_file_disabled") or {}).items()}
+    for path in performance_only:
+        per_file[path] = per_file.get(path, set()) | non_performance
+    out["per_file_disabled"] = per_file
+    return out
+
+
 def run_partial_analysis(
     repo_path: Any,
     graph_builder: Any,
@@ -700,11 +725,15 @@ def run_partial_analysis(
                 if _hcfg.has_overrides()
                 else None
             )
+            _analyzer_config = _performance_only_config(
+                _analyzer_config, _performance_changed - _health_changed
+            )
             partial_health_report = _health_analyzer.analyze(
                 _analyzer_config,
                 changed_files=_health_scope,
                 repo_function_mod_p80=repo_function_mod_p80,
                 timings=timings,
+                duplication_files=_health_changed,
             )
             # The closure exists only to refresh interprocedural performance.
             # Preserve the historical changed-file scope for every other
