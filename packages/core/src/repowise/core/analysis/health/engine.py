@@ -67,6 +67,7 @@ from .refactoring import (
 from .refactoring.graph_signals import build_file_scc_index, build_methods_by_file
 from .scoring import attach_impacts, compute_kpis, remap_severities, score_file
 from .source_reader import SourceReader, disk_source_reader
+from .walk_cache import HealthWalkCache
 
 log = structlog.get_logger(__name__)
 
@@ -314,6 +315,14 @@ class HealthAnalyzer:
         # repo's ``.repowise``). None disables caching — the duplication
         # pass then re-tokenizes everything, exactly as before.
         self.duplication_cache_dir = duplication_cache_dir
+        # The walk result for a file is a function of its bytes, its language
+        # and the walker's version, so it is kept beside the index like the
+        # parse trees and the clone windows are. Absent without a cache dir.
+        self._walk_cache: HealthWalkCache | None = (
+            HealthWalkCache(duplication_cache_dir, HEALTH_ANALYZER_VERSION)
+            if duplication_cache_dir is not None
+            else None
+        )
         # Checkout root, used only to read package boundaries off disk. None
         # falls back to inferring them from the analyzed file list, which sees
         # only the manifests the traverser emitted.
@@ -478,6 +487,8 @@ class HealthAnalyzer:
         walked: list[tuple[Any, FileComplexity]] = []
         timings_walk = timed(timings, "analysis.health.walk")
         timings_walk.__enter__()
+        if self._walk_cache is not None:
+            self._walk_cache.load()
         for pf in self.parsed_files:
             if changed_set is not None and pf.file_info.path not in changed_set:
                 continue
@@ -491,6 +502,7 @@ class HealthAnalyzer:
             # evaluate); see analyze_async.
             if on_step:
                 on_step(pf.file_info.path)
+        self._save_walk_cache()
         timings_walk.__exit__(None, None, None)
 
         with timed(timings, "analysis.health.repo_stats"):
@@ -674,6 +686,8 @@ class HealthAnalyzer:
         # Pre-walk in worker threads so each task hands a list of
         # FunctionComplexity entries to the synchronous biomarker stage.
         # tree-sitter parsing releases the GIL → real parallelism here.
+        if self._walk_cache is not None:
+            self._walk_cache.load()
         workers = max(1, int(max_workers or os.cpu_count() or 4))
         semaphore = asyncio.Semaphore(workers)
 
@@ -905,13 +919,35 @@ class HealthAnalyzer:
         source = self.read_source(path)
         if source is None:
             return FileComplexity(functions=[], classes=[])
+        key = None
+        if self._walk_cache is not None:
+            from repowise.core.ingestion import compute_content_hash
+
+            key = HealthWalkCache.key(language, compute_content_hash(source))
+            cached = self._walk_cache.get(key)
+            if cached is not None:
+                return cached
         if language == "sql":
             # SQL has no tree-sitter grammar here; the sqlglot-backed walker
             # produces routine CCN + the sql_* smell hits instead.
             from .sql_complexity import walk_sql_file
 
-            return walk_sql_file(pf.file_info, source)
-        return walk_file(path, language, source)
+            fcx = walk_sql_file(pf.file_info, source)
+        else:
+            fcx = walk_file(path, language, source)
+        if key is not None and self._walk_cache is not None:
+            self._walk_cache.put(key, fcx)
+        return fcx
+
+    def _save_walk_cache(self) -> None:
+        """Persist the walk entries this pass used or produced, if any."""
+        if self._walk_cache is not None:
+            self._walk_cache.save()
+            log.debug(
+                "health_walk_cache",
+                hits=self._walk_cache.hits,
+                misses=self._walk_cache.misses,
+            )
 
     def _extract_method_analyses(
         self,
