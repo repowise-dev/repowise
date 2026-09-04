@@ -59,6 +59,38 @@ def refine_kotlin_class_kind(class_node: Node) -> str:
     return "class"
 
 
+# Elixir definition keyword -> SymbolKind. Every definition is a `call` node,
+# so the node type says nothing; the keyword in the call's target says all.
+_ELIXIR_DEFINITION_KINDS = {
+    "defmodule": "module",
+    "defprotocol": "interface",
+    "defimpl": "impl",
+    "def": "function",
+    "defp": "function",
+    "defdelegate": "function",
+    "defmacro": "macro",
+    "defmacrop": "macro",
+    "defguard": "macro",
+    "defguardp": "macro",
+}
+
+
+def refine_elixir_call_kind(call_node: Node, src: str) -> str:
+    """Refine the placeholder ``module`` kind for an Elixir ``call`` node.
+
+    ``LANGUAGE_CONFIGS["elixir"]`` maps the one node type Elixir has to
+    ``module`` rather than to a callable kind on purpose: a ``def`` nested in
+    a ``defmodule`` has a ``call`` ancestor, so a callable mapping would make
+    ``_has_callable_ancestor`` drop every function in every module. The real
+    kind is read back here, after that filter has run.
+    """
+    target = call_node.child_by_field_name("target")
+    if target is None:
+        return "module"
+    keyword = node_text(target, src).strip()
+    return _ELIXIR_DEFINITION_KINDS.get(keyword, "module")
+
+
 def refine_pascal_type_kind(decl_type_node: Node) -> str:
     """Refine the generic ``class`` kind for Pascal ``declType`` nodes.
 

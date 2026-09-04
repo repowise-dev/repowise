@@ -5,6 +5,7 @@ from .docstrings import extract_module_docstring, extract_symbol_docstring
 from .helpers import (
     extract_go_receiver_type,
     node_text,
+    refine_elixir_call_kind,
     refine_go_type_kind,
     refine_kotlin_class_kind,
     refine_pascal_type_kind,
@@ -23,6 +24,7 @@ __all__ = [
     "extract_module_docstring",
     "extract_symbol_docstring",
     "node_text",
+    "refine_elixir_call_kind",
     "refine_go_type_kind",
     "refine_kotlin_class_kind",
     "refine_pascal_type_kind",

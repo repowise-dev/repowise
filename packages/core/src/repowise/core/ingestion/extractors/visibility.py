@@ -69,6 +69,18 @@ def public_by_default(_name: str, _mods: list[str]) -> str:
     return "public"
 
 
+# Elixir spells privacy in the definition keyword rather than in a modifier:
+# `defp` / `defmacrop` / `defguardp` are module-private, their unsuffixed
+# forms are public. elixir.scm captures the keyword as @symbol.modifiers.
+_ELIXIR_PRIVATE_KEYWORDS = frozenset({"defp", "defmacrop", "defguardp"})
+
+
+def elixir_visibility(_name: str, modifier_texts: list[str]) -> str:
+    if any(text.strip() in _ELIXIR_PRIVATE_KEYWORDS for text in modifier_texts):
+        return "private"
+    return "public"
+
+
 def kotlin_visibility(_name: str, modifier_texts: list[str]) -> str:
     combined = " ".join(modifier_texts).lower()
     if "private" in combined:
@@ -515,4 +527,5 @@ VISIBILITY_FNS: dict[str, Callable[[str, list[str]], str]] = {
     "swift": swift_visibility,
     "scala": scala_visibility,
     "php": php_visibility,
+    "elixir": elixir_visibility,
 }
