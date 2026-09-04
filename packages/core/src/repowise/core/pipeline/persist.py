@@ -304,6 +304,8 @@ async def persist_graph_nodes(
     repo_id: str,
     graph_builder: Any,
     ep_scores: dict[str, float] | None = None,
+    *,
+    timings: Any | None = None,
 ) -> None:
     """Persist file- and symbol-level graph nodes with full centrality metrics.
 
@@ -316,25 +318,30 @@ async def persist_graph_nodes(
         batch_upsert_graph_node_membership,
         batch_upsert_graph_nodes,
     )
+    from repowise.core.pipeline.phase_timing import timed
 
     graph = graph_builder.graph()
-    pr = graph_builder.pagerank()
-    bc = graph_builder.betweenness_centrality()
-    sym_pr = graph_builder.symbol_pagerank()
-    sym_bc = graph_builder.symbol_betweenness_centrality()
-    cd = graph_builder.community_detection()
-    sc = graph_builder.symbol_communities()
-    ci = graph_builder.community_info()
+    with timed(timings, "persist.graph_nodes.metrics"):
+        pr = graph_builder.pagerank()
+        bc = graph_builder.betweenness_centrality()
+        sym_pr = graph_builder.symbol_pagerank()
+        sym_bc = graph_builder.symbol_betweenness_centrality()
+        cd = graph_builder.community_detection()
+        sc = graph_builder.symbol_communities()
+        ci = graph_builder.community_info()
     # ``None`` means "derive scores from the graph" (the incremental update
     # path passes nothing). An explicit ``{}`` means "no scores" and is left
     # untouched. Without this, every ``update`` re-upserted symbol nodes with
     # empty community_meta and wiped the entry_point_scores written at init,
     # leaving get_execution_flows / the dashboard panel permanently empty.
     if ep_scores is None:
-        ep_scores = _derive_entry_point_scores(graph_builder)
+        with timed(timings, "persist.graph_nodes.entry_points"):
+            ep_scores = _derive_entry_point_scores(graph_builder)
 
     bt_commits = _betweenness_commits(graph_builder)
 
+    timings_rows = timed(timings, "persist.graph_nodes.rows")
+    timings_rows.__enter__()
     nodes = []
     for node_id in graph.nodes:
         data = graph.nodes[node_id]
@@ -400,15 +407,20 @@ async def persist_graph_nodes(
                 }
             )
         nodes.append(node_dict)
+    timings_rows.__exit__(None, None, None)
 
     if nodes:
-        await batch_upsert_graph_nodes(session, repo_id, nodes)
+        with timed(timings, "persist.graph_nodes.upsert"):
+            await batch_upsert_graph_nodes(session, repo_id, nodes)
 
     # Materialize the file-level metrics snapshot (graph_metrics) so large
     # repos can serve metric reads from SQL without recomputing the NetworkX
     # centrality kernels. Additive to graph_nodes; never changes node rows.
     try:
-        await batch_upsert_graph_metrics(session, repo_id, graph_builder.file_metrics_snapshot())
+        with timed(timings, "persist.graph_nodes.snapshots"):
+            await batch_upsert_graph_metrics(
+                session, repo_id, graph_builder.file_metrics_snapshot()
+            )
     except Exception as exc:  # materialization is non-load-bearing
         logger.warning("graph_metrics_materialize_skipped", error=str(exc))
 
@@ -416,9 +428,10 @@ async def persist_graph_nodes(
     # queryable rows (graph_node_membership). Feeds the break-cycle /
     # move-method refactoring surfaces; non-load-bearing like graph_metrics.
     try:
-        await batch_upsert_graph_node_membership(
-            session, repo_id, graph_builder.node_membership_snapshot()
-        )
+        with timed(timings, "persist.graph_nodes.snapshots"):
+            await batch_upsert_graph_node_membership(
+                session, repo_id, graph_builder.node_membership_snapshot()
+            )
     except Exception as exc:  # materialization is non-load-bearing
         logger.warning("graph_node_membership_materialize_skipped", error=str(exc))
 

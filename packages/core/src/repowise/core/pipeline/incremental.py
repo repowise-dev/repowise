@@ -1671,7 +1671,7 @@ async def persist_incremental_index(
                 from repowise.core.pipeline.persist import persist_graph_nodes
 
                 with timed(timings, "persist.graph_nodes"):
-                    await persist_graph_nodes(session, repo_id, graph_builder)
+                    await persist_graph_nodes(session, repo_id, graph_builder, timings=timings)
             except Exception as exc:
                 _skip("Graph nodes persist", exc)
 
