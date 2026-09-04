@@ -147,11 +147,11 @@ Resolve refs with `repowise expand <ref>` from a shell, or
 | Field | When present |
 |-------|--------------|
 | `timing_ms` | Tool wall-time |
-| `hint` | A short, conservative follow-up suggestion |
+| `hint` | A short, conservative follow-up suggestion. On a `get_answer` reply that graded `low` while the index is behind live HEAD, it says to run `repowise update` and ask again before trusting the answer |
 | `cached` | Only when `true` |
 | `index_age_days` | Days since the last `repowise update` |
 | `indexed_commit` | Short (12-char) SHA the index was built against |
-| `live_head` | Only when it differs from `indexed_commit` |
+| `live_head` | Short (12-char) SHA of the current checkout, whenever `.git/HEAD` is readable. Equal to `indexed_commit` when the index is current |
 | `stale_warning` | Only on a real signal: HEAD mismatch **that actually changed files**, or age over ~90 days when git is unreachable. Two commits with identical trees (an empty commit, a no-op merge) report `index_behind` with no warning |
 | `index_behind` | Whenever the live-vs-indexed comparison ran: `true` if HEAD has moved (alongside `stale_warning` when served content actually changed), `false` if the commits match. Absent means the comparison could not run (no git, or a repo-level tool that serves no file content) |
 | `embedder_degraded` | Whenever an embedder is resolved, `true` or `false`. Absent means none was initialised |
@@ -247,28 +247,51 @@ One-call RAG: retrieves over the wiki, gates synthesis on confidence, and return
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `question` | string | Yes | Natural language question about the codebase |
+| `scope` | string | No | Repository-relative path prefix to restrict retrieval to |
+| `include` | list[string] | No | `["evidence"]` returns the expanded projection: no confidence-keyed trimming, and a larger response budget |
 | `repo` | string | No | *(workspace only)* Target repo alias |
 
-**Returns:** A synthesized answer with file/symbol citations and a confidence label (`high`, `medium`, `low`). High-confidence answers can be cited directly. Low-confidence answers return ranked wiki candidates instead, with the page excerpt served on the highest-scoring few; the rest carry path, title and summary, and one follow-up call opens any of them.
+**Returns:** A synthesized answer with file/symbol citations, a `confidence`
+label (`high`, `medium`, `low`) rating the prose, and a `retrieval_quality`
+label (`high`, `partial`, `weak`) rating the evidence under it. Every grade
+returns an answer; what changes is how much evidence rides along with it.
+A `high` answer can be cited directly and sheds `retrieval`, `best_guesses`,
+`candidates` and `fallback_targets`, keeping one quote and, when the answer is
+not already grounded, one symbol body. A `medium` answer keeps one body, two
+quotes and the top two evidence rows. A `low` answer keeps two bodies and the
+top three evidence rows, and `fallback_targets` appears only when nothing else
+was served. Read the rows the reply names rather than calling `search_codebase`
+again. `include=["evidence"]` skips this trimming entirely.
 
-When synthesis cannot run at all — no provider resolvable, or the call failed —
-the response carries a top-level `degraded` naming the reason, and is built from
-retrieval and mined rationale with no LLM involved. `confidence` is `low` there
-for a different reason than usual, so read `degraded` first. It also raises
-`_meta.state.degraded`.
+When synthesis cannot run at all, no provider resolvable or the call failed, the
+response carries a top-level `degraded` naming the reason, is built from
+retrieval and mined rationale with no LLM involved, and keeps the fullest
+evidence shape whatever it graded. It also raises `_meta.state.degraded`.
+`confidence` there is graded from the retrieval actually served, not from the
+missing prose: on `no-llm-provider` it is `medium` unless `retrieval_quality` is
+`weak`, in which case `low`. Any other reason, a configured provider whose call
+failed, stays `low`, because a retry can still produce a real answer. `high` is
+unreachable on this path, since the `answer` string is assembled boilerplate.
+
+`_meta.complete` names the symbol bodies served whole from live source, with
+bounds checked against the file; do not re-open those. `_meta.scope_hint` names
+up to three knowledge-graph layers holding none of the served paths, so an agent
+knows which areas the answer did not touch. When an answer grades `low` and the
+index is behind live HEAD, `_meta.hint` says to run `repowise update` and ask
+again before trusting it.
 
 Two path-bearing blocks, with different jobs:
 
 | Field | Job | Confidence-gated? |
 |-------|-----|-------------------|
 | `retrieval` | **Evidence.** Enriched hits (summary, snippet, key symbols) to re-read when the prose needs checking. Shrinks as confidence rises, because a trustworthy answer needs less of it. | Yes |
-| `candidates` | **Navigation.** The ranked shortlist of files retrieval resolved, one `{path, lines?}` entry each, up to 20. | No |
+| `candidates` | **Navigation.** The ranked shortlist of files retrieval resolved, one `{path, lines?}` entry each, up to 20. | Shape-gated: the default projection drops it at every confidence |
 
-`candidates` is present whenever retrieval resolved anything, including on high-confidence answers where `retrieval` is deliberately empty. It is where to look next; it is not evidence that the answer is right.
+`candidates` is built whenever retrieval resolved anything, including on high-confidence answers where `retrieval` is deliberately empty, but the default projection drops it; ask for it with `include=["evidence"]`. It is where to look next; it is not evidence that the answer is right.
 
 **Retrieval legs:** three, fused by Reciprocal Rank Fusion: full-text and vector search over wiki pages, plus the structural symbol index. The symbol leg is keyed on the content words of the question rather than on whether it happens to carry an identifier-shaped token, so "how does an incremental update persist symbols" reaches the same rows as `_persist_symbols`. It exists because a generated file page renders only the *public* symbol table: a private helper or a local name is not in the text the other two legs index.
 
-**When to use:** First call on any code question. Collapses search, read, and reason into one round-trip. If confidence is low, follow up with `search_codebase` to discover candidate pages.
+**When to use:** First call on any code question. Collapses search, read, and reason into one round-trip. On a low grade, start from the evidence rows the reply already carries; reach for `search_codebase` only when `retrieval_quality` is `weak`.
 
 **Example call:**
 
