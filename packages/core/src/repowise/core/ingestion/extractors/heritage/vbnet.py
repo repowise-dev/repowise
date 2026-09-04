@@ -1,6 +1,6 @@
 """VB.NET heritage extraction.
 
-VB.NET separates the two clause kinds syntactically — ``Inherits`` names the
+VB.NET separates the two clause kinds syntactically: ``Inherits`` names the
 single base class (classes only), ``Implements`` names one or more
 interfaces (classes and structures). Interfaces themselves may ``Inherits``
 multiple interfaces. The grammar keeps them as distinct clause nodes with

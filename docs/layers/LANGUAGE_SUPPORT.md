@@ -273,6 +273,7 @@ bindings and heritage, with a dedicated workspace resolver per language.
 | **Dart** | `.dart` | `import` / `export` / `part` URIs, `package:` via every `pubspec.yaml`, Flutter route tables and `runApp()` edges. **Health markers included** |
 | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` `.inc` | `uses` clauses via the generic unit-name → file-stem fallback; project files as entry points. **Health markers included** |
 | **GDScript** | `.gd` | `preload(...)` / `load(...)` / `extends "res://..."` resolved as absolute paths from the nearest `project.godot`, so a repo holding many Godot projects keeps each project's `res://` namespace separate |
+| **VB.NET** | `.vb` | `Imports` through the same MSBuild project index C# uses: `.vbproj` / `.sln` parsing, `<RootNamespace>`-aware namespace lookup, NuGet package references |
 
 ### GDScript known gaps
 
@@ -511,6 +512,7 @@ cannot check.
 | C# | Full (health) | Dataflow dialect |
 | Dart | Good | riverpod / get_it dynamic hints, dataflow dialect |
 | Object Pascal | Good | Assertion and performance markers, a dedicated `uses` resolver |
+| VB.NET | Good | Health markers, project-level `<Import Include=...>` as implicit imports |
 | Elixir · F# | Good | AST upgrade (both grammars are available on PyPI) |
 | SQL / dbt | — | Column-level blast radius |
 | Shell | — | Shebang detection for extensionless executables |

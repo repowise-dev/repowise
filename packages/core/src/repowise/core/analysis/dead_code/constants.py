@@ -96,6 +96,13 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.g.cs",  # Roslyn-generated
     "*.g.i.cs",
     "*.AssemblyInfo.cs",
+    # VB.NET equivalents. "My Project" holds the generated Application,
+    # Resources and Settings designers that no .vb file imports by name.
+    "*.Designer.vb",
+    "*.designer.vb",
+    "*AssemblyInfo.vb",
+    "*/My Project/*.vb",
+    "*ApplicationEvents.vb",  # My.MyApplication hooks, raised by the VB runtime
     "*MauiProgram.cs",  # MAUI app entry — invoked by host, not imported
     "*App.xaml.cs",
     "*AppShell.xaml.cs",

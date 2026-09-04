@@ -75,7 +75,7 @@ _RESOLVERS: dict[str, ResolverFn] = {
     # <script src>/<link href> are asset paths, not module specifiers — they
     # get their own document-/root-relative resolution, never the TS/JS one.
     "html": resolve_html_asset,
-    # VB.NET Imports → namespace stem/path match (dotnet resolver lineage).
+    # VB.NET Imports resolve through the same DotNetProjectIndex as C#.
     "vbnet": resolve_vbnet_import,
 }
 

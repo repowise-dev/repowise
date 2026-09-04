@@ -292,6 +292,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "property_declaration": "variable",
             "event_declaration": "variable",
             "field_declaration": "variable",
+            "namespace_block": "module",
         },
         import_node_types=["imports_statement"],
         export_node_types=[],

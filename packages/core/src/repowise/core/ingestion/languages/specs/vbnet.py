@@ -11,7 +11,7 @@ SPEC = LanguageSpec(
     test_camel_suffixes=("Test", "Tests", "Spec", "Specs"),
     test_dir_suffixes=(".Tests", ".Specs"),
     extensions=frozenset({".vb"}),
-    grammar_package="tree_sitter_tree_sitter_vb_dotnet",
+    grammar_package="tree_sitter_vb_dotnet",
     scm_file="vbnet.scm",
     heritage_node_types=frozenset(
         {
@@ -59,6 +59,7 @@ SPEC = LanguageSpec(
     ),
     builtin_parents=frozenset(
         {
+            # The C# set, which VB.NET inherits verbatim: same BCL, same names.
             "Object",
             "ValueType",
             "Enum",
@@ -67,7 +68,27 @@ SPEC = LanguageSpec(
             "ApplicationException",
             "IDisposable",
             "IEnumerable",
+            "IEnumerator",
             "IComparable",
+            "ICloneable",
+            "IEquatable",
+            # UI and component base classes. VB.NET estates are WinForms-heavy
+            # and every designer form writes ``Inherits Form``, which would
+            # otherwise bind to any repo class of the same name.
+            "Form",
+            "Control",
+            "UserControl",
+            "Component",
+            "Page",
+            "Window",
+            "Attribute",
+            "EventArgs",
+            "MarshalByRefObject",
+            "INotifyPropertyChanged",
+            "IComparer",
+            "ICollection",
+            "IList",
+            "IDictionary",
         }
     ),
     builtin_types=frozenset(

@@ -1,11 +1,12 @@
 """Unit tests for the VB.NET language pipeline.
 
-Parses inline byte strings (no filesystem I/O). Covers symbols (class,
-module, structure, interface, enum, method, property), heritage (Inherits
-→ extends, Implements → implements), imports (Imports directives), and the
-real-world shapes the fixed fork handles: generics ``List(Of String)``, the
-``As New List(Of T)()`` object-initializer form, ByVal parameters, and
-own-line Inherits/Implements clauses.
+Parses inline byte strings (no filesystem I/O). Covers symbols (namespace,
+class, module, structure, interface, enum, method, property, field),
+heritage (Inherits to extends, Implements to implements), imports (Imports
+directives, plain and aliased), and the real-world shapes the fixed fork
+handles: generics ``List(Of String)``, the ``As New List(Of T)()``
+object-initializer form, ByVal parameters, and own-line Inherits/Implements
+clauses.
 
 Import *resolution* is covered separately in
 tests/unit/ingestion/test_vbnet_resolver.py, which needs no grammar.
@@ -13,7 +14,9 @@ tests/unit/ingestion/test_vbnet_resolver.py, which needs no grammar.
 
 from __future__ import annotations
 
-import pytest
+# Imported for its failure: the grammar is a hard dependency in
+# pyproject.toml, so a venv without it must go red rather than skip.
+import tree_sitter_vb_dotnet  # noqa: F401
 
 from repowise.core.ingestion.models import EXTENSION_TO_LANGUAGE
 from repowise.core.ingestion.parser import ASTParser
@@ -23,18 +26,11 @@ from tests.unit.ingestion.parser._helpers import _make_file_info
 def test_vb_extension_reaches_the_traversal_gate() -> None:
     """A .vb file must be recognized by the traverser, not just the AST
     parser. Both share the language registry, but EXTENSION_TO_LANGUAGE is
-    filtered through a static LanguageTag Literal at import time — a spec
+    filtered through a static LanguageTag Literal at import time, so a spec
     alone isn't enough. Regression: #1041 shipped without the tag, so .vb
     files scanned as unknown."""
     assert ".vb" in EXTENSION_TO_LANGUAGE
     assert EXTENSION_TO_LANGUAGE[".vb"] == "vbnet"
-
-# The grammar is a git dependency on the fixed fork; skip explicitly when a
-# partial venv lacks it so the failure mode is "run uv sync" not confusing
-# AssertionErrors.
-pytest.importorskip(
-    "tree_sitter_tree_sitter_vb_dotnet", reason="run `uv sync --all-packages`"
-)
 
 
 def _vb(path: str = "Models/Person.vb") -> object:
@@ -119,7 +115,7 @@ def test_heritage_extracted() -> None:
     }
     assert ("CustomerRepository", "RepositoryBase", "extends") in relations
     assert ("CustomerRepository", "ICustomerRepository", "implements") in relations
-    # IDisposable is a BCL interface in builtin_parents — filtered, like C#.
+    # IDisposable is a BCL interface in builtin_parents, so it is filtered.
     assert not any(r[1] == "IDisposable" for r in relations)
 
 
@@ -180,3 +176,62 @@ End Class
     )
     assert not result.parse_errors
     assert "OrderService" in {s.name for s in result.symbols}
+
+
+def test_fields_and_namespace_become_symbols() -> None:
+    """language_configs maps field_declaration and namespace_block, so the
+    query has to capture both; a class-level Private field is a symbol and
+    the namespace is the parent of the type inside it."""
+    parser = ASTParser()
+    source = b'''\
+Namespace MyApp.Data
+    Public Class Repo
+        Private _cache As Integer
+        Dim scratch As Long
+    End Class
+End Namespace
+'''
+    result = parser.parse_file(_vb("Data/Repo.vb"), source)
+    by_name = {s.name: s for s in result.symbols}
+    assert by_name["_cache"].kind == "variable"
+    assert by_name["_cache"].visibility == "private"
+    assert by_name["_cache"].parent_name == "Repo"
+    # Dim with no access modifier is Friend, which maps to internal.
+    assert by_name["scratch"].visibility == "internal"
+    assert by_name["MyApp.Data"].kind == "module"
+    assert by_name["Repo"].parent_name == "MyApp.Data"
+
+
+def test_aliased_import_records_the_target_namespace() -> None:
+    """Imports Gen = System.Collections.Generic is an edge to the namespace,
+    not to the alias; the grammar's namespace field is the target either way."""
+    parser = ASTParser()
+    source = b'''\
+Imports Gen = System.Collections.Generic
+Imports MyApp.Models
+
+Public Module Demo
+End Module
+'''
+    result = parser.parse_file(_vb("Demo.vb"), source)
+    modules = {i.module_path for i in result.imports}
+    assert "System.Collections.Generic" in modules
+    assert "MyApp.Models" in modules
+    assert "Gen" not in modules
+
+
+def test_bcl_base_classes_mint_no_heritage_edge() -> None:
+    """``Inherits Form`` is the WinForms base, not the repo's own Form. It sits
+    in builtin_parents so it is stripped, the way C# strips IDisposable."""
+    parser = ASTParser()
+    source = b'''\
+Public Class MainForm
+    Inherits Form
+    Implements INotifyPropertyChanged, IMyOwnContract
+End Class
+'''
+    result = parser.parse_file(_vb("Forms/MainForm.vb"), source)
+    parents = {r.parent_name for r in result.heritage}
+    assert "Form" not in parents
+    assert "INotifyPropertyChanged" not in parents
+    assert "IMyOwnContract" in parents

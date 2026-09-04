@@ -3197,7 +3197,7 @@ requires-dist = [
     { name = "tree-sitter-svelte", specifier = ">=1,<2" },
     { name = "tree-sitter-swift", specifier = ">=0.0.1" },
     { name = "tree-sitter-typescript", specifier = ">=0.23,<1" },
-    { name = "tree-sitter-vb-dotnet", git = "https://github.com/sloemo01/tree-sitter-vb-dotnet.git?rev=c29b08e" },
+    { name = "tree-sitter-vb-dotnet", specifier = ">=0.2,<1" },
     { name = "types-networkx", marker = "extra == 'dev'", specifier = ">=3.3,<4" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<1" },
     { name = "watchdog", specifier = ">=4,<5" },
@@ -4283,8 +4283,14 @@ wheels = [
 
 [[package]]
 name = "tree-sitter-vb-dotnet"
-version = "0.1.0"
-source = { git = "https://github.com/sloemo01/tree-sitter-vb-dotnet.git?rev=c29b08e#c29b08e107318a9255a1d3d6b42f7081618e349d" }
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/81/28/6b506d627ee1d8e876af019286f71d781cf2132514b5805312e13e7850eb/tree_sitter_vb_dotnet-0.2.0.tar.gz", hash = "sha256:d6931457a7a26746acb337b97872563b4c8bc966efe913a835000afdd9b9e77d", size = 416990, upload-time = "2026-09-04T08:25:43.809Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/21/5b/77b78b085880520943750fdfdba831cdcef8626188eb43b30faed88103ce/tree_sitter_vb_dotnet-0.2.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:e9ba30ceb86bae40a08f5e6d999e46f1868b361684664cbe0cd78e957b18b311", size = 148991, upload-time = "2026-09-04T08:25:39.481Z" },
+    { url = "https://files.pythonhosted.org/packages/88/c4/a405f6d856f2722e92e7fde9a61782ca3087e60130bf39a9840bb6af33c4/tree_sitter_vb_dotnet-0.2.0-cp310-abi3-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a1ec9fdbc7f042068dfe1cff6d8d9ee7532c546092ffe31da19a1fe65e150cf4", size = 158447, upload-time = "2026-09-04T08:25:41.045Z" },
+    { url = "https://files.pythonhosted.org/packages/2b/94/9efb324c925042c17a8627e237ec07a2e278e1810880aa345aa09b19e393/tree_sitter_vb_dotnet-0.2.0-cp310-abi3-win_amd64.whl", hash = "sha256:5eec71df134f3418be264349760d2b66ebe64b9a4a25910256e4925e395ac43d", size = 141363, upload-time = "2026-09-04T08:25:42.489Z" },
+]
 
 [[package]]
 name = "typer"

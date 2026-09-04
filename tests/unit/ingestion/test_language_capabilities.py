@@ -163,8 +163,8 @@ _FULL = {
     # vue components project to TypeScript through the same SFC pass as
     # svelte, so their <script> imports are ordinary ESM.
     "vue",
-    # vbnet through the fixed tree-sitter-vb-dotnet fork (generics, As New,
-    # own-line Inherits/Implements) with the namespace stem resolver.
+    # vbnet resolves Imports through the same DotNetProjectIndex as csharp:
+    # .vbproj / .sln parsing and a RootNamespace-aware namespace map.
     "vbnet",
 }
 _PARTIAL = {

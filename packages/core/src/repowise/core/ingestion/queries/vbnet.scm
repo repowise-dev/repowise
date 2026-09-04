@@ -1,14 +1,14 @@
 ; =============================================================================
-; repowise — VB.NET symbol, import, and call queries
-; tree-sitter-vb-dotnet (fixed fork, c29b08e)
+; repowise VB.NET symbol, import, and call queries
+; tree-sitter-vb-dotnet 0.2
 ; =============================================================================
 
 ; ---------------------------------------------------------------------------
-; Symbols — modifier-capturing patterns first (dedup keeps first match)
+; Symbols: modifier-capturing patterns first (dedup keeps first match)
 ; ---------------------------------------------------------------------------
 
 ; Class / module / structure / interface declarations. VB.NET nests all of
-; these inside namespace_block. The container *name* comes from the first
+; these inside namespace_block. The container name comes from the first
 ; identifier after the keyword token; the block node itself carries the type.
 (class_block
   (modifiers) @symbol.modifiers
@@ -55,12 +55,25 @@
   name: (identifier) @symbol.name
 ) @symbol.def
 
-; Constructors: Public Sub New(...) — the grammar drops the ``New`` token
-; entirely (constructor_declaration has no ``name`` field), so no name-based
-; pattern is possible here. Parameter types still feed the DI backbone below.
+; Fields: Private _foo As Integer. field_declaration has no name field; the
+; name sits one level down in the variable_declarator.
+(field_declaration
+  (modifiers) @symbol.modifiers
+  (variable_declarator
+    (identifier) @symbol.name)
+) @symbol.def
+
+; Namespaces: the block is named by a dotted namespace_name, not an identifier.
+(namespace_block
+  (namespace_name) @symbol.name
+) @symbol.def
+
+; Constructors: Public Sub New(...). The grammar drops the New token entirely
+; (constructor_declaration has no name field), so no name-based pattern is
+; possible here. Parameter types still feed the DI backbone below.
 
 ; ---------------------------------------------------------------------------
-; Symbols — fallback without modifiers
+; Symbols: fallback without modifiers
 ; ---------------------------------------------------------------------------
 
 (class_block
@@ -96,16 +109,23 @@
   name: (identifier) @symbol.name
 ) @symbol.def
 
+; Dim baz As Long, with no access modifier.
+(field_declaration
+  (variable_declarator
+    (identifier) @symbol.name)
+) @symbol.def
+
 ; ---------------------------------------------------------------------------
-; Namespaces — Imports ... (module-level, mirrors C# using directives)
+; Imports (module-level, mirrors C# using directives). The namespace field is
+; the target in both the plain and the Imports Alias = Target form.
 ; ---------------------------------------------------------------------------
 (imports_statement
   namespace: (_) @import.module
 ) @import.statement
 
 ; ---------------------------------------------------------------------------
-; Calls — invocation has target/arguments fields; member_access has
-; object/member fields. The grammar names the callee ``target``.
+; Calls: invocation has target/arguments fields; member_access has
+; object/member fields. The grammar names the callee "target".
 ; ---------------------------------------------------------------------------
 
 ; Simple call: Method(args)
@@ -114,10 +134,9 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
-; Member call: obj.Method(args) — receiver carries the type. The grammar's
-; ``object`` field is typed ``expression`` (a wrapper), so a bare
-; ``(identifier)`` there is impossible; the wildcard captures the wrapper and
-; resolution reads the identifier text out of it.
+; Member call: obj.Method(args), where the receiver carries the type. The
+; object field is always an expression wrapper, so a bare (identifier) there
+; cannot match; resolution reads the identifier text out of the wrapper.
 (invocation
   target: (member_access
     object: (_) @call.receiver
@@ -125,17 +144,11 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
-; Chained call: factory().Method(args) — object is an expression wrapper
-; again, so the wildcard captures it; resolution can inspect whether it wraps
-; an invocation.
-(invocation
-  target: (member_access
-    object: (_) @call.receiver_call
-    member: (identifier) @call.target)
-  arguments: (argument_list) @call.arguments
-) @call.site
+; No @call.receiver_call pattern: the shared reader of that capture looks for
+; a name/function field on the inner call, and this grammar's invocation has
+; neither, so Factory().Method(args) stays on the receiver-name path above.
 
-; Constructor: New ClassName(args) — argument_list is an unnamed child
+; Constructor: New ClassName(args); argument_list is an unnamed child.
 (new_expression
   type: (_) @call.target
   (argument_list) @call.arguments
