@@ -5,6 +5,7 @@
     "cli",
     "comment",
     "commit",
+    "conventions",
     "git_archaeology",
     "inline_marker",
     "llm_inferred",
@@ -58,7 +59,8 @@
     "pr",
     "comment",
     "session",
-    "session_discovery"
+    "session_discovery",
+    "conventions"
   ],
   "presets": [
     "default",

@@ -59,6 +59,7 @@ const SOURCE_LABEL: Record<string, string> = {
   adr: "ADR",
   changelog: "Changelog",
   session: "Session",
+  conventions: "Convention",
 };
 
 const MICRO_LABEL =

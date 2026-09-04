@@ -135,6 +135,15 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
         default_enabled=False,
     ),
     SourceSpec(
+        key="conventions",
+        label="Conventions",
+        description="Import patterns the graph proves: a wrapper most files reach a library through.",
+        deterministic=True,
+        llm=False,
+        authority="machine",
+        default_enabled=False,
+    ),
+    SourceSpec(
         key="cli",
         label="Manual entry",
         description="Decisions you recorded yourself. Always available.",
@@ -162,6 +171,7 @@ INDEX_SOURCE_KEYS: tuple[str, ...] = (
     "adr",
     "pr",
     "comment",
+    "conventions",
 )
 
 

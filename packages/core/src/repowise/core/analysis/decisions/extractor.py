@@ -162,6 +162,9 @@ class ExtractedDecision:
     # mean the lane said nothing, not that it said no.
     lane: str = ""
     needs_split: bool = False
+    # A source that measures its own conformance writes it; None means the
+    # git-diff recompute owns it.
+    staleness_score: float | None = None
 
 
 class DecisionSourceError(RuntimeError):
@@ -1059,6 +1062,20 @@ class DecisionExtractor:
         decisions.extend(_collect_batches("comment", list(results)))
         return decisions
 
+    # ------------------------------------------------------------------
+    # Source 6: Conventions (deterministic, graph-counted)
+    # ------------------------------------------------------------------
+
+    async def scan_conventions(self) -> list[ExtractedDecision]:
+        """Majority import patterns the graph proves, one candidate per wrapper and library."""
+        from repowise.core.analysis.decisions.conventions import scan_conventions
+
+        if self._graph is None:
+            return []
+        return scan_conventions(
+            self._graph, self._parsed_files, self._source_map, self._repo_path
+        )
+
     # Above this node count, skip the iterative PageRank solve and use degree
     # centrality (O(nodes)) instead — comment archaeology only needs a rough
     # "most depended-on files" ranking, not exact PageRank, and the iterative
@@ -1314,6 +1331,7 @@ class DecisionExtractor:
             ("adr", self.discover_adrs),
             ("pr", self.mine_pr_bodies),
             ("comment", self.mine_comment_archaeology),
+            ("conventions", self.scan_conventions),
         ]
         if enabled_sources is None and self._policy is not None:
             enabled_sources = self._policy.enabled_index_sources()

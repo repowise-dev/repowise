@@ -1075,7 +1075,9 @@ async def bulk_upsert_decisions(
         # No title match → ask the store whether a semantically-equivalent
         # decision already exists, and fold into it if so (cheap title dedup
         # stays the first pass; this only runs on the residual).
-        if rec is None and vector_store is not None:
+        # A computed record must not fold into a prose record that merely
+        # sounds alike; title dedup still applies to it.
+        if rec is None and vector_store is not None and headline.get("source") != "conventions":
             q_vec = group_vecs.get(norm)
             if batch_mode and q_vec is not None:
                 match_id = await find_duplicate_decision_by_vector(
@@ -1101,6 +1103,9 @@ async def bulk_upsert_decisions(
             headline_title = headline.get("title", "")
             headline_source = headline.get("source", "cli")
             headline_evidence_file = headline.get("evidence_file")
+            # A source that measures its own conformance supplies the score;
+            # otherwise the git-diff recompute fills it in later.
+            headline_staleness = headline.get("staleness_score")
             rec = DecisionRecord(
                 id=derive_decision_id(
                     repository_id,
@@ -1124,6 +1129,9 @@ async def bulk_upsert_decisions(
                 evidence_file=headline_evidence_file,
                 evidence_line=headline.get("evidence_line"),
                 confidence=headline.get("confidence", 0.5),
+                staleness_score=(
+                    float(headline_staleness) if headline_staleness is not None else 0.0
+                ),
             )
             session.add(rec)
             await session.flush()
@@ -1146,6 +1154,9 @@ async def bulk_upsert_decisions(
             rec.source = headline.get("source", rec.source)
             rec.evidence_file = headline.get("evidence_file")
             rec.evidence_line = headline.get("evidence_line")
+            # Only a source that measures its own conformance supplies this.
+            if headline.get("staleness_score") is not None:
+                rec.staleness_score = float(headline["staleness_score"])
 
         # Accrete one evidence row per contributing source occurrence.
         for d in members:
@@ -1443,6 +1454,10 @@ async def recompute_decision_staleness(
     for dec in decisions:
         affected = affected_by_id.get(dec.id)
         if not affected:
+            continue
+        # The source writes its own conformance share, and a git-diff score
+        # would overwrite it. The module backfill above still applies.
+        if dec.source == "conventions":
             continue
 
         from repowise.core.analysis.decision_extractor import DecisionExtractor
