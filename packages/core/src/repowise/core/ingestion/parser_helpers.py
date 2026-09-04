@@ -427,11 +427,23 @@ def _sanitize_pascal_project_source(source: bytes) -> bytes:
     it, so there's nothing to blank there and no reason to run the regex
     over every unit file in a codebase.
     """
-    if not _PASCAL_USES_IN_CLAUSE_RE.search(source):
+    return _blank_matches(source, _PASCAL_USES_IN_CLAUSE_RE)
+
+
+def _blank_matches(source: bytes, pattern: re.Pattern[bytes]) -> bytes:
+    """Overwrite every match of *pattern* with spaces, keeping the length.
+
+    The shared half of every byte-preserving source sanitizer: a construct the
+    grammar has no rule for is replaced in place, never removed, so line
+    numbers and byte offsets for everything else in the file survive. Spaces
+    and never a newline, so no pattern can consume a line break it did not
+    match.
+    """
+    if not pattern.search(source):
         return source
     out = bytearray(source)
-    for m in _PASCAL_USES_IN_CLAUSE_RE.finditer(source):
-        start, end = m.span()
+    for match in pattern.finditer(source):
+        start, end = match.span()
         out[start:end] = b" " * (end - start)
     return bytes(out)
 
@@ -544,6 +556,283 @@ def _pascal_dedupe_key(parent_name: str | None, signature: str) -> tuple[str | N
     parent_key = parent_name.lower() if parent_name else None
     sig_key = _WHITESPACE_RE.sub("", signature).lower()
     return (parent_key, sig_key)
+
+
+# ---------------------------------------------------------------------------
+# Objective-C helpers
+# ---------------------------------------------------------------------------
+
+_OBJC_METHOD_NODE_TYPES = frozenset({"method_declaration", "method_definition"})
+_OBJC_CLASS_NODE_TYPES = frozenset({"class_interface", "class_implementation"})
+
+# A declaration and the definition that answers it, keyed the way the dedup
+# below pairs them.
+_OBJC_DEFINITION_NODE_TYPES = frozenset({"class_implementation", "method_definition"})
+_OBJC_DECLARATION_NODE_TYPES = frozenset({"class_interface", "method_declaration"})
+
+# Macros that expand to nothing but are spelled as a bare identifier, so the
+# grammar makes them a keyword child of the method they trail.
+_OBJC_TRAILING_MACRO_NAMES = frozenset({
+    "NS_DESIGNATED_INITIALIZER", "NS_UNAVAILABLE", "NS_REQUIRES_SUPER",
+    "NS_RETURNS_INNER_POINTER", "NS_REFINED_FOR_SWIFT", "NS_SWIFT_UI_ACTOR",
+    "NS_REQUIRES_NIL_TERMINATION", "UNAVAILABLE_ATTRIBUTE", "DEPRECATED_ATTRIBUTE",
+})
+
+# ``typedef NS_ENUM(NSInteger, Kind) { KindA }`` shapes. See _objc_is_macro_enum.
+_OBJC_ENUM_MACRO_NAMES = frozenset({
+    "NS_ENUM", "NS_OPTIONS", "NS_CLOSED_ENUM", "NS_ERROR_ENUM",
+    "CF_ENUM", "CF_OPTIONS", "CF_CLOSED_ENUM",
+})
+
+
+def _objc_selector_name(def_node: Node, default_name: str, src: str) -> str:
+    """Join a method's keyword parts into its full selector.
+
+    A keyword is an ``identifier`` child that a ``method_parameter`` follows;
+    anything trailing the last parameter is an attribute macro, not part of
+    the name. See the Objective-C section of the architecture doc.
+    """
+    if def_node.type not in _OBJC_METHOD_NODE_TYPES:
+        return default_name
+    parts: list[str] = []
+    pending: str | None = None
+    for child in def_node.children:
+        if child.type == "identifier":
+            # Only the identifier immediately before a method_parameter is a
+            # keyword; a bare trailing one is a macro like
+            # NS_DESIGNATED_INITIALIZER, which would otherwise join into the
+            # selector and stop the header pairing with its implementation.
+            pending = _node_text(child, src).strip() or None
+        elif child.type == "method_parameter":
+            if pending is not None:
+                parts.append(pending)
+                pending = None
+        elif child.type in ("compound_statement", ";"):
+            break
+    if parts:
+        return "".join(f"{p}:" for p in parts)
+    # No parameters at all: the selector is the first keyword, unadorned.
+    first = next((c for c in def_node.children if c.type == "identifier"), None)
+    if first is None:
+        return default_name
+    text = _node_text(first, src).strip()
+    if not text or text in _OBJC_TRAILING_MACRO_NAMES:
+        return default_name
+    return text
+
+
+def _objc_is_macro_enum(def_node: Node, src: str) -> bool:
+    """True for a ``typedef NS_ENUM(Type, Name) { … }`` typedef.
+
+    This grammar has no rule for the macro, so the name argument and the brace
+    body land in ERROR nodes and only the *enumerators* survive as
+    ``declarator`` children. Capturing those mints a symbol per enum case named
+    as though it were the type, and never one for the type itself, so the whole
+    typedef is skipped: no symbol beats a wrong one.
+    """
+    if def_node.type != "type_definition":
+        return False
+    for child in def_node.children:
+        if child.type != "macro_type_specifier":
+            continue
+        name = child.child_by_field_name("name")
+        if name is not None and _node_text(name, src).strip() in _OBJC_ENUM_MACRO_NAMES:
+            return True
+    return False
+
+
+def _objc_category_name(def_node: Node, default_name: str, src: str) -> str:
+    """Name a category for the class it extends plus its own name.
+
+    Two categories on one class are two declarations about it, so naming both
+    for the class alone would merge them. A class extension (``Foo ()``) binds
+    no ``category`` field and keeps the plain name.
+    """
+    if def_node.type not in _OBJC_CLASS_NODE_TYPES:
+        return default_name
+    category = def_node.child_by_field_name("category")
+    if category is None:
+        return default_name
+    text = _node_text(category, src).strip()
+    return f"{default_name}({text})" if text else default_name
+
+
+def _objc_symbol_name(def_node: Node, default_name: str, src: str) -> str:
+    """The name a captured Objective-C definition carries."""
+    if def_node.type in _OBJC_METHOD_NODE_TYPES:
+        return _objc_selector_name(def_node, default_name, src)
+    return _objc_category_name(def_node, default_name, src)
+
+
+def _objc_container_node(def_node: Node, container_types: frozenset[str]) -> Node | None:
+    """The ``@interface`` / ``@implementation`` / ``@protocol`` around a member."""
+    ancestor = def_node.parent
+    while ancestor is not None:
+        if ancestor.type in container_types:
+            return ancestor
+        ancestor = ancestor.parent
+    return None
+
+
+def _objc_container_parent(def_node: Node, container_types: frozenset[str], src: str) -> str | None:
+    """The name of the container a method or property is declared in.
+
+    The generic nesting walk finds the same ancestor and then reads a ``name``
+    field these nodes do not have: each carries its name as a bare first
+    ``identifier`` child. Members of a category take the category's own name.
+    """
+    container = _objc_container_node(def_node, container_types)
+    if container is None:
+        return None
+    identifier = next((c for c in container.children if c.type == "identifier"), None)
+    if identifier is None:
+        return None
+    name = _node_text(identifier, src).strip()
+    return _objc_category_name(container, name, src) if name else None
+
+
+def _objc_message_selector(site_node: Node, target_node: Node, src: str) -> str | None:
+    """Join a message send's keyword parts, or None for a repeat match.
+
+    ``[view setTitle:t forState:s]`` binds one ``method:`` child per keyword,
+    so the one query pattern matches once per keyword. Returns the joined
+    selector for the match carrying the first keyword and None for every later
+    one, so the extra matches are dropped rather than emitted as targets that
+    name nothing. The node's own ``:`` tokens say whether the selector takes
+    arguments: ``[obj run]`` is ``run`` and ``[obj run:x]`` is ``run:``.
+    """
+    methods = site_node.children_by_field_name("method")
+    if not methods or methods[0].id != target_node.id:
+        return None
+    parts = [_node_text(m, src).strip() for m in methods]
+    parts = [p for p in parts if p]
+    if not parts:
+        return None
+    takes_arguments = any(c.type == ":" for c in site_node.children)
+    if not takes_arguments:
+        return parts[0]
+    return "".join(f"{p}:" for p in parts)
+
+
+def _objc_call_is_block_variable(site_node: Node, target_name: str, src: str) -> bool:
+    """True when a bare-identifier call invokes a block held in a variable.
+
+    Objective-C invokes a block with C call syntax, so ``completionBlock(hit)``
+    is a ``call_expression`` on a bare identifier that nothing in the grammar
+    separates from a call to a C function. Names like this are ubiquitous as
+    both a parameter and a ``@property``, so without the scope check the
+    resolver binds the invocation to an unrelated class's property.
+    """
+    node: Node | None = site_node
+    while node is not None:
+        if node.type == "compound_statement":
+            for statement in node.named_children:
+                if statement.type == "declaration" and _objc_declares_name(
+                    statement, target_name, src
+                ):
+                    return True
+        elif node.type == "method_definition":
+            return any(
+                child.type == "method_parameter"
+                and _objc_declares_name(child, target_name, src)
+                for child in node.children
+            )
+        elif node.type == "function_definition":
+            declarator = node.child_by_field_name("declarator")
+            return declarator is not None and _objc_declares_name(declarator, target_name, src)
+        node = node.parent
+    return False
+
+
+def _objc_declares_name(node: Node, name: str, src: str) -> bool:
+    """True when *node* binds *name* as a parameter or a variable.
+
+    A declarator nests (``void (^block)(int)``, ``SDBlock done = ^{}``), so
+    every identifier under the node is checked rather than only the direct
+    children. The node is a parameter or a declaration, never a body, so the
+    walk stays small; a nested block body is skipped for the same reason.
+    """
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if current.type in ("identifier", "field_identifier"):
+            if _node_text(current, src).strip() == name:
+                return True
+        elif current.type != "compound_statement":
+            stack.extend(current.children)
+    return False
+
+
+def _objc_container_family(container_kind: str | None) -> str | None:
+    """Which namespace a member belongs to: a protocol's, or a class's.
+
+    An ``@interface`` and its ``@implementation`` are the same class, so a
+    declaration in one must still dedupe against a definition in the other; a
+    ``@protocol`` of the same name is a different thing entirely.
+    """
+    return "protocol" if container_kind == "protocol_declaration" else container_kind and "class"
+
+
+def _dedupe_objc_interface_symbols(
+    symbols: list[Symbol], node_types: list[str], container_kinds: list[str | None]
+) -> list[Symbol]:
+    """Collapse a declaration into the definition standing beside it.
+
+    A ``.m`` routinely opens with a class extension (``@interface Foo ()``)
+    declaring the private methods its ``@implementation Foo`` then defines, so
+    each builds the same symbol id twice in one file. The definition wins: it
+    carries the body. Across two files the split is real and both symbols are
+    kept, marked with ``is_declaration`` the way a C header's prototype and its
+    ``.c`` definition already are.
+
+    The key carries the container kind because a protocol and a class may share
+    a name in one file, and ``-ping`` on the protocol is then a different method
+    from ``-ping`` on the class. Keyed on the name and not the signature:
+    Objective-C has no overloading, and a declaration and its definition
+    routinely differ in parameter names and nullability annotations.
+    """
+    definition_keys = {
+        (_objc_container_family(kind), s.parent_name, s.name)
+        for s, nt, kind in zip(symbols, node_types, container_kinds, strict=True)
+        if nt in _OBJC_DEFINITION_NODE_TYPES
+    }
+    seen_declarations: set[tuple[str | None, str | None, str]] = set()
+    kept: list[Symbol] = []
+    for symbol, node_type, kind in zip(symbols, node_types, container_kinds, strict=True):
+        if node_type in _OBJC_DECLARATION_NODE_TYPES:
+            key = (_objc_container_family(kind), symbol.parent_name, symbol.name)
+            if key in definition_keys or key in seen_declarations:
+                continue
+            seen_declarations.add(key)
+        kept.append(symbol)
+    return kept
+
+
+# Whole-line macros that expand to nothing a parser needs but which this
+# grammar reads as the start of a C declaration, swallowing whatever follows
+# into an ERROR node. Only bare whole-line forms are listed: a macro that
+# opens a real declaration (``FOUNDATION_EXPORT NSString *const kFoo;``) must
+# stay, and a call-shaped one (``NS_ENUM(NSInteger, Kind)``) is a different
+# problem that blanking a line cannot fix.
+_OBJC_BARE_MACRO_LINE_RE = re.compile(
+    rb"^[ \t]*(?:NS_ASSUME_NONNULL_BEGIN|NS_ASSUME_NONNULL_END"
+    rb"|NS_HEADER_AUDIT_BEGIN\([^)\r\n]*\)|NS_HEADER_AUDIT_END"
+    rb"|CF_ASSUME_NONNULL_BEGIN|CF_ASSUME_NONNULL_END"
+    rb"|NS_REFINED_FOR_SWIFT|NS_SWIFT_UI_ACTOR)[ \t]*(?=\r?\n|$)",
+    re.MULTILINE,
+)
+
+
+def prepare_objectivec_source(source: bytes) -> bytes:
+    """Blank whole-line nullability-audit macros, preserving every offset.
+
+    ``NS_ASSUME_NONNULL_BEGIN`` is not a preprocessor directive and this
+    grammar has no rule for it, so it parses as the opening of a C declaration
+    and error recovery folds the whole ``@interface … @end`` block after it
+    into one ERROR node. The macro wraps almost every modern Objective-C
+    header, so this is the dominant parse failure in real source.
+    """
+    return _blank_matches(source, _OBJC_BARE_MACRO_LINE_RE)
 
 
 # ---------------------------------------------------------------------------
@@ -1347,6 +1636,43 @@ def _elixir_head_type_identifier(type_node: Node, src: str) -> str | None:
     return node_text(type_node, src).strip() or None
 
 
+def _objc_head_type_identifier(type_node: Node, src: str) -> str | None:
+    """Return the head class name of an Objective-C type position, or None.
+
+    Examples:
+        ``(NSString *)``      -> None       (Foundation, never in-repo)
+        ``(AFHTTPClient *)``  -> the name
+        ``(instancetype)``    -> None       (builtin)
+        ``(void)`` / ``(id)`` -> None       (primitive / builtin)
+        ``@class Helper;``    -> "Helper"
+
+    The capture is a ``type_name`` wrapper for a method return or parameter
+    type, a bare ``type_identifier`` for a property, and a plain
+    ``identifier`` for a ``@class`` forward declaration or a protocol name, so
+    all four shapes start here. A pointer star lives in an
+    ``abstract_pointer_declarator`` inside the ``type_name``, which is skipped
+    rather than unwrapped: the star is not part of the name.
+    """
+    node: Node | None = type_node
+    for _ in range(6):
+        if node is None:
+            return None
+        kind = node.type
+        if kind in ("type_identifier", "identifier"):
+            text = _node_text(node, src).strip()
+            return text if is_resolvable_type_name(text, "objectivec") else None
+        if kind in ("primitive_type", "sized_type_specifier", "typedefed_specifier"):
+            return None
+        if kind in ("struct_specifier", "union_specifier", "enum_specifier"):
+            name = node.child_by_field_name("name")
+            if name is None:
+                return None  # anonymous aggregate -- no named type to resolve
+            text = _node_text(name, src).strip()
+            return text if is_resolvable_type_name(text, "objectivec") else None
+        node = node.named_children[0] if node.named_children else None
+    return None
+
+
 TYPE_HEAD_EXTRACTORS: dict[str, Callable[[Node, str], str | None]] = {
     "go": _go_head_type_identifier,
     "c": _c_head_type_identifier,
@@ -1359,6 +1685,7 @@ TYPE_HEAD_EXTRACTORS: dict[str, Callable[[Node, str], str | None]] = {
     "pascal": _pascal_head_type_identifier,
     "elixir": _elixir_head_type_identifier,
     "fsharp": _fsharp_head_type_identifier,
+    "objectivec": _objc_head_type_identifier,
 }
 
 

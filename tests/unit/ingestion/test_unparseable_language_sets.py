@@ -70,8 +70,9 @@ def test_passthrough_code_languages_are_not_in_the_set():
 
     clojure/haskell are ``is_passthrough`` but real code: zero symbols
     there is a gap in us, not a property of the file, so they must stay
-    eligible for the analyses this set exempts. Elixir used to sit here and
-    now parses to an AST, which is where a language in this state is headed.
+    eligible for the analyses this set exempts. Elixir and Objective-C used to
+    sit here and now parse to an AST, which is where a language in this state
+    is headed.
     """
     for tag in ("clojure", "haskell"):
         assert tag in REGISTRY.passthrough_languages(), tag

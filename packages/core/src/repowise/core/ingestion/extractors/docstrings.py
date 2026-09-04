@@ -174,7 +174,7 @@ def extract_module_docstring(root: Node, src: str, lang: str) -> str | None:
                 break
         if inner_lines:
             return "\n".join(inner_lines)
-    elif lang in ("cpp", "c"):
+    elif lang in ("cpp", "c", "objectivec"):
         # Doxygen: first /** ... */ block comment before any declaration
         for child in root.children:
             if child.type in ("comment", "block_comment"):
@@ -407,7 +407,7 @@ def extract_symbol_docstring(def_node: Node, src: str, lang: str) -> str | None:
         # /** Javadoc */ comment before the method/class
         return find_preceding_block_comment(def_node, src, "/**")
 
-    elif lang in ("cpp", "c"):
+    elif lang in ("cpp", "c", "objectivec"):
         # Doxygen: /** ... */ block comment or /// line comments
         result = find_preceding_block_comment(def_node, src, "/**")
         if result:

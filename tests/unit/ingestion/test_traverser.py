@@ -93,6 +93,39 @@ class TestLanguageDetection:
     def test_cpp_extension(self, tmp_path: Path) -> None:
         assert _detect_language(tmp_path / "calc.cpp") == "cpp"
 
+    def test_objectivec_header_is_routed_by_content(self, tmp_path: Path) -> None:
+        # One extension maps to one language repo-wide and ``.h`` belongs to
+        # C++, so an Objective-C header can only be told apart by what is in
+        # it: an @interface / @implementation / @protocol opening a line
+        # outside a comment is not valid C or C++.
+        f = tmp_path / "Widget.h"
+        f.write_text('#import <Foundation/Foundation.h>\n@interface Widget\n@end\n')
+        assert _detect_language(f) == "objectivec"
+
+    def test_a_protocol_declaration_is_enough(self, tmp_path: Path) -> None:
+        f = tmp_path / "Feeder.h"
+        f.write_text('@protocol Feeder <NSObject>\n- (void)feed;\n@end\n')
+        assert _detect_language(f) == "objectivec"
+
+    def test_a_doxygen_comment_does_not_route_a_cpp_header(self, tmp_path: Path) -> None:
+        # ``@interface`` and ``@class`` are also Doxygen commands, so an
+        # anywhere-in-the-file token match sent documented C++ headers to the
+        # Objective-C grammar.
+        f = tmp_path / "widget.h"
+        f.write_text(
+            '/**\n * @interface Widget\n * @class Widget\n */\n'
+            '// #import "legacy.h"\nclass Widget { int add(int a); };\n'
+        )
+        assert _detect_language(f) == "cpp"
+
+    def test_a_plain_c_header_stays_cpp(self, tmp_path: Path) -> None:
+        f = tmp_path / "calc.h"
+        f.write_text('#include <stdio.h>\nint add(int a, int b);\n')
+        assert _detect_language(f) == "cpp"
+
+    def test_a_dot_m_needs_no_sniff(self, tmp_path: Path) -> None:
+        assert _detect_language(tmp_path / "Widget.m") == "objectivec"
+
     def test_special_dockerfile(self, tmp_path: Path) -> None:
         assert _detect_language(tmp_path / "Dockerfile") == "dockerfile"
 

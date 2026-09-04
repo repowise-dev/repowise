@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import configparser
 import os
+import re
 import threading
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
@@ -747,6 +748,10 @@ class FileTraverser:
         # fall through to binary detection + shebang when the extension is
         # unrecognised, avoiding an 8 KB read for every .py/.ts/.go/… file.
         language = _language_from_name_or_ext(abs_path)
+        # A .h is C++ by extension and may be Objective-C by content; only a
+        # short read of the file itself can tell the two apart.
+        if language == "cpp":
+            language = _objc_header_language(abs_path) or language
         if language is None:
             if _is_binary(abs_path):
                 with self._count_lock:
@@ -921,10 +926,62 @@ def _language_from_name_or_ext(abs_path: Path) -> LanguageTag | None:
     return EXTENSION_TO_LANGUAGE.get(abs_path.suffix.lower())
 
 
+# A declaration or an import that opens its own line. Anchored rather than
+# matched anywhere in the file, and matched only after comments are blanked:
+# ``@interface`` and ``@class`` are Doxygen commands too, so an
+# anywhere-in-the-file token match routed C++ headers documented with
+# ``/** @class Widget */`` to the Objective-C grammar. ``@class`` is left out
+# because a bare forward declaration adds no header the rest of this rule
+# misses; ``#import`` stays because an umbrella header is a run of imports
+# with no declaration of its own, and dropping it lost every one of them.
+_OBJC_HEADER_DECLARATION_RE = re.compile(
+    rb"^[ \t]*(?:@(?:interface|implementation|protocol)\b|#[ \t]*import\b)", re.MULTILINE
+)
+
+# Comment spans to blank before that match runs, so a commented-out or
+# documented declaration cannot decide the routing.
+_C_COMMENT_RE = re.compile(rb"//[^\n]*|/\*.*?(?:\*/|\Z)", re.DOTALL)
+
+# How much of a .h file to read looking for one. Generous because the first
+# declaration sits below the licence banner and a Doxygen block per method:
+# in the corpus the first ``@interface`` landed at byte 4128 and 4374 in two
+# headers, so a 4 KB budget missed both.
+_OBJC_HEADER_SNIFF_BYTES = 16384
+
+
+def _objc_header_language(abs_path: Path) -> LanguageTag | None:
+    """``objectivec`` for a ``.h`` that reads as Objective-C, else ``None``.
+
+    One extension maps to one language for the whole repository, and ``.h``
+    belongs to C++; claiming it for Objective-C as well would reroute every C
+    and C++ header everywhere. Content is the only signal that can tell one
+    ``.h`` from another: an ``@interface``, ``@implementation``, ``@protocol``
+    or ``#import`` opening a line outside a comment is not C or C++.
+
+    Called only where the extension lookup already answered ``cpp``, so it
+    costs one read per ``.h`` file and nothing at all for anything else.
+    The traverser's existing head read, for binary detection and shebang
+    sniffing, fires only for an *unrecognised* extension, so there is no
+    earlier read of a ``.h`` to share.
+    """
+    if abs_path.suffix.lower() != ".h":
+        return None
+    try:
+        with open(abs_path, "rb") as f:
+            head = f.read(_OBJC_HEADER_SNIFF_BYTES)
+    except OSError:
+        return None
+    # Blank the comments in place so line starts are preserved.
+    head = _C_COMMENT_RE.sub(lambda m: b" " * len(m.group(0)), head)
+    return "objectivec" if _OBJC_HEADER_DECLARATION_RE.search(head) else None
+
+
 def _detect_language(abs_path: Path) -> LanguageTag:
-    """Detect the language of a file from name, extension, or shebang."""
+    """Detect the language of a file from name, extension, content, or shebang."""
     lang = _language_from_name_or_ext(abs_path)
     if lang is not None:
+        if lang == "cpp":
+            return _objc_header_language(abs_path) or lang
         return lang
     return _detect_by_shebang(abs_path)
 

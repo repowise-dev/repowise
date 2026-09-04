@@ -32,7 +32,7 @@ new language needs one only when it hits the same kind of wall.
 - [Call resolution](#call-resolution) · [the strategy seam](#the-per-language-strategy-seam) · [resolution origins](#resolution-origins) · [receiver typing](#receiver-typing) · [inherited dispatch](#inherited-dispatch)
 - [The edge vocabulary](#the-edge-vocabulary)
 - [Multi-language files (the SFC pattern)](#multi-language-files-the-sfc-pattern)
-- [Per-language mechanics](#per-language-mechanics) · [Elixir](#elixir) · [F#](#f) · [GDScript / Godot](#gdscript--godot) · [VB.NET](#vbnet) · [QML](#qml) · [Flutter widget trees](#flutter-widget-trees)
+- [Per-language mechanics](#per-language-mechanics) · [Elixir](#elixir) · [F#](#f) · [Objective-C](#objective-c) · [GDScript / Godot](#gdscript--godot) · [VB.NET](#vbnet) · [QML](#qml) · [Flutter widget trees](#flutter-widget-trees)
 - [Optional language-specific passes](#optional-language-specific-passes)
 - [The three code-health dialect registries](#the-three-code-health-dialect-registries)
 - [Workspace contract extraction](#workspace-contract-extraction)
@@ -749,6 +749,88 @@ import tier instead of a symbol tree built on invented nodes. Where a project
 splits one namespace across many single-file assemblies, most `open` targets
 are ambiguous and stay unresolved by design, which puts that repo's F#
 unused-export findings at the review tier rather than the asserted one.
+
+### Objective-C
+
+Three shapes the recipe does not cover.
+
+- **Header routing is by content, not extension.** The extension map holds one
+  language per extension for the whole repository, and `.h` belongs to C++, so
+  claiming it for Objective-C as well would reroute every C and C++ header
+  everywhere. `_objc_header_language` in `traverser.py` runs immediately after
+  the extension lookup and only when that lookup answered `cpp`. It reads the
+  first 4 KB of a `.h`, blanks the `//` and `/* */` spans in place, and returns
+  `objectivec` when an `@interface`, `@implementation` or `@protocol` opens a
+  line in what is left. All three are keywords no C or C++ header can carry
+  outside a comment. Both the anchoring and the comment blanking are load
+  bearing: `@interface` and `@class` are Doxygen commands too, and an
+  anywhere-in-the-file token match routed C++ headers documented with
+  `/** @class Widget */` to this grammar. `@class` and `#import` are not in the
+  set at all, since neither can be anchored the same way and neither adds a
+  header the rule above misses. A header carrying only preprocessor macros
+  stays `cpp`, which is the right answer for it. The C/C++ `header_source_pair` hint is still gated to the
+  `c` and `cpp` tags and is deliberately not widened here, so a sniffed
+  Objective-C header does not yet pair with its `.m`.
+
+- **A method is named by its whole selector.** `initWithName:age:` is one name,
+  and the grammar has no selector node and no selector field for it: the keyword
+  parts are bare `identifier` children of the `method_declaration`, interleaved
+  with the `method_parameter` nodes that carry the colon, the type and the
+  parameter name. The query captures the first keyword and `_objc_selector_name`
+  joins the rest; without the join every multi-keyword method would be named
+  after its first part and two of them would collide on one symbol id. A
+  keyword is only an identifier that a `method_parameter` follows: anything
+  after the last parameter is an attribute macro, and joining
+  `NS_DESIGNATED_INITIALIZER` or `NS_REQUIRES_SUPER` into the name stopped a
+  header pairing with the `.m` that defines the same method. A message
+  send is the mirror image: `message_expression` does field-label every keyword
+  as `method:`, so the one query pattern matches once per part, and
+  `_objc_message_selector` joins them on the first match and drops the rest so
+  the call-site name meets the symbol name. `@selector(a:b:)` is not captured at
+  all: this grammar leaves the text between the parens out of the tree entirely,
+  so there is nothing for a query to match.
+
+- **A whole-line nullability macro is blanked before parsing.**
+  `NS_ASSUME_NONNULL_BEGIN` is not a preprocessor directive and the grammar has
+  no rule for it, so it parses as the start of an ordinary C declaration and
+  error recovery folds the entire `@interface … @end` block after it into one
+  ERROR node. `prepare_objectivec_source` blanks those lines with spaces,
+  preserving every other byte offset, through the same
+  `sfc_source.prepare_source` hook Pascal uses, so the health walkers see the
+  same projection the ingestion parser does. Call-shaped macros are a different
+  problem and are left alone. `typedef NS_ENUM(Type, Name) { … }` still
+  produces ERROR nodes, and because only its enum *cases* survive as
+  declarators, capturing them mints a symbol per case named as though it were
+  the type and never one for the type itself, so `_objc_is_macro_enum` skips
+  the whole typedef: no symbol beats a wrong one.
+
+An `@interface` and its `@implementation` are two symbols in two files, told
+apart by `is_declaration`, following the C/C++ precedent rather than merging
+across files. Within one file they collapse in
+`_dedupe_objc_interface_symbols`, which is what stops the class extension a `.m`
+opens with from duplicating the implementation below it. A category is named for
+the class it extends plus its own name (`NSString(Trimming)`), so two categories
+on one class stay two symbols; a class extension binds no `category` field and
+keeps the plain class name. The dedup keys on which container declared each
+member, because a `@protocol` and a class may share a name in one file and the
+class's `-ping` would otherwise dedupe the protocol's `-ping` away. The two
+still share a symbol id, a stated ceiling: the id scheme has no room for a
+namespace, and renaming the protocol would break the `implements` heritage
+edges and type references that name it as written. Because a declaration and a
+definition are separate symbols, an `unused_export` finding on either is
+evidence about that one declaration and stays review tier: a header method with
+no in-repo caller may be exactly the public API the implementation serves.
+
+Two shapes are handled in the parser rather than the query. A block held in a
+parameter or a local is invoked with C call syntax, so `completionBlock(hit)`
+is a `call_expression` on a bare identifier that nothing in the grammar
+separates from a call to a C function; `_objc_call_is_block_variable` walks out
+to the enclosing method and drops the call when the name is one of its
+parameters or locals, which is what stops the resolver binding it to a
+same-named `@property` in an unrelated class. And nothing ever `#import`s a
+`.m`, so `is_file_reachable` lets a same-stem, same-directory `.h` answer for
+its implementation: without it every implementation file in an Objective-C
+library reported as an unreachable file.
 
 ### GDScript / Godot
 

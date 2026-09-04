@@ -455,6 +455,52 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         # see _fsharp_parent_name.
         parent_class_types=frozenset(),
     ),
+    "objectivec": LanguageConfig(
+        symbol_node_types={
+            # An @interface and its @implementation are two physical nodes in
+            # (usually) two files, the same way a C declaration and its
+            # definition are: both become symbols, the @interface one marked
+            # is_declaration. Within one file they collapse -- see
+            # _dedupe_objc_interface_symbols.
+            "class_interface": "class",
+            "class_implementation": "class",
+            "protocol_declaration": "interface",
+            "method_declaration": "method",
+            "method_definition": "method",
+            # Matches C#'s and Pascal's choice for the same concept: a field
+            # and a callable value share "variable" everywhere except Rust.
+            "property_declaration": "variable",
+            # Plain C inside a .m file, mapped the way c/cpp map it.
+            "function_definition": "function",
+            "declaration": "function",
+            "preproc_def": "variable",
+            "preproc_function_def": "function",
+            "enum_specifier": "enum",
+            "struct_specifier": "struct",
+            "type_definition": "struct",
+        },
+        import_node_types=["preproc_include"],
+        export_node_types=[],  # no re-export syntax; the header is the export
+        # Objective-C has no method access modifiers. @private/@protected on
+        # instance variables is the only visibility syntax and no ivars are
+        # captured, so the placeholder C/C++/Pascal use is honest here.
+        visibility_fn=public_by_default,
+        parent_extraction="nesting",
+        # A method_declaration is a direct child of its class_interface and
+        # a method_definition of its class_implementation, so the ancestor
+        # walk needs no per-language dig -- unlike C++ and Pascal, where a
+        # definition sits outside the class body. Reading the ancestor's name
+        # does: these nodes carry it as a bare first identifier child and not
+        # in a `name` field, so _objc_container_parent supplies it.
+        parent_class_types=frozenset(
+            {"class_interface", "class_implementation", "protocol_declaration"}
+        ),
+        # A @protocol is not a declaration of anything defined elsewhere:
+        # nothing ever implements it under its own name.
+        declaration_node_types=frozenset(
+            {"class_interface", "method_declaration", "declaration"}
+        ),
+    ),
     "pascal": LanguageConfig(
         symbol_node_types={
             # declType wraps class/record/interface/helper/enum/set/array/alias

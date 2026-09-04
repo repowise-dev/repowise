@@ -219,3 +219,61 @@ def test_framework_anchor_node_not_flagged_as_unreachable():
     assert "framework:typo3-core" not in paths
     # ext_localconf.php should also not be flagged: it has a framework: predecessor.
     assert "ext_localconf.php" not in paths
+
+
+def _objc_node(**overrides):
+    node = {
+        "is_entry_point": False,
+        "is_test": False,
+        "is_api_contract": False,
+        "language": "objectivec",
+        "symbol_count": 3,
+        "symbols": [],
+    }
+    node.update(overrides)
+    return node
+
+
+def test_objc_implementation_is_reached_through_its_header():
+    """Nothing ever ``#import``s a ``.m``.
+
+    A header declares the interface and the Xcode project joins the
+    implementation to it by target membership, which is not source. Without
+    the header standing in, every implementation file in an Objective-C
+    library reported as unreachable at full confidence.
+    """
+    g = _build_graph(
+        nodes={
+            "Lib/Widget.h": _objc_node(),
+            "Lib/Widget.m": _objc_node(),
+            "Lib/Umbrella.h": _objc_node(),
+        },
+        edges=[("Lib/Umbrella.h", "Lib/Widget.h", {"type": "imports"})],
+    )
+
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze({"detect_unused_exports": False, "detect_zombie_packages": False})
+    paths = {f.file_path for f in report.findings if f.kind == DeadCodeKind.UNREACHABLE_FILE}
+    assert "Lib/Widget.m" not in paths
+
+
+def test_objc_implementation_with_no_header_is_still_flagged():
+    """The rescue is the header, not the extension.
+
+    A ``.m`` whose header nothing imports, or which has no header at all, is
+    as unreachable as any other orphan.
+    """
+    g = _build_graph(
+        nodes={
+            "Lib/Orphan.m": _objc_node(),
+            "Lib/Lonely.h": _objc_node(),
+            "Lib/Lonely.m": _objc_node(),
+        },
+        edges=[],
+    )
+
+    analyzer = DeadCodeAnalyzer(g, git_meta_map={})
+    report = analyzer.analyze({"detect_unused_exports": False, "detect_zombie_packages": False})
+    paths = {f.file_path for f in report.findings if f.kind == DeadCodeKind.UNREACHABLE_FILE}
+    assert "Lib/Orphan.m" in paths
+    assert "Lib/Lonely.m" in paths

@@ -29,6 +29,7 @@ from .gdscript import _extract_gdscript_heritage
 from .go import _extract_go_heritage
 from .java import _extract_java_heritage
 from .kotlin import _extract_kotlin_heritage
+from .objectivec import _extract_objectivec_heritage
 from .pascal import _extract_pascal_heritage
 from .php import _extract_php_heritage
 from .python import _extract_python_heritage
@@ -64,6 +65,7 @@ HERITAGE_EXTRACTORS: dict[str, Callable[..., None]] = {
     "swift": _extract_swift_heritage,
     "scala": _extract_scala_heritage,
     "php": _extract_php_heritage,
+    "objectivec": _extract_objectivec_heritage,
     "pascal": _extract_pascal_heritage,
     "gdscript": _extract_gdscript_heritage,
     "vbnet": _extract_vbnet_heritage,

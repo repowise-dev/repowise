@@ -1,6 +1,6 @@
 # Language Support
 
-**24 languages parsed to a full AST · 39 on the five-rung ladder ·
+**25 languages parsed to a full AST · 39 on the five-rung ladder ·
 framework-aware across all of them.** "Do you support X" has five useful answers
 rather than two, so every language lands on a rung and the rung says what it
 buys you. Everything else in your repo still appears in the wiki and is tracked
@@ -34,6 +34,7 @@ reference.
   <img src="https://img.shields.io/badge/VB.NET-945DB7?style=flat-square&logo=dotnet&logoColor=white" alt="VB.NET" />
   <img src="https://img.shields.io/badge/Elixir-6E4A7E?style=flat-square&logo=elixir&logoColor=white" alt="Elixir" />
   <img src="https://img.shields.io/badge/F%23-378BBA?style=flat-square&logo=fsharp&logoColor=white" alt="F#" />
+  <img src="https://img.shields.io/badge/Objective--C-438EFF?style=flat-square&logo=apple&logoColor=white" alt="Objective-C" />
   &nbsp;<strong>· Partial &nbsp;</strong>
   <img src="https://img.shields.io/badge/Luau-00A2FF?style=flat-square&logo=lua&logoColor=white" alt="Luau" />
   <img src="https://img.shields.io/badge/Razor-512BD4?style=flat-square&logo=blazor&logoColor=white" alt="Razor / Blazor" />
@@ -57,13 +58,13 @@ produce meaningful output.
 | Tier | Languages | What you get |
 |------|-----------|--------------|
 | **Full** (13) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges, **and code-health markers** |
-| **Good** (9) | C · Swift · PHP · Dart · Object Pascal · GDScript · VB.NET · Elixir · F# | Everything above except the full health suite. Dart and Object Pascal *do* get health markers; C, Swift, PHP, GDScript, VB.NET, Elixir and F# don't yet. GDScript has a dedicated import resolver and Godot-specific framework edges but no named bindings (see [Known gaps](../architecture/language-support.md#gdscript--godot)) |
+| **Good** (10) | C · Swift · PHP · Dart · Object Pascal · GDScript · VB.NET · Elixir · F# · Objective-C | Everything above except the full health suite. Dart and Object Pascal *do* get health markers; C, Swift, PHP, GDScript, VB.NET, Elixir, F# and Objective-C don't yet. GDScript has a dedicated import resolver and Godot-specific framework edges but no named bindings (see [Known gaps](../architecture/language-support.md#gdscript--godot)) |
 | **Partial** (2) | Luau / Roblox · Razor / Blazor | Luau: AST symbols and `require()` resolution (Rojo / `.luaurc` aware), no health markers yet. Razor: a component symbol per file, call edges from `@code` blocks and component tags, C# health markers; no import resolution yet |
 | | | ⎯⎯ *tree-sitter parsing stops here. The rungs below are derived from git and imports, not from an AST.* ⎯⎯ |
 | **Lightweight** (6) | Clojure · Haskell · Lean 4 · Erlang · HTML · QML | A real file-to-file import graph, no symbol-level claims |
-| **Structural** (9) | Objective-C · R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history only: blame, hotspots, co-change. No AST parsing |
+| **Structural** (8) | R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history only: blame, hotspots, co-change. No AST parsing |
 
-The first three rungs are the **24 languages parsed to a full AST**; all five are
+The first three rungs are the **25 languages parsed to a full AST**; all five are
 the **39** on the ladder. Both numbers are worth stating and neither is worth
 stating alone, so if you only take one thing from this page, take the rung your
 language sits on rather than either count.
@@ -255,6 +256,7 @@ bindings and heritage, with a dedicated workspace resolver per language.
 | **VB.NET** | `.vb` | `Imports` through the same MSBuild project index C# uses: `.vbproj` / `.sln` parsing, `<RootNamespace>`-aware namespace lookup, NuGet package references |
 | **Elixir** | `.ex` `.exs` | `alias` / `import` / `require` / `use` against a `defmodule` index, with the Mix `lib/foo/bar.ex` → `Foo.Bar` convention as the fallback; `alias Foo.{Bar, Baz}` names both modules (no heritage: `use` and `@behaviour` are not inheritance) |
 | **F#** | `.fs` `.fsx` `.fsi` | `open` / `open type` against a declared-name index (namespace/module headers), plus the fsproj `<Compile Include>` compile order. `.fsi` signature files contribute imports only, no symbols. A layout that shares one namespace across many single-file projects leaves most `open` targets ambiguous by design, so unused-export findings there sit at the review tier (0.4) rather than being asserted |
+| **Objective-C** | `.m` `.mm` `.h` | `#import` / `#include` through the generic header-stem index, which covers the one-class-per-file convention; a framework import names no in-repo file and resolves to nothing |
 
 ---
 
@@ -412,6 +414,7 @@ Per-language mechanics behind these:
 | VB.NET | Good | Health markers, project-level `<Import Include=...>` as implicit imports |
 | Elixir | Good | Health markers, and a call-resolution strategy beyond same-file |
 | F# | Good | Health markers, and a resolver that reads the AST index instead of the declared-name regex |
+| Objective-C | Good | Health markers, a resolver that reads the Xcode project rather than file stems, and pairing a header with its implementation across files |
 | SQL / dbt | — | Column-level blast radius |
 | Shell | — | Shebang detection for extensionless executables |
 | HTML | Lightweight | A regex import tier for template dialects, gated on a framework manifest |

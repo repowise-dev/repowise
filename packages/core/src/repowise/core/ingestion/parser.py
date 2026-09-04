@@ -83,6 +83,7 @@ from .parser_helpers import (
     _classify_param_origin,
     _collect_error_nodes,
     _count_arguments,
+    _dedupe_objc_interface_symbols,
     _dedupe_pascal_interface_symbols,
     _elixir_call_is_definitional,
     _elixir_is_template_definition,
@@ -97,6 +98,12 @@ from .parser_helpers import (
     _has_callable_ancestor,
     _head_type_identifier,
     _is_async_node,
+    _objc_call_is_block_variable,
+    _objc_container_node,
+    _objc_container_parent,
+    _objc_is_macro_enum,
+    _objc_message_selector,
+    _objc_symbol_name,
     _qualified_cpp_parent,
     _qualified_pascal_parent,
     _run_query,
@@ -1141,9 +1148,14 @@ class ASTParser:
         symbols: list[Symbol] = []
         seen: set[tuple[int, str]] = set()  # (start_line, name) — dedup decorated dupes
         # Parallel to ``symbols`` (same indices) -- only populated/consumed
-        # for Pascal, to dedupe interface-declaration vs. implementation
-        # method pairs after the loop. See _dedupe_pascal_interface_symbols.
+        # for Pascal and Objective-C, to dedupe interface-declaration vs.
+        # implementation method pairs after the loop. See
+        # _dedupe_pascal_interface_symbols / _dedupe_objc_interface_symbols.
         node_types: list[str] = []
+        # Also parallel to ``symbols``, Objective-C only: which of @interface /
+        # @implementation / @protocol declared each member, so a protocol's
+        # method is never deduped against a same-named class method.
+        objc_container_kinds: list[str | None] = []
 
         # Deferred-export names (``export { x }`` / ``export default x``),
         # computed once per file for the TS/JS visibility refinement.
@@ -1261,6 +1273,17 @@ class ASTParser:
                 # `defimpl Proto, for: Type` is named for the module the
                 # compiler generates, not for the protocol alone.
                 name = _elixir_symbol_name(def_node, name, src)
+
+            elif file_info.language == "objectivec":
+                # `typedef NS_ENUM(NSInteger, Kind) { ... }` has no grammar
+                # rule, so only its enum *cases* survive as declarators and
+                # each would become a symbol named as though it were the type.
+                if _objc_is_macro_enum(def_node, src):
+                    continue
+                # A method is named by its whole selector
+                # (`initWithName:age:`), which no single node holds, and a
+                # category by the class it extends plus its own name.
+                name = _objc_symbol_name(def_node, name, src)
 
             export_type = cpp_export_type_defs.get(def_node.id)
             if export_type is not None and name != export_type.name:
@@ -1554,6 +1577,13 @@ class ASTParser:
             if parent_name is None and file_info.language == "elixir":
                 parent_name = _elixir_module_parent(def_node, src)
 
+            # Objective-C: an @interface / @implementation / @protocol names
+            # itself with a bare first identifier and no ``name`` field, so
+            # the nesting walk above finds the right ancestor and reads
+            # nothing off it.
+            if parent_name is None and file_info.language == "objectivec":
+                parent_name = _objc_container_parent(def_node, config.parent_class_types, src)
+
             # A ``field_declaration`` cannot occur outside a class body, so a
             # missing parent means the class did not parse. Grammar recovery,
             # not a member function.
@@ -1616,9 +1646,18 @@ class ASTParser:
                 )
             )
             node_types.append(node_type)
+            if file_info.language == "objectivec":
+                container = _objc_container_node(def_node, config.parent_class_types)
+                objc_container_kinds.append(container.type if container else None)
 
         if file_info.language == "pascal":
             symbols = _dedupe_pascal_interface_symbols(symbols, node_types)
+
+        # A .m file routinely declares its private methods in a class
+        # extension and defines them below in the @implementation, which
+        # builds each symbol id twice in one file.
+        if file_info.language == "objectivec":
+            symbols = _dedupe_objc_interface_symbols(symbols, node_types, objc_container_kinds)
 
         return symbols
 
@@ -2030,6 +2069,25 @@ class ASTParser:
             target_name = _node_text(target_nodes[0], src).strip()
             if not target_name:
                 continue
+
+            # Objective-C: a message send binds one `method:` child per
+            # keyword, so `[view setTitle:t forState:s]` matches the one
+            # query pattern twice. Join the whole selector on the first match
+            # so it can meet the symbol side, and drop the rest.
+            if file_info.language == "objectivec":
+                if site_node.type == "message_expression":
+                    joined = _objc_message_selector(site_node, target_nodes[0], src)
+                    if joined is None:
+                        continue
+                    target_name = joined
+                # A block held in a parameter or a local is invoked with C call
+                # syntax, so `completionBlock(hit)` is indistinguishable from a
+                # call to a C function by name alone. Left in, the resolver
+                # binds it to whatever same-named @property the repo holds.
+                elif not receiver_nodes and _objc_call_is_block_variable(
+                    site_node, target_name, src
+                ):
+                    continue
 
             if target_name in _call_builtins:
                 continue

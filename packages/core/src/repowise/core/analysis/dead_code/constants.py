@@ -80,6 +80,15 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # Instantiated by type name and loaded by the runtime (qrc, Loader,
     # qmlRegisterType), so a QML file never has a static importer.
     "*.qml",
+    # ---- Objective-C conventions ------------------------------------
+    # The app delegate is named in Info.plist and instantiated by
+    # UIApplicationMain / NSApplicationMain, and a scene delegate by the
+    # scene manifest, so no file ever imports either by name. (main.m is
+    # already an entry point through the language spec.)
+    "*AppDelegate.m",
+    "*AppDelegate.h",
+    "*SceneDelegate.m",
+    "*SceneDelegate.h",
     # ---- .NET / C# conventions --------------------------------------
     # Implicit / generated / framework-loaded files that have no
     # static importers by design.

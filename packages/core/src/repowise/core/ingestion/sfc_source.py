@@ -787,4 +787,8 @@ def prepare_source(language: str, source: bytes, *, path: str | None = None) -> 
         from .parser_helpers import prepare_pascal_source
 
         return prepare_pascal_source(source, path)
+    if language == "objectivec" and source:
+        from .parser_helpers import prepare_objectivec_source
+
+        return prepare_objectivec_source(source)
     return source

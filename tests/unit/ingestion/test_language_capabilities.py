@@ -101,7 +101,7 @@ class TestParityGoldens:
         camel = REGISTRY.camel_test_res_by_extension()
         assert set(camel) == {
             ".java", ".kt", ".kts", ".scala", ".cs", ".swift", ".php",
-            ".hs", ".lhs", ".vb",
+            ".hs", ".lhs", ".vb", ".m", ".mm",
         }
         assert camel[".java"].pattern == r"(?<=[a-z0-9])(?:Tests|Test|IT)$"
         assert camel[".scala"].pattern == r"(?<=[a-z0-9])(?:Suite|Spec|Test)$"
