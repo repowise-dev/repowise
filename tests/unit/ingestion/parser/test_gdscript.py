@@ -14,13 +14,12 @@ from __future__ import annotations
 
 import pytest
 
+# tree-sitter-gdscript is a pinned dependency, so an absent grammar is a broken
+# environment and must fail the suite rather than quietly skip it.
+import tree_sitter_gdscript  # noqa: F401
+
 from repowise.core.ingestion.parser import ASTParser
 from tests.unit.ingestion.parser._helpers import _make_file_info
-
-# tree-sitter-gdscript is a real dep in pyproject.toml, but it is sometimes
-# absent from a partially-synced developer venv. Skip explicitly so the
-# failure mode is "go run uv sync" rather than confusing AssertionErrors.
-pytest.importorskip("tree_sitter_gdscript", reason="run `uv sync --all-packages`")
 
 
 def _gd(path: str = "actors/player.gd") -> object:

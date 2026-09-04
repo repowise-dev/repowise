@@ -276,7 +276,9 @@ bindings and heritage, with a dedicated workspace resolver per language.
 ### GDScript known gaps
 
 Both dialects parse: GDScript 4 (`@export var`) and GDScript 3 (`export var`,
-`.method()` parent calls).
+`.method()` parent calls). On godotengine/godot-demo-projects, 459 of 461
+`.gd` files parse with no error node and every `res://` path naming an indexed
+script resolves; the two failures are the `$%UniqueName` form below.
 
 - **A script without `class_name` gets no class symbol**, so its `extends`
   produces no symbol-level heritage edge. Synthesizing a name from the file
@@ -311,17 +313,31 @@ Both dialects parse: GDScript 4 (`@export var`) and GDScript 3 (`export var`,
 - **Code health: duplication markers DO run** (the clone tokenizer needs only a
   grammar), but complexity, performance and dataflow dialects are not
   registered — that gap is what keeps GDScript at Good rather than Full.
-- **No `.tscn` / autoload / engine-callback awareness yet**, so despite the ✅
-  in the pipeline table above, **dead-code output on a Godot project is not
-  trustworthy** until that lands.
-- **One upstream grammar gap:** calling a function named `export` or `onready`
-  as a bare statement (`export()`) fails to parse, because the grammar still
+- **Dead code reads Godot's wiring, not only imports.** A script registered
+  under `[autoload]` in project.godot counts as an entry point, and a script a
+  `.tscn` attaches to a node is never flagged, because neither reference is an
+  import. Without that, 384 of the 461 `.gd` files in
+  godotengine/godot-demo-projects read as unreachable; with it, 29 do. A file
+  reached that way is exempt from the symbol-level passes too: a scene wires
+  handlers by name (`[connection ... method="_on_pressed"]`) and that name
+  appears in no script, which accounted for 522 of the 1,547 symbol findings
+  on that corpus. **A script reached only through a `.tres` resource, an editor
+  plugin manifest or `load()` on a computed path is still reported**, so the
+  remaining output is narrower than the ladder tier implies.
+- **Upstream grammar gap, reserved words:** calling a function named `export`
+  or `onready` as a bare statement (`export()`) fails to parse, because the
+  grammar still
   reserves those words at statement position for the GDScript 3 `export var` /
   `onready var` forms — which GDScript 4 respells `@export` / `@onready`, making
   both legal identifiers again. `self.export()`, `var x = export()` and
   `func export()` all parse; only the bare call statement fails. Contained to
   the one file by tree-sitter error recovery. Seen once in 651 corpus files
   (Pixelorama's `ExportDialog.gd`).
+- **Upstream grammar gap, `$%UniqueName`:** Godot accepts `$%Name` as shorthand
+  for a scene-unique node lookup, but the grammar takes `$` and `%` as
+  separate node-path forms and rejects the pair. `$Name`, `$Path/To/Node`
+  and `%Name` all parse. Two occurrences in the 461-file corpus, in two
+  files, and error recovery keeps the damage to the enclosing statement.
 
 ---
 

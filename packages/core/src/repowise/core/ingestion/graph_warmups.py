@@ -398,6 +398,40 @@ def _warmup_dart(ctx: ResolverContext) -> None:
                 pf.file_info.is_entry_point = True
 
 
+def _warmup_gdscript(ctx: ResolverContext) -> None:
+    """Stamp the Godot scripts the engine loads without an import.
+
+    An ``[autoload]`` entry in project.godot registers a script as a global
+    singleton the engine instantiates at startup, so it is an entry point in
+    the same sense ``main.py`` is. A script attached to a scene node is saved
+    in the ``.tscn`` as an ext_resource, which is a reference no GDScript file
+    makes: without this, every gameplay script in a Godot project reads as
+    unreachable, because scenes -- not scripts -- are what a Godot game wires
+    together.
+
+    A repo with no project.godot and no scenes gets two empty sets, so this is
+    a no-op on a loose bag of .gd files.
+    """
+    graph = getattr(ctx, "graph", None)
+    if graph is None:
+        return
+    from .resolvers.gdscript import engine_loaded_scripts
+
+    autoloads, scene_scripts = engine_loaded_scripts(ctx)
+    parsed = getattr(ctx, "parsed_files", None) or {}
+    for path in autoloads:
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["is_entry_point"] = True
+        pf = parsed.get(path)
+        if pf is not None and getattr(pf, "file_info", None) is not None:
+            pf.file_info.is_entry_point = True
+    for path in scene_scripts - autoloads:
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["is_never_flag"] = True
+
+
 # Map language tag → (phase-event name, warmup function). The phase
 # name shows up in the CLI progress bar and in ``state.json`` timings.
 #
@@ -416,6 +450,7 @@ _WARMUPS: dict[str, tuple[str, Warmup]] = {
     "c": ("graph.cpp_index", _warmup_cpp),
     "swift": ("graph.swift_entry", _warmup_swift),
     "dart": ("graph.dart_shells", _warmup_dart),
+    "gdscript": ("graph.godot_scenes", _warmup_gdscript),
 }
 
 

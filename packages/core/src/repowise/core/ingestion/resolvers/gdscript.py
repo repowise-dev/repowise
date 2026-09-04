@@ -30,6 +30,7 @@ They fall through to ``add_external_node`` so the reference still shows up.
 
 from __future__ import annotations
 
+import re
 from pathlib import PurePosixPath
 
 from repowise.core.fs_walk import iter_glob
@@ -145,3 +146,100 @@ def _join_relative(base: PurePosixPath, relative: str) -> str | None:
         elif segment not in ("", "."):
             parts.append(segment)
     return "/".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Engine-loaded scripts
+# ---------------------------------------------------------------------------
+# Godot reaches a script two ways that are not imports and so leave no edge in
+# the graph: an ``[autoload]`` entry in project.godot registers it as a global
+# singleton, and a scene attaches it to a node, saved in the .tscn as a
+# ``Script`` ext_resource. Read here so the dead-code pass does not report
+# every gameplay script in a Godot project as unreachable.
+
+# `[ext_resource type="Script" uid="uid://..." path="res://player.gd" id="5"]`.
+# Matched on the path suffix rather than on `type="Script"`: attribute order is
+# not fixed, a Godot 3 scene may omit the type, and a `.gd` ext_resource is a
+# script whatever the header says.
+_SCRIPT_RESOURCE_RE = re.compile(r'\[ext_resource\b[^\]]*?\bpath="(res://[^"]+\.gd)"')
+
+_AUTOLOAD_SECTION = "[autoload]"
+
+
+def _resolve_res(raw: str, owner_path: str, ctx: ResolverContext) -> str | None:
+    """Return the indexed path *raw* names, or None if it is not indexed.
+
+    Unlike :func:`resolve_gdscript_import` this never records an external
+    node: a scene referencing an asset outside the index is not a dependency
+    anyone asked to see, it is just a path that does not resolve.
+    """
+    relative = raw[len(_RES_PREFIX) :].lstrip("/")
+    root = _root_for(owner_path, ctx)
+    candidate = f"{root}/{relative}" if root else relative
+    return candidate if candidate in ctx.path_set else None
+
+
+def _rel_posix(path, ctx: ResolverContext) -> str | None:
+    if ctx.repo_path is None:
+        return None
+    try:
+        return path.relative_to(ctx.repo_path).as_posix()
+    except ValueError:
+        return None
+
+
+def engine_loaded_scripts(
+    ctx: ResolverContext,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Return ``(autoload singletons, scene-attached scripts)``.
+
+    Both are sets of indexed repo-relative paths. A path that resolves to a
+    file the index does not hold is dropped rather than guessed at, the same
+    rule the import resolver follows.
+    """
+    if ctx.repo_path is None:
+        return frozenset(), frozenset()
+
+    autoloads: set[str] = set()
+    for manifest in iter_glob(
+        ctx.repo_path, "project.godot", prune_nested_git=ctx.prune_nested_git
+    ):
+        owner = _rel_posix(manifest, ctx)
+        if owner is None:
+            continue
+        try:
+            text = manifest.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        in_section = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("["):
+                in_section = stripped == _AUTOLOAD_SECTION
+                continue
+            if not in_section or "=" not in stripped:
+                continue
+            # `Global="*res://autoload/global.gd"` -- the leading `*` marks the
+            # singleton as enabled and is not part of the path.
+            value = stripped.split("=", 1)[1].strip().strip('"').lstrip("*")
+            if not value.startswith(_RES_PREFIX) or not value.endswith(".gd"):
+                continue
+            resolved = _resolve_res(value, owner, ctx)
+            if resolved is not None:
+                autoloads.add(resolved)
+
+    scene_scripts: set[str] = set()
+    for scene in iter_glob(ctx.repo_path, "*.tscn", prune_nested_git=ctx.prune_nested_git):
+        owner = _rel_posix(scene, ctx)
+        if owner is None:
+            continue
+        try:
+            text = scene.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for match in _SCRIPT_RESOURCE_RE.finditer(text):
+            resolved = _resolve_res(match.group(1), owner, ctx)
+            if resolved is not None:
+                scene_scripts.add(resolved)
+
+    return frozenset(autoloads), frozenset(scene_scripts)
