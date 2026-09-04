@@ -166,7 +166,8 @@ class TestStates:
         assert by_basis["measured"].via == "coverage-map"
         assert by_basis["inferred"].test_file == "tests/api.test.ts"
         assert by_basis["inferred"].via == "call-graph"
-        assert by_basis["inferred"].consumer_symbol_id == "src/api.ts::getUser"
+        assert by_basis["inferred"].consumer_symbol_ids == ["src/api.ts::getUser"]
+        assert by_basis["inferred"].consumer_files == ["src/api.ts"]
         assert by_basis["inferred"].contract_ids == [BOUND.contract_id]
         assert by_basis["inferred"].contract_types == ["http"]
         assert by_basis["inferred"].source_files == [PROVIDER_FILE]

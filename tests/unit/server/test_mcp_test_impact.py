@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from repowise.core.analysis.test_reachability import MAX_TESTS_PER_TARGET
 from repowise.core.ingestion.models import Symbol
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 from repowise.core.workspace.contracts import ContractLink
@@ -82,8 +83,13 @@ ONLY_IMPORTED = _link(
     consumer_file="src/imported.ts", consumer_symbol_id="src/imported.ts::thing"
 )
 WIDE = _link(consumer_file="src/wide.ts", consumer_symbol_id="src/wide.ts::wide")
+HUGE = _link(consumer_file="src/huge.ts", consumer_symbol_id="src/huge.ts::huge")
 
 _WIDE_TESTS = _TESTS_PER_CONSUMER_LIMIT + 3
+
+#: Above the per-pair cap the core join applies by default, so a total of
+#: exactly this many proves the helper turned that cap off.
+_HUGE_TESTS = MAX_TESTS_PER_TARGET + 10
 
 
 class _FakeEnricher:
@@ -169,10 +175,40 @@ def _in_workspace(root: Path | None, enricher: Any):
         _state._registry, _state._cross_repo_enricher = prev
 
 
+async def _make_huge_frontend(repo: Path) -> None:
+    """A consumer repo whose one call site is reached by more tests than the cap."""
+    tests = [f"tests/huge{i}.test.ts" for i in range(_HUGE_TESTS)]
+    index = await make_repo_index(
+        repo,
+        {"src/huge.ts": [_symbol("src/huge.ts::huge")]},
+        alias="frontend",
+        graph_nodes=(
+            ("src/huge.ts", False),
+            *((path, True) for path in tests),
+        ),
+        graph_edges=(
+            ("src/huge.ts", "src/huge.ts::huge", "defines"),
+            *((path, f"{path}::it", "defines") for path in tests),
+            *((f"{path}::it", "src/huge.ts::huge", "calls") for path in tests),
+        ),
+    )
+    await index.close()
+
+
 @pytest.fixture
 async def workspace(tmp_path: Path):
     """A workspace whose one consumer repo is indexed on disk."""
     await _make_frontend(tmp_path / "frontend")
+    try:
+        yield tmp_path
+    finally:
+        await close_test_impact_indexes()
+
+
+@pytest.fixture
+async def huge_workspace(tmp_path: Path):
+    """The same workspace, with one call site far more tests reach."""
+    await _make_huge_frontend(tmp_path / "frontend")
     try:
         yield tmp_path
     finally:
@@ -273,6 +309,20 @@ async def test_the_inline_list_is_capped_and_the_tail_is_recoverable(
     assert len(tail) == _WIDE_TESTS - _TESTS_PER_CONSUMER_LIMIT
 
 
+async def test_the_total_counts_every_test_not_the_join_cap(
+    huge_workspace: Path,
+) -> None:
+    """The helper caps its own inline list, so the join must not cap first."""
+    collector = _FakeCollector()
+    with _in_workspace(huge_workspace, _FakeEnricher([HUGE])):
+        result = await cross_repo_tests("backend", [PROVIDER_FILE])
+    block = _block(result, HUGE, collector)
+    assert block["total"] == _HUGE_TESTS
+    assert block["truncated"] is True
+    assert len(block["tests_to_run"]) == _TESTS_PER_CONSUMER_LIMIT
+    assert len(collector.chunks[0][1]) == _HUGE_TESTS - _TESTS_PER_CONSUMER_LIMIT
+
+
 # ---------------------------------------------------------------------------
 # When the helper declines
 # ---------------------------------------------------------------------------
@@ -290,9 +340,33 @@ async def test_absent_without_contract_data(workspace: Path) -> None:
         assert await cross_repo_tests("backend", [PROVIDER_FILE]) is None
 
 
-async def test_absent_when_no_link_names_the_changed_file(workspace: Path) -> None:
+async def test_no_link_for_the_changed_file_is_named_not_silent(workspace: Path) -> None:
+    """Contract data but no link is an answer with a reason, not a None."""
     with _in_workspace(workspace, _FakeEnricher([BOUND])):
-        assert await cross_repo_tests("backend", ["app/untouched.py"]) is None
+        result = await cross_repo_tests("backend", ["app/untouched.py"])
+    assert result is not None
+    assert result.summary["reason"] == "no_matching_links"
+    assert result.recommendations == []
+
+
+async def test_a_failed_join_names_itself_on_every_row(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A break in the lookup must not read as "no tests guard this"."""
+    import repowise.core.workspace.test_impact as core_test_impact
+
+    def _boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("index gone")
+
+    monkeypatch.setattr(core_test_impact, "analyze_workspace_test_impact", _boom)
+    with _in_workspace(workspace, _FakeEnricher([BOUND])):
+        result = await cross_repo_tests("backend", [PROVIDER_FILE])
+    assert result is not None
+    assert result.summary == {"reason": "lookup_failed", "detail": "RuntimeError"}
+    block = _block(result, BOUND)
+    assert block["state"] == "unresolved"
+    assert block["unresolved_reason"] == "lookup_failed"
+    assert block["unresolved_detail"] == "RuntimeError"
 
 
 async def test_a_none_result_still_yields_a_block_naming_its_state() -> None:
@@ -322,3 +396,17 @@ async def test_the_consumer_index_is_opened_once_and_released(workspace: Path) -
         assert _state._test_impact_indexes["frontend"] is first
     await close_test_impact_indexes()
     assert _state._test_impact_indexes == {}
+
+
+async def test_a_closed_cache_answers_again_on_the_next_call(workspace: Path) -> None:
+    """Closing releases the sessions and the lock; the next call rebuilds both."""
+    with _in_workspace(workspace, _FakeEnricher([BOUND])):
+        first = await cross_repo_tests("backend", [PROVIDER_FILE])
+        await close_test_impact_indexes()
+        assert _state._test_impact_lock is None
+        again = await cross_repo_tests("backend", [PROVIDER_FILE])
+    assert first is not None and again is not None
+    assert [r.test_id for r in again.recommendations] == [
+        r.test_id for r in first.recommendations
+    ]
+    assert _state._test_impact_indexes["frontend"] is not None

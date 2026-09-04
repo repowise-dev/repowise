@@ -437,11 +437,14 @@ class WorkspaceTestRecommendation(BaseModel):
     test_id: str = ""
     test_file: str = ""
     consumer_repo: str = ""
-    consumer_file: str = ""
-    #: The symbol the contract bound to in the consumer. Carried through the
-    #: boundary so a caller can look the call site up instead of guessing it
-    #: from the file.
-    consumer_symbol_id: str | None = None
+    #: Every consumer file that reached this test. One test can guard several
+    #: call sites, and merging rows on the test would otherwise drop all but
+    #: one of the files that led to it.
+    consumer_files: list[str] = []
+    #: The symbols the contracts bound to in the consumer. Carried through the
+    #: boundary so a caller can look the call sites up instead of guessing them
+    #: from the files.
+    consumer_symbol_ids: list[str] = []
     provider_repo: str = ""
     contract_ids: list[str] = []
     contract_types: list[str] = []

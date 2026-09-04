@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type {
   WorkspaceTestImpactResponse,
@@ -14,8 +14,8 @@ function rec(over: Partial<WorkspaceTestRecommendation> = {}): WorkspaceTestReco
     test_id: "web::tests/users.test.ts::loads",
     test_file: "tests/users.test.ts",
     consumer_repo: "web",
-    consumer_file: "src/client.ts",
-    consumer_symbol_id: "src/client.ts::fetchUsers",
+    consumer_files: ["src/client.ts"],
+    consumer_symbol_ids: ["src/client.ts::fetchUsers"],
     provider_repo: "api",
     contract_ids: [CONTRACT],
     contract_types: ["http"],
@@ -118,6 +118,7 @@ describe("ContractTestsSection", () => {
       ["no_matching_links", /No contract link joins this file/],
       ["no_changed_files", /No provider file was submitted/],
       ["no_contract_data", /carries no contract data/],
+      ["lookup_failed", /lookup failed before it could answer/],
     ];
     for (const [reason, words] of cases) {
       const { unmount } = render(
@@ -126,6 +127,34 @@ describe("ContractTestsSection", () => {
       expect(screen.getByText(words)).toBeTruthy();
       unmount();
     }
+  });
+
+  it("appends the detail a failed lookup carries", () => {
+    render(
+      <ContractTestsSection
+        result={response({ summary: { reason: "lookup_failed", detail: "TimeoutError" } })}
+        contractId={CONTRACT}
+      />,
+    );
+    expect(screen.getByText(/\(TimeoutError\)/)).toBeTruthy();
+  });
+
+  it("keys two rows sharing a test id across provider repos apart", () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    render(
+      <ContractTestsSection
+        result={response({
+          recommendations: [
+            rec({ source_files: ["app/routers/users.py"] }),
+            rec({ provider_repo: "billing", source_files: ["app/routers/plans.py"] }),
+          ],
+        })}
+        contractId={CONTRACT}
+      />,
+    );
+    expect(screen.getAllByText("tests/users.test.ts")).toHaveLength(2);
+    expect(errors.mock.calls.flat().join(" ")).not.toContain("same key");
+    errors.mockRestore();
   });
 
   it("drops rows belonging to another contract", () => {

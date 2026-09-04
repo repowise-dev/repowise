@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Any
 from repowise.server.mcp_server import _state
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from repowise.core.workspace.test_impact import WorkspaceTestImpactResult
     from repowise.server.mcp_server._budget import OmissionCollector
 
@@ -32,7 +34,12 @@ _TESTS_PER_CONSUMER_LIMIT = 5
 
 _BASIS_ORDER = {"measured": 0, "inferred": 1}
 
-__all__ = ["close_test_impact_indexes", "cross_repo_tests", "tests_block_for"]
+__all__ = [
+    "close_test_impact_indexes",
+    "cross_repo_tests",
+    "cross_repo_tests_for",
+    "tests_block_for",
+]
 
 
 def _norm(path: str) -> str:
@@ -47,12 +54,26 @@ def _lock() -> asyncio.Lock:
     """The one lock guarding the process-held indexes.
 
     Each cached index holds a single database session, and a session is not
-    concurrent-safe, so two overlapping tool calls must not share one.
+    concurrent-safe, so two overlapping tool calls must not share one. The lock
+    is stored with the loop it was made on, because a lock bound to a loop that
+    has gone away can never be acquired again.
     """
-    lock = _state._test_impact_lock
-    if lock is None:
-        lock = _state._test_impact_lock = asyncio.Lock()
-    return lock
+    loop = asyncio.get_running_loop()
+    held = _state._test_impact_lock
+    if held is None or held[0] is not loop:
+        held = (loop, asyncio.Lock())
+        _state._test_impact_lock = held
+    return held[1]
+
+
+def _empty_result(reason: str, detail: str | None = None) -> WorkspaceTestImpactResult:
+    """An answer that says why it is empty, so silence is never unexplained."""
+    from repowise.core.workspace.test_impact import WorkspaceTestImpactResult
+
+    summary: dict[str, Any] = {"reason": reason}
+    if detail is not None:
+        summary["detail"] = detail
+    return WorkspaceTestImpactResult(summary=summary)
 
 
 async def _consumer_index(alias: str) -> Any:
@@ -81,27 +102,30 @@ async def _consumer_index(alias: str) -> Any:
     except Exception:
         _log.debug("Could not open the index for '%s'", alias, exc_info=True)
         index = None
-    # None is cached too: a repo without an index stays without one for the
-    # life of the process, and retrying it on every call costs a stat per call.
-    cache[alias] = index
+    # Only a real index is cached. Re-checking a repo without one costs a
+    # single stat, and it lets a repo indexed later start answering without a
+    # restart of this process.
+    if index is not None:
+        cache[alias] = index
     return index
 
 
-async def cross_repo_tests(
-    alias: str, changed_files: list[str]
+async def cross_repo_tests_for(
+    changed_by_repo: Mapping[str, Sequence[str]],
 ) -> WorkspaceTestImpactResult | None:
-    """Tests in other repos that guard *changed_files* in repo *alias*.
+    """One join over every provider repo and file a tool call touches.
 
-    ``None`` outside workspace mode, without contract data, or when nothing
-    could be joined, so a caller omits the block entirely. Never raises.
+    ``None`` only outside workspace mode or without contract data, so a caller
+    can omit its block entirely. Every other empty answer names its reason in
+    ``summary``: ``no_matching_links`` when the contract map knows no consumer
+    of those files, ``lookup_failed`` when the join itself broke. Never raises.
     """
+    if _state._registry is None:
+        return None
+    enricher = _state._cross_repo_enricher
+    if enricher is None or not getattr(enricher, "has_contract_data", False):
+        return None
     try:
-        if not changed_files or _state._registry is None:
-            return None
-        enricher = _state._cross_repo_enricher
-        if enricher is None or not getattr(enricher, "has_contract_data", False):
-            return None
-
         from repowise.core.workspace.contracts import ContractLink
         from repowise.core.workspace.repo_index import WorkspaceIndex
         from repowise.core.workspace.test_impact import analyze_workspace_test_impact
@@ -109,33 +133,50 @@ async def cross_repo_tests(
         # Straight off the loaded artifact; contracts.json is never re-read.
         seen: set[int] = set()
         links = []
-        for path in changed_files:
-            for raw in enricher.get_contract_links_as_provider(alias, path):
-                if id(raw) in seen:
-                    continue
-                seen.add(id(raw))
-                links.append(ContractLink.from_dict(raw))
-        if not links:
-            return None
+        changed: list[dict[str, str]] = []
+        for alias, paths in sorted(changed_by_repo.items()):
+            for path in sorted(set(paths)):
+                changed.append({"repo": alias, "path": path})
+                for raw in enricher.get_contract_links_as_provider(alias, path):
+                    if id(raw) in seen:
+                        continue
+                    seen.add(id(raw))
+                    links.append(ContractLink.from_dict(raw))
 
-        consumers = sorted({lk.consumer_repo for lk in links if lk.consumer_repo != alias})
-        if not consumers:
-            return None
+        consumers = sorted(
+            {lk.consumer_repo for lk in links if lk.consumer_repo != lk.provider_repo}
+        )
+        if not changed or not consumers:
+            return _empty_result("no_matching_links")
 
-        changed = [{"repo": alias, "path": path} for path in changed_files]
         async with _lock():
             opened = {}
             for consumer in consumers:
                 index = await _consumer_index(consumer)
                 if index is not None:
                     opened[consumer] = index
-            # A copy, so WorkspaceIndex.close() can never empty the cache.
+            # A copy, so WorkspaceIndex.close() can never empty the cache. The
+            # per-pair cap is off because this caller caps its own inline list
+            # and banks the tail, so it needs the true total.
             return await analyze_workspace_test_impact(
-                WorkspaceIndex(dict(opened)), links, changed, target_repos=set(consumers)
+                WorkspaceIndex(dict(opened)),
+                links,
+                changed,
+                target_repos=set(consumers),
+                max_tests_per_pair=None,
             )
-    except Exception:
+    except Exception as exc:
         _log.debug("Cross-repo test impact unavailable", exc_info=True)
+        return _empty_result("lookup_failed", type(exc).__name__)
+
+
+async def cross_repo_tests(
+    alias: str, changed_files: list[str]
+) -> WorkspaceTestImpactResult | None:
+    """Tests in other repos that guard *changed_files* in repo *alias*."""
+    if not changed_files:
         return None
+    return await cross_repo_tests_for({alias: changed_files})
 
 
 def tests_block_for(
@@ -162,12 +203,19 @@ def tests_block_for(
     }
     if result is None:
         return block
+    # A join that broke says so on every row it would have answered, so no row
+    # reads as "nothing guards this".
+    if result.summary.get("reason") == "lookup_failed":
+        block["state"] = "unresolved"
+        block["unresolved_reason"] = "lookup_failed"
+        block["unresolved_detail"] = result.summary.get("detail")
+        return block
     path = _norm(consumer_file)
     rows = [
         rec
         for rec in result.recommendations
         if rec.consumer_repo == consumer_repo
-        and rec.consumer_file == path
+        and path in rec.consumer_files
         and contract_id in rec.contract_ids
     ]
     unresolved = next(
@@ -184,8 +232,9 @@ def tests_block_for(
         rows.sort(key=lambda r: _BASIS_ORDER.get(r.basis, 99))
         block["state"] = rows[0].basis
     elif unresolved is not None:
+        # The reason belongs to the unresolved state alone: a row that did find
+        # tests through some other link is answered, not undetermined.
         block["state"] = "unresolved"
-    if unresolved is not None:
         block["unresolved_reason"] = unresolved.reason
         block["unresolved_detail"] = unresolved.detail
 
@@ -212,13 +261,20 @@ def tests_block_for(
 
 
 async def close_test_impact_indexes() -> None:
-    """Release every consumer index this process opened. Never raises."""
-    cache = _state._test_impact_indexes
-    for alias, index in list(cache.items()):
-        if index is None:
-            continue
-        try:
-            await index.close()
-        except Exception:
-            _log.debug("Error closing the index for '%s'", alias, exc_info=True)
-    cache.clear()
+    """Release every consumer index this process opened. Never raises.
+
+    Closing runs under the lock so no join is mid-query on a session being torn
+    down, and the lock is dropped with the indexes it guarded so the next call
+    binds a fresh one to whatever loop is running then.
+    """
+    async with _lock():
+        cache = _state._test_impact_indexes
+        for alias, index in list(cache.items()):
+            if index is None:
+                continue
+            try:
+                await index.close()
+            except Exception:
+                _log.debug("Error closing the index for '%s'", alias, exc_info=True)
+        cache.clear()
+    _state._test_impact_lock = None

@@ -2974,12 +2974,71 @@ export interface WorkspaceSystemNode {
   is_isolated?: boolean;
 }
 
+/** One consumer file the join looked at, and the state it ended in. */
+export interface WorkspaceTestImpactFile {
+  consumer_repo?: string;
+  consumer_file?: string;
+  state?: string;
+  measured_tests_count?: number;
+  inferred_tests_count?: number;
+  via?: string | null;
+  provider_repos?: string[];
+  contract_ids?: string[];
+  consumer_symbol_ids?: string[];
+}
+
+/** ``GET /api/workspace/test-impact``: consumer tests for a provider change. */
+export interface WorkspaceTestImpactResponse {
+  workspace?: boolean;
+  recommendations?: WorkspaceTestRecommendation[];
+  recommendations_total?: number;
+  recommendations_emitted?: number;
+  recommendations_truncated?: boolean;
+  recommendations_omitted?: number;
+  recommendations_by_basis?: Record<string, number>;
+  recommendations_by_repo?: Record<string, number>;
+  recommendations_by_consumer_repo?: Record<string, number>;
+  unresolved?: WorkspaceUnresolvedLink[];
+  files_analyzed?: WorkspaceTestImpactFile[];
+  summary?: Record<string, unknown>;
+}
+
+/** A test in a consumer repo that guards a changed provider file. */
+export interface WorkspaceTestRecommendation {
+  test_id?: string;
+  test_file?: string;
+  consumer_repo?: string;
+  consumer_files?: string[];
+  consumer_symbol_ids?: string[];
+  provider_repo?: string;
+  contract_ids?: string[];
+  contract_types?: string[];
+  basis?: string;
+  via?: string;
+  confidence?: number;
+  source_files?: string[];
+  evidence?: Record<string, unknown>[];
+}
+
 export interface WorkspaceUnmatchedConsumer {
   repo: string;
   file_path: string;
   contract_id: string;
   contract_type: string;
   reason: string;
+}
+
+/** A contract link the join could not follow, and why. */
+export interface WorkspaceUnresolvedLink {
+  consumer_repo?: string;
+  consumer_file?: string;
+  consumer_symbol_id?: string | null;
+  provider_repo?: string;
+  provider_file?: string;
+  contract_id?: string;
+  contract_type?: string;
+  reason?: string;
+  detail?: string | null;
 }
 
 export interface ZoomMapResponse {

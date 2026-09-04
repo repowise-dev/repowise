@@ -597,6 +597,11 @@ In workspace mode the response also carries `cross_repo`, and every
 `test_file`, `test_id`, `basis`, `via` and `confidence`, `total` and
 `truncated` for the overflow (the tail goes to the omission store), and
 `unresolved_reason` / `unresolved_detail` when the join could not be followed.
+Only `tests_to_run` is capped at five; `total` is the true number of tests
+found for that consumer, so `truncated: true` means `total` minus five went to
+the omission store. `unresolved_reason: "lookup_failed"` is the state every row
+lands in when the join itself failed, as opposed to one link that could not be
+followed, and `unresolved_detail` names what failed.
 
 > **Output-schema change.** `impacted_tests.tests` is now
 > `impacted_tests.tests_to_run`, matching `get_risk`'s directive.

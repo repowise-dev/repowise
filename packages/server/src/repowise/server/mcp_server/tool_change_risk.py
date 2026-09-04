@@ -48,7 +48,11 @@ from repowise.server.mcp_server._helpers import (
     resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server._test_impact import cross_repo_tests, tests_block_for
+from repowise.server.mcp_server._test_impact import (
+    _norm,
+    cross_repo_tests,
+    tests_block_for,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -596,10 +600,27 @@ def _cross_repo_block(
                     collector,
                     f"cross_repo.consumers[{i}].tests.tests_to_run",
                 )
-            test_files = {rec.test_file for rec in impact.recommendations}
+            # Counted over the rows this payload actually carries, so the
+            # sentence never promises tests for a consumer the cap dropped.
+            keys = {
+                (
+                    row.get("repo") or "",
+                    _norm(row.get("file") or ""),
+                    row.get("contract_id") or "",
+                )
+                for row in shown
+            }
+            test_files = {
+                rec.test_file
+                for rec in impact.recommendations
+                for path in rec.consumer_files
+                for cid in rec.contract_ids
+                if (rec.consumer_repo, path, cid) in keys
+            }
+            undetermined = sum(1 for row in shown if row["tests"]["state"] == "unresolved")
             summary += (
                 f" {len(test_files)} consumer test file(s) to run, "
-                f"{len(impact.unresolved)} link(s) could not be determined."
+                f"{undetermined} link(s) could not be determined."
             )
         return {
             "consumers": shown,

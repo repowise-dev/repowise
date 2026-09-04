@@ -60,8 +60,10 @@ class WorkspaceTestRecommendation:
     test_id: str
     test_file: str
     consumer_repo: str
-    consumer_file: str
-    consumer_symbol_id: str | None
+    # Plural: merging folds every call site the one test guards into this row,
+    # and only bound links reach a row, so no symbol id here is ever None.
+    consumer_files: list[str]
+    consumer_symbol_ids: list[str]
     provider_repo: str
     contract_ids: list[str]
     contract_types: list[str]
@@ -154,10 +156,9 @@ def _merge_recommendations(
     )
     return replace(
         strongest,
-        consumer_file=min(first.consumer_file, second.consumer_file),
-        consumer_symbol_id=min(
-            (s for s in (first.consumer_symbol_id, second.consumer_symbol_id) if s),
-            default=None,
+        consumer_files=sorted(set(first.consumer_files) | set(second.consumer_files)),
+        consumer_symbol_ids=sorted(
+            set(first.consumer_symbol_ids) | set(second.consumer_symbol_ids)
         ),
         contract_ids=sorted(set(first.contract_ids) | set(second.contract_ids)),
         contract_types=sorted(set(first.contract_types) | set(second.contract_types)),
@@ -317,8 +318,8 @@ async def _analyze_consumer(
                         test_id=entry["test_id"],
                         test_file=entry["test_file"],
                         consumer_repo=alias,
-                        consumer_file=path,
-                        consumer_symbol_id=link.consumer_symbol_id,
+                        consumer_files=[path],
+                        consumer_symbol_ids=[link.consumer_symbol_id],
                         provider_repo=link.provider_repo,
                         contract_ids=[link.contract_id],
                         contract_types=[link.contract_type],
@@ -360,8 +361,8 @@ async def _analyze_consumer(
                         test_id=test_id,
                         test_file=test_id.split("::", 1)[0],
                         consumer_repo=alias,
-                        consumer_file=path,
-                        consumer_symbol_id=link.consumer_symbol_id,
+                        consumer_files=[path],
+                        consumer_symbol_ids=[link.consumer_symbol_id],
                         provider_repo=link.provider_repo,
                         contract_ids=[link.contract_id],
                         contract_types=[link.contract_type],
@@ -414,11 +415,13 @@ async def analyze_workspace_test_impact(
     include_inferred: bool = True,
     min_confidence: float = 0.0,
     target_repos: Collection[str] | None = None,
+    max_tests_per_pair: int | None = MAX_TESTS_PER_TARGET,
 ) -> WorkspaceTestImpactResult:
     """Tests in consumer repos that guard *changed_files* in provider repos.
 
     *index* and *links* are supplied by the caller, so a request handler that
-    already holds both opens nothing here.
+    already holds both opens nothing here. ``max_tests_per_pair=None`` turns
+    the per-pair cap off, for a caller that caps and banks the tail itself.
     """
     changed_by_provider: dict[str, set[str]] = defaultdict(set)
     for entry in changed_files:
@@ -505,13 +508,16 @@ async def analyze_workspace_test_impact(
 
     deduplicated = sorted(seen.values(), key=_recommendation_sort_key)
 
-    capped: list[WorkspaceTestRecommendation] = []
-    counts: dict[tuple[str, str], int] = defaultdict(int)
-    for rec in deduplicated:
-        pair = (rec.consumer_repo, rec.provider_repo)
-        if counts[pair] < MAX_TESTS_PER_TARGET:
-            capped.append(rec)
-            counts[pair] += 1
+    if max_tests_per_pair is None:
+        capped = deduplicated
+    else:
+        capped = []
+        counts: dict[tuple[str, str], int] = defaultdict(int)
+        for rec in deduplicated:
+            pair = (rec.consumer_repo, rec.provider_repo)
+            if counts[pair] < max_tests_per_pair:
+                capped.append(rec)
+                counts[pair] += 1
 
     by_basis: dict[str, int] = {"measured": 0, "inferred": 0}
     by_repo: dict[str, int] = defaultdict(int)
@@ -584,8 +590,8 @@ def workspace_test_impact_to_dict(result: WorkspaceTestImpactResult) -> dict[str
                 "test_id": r.test_id,
                 "test_file": r.test_file,
                 "consumer_repo": r.consumer_repo,
-                "consumer_file": r.consumer_file,
-                "consumer_symbol_id": r.consumer_symbol_id,
+                "consumer_files": r.consumer_files,
+                "consumer_symbol_ids": r.consumer_symbol_ids,
                 "provider_repo": r.provider_repo,
                 "contract_ids": r.contract_ids,
                 "contract_types": r.contract_types,

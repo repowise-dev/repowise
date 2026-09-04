@@ -619,6 +619,14 @@ async def execute_job(
             enricher = getattr(app_state, "cross_repo_enricher", None)
             if enricher is not None and hasattr(enricher, "reload"):
                 enricher.reload()
+                # Imported here because a single-repo server never gets this
+                # far: the contract map and the consumer indexes the join
+                # reads change together, so a reload of one invalidates both.
+                from repowise.server.mcp_server._test_impact import (
+                    close_test_impact_indexes,
+                )
+
+                await close_test_impact_indexes()
         except Exception:
             logger.debug("enricher_reload_failed", job_id=job_id, exc_info=True)
 

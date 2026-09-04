@@ -1508,8 +1508,8 @@ class TestGetTestImpact:
                     test_id="tests/test_client.py::test_users",
                     test_file="tests/test_client.py",
                     consumer_repo="frontend",
-                    consumer_file="src/client.ts",
-                    consumer_symbol_id="src/client.ts::fetchUsers",
+                    consumer_files=["src/client.ts"],
+                    consumer_symbol_ids=["src/client.ts::fetchUsers"],
                     provider_repo="backend",
                     contract_ids=["http::GET::/api/users"],
                     contract_types=["http"],
@@ -1567,7 +1567,7 @@ class TestGetTestImpact:
         assert resp.status_code == 200
         data = resp.json()
         row = data["recommendations"][0]
-        assert row["consumer_symbol_id"] == "src/client.ts::fetchUsers"
+        assert row["consumer_symbol_ids"] == ["src/client.ts::fetchUsers"]
         assert row["basis"] == "measured"
         assert row["confidence"] == 0.9
         assert data["unresolved"][0]["reason"] == "unbound"

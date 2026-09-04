@@ -512,9 +512,10 @@ export interface WorkspaceTestRecommendation {
   test_id: string;
   test_file: string;
   consumer_repo: string;
-  consumer_file: string;
-  /** The symbol the contract bound to in the consumer, or null when unbound. */
-  consumer_symbol_id: string | null;
+  /** Every consumer file that reached this test, sorted. */
+  consumer_files: string[];
+  /** The symbols the contracts bound to in the consumer, sorted. */
+  consumer_symbol_ids: string[];
   provider_repo: string;
   contract_ids: string[];
   contract_types: string[];
@@ -571,7 +572,8 @@ export interface WorkspaceTestImpactResponse {
   /**
    * Counters plus, when the answer is empty, the `reason` that produced it
    * ("no_contract_data" | "no_changed_files" | "no_matching_links" |
-   * "no_contract_store").
+   * "no_contract_store" | "lookup_failed"), and for "lookup_failed" a
+   * `detail` naming what failed.
    */
   summary: Record<string, unknown>;
 }

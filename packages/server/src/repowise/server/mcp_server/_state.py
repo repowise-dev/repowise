@@ -42,7 +42,9 @@ _cross_repo_enricher: Any = None  # CrossRepoEnricher | None
 # below serializes the joins that read them. Both are cleared by
 # ``_test_impact.close_test_impact_indexes()`` where the enricher is dropped.
 _test_impact_indexes: dict[str, Any] = {}
-_test_impact_lock: asyncio.Lock | None = None
+# The loop the lock was created on, paired with the lock: an asyncio.Lock is
+# bound to one event loop, and a test or an embedded server can run a second.
+_test_impact_lock: tuple[Any, asyncio.Lock] | None = None
 
 # Embedder health — set by _resolve_embedder() in _server.py. ``None`` until an
 # embedder is resolved. When an explicitly-configured embedder fails to

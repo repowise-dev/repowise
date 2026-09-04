@@ -45,6 +45,10 @@ const REASON_WORDS: Record<string, string> = {
 };
 
 const SUMMARY_REASON_WORDS: Record<string, string> = {
+  // Only the CLI reports this one: it reads the contract store from disk and
+  // finds none. The route answers from an enricher that is already loaded, so
+  // it cannot produce it. Worded here anyway so a CLI-shaped payload rendered
+  // in the UI still reads.
   no_contract_store:
     "This workspace has no extracted contracts to join tests to. Run a workspace update to build the contract store.",
   no_contract_data:
@@ -53,6 +57,8 @@ const SUMMARY_REASON_WORDS: Record<string, string> = {
     "No contract link joins this file to a consumer repository, so no test in another repository can be traced back to it.",
   no_changed_files:
     "No provider file was submitted for analysis, so nothing was traced.",
+  lookup_failed:
+    "The lookup failed before it could answer, so treat these consumers as unknown.",
 };
 
 const NONE_WORDS =
@@ -90,7 +96,11 @@ function Body({
 
   if (rows.length === 0 && unresolved.length === 0) {
     const reason = summaryReason(result);
-    return <Prose>{(reason && SUMMARY_REASON_WORDS[reason]) ?? NONE_WORDS}</Prose>;
+    // An empty-string reason is still a miss, so index with "" and let the
+    // lookup fall through to the analyzed-and-found-nothing wording.
+    const words = SUMMARY_REASON_WORDS[reason ?? ""] ?? NONE_WORDS;
+    const detail = reason === "lookup_failed" ? summaryDetail(result) : null;
+    return <Prose>{detail ? `${words} (${detail})` : words}</Prose>;
   }
 
   return (
@@ -107,7 +117,12 @@ function Body({
           </h3>
           <ul className="m-0 flex list-none flex-col gap-2 p-0">
             {repoRows.map((row) => (
-              <li key={`${row.consumer_repo}|${row.test_id}`} className="flex flex-col gap-1">
+              // One test id can appear once per provider repo it guards, so
+              // the provider files are part of what makes the row unique.
+              <li
+                key={`${row.consumer_repo}|${row.test_id}|${row.source_files.join(",")}`}
+                className="flex flex-col gap-1"
+              >
                 <span className="font-mono text-xs text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
                   {row.test_file}
                 </span>
@@ -141,8 +156,12 @@ function UnresolvedList({ rows }: { rows: WorkspaceUnresolvedLink[] }) {
         untested.
       </Prose>
       <ul className="m-0 flex list-none flex-col gap-2 p-0">
-        {rows.map((row) => (
-          <li key={`${row.consumer_repo}|${row.consumer_file}|${row.reason}`}>
+        {rows.map((row, index) => (
+          <li
+            key={`${row.consumer_repo}|${row.consumer_file}|${row.contract_id}|${
+              row.consumer_symbol_id ?? index
+            }`}
+          >
             <span className="font-mono text-xs text-[var(--color-text-primary)] [overflow-wrap:anywhere]">
               {row.consumer_repo} / {row.consumer_file}
             </span>
@@ -167,6 +186,11 @@ function Prose({ children }: { children: ReactNode }) {
 function summaryReason(result: WorkspaceTestImpactResponse): string | null {
   const reason = result.summary?.reason;
   return typeof reason === "string" ? reason : null;
+}
+
+function summaryDetail(result: WorkspaceTestImpactResponse): string | null {
+  const detail = result.summary?.detail;
+  return typeof detail === "string" && detail ? detail : null;
 }
 
 function groupByRepo(rows: WorkspaceTestRecommendation[]): [string, WorkspaceTestRecommendation[]][] {
