@@ -250,6 +250,16 @@ class TestArgumentScanning:
         )
 
 
+class TestLiteralSpan:
+    def test_a_capture_cut_at_an_inner_quote_keeps_its_prefix(self):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls
+
+        content = "fetch(`https://h/v1/links?${new URLSearchParams({ a: 'x' })}`)"
+        (row,) = fetch_calls(content)
+        assert row.url == "`https://h/v1/links?${new URLSearchParams({ a: `"
+        assert resolve_url(row.url, JS_SYNTAX) == "https://h/v1/links?${new URLSearchParams({ a: "
+
+
 class TestConsumerContracts:
     def _ctx(self, content: str, suffix: str = ".go") -> ScanContext:
         return ScanContext("svc", f"client{suffix}", suffix, content, {}, None)

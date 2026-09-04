@@ -598,9 +598,13 @@ def literal_span(content: str, m: re.Match[str], group: int) -> str:
 
     For a recogniser whose regex captures the text between the quotes: the
     slice one character wider on each side is the literal as written, which is
-    what :func:`resolve_url` reads.
+    what :func:`resolve_url` reads. A capture that stopped at a different quote
+    (one inside a ``${...}`` expression) is closed with its own opening quote,
+    so the text read is the prefix the regex saw and the row is kept.
     """
-    return content[m.start(group) - 1 : m.end(group) + 1]
+    quote = content[m.start(group) - 1]
+    body = content[m.start(group) : m.end(group)]
+    return quote + body + quote
 
 
 def matches_in(
