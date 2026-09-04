@@ -5,6 +5,7 @@ from __future__ import annotations
 from tree_sitter import Node
 
 from ...models import HeritageRelation
+from ...type_names import bare_type_name
 from ..helpers import node_text
 
 
@@ -29,9 +30,9 @@ def _parent_from_extends(extends_node: Node, src: str) -> str | None:
             # `type` is choice(attribute, identifier, subscript), so a
             # qualified parent arrives dotted (`extends Inventory.BaseSlot`).
             # HeritageResolver matches bare symbol names, and the inner class
-            # is indexed as `BaseSlot`, so keep the last segment -- the same
-            # thing the Kotlin and C# extractors do for qualified parents.
-            return text.rsplit(".", 1)[-1].strip() or None
+            # is indexed as `BaseSlot`, so the shared helper takes the last
+            # segment, the same answer the C++ and C# extractors read from it.
+            return bare_type_name(text) or None
     return None
 
 
