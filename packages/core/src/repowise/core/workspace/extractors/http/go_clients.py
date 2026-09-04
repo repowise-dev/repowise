@@ -85,7 +85,6 @@ def net_http_calls(content: str) -> Iterator[ClientCallMatch]:
             client=_CLIENT,
             url=args[0],
             offset=m.start(),
-            paren_offset=paren,
             method=verb,
         )
 
@@ -104,7 +103,6 @@ def net_http_calls(content: str) -> Iterator[ClientCallMatch]:
             client=_CLIENT,
             url=args[url_at],
             offset=m.start(),
-            paren_offset=paren,
             method=method,
         )
 
@@ -114,9 +112,9 @@ class GoClientsDialect:
     extensions = GO
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
+        rows = list(net_http_calls(ctx.content))
+        if not rows:
+            return []
         return consumer_contracts(
-            ctx,
-            net_http_calls(ctx.content),
-            GO_SYNTAX,
-            constants=string_constants(ctx.content, GO_SYNTAX),
+            ctx, rows, GO_SYNTAX, constants=string_constants(ctx.content, GO_SYNTAX)
         )

@@ -59,8 +59,9 @@ _CHAIN_LIMIT = 2000
 # `delete` are not, which is why the file is gated on the class name and the
 # rows go through `path_only`.
 _REST_TEMPLATE_RE = re.compile(
-    r"\b[A-Za-z_]\w*\s*\.\s*"
-    r"(getForObject|getForEntity|postForObject|postForEntity|patchForObject|exchange|put|delete)"
+    r"\b(?:[A-Za-z_]\w*\s*\.\s*"
+    r"(getForObject|getForEntity|postForObject|postForEntity|patchForObject|exchange)"
+    r"|\w*[Tt]emplate\w*\s*\.\s*(put|delete))"
     r"\s*\("
 )
 
@@ -80,7 +81,6 @@ def feign_calls(content: str) -> Iterator[ClientCallMatch]:
             # literal, so hand it one.
             url=f'"{m.group(2).strip()}"',
             offset=m.start(),
-            paren_offset=content.find("(", m.start()),
             method=verb.upper(),
             confidence=_FEIGN_CONFIDENCE,
         )
@@ -115,8 +115,8 @@ def java_net_http_calls(content: str) -> Iterator[ClientCallMatch]:
     for m in _NEW_BUILDER_RE.finditer(content):
         paren = m.end() - 1
         close = match_paren(content, paren)
-        args = call_arguments(content, paren)
-        if close < 0 or args is None:
+        args = call_arguments(content, paren, close) if close >= 0 else None
+        if args is None:
             continue
         # newBuilder(uri); the two-argument copy form carries a request, not a URL.
         url = args[0] if len(args) == 1 else None
@@ -138,7 +138,6 @@ def java_net_http_calls(content: str) -> Iterator[ClientCallMatch]:
             client="java-net-http",
             url=url,
             offset=m.start(),
-            paren_offset=paren,
             method=method,
             confidence=_BUILDER_CONFIDENCE,
         )
@@ -148,7 +147,7 @@ def resttemplate_calls(content: str) -> Iterator[ClientCallMatch]:
     if "RestTemplate" not in content:
         return
     for m in _REST_TEMPLATE_RE.finditer(content):
-        callee = m.group(1)
+        callee = m.group(1) or m.group(2)
         paren = m.end() - 1
         args = call_arguments(content, paren)
         if not args:
@@ -164,7 +163,6 @@ def resttemplate_calls(content: str) -> Iterator[ClientCallMatch]:
             client="resttemplate",
             url=args[0],
             offset=m.start(),
-            paren_offset=paren,
             callee=callee,
             method=method,
             confidence=_REST_TEMPLATE_CONFIDENCE,
@@ -177,11 +175,13 @@ class JavaClientsDialect:
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-        constants = string_constants(content, JAVA_SYNTAX)
         named = [*feign_calls(content), *java_net_http_calls(content)]
         # `.put`/`.delete` on any receiver could be a collection, so a URL with
         # no slash in it is a key rather than a route.
         ambiguous = list(resttemplate_calls(content))
+        if not named and not ambiguous:
+            return []
+        constants = string_constants(content, JAVA_SYNTAX)
         return [
             *consumer_contracts(ctx, named, JAVA_SYNTAX, constants=constants),
             *consumer_contracts(ctx, ambiguous, JAVA_SYNTAX, constants=constants, path_only=True),

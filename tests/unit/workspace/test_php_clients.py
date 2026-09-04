@@ -64,6 +64,34 @@ class Reports
 }
 """
 
+GUZZLE_PROPERTY_BASE = """<?php
+
+use GuzzleHttp\\Client;
+
+class Contacts
+{
+    public function run(Client $client): void
+    {
+        $client->request('GET', $this->base . '/contacts');
+    }
+}
+"""
+
+GUZZLE_BASE_RELATIVE = """<?php
+
+use GuzzleHttp\\Client;
+
+class Mixed
+{
+    public function run(Client $client): void
+    {
+        $client->request('GET', 'some/path');
+        $client->request('GET', '/some/path');
+        $client->request('GET', 'https://h/x');
+    }
+}
+"""
+
 LARAVEL_HTTP = """<?php
 
 use Illuminate\\Support\\Facades\\Http;
@@ -172,6 +200,12 @@ class TestPhpClientsContracts:
         assert [c.contract_id for c in contracts] == ["http::GET::/api/reports"]
         assert contracts[0].meta["host"] == "reports.internal"
 
+    def test_a_property_base_the_file_never_binds_is_stripped(self):
+        (contract,) = PhpClientsDialect().extract(_ctx(GUZZLE_PROPERTY_BASE))
+        assert contract.contract_id == "http::GET::/contacts"
+        assert contract.meta["base_stripped"] is True
+        assert contract.meta["base_token"] == "base"
+
     def test_facade_contracts(self):
         contracts = PhpClientsDialect().extract(_ctx(LARAVEL_HTTP))
         assert [c.contract_id for c in contracts] == [
@@ -200,6 +234,11 @@ class TestPhpClientsRefusals:
     def test_a_runtime_verb_is_refused(self):
         source = "<?php\nuse GuzzleHttp\\Client;\n$client->request($method, '/api/things');\n"
         assert _ids(source) == []
+
+    def test_a_base_relative_literal_is_dropped_beside_its_rooted_siblings(self):
+        # A client composes `'some/path'` onto its configured `base_uri`, so
+        # the path the request reaches has a prefix the file does not carry.
+        assert _ids(GUZZLE_BASE_RELATIVE) == ["http::GET::/some/path", "http::GET::/x"]
 
     def test_a_bare_host_carries_no_route(self):
         source = "<?php\nuse Illuminate\\Support\\Facades\\Http;\nHttp::get('example.com');\n"

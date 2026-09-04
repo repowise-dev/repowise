@@ -52,7 +52,6 @@ def reqwest_calls(content: str) -> Iterator[ClientCallMatch]:
                 client="reqwest",
                 url=m.group(2) + ")",
                 offset=m.start(),
-                paren_offset=content.find("(", m.start()),
                 method=m.group(1).upper(),
                 confidence=_CONFIDENCE,
             )

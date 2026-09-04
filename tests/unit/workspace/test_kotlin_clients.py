@@ -96,6 +96,20 @@ suspend fun run(client: HttpClient, target: String, port: Int) {
 fun documented() = Unit
 """
 
+RELATIVE_AND_ROOTED = """package com.example.sync
+
+import io.ktor.client.*
+import io.ktor.client.request.*
+
+const val BASE = "https://svc.example.com"
+
+suspend fun run(client: HttpClient) {
+    client.get("api/v1/users")
+    client.get("/api/v1/users")
+    client.get("$BASE/api/v1/orders")
+}
+"""
+
 NOT_KTOR = """package com.example.cache
 
 class Cache(private val entries: Map<String, String>) {
@@ -236,6 +250,17 @@ class TestKotlinClientsRefusals:
     def test_a_slash_free_argument_emits_nothing(self):
         source = 'import io.ktor.client.request.*\nfun f() { client.get("lookup-key") }\n'
         assert contracts(source) == []
+
+    def test_a_relative_path_emits_nothing_while_a_rooted_one_emits(self):
+        assert [m.url for m in ktor_calls(RELATIVE_AND_ROOTED)] == [
+            '"api/v1/users"',
+            '"/api/v1/users"',
+            '"$BASE/api/v1/orders"',
+        ]
+        assert ids(RELATIVE_AND_ROOTED) == [
+            "http::GET::/api/v1/orders",
+            "http::GET::/api/v1/users",
+        ]
 
 
 class TestKotlinClientsCrossRepoLink:

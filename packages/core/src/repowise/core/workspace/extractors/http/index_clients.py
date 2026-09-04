@@ -35,6 +35,8 @@ from ..langs import PYTHON
 from .client_calls import (
     JS_SYNTAX,
     PYTHON_SYNTAX,
+    VERBS,
+    is_rooted_url,
     match_paren,
     resolve_url,
     split_first_arg,
@@ -77,12 +79,7 @@ _CLIENT_CALL_RE = re.compile(
 
 # ``request`` is absent on purpose: it takes the method as its first argument
 # and the URL as its second, so this rule would record the verb as the path.
-_HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "head", "options"})
-
-# A first argument concrete enough to be a URL: a path, a base placeholder, or
-# an absolute URL. Mirrors the concreteness test the regex dialect already
-# applies, so both paths agree on what counts as a usable literal.
-_CONCRETE_URL_RE = re.compile(r"^(?:/|\$\{|https?:|//)")
+_HTTP_VERBS = VERBS
 
 # ``method: "POST"`` anywhere in the remaining arguments of the same call.
 _METHOD_OPT_RE = re.compile(r"""method\s*:\s*['"](\w+)['"]""")
@@ -102,7 +99,7 @@ def _first_arg_url(arg: str, is_python: bool, constants: dict[str, str]) -> str 
     language.
     """
     url = resolve_url(arg, PYTHON_SYNTAX if is_python else JS_SYNTAX, constants)
-    return url if url is not None and _CONCRETE_URL_RE.match(url) else None
+    return url if url is not None and is_rooted_url(url) else None
 
 
 def _client_library(

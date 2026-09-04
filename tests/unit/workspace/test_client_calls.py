@@ -169,6 +169,45 @@ class TestConstantFolding:
     def test_a_comparison_is_not_an_assignment(self):
         assert string_constants('if (a == "x") {}\n', JAVA_SYNTAX) == {}
 
+    @pytest.mark.parametrize(
+        ("syntax", "content"),
+        [
+            (GO_SYNTAX, 'base := "http://host"\nbase += "/v1"\n'),
+            (GO_SYNTAX, 'url := "https://host/v1"\nurl, err = build(id)\n'),
+            (PHP_SYNTAX, "$b = 'http://host';\n$b .= '/v1';\n"),
+            (KOTLIN_SYNTAX, 'var b = "http://host"\nb += "/v1"\n'),
+        ],
+    )
+    def test_a_compound_or_multiple_assignment_retires_the_name(self, syntax, content):
+        assert string_constants(content, syntax) == {}
+
+    def test_a_field_assignment_is_not_a_local(self):
+        content = 'this.baseUrl = "https://prod/api";\nString f(String baseUrl) {}\n'
+        assert string_constants(content, JAVA_SYNTAX) == {}
+
+    @pytest.mark.parametrize(
+        ("syntax", "content"),
+        [
+            (JAVA_SYNTAX, '/** String url = "/v1/example"; */\n'),
+            (KOTLIN_SYNTAX, '// val base = "/v1/example"\n'),
+            (RUBY_SYNTAX, "# BASE = 'https://h/root'\n"),
+        ],
+    )
+    def test_an_assignment_in_a_comment_is_not_a_binding(self, syntax, content):
+        assert string_constants(content, syntax) == {}
+
+    def test_an_unwrap_or_format_call_must_be_the_whole_expression(self):
+        constants = {"BASE": '"https://h/root"'}
+        assert resolve_url('URI.create(BASE).resolve("/v2")', JAVA_SYNTAX, constants) is None
+        assert resolve_url('fmt.Sprintf("%s/api", b) + "/v2"', GO_SYNTAX) is None
+        assert resolve_url("URI.parse(BASE) + '/x'", RUBY_SYNTAX, constants) is None
+
+    def test_a_doubled_percent_is_a_literal(self):
+        assert resolve_url('fmt.Sprintf("/a/100%%/%s", x)', GO_SYNTAX) == "/a/100%/${x}"
+
+    def test_csharp_escaped_braces_are_refused(self):
+        assert resolve_url('$"/a/{{lit}}/{id}"', CSHARP_SYNTAX) is None
+
 
 class TestMethodFromArgument:
     @pytest.mark.parametrize(
@@ -182,6 +221,8 @@ class TestMethodFromArgument:
             ("Net::HTTP::Get", "GET"),
             ("o.Method", None),
             ("method", None),
+            ("options", None),
+            ("GET", "GET"),
             ('"BUY"', None),
         ],
     )
@@ -215,32 +256,26 @@ class TestConsumerContracts:
 
     def test_method_falls_back_to_the_callee_name(self):
         content = 'apiPost("/users")'
-        rows = [
-            ClientCallMatch(client="w", url='"/users"', offset=0, paren_offset=7, callee="apiPost")
-        ]
+        rows = [ClientCallMatch(client="w", url='"/users"', offset=0, callee="apiPost")]
         (c,) = consumer_contracts(self._ctx(content), rows, GO_SYNTAX)
         assert c.contract_id == "http::POST::/users"
         assert c.line == 1
         assert c.meta["client"] == "w"
 
     def test_an_unresolved_url_emits_nothing(self):
-        rows = [ClientCallMatch(client="w", url="u", offset=0, paren_offset=1, method="GET")]
+        rows = [ClientCallMatch(client="w", url="u", offset=0, method="GET")]
         assert consumer_contracts(self._ctx("f(u)"), rows, GO_SYNTAX) == []
 
     def test_rooted_only_drops_a_base_relative_path(self):
         rows = [
-            ClientCallMatch(client="w", url='"some/path"', offset=0, paren_offset=1, method="GET"),
-            ClientCallMatch(client="w", url='"/rooted"', offset=0, paren_offset=1, method="GET"),
-            ClientCallMatch(client="w", url='"${b}/x"', offset=0, paren_offset=1, method="GET"),
+            ClientCallMatch(client="w", url='"some/path"', offset=0, method="GET"),
+            ClientCallMatch(client="w", url='"/rooted"', offset=0, method="GET"),
+            ClientCallMatch(client="w", url='"${b}/x"', offset=0, method="GET"),
         ]
         got = consumer_contracts(self._ctx("x", ".js"), rows, JS_SYNTAX, rooted_only=True)
         assert [c.contract_id for c in got] == ["http::GET::/rooted", "http::GET::/x"]
 
     def test_path_only_drops_a_key_lookup(self):
-        rows = [
-            ClientCallMatch(
-                client="w", url='"database_url"', offset=0, paren_offset=1, method="GET"
-            )
-        ]
+        rows = [ClientCallMatch(client="w", url='"database_url"', offset=0, method="GET")]
         assert consumer_contracts(self._ctx("x"), rows, GO_SYNTAX, path_only=True) == []
         assert len(consumer_contracts(self._ctx("x"), rows, GO_SYNTAX)) == 1

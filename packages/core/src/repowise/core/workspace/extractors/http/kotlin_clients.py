@@ -75,46 +75,8 @@ _CONFIDENCE = 0.65
 
 
 def _block_end(content: str, open_idx: int) -> int:
-    """Index of the ``}`` closing the ``{`` at *open_idx*, or -1.
-
-    The brace counterpart of :func:`.client_calls.match_paren`, which scans for
-    a ``)`` and so cannot bound a lambda. A ``${...}`` inside a string literal
-    is tracked as ordinary depth, so an interpolated URL in the block does not
-    unbalance the scan.
-    """
-    depth = 0
-    quote = False
-    tmpl: list[int] = []
-    i, n = open_idx, len(content)
-    while i < n:
-        ch = content[i]
-        if quote:
-            if ch == "\\":
-                i += 2
-                continue
-            if ch == "$" and i + 1 < n and content[i + 1] == "{":
-                tmpl.append(depth)
-                depth += 1
-                quote = False
-                i += 2
-                continue
-            if ch == '"':
-                quote = False
-            i += 1
-            continue
-        if ch == '"':
-            quote = True
-        elif ch in "([{":
-            depth += 1
-        elif ch in ")]}":
-            depth -= 1
-            if tmpl and ch == "}" and depth == tmpl[-1]:
-                tmpl.pop()
-                quote = True
-            elif depth == 0 and ch == "}":
-                return i
-        i += 1
-    return -1
+    """Index of the ``}`` closing the lambda opened at *open_idx*, or -1."""
+    return match_paren(content, open_idx, closer="}")
 
 
 def _skip_site(content: str, offset: int) -> bool:
@@ -127,7 +89,8 @@ def _skip_site(content: str, offset: int) -> bool:
     lower camel case, so ``Paths.get("build.gradle")`` is a file, not a route,
     while ``client.get(...)`` and ``createClient().get(...)`` both stay.
     """
-    line_start = content.rfind("\n", 0, offset) + 1
+    # Bounded so a long generated line is not copied once per call on it.
+    line_start = max(content.rfind("\n", 0, offset) + 1, offset - 200)
     line = content[line_start:offset]
     if line.lstrip().startswith(("*", "//", "/*")):
         return True
@@ -155,12 +118,11 @@ def _url_argument(content: str, paren_offset: int) -> str | None:
     return positional[0] if len(positional) == 1 else None
 
 
-def _block_url(content: str, block_start: int, block_end: int) -> tuple[str, int] | None:
-    """The URL a request block builds, with the offset of the call that built it."""
+def _block_url(content: str, block_start: int, block_end: int) -> str | None:
+    """The URL a request block builds."""
     call = _URL_CALL_RE.search(content, block_start, block_end)
     if call is not None:
-        url = _url_argument(content, call.end() - 1)
-        return None if url is None else (url, call.end() - 1)
+        return _url_argument(content, call.end() - 1)
     builder = _URL_BLOCK_RE.search(content, block_start, block_end)
     if builder is None:
         return None
@@ -171,7 +133,7 @@ def _block_url(content: str, block_start: int, block_end: int) -> tuple[str, int
     if call is None:
         return None
     args = call_arguments(content, call.end() - 1)
-    return (args[0], call.end() - 1) if args and len(args) == 1 else None
+    return args[0] if args and len(args) == 1 else None
 
 
 def _trailing_block(content: str, offset: int) -> int:
@@ -193,7 +155,6 @@ def ktor_calls(content: str) -> Iterator[ClientCallMatch]:
             client="ktor",
             url=args[0],
             offset=m.start(),
-            paren_offset=m.end() - 1,
             method=m.group(1).upper(),
             confidence=_CONFIDENCE,
         )
@@ -204,14 +165,13 @@ def ktor_calls(content: str) -> Iterator[ClientCallMatch]:
         end = _block_end(content, m.end() - 1)
         if end < 0:
             continue
-        found = _block_url(content, m.end(), end)
-        if found is None:
+        url = _block_url(content, m.end(), end)
+        if url is None:
             continue
         yield ClientCallMatch(
             client="ktor",
-            url=found[0],
+            url=url,
             offset=m.start(),
-            paren_offset=found[1],
             method=m.group(1).upper(),
             confidence=_CONFIDENCE,
         )
@@ -223,22 +183,20 @@ def ktor_calls(content: str) -> Iterator[ClientCallMatch]:
             close = match_paren(content, m.end() - 1)
             if close < 0:
                 continue
-            args = call_arguments(content, m.end() - 1)
+            args = call_arguments(content, m.end() - 1, close)
             url = args[0] if args else None
-            url_offset = m.end() - 1
             block = _trailing_block(content, close + 1)
         else:
-            url, url_offset, block = None, m.end() - 1, m.end() - 1
+            url, block = None, m.end() - 1
         if block < 0:
             continue
         end = _block_end(content, block)
         if end < 0:
             continue
         if url is None:
-            found = _block_url(content, block + 1, end)
-            if found is None:
+            url = _block_url(content, block + 1, end)
+            if url is None:
                 continue
-            url, url_offset = found
         verb = _METHOD_ASSIGN_RE.search(content, block, end)
         method = method_from_argument(verb.group(1)) if verb is not None else None
         if method is None:
@@ -247,7 +205,6 @@ def ktor_calls(content: str) -> Iterator[ClientCallMatch]:
             client="ktor",
             url=url,
             offset=m.start(),
-            paren_offset=url_offset,
             method=method,
             confidence=_CONFIDENCE,
         )
@@ -261,11 +218,16 @@ class KotlinClientsDialect:
         content = ctx.content
         if _KTOR_PACKAGE not in content:
             return []
-        # `.get("key")` on a map has no slash; the receiver is anyone's.
+        rows = list(ktor_calls(content))
+        if not rows:
+            return []
+        # `.get("key")` on a map has no slash; the receiver is anyone's. A
+        # relative path composes onto the client's default request base.
         return consumer_contracts(
             ctx,
-            ktor_calls(content),
+            rows,
             KOTLIN_SYNTAX,
             constants=string_constants(content, KOTLIN_SYNTAX),
             path_only=True,
+            rooted_only=True,
         )

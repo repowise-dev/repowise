@@ -65,11 +65,7 @@ def fetch_calls(content: str) -> Iterator[ClientCallMatch]:
         if m.group(1) in method_urls:
             continue
         yield ClientCallMatch(
-            client="fetch",
-            url=literal_span(content, m, 1),
-            offset=m.start(),
-            paren_offset=content.find("(", m.start()),
-            callee="fetch",
+            client="fetch", url=literal_span(content, m, 1), offset=m.start(), callee="fetch"
         )
 
 
@@ -95,7 +91,6 @@ def wrapper_calls(content: str) -> Iterator[ClientCallMatch]:
             client="wrapper",
             url=literal_span(content, m, 2),
             offset=m.start(),
-            paren_offset=content.find("(", m.start()),
             callee=callee,
             method=method_opt.group(1).upper() if method_opt else None,
             confidence=0.65,

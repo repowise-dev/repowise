@@ -245,6 +245,52 @@ class Cache {
 }
 """
 
+MAP_PUT_BESIDE_A_TEMPLATE_PUT = """package com.example;
+
+import org.springframework.web.client.RestTemplate;
+
+class Client {
+    void run(RestTemplate restTemplate, HttpHeaders headers, Object body) {
+        headers.put("Content-Type", "application/json");
+        restTemplate.put("/v1/pets/7", body);
+    }
+}
+"""
+
+OKHTTP_BUILDER = """package com.example;
+
+import okhttp3.Request;
+
+class Client {
+    Request build(String url) {
+        return new Request.Builder().url(url).get().build();
+    }
+}
+"""
+
+REST_TEMPLATE_REQUEST_ENTITY = """package com.example;
+
+import org.springframework.web.client.RestTemplate;
+
+class Client {
+    void run(RestTemplate template) {
+        template.exchange(RequestEntity.get("/owners/1").build(), String.class);
+    }
+}
+"""
+
+BUILDER_INSTANCE_FORMATTED = """package com.example;
+
+class Client {
+    HttpRequest list(String prefix) {
+        return HttpRequest.newBuilder()
+            .uri(URI.create("%s%s".formatted(listUrl(), prefix)))
+            .GET()
+            .build();
+    }
+}
+"""
+
 
 def contracts(content: str, rel_path: str = "Client.java") -> list:
     ctx = ScanContext("svc", rel_path, ".java", content, {}, None)
@@ -378,6 +424,20 @@ class TestJavaClientsRefusals:
     def test_a_file_that_never_names_resttemplate_is_not_read(self) -> None:
         assert list(resttemplate_calls(MAP_PUT_WITHOUT_REST_TEMPLATE)) == []
         assert contracts(MAP_PUT_WITHOUT_REST_TEMPLATE) == []
+
+    def test_only_a_template_receiver_owns_a_bare_put(self) -> None:
+        rows = list(resttemplate_calls(MAP_PUT_BESIDE_A_TEMPLATE_PUT))
+        assert [(r.callee, r.url) for r in rows] == [("put", '"/v1/pets/7"')]
+        assert ids(MAP_PUT_BESIDE_A_TEMPLATE_PUT) == {"http::PUT::/v1/pets/7"}
+
+    def test_an_okhttp_request_builder_emits_nothing(self) -> None:
+        assert contracts(OKHTTP_BUILDER) == []
+
+    def test_an_exchange_whose_verb_lives_in_a_request_entity_emits_nothing(self) -> None:
+        assert contracts(REST_TEMPLATE_REQUEST_ENTITY) == []
+
+    def test_an_instance_formatted_call_is_not_a_format_head(self) -> None:
+        assert contracts(BUILDER_INSTANCE_FORMATTED) == []
 
 
 JAVA_CONSUMER = """package com.example.client;

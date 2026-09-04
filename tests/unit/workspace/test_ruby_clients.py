@@ -16,6 +16,7 @@ from pathlib import Path
 from repowise.core.workspace.contracts import match_contracts
 from repowise.core.workspace.extractors.base import ScanContext
 from repowise.core.workspace.extractors.http import HttpExtractor
+from repowise.core.workspace.extractors.http.fastapi import FastApiDialect
 from repowise.core.workspace.extractors.http.ruby_clients import (
     RubyClientsDialect,
     faraday_connection_calls,
@@ -183,7 +184,7 @@ class TestRubyClientsRecognition:
 
     def test_connection_receiver_comes_from_faraday_new(self) -> None:
         rows = list(faraday_connection_calls(FARADAY_RB))
-        assert [(r.receiver, r.method, r.confidence) for r in rows] == [("connection", "GET", 0.65)]
+        assert [(r.method, r.confidence) for r in rows] == [("GET", 0.65)]
 
 
 class TestRubyClientsContracts:
@@ -204,6 +205,9 @@ class TestRubyClientsContracts:
         ids = {c.contract_id for c in _contracts(RESTCLIENT_RB)}
         assert ids == {"http::POST::/ping", "http::DELETE::/instances/{param}"}
 
+    def test_restclient_rows_name_their_library(self) -> None:
+        assert {c.meta["client"] for c in _contracts(RESTCLIENT_RB)} == {"restclient"}
+
     def test_uri_wrapper_is_peeled(self) -> None:
         by_id = {c.contract_id: c for c in _contracts(NET_HTTP_RB)}
         assert set(by_id) == {"http::GET::/_cluster/health", "http::POST::/reports"}
@@ -214,6 +218,7 @@ class TestRubyClientsContracts:
         assert [(c.contract_id, c.confidence) for c in contracts] == [
             ("http::GET::/v1/models", 0.65)
         ]
+        assert contracts[0].meta["client"] == "faraday"
 
     def test_base_expression_is_stripped_for_the_matcher(self) -> None:
         content = 'HTTParty.get("#{api_base_path}/v1/Content/#{content_sid}")\n'
@@ -237,6 +242,10 @@ class TestRubyClientsRefusals:
         content = "conn = Faraday.new\nconn.options.timeout = 5\n"
         assert list(faraday_connection_calls(content)) == []
 
+    def test_a_url_expression_ending_in_a_call_emits_nothing(self) -> None:
+        content = "HTTParty.get(inbox.channel.media_url(attachment_payload[:id]))\n"
+        assert _contracts(content) == []
+
     def test_name_assigned_twice_does_not_fold(self) -> None:
         content = (
             "path = 'meetings'\n"
@@ -256,9 +265,11 @@ class TestRubyClientsLink:
         web.mkdir()
         (web / "client.rb").write_text(LINK_CLIENT_RB, encoding="utf-8")
 
-        # `source_extensions` reads the class, so the dialect is registered on a
-        # subclass rather than an instance until the tuple carries Ruby.
+        # `source_extensions` reads the class, so both sides are named on a
+        # subclass rather than an instance: the test then depends on this pair
+        # of dialects only, not on whatever the default tuples carry.
         class RubyExtractor(HttpExtractor):
+            provider_dialects = (FastApiDialect(),)
             consumer_dialects = (RubyClientsDialect(),)
 
         extractor = RubyExtractor()

@@ -140,6 +140,13 @@ func run() {
 }
 """
 
+BARE_ROOT = """package main
+
+func run() {
+	req, _ := http.NewRequest(http.MethodGet, "/", nil)
+}
+"""
+
 MAP_LOOKUP = """package main
 
 func run(c cache, client apiClient) {
@@ -247,6 +254,10 @@ class TestGoClientsRefusals:
 
     def test_example_in_a_doc_comment_emits_nothing(self) -> None:
         assert _extract(COMMENT_EXAMPLE) == []
+
+    def test_a_bare_root_path_emits_nothing(self) -> None:
+        # A test server's `"/"` names no route to match on.
+        assert _extract(BARE_ROOT) == []
 
     def test_client_receiver_call_emits_nothing(self) -> None:
         assert _extract(CLIENT_RECEIVER) == []

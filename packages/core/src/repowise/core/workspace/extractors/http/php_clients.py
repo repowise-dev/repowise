@@ -62,9 +62,13 @@ _MAX_CHAIN_LINKS = 8
 _AMBIGUOUS_RECEIVER_CONFIDENCE = 0.65
 
 
+def _names_a_client(content: str) -> bool:
+    return "Client" in content and _GUZZLE_GATE_RE.search(content) is not None
+
+
 def guzzle_request_calls(content: str) -> Iterator[ClientCallMatch]:
     """``$client->request('GET', $url, ...)``: verb first, URL second."""
-    if not _GUZZLE_GATE_RE.search(content):
+    if not _names_a_client(content):
         return
     for m in _GUZZLE_REQUEST_RE.finditer(content):
         open_idx = m.end() - 1
@@ -78,14 +82,13 @@ def guzzle_request_calls(content: str) -> Iterator[ClientCallMatch]:
             client="guzzle",
             url=args[1],
             offset=m.start(),
-            paren_offset=open_idx,
             method=method,
         )
 
 
 def guzzle_verb_calls(content: str) -> Iterator[ClientCallMatch]:
     """``$client->get($url)``: the verb is the callee's name."""
-    if not _GUZZLE_GATE_RE.search(content):
+    if not _names_a_client(content):
         return
     for m in _GUZZLE_VERB_RE.finditer(content):
         open_idx = m.end() - 1
@@ -96,7 +99,6 @@ def guzzle_verb_calls(content: str) -> Iterator[ClientCallMatch]:
             client="guzzle",
             url=args[0],
             offset=m.start(),
-            paren_offset=open_idx,
             method=m.group(1).upper(),
             confidence=_AMBIGUOUS_RECEIVER_CONFIDENCE,
         )
@@ -117,13 +119,12 @@ def laravel_http_calls(content: str) -> Iterator[ClientCallMatch]:
             if close < 0:
                 break
             if link.group(1).lower() in VERBS:
-                args = call_arguments(content, open_idx)
+                args = call_arguments(content, open_idx, close)
                 if args:
                     yield ClientCallMatch(
                         client="laravel-http",
                         url=args[0],
                         offset=m.start(),
-                        paren_offset=open_idx,
                         method=link.group(1).upper(),
                     )
                 break
@@ -138,12 +139,17 @@ class PhpClientsDialect:
     extensions = PHP
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
+        request_rows = list(guzzle_request_calls(ctx.content))
+        verb_rows = list(guzzle_verb_calls(ctx.content))
+        facade_rows = list(laravel_http_calls(ctx.content))
+        if not request_rows and not verb_rows and not facade_rows:
+            return []
         constants = string_constants(ctx.content, PHP_SYNTAX)
         # A Guzzle client composes a relative path onto its `base_uri`, so only
         # a rooted or absolute URL names the route reached.
         out = consumer_contracts(
             ctx,
-            guzzle_request_calls(ctx.content),
+            request_rows,
             PHP_SYNTAX,
             constants=constants,
             rooted_only=True,
@@ -152,7 +158,7 @@ class PhpClientsDialect:
         # route, so both verb-named shapes need a path.
         out += consumer_contracts(
             ctx,
-            guzzle_verb_calls(ctx.content),
+            verb_rows,
             PHP_SYNTAX,
             constants=constants,
             path_only=True,
@@ -160,7 +166,7 @@ class PhpClientsDialect:
         )
         out += consumer_contracts(
             ctx,
-            laravel_http_calls(ctx.content),
+            facade_rows,
             PHP_SYNTAX,
             constants=constants,
             path_only=True,

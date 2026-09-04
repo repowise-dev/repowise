@@ -33,6 +33,7 @@ from .client_calls import (
     ClientCallMatch,
     call_arguments,
     consumer_contracts,
+    match_paren,
     method_from_argument,
     split_first_arg,
     string_constants,
@@ -61,36 +62,38 @@ _FARADAY_NEW_RE = re.compile(r"(?<![.\w])(@?[a-z_]\w*)\s*=\s*Faraday\.new\b")
 _CONNECTION_CONFIDENCE = 0.65
 
 
-def _first_argument(content: str, end: int) -> tuple[str | None, int]:
-    """The URL argument of the call whose callee ends at *end*, and its ``(``.
+def _first_argument(content: str, end: int) -> str | None:
+    """The URL argument of the call whose callee ends at *end*.
 
-    The offset is the opening parenthesis when the call has one, else the first
-    character of the argument, which is what a paren-less Ruby call gives.
+    Ruby lets the parentheses go, so without one the argument runs to the
+    first top-level comma or the end of the line.
     """
     i = end
     while i < len(content) and content[i] in " \t":
         i += 1
     if i < len(content) and content[i] == "(":
-        args = call_arguments(content, i)
-        return (args[0] if args else None), i
+        close = match_paren(content, i)
+        if close < 0:
+            return None
+        first, _ = split_first_arg(content[i + 1 : close])
+        return first or None
     line_end = content.find("\n", i)
     if line_end < 0:
         line_end = len(content)
     first, _ = split_first_arg(content[i:line_end])
-    return (first or None), i
+    return first or None
 
 
 def module_calls(content: str) -> Iterator[ClientCallMatch]:
     """``HTTParty.get(...)`` / ``RestClient.post(...)`` / ``Faraday.get(...)``."""
     for m in _MODULE_CALL_RE.finditer(content):
-        url, paren = _first_argument(content, m.end())
+        url = _first_argument(content, m.end())
         if url is None:
             continue
         yield ClientCallMatch(
             client=_MODULE_CLIENTS[m.group(1)],
             url=url,
             offset=m.start(),
-            paren_offset=paren,
             method=m.group(2).upper(),
         )
 
@@ -98,7 +101,7 @@ def module_calls(content: str) -> Iterator[ClientCallMatch]:
 def net_http_calls(content: str) -> Iterator[ClientCallMatch]:
     """``Net::HTTP.get(URI(url))`` and ``http.request(Net::HTTP::Get.new(uri))``."""
     for m in _NET_HTTP_RE.finditer(content):
-        url, paren = _first_argument(content, m.end())
+        url = _first_argument(content, m.end())
         if url is None:
             continue
         verb = m.group(1)
@@ -106,7 +109,6 @@ def net_http_calls(content: str) -> Iterator[ClientCallMatch]:
             client="net-http",
             url=url,
             offset=m.start(),
-            paren_offset=paren,
             method="GET" if verb == "get_response" else verb.upper(),
         )
     for m in _REQUEST_OBJECT_RE.finditer(content):
@@ -118,7 +120,6 @@ def net_http_calls(content: str) -> Iterator[ClientCallMatch]:
             client="net-http",
             url=args[0],
             offset=m.start(),
-            paren_offset=m.end() - 1,
             method=method,
         )
 
@@ -141,9 +142,7 @@ def faraday_connection_calls(content: str) -> Iterator[ClientCallMatch]:
             client="faraday",
             url=args[0],
             offset=m.start(),
-            paren_offset=m.end() - 1,
             method=m.group(2).upper(),
-            receiver=m.group(1),
             confidence=_CONNECTION_CONFIDENCE,
         )
 
@@ -154,16 +153,20 @@ class RubyClientsDialect:
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-        constants = string_constants(content, RUBY_SYNTAX)
         rows = [*module_calls(content), *net_http_calls(content)]
+        connection_rows = list(faraday_connection_calls(content))
+        if not rows and not connection_rows:
+            return []
+        constants = string_constants(content, RUBY_SYNTAX)
         out = consumer_contracts(ctx, rows, RUBY_SYNTAX, constants=constants)
         # A connection variable's `.get` could be a hash lookup, so a URL with
         # no slash in it is not a route.
         out += consumer_contracts(
             ctx,
-            faraday_connection_calls(content),
+            connection_rows,
             RUBY_SYNTAX,
             constants=constants,
             path_only=True,
+            rooted_only=True,
         )
         return out

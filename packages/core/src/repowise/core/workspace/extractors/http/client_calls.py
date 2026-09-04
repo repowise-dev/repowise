@@ -59,16 +59,14 @@ class ClientCallMatch:
     reads it. ``method`` is the verb when the call shape settles it (a verb
     argument, a builder terminal, an explicit option) and ``None`` when only
     the callee's name carries it, in which case :func:`method_from_callee`
-    reads ``callee``. ``paren_offset`` is the ``(`` opening the argument list.
+    reads ``callee``. ``offset`` is where the call starts, for its line.
     """
 
     client: str
     url: str
     offset: int
-    paren_offset: int
     callee: str = ""
     method: str | None = None
-    receiver: str | None = None
     confidence: float = 0.75
 
 
@@ -111,17 +109,24 @@ class UrlSyntax:
 
 _QUOTES = "'\"`"
 
+# How far a scan may run past its opening bracket. A stray quote in a comment
+# desynchronises the scan, and without a bound every candidate after it would
+# read to the end of the file.
+SCAN_LIMIT = 50_000
 
-def match_paren(content: str, open_idx: int) -> int:
-    """Index of the ``)`` closing the ``(`` at *open_idx*, or -1.
+
+def match_paren(content: str, open_idx: int, limit: int = SCAN_LIMIT, closer: str = ")") -> int:
+    """Index of the bracket closing the one at *open_idx*, or -1.
 
     Quote- and template-aware so a parenthesis inside a string literal does not
     unbalance the scan. Nested ``${...}`` inside a template literal is tracked
-    as ordinary depth, which is what makes ``` `/a/${f(x)}/b` ``` parse.
+    as ordinary depth, which is what makes ``` `/a/${f(x)}/b` ``` parse. A
+    call that does not close within *limit* characters is -1 as well.
+    *closer* is ``}`` for a trailing lambda block.
     """
     depth = 0
     i = open_idx
-    n = len(content)
+    n = min(len(content), open_idx + limit)
     # Open template literals, innermost last. A backtick inside a ``${...}``
     # opens a *nested* literal rather than closing the outer one, so the state
     # has to be a stack: ``fetch(`/a/${c ? `x` : `y`}/b`)`` otherwise reads the
@@ -154,7 +159,7 @@ def match_paren(content: str, open_idx: int) -> int:
             if tmpl and ch == "}" and depth == tmpl[-1]:
                 tmpl.pop()
                 quote = "`"  # back inside the template literal that opened it
-            elif depth == 0 and ch == ")":
+            elif depth == 0 and ch == closer:
                 return i
         i += 1
     return -1
@@ -203,20 +208,56 @@ def _split_top_level(text: str, sep: str) -> list[str]:
 
 
 def split_first_arg(args: str) -> tuple[str, str]:
-    """Split an argument list into ``(first_arg, rest)`` at the top-level comma."""
-    parts = _split_top_level(args, ",")
-    if len(parts) == 1:
-        return args.strip(), ""
-    return parts[0].strip(), ",".join(parts[1:])
+    """Split an argument list into ``(first_arg, rest)`` at the top-level comma.
+
+    Stops at that comma: the rest is returned unscanned, so a call whose second
+    argument is a large options literal costs only its first argument.
+    """
+    depth = 0
+    tmpl: list[int] = []  # see :func:`match_paren`: nested templates need a stack
+    quote: str | None = None
+    i = 0
+    n = len(args)
+    while i < n:
+        ch = args[i]
+        if quote is not None:
+            if ch == "\\":
+                i += 2
+                continue
+            if quote == "`" and ch == "$" and i + 1 < n and args[i + 1] == "{":
+                tmpl.append(depth)
+                depth += 1
+                quote = None
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in _QUOTES:
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if tmpl and ch == "}" and depth == tmpl[-1]:
+                tmpl.pop()
+                quote = "`"
+        elif ch == "," and depth == 0:
+            return args[:i].strip(), args[i + 1 :]
+        i += 1
+    return args.strip(), ""
 
 
-def call_arguments(content: str, paren_offset: int) -> list[str] | None:
+def call_arguments(content: str, paren_offset: int, close: int | None = None) -> list[str] | None:
     """The top-level arguments of the call whose ``(`` is at *paren_offset*.
 
     ``None`` when the argument list does not close, so a recogniser can tell a
-    scanner failure from a call with no arguments.
+    scanner failure from a call with no arguments. *close* is the matching
+    ``)`` when the caller has already found it.
     """
-    close = match_paren(content, paren_offset)
+    if close is None:
+        close = match_paren(content, paren_offset)
     if close < 0:
         return None
     inner = content[paren_offset + 1 : close]
@@ -243,6 +284,12 @@ def method_from_argument(text: str) -> str | None:
     """
     t = text.strip()
     m = _QUOTED_WORD_RE.match(t)
+    if m is None:
+        # A bare name is a verb only as a constant (`GET`), never as a
+        # lower-case variable that happens to be called `get`.
+        segments = _LAST_SEGMENT_RE.split(t)
+        if len(segments) == 1 and not t.isupper():
+            return None
     word = m.group(1) if m else _LAST_SEGMENT_RE.split(t)[-1]
     if not m and word.startswith("Method") and len(word) > len("Method"):
         word = word[len("Method") :]
@@ -352,14 +399,29 @@ def _format_template(text: str, syntax: UrlSyntax, constants: dict[str, str]) ->
     m = _head_re(syntax.format_heads).match(text)
     if m is None or syntax.placeholder is None:
         return None
-    args = call_arguments(text, m.end() - 1)
+    args = _whole_call_arguments(text, m.end() - 1)
     if not args:
         return None
     parsed = _parse_literal(args[0], syntax)
     if parsed is None:
         return None
     body = _literal_text(parsed, syntax, constants)
-    return None if body is None else syntax.placeholder.sub("${x}", body)
+    if body is None:
+        return None
+    # `%%` is a literal percent sign, not a hole.
+    return syntax.placeholder.sub(lambda h: "%" if h.group() == "%%" else "${x}", body)
+
+
+def _whole_call_arguments(text: str, paren: int) -> list[str] | None:
+    """The arguments of the call at *paren* when the call is all of *text*.
+
+    ``URI.create(BASE).resolve("/x")`` is not ``URI.create(BASE)``: reading the
+    head alone would drop the path the request reaches.
+    """
+    close = match_paren(text, paren)
+    if close < 0 or text[close + 1 :].strip():
+        return None
+    return call_arguments(text, paren, close)
 
 
 def _unwrap(text: str, syntax: UrlSyntax) -> str | None:
@@ -367,12 +429,14 @@ def _unwrap(text: str, syntax: UrlSyntax) -> str | None:
     m = _head_re(syntax.unwrap_heads).match(text)
     if m is None:
         return None
-    args = call_arguments(text, m.end() - 1)
+    args = _whole_call_arguments(text, m.end() - 1)
     return args[0] if args and len(args) == 1 else None
 
 
 def _concat(text: str, syntax: UrlSyntax, constants: dict[str, str]) -> str | None:
     """``a + "/x"`` as template text, or ``None`` when a piece is not readable."""
+    if syntax.concat not in text:
+        return None
     pieces = _split_top_level(text, syntax.concat)
     if len(pieces) < 2:
         return None
@@ -441,8 +505,11 @@ def string_constants(content: str, syntax: UrlSyntax, code: str | None = None) -
     """
     if syntax.assignment is None:
         return {}
+    text = content if code is None else code
     seen: dict[str, str | None] = {}
-    for m in syntax.assignment.finditer(content if code is None else code):
+    for m in syntax.assignment.finditer(text):
+        if code is None and _on_comment_line(content, m.start()):
+            continue  # an example in a doc comment is not a binding
         name = m.group("name")
         rhs = content[m.start("rhs") : m.end("rhs")].strip()
         if syntax.assignment_strip is not None:
@@ -450,12 +517,41 @@ def string_constants(content: str, syntax: UrlSyntax, code: str | None = None) -
         # A second assignment retires the name whatever it assigns: the reader
         # cannot tell which one reaches the call site.
         seen[name] = None if name in seen or resolve_url(rhs, syntax) is None else rhs
+    # `x += "/v1"` and `x, err = f()` rebind a name without the plain form.
+    for m in _COMPOUND_ASSIGN_RE.finditer(text):
+        seen[m.group(1)] = None
+    for m in _MULTI_ASSIGN_RE.finditer(text):
+        for name in m.group(1).replace(" ", "").split(","):
+            seen[name.lstrip("$")] = None
     return {name: text for name, text in seen.items() if text is not None}
+
+
+# ``x += ...`` / ``$x .= ...``; the name is keyed without a PHP sigil.
+_COMPOUND_ASSIGN_RE = re.compile(r"(?<![\w.$-])\$?([A-Za-z_]\w*)[ \t]*[+.]=(?!=)")
+# ``a, b := f()`` / ``a, b = f()``: every name on the left is rebound.
+_MULTI_ASSIGN_RE = re.compile(
+    r"^[ \t]*(\$?[A-Za-z_]\w*(?:[ \t]*,[ \t]*\$?[A-Za-z_]\w*)+)[ \t]*:?=(?!=)", re.MULTILINE
+)
+
+
+def _on_comment_line(content: str, offset: int) -> bool:
+    """True when the line holding *offset* starts as a line or block comment."""
+    start = max(content.rfind("\n", 0, offset) + 1, offset - 200)
+    return content[start:offset].lstrip().startswith(("//", "#", "*", "/*"))
 
 
 # ---------------------------------------------------------------------------
 # Contracts
 # ---------------------------------------------------------------------------
+
+# A URL concrete enough to name a route on its own: a rooted path, a base
+# placeholder, or an absolute URL. A relative path composes onto a base this
+# layer cannot see.
+_ROOTED_URL_RE = re.compile(r"^(?:/|\$\{|https?:|//)")
+
+
+def is_rooted_url(url: str) -> bool:
+    return _ROOTED_URL_RE.match(url) is not None
 
 
 def consumer_contracts(
@@ -481,7 +577,7 @@ def consumer_contracts(
         url = resolve_url(m.url, syntax, constants)
         if url is None or (path_only and "/" not in url):
             continue
-        if rooted_only and "://" not in url and not url.startswith(("//", "/", "${")):
+        if rooted_only and not is_rooted_url(url):
             continue
         method = m.method or method_from_callee(m.callee)
         c = build_consumer_contract(
@@ -533,7 +629,6 @@ def matches_in(
             client=client,
             url=url,
             offset=m.start(),
-            paren_offset=content.find("(", m.start(), m.start(url_group)),
             callee=m.group(callee_group) if callee_group is not None else "",
             method=m.group(method_group).upper() if method_group is not None else None,
             confidence=confidence,
@@ -544,7 +639,7 @@ def matches_in(
 # Per-language syntax tables
 # ---------------------------------------------------------------------------
 
-_C_FORMAT_PLACEHOLDER_RE = re.compile(r"%[-+ #0]*\d*(?:\.\d+)?[a-zA-Z]")
+_C_FORMAT_PLACEHOLDER_RE = re.compile(r"%%|%[-+ #0]*\d*(?:\.\d+)?[a-zA-Z]")
 _BRACE_PLACEHOLDER_RE = re.compile(r"\{[^}]*\}")
 _BRACE_INTERP_RE = re.compile(r"(?<!\{)\{([^{}]+)\}(?!\})")
 _ESCAPED_BRACE_RE = re.compile(r"\{\{|\}\}")
@@ -578,6 +673,7 @@ CSHARP_SYNTAX = UrlSyntax(
     prefixes="$@",
     template_prefixes="$",
     interpolation=_BRACE_INTERP_RE,
+    refuse=_ESCAPED_BRACE_RE,
 )
 
 GO_SYNTAX = UrlSyntax(
@@ -609,7 +705,7 @@ JAVA_SYNTAX = UrlSyntax(
     unwrap_heads=("URI.create", "new URI", "new URL", "URI", "HttpUrl.parse"),
     concat="+",
     assignment=re.compile(
-        r"(?<![=!<>])\b(?P<name>[A-Za-z_]\w*)[ \t]*=(?!=)[ \t]*(?P<rhs>[^;\n]+);"
+        r"(?<![=!<>.\w])(?P<name>[A-Za-z_]\w*)[ \t]*=(?!=)[ \t]*(?P<rhs>[^;\n]+);"
     ),
 )
 
@@ -646,9 +742,9 @@ __all__ = [
     "RUST_SYNTAX",
     "VERBS",
     "ClientCallMatch",
-    "UrlSyntax",
     "call_arguments",
     "consumer_contracts",
+    "is_rooted_url",
     "literal_span",
     "match_paren",
     "matches_in",
