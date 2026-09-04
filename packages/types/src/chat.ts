@@ -241,7 +241,17 @@ export interface RiskReportArtifactData {
   /** `get_change_risk` action-first blocks. */
   directive?: ChangeRiskDirective;
   health_delta?: ChangeHealthDeltaData;
-  change_shape?: Record<string, unknown>;
+  change_shape?: {
+    independent_changes?: {
+      count?: number;
+      summary?: string;
+      basis?: string;
+      ungrouped_files?: string[];
+      groups?: Array<{ files: string[]; bridging_files?: string[] }>;
+      [k: string]: unknown;
+    };
+    [k: string]: unknown;
+  };
   impacted_tests?: { tests_to_run?: string[]; status?: string; summary?: string };
   /** Bug-fix record of the touched files: the "historically fragile" signal. */
   fix_history?: {
@@ -249,6 +259,24 @@ export interface RiskReportArtifactData {
     files?: Array<{ path: string; churn: number; fix_pressure: number }>;
   };
   prior_fixes?: { files_with_fixes?: number; total_fixes?: number };
+  /** Other open branches editing the files this change edits. */
+  branch_overlap?: {
+    base?: string;
+    current?: string;
+    scanned?: number;
+    total?: number;
+    truncated?: boolean;
+    summary?: string;
+    branches?: Array<{
+      branch: string;
+      ahead?: number;
+      behind?: number;
+      last_commit?: string;
+      files?: Array<{ file: string; basis: string; partner?: string }>;
+      [k: string]: unknown;
+    }>;
+    [k: string]: unknown;
+  };
   [k: string]: unknown;
 }
 

@@ -562,6 +562,47 @@ repowise risk main..HEAD      # score a branch / PR range
 repowise risk --ext .ts,.tsx
 ```
 
+With a readable index the command also prints whether the diff is one change or
+several: the changed files grouped by the links the index holds plus, for a
+`base..head` range, the files each commit touched. Only indexed, non-test source
+files a resolver can link are grouped; docs, config, data and tests are always
+printed under `Left out of the grouping:`. Each group names its files and the
+files that alone hold it together, and a closing `Basis:` line says what was
+checked. Silent when the diff is one change, and it carries no score.
+
+---
+
+## `overlap`
+
+Which other open branches edit the files this change edits. Git answers it, so it
+works with no index; an index orders the shared files and adds the files history
+pairs with them. Every row states its basis in words, `same file` or
+`co-change pair, N of M commits`. No score. Branches stacked on the current one
+are skipped, as are noise paths and dependency manifests.
+
+```bash
+repowise overlap [OPTIONS]
+```
+
+### Options
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--base` | ref | trunk | Base ref both sides are diffed against (`origin/HEAD`, else `main` or `master`) |
+| `--branch` | ref | HEAD | The change to compare |
+| `--path` | path | cwd | Git repository path |
+| `--limit` | int | 50 | How many branches to diff, newest committer date first |
+| `--format` | choice | table | `table` or `json` |
+
+### Examples
+
+```bash
+repowise overlap                          # who else is editing what you are editing
+repowise overlap --base main --limit 100  # a wider scan against an explicit base
+```
+
+When nothing overlaps, the command prints one line saying so with the scan counts.
+
 ---
 
 ## `security`
