@@ -109,7 +109,8 @@ AST parsing, import resolution, named bindings, call resolution, heritage
 extraction, multi-project workspace resolvers, framework-aware edges, per-language
 dynamic-hint extractors, and code-health markers. A further **6 at Good tier** (C,
 Swift, PHP, Dart, Object Pascal/Delphi, GDScript) get all of that except the full health
-suite, and Luau and Razor/Blazor are partial. SQL/dbt, shell, HTML, and the config formats are
+suite, with GDScript also lacking framework edges and named bindings, and Luau
+and Razor/Blazor are partial. SQL/dbt, shell, HTML, and the config formats are
 handled by dedicated extractors on top of that.
 
 Below the AST line the ladder continues rather than stopping: **8 at Lightweight**

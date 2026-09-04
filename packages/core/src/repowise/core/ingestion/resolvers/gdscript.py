@@ -160,8 +160,12 @@ def _join_relative(base: PurePosixPath, relative: str) -> str | None:
 # `[ext_resource type="Script" uid="uid://..." path="res://player.gd" id="5"]`.
 # Matched on the path suffix rather than on `type="Script"`: attribute order is
 # not fixed, a Godot 3 scene may omit the type, and a `.gd` ext_resource is a
-# script whatever the header says.
-_SCRIPT_RESOURCE_RE = re.compile(r'\[ext_resource\b[^\]]*?\bpath="(res://[^"]+\.gd)"')
+# script whatever the header says. The editor writes double quotes; single
+# quotes are accepted because a hand-edited or tool-generated scene may use
+# them and the backreference keeps the pair matched.
+_SCRIPT_RESOURCE_RE = re.compile(
+    r"""\[ext_resource\b[^\]]*?\bpath=(["'])(res://.+?\.gd)\1"""
+)
 
 _AUTOLOAD_SECTION = "[autoload]"
 
@@ -238,7 +242,7 @@ def engine_loaded_scripts(
         except OSError:
             continue
         for match in _SCRIPT_RESOURCE_RE.finditer(text):
-            resolved = _resolve_res(match.group(1), owner, ctx)
+            resolved = _resolve_res(match.group(2), owner, ctx)
             if resolved is not None:
                 scene_scripts.add(resolved)
 

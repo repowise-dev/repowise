@@ -1,5 +1,5 @@
 ; =============================================================================
-; repowise — GDScript (Godot) symbol, import and call queries
+; repowise: GDScript (Godot) symbol, import and call queries
 ; tree-sitter-gdscript (PrestonKnopp/tree-sitter-gdscript) >= 6.1
 ; =============================================================================
 ;

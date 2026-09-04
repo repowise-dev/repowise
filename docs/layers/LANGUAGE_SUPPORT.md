@@ -284,16 +284,20 @@ script resolves; the two failures are the `$%UniqueName` form below.
   produces no symbol-level heritage edge. Synthesizing a name from the file
   stem would point the edge at a node that isn't in the graph. The
   `extends "res://..."` import edge is unaffected and carries the dependency.
-- **`extends "res://base.gd"` is an import, not heritage** — a path is not a
+- **`extends "res://base.gd"` is an import, not heritage.** A path is not a
   type name.
 - **Engine methods on implicit `self`** (`get_node`, `emit_signal`, `connect`)
   are unresolved targets; only Godot's *global* scope is filtered as builtin.
   Same tradeoff as Pascal's framework calls. Note the builtin filter is
   receiver-blind, so a project method sharing a global's name (`hash`, `seed`,
   `str`) loses its call edge. `load` is excluded from the filter for exactly
-  this reason.
-- **`uid://` paths and `load(some_variable)` stay external** — the first needs
+  this reason, and the common engine API is listed separately so a bare
+  `load(...)` or `queue_free()` is refused by the bare-name tier instead of
+  binding to a lone project function of the same name.
+- **`uid://` paths and `load(some_variable)` stay external.** The first needs
   the excluded `.uid` sidecars, the second needs dataflow. Neither is guessed.
+  For the same reason, a scene's `[ext_resource]` that carries only a `uid://`
+  and no `path` cannot be followed back to the script it names.
 - **Signals share the `variable` kind** (no `signal` member in `SymbolKind`).
 - **No framework edges and no named bindings.** Unlike C / Swift / PHP / Dart
   at this tier, there is no Godot framework-edge handler and no binding
@@ -302,17 +306,18 @@ script resolves; the two failures are the `$%UniqueName` form below.
   `rpc("name")`, `connect(..., "method_name")`, GDScript 3 `setget` accessor
   names, and `$NodePath` / `%UniqueName` lookups produce no edges, so those
   methods read as unreferenced.
-- **Annotation arguments are not imports** — `@icon("res://…")` and
+- **Annotation arguments are not imports.** `@icon("res://…")` and
   `class_name X, "res://icon.png"` reference real files that are not recorded.
-- **Setter/getter bodies are not symbols**, so calls made inside one attribute
-  to the enclosing `variable` symbol.
+- **Setter/getter bodies are not symbols**, so a call made inside one is
+  attributed to the enclosing `variable` symbol: a `recompute()` in a setter
+  leaves a call edge from the property, not from an accessor of its own.
 - **Lambdas are not symbols.** A `lambda` is its own node type and may be a
   variable's value or a call argument, so callback-heavy code
   (`tween.finished.connect(func(): ...)`) is invisible to the symbol layer.
   A lambda bound to a variable still yields the *variable* as a symbol.
 - **Code health: duplication markers DO run** (the clone tokenizer needs only a
   grammar), but complexity, performance and dataflow dialects are not
-  registered — that gap is what keeps GDScript at Good rather than Full.
+  registered, and that gap is what keeps GDScript at Good rather than Full.
 - **Dead code reads Godot's wiring, not only imports.** A script registered
   under `[autoload]` in project.godot counts as an entry point, and a script a
   `.tscn` attaches to a node is never flagged, because neither reference is an
@@ -326,11 +331,11 @@ script resolves; the two failures are the `$%UniqueName` form below.
   remaining output is narrower than the ladder tier implies.
 - **Upstream grammar gap, reserved words:** calling a function named `export`
   or `onready` as a bare statement (`export()`) fails to parse, because the
-  grammar still
-  reserves those words at statement position for the GDScript 3 `export var` /
-  `onready var` forms — which GDScript 4 respells `@export` / `@onready`, making
-  both legal identifiers again. `self.export()`, `var x = export()` and
-  `func export()` all parse; only the bare call statement fails. Contained to
+  grammar still reserves those words at statement position for the GDScript 3
+  `export var` / `onready var` forms. GDScript 4 respells those `@export` /
+  `@onready`, making both legal identifiers again. `self.export()`,
+  `var x = export()` and `func export()` all parse; only the bare call
+  statement fails. Contained to
   the one file by tree-sitter error recovery. Seen once in 651 corpus files
   (Pixelorama's `ExportDialog.gd`).
 - **Upstream grammar gap, `$%UniqueName`:** Godot accepts `$%Name` as shorthand

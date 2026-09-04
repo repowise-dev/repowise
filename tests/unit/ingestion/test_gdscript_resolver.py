@@ -185,6 +185,13 @@ SCENE = """\
 [ext_resource type="Script" uid="uid://e3f" path="res://bullets.gd" id="2"]
 [ext_resource type="Texture2D" path="res://face.png" id="3"]
 [ext_resource type="Script" path="res://absent.gd" id="4"]
+[ext_resource type="Script" uid="uid://n0path" id="5"]
+"""
+
+SINGLE_QUOTED_SCENE = """\
+[gd_scene format=3]
+
+[ext_resource type='Script' path='res://bullets.gd' id='2']
 """
 
 
@@ -211,7 +218,17 @@ class TestEngineLoadedScripts:
         ctx = _ctx({"game/bullets.gd", "game/other.gd"}, repo_path=tmp_path)
         autoloads, scenes = engine_loaded_scripts(ctx)
         assert autoloads == frozenset()
+        # `absent.gd` is not indexed, `face.png` is not a script, and the
+        # `uid://`-only entry carries no path to resolve.
         assert scenes == frozenset({"game/bullets.gd"})
+
+    def test_single_quoted_paths_are_accepted(self, tmp_path: Path) -> None:
+        _write_project(tmp_path, "game")
+        (tmp_path / "game" / "hand_edited.tscn").write_text(
+            SINGLE_QUOTED_SCENE, encoding="utf-8"
+        )
+        ctx = _ctx({"game/bullets.gd"}, repo_path=tmp_path)
+        assert engine_loaded_scripts(ctx)[1] == frozenset({"game/bullets.gd"})
 
     def test_no_godot_project_yields_nothing(self, tmp_path: Path) -> None:
         ctx = _ctx({"a.gd"}, repo_path=tmp_path)

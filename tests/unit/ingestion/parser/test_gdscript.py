@@ -12,6 +12,8 @@ tests/unit/ingestion/test_gdscript_resolver.py, which needs no grammar.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 # tree-sitter-gdscript is a pinned dependency, so an absent grammar is a broken
@@ -375,7 +377,74 @@ class TestKnownGrammarGap:
 class TestGDScriptParsesCleanly:
     @pytest.mark.parametrize("source", [PLAYER_SOURCE, LEGACY_SOURCE])
     def test_no_parse_errors(self, parser: ASTParser, source: bytes) -> None:
-        # The corpus gate in local-stash/gdscript-godot/PLAN.md is "no parse
-        # errors"; this is its unit-level sentinel over both dialects.
+        # The corpus gate is "no parse errors"; this is its unit-level
+        # sentinel over both dialects.
         result = parser.parse_file(_gd(), source)
         assert result.parse_errors == []
+
+
+def _build_graph(repo: Path):
+    """Parse every file under *repo* and return the built graph."""
+    from repowise.core.ingestion import FileTraverser, GraphBuilder
+
+    traverser = FileTraverser(repo)
+    parser = ASTParser()
+    builder = GraphBuilder(repo_path=repo)
+    for fi in traverser.traverse():
+        builder.add_file(parser.parse_file(fi, Path(fi.abs_path).read_bytes()))
+    return builder.build()
+
+
+def _call_targets(graph, source_file: str) -> set[str]:
+    return {
+        target
+        for src, target, data in graph.edges(data=True)
+        if data.get("edge_type") == "calls" and src.startswith(f"{source_file}::")
+    }
+
+
+class TestEngineMethodsAreNotGuessedAt:
+    """The bare-name tier must not answer an engine call with a project symbol.
+
+    That tier binds a name declared exactly once anywhere in the repo, at 0.50
+    confidence. Every implicit-`self` engine call is a bare name, so without
+    ``builtin_methods`` a script's `load(...)` or `queue_free()` lands on
+    whatever lone function shares the spelling.
+    """
+
+    def test_bare_load_does_not_bind_to_a_project_function_named_load(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "save_manager.gd").write_bytes(
+            b"extends Node\nclass_name SaveManager\n\n"
+            b"func load(path):\n\treturn path\n"
+        )
+        (tmp_path / "player.gd").write_bytes(
+            b"extends Node\n\nfunc respawn():\n\tload(\"res://x.tscn\")\n"
+        )
+        graph = _build_graph(tmp_path)
+        assert "save_manager.gd::load" in graph
+        assert "save_manager.gd::load" not in _call_targets(graph, "player.gd")
+
+    @pytest.mark.parametrize("name", ["queue_free", "emit_signal", "get_parent"])
+    def test_other_engine_names_are_refused_too(self, tmp_path: Path, name: str) -> None:
+        (tmp_path / "helper.gd").write_bytes(
+            f"extends Node\n\nfunc {name}():\n\tpass\n".encode()
+        )
+        (tmp_path / "caller.gd").write_bytes(
+            f"extends Node\n\nfunc act():\n\t{name}()\n".encode()
+        )
+        graph = _build_graph(tmp_path)
+        assert f"helper.gd::{name}" not in _call_targets(graph, "caller.gd")
+
+    def test_a_unique_project_function_still_resolves(self, tmp_path: Path) -> None:
+        # The control: the tier is a guess, not a wrong one by construction,
+        # and a name the engine does not own must still bind.
+        (tmp_path / "damage.gd").write_bytes(
+            b"extends Node\n\nfunc apply_falloff_damage(amount):\n\treturn amount\n"
+        )
+        (tmp_path / "caller.gd").write_bytes(
+            b"extends Node\n\nfunc hit():\n\tapply_falloff_damage(5)\n"
+        )
+        graph = _build_graph(tmp_path)
+        assert "damage.gd::apply_falloff_damage" in _call_targets(graph, "caller.gd")
