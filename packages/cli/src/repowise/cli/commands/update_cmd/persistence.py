@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -1344,7 +1345,15 @@ def _full_rescore_interval_days() -> float:
         try:
             return max(0.0, float(raw))
         except ValueError:
-            pass
+            # Say it where the user will actually see it: a silently-ignored
+            # value makes the rescore cadence look deliberate when it is
+            # actually the default (issue #1370). stderr matches how
+            # build_embedder reports the same class of misconfiguration.
+            print(
+                f"REPOWISE_FULL_RESCORE_INTERVAL_DAYS={raw!r} is not a number; "
+                f"using the default {_FULL_RESCORE_INTERVAL_DAYS} days.",
+                file=sys.stderr,
+            )
     return _FULL_RESCORE_INTERVAL_DAYS
 
 
