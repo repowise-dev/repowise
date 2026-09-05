@@ -259,6 +259,34 @@ def _resolve_embedder():
         return KeylessEmbedder()
 
 
+#: How often the running server re-reads release currency. The PyPI fetch
+#: itself is TTL-cached on disk for a day and shared with the CLI advisory, so
+#: this bounds only the in-process refresh, never the network.
+_RELEASE_RECHECK_S = 6 * 3600
+
+
+async def _poll_release_check() -> None:
+    """Keep ``_state._release_check`` current for the life of the server.
+
+    Runs off the event loop thread because the miss path does a network
+    fetch; a tool call never waits on it. Never raises: a failed check is
+    recorded as unknown and retried on the next pass.
+    """
+    from repowise.core.upgrade.release import check_latest_version_cached
+    from repowise.server import __version__
+
+    while True:
+        try:
+            _state._release_check = await asyncio.to_thread(
+                check_latest_version_cached, __version__
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.debug("repowise MCP: release check failed", exc_info=True)
+        await asyncio.sleep(_RELEASE_RECHECK_S)
+
+
 async def _cancel_task(task: asyncio.Task) -> None:
     """Cancel a lifespan background task and swallow its unwind."""
     task.cancel()
@@ -410,6 +438,7 @@ async def _lifespan(server: FastMCP):
     # call can otherwise land mid-import and wedge the loop.
     _state._lancedb_ready = asyncio.Event()
     _warm_task = asyncio.create_task(_warm_lancedb(), name="lancedb-warmup")
+    _release_task = asyncio.create_task(_poll_release_check(), name="release-check")
 
     # --- Workspace detection ------------------------------------------------
     ws_root, ws_config, ws_repo_alias = _detect_workspace(_state._repo_path)
@@ -482,6 +511,7 @@ async def _lifespan(server: FastMCP):
 
         yield
 
+        await _cancel_task(_release_task)
         await _cancel_task(_warm_task)
         _state._lancedb_ready = None
         _state._cross_repo_enricher = None
@@ -527,6 +557,7 @@ async def _lifespan(server: FastMCP):
             raise
     except (OSError, OperationalError) as exc:
         # A read-only or missing directory, or a .repowise that is a file.
+        await _cancel_task(_release_task)
         await _cancel_task(_warm_task)
         raise _store_unavailable(store_location, _state._repo_path, exc) from exc
 
@@ -559,6 +590,7 @@ async def _lifespan(server: FastMCP):
 
     yield
 
+    await _cancel_task(_release_task)
     await _cancel_task(_bg_task)
     await _cancel_task(_warm_task)
     _state._lancedb_ready = None

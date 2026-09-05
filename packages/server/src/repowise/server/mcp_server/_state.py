@@ -54,3 +54,12 @@ _test_impact_lock: tuple[Any, asyncio.Lock] | None = None
 # (issue #306). Shape: {"active": str, "requested": str | None,
 # "degraded": bool, "reason": str (only when degraded)}.
 _embedder_status: dict[str, Any] | None = None
+
+# Release currency. The stdio server is the longest-lived process the product
+# runs and was the one path that never checked PyPI, so a client could sit on
+# an old release for weeks with no signal. ``_release_check`` is the latest
+# ``ReleaseCheck`` from the lifespan's poller (``None`` until the first pass);
+# ``_release_announced`` is the newest version ``_meta`` has already named, so
+# each newer release is surfaced once per process rather than on every call.
+_release_check: Any = None
+_release_announced: str | None = None
