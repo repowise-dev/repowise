@@ -20,6 +20,7 @@ import asyncio
 import pytest
 
 from repowise.server.mcp_server import _answer_pipeline as pipeline
+from repowise.server.mcp_server._helpers import _EMBED_TIMEOUT_ENV
 
 
 class _Store:
@@ -70,7 +71,7 @@ def fresh_record():
 
 @pytest.mark.asyncio
 async def test_a_healthy_leg_records_ok(monkeypatch):
-    monkeypatch.setattr(pipeline, "_EMBED_TIMEOUT_S", 0.5)
+    monkeypatch.setenv(_EMBED_TIMEOUT_ENV, "0.5")
     await pipeline._safe_vector_search(_Ctx(store=_Store()), "how does retrieval work")
     assert pipeline.retrieval_legs()["vector"] == "ok"
     assert pipeline.degraded_legs(pipeline.retrieval_legs()) == []
@@ -79,7 +80,7 @@ async def test_a_healthy_leg_records_ok(monkeypatch):
 @pytest.mark.asyncio
 async def test_an_embed_timeout_is_named_and_does_not_fail_the_call(monkeypatch):
     """The exact A18 shape: the answer still comes back, lexical-only."""
-    monkeypatch.setattr(pipeline, "_EMBED_TIMEOUT_S", 0.05)
+    monkeypatch.setenv(_EMBED_TIMEOUT_ENV, "0.05")
     ctx = _Ctx(store=_Store(embed_hangs=True))
 
     results = await pipeline._safe_vector_search(ctx, "how does retrieval work")

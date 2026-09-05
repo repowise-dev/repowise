@@ -8,9 +8,12 @@ with a coverage re-ranker, not of any particular codebase.
 
 from __future__ import annotations
 
+import logging
 import os
 
 from repowise.server.mcp_server._query_terms import STOPWORDS
+
+_log = logging.getLogger("repowise.mcp.answer")
 
 # How many top retrieval hits to enrich with WikiSymbol context. Enriching
 # every hit produces large responses that bloat the cached prompt prefix on
@@ -499,7 +502,38 @@ _MAX_RICH_SIG_LINES = 4
 # Synthesis sampling. Answers target 150-400 words (~550 tokens), so the cap is
 # headroom rather than the binding constraint; generation speed is. Temperature
 # is low because the answer must track the retrieved excerpts, not embellish.
-_SYNTHESIS_MAX_TOKENS = 1024
+#
+# That headroom reasoning holds only for a non-reasoning model. A reasoning
+# model spends the same budget on hidden thinking *before* emitting any answer
+# token, so 1024 is not headroom for it — it is the entire allowance, and the
+# call comes back empty with a ``length`` finish_reason (see
+# ``synthesis._empty_completion_note``). REPOWISE_SYNTHESIS_MAX_TOKENS exists
+# so such a model can be given room, instead of being swapped for a weaker one.
+_SYNTHESIS_MAX_TOKENS_ENV = "REPOWISE_SYNTHESIS_MAX_TOKENS"
+_SYNTHESIS_MAX_TOKENS_DEFAULT = 1024
+
+
+def _synthesis_max_tokens() -> int:
+    """The synthesis token budget, from env or the hosted-model default.
+
+    An unparseable or non-positive value warns and keeps the default instead
+    of silently capping synthesis at 0 — matching how REPOWISE_EMBEDDING_TIMEOUT
+    and REPOWISE_VECTOR_SEARCH_TIMEOUT_S are resolved.
+    """
+    raw = os.environ.get(_SYNTHESIS_MAX_TOKENS_ENV, "").strip()
+    if not raw:
+        return _SYNTHESIS_MAX_TOKENS_DEFAULT
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        _log.warning("Ignoring unusable %s=%r", _SYNTHESIS_MAX_TOKENS_ENV, raw)
+        return _SYNTHESIS_MAX_TOKENS_DEFAULT
+    return value
+
+
+_SYNTHESIS_MAX_TOKENS = _synthesis_max_tokens()
 _SYNTHESIS_TEMPERATURE = 0.2
 
 _SYSTEM_PROMPT = (
