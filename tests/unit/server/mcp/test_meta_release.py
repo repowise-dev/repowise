@@ -89,3 +89,12 @@ async def test_poller_survives_a_failing_check(monkeypatch: pytest.MonkeyPatch) 
     with pytest.raises(asyncio.CancelledError):
         await _server._poll_release_check()
     assert _state._release_check is None
+
+
+def test_release_state_is_reachable_through_the_package_proxy() -> None:
+    import repowise.server.mcp_server as mcp_mod
+
+    mcp_mod._release_announced = "1.2.3"
+    assert _state._release_announced == "1.2.3"
+    mcp_mod._release_announced = None
+    assert mcp_mod._release_check is None

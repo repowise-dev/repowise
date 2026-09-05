@@ -229,6 +229,8 @@ _STATE_NAMES = frozenset(
         "_workspace_root",
         "_cross_repo_enricher",
         "_embedder_status",
+        "_release_check",
+        "_release_announced",
     }
 )
 
