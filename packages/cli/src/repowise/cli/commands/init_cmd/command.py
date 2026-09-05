@@ -619,6 +619,19 @@ def _run_generation_phase(
     ),
 )
 @click.option(
+    "--hook/--no-hook",
+    "hook",
+    default=None,
+    help=(
+        "Install the post-commit hook that runs `repowise update` after each "
+        "commit, so the index stays current without anyone typing it. Default: "
+        "on. Interactive runs ask; --yes and non-interactive runs install it and "
+        "print how to undo it (`repowise hook uninstall`). --no-hook skips it. "
+        "--no-editor-setup skips it too, since a git hook is a write outside "
+        ".repowise/. In workspace mode the choice applies to every selected repo."
+    ),
+)
+@click.option(
     "--editor-setup/--no-editor-setup",
     "editor_setup",
     default=True,
@@ -797,6 +810,7 @@ def init_command(
     agents_md: bool | None,
     codex_setup: bool | None,
     distill_hook: bool | None,
+    hook: bool | None,
     editor_setup: bool,
     save_key: bool,
     include_submodules: bool,
@@ -960,6 +974,7 @@ def init_command(
             agents_md=agents_md,
             codex_setup=codex_setup,
             distill_hook=distill_hook,
+            hook=hook,
             editor_setup=editor_setup,
             save_key=save_key,
             include_submodules=include_submodules,
@@ -1790,8 +1805,14 @@ def init_command(
         embedder_name_resolved=embedder_name_resolved,
     )
 
-    # Offer to install post-commit hook (both index-only and full modes)
-    offer_hook_install(console, [repo_path], yes=yes)
+    # Post-commit auto-sync hook (both index-only and full modes)
+    offer_hook_install(
+        console,
+        [repo_path],
+        flag=hook,
+        yes=yes,
+        no_editor_setup=not editor_setup,
+    )
 
     # Opt-in distill command-rewrite hook for Claude Code. The workspace flow
     # runs its own offer across all selected repos inside _workspace_init.
