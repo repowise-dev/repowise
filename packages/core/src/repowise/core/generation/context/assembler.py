@@ -22,6 +22,7 @@ from repowise.core.ingestion.package_roots import (
     package_roots_from_paths,
     scan_package_roots,
 )
+from repowise.core.test_paths import is_test_related_path
 
 from ...co_change import STRUCTURAL_UNEXPLAINED, parse_partners
 from ..categories import file_category
@@ -757,8 +758,16 @@ class ContextAssembler:
         scc_set = set(scc_files)
         member_symbols = []
         for fc in file_contexts:
-            pub = [s for s in fc.symbols if s.get("visibility") == "public"][:5]
-            member_symbols.append({"file_path": fc.file_path, "symbols": pub})
+            # Both guards are what the section renders: an unnamed symbol
+            # printed a bare "- " bullet, and a file with nothing public got a
+            # heading with no list under it.
+            pub = [
+                s
+                for s in fc.symbols
+                if s.get("visibility") == "public" and (s.get("name") or "").strip()
+            ][:5]
+            if pub:
+                member_symbols.append({"file_path": fc.file_path, "symbols": pub})
 
         cross_imports = [
             {"from": fc.file_path, "to": dep}
@@ -774,6 +783,8 @@ class ContextAssembler:
             total_symbols=total_symbols,
             member_symbols=member_symbols,
             cross_imports=cross_imports,
+            test_only=bool(scc_files)
+            and all(is_test_related_path(f) for f in scc_files),
         )
 
     # ------------------------------------------------------------------
