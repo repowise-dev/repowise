@@ -10,6 +10,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from repowise.core.persistence.database import (
@@ -26,6 +27,29 @@ from repowise.core.providers.embedding.base import KeylessEmbedder
 from repowise.server.mcp_server import _state
 
 _log = __import__("logging").getLogger("repowise.mcp")
+
+
+class StoreUnavailableError(RuntimeError):
+    """The repo-local index store cannot be created or opened.
+
+    Raised out of the lifespan so the process exits once with a message that
+    names the path and the fix. Before this the same failure escaped as a
+    bare traceback, and an MCP host treats a server that dies at startup as
+    one to respawn, so an unwritable .repowise became a crash loop. Click-free
+    because the server does not depend on the CLI; the mcp command turns it
+    into a clean non-zero exit.
+    """
+
+
+def _store_unavailable(
+    where: str, repo_path: str | None, exc: BaseException
+) -> StoreUnavailableError:
+    repo = repo_path or "the repository"
+    return StoreUnavailableError(
+        f"repowise MCP: cannot open the index store at {where}: {exc}. "
+        f"Run 'repowise init' in {repo} to create it, or fix the permissions "
+        "on that directory."
+    )
 
 
 # Per-embedder remediation hints, appended to the ERROR log and the `_meta`
@@ -474,26 +498,37 @@ async def _lifespan(server: FastMCP):
     configured_db_url = get_configured_db_url()
 
     # When repo path is set and no env override, prefer repo-local DB.
-    if _state._repo_path and configured_db_url is None:
-        db_path = get_repo_db_path(_state._repo_path)
-        repowise_dir = db_path.parent
-        if not repowise_dir.exists():
-            _log.warning(
-                "No .repowise directory at %s — run 'repowise init' first",
-                _state._repo_path,
-            )
-            repowise_dir.mkdir(parents=True, exist_ok=True)
-        elif not db_path.exists():
-            _log.warning(
-                "No wiki.db in %s — run 'repowise init' to generate the wiki",
-                repowise_dir,
-            )
+    store_location = "the configured database"
+    try:
+        if _state._repo_path and configured_db_url is None:
+            db_path = get_repo_db_path(_state._repo_path)
+            repowise_dir = db_path.parent
+            store_location = str(repowise_dir)
+            if not repowise_dir.exists():
+                _log.warning(
+                    "No .repowise directory at %s — run 'repowise init' first",
+                    _state._repo_path,
+                )
+                repowise_dir.mkdir(parents=True, exist_ok=True)
+            elif not db_path.exists():
+                _log.warning(
+                    "No wiki.db in %s — run 'repowise init' to generate the wiki",
+                    repowise_dir,
+                )
 
-    db_url = resolve_db_url(_state._repo_path)
+        db_url = resolve_db_url(_state._repo_path)
 
-    _log.info("repowise MCP: initialising database…")
-    engine = create_engine(db_url)
-    await init_db(engine)
+        _log.info("repowise MCP: initialising database…")
+        engine = create_engine(db_url)
+        try:
+            await init_db(engine)
+        except (OSError, OperationalError):
+            await engine.dispose()
+            raise
+    except (OSError, OperationalError) as exc:
+        # A read-only or missing directory, or a .repowise that is a file.
+        await _cancel_task(_warm_task)
+        raise _store_unavailable(store_location, _state._repo_path, exc) from exc
 
     _state._session_factory = async_sessionmaker(
         engine, expire_on_commit=False, class_=AsyncSession
