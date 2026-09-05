@@ -17,8 +17,44 @@ from click.testing import CliRunner
 
 from repowise.cli import cost_gate
 from repowise.cli.commands.init_cmd._interactive import offer_hook_install
+from repowise.cli.commands.init_cmd.command import _interactive_gate
 from repowise.cli.helpers import NO_SAVE_KEY_ENV, save_config
 from repowise.cli.main import cli
+
+
+class TestInteractiveGate:
+    """The questionnaire gate: --resume must skip it (issue #2098)."""
+
+    def test_tty_with_no_flags_is_interactive(self) -> None:
+        assert _interactive_gate(
+            isatty=True, provider_name=None, index_only=False, yes=False, resume=False
+        )
+
+    def test_resume_skips_the_gate_on_a_tty(self) -> None:
+        """A resume must not re-ask questions the prior run already answered."""
+        assert not _interactive_gate(
+            isatty=True, provider_name=None, index_only=False, yes=False, resume=True
+        )
+
+    def test_yes_skips_the_gate(self) -> None:
+        assert not _interactive_gate(
+            isatty=True, provider_name=None, index_only=False, yes=True, resume=False
+        )
+
+    def test_explicit_provider_skips_the_gate(self) -> None:
+        assert not _interactive_gate(
+            isatty=True, provider_name="anthropic", index_only=False, yes=False, resume=False
+        )
+
+    def test_index_only_skips_the_gate(self) -> None:
+        assert not _interactive_gate(
+            isatty=True, provider_name=None, index_only=True, yes=False, resume=False
+        )
+
+    def test_non_tty_skips_the_gate(self) -> None:
+        assert not _interactive_gate(
+            isatty=False, provider_name=None, index_only=False, yes=False, resume=False
+        )
 
 
 def _est(usd: float) -> SimpleNamespace:
