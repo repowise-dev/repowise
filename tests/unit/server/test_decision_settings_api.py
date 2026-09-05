@@ -45,6 +45,7 @@ async def test_get_returns_the_full_source_registry(client: AsyncClient):
         "comment",
         "session",
         "session_discovery",
+        "conventions",
         "cli",
     ]
     assert body["preset"] == "default"

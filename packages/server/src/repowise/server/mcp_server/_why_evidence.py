@@ -36,6 +36,7 @@ ProvenanceKind = Literal[
     "human_decision",
     "extracted_rationale",
     "historical",
+    "computed",
     "inferred",
     "unknown",
 ]
@@ -47,6 +48,9 @@ _RATIONALE_SOURCES = frozenset(
 _HISTORICAL_SOURCES = frozenset(
     {"changelog", "commit", "git_archaeology", "pr", "readme_mining"}
 )
+# Counted from the code itself rather than written by anyone, so neither
+# rationale prose nor history nor a guess.
+_COMPUTED_SOURCES = frozenset({"conventions"})
 _INFERRED_SOURCES = frozenset({"inferred", "semantic"})
 _FULL_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$")
 _REFERENCE_CACHE_LIMIT = 4096
@@ -161,6 +165,8 @@ def provenance_for_source(source: str | None) -> ProvenanceKind:
         return "extracted_rationale"
     if normalized in _HISTORICAL_SOURCES:
         return "historical"
+    if normalized in _COMPUTED_SOURCES:
+        return "computed"
     if normalized in _INFERRED_SOURCES:
         return "inferred"
     return "unknown"

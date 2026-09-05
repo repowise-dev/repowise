@@ -9,6 +9,7 @@ import yaml
 
 from repowise.core.analysis.decisions.policy import (
     CAPTURE_SOURCE_KEYS,
+    INDEX_SOURCE_KEYS,
     PRESET_NAMES,
     SOURCE_SPECS,
     DiscoveryBudget,
@@ -36,6 +37,10 @@ def _write_config(repo: Path, text: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Sources that shipped off: an upgrade must not switch them on.
+_OFF_BY_DEFAULT = frozenset(spec.key for spec in SOURCE_SPECS if not spec.default_enabled)
+
+
 @pytest.mark.parametrize("config", [None, {}, {"decisions": {}}, {"decisions": None}])
 def test_absent_config_resolves_to_prior_behaviour(config):
     """A repo indexed before the policy existed must not change on upgrade."""
@@ -43,12 +48,13 @@ def test_absent_config_resolves_to_prior_behaviour(config):
 
     assert policy.enabled is True
     assert policy.llm is True
-    legacy = [key for key in CAPTURE_SOURCE_KEYS if key != "session_discovery"]
+    legacy = [key for key in CAPTURE_SOURCE_KEYS if key not in _OFF_BY_DEFAULT]
     assert all(policy.source_enabled(key) for key in legacy)
-    assert all(policy.llm_allowed(key) for key in legacy)
+    assert all(policy.llm_allowed(key) for key in legacy if key != "conventions")
     # A source added after this config shape existed is off until asked for:
-    # an upgrade must not start a model call nobody enabled.
+    # an upgrade must not start capture nobody enabled.
     assert policy.source_enabled("session_discovery") is False
+    assert policy.source_enabled("conventions") is False
     assert policy.preset_name() == "default"
 
 
@@ -101,7 +107,7 @@ def test_retired_source_keys_say_retired_not_unknown(retired):
     assert all(
         resolution.policy.source_enabled(key)
         for key in CAPTURE_SOURCE_KEYS
-        if key != "session_discovery"
+        if key not in _OFF_BY_DEFAULT
     )
 
 
@@ -472,3 +478,30 @@ def test_a_preset_written_today_round_trips_with_discovery_on():
     stored = {"decisions": {**policy.to_config_block(), "preset": "balanced"}}
 
     assert resolve_policy(stored).policy == policy
+
+
+# ---------------------------------------------------------------------------
+# Conventions
+# ---------------------------------------------------------------------------
+
+
+def test_conventions_runs_at_index_time_but_is_off_by_default():
+    assert "conventions" in INDEX_SOURCE_KEYS
+    policy = preset_policy("default")
+    assert policy.source_enabled("conventions") is False
+    assert "conventions" not in policy.enabled_index_sources()
+
+
+def test_full_preset_turns_conventions_on():
+    policy = preset_policy("full")
+    assert "conventions" in policy.enabled_index_sources()
+
+
+def test_conventions_runs_with_no_model_once_it_is_switched_on():
+    policy = resolve_policy(
+        {"decisions": {"llm": False, "sources": {"conventions": True}}}
+    ).policy
+
+    assert policy.source_enabled("conventions") is True
+    assert policy.llm_allowed("conventions") is False
+    assert "conventions" in policy.enabled_index_sources()

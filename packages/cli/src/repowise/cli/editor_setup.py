@@ -92,8 +92,10 @@ def detect_editor_setup_outcome(
     """Read the ground-truth editor-setup state for the completion panel.
 
     Called after registration and the hook offers, so what it reads is final.
-    Every probe is a cheap local file read and is defensive: a failure degrades
-    to "not set up" rather than crashing ``init``.
+    Every probe is defensive: a failure degrades to "not set up" rather than
+    crashing ``init``. All but one are local file reads; the autosync probe
+    spawns ``git rev-parse`` once, because ``core.hooksPath`` and worktrees make
+    the hooks directory impossible to derive from the repo path alone.
     """
     disabled = is_editor_setup_disabled(no_editor_setup)
 
@@ -101,7 +103,7 @@ def detect_editor_setup_outcome(
     try:
         from repowise.cli.hooks import status as _hook_status
 
-        autosync = _hook_status(repo_path) == "installed"
+        autosync = _hook_status(repo_path).startswith("installed")
     except Exception:
         pass
 

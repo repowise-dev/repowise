@@ -54,6 +54,7 @@ def test_show_json_lists_every_source(repo: Path):
         "comment",
         "session",
         "session_discovery",
+        "conventions",
         "cli",
     ]
     assert payload["policy"]["preset"] == "default"
