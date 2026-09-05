@@ -60,7 +60,6 @@ def _is_stub_fallback_row(page) -> bool:
     return isinstance(meta, dict) and STUB_FALLBACK_ERROR in meta
 
 
-
 async def _page_count(session: object, repo_id: str) -> int:
     """Count this repository's pages in SQL.
 
@@ -103,12 +102,53 @@ async def _all_pages_for_reconciliation(session: object, repo_id: str) -> list:
     from repowise.core.persistence.models import Page
 
     result = await session.execute(  # type: ignore[attr-defined]
-        select(Page.id, Page.content, Page.metadata_json).where(
-            Page.repository_id == repo_id
-        )
+        select(Page.id, Page.content, Page.metadata_json).where(Page.repository_id == repo_id)
     )
     return list(result.all())
 
+
+def _provider_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
+    """Report provider implementations, configuration errors, and usability.
+
+    These are three distinct claims.  In particular, an empty validation
+    warning list means no configured key is malformed; it does not prove that
+    an LLM provider will resolve for this repository.
+    """
+    checks: list[DoctorCheck] = []
+
+    try:
+        from repowise.core.providers import list_providers
+
+        providers = list_providers()
+        checks.append(
+            _check(
+                "Providers",
+                bool(providers),
+                f"Implementations loaded: {', '.join(providers)}",
+            )
+        )
+    except Exception as exc:
+        checks.append(_check("Providers", False, str(exc)))
+
+    from repowise.cli.helpers import validate_provider_config
+
+    config_warnings = validate_provider_config()
+    config_ok = not config_warnings
+    config_detail = "No misconfigured provider keys" if config_ok else "; ".join(config_warnings)
+    checks.append(_check("Provider config", config_ok, config_detail))
+
+    from repowise.core.providers.llm.registry import provider_available_for_repo
+
+    llm_available = provider_available_for_repo(repo_path)
+    llm_detail = (
+        "Resolves for this repository"
+        if llm_available
+        else "None configured — prose degrades to a structural wiki; set a key or pass --provider"
+    )
+    # Keyless operation is supported, so this is informational rather than a
+    # failing health check.  The detail tells users what init will actually do.
+    checks.append(_check("LLM provider", True, llm_detail))
+    return checks
 
 
 def _run_repo_checks(
@@ -211,24 +251,8 @@ def _run_repo_checks(
         except Exception as e:
             checks.append(_check("Store format", True, f"Could not check: {e}"))
 
-    # 5. Provider importable?
-    provider_ok = False
-    try:
-        from repowise.core.providers import list_providers
-
-        providers = list_providers()
-        provider_ok = len(providers) > 0
-        checks.append(_check("Providers", provider_ok, ", ".join(providers)))
-    except Exception as e:
-        checks.append(_check("Providers", False, str(e)))
-
-    # 6. Provider configuration?
-    from repowise.cli.helpers import validate_provider_config
-
-    config_warnings = validate_provider_config()
-    config_ok = len(config_warnings) == 0
-    config_detail = "All required API keys configured" if config_ok else "; ".join(config_warnings)
-    checks.append(_check("Provider config", config_ok, config_detail))
+    # 5-6. Provider implementations, configuration, and repo-level usability.
+    checks.extend(_provider_checks(repo_path))
 
     # 6b. Hosted account (informational: signed out is not a failure).
     try:
@@ -627,9 +651,7 @@ def _run_repo_checks(
                     # only command that could fix the drift was the one the
                     # drift killed. Both repairs below work on either column
                     # set, so say what failed and carry on.
-                    console.print(
-                        f"  [yellow]Full-text index upgrade skipped: {exc}[/yellow]"
-                    )
+                    console.print(f"  [yellow]Full-text index upgrade skipped: {exc}[/yellow]")
                 # Orphans first, deliberately. Deleting one needs nothing but
                 # its page_id, so it works on any column set this class has
                 # ever written — including the one an upgrade just failed to
