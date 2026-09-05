@@ -220,6 +220,7 @@ def _run_deterministic_generation_phase(
     onboarding: bool,
     wiki_style: str,
     max_file_pages: int | None,
+    folder_coverage: tuple[tuple[str, float], ...],
     embedder_name_resolved: str,
     embedder_was_requested: bool,
     resume: bool,
@@ -289,6 +290,7 @@ def _run_deterministic_generation_phase(
         enable_onboarding=onboarding,
         wiki_style=wiki_style,
         max_file_pages=max_file_pages,
+        folder_coverage=folder_coverage,
     )
     run_repo_generation(
         repo_path=repo_path,
@@ -316,6 +318,7 @@ def _run_generation_phase(
     onboarding: bool,
     wiki_style: str,
     max_file_pages: int | None,
+    folder_coverage: tuple[tuple[str, float], ...],
     yes: bool,
     dry_run: bool,
     skip_tests: bool,
@@ -351,6 +354,7 @@ def _run_generation_phase(
         enable_onboarding=onboarding,
         wiki_style=wiki_style,
         max_file_pages=max_file_pages,
+        folder_coverage=folder_coverage,
     )
     plans, est = estimate_generation(
         result=result,
@@ -697,6 +701,18 @@ def _run_generation_phase(
     ),
 )
 @click.option(
+    "--folder-coverage",
+    "folder_coverage_rules",
+    multiple=True,
+    metavar="GLOB=PCT",
+    help=(
+        "Documentation floor for a folder: 'src/core=1.0' promises every code "
+        "file under src/core gets a file page whatever its importance score; "
+        "'src/legacy=0.5' promises half. Repeatable. Saved to config.yaml so "
+        "later update runs keep the floors."
+    ),
+)
+@click.option(
     "--coverage-report",
     "coverage_report",
     type=click.Path(exists=True, dir_okay=False),
@@ -810,6 +826,7 @@ def init_command(
     no_cost_tracking: bool,
     verbose: bool,
     progress: str,
+    folder_coverage_rules: tuple[str, ...],
 ) -> None:
     """Generate wiki documentation for a codebase.
 
@@ -1179,6 +1196,13 @@ def init_command(
         max_file_pages_opt if max_file_pages_opt is not None else max_file_pages_choice,
         config,
     )
+    # Folder documentation floors: flag > config.yaml. The flag's raw
+    # "glob=pct" strings are parsed once and passed as a GenerationConfig
+    # override; when the flag is absent, from_repo_config picks the rules up
+    # from config.yaml itself (same precedence as --max-file-pages).
+    from repowise.core.generation.folder_coverage import _parse_folder_coverage
+
+    folder_coverage = _parse_folder_coverage(folder_coverage_rules) if folder_coverage_rules else ()
     resolved_reasoning = resolve_reasoning(reasoning, config)
     exclude_patterns: list[str] = list(config.get("exclude_patterns") or []) + list(exclude)
 
@@ -1509,6 +1533,7 @@ def init_command(
             onboarding=onboarding,
             wiki_style=wiki_style,
             max_file_pages=max_file_pages,
+            folder_coverage=folder_coverage,
             embedder_name_resolved=embedder_name_resolved,
             embedder_was_requested=embedder_was_requested,
             resume=resume,
@@ -1526,6 +1551,7 @@ def init_command(
             onboarding=onboarding,
             wiki_style=wiki_style,
             max_file_pages=max_file_pages,
+            folder_coverage=folder_coverage,
             yes=yes,
             dry_run=dry_run,
             skip_tests=skip_tests,
@@ -1567,7 +1593,8 @@ def init_command(
                 language=language,
                 onboarding=onboarding,
                 wiki_style=wiki_style,
-                max_file_pages=max_file_pages,
+            max_file_pages=max_file_pages,
+            folder_coverage=folder_coverage,
                 # The user has a provider and just declined a bill, not the
                 # embedder they configured, so honour it either way.
                 embedder_was_requested=True,
@@ -1634,6 +1661,13 @@ def init_command(
         # save_config_partial drops None values, and 0 is not None, so an explicit
         # refusal reaches the file.
         save_config_partial(repo_path, max_file_pages=max_file_pages)
+
+    # Persist the folder documentation floors so `repowise update` /
+    # `repowise generate` keep documenting the folders the user pinned.
+    # Written whenever the flag was passed with rules, exactly like the
+    # file-page cap: an override is recorded, the default stays unwritten.
+    if folder_coverage_rules:
+        save_config_partial(repo_path, folder_coverage=list(folder_coverage_rules))
 
     # Persist the wiki style so `repowise update` / `restyle` honor it without
     # re-passing the flag. Written before any config_fingerprint is computed
