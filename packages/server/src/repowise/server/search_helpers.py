@@ -61,9 +61,10 @@ async def build_primary_vector_store(
 ) -> tuple[Any, str | None]:
     """Build the primary repo's durable vector store when it can be identified.
 
-    Identifies the primary repo by checking workspace configuration, matching
-    against the current working directory, or falling back to the single
-    configured repository. The returned repo id lets startup seed the per-repo
+    A repo-local SQLite database normally contains one repository row. For a
+    shared registry database, only a row whose ``wiki.db`` matches ``db_url`` is
+    treated as primary. Identifies the primary repo by checking ``db_url``,
+    workspace configuration, current working directory, or single-row fallback.
     cache so jobs and searches reuse the same connection.
     """
     from sqlalchemy import select
@@ -81,22 +82,29 @@ async def build_primary_vector_store(
         logger.debug("primary_vector_repo_lookup_failed", exc_info=True)
 
     selected: tuple[str, str] | None = None
+    normalized_url = db_url.replace("\\", "/")
+    for repo_id, local_path in rows:
+        local_db = (Path(local_path).resolve() / ".repowise" / "wiki.db").as_posix()
+        if local_db in normalized_url:
+            selected = (repo_id, local_path)
+            break
 
-    try:
-        from repowise.core.workspace.config import WorkspaceConfig, find_workspace_root
+    if selected is None:
+        try:
+            from repowise.core.workspace.config import WorkspaceConfig, find_workspace_root
 
-        ws_root = find_workspace_root()
-        if ws_root is not None:
-            ws_config = WorkspaceConfig.load(ws_root)
-            primary_entry = ws_config.get_primary()
-            if primary_entry is not None:
-                primary_path = (ws_root / primary_entry.path).resolve()
-                for repo_id, local_path in rows:
-                    if Path(local_path).resolve() == primary_path:
-                        selected = (repo_id, local_path)
-                        break
-    except Exception:
-        logger.debug("workspace_config_primary_lookup_failed", exc_info=True)
+            ws_root = find_workspace_root()
+            if ws_root is not None:
+                ws_config = WorkspaceConfig.load(ws_root)
+                primary_entry = ws_config.get_primary()
+                if primary_entry is not None:
+                    primary_path = (ws_root / primary_entry.path).resolve()
+                    for repo_id, local_path in rows:
+                        if Path(local_path).resolve() == primary_path:
+                            selected = (repo_id, local_path)
+                            break
+        except Exception:
+            logger.debug("workspace_config_primary_lookup_failed", exc_info=True)
 
     if selected is None:
         try:

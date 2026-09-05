@@ -284,3 +284,49 @@ async def test_build_primary_vector_store_create_false_does_not_create_empty_dir
         assert not (repo_path / ".repowise" / "lancedb").exists()
     finally:
         await loaded_store.close()
+
+
+async def test_build_primary_vector_store_shared_sqlite_registry_db_url_match(
+    session_factory,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """SQLite db_url pointing at wiki.db resolves primary repo even when cwd does not match."""
+    standalone_dir = tmp_path / "standalone"
+    standalone_dir.mkdir()
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    (repo_a / ".repowise" / "lancedb").mkdir(parents=True)
+    (repo_b / ".repowise" / "lancedb").mkdir(parents=True)
+
+    async with get_session(session_factory) as session:
+        r_a = await crud.upsert_repository(
+            session,
+            name="repo-a",
+            local_path=str(repo_a),
+        )
+        await crud.upsert_repository(
+            session,
+            name="repo-b",
+            local_path=str(repo_b),
+        )
+
+    embedder = MockEmbedder()
+    lance_store = LanceDBVectorStore(str(repo_a / ".repowise" / "lancedb"), embedder=embedder)
+    await lance_store.embed_and_upsert("p-db-match", "db-content", {"title": "DbMatch"})
+    await lance_store.close()
+
+    monkeypatch.chdir(standalone_dir)
+    sqlite_url = f"sqlite+aiosqlite:///{repo_a.as_posix()}/.repowise/wiki.db"
+
+    loaded_store, loaded_repo_id = await build_primary_vector_store(
+        session_factory,
+        sqlite_url,
+        embedder,
+    )
+    try:
+        assert loaded_repo_id == r_a.id
+        assert isinstance(loaded_store, LanceDBVectorStore)
+        assert await loaded_store.list_page_ids() == {"p-db-match"}
+    finally:
+        await loaded_store.close()
