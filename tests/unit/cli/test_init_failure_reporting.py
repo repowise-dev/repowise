@@ -547,3 +547,93 @@ def test_run_repo_generation_uses_exact_job_id_when_provided(tmp_path, monkeypat
     )
 
     assert getattr(result, "failed_page_ids", None) == ["file_page:target_failure.ts"]
+
+
+class TestGenerationPhaseEmbedderDegradation:
+    """Issue #1369: a generation-phase embedder rebuild can degrade silently.
+
+    The init header probes the embedder and warns on degradation, but the
+    generation phase rebuilds it. If that second build fails — Ollama goes
+    down mid-run, a key is revoked between header and generation — the run
+    writes mock (keyless) vectors and a scripted run would record a clean
+    state.json with nothing saying so. ``run_repo_generation`` must record the
+    degradation on ``result`` so the callers fold it into ``state.json``.
+    """
+
+    def _run(self, tmp_path, monkeypatch, *, result, requested: str) -> None:
+        monkeypatch.setattr(
+            "repowise.cli.commands.init_cmd.generation.console.print", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            "repowise.cli.commands.init_cmd.generation.run_async",
+            lambda coro: [_page("file_page:lib/c.ts")],
+        )
+        monkeypatch.setattr(
+            "repowise.cli.commands.init_cmd.generation._enrich_knowledge_graph",
+            lambda **kw: None,
+        )
+        monkeypatch.setattr(
+            "repowise.cli.commands.init_cmd.generation.flush_cost_tracker", lambda t: None
+        )
+        run_repo_generation(
+            repo_path=tmp_path,
+            result=result,
+            provider=SimpleNamespace(provider_name="mock", model_name="mock-model"),
+            gen_config=SimpleNamespace(max_concurrency=1, deterministic=False),
+            concurrency=1,
+            embedder_name_resolved=requested,
+            resume=False,
+            verbose=False,
+        )
+
+    @staticmethod
+    def _result() -> SimpleNamespace:
+        return SimpleNamespace(
+            repo_name="test_repo",
+            parsed_files=[],
+            source_map={},
+            graph_builder=MagicMock(),
+            repo_structure=MagicMock(),
+            git_meta_map={},
+        )
+
+    def test_real_embedder_degradation_is_recorded(self, tmp_path, monkeypatch):
+        from repowise.core.providers.embedding.base import KeylessEmbedder
+
+        monkeypatch.setattr(
+            "repowise.cli.commands.init_cmd.generation.build_embedder",
+            lambda *a, **k: KeylessEmbedder(),
+        )
+        result = self._result()
+        self._run(tmp_path, monkeypatch, result=result, requested="ollama")
+
+        reason = getattr(result, "embedder_degraded", None)
+        assert reason is not None
+        assert "ollama" in reason
+        assert "keyless" in reason
+
+    def test_keyless_default_stays_silent(self, tmp_path, monkeypatch):
+        """``mock`` is the keyless default; reaching it is not a failure."""
+        from repowise.core.providers.embedding.base import KeylessEmbedder
+
+        monkeypatch.setattr(
+            "repowise.cli.commands.init_cmd.generation.build_embedder",
+            lambda *a, **k: KeylessEmbedder(),
+        )
+        result = self._result()
+        self._run(tmp_path, monkeypatch, result=result, requested="mock")
+
+        assert getattr(result, "embedder_degraded", None) is None
+
+    def test_healthy_rebuild_stays_silent(self, tmp_path, monkeypatch):
+        """A real embedder that builds clean is not degraded."""
+        from repowise.core.providers.embedding.base import MockEmbedder
+
+        monkeypatch.setattr(
+            "repowise.cli.commands.init_cmd.generation.build_embedder",
+            lambda *a, **k: MockEmbedder(),
+        )
+        result = self._result()
+        self._run(tmp_path, monkeypatch, result=result, requested="openai")
+
+        assert getattr(result, "embedder_degraded", None) is None
