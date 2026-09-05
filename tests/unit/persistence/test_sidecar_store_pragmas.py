@@ -1,7 +1,7 @@
 """The synchronous sidecar stores must open under a contended WAL switch.
 
 Each store used to issue ``PRAGMA journal_mode=WAL`` bare, before any busy
-timeout. The switch needs a brief exclusive lock, so a reader holding an open
+timeout. The switch needs a short exclusive lock, so a reader holding an open
 transaction on the same file made every constructor raise ``database is
 locked``. That is the shape a post-commit update overlapping an editor hook
 produces, and it is why the hook could not default on until these were

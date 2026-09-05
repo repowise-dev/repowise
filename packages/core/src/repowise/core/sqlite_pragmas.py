@@ -20,7 +20,7 @@ def apply_sqlite_pragmas(conn: sqlite3.Connection, busy_timeout_ms: int) -> bool
     """Apply ``busy_timeout``, WAL and ``synchronous=NORMAL``. Never raises on WAL.
 
     The stores used to issue the WAL switch bare, before any busy timeout.
-    The switch needs a brief exclusive lock, so a concurrent reader or writer
+    The switch needs a short exclusive lock, so a concurrent reader or writer
     on the same file made the constructor raise ``database is locked`` and
     took the whole store down, at exactly the moment a post-commit update and
     an editor hook were most likely to overlap. The timeout goes first so the
