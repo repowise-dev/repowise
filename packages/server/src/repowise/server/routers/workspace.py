@@ -41,6 +41,7 @@ from repowise.server.schemas import (
     WorkspaceResponse,
     WorkspaceSyncResponse,
     WorkspaceSystemGraphResponse,
+    WorkspaceTestImpactResponse,
 )
 from repowise.server.services.module_health import read_repo_health_score
 
@@ -684,6 +685,50 @@ async def get_blast_radius(
         graph, target, max_depth=max_depth, include_behavioral=include_behavioral
     )
     return WorkspaceBlastRadiusResponse(**result.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/test-impact
+# ---------------------------------------------------------------------------
+
+
+@router.get("/test-impact", response_model=WorkspaceTestImpactResponse)
+async def get_test_impact(
+    ws_config=Depends(get_workspace_config),
+    enricher=Depends(get_cross_repo_enricher),
+    repo: str = Query(..., description="Provider repo alias the changed files belong to."),
+    file: list[str] = Query(
+        ..., description="Changed file path, relative to that repo's root. Repeatable."
+    ),
+):
+    """Which tests in the consumer repos guard a change to these provider files.
+
+    Rows carry the basis they came from: ``measured`` when a coverage map
+    recorded the test against the consumer call site, ``inferred`` when the
+    consumer's call or import graph reaches it. A link the join could not
+    follow is reported in ``unresolved`` with its reason, never dropped, so an
+    empty answer always names the state that produced it.
+
+    Shares :func:`cross_repo_tests` with the MCP tools, so the REST answer and
+    the agent answer cannot drift apart.
+    """
+    _require_workspace(ws_config)
+
+    if enricher is None:
+        return WorkspaceTestImpactResponse(summary={"reason": "no_contract_data"})
+
+    # Imported here, not at module scope: the helper pulls in the cross-repo
+    # join and holds consumer indexes open, and a single-repo server never
+    # reaches this route.
+    from repowise.server.mcp_server._test_impact import cross_repo_tests
+
+    result = await cross_repo_tests(repo, list(file))
+    if result is None:
+        return WorkspaceTestImpactResponse(summary={"reason": "no_contract_data"})
+
+    from repowise.core.workspace.test_impact import workspace_test_impact_to_dict
+
+    return WorkspaceTestImpactResponse(**workspace_test_impact_to_dict(result))
 
 
 # ---------------------------------------------------------------------------

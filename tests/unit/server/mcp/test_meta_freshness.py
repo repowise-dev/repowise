@@ -240,3 +240,62 @@ def test_no_answer_hint_names_an_external_tool() -> None:
     assert not [h for h in hints if h and "Grep" in h]
     assert "Grep" not in NO_HITS_RECOVERY_HINT
     assert "search_codebase" in NO_HITS_RECOVERY_HINT
+
+
+async def _stamp_head_commit(sha: str) -> None:
+    """Give the fixture repository an indexed commit so freshness has something
+    to report. Without it ``freshness_from_repo`` emits only the age fields, and
+    a tool that forgot to pass ``repository`` would look identical to one that
+    passed it."""
+    from sqlalchemy import update
+
+    import repowise.server.mcp_server as mcp_mod
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import Repository
+
+    async with get_session(mcp_mod._session_factory) as session:
+        await session.execute(update(Repository).values(head_commit=sha))
+
+
+@pytest.mark.asyncio
+async def test_structured_search_meta_carries_freshness(setup_mcp):
+    """A single-repo symbol search compares against one index, so it must say
+    which commit that index was built from."""
+    from repowise.server.mcp_server import search_codebase
+
+    await _stamp_head_commit(_INDEXED)
+    result = await search_codebase("AuthService", mode="symbol")
+    assert result["_meta"]["indexed_commit"] == _INDEXED[:12]
+
+
+@pytest.mark.asyncio
+async def test_execution_flows_meta_carries_freshness(setup_mcp):
+    """get_execution_flows serves traces over files of one repo, so its
+    envelope carries that repo's freshness like every other default tool."""
+    from repowise.server.mcp_server.tool_flows import get_execution_flows
+
+    await _stamp_head_commit(_INDEXED)
+    result = await get_execution_flows()
+    assert result["_meta"]["indexed_commit"] == _INDEXED[:12]
+
+
+@pytest.mark.asyncio
+async def test_execution_flows_targets_name_the_traced_files(setup_mcp, monkeypatch):
+    """A stale warning is scoped to what the response served, so the files the
+    published traces walk have to reach freshness as targets."""
+    from repowise.server.mcp_server import tool_flows
+
+    seen: list = []
+    real = tool_flows._build_meta
+
+    def spy(**kwargs):
+        seen.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(tool_flows, "_build_meta", spy)
+    await _stamp_head_commit(_INDEXED)
+    result = await tool_flows.get_execution_flows(entry_point="src/auth/service.py")
+    assert result["flows"]
+    assert result["_meta"]["indexed_commit"] == _INDEXED[:12]
+    assert seen[-1]["repository"] is not None
+    assert "src/auth/service.py" in seen[-1]["targets"]

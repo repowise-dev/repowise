@@ -473,7 +473,7 @@ export function HotspotTable({
                         {prefix && (
                           <RowActions
                             actions={[
-                              { icon: GitBranch, label: "Graph", href: `${prefix}/architecture?view=graph&node=${encodeURIComponent(h.file_path)}` },
+                              { icon: GitBranch, label: "Graph", href: `${prefix}/architecture?view=files&node=${encodeURIComponent(h.file_path)}` },
                               // `?file=` is read by nothing in the docs
                               // surface, so this used to open the repo
                               // overview while looking like it had worked.

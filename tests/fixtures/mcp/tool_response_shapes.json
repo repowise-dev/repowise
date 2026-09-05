@@ -136,9 +136,33 @@
       "source": null,
       "timing_ms": null
     },
+    "branch_overlap": {
+      "base": null,
+      "branches": [
+        {
+          "ahead": null,
+          "behind": null,
+          "branch": null,
+          "files": [
+            {
+              "basis": null,
+              "file": null,
+              "partner": null
+            }
+          ],
+          "last_commit": null
+        }
+      ],
+      "current": null,
+      "scanned": null,
+      "summary": null,
+      "total": null,
+      "truncated": null
+    },
     "change_shape": {
       "classification": null,
       "diagnostics_via": null,
+      "independent_changes": null,
       "fallback_band": null,
       "is_fix": null,
       "measures": null,

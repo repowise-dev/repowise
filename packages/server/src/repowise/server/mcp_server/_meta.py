@@ -520,6 +520,35 @@ EXHAUSTIVE_SWEEP_HINT = (
     "Grep the name; that is the one job this surface does not do."
 )
 
+# Appended to a get_answer hint when the answer graded low and the index is
+# behind live HEAD; the one place holding both signals says what to do.
+INDEX_BEHIND_LOW_CONFIDENCE_HINT = (
+    "The index is behind HEAD, so run `repowise update` and ask again before "
+    "trusting a low-confidence answer."
+)
+
+
+def completeness_line(*, bodies: int = 0, files: int = 0) -> str | None:
+    """One sentence naming the whole units this response already served.
+
+    Only ever counts complete units. A sliced body or a partial range is not a
+    unit, so the callers filter before they count and this returns ``None`` when
+    nothing whole was served.
+    """
+    bodies = max(0, int(bodies))
+    files = max(0, int(files))
+    if not bodies and not files:
+        return None
+    parts: list[str] = []
+    if bodies:
+        noun = "symbol body" if bodies == 1 else "symbol bodies"
+        parts.append(f"{bodies} {noun} served whole from live source")
+    if files:
+        noun = "file" if files == 1 else "files"
+        parts.append(f"{files} {noun} served whole")
+    closing = "do not re-open it." if bodies + files == 1 else "do not re-open them."
+    return f"Complete: {' and '.join(parts)}; {closing}"
+
 
 def answer_hint(
     confidence: str,

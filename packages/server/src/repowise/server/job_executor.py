@@ -495,6 +495,8 @@ async def execute_job(
                 repo_wiki_style=wiki_style,
                 vector_store=vector_store,
                 prior_pages=prior_pages,
+                session_factory=session_factory,
+                repo_id=repo_id,
             )
 
         # ---- Persist results -----------------------------------------------
@@ -619,6 +621,14 @@ async def execute_job(
             enricher = getattr(app_state, "cross_repo_enricher", None)
             if enricher is not None and hasattr(enricher, "reload"):
                 enricher.reload()
+                # Imported here because a single-repo server never gets this
+                # far: the contract map and the consumer indexes the join
+                # reads change together, so a reload of one invalidates both.
+                from repowise.server.mcp_server._test_impact import (
+                    close_test_impact_indexes,
+                )
+
+                await close_test_impact_indexes()
         except Exception:
             logger.debug("enricher_reload_failed", job_id=job_id, exc_info=True)
 
@@ -1153,6 +1163,8 @@ async def _incremental_page_regen(
     *,
     vector_store: Any | None = None,
     prior_pages: dict[str, Any] | None = None,
+    session_factory: Any | None = None,
+    repo_id: str | None = None,
 ) -> list:
     """Regenerate only wiki pages affected by recent changes.
 
@@ -1202,11 +1214,30 @@ async def _incremental_page_regen(
             return []
 
         cascade_budget = compute_adaptive_budget(file_diffs, result.file_count)
+
+        # Feed existing stale-page ages into the cascade so a constrained
+        # budget spends its LLM calls on the oldest stale pages rather than
+        # reordering purely by importance (issues #847 / #851). Best effort:
+        # a missing session/repo just falls back to the historical ordering.
+        stale_pages: dict[str, float] = {}
+        if session_factory is not None and repo_id is not None:
+            try:
+                from repowise.core.persistence import (
+                    get_session,
+                    get_stale_file_page_ages,
+                )
+
+                async with get_session(session_factory) as session:
+                    stale_pages = await get_stale_file_page_ages(session, repo_id)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("incremental_page_regen_stale_lookup_failed", error=str(exc))
+
         affected = detector.get_affected_pages(
             file_diffs,
             result.graph_builder.graph(),
             cascade_budget,
             pagerank=result.graph_builder.pagerank(),
+            stale_pages=stale_pages,
         )
 
         if not affected.regenerate:

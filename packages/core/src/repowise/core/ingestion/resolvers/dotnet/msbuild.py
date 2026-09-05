@@ -1,9 +1,11 @@
-"""Parse MSBuild project files (.csproj, Directory.Build.props/targets).
+"""Parse MSBuild project files (.csproj, .vbproj, Directory.Build.props/targets).
 
 Only the fields repowise actually uses are extracted: ProjectReference,
 PackageReference, RootNamespace, AssemblyName, ImplicitUsings, and
-project-level <Using Include=...> items. The parser tolerates both
-SDK-style and legacy XML (``<Project ToolsVersion="...">``).
+project-level <Using Include=...> / <Import Include=...> items. The parser
+tolerates both SDK-style and legacy XML (``<Project ToolsVersion="...">``).
+
+.vbproj carries the same MSBuild schema as .csproj, so one parser serves both.
 """
 
 from __future__ import annotations
@@ -133,7 +135,9 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
             pkg = elem.get("Include")
             if pkg:
                 project.package_references.add(pkg.strip())
-        elif tag == "Using":
+        elif tag in ("Using", "Import"):
+            # <Using Include="X"/> is the C# form, <Import Include="X"/> the VB
+            # one; MSBuild's own <Import Project="..."/> carries no Include.
             ns = elem.get("Include")
             if ns:
                 project.project_usings.add(ns.strip())
@@ -141,18 +145,37 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
     return project
 
 
+def _find_project_files(
+    repo_path: Path,
+    pattern: str,
+    *,
+    prune_nested_git: bool = True,
+    snapshot: Any | None = None,
+) -> list[Path]:
+    out: list[Path] = []
+    for proj in glob_via(snapshot, repo_path, pattern, prune_nested_git=prune_nested_git):
+        if path_has_dotnet_scan_skip_dir(proj, repo_path):
+            continue
+        out.append(proj)
+    return out
+
+
 def find_csproj_files(
     repo_path: Path, *, prune_nested_git: bool = True, snapshot: Any | None = None
 ) -> list[Path]:
     """Return all .csproj files under *repo_path*, skipping bin/obj output."""
-    out: list[Path] = []
-    for csproj in glob_via(
-        snapshot, repo_path, "*.csproj", prune_nested_git=prune_nested_git
-    ):
-        if path_has_dotnet_scan_skip_dir(csproj, repo_path):
-            continue
-        out.append(csproj)
-    return out
+    return _find_project_files(
+        repo_path, "*.csproj", prune_nested_git=prune_nested_git, snapshot=snapshot
+    )
+
+
+def find_vbproj_files(
+    repo_path: Path, *, prune_nested_git: bool = True, snapshot: Any | None = None
+) -> list[Path]:
+    """Return all .vbproj files under *repo_path*, skipping bin/obj output."""
+    return _find_project_files(
+        repo_path, "*.vbproj", prune_nested_git=prune_nested_git, snapshot=snapshot
+    )
 
 
 def path_has_dotnet_scan_skip_dir(path: Path, repo_root: Path) -> bool:

@@ -1,8 +1,14 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { ApiClientError } from "@/lib/api/client";
-import { getWorkspace, getWorkspaceContractDetail } from "@/lib/api/workspace";
-import { ContractBody, headingFor } from "./contract-body";
+import {
+  getWorkspace,
+  getWorkspaceContractDetail,
+  getWorkspaceTestImpact,
+} from "@/lib/api/workspace";
+import type { WorkspaceTestImpactResponse } from "@repowise-dev/types/workspace";
+import { contractHeading } from "@repowise-dev/ui/workspace/contract-facts";
+import { ContractBody } from "./contract-body";
 
 export const revalidate = 30;
 
@@ -15,7 +21,7 @@ export async function generateMetadata({ searchParams }: Props): Promise<Metadat
   if (!repo || !file || !id) return { title: "Contract" };
   try {
     const detail = await getWorkspaceContractDetail({ repo, file, id });
-    return { title: `${headingFor(detail.contract)} — Contract` };
+    return { title: `${contractHeading(detail.contract)} — Contract` };
   } catch {
     return { title: "Contract" };
   }
@@ -58,5 +64,27 @@ export default async function ContractDetailPage({ searchParams }: Props) {
     }
   }
 
-  return <ContractBody detail={detailResult.value} repoIds={repoIds} />;
+  const { contract } = detailResult.value;
+  let testImpact: WorkspaceTestImpactResponse | null = null;
+  let testImpactError: string | null = null;
+  // Only a provider has consumers to find tests in, and the lookup opens the
+  // consumer indexes, so a consumer contract never pays for it. It runs after
+  // the detail because the role and the file path are what it takes.
+  if (contract.role === "provider") {
+    try {
+      testImpact = await getWorkspaceTestImpact(contract.repo, [contract.file_path]);
+    } catch {
+      testImpactError =
+        "Test impact could not be read. It is answered from the consumer repositories' own indexes, and that lookup failed.";
+    }
+  }
+
+  return (
+    <ContractBody
+      detail={detailResult.value}
+      repoIds={repoIds}
+      testImpact={testImpact}
+      testImpactError={testImpactError}
+    />
+  );
 }

@@ -31,6 +31,8 @@ LanguageTag = Literal[
     "cpp",
     "c",
     "csharp",
+    # Razor / Blazor markup, projected to C# via sfc_source (byte-scan).
+    "razor",
     "ruby",
     "php",
     "swift",
@@ -39,6 +41,8 @@ LanguageTag = Literal[
     "luau",
     "dart",
     "pascal",
+    "gdscript",
+    "vbnet",
     # Passthrough code languages (no AST parser yet — empty ParsedFile,
     # files enter the graph via the generic resolver). Before these tags
     # existed the traverser silently skipped such files as unknown, so e.g.
@@ -74,6 +78,12 @@ LanguageTag = Literal[
     "xaml",
     # Markup with no symbols, but <script src>/<link href> are real edges.
     "html",
+    # Lightweight: qmldir-declared module imports and quoted references.
+    "qml",
+    # Godot .tscn/.tres/.escn + project.godot: data with no symbols, but
+    # [ext_resource path=...] and [autoload] are how a Godot project reaches
+    # its scripts at all.
+    "godot_resource",
     "unknown",
 ]
 

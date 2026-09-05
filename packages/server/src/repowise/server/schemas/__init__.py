@@ -145,6 +145,8 @@ from .graph import (
     ModuleGraphResponse,
     ModuleNodeResponse,
     NodeSearchResult,
+    PopulationBreakdown,
+    UnclusteredFiles,
 )
 from .health import (
     CoordinatorHealthResponse,
@@ -268,7 +270,11 @@ from .workspace import (
     WorkspaceSystemEdge,
     WorkspaceSystemGraphResponse,
     WorkspaceSystemNode,
+    WorkspaceTestImpactFile,
+    WorkspaceTestImpactResponse,
+    WorkspaceTestRecommendation,
     WorkspaceUnmatchedConsumer,
+    WorkspaceUnresolvedLink,
 )
 from .zoom import (
     ZoomMapResponse,
@@ -430,6 +436,7 @@ __all__ = [
     "PageSummaryResponse",
     "PageVersionResponse",
     "Paginated",
+    "PopulationBreakdown",
     "ProviderEntry",
     "ProviderStatusResponse",
     "ProviderValidationResponse",
@@ -460,6 +467,7 @@ __all__ = [
     "SymbolNodeSummary",
     "SymbolResponse",
     "TransitiveEntry",
+    "UnclusteredFiles",
     "UpdateMcpToolsRequest",
     "VersionResponse",
     "WebhookResponse",
@@ -493,7 +501,11 @@ __all__ = [
     "WorkspaceSystemEdge",
     "WorkspaceSystemGraphResponse",
     "WorkspaceSystemNode",
+    "WorkspaceTestImpactFile",
+    "WorkspaceTestImpactResponse",
+    "WorkspaceTestRecommendation",
     "WorkspaceUnmatchedConsumer",
+    "WorkspaceUnresolvedLink",
     "ZoomMapResponse",
     "ZoomMetricsResponse",
     "ZoomNodeResponse",

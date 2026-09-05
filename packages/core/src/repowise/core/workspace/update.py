@@ -273,6 +273,15 @@ def check_repo_staleness(
         return True, current_head, 0
 
     if current_head == last_commit:
+        # Same reconciliation as the single-repo update: a page can be stale
+        # with HEAD unmoved, and only an update clears it.
+        try:
+            from repowise.core.persistence import load_stale_structural_file_paths
+
+            if load_stale_structural_file_paths(repo_path):
+                return True, current_head, 0
+        except Exception:
+            _log.debug("stale page probe failed for %s", repo_path, exc_info=True)
         return False, current_head, 0
 
     behind = count_commits_between(repo_path, last_commit, current_head)

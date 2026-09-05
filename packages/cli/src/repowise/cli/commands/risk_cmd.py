@@ -26,12 +26,13 @@ Examples:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import click
 from rich.table import Table
 
 from repowise.cli.commands import _tool_adapters as _ta
-from repowise.cli.helpers import console, err_console
+from repowise.cli.helpers import console, err_console, repo_index_session, run_async
 from repowise.cli.output import emit_json, format_option, full_option
 from repowise.core.analysis.change_risk import (
     change_risk_payload,
@@ -384,6 +385,65 @@ def _print_records(label: str, values: list, key: str, truncated: int = 0) -> No
         console.print(f"    [dim]... and {truncated} more[/dim]")
 
 
+def _independent_changes_for(repo_path: str, result, revspec: str | None) -> dict | None:
+    """How this diff splits, per the index, or ``None`` when it cannot be read."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core import git_refs
+    from repowise.core.analysis.independent_changes import independent_changes
+
+    paths = [path for path, _ in result.features.file_churn]
+    if len(paths) < 2:
+        return None
+    # A diff names paths from the repository root, so a command run in a
+    # subdirectory has to score against that root, not against the given path.
+    root = Path(git_refs.toplevel(repo_path) or repo_path).resolve()
+    # One commit touching two files links them harder than any edge does. Read
+    # git before the store opens: no subprocess while a connection is held.
+    sets = git_refs.commit_file_sets(str(root), revspec)
+
+    async def read() -> dict | None:
+        found = None
+        async with repo_index_session(root) as opened:
+            if opened is not None:
+                session, repo_id = opened
+                try:
+                    found = await independent_changes(session, repo_id, paths, commit_sets=sets)
+                except (SQLAlchemyError, OSError, LookupError):
+                    # An index written by an older version can fail the query itself.
+                    return None
+        return found.to_dict() if found else None
+
+    return run_async(read())
+
+
+#: How many ungrouped names the table prints. The summary already states the
+#: count, so a docs-heavy diff need not spell out hundreds of paths.
+_UNGROUPED_SHOWN = 10
+
+
+def _print_independent_changes(block: dict) -> None:
+    """The groups, plainly: no score, no percentage, no adjective."""
+    from rich.markup import escape
+
+    console.print(f"\n[bold]{escape(str(block.get('summary') or ''))}[/bold]")
+    for number, group in enumerate(block.get("groups") or [], start=1):
+        files = [str(f) for f in group.get("files") or []]
+        plural = "" if len(files) == 1 else "s"
+        console.print(f"  {number}. {len(files)} file{plural}: {escape(', '.join(files))}")
+        bridging = [str(f) for f in group.get("bridging_files") or []]
+        if bridging:
+            # Naming these files says where the group would split if one moved out.
+            console.print(f"     [dim]held together by: {escape(', '.join(bridging))}[/dim]")
+    ungrouped = [str(f) for f in block.get("ungrouped_files") or []]
+    if ungrouped:
+        shown = escape(", ".join(ungrouped[:_UNGROUPED_SHOWN]))
+        cut = len(ungrouped) - _UNGROUPED_SHOWN
+        more = f" and {cut} more" if cut > 0 else ""
+        console.print(f"  Left out of the grouping: {shown}{more}")
+    console.print(f"  [dim]Basis: {escape(str(block.get('basis') or ''))}.[/dim]")
+
+
 def _ordinal(n: int) -> str:
     """1 -> '1st', 2 -> '2nd', 93 -> '93rd', 11 -> '11th'."""
     suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
@@ -501,7 +561,11 @@ def risk_command(
         )
 
     if fmt == "json":
-        click.echo(json.dumps(change_risk_payload(result, scales=True), indent=2))
+        payload = change_risk_payload(result, scales=True)
+        groups = _independent_changes_for(repo_path, result, revspec)
+        if groups:
+            payload["independent_changes"] = groups
+        click.echo(json.dumps(payload, indent=2))
         return
 
     # Lead with the benchmarked population-relative authority. Without a usable
@@ -586,3 +650,7 @@ def risk_command(
             f"[{push_color}]{sign}{d.contribution:.2f}[/{push_color}]",
         )
     console.print(table)
+
+    groups = _independent_changes_for(repo_path, result, revspec)
+    if groups:
+        _print_independent_changes(groups)

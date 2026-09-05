@@ -304,6 +304,8 @@ async def persist_graph_nodes(
     repo_id: str,
     graph_builder: Any,
     ep_scores: dict[str, float] | None = None,
+    *,
+    timings: Any | None = None,
 ) -> None:
     """Persist file- and symbol-level graph nodes with full centrality metrics.
 
@@ -316,25 +318,30 @@ async def persist_graph_nodes(
         batch_upsert_graph_node_membership,
         batch_upsert_graph_nodes,
     )
+    from repowise.core.pipeline.phase_timing import timed
 
     graph = graph_builder.graph()
-    pr = graph_builder.pagerank()
-    bc = graph_builder.betweenness_centrality()
-    sym_pr = graph_builder.symbol_pagerank()
-    sym_bc = graph_builder.symbol_betweenness_centrality()
-    cd = graph_builder.community_detection()
-    sc = graph_builder.symbol_communities()
-    ci = graph_builder.community_info()
+    with timed(timings, "persist.graph_nodes.metrics"):
+        pr = graph_builder.pagerank()
+        bc = graph_builder.betweenness_centrality()
+        sym_pr = graph_builder.symbol_pagerank()
+        sym_bc = graph_builder.symbol_betweenness_centrality()
+        cd = graph_builder.community_detection()
+        sc = graph_builder.symbol_communities()
+        ci = graph_builder.community_info()
     # ``None`` means "derive scores from the graph" (the incremental update
     # path passes nothing). An explicit ``{}`` means "no scores" and is left
     # untouched. Without this, every ``update`` re-upserted symbol nodes with
     # empty community_meta and wiped the entry_point_scores written at init,
     # leaving get_execution_flows / the dashboard panel permanently empty.
     if ep_scores is None:
-        ep_scores = _derive_entry_point_scores(graph_builder)
+        with timed(timings, "persist.graph_nodes.entry_points"):
+            ep_scores = _derive_entry_point_scores(graph_builder)
 
     bt_commits = _betweenness_commits(graph_builder)
 
+    timings_rows = timed(timings, "persist.graph_nodes.rows")
+    timings_rows.__enter__()
     nodes = []
     for node_id in graph.nodes:
         data = graph.nodes[node_id]
@@ -375,6 +382,7 @@ async def persist_graph_nodes(
                 community_meta = {
                     "label": comm_info.label,
                     "cohesion": comm_info.cohesion,
+                    "conductance": comm_info.conductance,
                 }
         elif node_type == "symbol":
             sym_cid = sc.get(node_id)
@@ -399,15 +407,20 @@ async def persist_graph_nodes(
                 }
             )
         nodes.append(node_dict)
+    timings_rows.__exit__(None, None, None)
 
     if nodes:
-        await batch_upsert_graph_nodes(session, repo_id, nodes)
+        with timed(timings, "persist.graph_nodes.upsert"):
+            await batch_upsert_graph_nodes(session, repo_id, nodes)
 
     # Materialize the file-level metrics snapshot (graph_metrics) so large
     # repos can serve metric reads from SQL without recomputing the NetworkX
     # centrality kernels. Additive to graph_nodes; never changes node rows.
     try:
-        await batch_upsert_graph_metrics(session, repo_id, graph_builder.file_metrics_snapshot())
+        with timed(timings, "persist.graph_nodes.snapshots"):
+            await batch_upsert_graph_metrics(
+                session, repo_id, graph_builder.file_metrics_snapshot()
+            )
     except Exception as exc:  # materialization is non-load-bearing
         logger.warning("graph_metrics_materialize_skipped", error=str(exc))
 
@@ -415,9 +428,10 @@ async def persist_graph_nodes(
     # queryable rows (graph_node_membership). Feeds the break-cycle /
     # move-method refactoring surfaces; non-load-bearing like graph_metrics.
     try:
-        await batch_upsert_graph_node_membership(
-            session, repo_id, graph_builder.node_membership_snapshot()
-        )
+        with timed(timings, "persist.graph_nodes.snapshots"):
+            await batch_upsert_graph_node_membership(
+                session, repo_id, graph_builder.node_membership_snapshot()
+            )
     except Exception as exc:  # materialization is non-load-bearing
         logger.warning("graph_node_membership_materialize_skipped", error=str(exc))
 
@@ -1545,6 +1559,67 @@ async def _analyzed_commit(session: Any, repo_id: str) -> str | None:
         return None
 
 
+async def snapshot_health_from_store(session: Any, repo_id: str) -> None:
+    """Append a ``HealthSnapshot`` built from the repository's stored rows.
+
+    One writer for the full index and the incremental update. The full path
+    used to snapshot from the in-memory report and the update path never
+    snapshotted at all, so ``health --trend`` and the CLAUDE.md trend only
+    moved on a full re-index however many updates ran in between. A partial
+    report cannot be snapshotted directly, because it holds the changed files
+    and the snapshot has to describe the whole repository; the store after the
+    write holds exactly that, on both paths.
+
+    Best-effort: a snapshot that fails to write is logged and never fails the
+    run that produced the rows it describes.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.analysis.health.scoring import compute_kpis
+    from repowise.core.analysis.health.trends import snapshot_file_maps
+    from repowise.core.persistence.crud import get_hotspot_file_paths, save_health_snapshot
+    from repowise.core.persistence.models import HealthFileMetric, HealthFinding
+
+    try:
+        metrics = list(
+            (
+                await session.execute(
+                    select(HealthFileMetric).where(HealthFileMetric.repository_id == repo_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not metrics:
+            return
+        findings = list(
+            (
+                await session.execute(
+                    select(HealthFinding).where(
+                        HealthFinding.repository_id == repo_id,
+                        HealthFinding.status == "open",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        kpis = compute_kpis(metrics, await get_hotspot_file_paths(session, repo_id))
+        scores_map, deductions_map = snapshot_file_maps(metrics, findings)
+        await save_health_snapshot(
+            session,
+            repo_id,
+            hotspot_health=float(kpis.get("hotspot_health", 10.0)),
+            average_health=float(kpis.get("average_health", 10.0)),
+            worst_performer_path=kpis.get("worst_performer_path"),
+            worst_performer_score=kpis.get("worst_performer_score"),
+            per_file_scores=scores_map,
+            per_file_deductions=deductions_map,
+        )
+    except Exception as exc:
+        logger.warning("health_snapshot_skipped", error=str(exc))
+
+
 async def save_full_health_report(
     session: Any,
     repo_id: str,
@@ -1631,13 +1706,11 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     decisions/governance are idempotent. Intended to run once the analysis
     phase has fully completed.
     """
-    from repowise.core.analysis.health.trends import snapshot_file_maps
     from repowise.core.persistence.crud import (
         bulk_upsert_decisions,
         recompute_decision_staleness,
         save_coverage_files,
         save_dead_code_findings,
-        save_health_snapshot,
         upsert_git_function_blame_bulk,
     )
 
@@ -1668,24 +1741,9 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
         fn_blame_rows = getattr(hr, "function_blame_rows", None)
         if fn_blame_rows:
             await upsert_git_function_blame_bulk(session, repo_id, fn_blame_rows)
-        # Snapshot the run for trend tracking (rolling delete inside).
-        kpis = hr.kpis or {}
-        try:
-            scores_map, deductions_map = snapshot_file_maps(
-                hr.metrics or [], hr.findings or []
-            )
-            await save_health_snapshot(
-                session,
-                repo_id,
-                hotspot_health=float(kpis.get("hotspot_health", 10.0)),
-                average_health=float(kpis.get("average_health", 10.0)),
-                worst_performer_path=kpis.get("worst_performer_path"),
-                worst_performer_score=kpis.get("worst_performer_score"),
-                per_file_scores=scores_map,
-                per_file_deductions=deductions_map,
-            )
-        except Exception as _snap_err:
-            logger.warning("health_snapshot_skipped", error=str(_snap_err))
+        # Snapshot the run for trend tracking (rolling delete inside). From
+        # the rows just written, by the same writer the update path uses.
+        await snapshot_health_from_store(session, repo_id)
 
     # ---- Decision records ----------------------------------------------------
     # One contributor: the multi-source extractor. A second read used to fold

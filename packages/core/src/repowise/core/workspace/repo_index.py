@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
     from pathlib import Path
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -83,9 +84,19 @@ class RepoIndex:
     dialect may call one from the worker thread it runs in.
     """
 
-    def __init__(self, alias: str, repo_path: Path, session: AsyncSession, engine: Any) -> None:
+    def __init__(
+        self,
+        alias: str,
+        repo_path: Path,
+        session: AsyncSession,
+        engine: Any,
+        *,
+        # Required: an empty id makes every repository-scoped query return nothing.
+        repo_id: str,
+    ) -> None:
         self.alias = alias
         self.repo_path = repo_path
+        self.repo_id = repo_id
         self._session = session
         self._engine = engine
         self._by_file: dict[str, list[IndexedSymbol]] = {}
@@ -164,6 +175,11 @@ class RepoIndex:
             )
 
     # -- Public API --------------------------------------------------------
+
+    @property
+    def session(self) -> AsyncSession:
+        """The connection the index holds; reachability queries run on it too."""
+        return self._session
 
     def symbols_for_file(self, rel_path: str) -> list[IndexedSymbol]:
         """Symbols declared in *rel_path* (POSIX, repo-relative), outermost first."""
@@ -292,7 +308,7 @@ async def open_repo_index(alias: str, repo_path: Path) -> RepoIndex | None:
             ).scalar_one_or_none()
         if repo is None:
             raise LookupError(f"No repository row in {repo_path}")
-        index = RepoIndex(alias, repo_path, session, engine)
+        index = RepoIndex(alias, repo_path, session, engine, repo_id=repo.id)
         await index._load(repo.id)
         ok = True
     finally:
@@ -304,9 +320,17 @@ async def open_repo_index(alias: str, repo_path: Path) -> RepoIndex | None:
     return index
 
 
-async def open_workspace_index(ws_config: Any, workspace_root: Path) -> WorkspaceIndex:
-    """Open every indexed repo in the workspace. A repo that fails is skipped."""
-    entries = list(ws_config.repos)
+async def open_workspace_index(
+    ws_config: Any,
+    workspace_root: Path,
+    *,
+    aliases: Collection[str] | None = None,
+) -> WorkspaceIndex:
+    """Open every indexed repo in the workspace. A repo that fails is skipped.
+
+    *aliases*, when given, restricts the open to those repos.
+    """
+    entries = [e for e in ws_config.repos if aliases is None or e.alias in aliases]
     opened = await asyncio.gather(
         *(
             open_repo_index(e.alias, (workspace_root / e.path).resolve())

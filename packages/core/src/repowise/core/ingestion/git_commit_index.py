@@ -19,6 +19,7 @@ input file, not retro-fittable from a repo-wide log.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
@@ -75,6 +76,111 @@ def load_git_ai_note_agents(repo: object, commit_limit: int) -> dict[str, str]:
     return agents
 
 
+#: Cache file name under the repository's ``.repowise`` directory, and the
+#: shape version it carries. Bump the version when ``_LOG_FORMAT`` or the
+#: record layout changes, so an older cache is re-walked rather than misread.
+_WINDOW_CACHE_NAME = "commit_window_cache.json"
+_WINDOW_CACHE_VERSION = 1
+
+
+def _record_ts(record: str) -> int:
+    """The committer timestamp of one raw record, or 0 when unparseable."""
+    from .git_indexer import _FIELD_SEP
+
+    parts = record.split(_FIELD_SEP, 6)
+    try:
+        return int(parts[5])
+    except (IndexError, ValueError):
+        return 0
+
+
+def _window_records(repo: object, depth: int, cache_dir: Path | None) -> list[str]:
+    """The raw log records of the newest ``depth`` non-merge commits.
+
+    Git computes ``--numstat`` for every commit in the window, and on a
+    repository with wide commits that walk costs seconds however few commits
+    are new. With *cache_dir* the records from the last walk are kept beside
+    the index, keyed by the HEAD they were taken at, and the next call asks git
+    only for ``cached_head..HEAD``. The merged list is ordered the way the
+    full walk orders it (committer time, newest first) and cut to ``depth``,
+    so the parse below sees the same records a fresh walk would produce.
+
+    A cached HEAD that is not an ancestor of the current one (a rebase, a
+    reset) or a cache of another depth or version is discarded and the full
+    walk runs. Every failure on the cache path falls back to the full walk;
+    the cache can only ever save time, never change the answer.
+    """
+    import json
+
+    from .git_indexer import _LOG_FORMAT, _RECORD_SEP
+
+    def _full_walk() -> list[str]:
+        raw = repo.git.log(  # type: ignore[attr-defined]
+            f"-{depth}", "--numstat", "--no-merges", f"--format={_LOG_FORMAT}"
+        )
+        return [rec for rec in raw.split(_RECORD_SEP) if rec.strip()]
+
+    if cache_dir is None:
+        return _full_walk()
+
+    cache_path = Path(cache_dir) / _WINDOW_CACHE_NAME
+    try:
+        head = repo.head.commit.hexsha  # type: ignore[attr-defined]
+    except Exception:
+        return _full_walk()
+
+    records: list[str] | None = None
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        if (
+            cached.get("version") == _WINDOW_CACHE_VERSION
+            and cached.get("depth") == depth
+            and isinstance(cached.get("records"), list)
+        ):
+            cached_head = str(cached.get("head") or "")
+            if cached_head == head:
+                records = list(cached["records"])
+            elif cached_head:
+                # Raises when the cached head is unknown to this repository or
+                # not behind HEAD, which is exactly when the cache is stale.
+                repo.git.merge_base("--is-ancestor", cached_head, head)  # type: ignore[attr-defined]
+                raw = repo.git.log(  # type: ignore[attr-defined]
+                    f"{cached_head}..{head}",
+                    "--numstat",
+                    "--no-merges",
+                    f"--format={_LOG_FORMAT}",
+                )
+                fresh = [rec for rec in raw.split(_RECORD_SEP) if rec.strip()]
+                merged = fresh + list(cached["records"])
+                # Stable, so a fresh record stays ahead of a cached one at the
+                # same second, which is where the full walk puts it too.
+                merged.sort(key=_record_ts, reverse=True)
+                records = merged[:depth]
+    except Exception:
+        records = None
+
+    if records is None:
+        records = _full_walk()
+
+    try:
+        from repowise.core.fsutils import atomic_write_text
+
+        atomic_write_text(
+            cache_path,
+            json.dumps(
+                {
+                    "version": _WINDOW_CACHE_VERSION,
+                    "head": head,
+                    "depth": depth,
+                    "records": records,
+                }
+            ),
+        )
+    except Exception as exc:
+        logger.debug("commit_window_cache_write_failed", error=str(exc))
+    return records
+
+
 def load_commit_index(
     repo: object,
     commit_limit: int,
@@ -84,6 +190,7 @@ def load_commit_index(
     since_ts: int | None = None,
     provenance_classifier: object | None = None,
     trace_index: object | None = None,
+    cache_dir: Path | None = None,
 ) -> dict[str, list[_CommitRec]]:
     """Bucket every commit in the recent history by the files it touched.
 
@@ -121,14 +228,17 @@ def load_commit_index(
     pattern registry; callers with repo-local pattern extensions pass the
     config-aware instance instead.
 
+    *cache_dir*, when given, keeps the window's raw records between runs so
+    only the commits since the last walk are asked of git (see
+    :func:`_window_records`). Ignored with *since_ts*, whose own bound already
+    keeps that walk short.
+
     Failures (git unavailable, corrupt log output, etc.) return an
     empty dict so the caller can fall back to per-file indexing.
     """
     # Imported here to avoid a circular import — these live in git_indexer's
     # records module and this module is imported from there.
     from .git_indexer import (
-        _LOG_FORMAT,
-        _RECORD_SEP,
         _CommitRec,
         _extract_rename_paths,
         _parse_commit_record,
@@ -172,17 +282,12 @@ def load_commit_index(
             return {}
 
     try:
-        raw = repo.git.log(  # type: ignore[attr-defined]
-            f"-{depth}",
-            "--numstat",
-            "--no-merges",
-            f"--format={_LOG_FORMAT}",
-        )
+        records = _window_records(repo, depth, cache_dir if since_ts is None else None)
     except Exception as exc:
         logger.warning("repo_commit_index_failed", error=str(exc))
         return {}
 
-    if not raw:
+    if not records:
         return {}
 
     # git-ai authorship notes for this window (``{}`` unless the repo uses them).
@@ -201,9 +306,7 @@ def load_commit_index(
     # Split on the NUL record separator rather than newlines: commit bodies
     # (``%b``) are multi-line, so a line-based scan would mistake body lines
     # for numstat rows. The first chunk before the leading separator is empty.
-    for record in raw.split(_RECORD_SEP):
-        if not record.strip():
-            continue
+    for record in records:
         parsed = _parse_commit_record(record)
         if parsed is None:
             continue

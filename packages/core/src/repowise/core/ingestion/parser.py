@@ -45,10 +45,13 @@ from .extractors import (
     extract_module_docstring,
     extract_symbol_docstring,
     node_text,
+    refine_elixir_call_kind,
+    refine_fsharp_type_kind,
     refine_go_type_kind,
     refine_kotlin_class_kind,
     refine_pascal_type_kind,
 )
+from .extractors.bindings.elixir import elixir_import_modules
 from .extractors.bindings.python import expand_bare_relative_imports
 from .extractors.bindings.ts_js import (
     declarator_binds_callable,
@@ -80,11 +83,27 @@ from .parser_helpers import (
     _classify_param_origin,
     _collect_error_nodes,
     _count_arguments,
+    _dedupe_objc_interface_symbols,
     _dedupe_pascal_interface_symbols,
+    _elixir_call_is_definitional,
+    _elixir_is_template_definition,
+    _elixir_module_parent,
+    _elixir_symbol_name,
     _find_enclosing_symbol,
+    _fsharp_binding_end_line,
+    _fsharp_binding_has_params,
+    _fsharp_binding_is_nested,
+    _fsharp_parent_is_type,
+    _fsharp_parent_name,
     _has_callable_ancestor,
     _head_type_identifier,
     _is_async_node,
+    _objc_call_is_block_variable,
+    _objc_container_node,
+    _objc_container_parent,
+    _objc_is_macro_enum,
+    _objc_message_selector,
+    _objc_symbol_name,
     _qualified_cpp_parent,
     _qualified_pascal_parent,
     _run_query,
@@ -942,7 +961,16 @@ class ASTParser:
         grammar_tag = "tsx" if lang == "typescript" and file_info.path.endswith(".tsx") else lang
         language = _get_language(grammar_tag)
 
-        if config is None or language is None:
+        # tree-sitter-fsharp ships a second grammar (``language_signature``)
+        # for .fsi signature files, and a spec loads exactly one. Read with
+        # the implementation grammar, a signature file's ``val`` and member
+        # signatures land in ERROR recovery, which hoists whatever the
+        # recovery invents into the symbol list. The regex tier still gives
+        # these files their ``open`` imports, which is all a signature file
+        # contributes that another file does not also state.
+        signature_file = lang == "fsharp" and file_info.path.endswith(".fsi")
+
+        if config is None or language is None or signature_file:
             if config is not None and language is None and lang not in _MISSING_GRAMMAR_REPORTED:
                 # Once per language, not once per file: the fact is about the
                 # environment, and it does not become truer on the four
@@ -1120,9 +1148,14 @@ class ASTParser:
         symbols: list[Symbol] = []
         seen: set[tuple[int, str]] = set()  # (start_line, name) — dedup decorated dupes
         # Parallel to ``symbols`` (same indices) -- only populated/consumed
-        # for Pascal, to dedupe interface-declaration vs. implementation
-        # method pairs after the loop. See _dedupe_pascal_interface_symbols.
+        # for Pascal and Objective-C, to dedupe interface-declaration vs.
+        # implementation method pairs after the loop. See
+        # _dedupe_pascal_interface_symbols / _dedupe_objc_interface_symbols.
         node_types: list[str] = []
+        # Also parallel to ``symbols``, Objective-C only: which of @interface /
+        # @implementation / @protocol declared each member, so a protocol's
+        # method is never deduped against a same-named class method.
+        objc_container_kinds: list[str | None] = []
 
         # Deferred-export names (``export { x }`` / ``export default x``),
         # computed once per file for the TS/JS visibility refinement.
@@ -1232,6 +1265,26 @@ class ASTParser:
             if not name:
                 continue
 
+            if file_info.language == "elixir":
+                # A `def` inside `quote do ... end` is macro body, not a
+                # definition of the module that writes it.
+                if _elixir_is_template_definition(def_node, src):
+                    continue
+                # `defimpl Proto, for: Type` is named for the module the
+                # compiler generates, not for the protocol alone.
+                name = _elixir_symbol_name(def_node, name, src)
+
+            elif file_info.language == "objectivec":
+                # `typedef NS_ENUM(NSInteger, Kind) { ... }` has no grammar
+                # rule, so only its enum *cases* survive as declarators and
+                # each would become a symbol named as though it were the type.
+                if _objc_is_macro_enum(def_node, src):
+                    continue
+                # A method is named by its whole selector
+                # (`initWithName:age:`), which no single node holds, and a
+                # category by the class it extends plus its own name.
+                name = _objc_symbol_name(def_node, name, src)
+
             export_type = cpp_export_type_defs.get(def_node.id)
             if export_type is not None and name != export_type.name:
                 # The ordinary struct/class query sees the same specifier, but
@@ -1278,6 +1331,25 @@ class ASTParser:
             ):
                 continue
 
+            # F#: a ``let`` nested in another binding's body has the same node
+            # shape as a top-level one, so the ancestor filter above cannot
+            # see it -- what it captures is the binding's left-hand side, and
+            # a nested binding's left-hand side has no callable ancestor
+            # either. A ``let`` inside a type body is a field and stays.
+            if file_info.language == "fsharp" and node_type in (
+                "function_declaration_left",
+                "value_declaration_left",
+            ):
+                if _fsharp_binding_is_nested(def_node):
+                    continue
+                # A value binding that carries parameter patterns beside its
+                # name is a function the grammar reparsed as a value because
+                # of its return-type annotation.
+                if node_type == "value_declaration_left" and _fsharp_binding_has_params(
+                    def_node
+                ):
+                    kind = "function"
+
             # Refine "struct" kind for Go type_spec (check if struct or interface body)
             if kind == "struct" and config.parent_extraction == "receiver":
                 kind = refine_go_type_kind(def_node, src)
@@ -1297,6 +1369,23 @@ class ASTParser:
             if kind == "class" and file_info.language == "pascal" and def_node.type == "declType":
                 kind = refine_pascal_type_kind(def_node)
 
+            # Elixir: every definition is a ``call``, so the node type cannot
+            # name the kind and the config maps it to a deliberately
+            # non-callable placeholder (see refine_elixir_call_kind). The
+            # keyword in the call's target is what actually says what was
+            # defined.
+            if file_info.language == "elixir" and def_node.type == "call":
+                kind = refine_elixir_call_kind(def_node, src)
+
+            # F# writes a class, a struct and an interface with the same
+            # ``anon_type_defn`` node; only the body says which it is.
+            if (
+                kind == "class"
+                and file_info.language == "fsharp"
+                and def_node.type == "anon_type_defn"
+            ):
+                kind = refine_fsharp_type_kind(def_node)
+
             # Dart: a function is a ``function_signature`` whose BODY is a
             # sibling ``function_body`` node (members wrap the signature in
             # ``method_signature``). Two consequences the generic path can't
@@ -1308,6 +1397,15 @@ class ASTParser:
             end_line = def_node.end_point[0] + 1
             if export_type is not None:
                 end_line = export_type.range_node.end_point[0] + 1
+            # F#: the captured node is the binding's left-hand side, so its
+            # own span stops at the parameter list. Extend it over the body
+            # (and any return-type annotation between the two) or every call
+            # in the body is attributed to whatever encloses the binding.
+            if file_info.language == "fsharp" and node_type in (
+                "function_declaration_left",
+                "value_declaration_left",
+            ):
+                end_line = _fsharp_binding_end_line(def_node)
             if file_info.language == "dart" and node_type in (
                 "function_signature",
                 "getter_signature",
@@ -1450,6 +1548,12 @@ class ASTParser:
                         break
                     ancestor = ancestor.parent
 
+            # F#: no type node carries a ``name`` field -- the name hangs off
+            # a ``type_name`` child -- so the generic walk finds the ancestor
+            # and then reads nothing off it.
+            if parent_name is None and file_info.language == "fsharp":
+                parent_name = _fsharp_parent_name(def_node, src)
+
             # C/C++ qualified definitions: ``void Foo::method() { … }``
             # carries the class as the scope of a ``qualified_identifier``
             # parent of the name node. Without this resolution, every
@@ -1467,14 +1571,31 @@ class ASTParser:
             if parent_name is None and file_info.language == "pascal" and name_nodes:
                 parent_name = _qualified_pascal_parent(name_nodes[0], src)
 
+            # Elixir: the enclosing ``defmodule`` is a ``call`` with no
+            # ``name`` field for the generic nesting walk to read, so the
+            # module name has to be dug out of its first argument.
+            if parent_name is None and file_info.language == "elixir":
+                parent_name = _elixir_module_parent(def_node, src)
+
+            # Objective-C: an @interface / @implementation / @protocol names
+            # itself with a bare first identifier and no ``name`` field, so
+            # the nesting walk above finds the right ancestor and reads
+            # nothing off it.
+            if parent_name is None and file_info.language == "objectivec":
+                parent_name = _objc_container_parent(def_node, config.parent_class_types, src)
+
             # A ``field_declaration`` cannot occur outside a class body, so a
             # missing parent means the class did not parse. Grammar recovery,
             # not a member function.
             if node_type == "function_declarator" and parent_name is None:
                 continue
 
-            # Upgrade function → method when a parent class is detected
-            if parent_name and kind == "function":
+            # Upgrade function → method when a parent class is detected.
+            # F#: a nested module is a parent too (for id uniqueness), but it
+            # is not a type, so a `let` inside one stays a function.
+            if parent_name and kind == "function" and (
+                file_info.language != "fsharp" or _fsharp_parent_is_type(def_node)
+            ):
                 kind = "method"
 
             # Build signature
@@ -1525,9 +1646,18 @@ class ASTParser:
                 )
             )
             node_types.append(node_type)
+            if file_info.language == "objectivec":
+                container = _objc_container_node(def_node, config.parent_class_types)
+                objc_container_kinds.append(container.type if container else None)
 
         if file_info.language == "pascal":
             symbols = _dedupe_pascal_interface_symbols(symbols, node_types)
+
+        # A .m file routinely declares its private methods in a class
+        # extension and defines them below in the @implementation, which
+        # builds each symbol id twice in one file.
+        if file_info.language == "objectivec":
+            symbols = _dedupe_objc_interface_symbols(symbols, node_types, objc_container_kinds)
 
         return symbols
 
@@ -1584,6 +1714,7 @@ class ASTParser:
         imports: list[Import] = []
         seen_raws: set[str] = set()
         seen_pascal_units: set[str] = set()
+        seen_elixir_modules: set[str] = set()
 
         for capture_dict in matches:
             stmt_nodes = capture_dict.get("import.statement", [])
@@ -1645,6 +1776,69 @@ class ASTParser:
                             is_reexport=False,
                         )
                     )
+                continue
+
+            # Elixir: `alias Foo.{Bar, Baz}` names two modules in one
+            # statement, so dedup by raw statement text (below) would drop all
+            # but the first. Deduped by module path instead, which is also
+            # what makes a module aliased twice in one file one dependency.
+            if file_info.language == "elixir":
+                raw = _node_text(stmt_node, src).split("\n", 1)[0].strip()
+                directive_node = stmt_node.child_by_field_name("target")
+                directive = _node_text(directive_node, src).strip() if directive_node else ""
+                for module_path in elixir_import_modules(module_nodes[0], src):
+                    if module_path in seen_elixir_modules:
+                        continue
+                    seen_elixir_modules.add(module_path)
+                    imports.append(
+                        Import(
+                            raw_statement=raw,
+                            # `import Foo` pulls in every public function;
+                            # alias/require/use bind the module itself, which
+                            # is the same wildcard sentinel the regex tier
+                            # writes for this language.
+                            module_path=module_path,
+                            imported_names=["*"] if directive == "import" else [],
+                            is_relative=False,
+                            resolved_file=None,
+                            bindings=[],
+                            is_reexport=False,
+                        )
+                    )
+                continue
+
+            # F#: `open Foo.Bar` binds every public name in Foo.Bar, which is
+            # the wildcard sentinel this codebase already uses -- and which
+            # the call resolver reads to decide which imports a bare name may
+            # be looked up in (F# bare names are lexically scoped).
+            # `open type Foo.Bar.Baz` binds a TYPE's static members instead,
+            # so the module the file depends on is the path holding the type.
+            if file_info.language == "fsharp":
+                raw = _node_text(stmt_node, src).strip()
+                if raw in seen_raws:
+                    continue
+                seen_raws.add(raw)
+                module_path = _node_text(module_nodes[0], src).strip()
+                if not module_path:
+                    continue
+                names: list[str] = ["*"]
+                if any(child.type == "type" for child in stmt_node.children):
+                    head, _, type_name = module_path.rpartition(".")
+                    if head:
+                        module_path, names = head, [type_name]
+                    else:
+                        names = []
+                imports.append(
+                    Import(
+                        raw_statement=raw,
+                        module_path=module_path,
+                        imported_names=names,
+                        is_relative=False,
+                        resolved_file=None,
+                        bindings=[],
+                        is_reexport=False,
+                    )
+                )
                 continue
 
             raw = _node_text(stmt_node, src).strip()
@@ -1876,13 +2070,49 @@ class ASTParser:
             if not target_name:
                 continue
 
+            # Objective-C: a message send binds one `method:` child per
+            # keyword, so `[view setTitle:t forState:s]` matches the one
+            # query pattern twice. Join the whole selector on the first match
+            # so it can meet the symbol side, and drop the rest.
+            if file_info.language == "objectivec":
+                if site_node.type == "message_expression":
+                    joined = _objc_message_selector(site_node, target_nodes[0], src)
+                    if joined is None:
+                        continue
+                    target_name = joined
+                # A block held in a parameter or a local is invoked with C call
+                # syntax, so `completionBlock(hit)` is indistinguishable from a
+                # call to a C function by name alone. Left in, the resolver
+                # binds it to whatever same-named @property the repo holds.
+                elif not receiver_nodes and _objc_call_is_block_variable(
+                    site_node, target_name, src
+                ):
+                    continue
+
             if target_name in _call_builtins:
+                continue
+
+            # Elixir: a definition head (`add(a, b)` in `def add(a, b)`) and a
+            # module attribute (`@doc "..."`) are both ``call`` nodes, and no
+            # query predicate can see the parent that tells them apart. Left
+            # in, every function in the repo would call itself.
+            if file_info.language == "elixir" and _elixir_call_is_definitional(site_node, src):
                 continue
 
             line = site_node.start_point[0] + 1
             receiver_name = _node_text(receiver_nodes[0], src).strip() if receiver_nodes else None
             if receiver_name and file_info.language == "php":
                 receiver_name = _normalize_php_receiver(receiver_name)
+            # F#: a dotted static path (``Path.Combine(a, b)``) collapses into
+            # one identifier node in this grammar -- there is no dot node to
+            # capture a receiver from -- so the split happens on the text.
+            # After the builtin check above, so a name is filtered as written.
+            if file_info.language == "fsharp" and receiver_name is None and "." in target_name:
+                receiver_name, _, target_name = target_name.rpartition(".")
+                receiver_name = receiver_name.strip()
+                target_name = target_name.strip()
+                if not target_name:
+                    continue
             receiver_call = (
                 _call_receiver_from_node(receiver_call_nodes[0], src)
                 if receiver_call_nodes

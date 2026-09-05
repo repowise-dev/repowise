@@ -28,7 +28,7 @@ from repowise.core.analysis.change_risk import (
 )
 from repowise.core.analysis.pr_blast import rank_tests_by_reach
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._budget.contracts import response_budget_shed_order
 from repowise.server.mcp_server._change_health import (
     directive as _directive,
@@ -48,6 +48,11 @@ from repowise.server.mcp_server._helpers import (
     resolve_enum_argument,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._test_impact import (
+    _norm,
+    cross_repo_tests,
+    tests_block_for,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -65,6 +70,20 @@ _PRIOR_FIXES_LIMIT = 10
 #: full traversal, so both lists stay short and report their own overflow.
 _CROSS_REPO_BREAKING_LIMIT = 5
 _CROSS_REPO_CONSUMER_LIMIT = 10
+
+#: Ceiling on the branch scan, bounded so a repository with hundreds of refs
+#: cannot hold the response.
+_BRANCH_OVERLAP_TIMEOUT_SECONDS = 20
+
+#: Caps on the branch-overlap block. It answers "is anyone else editing these
+#: files", not "list every branch", so both lists stay short and their tails go
+#: to the omission store.
+_BRANCH_OVERLAP_LIMIT = 5
+_BRANCH_OVERLAP_FILES_LIMIT = 10
+
+#: Cap on the files the index cannot link. The count is already in the block's
+#: summary, so the names are supporting detail and their tail is recoverable.
+_UNGROUPED_FILES_LIMIT = 10
 
 # Compatibility projection for direct callers and older tests. The shared
 # response contract remains the single source of truth for this order.
@@ -126,6 +145,10 @@ async def get_change_risk(
     ``prior_fixes`` counts past fixes overlapping this diff. ``change_shape``
     ranks the diff's size and spread against recent commits.
 
+    ``branch_overlap`` names other open branches editing the same files, each
+    row stating its basis. ``change_shape.independent_changes`` says when the
+    diff is several changes the index does not connect.
+
     Args:
         revspec: Commit or ``base..head`` range. Omit to review uncommitted
             work, or ``HEAD`` when the tree is clean.
@@ -178,19 +201,16 @@ async def get_change_risk(
     # extensions + riskignore + request excludes), so nothing downstream
     # disagrees with the score about which files the change touches. Read once
     # and shared: both blocks below need it and git is the expensive part.
-    # The test and fix blocks need the index; the cross-repo block needs only
-    # workspace contracts, so an unindexed member still gets one rather than
-    # going silently blind. Nothing else pays the git call.
-    changed: dict[str, set[int]] = {}
-    changed_error: tuple[str, str] | None = None
-    if getattr(ctx, "session_factory", None) is not None or _has_contract_data():
-        changed, changed_error = await _changed_in_scope(
-            str(ctx.path),
-            revspec,
-            normalize_extensions(tuple(extensions or ())),
-            result.riskignore_excludes + result.request_excludes,
-            working_tree=result.working_tree,
-        )
+    # The test and fix blocks need the index and the cross-repo block needs
+    # workspace contracts, but the branch-overlap block needs only git, so every
+    # call pays this read rather than an unindexed repo going blind.
+    changed, changed_error = await _changed_in_scope(
+        str(ctx.path),
+        revspec,
+        normalize_extensions(tuple(extensions or ())),
+        result.riskignore_excludes + result.request_excludes,
+        working_tree=result.working_tree,
+    )
     collector = OmissionCollector("get_change_risk", repo_root=ctx.path)
     # The delta is the expensive half and needs nothing the enrichments need,
     # so it runs alongside them rather than after.
@@ -210,9 +230,21 @@ async def get_change_risk(
         prior_fixes = await _prior_fixes_block(ctx, changed)
         if prior_fixes is not None:
             payload["prior_fixes"] = prior_fixes
-        cross_repo = _cross_repo_block(getattr(ctx, "alias", ""), sorted(changed))
+        alias = getattr(ctx, "alias", "")
+        # The join needs an open index per consumer repo, so it runs once for
+        # the whole change and the block distributes its rows.
+        impact = await cross_repo_tests(alias, sorted(changed))
+        cross_repo = _cross_repo_block(alias, sorted(changed), impact, collector)
         if cross_repo is not None:
             payload["cross_repo"] = cross_repo
+        # A drill-down returns one finding and nothing else, so neither block
+        # would reach the caller; both are pure cost on that path.
+        overlap = independent = None
+        if finding_id is None:
+            overlap = await _branch_overlap_block(ctx, changed, collector)
+            if overlap is not None:
+                payload["branch_overlap"] = overlap
+            independent = await _independent_changes_block(ctx, changed, collector, revspec)
     except BaseException:
         # Never leave the comparison running for a request that is already over.
         delta_task.cancel()
@@ -222,7 +254,7 @@ async def get_change_risk(
     if finding_id is not None:
         return _drill_down(payload, delta, finding_id, revspec)
     _attach_health(payload, delta, revspec, expand="findings" in include_set)
-    payload["change_shape"] = _change_shape(payload, diagnostics)
+    payload["change_shape"] = _change_shape(payload, diagnostics, independent)
     # source: live_git marks that the *score* is computed from the working
     # checkout's git. The two blocks above are index-backed, so the freshness
     # fields do apply to them, scoped to the change's files. None (not []) when
@@ -378,10 +410,15 @@ def _attach_health(payload: dict, delta: Any, revspec: str | None, *, expand: bo
     payload.update(ordered)
 
 
-def _change_shape(payload: dict, diagnostics: dict) -> dict[str, Any]:
+def _change_shape(
+    payload: dict, diagnostics: dict, independent: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """The ranked diff-shape reading, kept compact and clearly supporting."""
     shape = {f: payload[f] for f in _CHANGE_SHAPE_FIELDS if f in payload}
     shape["measures"] = "diff size and spread, not danger"
+    # How many changes this diff is belongs beside its size, not above it.
+    if independent is not None:
+        shape["independent_changes"] = independent
     if diagnostics:
         shape["diagnostics_via"] = "get_change_risk(include=['diagnostics'])"
     return shape
@@ -462,17 +499,12 @@ def _filter_changed(
     return out
 
 
-def _has_contract_data() -> bool:
-    """Whether workspace contracts are loaded, so the cross-repo block can speak."""
-    from repowise.server.mcp_server import _state
-
-    if not _is_workspace_mode():
-        return False
-    enricher = _state._cross_repo_enricher
-    return bool(enricher is not None and getattr(enricher, "has_contract_data", False))
-
-
-def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | None:
+def _cross_repo_block(
+    alias: str,
+    changed_files: list[str],
+    impact: Any = None,
+    collector: OmissionCollector | None = None,
+) -> dict[str, Any] | None:
     """What this commit does to consumers in other repos, or ``None``.
 
     A commit that changes a published signature is the same class of fact as
@@ -575,8 +607,41 @@ def _cross_repo_block(alias: str, changed_files: list[str]) -> dict[str, Any] | 
             summary += "; the last workspace update found no break in them."
         else:
             summary += "; no breaking-change report has been built for them."
+        shown = consumers[:_CROSS_REPO_CONSUMER_LIMIT]
+        if impact is not None:
+            for i, row in enumerate(shown):
+                row["tests"] = tests_block_for(
+                    impact,
+                    row.get("repo") or "",
+                    row.get("file") or "",
+                    row.get("contract_id") or "",
+                    collector,
+                    f"cross_repo.consumers[{i}].tests.tests_to_run",
+                )
+            # Counted over the rows this payload actually carries, so the
+            # sentence never promises tests for a consumer the cap dropped.
+            keys = {
+                (
+                    row.get("repo") or "",
+                    _norm(row.get("file") or ""),
+                    row.get("contract_id") or "",
+                )
+                for row in shown
+            }
+            test_files = {
+                rec.test_file
+                for rec in impact.recommendations
+                for path in rec.consumer_files
+                for cid in rec.contract_ids
+                if (rec.consumer_repo, path, cid) in keys
+            }
+            undetermined = sum(1 for row in shown if row["tests"]["state"] == "unresolved")
+            summary += (
+                f" {len(test_files)} consumer test file(s) to run, "
+                f"{undetermined} link(s) could not be determined."
+            )
         return {
-            "consumers": consumers[:_CROSS_REPO_CONSUMER_LIMIT],
+            "consumers": shown,
             "consumers_truncated": max(0, len(consumers) - _CROSS_REPO_CONSUMER_LIMIT),
             "consumer_repos": repos,
             "breaking_changes": breaking,
@@ -770,6 +835,123 @@ async def _prior_fixes_block(ctx: Any, changed: dict[str, set[int]]) -> dict[str
     concentration = _concentration(files[:_PRIOR_FIXES_LIMIT])
     if concentration is not None:
         block["concentration"] = concentration
+    return block
+
+
+async def _independent_changes_block(
+    ctx: Any,
+    changed: dict[str, set[int]],
+    collector: OmissionCollector,
+    revspec: str | None = None,
+) -> dict[str, Any] | None:
+    """The changed files split into groups nothing in the index links, or ``None``.
+
+    Silent for a single changed file and without an index: the split is a claim
+    about what the index holds, so an unindexed repo makes no claim at all.
+    """
+    from repowise.core.analysis.independent_changes import independent_changes
+    from repowise.core.git_refs import commit_file_sets
+    from repowise.core.persistence.database import get_session
+
+    session_factory = getattr(ctx, "session_factory", None)
+    if session_factory is None or len(changed) < 2:
+        return None
+    # Returns [] without a git call for anything that is not a range, so the
+    # range test lives in one place rather than here as well.
+    sets = await asyncio.to_thread(
+        commit_file_sets, str(ctx.path), _normalize_revspec(revspec)
+    )
+    try:
+        async with get_session(session_factory) as session:
+            repo_id = (await _get_repo(session)).id
+            result = await independent_changes(
+                session, repo_id, list(changed), commit_sets=sets
+            )
+    except (LookupError, SQLAlchemyError):
+        return None
+    if result is None:
+        return None
+    block = result.to_dict()
+    cap_collection(
+        block,
+        "ungrouped_files",
+        block["ungrouped_files"],
+        _UNGROUPED_FILES_LIMIT,
+        collector,
+        label=(
+            "change_shape.independent_changes.ungrouped_files "
+            f"beyond cap={_UNGROUPED_FILES_LIMIT}"
+        ),
+    )
+    return block
+
+
+def _scan_from_trunk(path: str, files: list[str]) -> Any:
+    """The base lookup and the scan, both git, in one hop off the event loop."""
+    from repowise.core.analysis.branch_overlap import scan_branches
+    from repowise.core.git_refs import default_base
+
+    return scan_branches(path, files, base=default_base(path))
+
+
+async def _scan_overlap(ctx: Any, files: list[str]) -> Any:
+    """Run the branch scan, with the index when one opens and without when it does not."""
+    from repowise.core.analysis.branch_overlap import rank_with_index
+    from repowise.core.persistence.database import get_session
+
+    path = str(ctx.path)
+    scan = await asyncio.to_thread(_scan_from_trunk, path, files)
+    session_factory = getattr(ctx, "session_factory", None)
+    if session_factory is not None:
+        try:
+            # The session opens only for the index step, never across the git work.
+            async with get_session(session_factory) as session:
+                return await rank_with_index(session, (await _get_repo(session)).id, scan)
+        except (LookupError, SQLAlchemyError):
+            pass
+    return scan.overlap
+
+
+async def _branch_overlap_block(
+    ctx: Any, changed: dict[str, set[int]], collector: OmissionCollector
+) -> dict[str, Any] | None:
+    """Other open branches editing the files this change edits, or ``None``.
+
+    Git alone answers it, so a repo without an index still gets the block; an
+    index only ranks the shared files and adds the history rows. ``None`` when
+    no other branch overlaps, because an all-clear block is noise.
+    """
+    if not changed:
+        return None
+    try:
+        overlap = await asyncio.wait_for(
+            _scan_overlap(ctx, sorted(changed)), timeout=_BRANCH_OVERLAP_TIMEOUT_SECONDS
+        )
+    except (TimeoutError, subprocess.SubprocessError, OSError):
+        return None
+
+    block = overlap.to_dict()
+    if not block["branches"]:
+        return None
+    # Branches first: an entry the cap drops goes to the store whole, and only
+    # the entries that survive can carry an index the reader can find.
+    kept = cap_collection(
+        block,
+        "branches",
+        block["branches"],
+        _BRANCH_OVERLAP_LIMIT,
+        collector,
+        label=f"branch_overlap.branches beyond cap={_BRANCH_OVERLAP_LIMIT}",
+    )
+    for i, entry in enumerate(kept):
+        cap_collection(
+            entry,
+            "files",
+            entry["files"],
+            _BRANCH_OVERLAP_FILES_LIMIT,
+            collector,
+            label=f"branch_overlap.branches[{i}].files beyond cap={_BRANCH_OVERLAP_FILES_LIMIT}",
+        )
     return block
 
 

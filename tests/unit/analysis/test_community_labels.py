@@ -15,6 +15,8 @@ import networkx as nx
 
 from repowise.core.analysis.communities import (
     CommunityInfo,
+    _assign_tests_to_communities,
+    _conductance,
     _deduplicate_labels,
     _heuristic_label,
     detect_file_communities,
@@ -113,6 +115,79 @@ class TestDetectFileCommunitiesLabels:
         # The informative segments survive somewhere in the labels.
         joined = " ".join(labels)
         assert "ingestion" in joined and "web" in joined
+
+
+class TestRootFirstLabels:
+    def test_sub_label_follows_path_order(self):
+        # Frequency picks "ingestion" (in every path) as primary and "engine"
+        # as the sub-segment; the label must still read the way the paths nest.
+        paths = [f"engine/ingestion/r{i}.py" for i in range(4)] + [
+            "other/ingestion/z.py",
+        ]
+        assert _heuristic_label(paths, 0) == "engine/ingestion"
+
+    def test_repo_name_is_generic(self):
+        # "acme" sits under packages/*/src in half the paths, below the
+        # dominant-segment bar, so only the explicit repo name strips it.
+        ingest = [f"packages/core/src/acme/ingestion/m{i}.py" for i in range(6)]
+        web = [f"packages/web/components/w{i}.tsx" for i in range(6)]
+        edges = list(itertools.pairwise(ingest)) + list(itertools.pairwise(web))
+        _, info, _ = detect_file_communities(_graph(ingest + web, edges), repo_name="Acme")
+        labels = {ci.label for ci in info.values()}
+        assert "ingestion" in labels
+        for label in labels:
+            assert "acme" not in label.split("/")
+
+
+class TestTestAssignment:
+    def test_most_linked_community_wins(self):
+        # The test imports one file from community 0 and two from community 1.
+        # Alphabetical order would file it under community 0 ("a.py").
+        g = nx.DiGraph()
+        for p in ["src/a.py", "src/m.py", "src/n.py", "tests/test_x.py"]:
+            g.add_node(p, node_type="file")
+        for target in ["src/a.py", "src/m.py", "src/n.py"]:
+            g.add_edge("tests/test_x.py", target, edge_type="imports")
+        prod = {"src/a.py": 0, "src/m.py": 1, "src/n.py": 1}
+        assert _assign_tests_to_communities(["tests/test_x.py"], prod, g) == {
+            "tests/test_x.py": 1
+        }
+
+    def test_ties_break_on_lowest_community_id(self):
+        g = nx.DiGraph()
+        for p in ["src/a.py", "src/b.py", "tests/test_x.py"]:
+            g.add_node(p, node_type="file")
+        g.add_edge("tests/test_x.py", "src/b.py", edge_type="imports")
+        g.add_edge("tests/test_x.py", "src/a.py", edge_type="imports")
+        prod = {"src/a.py": 2, "src/b.py": 1}
+        assert _assign_tests_to_communities(["tests/test_x.py"], prod, g) == {
+            "tests/test_x.py": 1
+        }
+
+
+class TestConductance:
+    def test_cut_over_volume(self):
+        g = nx.Graph()
+        g.add_edges_from([("a", "b"), ("b", "c"), ("c", "x"), ("a", "y")])
+        # intra a-b, b-c (volume 4 counted from both ends); cut c-x, a-y.
+        assert _conductance(g, ["a", "b", "c"]) == round(2 / 6, 4)
+
+    def test_none_when_nothing_is_linked(self):
+        g = nx.Graph()
+        g.add_nodes_from(["a", "b"])
+        assert _conductance(g, ["a", "b"]) is None
+
+    def test_detection_reads_it_off_production_members(self):
+        prod = [f"src/p{i}.py" for i in range(4)]
+        g = _graph([*prod, "tests/test_p.py"], list(itertools.combinations(prod, 2)))
+        g.nodes["tests/test_p.py"]["is_test"] = True
+        g.add_edge("tests/test_p.py", "src/p0.py", edge_type="imports")
+        _, info, _ = detect_file_communities(g)
+        (ci,) = [c for c in info.values() if "src/p0.py" in c.members]
+        # One production community, all its edges internal: nothing leaves.
+        assert ci.conductance == 0.0
+        # Labelled from the production members, not the attached test.
+        assert ci.label != "tests"
 
 
 class TestExampleSeparation:

@@ -56,7 +56,8 @@ Files that frequently change together across repos — consider reviewing both w
 
 These tools work across all repos in this workspace. Pass `repo="alias"` to scope, `repo="all"` for cross-repo queries, or omit for the default repo.
 
-- **Trust the index.** `verified: true` means the bytes were checked against the live tree, so never re-read those lines. Re-read only on `bounds: "approximate"`, `_meta.stale_warning`, `search_method: "bm25"` or `confidence: "low"`; `index_behind: true` alone is informational.
+- **Trust the index.** `verified: true` and `_meta.complete` mean the bytes were checked against the live tree, so never re-read them. Re-read only what `bounds: "approximate"` or `_meta.stale_warning` names. `confidence` rates the prose, not the evidence: on `low` read the `fallback_targets` or `best_guesses` the reply names, and run `repowise update` and ask again if `_meta.hint` says the index is behind HEAD. `index_behind: true` alone is informational.
+- **A zero carries its basis.** An empty `callers`/`callees`/`used_by` comes with a `*_basis` saying how much of that language's calls the graph resolved, so read it before concluding nothing calls a symbol. `_meta.scope_hint` names the areas the answer did not touch.
 - **Workspace-specific:** `get_overview(repo="all")` returns cross-repo topology (co-changes, package deps, API contracts); `get_risk(changed_files=[...])` picks up cross-repo consumers automatically; `get_blast_radius` / `get_conformance` / `get_architecture` cover cross-repo impact, dependency-rule violations, and coupling.
 
 {{ data.tool_table_md }}

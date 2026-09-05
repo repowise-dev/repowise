@@ -108,13 +108,17 @@ export interface ArchitectureEdgeResponse {
 export interface ArchitectureGraphResponse {
   nodes: ArchitectureNodeResponse[];
   edges: ArchitectureEdgeResponse[];
+  population?: PopulationBreakdown | null;
+  unclustered?: UnclusteredFiles | null;
 }
 
 export interface ArchitectureNodeResponse {
   community_id: number;
   label: string;
   cohesion: number;
+  conductance?: number | null;
   member_count: number;
+  hidden_member_count?: number;
   top_file: string;
   avg_pagerank: number;
   hotspot_count?: number;
@@ -500,16 +504,27 @@ export interface CommunityDetailResponse {
   community_id: number;
   label: string;
   cohesion: number;
+  conductance?: number | null;
   member_count: number;
+  hidden_member_count?: number;
   members: CommunityMember[];
   truncated: boolean;
   neighboring_communities: NeighboringCommunity[];
+  health_score?: number | null;
+  scored_member_count?: number;
+  hot_count?: number;
+  dead_count?: number;
+  decision_count?: number;
+  primary_owner?: string | null;
+  primary_owner_file_count?: number;
 }
 
 export interface CommunityMember {
   path: string;
   pagerank: number;
   is_entry_point: boolean;
+  is_hotspot?: boolean;
+  is_dead?: boolean;
 }
 
 export interface CommunitySliceNodeResponse {
@@ -538,13 +553,16 @@ export interface CommunitySliceResponse {
   community_id: number;
   member_count: number;
   truncated?: boolean;
+  hidden_member_count?: number;
 }
 
 export interface CommunitySummaryItem {
   community_id: number;
   label: string;
   cohesion: number;
+  conductance?: number | null;
   member_count: number;
+  hidden_member_count?: number;
   top_file: string;
 }
 
@@ -2010,6 +2028,23 @@ export interface Paginated_SymbolResponse_ {
   next_offset?: number | null;
 }
 
+/**
+ * What the map is counting.
+ *
+ * Every count in the payload is over ``visible``. The category totals are
+ * reported whether or not included, so a client can offer "show tests (N)".
+ */
+export interface PopulationBreakdown {
+  total: number;
+  visible: number;
+  tests?: number;
+  examples?: number;
+  docs?: number;
+  include_tests?: boolean;
+  include_examples?: boolean;
+  include_docs?: boolean;
+}
+
 /** One provider in the catalog, as the settings picker renders it. */
 export interface ProviderEntry {
   id: string;
@@ -2556,6 +2591,16 @@ export interface TransitiveEntry {
 }
 
 /**
+ * Visible files below ``min_members``; almost all have no dependency edge.
+ *
+ * ``files`` is the head by PageRank, capped.
+ */
+export interface UnclusteredFiles {
+  file_count: number;
+  files?: string[];
+}
+
+/**
  * Persist a new ``mcp.tools`` override for a repo.
  *
  * ``tools`` accepts the same shapes as the config block: a list of explicit
@@ -2929,12 +2974,71 @@ export interface WorkspaceSystemNode {
   is_isolated?: boolean;
 }
 
+/** One consumer file the join looked at, and the state it ended in. */
+export interface WorkspaceTestImpactFile {
+  consumer_repo?: string;
+  consumer_file?: string;
+  state?: string;
+  measured_tests_count?: number;
+  inferred_tests_count?: number;
+  via?: string | null;
+  provider_repos?: string[];
+  contract_ids?: string[];
+  consumer_symbol_ids?: string[];
+}
+
+/** ``GET /api/workspace/test-impact``: consumer tests for a provider change. */
+export interface WorkspaceTestImpactResponse {
+  workspace?: boolean;
+  recommendations?: WorkspaceTestRecommendation[];
+  recommendations_total?: number;
+  recommendations_emitted?: number;
+  recommendations_truncated?: boolean;
+  recommendations_omitted?: number;
+  recommendations_by_basis?: Record<string, number>;
+  recommendations_by_repo?: Record<string, number>;
+  recommendations_by_consumer_repo?: Record<string, number>;
+  unresolved?: WorkspaceUnresolvedLink[];
+  files_analyzed?: WorkspaceTestImpactFile[];
+  summary?: Record<string, unknown>;
+}
+
+/** A test in a consumer repo that guards a changed provider file. */
+export interface WorkspaceTestRecommendation {
+  test_id?: string;
+  test_file?: string;
+  consumer_repo?: string;
+  consumer_files?: string[];
+  consumer_symbol_ids?: string[];
+  provider_repo?: string;
+  contract_ids?: string[];
+  contract_types?: string[];
+  basis?: string;
+  via?: string;
+  confidence?: number;
+  source_files?: string[];
+  evidence?: Record<string, unknown>[];
+}
+
 export interface WorkspaceUnmatchedConsumer {
   repo: string;
   file_path: string;
   contract_id: string;
   contract_type: string;
   reason: string;
+}
+
+/** A contract link the join could not follow, and why. */
+export interface WorkspaceUnresolvedLink {
+  consumer_repo?: string;
+  consumer_file?: string;
+  consumer_symbol_id?: string | null;
+  provider_repo?: string;
+  provider_file?: string;
+  contract_id?: string;
+  contract_type?: string;
+  reason?: string;
+  detail?: string | null;
 }
 
 export interface ZoomMapResponse {

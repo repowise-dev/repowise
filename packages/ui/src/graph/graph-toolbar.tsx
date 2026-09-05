@@ -3,10 +3,8 @@
 import {
   Palette,
   Network,
-  EyeOff,
   Maximize,
   Route,
-  GitFork,
   Skull,
   Flame,
   Workflow,
@@ -16,9 +14,11 @@ import {
   Waypoints,
   SlidersHorizontal,
   HelpCircle,
+  ChevronDown,
 } from "lucide-react";
 import { memo, useState } from "react";
 import { Button } from "../ui/button";
+import { Popover, PopoverTrigger, PopoverContent } from "../ui/popover";
 
 /**
  * No "risk" member. There was one, and it painted `pagerank * 3` through
@@ -87,11 +87,23 @@ export function viewModeToScopeOverlays(view: ViewMode): { scope: Scope; overlay
 
 interface GraphToolbarProps {
   viewMode: ViewMode;
-  onViewChange: (mode: ViewMode) => void;
+  /**
+   * @deprecated The All/Hot/Dead filter moved to {@link GraphNodeFilter}, which
+   * renders beside the node count it changes. Accepted and ignored here so an
+   * out-of-tree host compiles while it ports.
+   */
+  onViewChange?: ((mode: ViewMode) => void) | undefined;
   colorMode: ColorMode;
   onColorModeChange: (mode: ColorMode) => void;
-  hideTests: boolean;
-  onHideTestsChange: (v: boolean) => void;
+  /**
+   * @deprecated Removed. The control was titled "Hide test files" and filtered
+   * *search results* only — `activeSignals` never reached the renderer, so
+   * every test file stayed drawn. Accepted and ignored rather than shipping a
+   * button that does not do what it says.
+   */
+  hideTests?: boolean | undefined;
+  /** @deprecated See {@link GraphToolbarProps.hideTests}. */
+  onHideTestsChange?: ((v: boolean) => void) | undefined;
   onFitView: () => void;
   showPathFinder: boolean;
   onTogglePathFinder: () => void;
@@ -142,31 +154,22 @@ const LAYOUT_MODES: { id: LayoutMode; icon: typeof GitBranch; label: string }[] 
   { id: "hierarchical", icon: GitBranch, label: "Hierarchical" },
 ];
 
-// The constellation (Knowledge Graph) scope is always radial — a single
-// disabled-looking indicator replaces the Force/Hierarchical toggle there.
-const RADIAL_LAYOUT: { id: LayoutMode; icon: typeof GitFork; label: string } = {
-  id: "radial",
-  icon: GitFork,
-  label: "Radial",
-};
-
 /**
- * One panel, not four.
+ * Groups inside the one header cluster.
  *
- * Scope, node filter, the layout/colour/action row and search each used to be
- * their own rounded box with its own border, its own `shadow-sm` and its own
- * `backdrop-blur-sm`, stacked down the same edge with 6px of canvas showing
- * between them. Four frames and four shadows for one control surface, over a
- * diagram the reader is trying to look past (rule 13). They are now one shell
- * with hairline dividers, sharing the legend's chrome so the two corners of
- * the canvas read as the same system.
+ * A hairline *between* groups, not a box *around* them. This was a bordered
+ * panel whose three groups stacked as blocks, so beside the scope controls it
+ * read as a second toolbar. Every peer canvas puts exactly one cluster in the
+ * header band: `health/triage-view` (lens switcher only), the Knowledge Graph
+ * page (one hairline row), `workspace/system-map` (filters only) and
+ * `coupling/coupling-explorer` (hairline rows, no box). DESIGN_LANGUAGE.md
+ * reserves bordered containers for objects that can be selected, opened or
+ * acted on; a cluster of loose toggles is not one.
  */
-const panelClass =
-  "overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/85 shadow-sm backdrop-blur-sm";
+const groupClass = "flex items-center gap-0.5";
 
-/** A divider row inside the panel. The first group omits the top hairline. */
-const groupClass =
-  "flex items-center gap-0.5 p-1 border-t border-[var(--color-border-default)] first:border-t-0";
+const dividerClass =
+  "ml-0.5 border-l border-[var(--color-border-default)] pl-1.5";
 
 const itemActiveClass =
   "bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]";
@@ -175,13 +178,87 @@ const itemIdleClass =
 const itemClass =
   "flex items-center gap-1.5 rounded-md px-2 py-2 text-[10px] font-medium transition-colors sm:py-1";
 
-export const GraphToolbar = memo(function GraphToolbar({
+/** Segmented control, matching `coupling-explorer`'s: counts live inside the
+ *  segments rather than in a caption beside them. */
+const segmentGroupClass =
+  "inline-flex overflow-hidden rounded-md border border-[var(--color-border-default)]";
+const segmentClass =
+  "shrink-0 whitespace-nowrap border-r border-[var(--color-border-default)] px-2 py-1.5 text-[10px] font-medium transition-colors last:border-r-0 sm:py-1";
+
+/**
+ * Exclusive All / Hot / Dead node filter, rendered beside the node count it
+ * changes rather than in the header.
+ *
+ * A control whose entire effect is "how many nodes are drawn" belongs next to
+ * the figure reporting that number — DESIGN_LANGUAGE.md's rule that a control
+ * must change the same dataset its caption counts.
+ *
+ * No totals inside the segments. They would be repo-wide, sitting a few pixels
+ * from a node count that is view-scoped, with nothing saying the two figures
+ * count different sets. `OverlayCountChip` already reconciles them as
+ * "380 of 412" in the canvas status row, where there is room to say so.
+ */
+export function GraphNodeFilter({
   viewMode,
   onViewChange,
+  className,
+}: {
+  viewMode: ViewMode;
+  onViewChange: (mode: ViewMode) => void;
+  className?: string | undefined;
+}) {
+  const { scope, overlays } = viewModeToScopeOverlays(viewMode);
+  const active: Overlay | "all" = overlays.has("dead")
+    ? "dead"
+    : overlays.has("hot")
+      ? "hot"
+      : "all";
+
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Node filter"
+      className={`${segmentGroupClass} ${className ?? ""}`}
+    >
+      {NODE_FILTERS.map((f) => {
+        const Icon = f.icon;
+        const isActive = active === f.id;
+        return (
+          <button
+            key={f.id}
+            type="button"
+            role="radio"
+            aria-checked={isActive}
+            title={f.hint}
+            onClick={() =>
+              onViewChange(
+                scopeOverlaysToViewMode(
+                  scope,
+                  new Set<Overlay>(f.id === "all" ? [] : [f.id]),
+                ),
+              )
+            }
+            className={`${segmentClass} ${
+              isActive
+                ? "bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]"
+                : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]"
+            }`}
+          >
+            <span className="inline-flex items-center gap-1">
+              {Icon && <Icon className="h-3 w-3" />}
+              {f.label}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+export const GraphToolbar = memo(function GraphToolbar({
+  viewMode,
   colorMode,
   onColorModeChange,
-  hideTests,
-  onHideTestsChange,
   onFitView,
   showPathFinder,
   onTogglePathFinder,
@@ -198,97 +275,29 @@ export const GraphToolbar = memo(function GraphToolbar({
   onToggleHelp,
   hierarchicalDisabledReason,
 }: GraphToolbarProps) {
-  // Below sm the full control cluster is too much chrome over the canvas —
-  // collapse it behind a single toggle, keeping search always reachable.
+  // Below sm the full control cluster is too much chrome — collapse it behind
+  // a single toggle, keeping search always reachable.
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [traceOpen, setTraceOpen] = useState(false);
   const clusterVisibility = mobileOpen ? "flex" : "hidden sm:flex";
-  // Derive scope + overlays from the legacy ViewMode so this component remains
-  // the single source of truth — callers can continue to round-trip the
-  // wire-format ``viewMode`` value through query params without translation.
-  const { scope: activeScope, overlays: activeOverlays } = viewModeToScopeOverlays(viewMode);
+  // Derive scope from the legacy ViewMode so this component remains the single
+  // source of truth — callers can continue to round-trip the wire-format
+  // `viewMode` value through query params without translation.
+  const { scope: activeScope } = viewModeToScopeOverlays(viewMode);
 
   // The Knowledge Graph (constellation) scope is a fixed radial composition:
   // overlays / FA2 / hierarchical layout don't apply, so those controls are
   // hidden here rather than shown in a half-working state.
   const isConstellation = activeScope === "architecture";
 
-  // Exclusive node filter. Legacy "unified" URLs parse to both overlays and
-  // render as Dead here; any click normalizes back to a single filter.
-  const activeFilter: Overlay | "all" = activeOverlays.has("dead")
-    ? "dead"
-    : activeOverlays.has("hot")
-      ? "hot"
-      : "all";
-
-  const setNodeFilter = (id: Overlay | "all") => {
-    const next = new Set<Overlay>(id === "all" ? [] : [id]);
-    onViewChange(scopeOverlaysToViewMode(activeScope, next));
-  };
+  const traceActive = showPathFinder || showFlows;
 
   return (
-    <div className="flex flex-col gap-1.5 items-end">
-      {/* Mobile: single toggle for the control cluster */}
-      <button
-        onClick={() => setMobileOpen((s) => !s)}
-        className={`flex items-center gap-1.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/90 backdrop-blur-sm px-2 py-1.5 text-[10px] font-medium shadow-sm sm:hidden ${
-          mobileOpen
-            ? "text-[var(--color-accent-primary)]"
-            : "text-[var(--color-text-secondary)]"
-        }`}
-        aria-expanded={mobileOpen}
-        aria-label="Graph controls"
-      >
-        <SlidersHorizontal className="w-3 h-3" />
-        Controls
-      </button>
-
-      <div className={panelClass}>
-      {/* Node filter (exclusive All / Hot / Dead) — not applicable in the constellation */}
-      {!isConstellation && (
-      <div
-        role="radiogroup"
-        aria-label="Node filter"
-        className={`${clusterVisibility} ${groupClass}`}
-      >
-        {NODE_FILTERS.map((f) => {
-          const Icon = f.icon;
-          const isActive = activeFilter === f.id;
-          return (
-            <button
-              key={f.id}
-              onClick={() => setNodeFilter(f.id)}
-              className={`${itemClass} ${isActive ? itemActiveClass : itemIdleClass}`}
-              title={f.hint}
-              aria-label={f.label}
-              role="radio"
-              aria-checked={isActive}
-            >
-              {Icon && <Icon className="w-3 h-3" />}
-              <span className={Icon ? "hidden lg:inline" : undefined}>{f.label}</span>
-            </button>
-          );
-        })}
-      </div>
-      )}
-
-      {/* Layout · colour · actions. */}
-      <div className={`${clusterVisibility} ${groupClass}`}>
-        <div className="flex gap-0.5">
-          {isConstellation ? (
-            // Constellation is locked to the radial layout; show a single
-            // active indicator instead of the Force/Hierarchical toggle.
-            <button
-              key={RADIAL_LAYOUT.id}
-              disabled
-              className={`${itemClass} ${itemActiveClass} cursor-default`}
-              title={`${RADIAL_LAYOUT.label} (fixed for Communities)`}
-              aria-label={RADIAL_LAYOUT.label}
-              aria-pressed
-            >
-              <RADIAL_LAYOUT.icon className="w-3 h-3" />
-            </button>
-          ) : (
-            LAYOUT_MODES.map((m) => {
+    <div className="flex flex-wrap items-center justify-end gap-1.5">
+      <div className={`${clusterVisibility} flex-wrap items-center gap-y-1`}>
+        {!isConstellation && (
+          <div className={groupClass}>
+            {LAYOUT_MODES.map((m) => {
               const Icon = m.icon;
               const isActive = layoutMode === m.id;
               const disabledReason =
@@ -309,86 +318,114 @@ export const GraphToolbar = memo(function GraphToolbar({
                   <Icon className="w-3 h-3" />
                 </button>
               );
-            })
-          )}
-        </div>
+            })}
+          </div>
+        )}
 
-        {/* Colour-by. This control decides what every circle on the canvas
-            means, and it used to be three unlabelled icons — a palette, a
-            network and a shield — so there was no way to know whether you were
-            looking at languages, communities or risk without hovering each
-            one. Worse, Risk paints green/amber/red and Community paints
-            families that include green, amber and red: same marks, two
-            vocabularies, switched by a mystery glyph. The active mode now
-            always carries its word. */}
-        <div className="flex items-center gap-0.5 border-l border-[var(--color-border-default)] pl-1">
-          <span className="hidden pl-1 pr-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] lg:inline">
-            Colour
-          </span>
-          {COLOR_MODES.map((m) => {
-            const Icon = m.icon;
-            const isActive = colorMode === m.id;
-            return (
-              <button
-                key={m.id}
-                onClick={() => onColorModeChange(m.id)}
-                className={`${itemClass} ${isActive ? itemActiveClass : itemIdleClass}`}
-                title={m.label}
-                aria-label={m.label}
-                aria-pressed={isActive}
-              >
-                <Icon className="w-3 h-3" />
-                {isActive && <span>{m.label}</span>}
-              </button>
-            );
-          })}
-        </div>
+        {/* Colour-by. The active mode always carries its word: unlabelled
+            glyphs gave no way to tell which vocabulary the circles were in.
+            Hidden in the constellation, where hubs are family-coloured
+            regardless of this setting. */}
+        {!isConstellation && (
+          <div className={`${groupClass} ${dividerClass}`}>
+            <span className="hidden pr-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] lg:inline">
+              Colour
+            </span>
+            {COLOR_MODES.map((m) => {
+              const Icon = m.icon;
+              const isActive = colorMode === m.id;
+              return (
+                <button
+                  key={m.id}
+                  onClick={() => onColorModeChange(m.id)}
+                  className={`${itemClass} ${isActive ? itemActiveClass : itemIdleClass}`}
+                  title={m.label}
+                  aria-label={m.label}
+                  aria-pressed={isActive}
+                >
+                  <Icon className="w-3 h-3" />
+                  {isActive && <span>{m.label}</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* No theme control here. It set the *global* theme, so it did exactly
             what the app's own toggle in the header does, a few hundred pixels
             away — two controls, one effect, and this one buried in a row of a
-            dozen unlabelled icons. */}
-        <div className="flex gap-0.5 border-l border-[var(--color-border-default)] pl-1">
-          {/* Path finder / execution flows operate on file-level nodes and
-              don't apply to the community constellation — hidden there. */}
-          {!isConstellation && pathFinderAvailable && (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onTogglePathFinder}
-            className={`h-8 w-8 sm:h-7 sm:w-7 p-0 ${showPathFinder ? "text-[var(--color-accent-primary)]" : "text-[var(--color-text-tertiary)]"}`}
-            title="Find dependency path"
-            aria-label="Find dependency path"
-            aria-pressed={showPathFinder}
-          >
-            <Route className="w-3.5 h-3.5" />
-          </Button>
-          )}
+            dozen unlabelled icons.
+
+            Path finding and execution flows are two uncommon actions that were
+            two unlabelled glyphs. DESIGN_LANGUAGE.md: do not abbreviate an
+            uncommon action to make it fit. One named control, opened on
+            demand, carries both with their words. */}
+        <div className={`${groupClass} ${isConstellation ? "" : dividerClass}`}>
           {!isConstellation && (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onToggleFlows}
-            className={`h-8 w-8 sm:h-7 sm:w-7 p-0 ${showFlows ? "text-[var(--color-accent-primary)]" : "text-[var(--color-text-tertiary)]"}`}
-            title="Execution flows"
-            aria-label="Execution flows"
-            aria-pressed={showFlows}
-          >
-            <Workflow className="w-3.5 h-3.5" />
-          </Button>
-          )}
-          {!isConstellation && (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => onHideTestsChange(!hideTests)}
-            className={`h-8 w-8 sm:h-7 sm:w-7 p-0 ${hideTests ? "text-[var(--color-accent-primary)]" : "text-[var(--color-text-tertiary)]"}`}
-            title={hideTests ? "Show test files" : "Hide test files"}
-            aria-label={hideTests ? "Show test files" : "Hide test files"}
-            aria-pressed={hideTests}
-          >
-            <EyeOff className="w-3.5 h-3.5" />
-          </Button>
+            <Popover open={traceOpen} onOpenChange={setTraceOpen}>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className={`${itemClass} ${traceActive ? itemActiveClass : itemIdleClass}`}
+                  title={
+                    pathFinderAvailable
+                      ? "Trace a dependency path or an execution flow"
+                      : "Trace an execution flow"
+                  }
+                  // Not colour alone. The two buttons this replaced each
+                  // carried their own `aria-pressed`; without this a reader who
+                  // cannot see the accent has to open the menu to learn a trace
+                  // panel is already open.
+                  aria-label={
+                    showPathFinder
+                      ? "Trace — dependency path open"
+                      : showFlows
+                        ? "Trace — execution flows open"
+                        : "Trace"
+                  }
+                >
+                  <Route className="w-3 h-3" />
+                  <span>Trace</span>
+                  <ChevronDown className="w-3 h-3" />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-56 p-1">
+                {pathFinderAvailable && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTraceOpen(false);
+                      onTogglePathFinder();
+                    }}
+                    aria-pressed={showPathFinder}
+                    className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-wash-hover)] ${
+                      showPathFinder
+                        ? "text-[var(--color-accent-primary)]"
+                        : "text-[var(--color-text-primary)]"
+                    }`}
+                  >
+                    <Route className="h-3.5 w-3.5 shrink-0" />
+                    Find dependency path
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTraceOpen(false);
+                    onToggleFlows();
+                  }}
+                  aria-pressed={showFlows}
+                  className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-wash-hover)] ${
+                    showFlows
+                      ? "text-[var(--color-accent-primary)]"
+                      : "text-[var(--color-text-primary)]"
+                  }`}
+                >
+                  <Workflow className="h-3.5 w-3.5 shrink-0" />
+                  Execution flows
+                </button>
+              </PopoverContent>
+            </Popover>
           )}
           <Button
             size="sm"
@@ -416,9 +453,11 @@ export const GraphToolbar = memo(function GraphToolbar({
       </div>
 
       {/* Search stays visible at every width — it is the one control that
-          still works when the rest of the cluster is collapsed on a phone. */}
-      <div className="flex items-center gap-1.5 border-t border-[var(--color-border-default)] px-2 py-1.5">
-        <Search className="h-3 w-3 shrink-0 text-[var(--color-text-tertiary)]" />
+          still works when the rest of the cluster is collapsed on a phone. A
+          bordered field of its own width, rather than a row of the old panel,
+          so it stops stretching to whatever the widest stacked group needed. */}
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
         <input
           type="text"
           value={searchQuery}
@@ -426,24 +465,40 @@ export const GraphToolbar = memo(function GraphToolbar({
           onKeyDown={onSearchKeyDown}
           placeholder="Search nodes…"
           aria-label="Search graph nodes"
-          className="w-full min-w-0 sm:w-28 bg-transparent text-xs text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] lg:w-40"
+          className="w-40 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] py-1.5 pl-7 pr-14 text-xs text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] focus:border-[var(--color-border-hover)] sm:w-36 lg:w-48"
         />
-        {searchQuery && searchMatchCount != null && searchTotalCount != null && (
-          <span className="whitespace-nowrap font-mono text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
-            {searchMatchCount}/{searchTotalCount}
-          </span>
-        )}
-        {searchQuery && (
-          <button
-            onClick={() => onSearchChange("")}
-            aria-label="Clear search"
-            className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-          >
-            <X className="h-3 w-3" />
-          </button>
-        )}
+        <span className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
+          {searchQuery && searchMatchCount != null && searchTotalCount != null && (
+            <span className="whitespace-nowrap font-mono text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
+              {searchMatchCount}/{searchTotalCount}
+            </span>
+          )}
+          {searchQuery && (
+            <button
+              onClick={() => onSearchChange("")}
+              aria-label="Clear search"
+              className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          )}
+        </span>
       </div>
-      </div>
+
+      {/* Mobile: single toggle for the control cluster */}
+      <button
+        onClick={() => setMobileOpen((s) => !s)}
+        className={`flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2 py-1.5 text-[10px] font-medium sm:hidden ${
+          mobileOpen
+            ? "text-[var(--color-accent-primary)]"
+            : "text-[var(--color-text-secondary)]"
+        }`}
+        aria-expanded={mobileOpen}
+        aria-label="Graph controls"
+      >
+        <SlidersHorizontal className="w-3 h-3" />
+        Controls
+      </button>
     </div>
   );
 });

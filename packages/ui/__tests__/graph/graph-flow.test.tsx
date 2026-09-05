@@ -6,7 +6,11 @@ import { GraphFlow } from "../../src/graph/graph-flow.js";
 // Stub the Sigma canvas: it dynamically imports "sigma", which needs WebGL2
 // and rejects under jsdom. These tests assert toolbar / notice / picker
 // behavior, none of which lives inside the canvas.
-const { focusNodeSpy } = vi.hoisted(() => ({ focusNodeSpy: vi.fn() }));
+const { focusNodeSpy, nodeCameraSpy, setEntryCameraSpy } = vi.hoisted(() => ({
+  focusNodeSpy: vi.fn(),
+  nodeCameraSpy: vi.fn(() => ({ x: 0.4, y: 0.6, ratio: 0.08 })),
+  setEntryCameraSpy: vi.fn(),
+}));
 vi.mock("../../src/graph/sigma/sigma-canvas.js", () => ({
   SigmaCanvas: forwardRef(function MockSigmaCanvas(_props, ref) {
     useImperativeHandle(ref, () => ({
@@ -14,6 +18,8 @@ vi.mock("../../src/graph/sigma/sigma-canvas.js", () => ({
       fitView: () => {},
       zoomIn: () => {},
       zoomOut: () => {},
+      nodeCamera: nodeCameraSpy,
+      setEntryCamera: setEntryCameraSpy,
     }));
     return <div data-testid="sigma-canvas" />;
   }),
@@ -22,6 +28,8 @@ vi.mock("../../src/graph/sigma/sigma-canvas.js", () => ({
 afterEach(() => {
   vi.useRealTimers();
   focusNodeSpy.mockClear();
+  nodeCameraSpy.mockClear();
+  setEntryCameraSpy.mockClear();
 });
 
 // Fixture file node carrying every required GraphNode field.
@@ -58,14 +66,14 @@ describe("GraphFlow shell", () => {
   });
 
   // Uses "language" as the controlled value because it is the one that is not
-  // the default. This was "risk" until that lens was removed for painting
-  // `pagerank * 3` through unreachable thresholds; the assertion is about
-  // control flow, not about which lens, so it survives the swap unchanged.
+  // the default. Rendered in the file scope: the constellation colours hubs by
+  // family whatever colorMode says, so the control is not offered there.
   it("reflects a controlled colorMode and reports changes without self-updating", () => {
     const onColorModeChange = vi.fn();
     render(
       <GraphFlow
         {...baseProps}
+        initialViewMode="full"
         colorMode="language"
         onColorModeChange={onColorModeChange}
       />,
@@ -88,7 +96,9 @@ describe("GraphFlow shell", () => {
   });
 
   it("tracks its own colorMode when uncontrolled (seeded by initialColorMode)", () => {
-    render(<GraphFlow {...baseProps} initialColorMode="language" />);
+    render(
+      <GraphFlow {...baseProps} initialViewMode="full" initialColorMode="language" />,
+    );
 
     expect(
       screen.getByRole("button", { name: "Language" }).getAttribute("aria-pressed"),
@@ -125,7 +135,9 @@ describe("GraphFlow shell", () => {
         fullGraph={{ nodes: [], links: [], truncated: true, dead_total: 3 }}
       />,
     );
-    fireEvent.click(screen.getByRole("radio", { name: "Dead" }));
+    // The segment carries its own total now, so the accessible name is
+    // "Dead 3" rather than "Dead".
+    fireEvent.click(screen.getByRole("radio", { name: /^Dead/ }));
     expect(screen.getByText("Dead files are outside the loaded view")).toBeTruthy();
   });
 
@@ -137,7 +149,7 @@ describe("GraphFlow shell", () => {
         fullGraph={{ nodes: [], links: [], dead_total: 0 }}
       />,
     );
-    fireEvent.click(screen.getByRole("radio", { name: "Dead" }));
+    fireEvent.click(screen.getByRole("radio", { name: /^Dead/ }));
     expect(screen.getByText("No dead files in this repo")).toBeTruthy();
   });
 
@@ -172,6 +184,7 @@ describe("GraphFlow shell", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("button", { name: "Trace" }));
     fireEvent.click(screen.getByRole("button", { name: "Execution flows" }));
     expect(screen.getByText("Execution Flows")).toBeTruthy();
 
@@ -202,6 +215,7 @@ describe("GraphFlow shell", () => {
       <GraphFlow {...baseProps} initialViewMode="full" executionFlows={flows} />,
     );
 
+    fireEvent.click(screen.getByRole("button", { name: "Trace" }));
     fireEvent.click(screen.getByRole("button", { name: "Execution flows" }));
     fireEvent.click(screen.getByText("main"));
 
@@ -295,3 +309,327 @@ describe("GraphFlow shell", () => {
     expect(button.getAttribute("aria-pressed")).toBe("true");
   });
 });
+
+describe("GraphFlow drill-down", () => {
+  const sliceNode = (id: string, isBoundary = false) => ({
+    ...fileNode(id, "typescript"),
+    community_id: 3,
+    ...(isBoundary ? { is_boundary: true } : {}),
+  });
+
+  const slice = {
+    community_id: 3,
+    member_count: 2,
+    nodes: [sliceNode("src/a.ts"), sliceNode("src/b.ts"), sliceNode("vendor/z.ts", true)],
+    links: [{ source: "src/a.ts", target: "src/b.ts", imported_names: ["x"] }],
+  };
+
+  const communities = [
+    { community_id: 3, label: "auth-cluster", cohesion: 0.4, member_count: 2, top_file: "src/a.ts" },
+  ];
+
+  it("draws the entered community's own slice instead of the capped full graph", () => {
+    render(
+      <GraphFlow
+        {...baseProps}
+        viewMode="full"
+        activeCommunity={3}
+        communitySlice={slice as never}
+        communities={communities as never}
+        fullGraph={{ nodes: [fileNode("other/far.ts", "python")], links: [] } as never}
+      />,
+    );
+    // The slice rendered, so the canvas is not the empty state and the
+    // breadcrumb names where we are.
+    expect(screen.getByTestId("sigma-canvas")).toBeTruthy();
+    const crumbs = screen.getByLabelText("Graph location");
+    expect(crumbs.textContent).toContain("auth-cluster");
+  });
+
+  it("reports leaving the community when the breadcrumb root is clicked", () => {
+    const onActiveCommunityChange = vi.fn();
+    const onViewModeChange = vi.fn();
+    render(
+      <GraphFlow
+        {...baseProps}
+        viewMode="full"
+        activeCommunity={3}
+        communitySlice={slice as never}
+        communities={communities as never}
+        repoName="repowise"
+        onActiveCommunityChange={onActiveCommunityChange}
+        onViewModeChange={onViewModeChange}
+      />,
+    );
+    fireEvent.click(screen.getByTitle("Back to repowise"));
+    expect(onActiveCommunityChange).toHaveBeenCalledWith(null);
+    // Up from a community is the constellation it came from, not "all files".
+    expect(onViewModeChange).toHaveBeenCalledWith("architecture");
+  });
+
+  it("shows no breadcrumb when nothing has been drilled into", () => {
+    render(
+      <GraphFlow
+        {...baseProps}
+        viewMode="full"
+        activeCommunity={null}
+        communities={communities as never}
+        fullGraph={{ nodes: [fileNode("src/a.ts", "typescript")], links: [] } as never}
+      />,
+    );
+    expect(screen.queryByLabelText("Graph location")).toBeNull();
+  });
+
+  it("ignores a community carried into the constellation scope", () => {
+    // `?community=` only means something on a file-level scope; half-applying
+    // it would draw a slice under a "Communities" switcher.
+    render(
+      <GraphFlow
+        {...baseProps}
+        viewMode="architecture"
+        activeCommunity={3}
+        communitySlice={slice as never}
+        communities={communities as never}
+      />,
+    );
+    expect(screen.queryByLabelText("Graph location")).toBeNull();
+  });
+});
+
+describe("GraphFlow module filter", () => {
+  const nodes = [
+    fileNode("packages/ui/src/a.ts", "typescript"),
+    fileNode("packages/ui/src/b.ts", "typescript"),
+    fileNode("packages/core/src/c.py", "python"),
+  ];
+
+  it("reports every module group, not only the selected one", () => {
+    const onModuleGroupsChange = vi.fn();
+    render(
+      <GraphFlow
+        {...baseProps}
+        viewMode="full"
+        activeModule="packages/ui"
+        onModuleGroupsChange={onModuleGroupsChange}
+        fullGraph={{ nodes, links: [] } as never}
+      />,
+    );
+    // Derived from the unfiltered payload: selecting a module must not collapse
+    // the menu you selected it from.
+    const groups = onModuleGroupsChange.mock.calls.at(-1)?.[0] as { id: string }[];
+    expect(groups.map((g) => g.id).sort()).toEqual(["packages/core", "packages/ui"]);
+  });
+});
+
+describe("GraphFlow drill-down honesty", () => {
+  const member = (id: string) => ({ ...fileNode(id, "typescript"), community_id: 3 });
+  const stub = (id: string) => ({ ...member(id), is_boundary: true });
+
+  const communities = [
+    { community_id: 3, label: "auth-cluster", cohesion: 0.4, member_count: 500, top_file: "src/a.ts" },
+  ];
+
+  it("says so when the slice is capped, and counts the stubs separately", () => {
+    render(
+      <GraphFlow
+        {...baseProps}
+        viewMode="full"
+        activeCommunity={3}
+        communities={communities as never}
+        communitySlice={{
+          community_id: 3,
+          member_count: 500,
+          truncated: true,
+          nodes: [member("src/a.ts"), member("src/b.ts"), stub("vendor/z.ts")],
+          links: [],
+        } as never}
+      />,
+    );
+    // "The files in auth-cluster" over 2 of 500 would be the lie; the repo-wide
+    // truncation banner is deliberately off in this scope.
+    expect(
+      screen.getByText(
+        "Showing the 2 most connected of 500 files in this group, plus 1 faded file outside it that they reach.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("withdraws the All / Hot / Dead filter, which could not reach a slice", () => {
+    // The slice endpoint returns the whole community whatever the signal says,
+    // so inside one the pill lit, the URL changed, an overlay fetch fired and
+    // the canvas did not move.
+    render(
+      <GraphFlow
+        {...baseProps}
+        viewMode="full"
+        activeCommunity={3}
+        communities={communities as never}
+        communitySlice={{
+          community_id: 3,
+          member_count: 2,
+          truncated: false,
+          nodes: [member("src/a.ts"), member("src/b.ts")],
+          links: [],
+        } as never}
+      />,
+    );
+    expect(screen.queryByRole("radio", { name: /^Dead/ })).toBeNull();
+    expect(screen.queryByRole("radio", { name: /^Hot/ })).toBeNull();
+  });
+
+  it("names the community once in prose, not three times on one screen", () => {
+    render(
+      <GraphFlow
+        {...baseProps}
+        viewMode="full"
+        activeCommunity={3}
+        communities={communities as never}
+        communitySlice={{
+          community_id: 3,
+          member_count: 2,
+          truncated: false,
+          nodes: [member("src/a.ts"), member("src/b.ts")],
+          links: [],
+        } as never}
+      />,
+    );
+    // The breadcrumb names it and carries the way out; the description used to
+    // repeat the name and then explain the faded ring a second time, beside a
+    // banner already counting it. The double-click instruction is withheld
+    // because this host wired no `onNodeViewDocs` for it to reach.
+    expect(
+      screen.getByText("How the files in this group depend on each other."),
+    ).toBeTruthy();
+  });
+
+  it("only promises the double-click when the host wired somewhere to go", () => {
+    render(
+      <GraphFlow
+        {...baseProps}
+        viewMode="full"
+        activeCommunity={3}
+        communities={communities as never}
+        onNodeViewDocs={vi.fn()}
+        communitySlice={{
+          community_id: 3,
+          member_count: 2,
+          truncated: false,
+          nodes: [member("src/a.ts"), member("src/b.ts")],
+          links: [],
+        } as never}
+      />,
+    );
+    expect(
+      screen.getByText(
+        "How the files in this group depend on each other. Double-click a file to open it.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("does not claim truncation when the whole community is drawn", () => {
+    render(
+      <GraphFlow
+        {...baseProps}
+        viewMode="full"
+        activeCommunity={3}
+        communities={communities as never}
+        communitySlice={{
+          community_id: 3,
+          member_count: 2,
+          truncated: false,
+          nodes: [member("src/a.ts"), member("src/b.ts")],
+          links: [],
+        } as never}
+      />,
+    );
+    expect(screen.getByText("Showing all 2 files in this group.")).toBeTruthy();
+  });
+
+  it("drops the held frame when the slice fetch fails instead of pinning it", () => {
+    // SWR leaves `data` undefined and `isLoading` false between retries. Holding
+    // on "no slice yet" alone left the constellation drawn under a breadcrumb
+    // asserting a scoped file graph, with no error and no empty state.
+    const { rerender } = render(
+      <GraphFlow
+        {...baseProps}
+        viewMode="architecture"
+        constellationGraph={
+          { nodes: [{ community_id: 3, label: "auth-cluster", member_count: 2, avg_pagerank: 0.1 }], edges: [] } as never
+        }
+        communities={communities as never}
+      />,
+    );
+    rerender(
+      <GraphFlow
+        {...baseProps}
+        viewMode="full"
+        activeCommunity={3}
+        communitySlice={undefined}
+        isLoadingCommunitySlice={false}
+        communities={communities as never}
+      />,
+    );
+    expect(screen.getByText("No graph data")).toBeTruthy();
+  });
+
+  it("drops the dead/hot captions inside a community the signal never filtered", () => {
+    render(
+      <GraphFlow
+        {...baseProps}
+        viewMode="dead"
+        activeCommunity={3}
+        communities={communities as never}
+        deadCodeGraph={{ nodes: [], links: [], dead_total: 9 } as never}
+        communitySlice={{
+          community_id: 3,
+          member_count: 2,
+          truncated: false,
+          nodes: [member("src/a.ts"), member("src/b.ts")],
+          links: [],
+        } as never}
+      />,
+    );
+    expect(screen.queryByText(/dead files/)).toBeNull();
+  });
+});
+
+describe("GraphFlow hook order", () => {
+  it("keeps the same hooks on the loading pass and the loaded one", () => {
+    // The loading branch returns a skeleton before the render body, so a hook
+    // declared below it does not run on that pass. React then sees the hook
+    // count change on the next render and takes the whole canvas down with
+    // "change in the order of Hooks called by GraphFlow" — recoverable only by
+    // a page refresh.
+    const errors: unknown[][] = [];
+    const spy = vi
+      .spyOn(console, "error")
+      .mockImplementation((...args: unknown[]) => {
+        errors.push(args);
+      });
+    try {
+      const { rerender } = render(
+        <GraphFlow {...baseProps} viewMode="full" isLoadingFullGraph={true} />,
+      );
+      rerender(
+        <GraphFlow
+          {...baseProps}
+          viewMode="full"
+          isLoadingFullGraph={false}
+          fullGraph={
+            {
+              nodes: [fileNode("src/a.ts", "typescript")],
+              links: [],
+            } as never
+          }
+        />,
+      );
+      const hookComplaint = errors.find((e) =>
+        String(e[0] ?? "").includes("order of Hooks"),
+      );
+      expect(hookComplaint).toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+

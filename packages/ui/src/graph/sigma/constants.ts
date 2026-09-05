@@ -44,13 +44,14 @@ export function getNodeMass(
 // ---- Edge colors by semantic type (warm theme palette) ----
 //
 // Per-theme literal hex (canvas can't resolve var()); mirrors the semantic
-// edge palette in lib/confidence.ts EDGE_COLORS — import = brand orange,
+// edge palette in lib/confidence.ts EDGE_COLORS. No "import" key: that kind
+// was only ever returned for an edge with an endpoint missing from the graph,
+// and the adapter drops those before drawing.
 // crossCommunity = plum (--color-accent-secondary), internal = sage/green
 // (--color-success family). Dark variants are lifted to read on the near-black
 // plum canvas. Resolve via edgeColorsForTheme(); kept literal + allowlisted.
 
 export type EdgeKind =
-  | "import"
   | "crossCommunity"
   | "internal"
   | "dynamic"
@@ -61,14 +62,12 @@ export const EDGE_COLORS_BY_THEME: Record<
   Record<EdgeKind, string>
 > = {
   light: {
-    import: "#f59520", // brand orange
     crossCommunity: "#58436c", // plum (accent-secondary)
     internal: "#1d8155", // sage/green (success)
     dynamic: "#8c7f88", // muted text-tertiary
     lowConfidence: "#b8aeb3", // faint plum-gray
   },
   dark: {
-    import: "#f59520", // brand orange
     crossCommunity: "#a98fc4", // plum-300 (accent-secondary dark)
     internal: "#34d399", // green (success dark)
     dynamic: "#786f84", // muted text-tertiary dark
@@ -89,7 +88,6 @@ export function edgeColorsForTheme(
 export const EDGE_COLORS = EDGE_COLORS_BY_THEME.dark;
 
 export const EDGE_SIZE_MULTIPLIERS = {
-  import: 0.6,
   crossCommunity: 0.8,
   internal: 0.4,
   dynamic: 0.3,

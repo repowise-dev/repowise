@@ -22,6 +22,7 @@ from repowise.core.persistence.models import (
 )
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
+from repowise.server.mcp_server._basis import basis_cache_key, call_resolution_bases
 from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -422,7 +423,7 @@ async def get_dead_code(
     for f in all_findings:
         by_kind[f.kind] = by_kind.get(f.kind, 0) + 1
 
-    summary = {
+    summary: dict[str, Any] = {
         "total_findings": len(all_findings),
         "filtered_findings": len(filtered),
         "deletable_lines": sum(f.lines for f in all_findings if _effective_safe(f)),
@@ -445,6 +446,12 @@ async def get_dead_code(
     result["impact"] = _compute_impact(tiers)
 
     _maybe_limit_note(result)
+
+    # How much of the call graph these findings rest on, per language. A
+    # reachability finding is only as strong as the edges that reached.
+    summary["call_resolution_basis"] = await call_resolution_bases(
+        session, repository.id, cache_key=basis_cache_key(repository)
+    )
 
     result["_meta"] = _build_meta(repository=repository)
     attach_ignored_arguments(result, ignored)

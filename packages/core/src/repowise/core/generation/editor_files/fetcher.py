@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.health.perf.coverage import coverage_for_metrics
 from repowise.core.analysis.health.scoring import hotspot_health, nloc_weighted_score
+from repowise.core.analysis.health.trends import DECLINE_LOOKBACK, hotspot_trend
 from repowise.core.entry_candidacy import conventional_entry_stems
 from repowise.core.generation.entry_points import rank_entry_points
 from repowise.core.persistence import crud
@@ -212,6 +213,12 @@ class EditorFileDataFetcher:
 
         The fix columns come from the same row the churn columns already did, so
         this is the same single query it was.
+
+        Filtered to files that exist in the checkout. A ``git_metadata`` row
+        outlives its file when the deleted-file prune refuses a run that looks
+        like a broken checkout, and a fix-heavy file that was deleted would
+        otherwise rank first in "files that need care" forever. The limit is
+        applied after the filter, so a dropped row cannot leave the list short.
         """
         result = await self._session.execute(
             select(
@@ -234,11 +241,14 @@ class EditorFileDataFetcher:
                 GitMetadata.churn_percentile.desc(),
                 GitMetadata.file_path.asc(),  # deterministic tie-break
             )
-            .limit(_MAX_HOTSPOTS)
         )
         now = datetime.now(UTC)
         hotspots: list[HotspotFile] = []
         for row in result.all():
+            if len(hotspots) >= _MAX_HOTSPOTS:
+                break
+            if not (self._repo_path / row[0]).exists():
+                continue
             last_fix_at = row[6]
             age: str | None = None
             if isinstance(last_fix_at, datetime):
@@ -431,12 +441,18 @@ class EditorFileDataFetcher:
                     }
                 )
 
+        # The trend the snapshots record, or nothing: a repository indexed once
+        # has no trend, and the section used to print "stable" for it anyway.
+        history = await crud.list_health_snapshots(
+            self._session, self._repo_id, limit=DECLINE_LOOKBACK + 1
+        )
+
         return CodeHealthBlock(
             hotspot_health=round(hotspot_for_claude_md, 2),
             average_health=round(avg, 2),
             worst_score=round(worst.score, 2),
             worst_path=worst.file_path,
-            hotspot_trend="stable",
+            hotspot_trend=hotspot_trend(history),
             maintainability_average=(
                 round(maintainability_average, 2) if maintainability_average is not None else None
             ),

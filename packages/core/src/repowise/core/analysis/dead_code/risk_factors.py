@@ -39,6 +39,12 @@ from pathlib import PurePosixPath
 # so the analyzer and every read-time consumer agree.
 SAFE_CONFIDENCE_THRESHOLD: float = 0.7
 
+# Confidence for an unreachable file that has no git row at all. Absence is
+# the weakest evidence the ladder sees, not the strongest: the file may be
+# untracked, newly added, or outside the walk that produced the rows. Held
+# below the deletion-ready threshold so no verdict is issued on it.
+NO_GIT_SIGNAL_CONFIDENCE: float = 0.5
+
 # Confidence ceiling applied to a finding that carries a runtime-load risk
 # factor. 0.4 is the default ``min_confidence`` floor across CLI, REST router,
 # and MCP tools (which import this value as their single source of truth), so the

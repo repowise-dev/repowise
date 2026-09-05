@@ -43,7 +43,16 @@ _PROBE_PATHS = [
     "app/loading.tsx",
     "app/error.tsx",
     "app/not-found.tsx",
+    "ui/components/Button.qml",
+    "src/Forms/MainForm.Designer.vb",
+    "src/Forms/MainForm.designer.vb",
+    "src/My Project/Settings.Designer.vb",
+    "src/My Project/Resources.vb",
+    "src/Properties/AssemblyInfo.vb",
     # Negatives — close but should NOT match.
+    "src/Forms/MainForm.vb",
+    "src/DesignerHelper.vb",
+    "src/MyProject/Helper.vb",
     "src/pages.py",
     "core/router.py",
     "lib/pagination.tsx",
@@ -111,6 +120,34 @@ class TestShouldNeverFlag:
 
     def test_init_py_barrel(self):
         assert self._analyzer()._should_never_flag("pkg/sub/__init__.py", set())
+
+    def test_qml_component(self):
+        # Instantiated by type name and loaded by the Qt runtime, so a QML
+        # file never has a static importer to find.
+        assert self._analyzer()._should_never_flag("ui/components/Button.qml", set())
+        assert not self._analyzer()._should_never_flag("ui/components/button.js", set())
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "src/Forms/MainForm.Designer.vb",
+            "src/Forms/MainForm.designer.vb",
+            "src/Properties/AssemblyInfo.vb",
+            "src/My Project/Settings.Designer.vb",
+            "src/My Project/Resources.vb",
+        ],
+    )
+    def test_vbnet_generated_files_are_never_flagged(self, path):
+        """VB.NET's generated side-files have no static importer by design,
+        the same way the C# designer and AssemblyInfo files above do not."""
+        assert self._analyzer()._should_never_flag(path, set())
+
+    @pytest.mark.parametrize(
+        "path",
+        ["src/Forms/MainForm.vb", "src/DesignerHelper.vb", "src/MyProject/Helper.vb"],
+    )
+    def test_hand_written_vbnet_files_stay_flaggable(self, path):
+        assert not self._analyzer()._should_never_flag(path, set())
 
 
 class TestSuffixIndexEquivalence:

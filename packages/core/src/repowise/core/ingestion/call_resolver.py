@@ -86,6 +86,18 @@ _IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin"})
 # these calls resolve to is the id C# binds.
 _INHERITED_LANGUAGES = frozenset({"kotlin", "python", "typescript", "swift", "csharp"})
 
+# Languages where a bare name is scoped lexically: it can only mean the
+# caller's own module, an explicit ``import``, or the prelude. Elixir's
+# ``alias`` / ``require`` / ``use`` bind a module name, never a function name,
+# so repo-wide uniqueness is no evidence and only wildcard imports may merge
+# names. F# is the same rule with different spelling: a bare name means the
+# enclosing scope, a module the file has ``open``ed, or FSharp.Core, and
+# nothing else -- a name unique across the repo is not thereby in scope.
+_LEXICAL_BARE_NAME_LANGUAGES = frozenset({"elixir", "fsharp"})
+
+# The sentinel an import that binds a whole module's public names carries.
+_WILDCARD_IMPORTED_NAMES = ["*"]
+
 # Ancestors within four hops: ``heritage_ancestors`` bounds expansion, not
 # reach, so 3 reaches 4.
 _MAX_ANCESTOR_EXPAND_DEPTH = 3
@@ -972,13 +984,35 @@ class CallResolver:
         merged = self._merged_import_symbols.get(file_path)
         if merged is None:
             merged = {}
-            for imported_file in sorted(self._import_targets.get(file_path, ())):
+            for imported_file in sorted(self._bare_name_import_sources(file_path)):
                 if imported_file.startswith("external:"):
                     continue
                 for name, sym_id in self._file_symbols.get(imported_file, {}).items():
                     merged.setdefault(name, sym_id)
             self._merged_import_symbols[file_path] = merged
         return merged
+
+    def _bare_name_import_sources(self, file_path: str) -> set[str]:
+        """The imported files a bare name in *file_path* may be looked up in.
+
+        Every language but the lexically-scoped ones can use its whole import
+        set: a name reaching this tier arrived through some import, and which
+        directive carried it is not knowable from the resolved file alone. For
+        a language in ``_LEXICAL_BARE_NAME_LANGUAGES`` it is knowable and it
+        matters, so only imports that bind a whole module's public names count.
+        """
+        targets = self._import_targets.get(file_path, set())
+        if self._language_of(file_path) not in _LEXICAL_BARE_NAME_LANGUAGES:
+            return targets
+        parsed = self._parsed_files.get(file_path)
+        if parsed is None:
+            return targets
+        return {
+            imp.resolved_file
+            for imp in parsed.imports
+            if imp.resolved_file in targets
+            and list(imp.imported_names) == _WILDCARD_IMPORTED_NAMES
+        }
 
     def _merged_methods_for(self, file_path: str) -> dict[tuple[str, str], str]:
         """Merged ``{(class, method) → symbol_id}`` across imports (see above)."""
@@ -1380,7 +1414,11 @@ class CallResolver:
         candidate: str,
     ) -> ResolvedCall | None:
         """Tier 3's gates, applied to the one symbol the name resolves to."""
-        if target_name in get_builtin_methods(self._language_of(file_path) or ""):
+        language = self._language_of(file_path) or ""
+        if language in _LEXICAL_BARE_NAME_LANGUAGES:
+            # Repo-wide uniqueness says nothing about a lexically scoped name.
+            return None
+        if target_name in get_builtin_methods(language):
             return None
         if candidate in self._non_callable_ids:
             # Refused here rather than by falling through, so "this tier can

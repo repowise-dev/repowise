@@ -19,6 +19,8 @@ import { parseAsString, parseAsStringLiteral, useQueryState } from "nuqs";
 import { Wrench, RotateCw } from "lucide-react";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { ViewTabs } from "@repowise-dev/ui/shared/view-tabs";
+
+const REFACTORING_PANEL_ID = "refactoring-tab-panel";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { Skeleton, SkeletonRegion } from "@repowise-dev/ui/ui/skeleton";
 import {
@@ -250,12 +252,19 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
         <ViewTabs
           tabs={tabs}
           value={type}
+          panelId={REFACTORING_PANEL_ID}
           onValueChange={(id) => {
             setOffset(0);
             void setType(id as TypeFilter);
           }}
         />
 
+        <div
+          id={REFACTORING_PANEL_ID}
+          role="tabpanel"
+          aria-labelledby={`${REFACTORING_PANEL_ID}-tab-${type}`}
+          tabIndex={0}
+        >
         {error ? (
           <div className="rounded-2xl border border-[var(--color-error)]/30 bg-[var(--color-error)]/5 p-6 text-sm text-[var(--color-text-secondary)]">
             Couldn&apos;t load refactoring opportunities. The repo may not be indexed yet, or the
@@ -308,6 +317,7 @@ export default function RefactoringPage({ params }: { params: Promise<{ id: stri
             }
           />
         )}
+        </div>
       </div>
 
       <OpportunityDrawer

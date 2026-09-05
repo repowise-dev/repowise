@@ -567,6 +567,12 @@ async def populated_db(session: AsyncSession, repo_id: str) -> str:
 async def setup_mcp(factory, fts, vector_store, populated_db):
     """Configure the MCP module's global state for testing."""
     import repowise.server.mcp_server as mcp_mod
+    from repowise.server.mcp_server import _basis, _scope
+
+    # Every test repo shares one id and one updated_at, so a grouping cached
+    # from an earlier test would be served to the next one's different seed.
+    _basis.reset_cache()
+    _scope.reset_cache()
 
     mcp_mod._session_factory = factory
     mcp_mod._fts = fts

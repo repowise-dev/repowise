@@ -487,3 +487,93 @@ export interface ArchitectureMetrics {
   roles: NodeArchitectureRole[];
   generated_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// Cross-repo test impact: which consumer tests guard a provider change.
+// Mirror of `core/workspace/test_impact.py` and
+// `server/schemas/workspace.py::WorkspaceTestImpactResponse`.
+// ---------------------------------------------------------------------------
+
+/** How a recommendation was arrived at. */
+export type TestImpactBasis = "measured" | "inferred";
+
+/** The state one consumer file ended the join in. */
+export type TestImpactState = "measured" | "inferred" | "none" | "unresolved";
+
+/** Why a contract link could not be followed into the consumer's tests. */
+export type TestImpactUnresolvedReason =
+  | "no_index"
+  | "unbound"
+  | "symbol_missing"
+  | "lookup_failed";
+
+/** A test in a consumer repo that guards a changed provider file. */
+export interface WorkspaceTestRecommendation {
+  test_id: string;
+  test_file: string;
+  consumer_repo: string;
+  /** Every consumer file that reached this test, sorted. */
+  consumer_files: string[];
+  /** The symbols the contracts bound to in the consumer, sorted. */
+  consumer_symbol_ids: string[];
+  provider_repo: string;
+  contract_ids: string[];
+  contract_types: string[];
+  basis: TestImpactBasis;
+  /** "coverage-map" | "call-graph" | "import-graph". */
+  via: string;
+  /** The link's confidence as a plain number, not a percentage. */
+  confidence: number;
+  /** Provider files this test guards. */
+  source_files: string[];
+  evidence: Record<string, unknown>[];
+}
+
+/** A contract link the join could not follow, and why. */
+export interface WorkspaceUnresolvedLink {
+  consumer_repo: string;
+  consumer_file: string;
+  consumer_symbol_id: string | null;
+  provider_repo: string;
+  provider_file: string;
+  contract_id: string;
+  contract_type: string;
+  reason: TestImpactUnresolvedReason | string;
+  detail: string | null;
+}
+
+/** One consumer file the join looked at, and the state it ended in. */
+export interface WorkspaceTestImpactFile {
+  consumer_repo: string;
+  consumer_file: string;
+  state: TestImpactState;
+  measured_tests_count: number;
+  inferred_tests_count: number;
+  /** The tier that answered, or null when nothing did. */
+  via: string | null;
+  provider_repos: string[];
+  contract_ids: string[];
+  consumer_symbol_ids: string[];
+}
+
+/** `GET /api/workspace/test-impact`: consumer tests for a provider change. */
+export interface WorkspaceTestImpactResponse {
+  workspace: boolean;
+  recommendations: WorkspaceTestRecommendation[];
+  recommendations_total: number;
+  recommendations_emitted: number;
+  recommendations_truncated: boolean;
+  recommendations_omitted: number;
+  recommendations_by_basis: Record<string, number>;
+  recommendations_by_repo: Record<string, number>;
+  recommendations_by_consumer_repo: Record<string, number>;
+  unresolved: WorkspaceUnresolvedLink[];
+  files_analyzed: WorkspaceTestImpactFile[];
+  /**
+   * Counters plus, when the answer is empty, the `reason` that produced it
+   * ("no_contract_data" | "no_changed_files" | "no_matching_links" |
+   * "no_contract_store" | "lookup_failed"), and for "lookup_failed" a
+   * `detail` naming what failed.
+   */
+  summary: Record<string, unknown>;
+}

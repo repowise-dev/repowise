@@ -1,6 +1,6 @@
 # Language Support
 
-**19 languages parsed to a full AST · 35 on the five-rung ladder ·
+**25 languages parsed to a full AST · 39 on the five-rung ladder ·
 framework-aware across all of them.** "Do you support X" has five useful answers
 rather than two, so every language lands on a rung and the rung says what it
 buys you. Everything else in your repo still appears in the wiki and is tracked
@@ -30,8 +30,14 @@ reference.
   <img src="https://img.shields.io/badge/PHP-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP" />
   <img src="https://img.shields.io/badge/Dart-0175C2?style=flat-square&logo=dart&logoColor=white" alt="Dart" />
   <img src="https://img.shields.io/badge/Delphi-EE1F35?style=flat-square&logo=delphi&logoColor=white" alt="Object Pascal / Delphi" />
+  <img src="https://img.shields.io/badge/GDScript-478CBF?style=flat-square&logo=godotengine&logoColor=white" alt="GDScript / Godot" />
+  <img src="https://img.shields.io/badge/VB.NET-945DB7?style=flat-square&logo=dotnet&logoColor=white" alt="VB.NET" />
+  <img src="https://img.shields.io/badge/Elixir-6E4A7E?style=flat-square&logo=elixir&logoColor=white" alt="Elixir" />
+  <img src="https://img.shields.io/badge/F%23-378BBA?style=flat-square&logo=fsharp&logoColor=white" alt="F#" />
+  <img src="https://img.shields.io/badge/Objective--C-438EFF?style=flat-square&logo=apple&logoColor=white" alt="Objective-C" />
   &nbsp;<strong>· Partial &nbsp;</strong>
   <img src="https://img.shields.io/badge/Luau-00A2FF?style=flat-square&logo=lua&logoColor=white" alt="Luau" />
+  <img src="https://img.shields.io/badge/Razor-512BD4?style=flat-square&logo=blazor&logoColor=white" alt="Razor / Blazor" />
 </p>
 
 **Contents:** [Tiers](#tiers) ·
@@ -52,14 +58,14 @@ produce meaningful output.
 | Tier | Languages | What you get |
 |------|-----------|--------------|
 | **Full** (13) | Python · TypeScript · JavaScript · Svelte · Vue · Java · Kotlin · Go · Rust · C++ · C# · Scala · Ruby | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges, **and code-health markers** |
-| **Good** (5) | C · Swift · PHP · Dart · Object Pascal | Everything above except the full health suite. Dart and Object Pascal *do* get health markers; C, Swift and PHP don't yet |
-| **Partial** (1) | Luau / Roblox | AST symbols and `require()` resolution (Rojo / `.luaurc` aware). No health markers yet |
+| **Good** (10) | C · Swift · PHP · Dart · Object Pascal · GDScript · VB.NET · Elixir · F# · Objective-C | Everything above except the full health suite. Dart and Object Pascal *do* get health markers; C, Swift, PHP, GDScript, VB.NET, Elixir, F# and Objective-C don't yet. GDScript has a dedicated import resolver and Godot-specific framework edges but no named bindings (see [Known gaps](../architecture/language-support.md#gdscript--godot)) |
+| **Partial** (2) | Luau / Roblox · Razor / Blazor | Luau: AST symbols and `require()` resolution (Rojo / `.luaurc` aware), no health markers yet. Razor: a component symbol per file, call edges from `@code` blocks and component tags, C# health markers; no import resolution yet |
 | | | ⎯⎯ *tree-sitter parsing stops here. The rungs below are derived from git and imports, not from an AST.* ⎯⎯ |
-| **Lightweight** (7) | Elixir · Clojure · Haskell · Lean 4 · Erlang · F# · HTML | A real file-to-file import graph, no symbol-level claims |
-| **Structural** (9) | Objective-C · R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history only: blame, hotspots, co-change. No AST parsing |
+| **Lightweight** (6) | Clojure · Haskell · Lean 4 · Erlang · HTML · QML | A real file-to-file import graph, no symbol-level claims |
+| **Structural** (8) | R · Zig · Julia · Elm · OCaml · Crystal · Nim · D | Git history only: blame, hotspots, co-change. No AST parsing |
 
-The first three rungs are the **19 languages parsed to a full AST**; all five are
-the **35** on the ladder. Both numbers are worth stating and neither is worth
+The first three rungs are the **25 languages parsed to a full AST**; all five are
+the **39** on the ladder. Both numbers are worth stating and neither is worth
 stating alone, so if you only take one thing from this page, take the rung your
 language sits on rather than either count.
 
@@ -78,17 +84,19 @@ meaningless for a script invoked by name. See
 |-------|:----:|:----:|:-------:|:-----------:|:----------:|
 | File discovery & git history | ✅ | ✅ | ✅ | ✅ | ✅ |
 | AST symbol extraction | ✅ | ✅ | ✅ | — | — |
-| Import resolution | ✅ | ✅ | ✅ | file-level | — |
+| Import resolution | ✅ | ✅ | Luau | file-level | — |
 | Call graph edges | ✅ | ✅ | ✅ | — | — |
 | Heritage (extends / implements) | ✅ | ✅ | — | — | — |
 | Named bindings | ✅ | ✅ | — | — | — |
-| Code-health markers | ✅ | Dart, Pascal | — | — | — |
+| Code-health markers | ✅ | Dart, Pascal | Razor | — | — |
 | Dead code detection | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Semantic search & wiki pages | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 Scala's import resolution is partial: it shares the JVM index with Java and
 Kotlin and falls back to parsing SBT / Mill build files. Every other Full and
-Good language resolves imports outright.
+Good language resolves imports outright. On the Partial rung the two languages
+split: Luau resolves `require()` and has no health markers, Razor has C#
+health markers and no import edges yet.
 
 ---
 
@@ -214,19 +222,21 @@ are not reported as unreachable.
 
 ### Single-file components (Svelte, Vue)
 
-A `.svelte` or `.vue` file is three languages at once, so it gets a shared
-projection rather than a grammar of its own: a markup grammar locates the
-`<script>` blocks and the markup expressions, everything else is blanked to
-spaces with newlines preserved, and the result is parsed as TypeScript at
-**byte-identical offsets**.
+A `.svelte` or `.vue` file is projected into TypeScript at **byte-identical
+offsets**, so a component reuses the TypeScript queries, config and all three
+health dialects verbatim and every line number points at the real source file.
+The component itself becomes a symbol named after the file, `<Foo />` in markup
+mints a call edge, and a handler referenced only from `on:click={inc}` or
+`@click="inc"` carries an edge instead of reading as dead code.
 
-That one property is what makes the rest free: a component reuses the
-TypeScript queries, config and all three health dialects verbatim, and every line
-number points at the real source file. On top of it: the component itself becomes
-a symbol named after the file (`back-to-top.vue` declares `BackToTop`, which is
-what a parent actually writes), `<Foo />` in markup mints a call edge, and a
-handler referenced only from `on:click={inc}` or `@click="inc"` carries an edge
-instead of reading as dead code.
+### Razor / Blazor markup (`.razor`, `.cshtml`)
+
+Razor has the same shape, but with no usable grammar available the locator
+byte-scans `@code { }`, `@functions { }` and `@{ }` interiors into a C# buffer
+at byte-identical offsets, so the C# queries and health markers apply verbatim
+and PascalCase markup tags mint component call edges. It sits on the Partial
+rung because `@code` members land as call edges rather than symbols and the
+directives are blanked, so a Razor file carries no import edges yet.
 
 ---
 
@@ -242,6 +252,11 @@ bindings and heritage, with a dedicated workspace resolver per language.
 | **PHP** | `.php` | `use Foo\Bar\Baz` with composer.json PSR-4 longest-prefix resolution; Laravel, TYPO3 edges |
 | **Dart** | `.dart` | `import` / `export` / `part` URIs, `package:` via every `pubspec.yaml`, Flutter route tables and `runApp()` edges. **Health markers included** |
 | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` `.inc` | `uses` clauses via the generic unit-name → file-stem fallback; project files as entry points. **Health markers included** |
+| **GDScript** | `.gd` | `preload(...)` / `load(...)` / `extends "res://..."` resolved as absolute paths from the nearest `project.godot`, so a repo holding many Godot projects keeps each project's `res://` namespace separate, plus scene, autoload and `class_name` edges (see [GDScript / Godot](../architecture/language-support.md#gdscript--godot)) |
+| **VB.NET** | `.vb` | `Imports` through the same MSBuild project index C# uses: `.vbproj` / `.sln` parsing, `<RootNamespace>`-aware namespace lookup, NuGet package references |
+| **Elixir** | `.ex` `.exs` | `alias` / `import` / `require` / `use` against a `defmodule` index, with the Mix `lib/foo/bar.ex` → `Foo.Bar` convention as the fallback; `alias Foo.{Bar, Baz}` names both modules (no heritage: `use` and `@behaviour` are not inheritance) |
+| **F#** | `.fs` `.fsx` `.fsi` | `open` / `open type` against a declared-name index (namespace/module headers), plus the fsproj `<Compile Include>` compile order. `.fsi` signature files contribute imports only, no symbols. A layout that shares one namespace across many single-file projects leaves most `open` targets ambiguous by design, so unused-export findings there sit at the review tier (0.4) rather than being asserted |
+| **Objective-C** | `.m` `.mm` `.h` | `#import` / `#include` through the generic header-stem index, which covers the one-class-per-file convention; a framework import names no in-repo file and resolves to nothing |
 
 ---
 
@@ -288,11 +303,16 @@ meaningless.
 
 ### Lightweight tier
 
-Elixir, Clojure, Haskell, Lean 4, Erlang, F# and HTML get a real file-level
-import graph: imports extracted per language and resolved against a declared
-module-name index. The knowledge graph runs in flow/sparse mode on the result:
-honest file-to-file dependencies, no symbol-level claims. F# additionally honours
-the fsproj `<Compile Include>` compile order.
+Clojure, Haskell, Lean 4, Erlang and HTML get a real file-level import graph:
+imports extracted per language and resolved against a declared module-name
+index. The knowledge graph runs in flow/sparse mode on the result: honest
+file-to-file dependencies, no symbol-level claims.
+
+**QML** joins the lightweight tier with imports only: module specs resolve
+against a `qmldir`-declared module index and quoted references resolve relative
+to the importing file. `.qml` files are **never flagged as dead code**, because
+a component is instantiated by type name and loaded by the Qt runtime through
+qrc, `Loader` and `qmlRegisterType`, none of which is an import.
 
 **HTML** is import-tier on purpose. It has no functions, classes or calls, so
 there are no symbols to claim, but its `<script src>` and `<link href>` become
@@ -307,6 +327,12 @@ reachable is not statically decidable.
 OpenAPI, Protobuf, GraphQL, Dockerfile, Makefile, YAML, JSON, TOML, Terraform and
 Markdown appear in the file tree and the wiki, with special handlers extracting
 endpoints and targets where applicable.
+
+Godot resource files sit here too: `.tscn` / `.tres` / `.escn`,
+`project.godot` and an addon's `plugin.cfg` carry no symbols, but the paths
+they name are how a Godot project reaches its scripts, so they are indexed and
+read for those paths. See
+[GDScript / Godot](../architecture/language-support.md#gdscript--godot).
 
 ---
 
@@ -331,16 +357,13 @@ map before markers fire. This table is why a language is Full rather than Good.
 | Ruby | ✅ | ✅ | ✅ | later | ✅ |
 | Dart | ✅ | n/a | ✅ | later | ✅ |
 | Object Pascal | ✅ | n/a | later | later | n/a |
+| Razor | ✅ | n/a | n/a | later | ✅ |
 | Shell | ✅ | n/a | n/a | n/a | n/a |
 
-Every cell is a deliberate call, not an oversight. Go and Object Pascal have no
-class metrics because neither language nests a type's method *bodies* inside the
-type; mapping them anyway would emit a class with `method_count == 0` for every
-class in the repo. Kotlin's Extract Method is **blocked on the grammar**, not
-unscheduled: tree-sitter-kotlin parses a bare `break` as a plain identifier, and
-a slicer that cannot see a jump would propose an extraction that silently changes
-control flow. Rust and C++ omit `string_concat_in_loop` because both append in
-amortized O(1), so it would be a guaranteed false positive.
+Every cell is a deliberate call, not an oversight: a language reaches a dialect
+or it stays silent, and an `n/a` records a metric the language cannot carry
+rather than one nobody got to. Kotlin's Extract Method is **blocked on the
+grammar**, not unscheduled.
 
 Per-marker mechanics, every per-language precision ceiling and the reasoning
 behind each `n/a`: [CODE_HEALTH.md](CODE_HEALTH.md) and
@@ -354,25 +377,24 @@ Stated plainly, because a ceiling you know about is worth more than a claim you
 cannot check.
 
 - **Template dialects are invisible.** Django/Jinja, Go templates, ERB,
-  Handlebars, Blade and Thymeleaf parse cleanly as HTML and yield nothing:
-  `{% extends "base.html" %}` is plain text to an HTML parser. Covering them
-  needs a per-dialect regex tier gated on a framework manifest.
+  Handlebars, Blade and Thymeleaf parse as HTML and yield nothing.
 - **Svelte and Vue binding forms are skipped.** `{#each x as y}` and
-  `v-for="x in xs"` *parse* as JS but mean something else, so they are skipped: a
-  parse that succeeds with the wrong meaning is worse than a skip. Component
-  props are set by the parent as markup attributes and never imported by name, so
-  the unused-export pass is suppressed for both.
-- **Object Pascal's `extends`/`implements` split is a naming heuristic.**
-  `class(TBase, IFoo, IBar)` doesn't itself distinguish a base class from an
-  implemented interface; the heritage extractor infers it from the `I`-prefix
-  convention rather than a language guarantee. (`record` / `interface` /
-  class-helper / enum / type alias each report their own `SymbolKind` via
-  `refine_pascal_type_kind` — they no longer collapse to `kind="class"`.)
+  `v-for="x in xs"` parse as JS but mean something else.
+- **Razor has no import edges**, and an attribute-bound handler carries none.
+- **Object Pascal's `extends`/`implements` split is a naming heuristic**,
+  inferred from the `I`-prefix convention rather than a language guarantee.
+- **GDScript resolves no `uid://` path and no string dispatch**, and a script
+  without `class_name` gets no class symbol.
+- **A Godot `addons/` tree is exempt from dead-code reporting** only when a
+  `project.godot` sits above it, so a plugin's own repo reports normally.
+- **VB.NET leaves a few constructs unparsed**, XML and tuple literals among them.
 - **C has no health dialect.** It shares the C++ grammar for parsing but reaches
   no health walker map, so it gets graph coverage without markers.
 - **Scala import resolution is partial**, and ScalaTest's infix DSL
-  (`x shouldBe y`) is not counted as an assertion: there is no assert-prefixed
-  callee to key on.
+  (`x shouldBe y`) is not counted as an assertion.
+
+Per-language mechanics behind these:
+[architecture/language-support.md](../architecture/language-support.md).
 
 ---
 
@@ -387,8 +409,12 @@ cannot check.
 | Ruby | Full (health) | Dataflow dialect, LCOM4 via `@ivar` grouping |
 | C# | Full (health) | Dataflow dialect |
 | Dart | Good | riverpod / get_it dynamic hints, dataflow dialect |
+| GDScript | Good | The health dialects (complexity, performance, dataflow) that would take it to Full; the grammar supports all three |
 | Object Pascal | Good | Assertion and performance markers, a dedicated `uses` resolver |
-| Elixir · F# | Good | AST upgrade (both grammars are available on PyPI) |
+| VB.NET | Good | Health markers, project-level `<Import Include=...>` as implicit imports |
+| Elixir | Good | Health markers, and a call-resolution strategy beyond same-file |
+| F# | Good | Health markers, and a resolver that reads the AST index instead of the declared-name regex |
+| Objective-C | Good | Health markers, a resolver that reads the Xcode project rather than file stems, and pairing a header with its implementation across files |
 | SQL / dbt | — | Column-level blast radius |
 | Shell | — | Shebang detection for extensionless executables |
 | HTML | Lightweight | A regex import tier for template dialects, gated on a framework manifest |

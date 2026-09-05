@@ -681,9 +681,9 @@ class TestSupersedeCannotSubtract:
     ],
 )
 def test_literal_url_recognition(args: str, expected: str | None):
-    from repowise.core.workspace.extractors.http.index_clients import _literal_url
+    from repowise.core.workspace.extractors.http.client_calls import JS_SYNTAX, resolve_url
 
-    assert _literal_url(args) == expected
+    assert resolve_url(args, JS_SYNTAX) == expected
 
 
 # ---------------------------------------------------------------------------

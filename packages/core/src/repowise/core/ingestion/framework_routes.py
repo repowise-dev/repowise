@@ -44,11 +44,16 @@ class RouteMatch:
 
 @dataclass(frozen=True)
 class GroupMatch:
-    """One router-group binding — ``var v1 = api.MapGroup("/v1")``."""
+    """One router-group binding — ``var v1 = api.MapGroup("/v1")``.
+
+    ``prefix`` is ``None`` when the call declares one this cannot read, which is
+    not the same as declaring none: a consumer must refuse the routes under such
+    a group rather than serve them at the group's own prefix.
+    """
 
     var: str
     parent: str | None
-    prefix: str
+    prefix: str | None
 
 
 def _opt(value: str | None) -> str | None:
@@ -453,12 +458,13 @@ def _django_path(raw: str, verb: str) -> str:
     """A URLconf pattern as a path.
 
     Both spellings of a capture become ``{name}``: ``path()``'s
-    ``<converter:name>`` and ``re_path()``'s ``(?P<name>...)``, whose anchors go
-    with it. ``normalize_http_path`` reads neither, so a path left as written
-    would carry the converter into the contract id.
+    ``<converter:name>``, which is Flask's rule and shares its rewrite, and
+    ``re_path()``'s ``(?P<name>...)``, whose anchors go with it.
+    ``normalize_http_path`` reads neither, so a path left as written would carry
+    the converter into the contract id.
     """
     if verb == "path":
-        return re.sub(r"<(?:\w+:)?(\w+)>", r"{\1}", raw)
+        return flask_path(raw)
     raw = re.sub(r"\(\?P<(\w+)>[^)]*\)", r"{\1}", raw)
     return raw.strip("^$")
 
@@ -585,11 +591,33 @@ _NEXT_INERT_SEG_RE = re.compile(r"\(.*\)|@.*|_.*")
 # `[id]`, `[...slug]`, `[[...slug]]` -> `{id}` / `{slug}`.
 _NEXT_DYNAMIC_SEG_RE = re.compile(r"^\[+\.{0,3}(?P<name>[^\]]+)\]+$")
 
+# A named export opening its own line. Only whitespace may precede it, so a
+# commented-out handler declares nothing. Shared with Remix, which reads the
+# same declaration for a different set of names.
+_EXPORT_HEAD = r"^[^\S\n]*(?P<export>export)\s+(?:async\s+)?(?:function\s+|const\s+|let\s+|var\s+)"
+
+
+def _exported_names(content: str, pattern: re.Pattern[str]) -> list[tuple[str, int]]:
+    """``(name, offset)`` per exported handler, first declaration of each.
+
+    *offset* is the ``export`` keyword, which is where the declaration starts
+    and so the line a contract binds to.
+    """
+    out: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    for m in pattern.finditer(content):
+        name = m.group("name")
+        if name not in seen:
+            seen.add(name)
+            out.append((name, m.start("export")))
+    return out
+
+
 # The App Router takes the verb from the exported name and the path from the
 # file's location, so a route handler's text holds no path literal at all.
 _NEXT_HANDLER_RE = re.compile(
-    r"export\s+(?:async\s+)?(?:function\s+|const\s+|let\s+|var\s+)"
-    r"(?P<verb>GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b"
+    _EXPORT_HEAD + r"(?P<name>GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b",
+    re.MULTILINE,
 )
 
 
@@ -627,11 +655,494 @@ def next_route_path(rel_path: str) -> str | None:
 
 def next_route_verbs(content: str) -> list[tuple[str, int]]:
     """``(verb, offset)`` per exported handler, in declaration order."""
-    out: list[tuple[str, int]] = []
-    seen: set[str] = set()
-    for m in _NEXT_HANDLER_RE.finditer(content):
-        verb = m.group("verb")
-        if verb not in seen:
-            seen.add(verb)
-            out.append((verb, m.start("verb")))
+    return _exported_names(content, _NEXT_HANDLER_RE)
+
+
+# ---------------------------------------------------------------------------
+# Flask
+# ---------------------------------------------------------------------------
+
+# @app.route("/users/<int:id>", methods=["GET", "POST"]) plus Flask 2's
+# verb-named shortcuts. `route` carries its verbs in the call rather than in the
+# decorator name, so the verb is read from the argument text for that spelling.
+# The decorator must open its own line: only whitespace may precede it, so a
+# commented-out route and one written in a trailing comment are both inert.
+_FLASK_ROUTE_RE = re.compile(
+    r"^[^\S\n]*(?P<at>@)(?P<receiver>\w+)\s*\.\s*"
+    r"(?P<verb>route|get|post|put|patch|delete)\s*(?P<paren>\()"
+    r"""\s*(?:r|rb|b)?(?P<q>['"])(?P<path>[^'"]*)(?P=q)""",
+    re.MULTILINE,
+)
+
+# `methods=["GET", "POST"]`, in either bracket style Flask accepts.
+_FLASK_METHODS_RE = re.compile(r"methods\s*=\s*[\[(](?P<verbs>[^\])]*)[\])]")
+_FLASK_METHOD_LITERAL_RE = re.compile(r"""['"](\w+)['"]""")
+
+# The keyword itself, whatever its value. Seeing one the literal pattern above
+# could not read means the route serves verbs this file does not spell.
+_FLASK_METHODS_KW_RE = re.compile(r"\bmethods\s*=")
+
+# app.register_blueprint(bp, url_prefix="/users"). The receiver is captured
+# because Flask 2 lets a blueprint register another blueprint under itself.
+_FLASK_REGISTER_RE = re.compile(
+    r"(?:(?P<parent>\w+)\s*\.\s*)?register_blueprint\s*(?P<paren>\()\s*(?P<var>\w[\w.]*)"
+)
+_FLASK_URL_PREFIX_RE = re.compile(r"""url_prefix\s*=\s*['"](?P<prefix>[^'"]*)['"]""")
+
+# The keyword itself, whatever its value: one the literal pattern above could
+# not read mounts the blueprint somewhere this file does not spell.
+_FLASK_URL_PREFIX_KW_RE = re.compile(r"\burl_prefix\s*=")
+
+# A converter, with or without arguments: `<int:id>`, `<id>`, `<path:rest>`,
+# `<string(minlength=2):code>`.
+_FLASK_CONVERTER_RE = re.compile(r"<(?:[^<>]*:)?(\w+)>")
+
+# The decorated function. Only further decorators, comments and blank lines may
+# sit between the route call and it; anything else means the decorator was not
+# on a function, and the next `def` in the file belongs to somebody else.
+_FLASK_DEF_RE = re.compile(r"^[^\S\n]*(?:async[^\S\n]+)?def[^\S\n]+(?P<name>\w+)", re.MULTILINE)
+_FLASK_BETWEEN_RE = re.compile(r"(?:[^\S\n]*(?:@[^\n]*|#[^\n]*)?\n)*[^\S\n]*")
+
+# A docstring, so a route in a usage example is not read as a route. Flask's own
+# helpers document themselves with `@app.route("/uploads/<path:name>")` blocks,
+# and those endpoints do not exist anywhere.
+_TRIPLE_QUOTE_RE = re.compile(r'"""|\'\'\'')
+
+
+def _docstring_spans(content: str) -> list[tuple[int, int]]:
+    """``(start, end)`` of every triple-quoted string in *content*, in order.
+
+    A span is closed by its own delimiter, so a ``'''`` written inside a
+    ``\"\"\"`` block does not end it. An unterminated opener ends the walk rather
+    than swallowing the rest of the file.
+    """
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    while (m := _TRIPLE_QUOTE_RE.search(content, pos)) is not None:
+        close = content.find(m.group(), m.end())
+        if close == -1:
+            break
+        pos = close + 3
+        spans.append((m.start(), pos))
+    return spans
+
+
+def flask_path(raw: str) -> str:
+    """A Flask rule as a path: every converter spelling becomes ``{name}``.
+
+    ``normalize_http_path`` reads ``<...>`` as ordinary text and would carry the
+    converter into the contract id, so the rewrite happens here, as it does for
+    Django's ``<converter:name>``.
+    """
+    return _FLASK_CONVERTER_RE.sub(r"{\1}", raw)
+
+
+def _flask_handler(content: str, after: int) -> str | None:
+    """The name of the function decorated by a route call ending at *after*."""
+    m = _FLASK_DEF_RE.search(content, after)
+    if m is None or not _FLASK_BETWEEN_RE.fullmatch(content, after, m.start()):
+        return None
+    return m.group("name")
+
+
+def _flask_verbs(args: str, verb: str) -> list[str]:
+    """The methods a route decorator declares, in the order written.
+
+    Empty when the call names its methods through a variable
+    (``methods=HTTP_METHODS``): the route serves verbs the file does not spell,
+    and defaulting to GET would publish one of them as the whole endpoint.
+    """
+    if verb != "route":
+        return [verb.upper()]
+    m = _FLASK_METHODS_RE.search(args)
+    if m is None:
+        # Flask serves GET when `methods=` is absent.
+        return [] if _FLASK_METHODS_KW_RE.search(args) else ["GET"]
+    return [v.upper() for v in _FLASK_METHOD_LITERAL_RE.findall(m.group("verbs"))]
+
+
+def _flask_call_end(content: str, paren_offset: int) -> int:
+    """Index just past the call opened at *paren_offset*, or the text's end."""
+    close = match_paren(content, paren_offset, quotes="\"'", hash_comments=True)
+    return len(content) if close == -1 else close + 1
+
+
+def flask_routes(content: str) -> Iterator[RouteMatch]:
+    """Route decorators in *content*, one match per declared method.
+
+    ``receiver`` is the decorated variable as written; whether it holds an app or
+    a blueprint is the consumer's question, because the answer needs the file's
+    bindings. ``handler`` is the function directly below. A decorator inside a
+    docstring is documentation, not a route.
+    """
+    matches = list(_FLASK_ROUTE_RE.finditer(content))
+    # Paid for only once a candidate exists, and walked alongside the matches:
+    # both are in ascending offset order, so neither is rescanned.
+    spans = _docstring_spans(content) if matches else []
+    span = 0
+    for m in matches:
+        at = m.start("at")
+        while span < len(spans) and spans[span][1] <= at:
+            span += 1
+        if span < len(spans) and spans[span][0] < at:
+            continue
+        paren_offset = m.start("paren")
+        end = _flask_call_end(content, paren_offset)
+        handler = _flask_handler(content, end)
+        path = flask_path(m.group("path"))
+        for verb in _flask_verbs(content[paren_offset:end], m.group("verb").lower()):
+            yield RouteMatch(
+                verb=verb,
+                path=path,
+                receiver=m.group("receiver"),
+                handler=handler,
+                offset=at,
+                paren_offset=paren_offset,
+            )
+
+
+def flask_blueprints(content: str) -> Iterator[GroupMatch]:
+    """``register_blueprint(...)`` mounts in *content*.
+
+    ``var`` is the registered expression as written, dotted where the call names
+    one (``views.bp``): the graph consumer resolves its head against the file's
+    imports, the contract consumer keys the prefix on its final segment.
+    ``prefix`` is empty when the call carries no ``url_prefix=`` and ``None``
+    when it carries one this cannot read (``url_prefix=PREFIX``), which is where
+    the blueprint is mounted and the routes on it are not served.
+    """
+    if "register_blueprint" not in content:
+        return
+    for m in _FLASK_REGISTER_RE.finditer(content):
+        paren_offset = m.start("paren")
+        args = content[paren_offset : _flask_call_end(content, paren_offset)]
+        pm = _FLASK_URL_PREFIX_RE.search(args)
+        if pm is None and _FLASK_URL_PREFIX_KW_RE.search(args):
+            prefix: str | None = None
+        else:
+            prefix = pm.group("prefix") if pm else ""
+        yield GroupMatch(
+            var=m.group("var"),
+            parent=_opt(m.group("parent")),
+            prefix=prefix,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Micronaut
+# ---------------------------------------------------------------------------
+
+# `@Controller("/users")` names the class prefix and `@Get("/{id}")` the
+# sub-path: the two-level shape JAX-RS spells with two annotations, written
+# with the verb in the annotation's own name. The graph side recognised
+# `@Controller` as a substring only, to stamp a role; nothing read the paths.
+_MICRONAUT_VERBS = "Get|Post|Put|Delete|Patch|Head|Options"
+
+_MICRONAUT_VERB_RE = re.compile(rf"@(?P<verb>{_MICRONAUT_VERBS})\b")
+_MICRONAUT_CONTROLLER_RE = re.compile(r"@Controller\b")
+
+# A declarative HTTP client, written with the same verb annotations as a
+# controller: its routes are calls out, not endpoints served.
+_MICRONAUT_CLIENT_RE = re.compile(r"@Client\b")
+
+# An argument list follows, or the annotation stands alone.
+_MICRONAUT_OPEN_RE = re.compile(r"\s*\(")
+
+# The path argument: positional, or named `uri =` (Micronaut's spelling) or
+# `value =` (its alias).
+_MICRONAUT_ARG_RE = re.compile(r"""\s*\(\s*(?:(?:uri|value)\s*=\s*)?["'](?P<path>[^"']*)["']""")
+
+# The first argument's keyword, when it has one. An annotation whose arguments
+# are all named and none of them a path key carries no path at all, so
+# `@Get(produces = ...)` serves the class prefix exactly as a bare `@Get` does.
+_MICRONAUT_NAMED_ARG_RE = re.compile(r"\(\s*\w+\s*=")
+
+# A keyword that does name the path: seeing one this could not read means the
+# route has a path and it is not the class prefix.
+_MICRONAUT_PATH_KEY_RE = re.compile(r"\b(?:uri|uris|value)\s*=")
+
+# A type declaration, unanchored because a Micronaut controller is routinely
+# written on one line (`@Controller("/hi") public class Hi {}`), which a
+# line-anchored match reads as no declaration at all. Java's `record` and `enum`
+# count: both carry controller annotations, and a spelling left out here is a
+# controller the graph reads as an ordinary file.
+_MICRONAUT_TYPE_RE = re.compile(r"\b(?:class|interface|object|record|enum)\s+\w+")
+
+# An RFC 6570 query or fragment expansion. Micronaut route templates carry
+# their query parameters in the path string (`/list{?args*}`), where
+# `normalize_http_path` reads them as a path parameter rather than dropping
+# them the way it drops a plain `?query`.
+_MICRONAUT_QUERY_EXPANSION_RE = re.compile(r"\{[?#&][^}]*\}")
+
+# The annotated method's name: the first identifier opening a parameter list
+# that is not itself an annotation, so an annotation run carrying calls of its
+# own (`@Produces(...)`, a nested `@Schema(...)`) is stepped over.
+_MICRONAUT_METHOD_RE = re.compile(r"(?<![@\w])(?P<name>\w+)\s*\(")
+
+
+def micronaut_annotations(content: str) -> set[int]:
+    """Offsets of every ``@`` written as code in *content*.
+
+    An annotation quoted in a doc comment or a string is documentation, not a
+    route: the guides ship whole controllers inside asciidoc snippets, and the
+    routes in them are served by nothing.
+
+    The scan reads the whole file, so a consumer wanting more than one of the
+    three readers below computes this once and hands it to each of them.
+    """
+    return {i for i, c, _ in scan_code(content, quotes='"', text_blocks=True) if c == "@"}
+
+
+def micronaut_path(raw: str) -> str:
+    """A Micronaut route template as a path, without its query expansion."""
+    return _MICRONAUT_QUERY_EXPANSION_RE.sub("", raw)
+
+
+def _micronaut_annotation_path(content: str, at: int) -> str | None:
+    """The path the annotation ending at *at* declares.
+
+    ``""`` when it names no path, which Micronaut serves at the class prefix:
+    a bare ``@Get``, and equally ``@Get(produces = ...)``, whose arguments are
+    all named and none of them the path. ``None`` when it does name one this
+    cannot read: ``uris = {…}`` names several and a constant names none, and in
+    neither case is the class prefix on its own the route.
+    """
+    opened = _MICRONAUT_OPEN_RE.match(content, at)
+    if opened is None:
+        return ""
+    m = _MICRONAUT_ARG_RE.match(content, at)
+    if m is not None:
+        return m.group("path")
+    close = match_paren(content, opened.end() - 1, quotes='"')
+    args = content[opened.end() - 1 : len(content) if close == -1 else close]
+    if _MICRONAUT_PATH_KEY_RE.search(args) or not _MICRONAUT_NAMED_ARG_RE.match(args):
+        return None
+    return ""
+
+
+def _micronaut_annotated_types(
+    content: str, pattern: re.Pattern[str], annotations: set[int] | None = None
+) -> Iterator[tuple[int, str | None]]:
+    """``(offset, path)`` per type-level match of *pattern*, ascending.
+
+    The declaration scan is JAX-RS's: an annotation run reaching a type is the
+    same shape in both. ``path`` is ``None`` when the annotation carries an
+    argument this cannot read.
+    """
+    code = micronaut_annotations(content) if annotations is None else annotations
+    for m in pattern.finditer(content):
+        if m.start() not in code:
+            continue
+        end = _jaxrs_decl_end(content, m.start())
+        if not _MICRONAUT_TYPE_RE.search(content, m.end(), end):
+            continue
+        yield m.start(), _micronaut_annotation_path(content, m.end())
+
+
+def micronaut_class_paths(
+    content: str, annotations: set[int] | None = None
+) -> list[tuple[int, str | None]]:
+    """``(offset, prefix)`` per type-level ``@Controller``, ascending.
+
+    A controller whose prefix is a constant keeps its entry with a ``None``
+    prefix. It is still a controller, which is what the graph reads, and the
+    routes under it are refused by the contract consumer rather than published
+    at a path nothing serves.
+    """
+    if "@Controller" not in content:
+        return []
+    return [
+        (offset, None if path is None else micronaut_path(path).rstrip("/"))
+        for offset, path in _micronaut_annotated_types(
+            content, _MICRONAUT_CONTROLLER_RE, annotations
+        )
+    ]
+
+
+def micronaut_client_types(content: str, annotations: set[int] | None = None) -> list[int]:
+    """Offsets of every type-level ``@Client``, ascending.
+
+    A declarative client declares the endpoints it calls with the annotations a
+    controller declares the ones it serves with, so the two are told apart only
+    by which of them the verb annotation sits under.
+    """
+    if "@Client" not in content:
+        return []
+    return [
+        offset
+        for offset, _path in _micronaut_annotated_types(content, _MICRONAUT_CLIENT_RE, annotations)
+    ]
+
+
+def _micronaut_route_path(content: str, at: int) -> str | None:
+    """The sub-path an annotation ending at *at* declares, as a path."""
+    raw = _micronaut_annotation_path(content, at)
+    return None if raw is None else micronaut_path(raw)
+
+
+def micronaut_routes(content: str, annotations: set[int] | None = None) -> Iterator[RouteMatch]:
+    """Verb-annotated controller methods in *content*.
+
+    ``path`` is the method's own sub-path, ``""`` when the annotation carries
+    none and the class prefix is the whole route; the prefix is stitched on by
+    the consumer, the only side that knows how to compose one. ``handler`` is
+    the method the annotation is written above.
+    """
+    code = micronaut_annotations(content) if annotations is None else annotations
+    for m in _MICRONAUT_VERB_RE.finditer(content):
+        if m.start() not in code:
+            continue
+        end = _jaxrs_decl_end(content, m.start())
+        name = _MICRONAUT_METHOD_RE.search(content, m.end(), end)
+        yield RouteMatch(
+            verb=m.group("verb").upper(),
+            path=_micronaut_route_path(content, m.end()),
+            receiver=None,
+            handler=name.group("name") if name is not None else None,
+            offset=m.start(),
+            paren_offset=m.start(),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Remix
+# ---------------------------------------------------------------------------
+
+# Remix serves what it finds under `app/routes/`, so no route call exists to
+# read: the path is the file's name read as a grammar and the verb is the name
+# of each exported handler. `app/` is optional because the app directory is
+# configurable and a repo that moves it still writes `routes/` under it.
+_REMIX_ROUTES_DIR_RE = re.compile(r"(?:^|/)(?:app/)?routes/")
+
+REMIX_ROUTE_EXTS: tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx")
+
+# A test written beside the route it exercises. `routes/` holds both.
+_REMIX_TEST_RE = re.compile(r"\.(?:test|spec)\.")
+
+# `loader` answers a GET. `action` answers every verb that is not a GET and the
+# file never says which, so the route is recorded with the unknown-verb marker
+# the URLconf dialects use rather than a guessed POST.
+_REMIX_EXPORT_RE = re.compile(_EXPORT_HEAD + r"(?P<name>loader|action)\b", re.MULTILINE)
+
+#: The HTTP method each exported handler answers.
+REMIX_HANDLER_VERBS: dict[str, str] = {"loader": "GET", "action": "*"}
+
+
+def remix_route_file(rel_path: str) -> bool:
+    """True when *rel_path* is a route Remix loads by filesystem convention."""
+    if not _REMIX_ROUTES_DIR_RE.search(rel_path):
+        return False
+    name = rel_path.rsplit("/", 1)[-1]
+    if _REMIX_TEST_RE.search(name):
+        return False
+    return name.endswith(REMIX_ROUTE_EXTS)
+
+
+def _remix_strip_ext(name: str) -> str:
+    for ext in REMIX_ROUTE_EXTS:
+        if name.endswith(ext):
+            return name[: -len(ext)]
+    return name
+
+
+#: Written before a character the route name escaped, so the grammar below can
+#: tell ``.`` from ``[.]`` without a second pass over the name.
+_REMIX_ESCAPE_MARK = "\x00"
+
+
+def _remix_split(part: str) -> list[str]:
+    """The segments of one dotted route name, escapes marked.
+
+    ``.`` separates segments, and inside ``[...]`` every character is literal:
+    that is how a route serves a file name (``sitemap[.]xml``). The escape
+    covers the bracketed characters and no more, so each one is marked rather
+    than the segment holding it: ``$id[.]json`` is still a parameter.
+    """
+    segments: list[str] = []
+    current = ""
+    in_escape = False
+    for ch in part:
+        if ch == "[" and not in_escape:
+            in_escape = True
+        elif ch == "]" and in_escape:
+            in_escape = False
+        elif ch == "." and not in_escape:
+            segments.append(current)
+            current = ""
+        else:
+            current += _REMIX_ESCAPE_MARK + ch if in_escape else ch
+    segments.append(current)
+    return segments
+
+
+def _remix_chars(segment: str) -> list[tuple[str, bool]]:
+    """``(character, escaped)`` pairs, reading the marker back off *segment*."""
+    out: list[tuple[str, bool]] = []
+    marked = False
+    for ch in segment:
+        if ch == _REMIX_ESCAPE_MARK and not marked:
+            marked = True
+            continue
+        out.append((ch, marked))
+        marked = False
     return out
+
+
+def _remix_segment_path(segment: str) -> str | None:
+    """The URL segment a route-name segment names, or None when it names none.
+
+    Every rule reads unescaped characters only: a ``$`` or a ``_`` written
+    inside brackets is part of the name the route serves, not grammar.
+    """
+    chars = _remix_chars(segment)
+    if chars and chars[0] == ("_", False):
+        # `_index` and every other pathless layout: nesting, not a URL segment.
+        return None
+    # A trailing underscore opts the route out of its parent's layout, which
+    # changes what renders and not what is served.
+    while chars and chars[-1] == ("_", False):
+        chars.pop()
+    if len(chars) > 1 and chars[0] == ("(", False) and chars[-1] == (")", False):
+        # Optional. Recorded in its present form: the absent form is a second
+        # path, and emitting both would publish an endpoint per combination.
+        chars = chars[1:-1]
+    if chars == [("$", False)]:
+        return "*"
+    text = "".join(ch for ch, _esc in chars)
+    if chars and chars[0] == ("$", False):
+        return ":" + text[1:]
+    return text or None
+
+
+def remix_route_path(rel_path: str) -> str | None:
+    """The URL the Remix route file *rel_path* serves, else None.
+
+    Directories separate segments exactly as ``.`` does, so the nested form
+    (``routes/users/$id.tsx``) and the flat form (``routes/users.$id.tsx``)
+    read alike. A directory whose file is named ``route`` carries the route's
+    name itself, and a trailing ``index`` is the parent's index route.
+    """
+    if not remix_route_file(rel_path):
+        return None
+    end = 0
+    for m in _REMIX_ROUTES_DIR_RE.finditer(rel_path):
+        end = m.end()
+    parts = rel_path[end:].split("/")
+    parts[-1] = _remix_strip_ext(parts[-1])
+    if len(parts) > 1 and parts[-1] == "route":
+        parts.pop()
+    raw: list[str] = []
+    for part in parts:
+        raw.extend(_remix_split(part))
+    if raw and raw[-1] == "index":
+        raw.pop()
+    segments = [seg for text in raw if (seg := _remix_segment_path(text)) is not None]
+    return "/" + "/".join(segments)
+
+
+def remix_route_verbs(content: str) -> list[tuple[str, int]]:
+    """``(verb, offset)`` per exported route handler, in declaration order."""
+    return [
+        (REMIX_HANDLER_VERBS[name], offset)
+        for name, offset in _exported_names(content, _REMIX_EXPORT_RE)
+    ]

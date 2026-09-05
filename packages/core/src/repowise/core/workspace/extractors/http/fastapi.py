@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from ..base import line_at
 from ..langs import PYTHON
 from .dialect import METHODS, build_provider_contract
+from .flask import flask_file
 from .mounts import balanced_args, compose_prefix, router_prefixes
 
 if TYPE_CHECKING:
@@ -51,6 +52,8 @@ class FastApiDialect:
         Keyed by the router variable's final name segment (``pkg.router`` ->
         ``router``); only mounts that carry an explicit ``prefix=`` are recorded.
         """
+        if flask_file(content):
+            return {}
         out: dict[str, str] = {}
         for m in _INCLUDE_ROUTER_RE.finditer(content):
             args = balanced_args(content, m.end() - 1)  # m.end()-1 is the '('
@@ -61,6 +64,11 @@ class FastApiDialect:
         return out
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
+        # `@app.get` is spelled the same in both frameworks and `app` is a
+        # conventional name in both, so a Flask file read here would publish
+        # every one of its routes a second time, labelled FastAPI.
+        if flask_file(ctx.content):
+            return []
         prefixes = router_prefixes(ctx.content, "APIRouter|FastAPI")
         known = set(prefixes) | _DEFAULT_ROUTER_NAMES
 

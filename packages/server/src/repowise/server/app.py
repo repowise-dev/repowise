@@ -448,6 +448,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await _repo_registry.close()
             # The enricher is only ever published alongside the registry.
             set_tool_workspace(registry=None, workspace_root=None, cross_repo_enricher=None)
+            # The test-impact join holds its own session per consumer repo.
+            from repowise.server.mcp_server._test_impact import close_test_impact_indexes
+
+            with suppress(Exception):
+                await close_test_impact_indexes()
         # Dispose workspace repo engines first
         for ws_engine in getattr(app.state, "workspace_engines", []):
             with suppress(Exception):

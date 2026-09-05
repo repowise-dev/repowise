@@ -43,7 +43,7 @@ requirement for the index.
 ## Graph Intelligence
 
 tree-sitter parses your source into a **two-tier dependency graph**: file nodes
-and symbol nodes (functions, classes, methods). 19 languages parse to a full
+and symbol nodes (functions, classes, methods). 25 languages parse to a full
 AST; see [`LANGUAGE_SUPPORT.md`](LANGUAGE_SUPPORT.md) for per-language tiers.
 
 A **confidence-scored call resolver** handles import aliases, barrel

@@ -79,6 +79,9 @@ _NON_DEPENDENCY_EDGES: frozenset[str] = frozenset({"co_changes"})
 
 _JVM_SUFFIXES: tuple[str, ...] = (".java", ".kt")
 
+#: Objective-C implementation files, which no source ever imports.
+_OBJC_SOURCE_SUFFIXES: tuple[str, ...] = (".m", ".mm")
+
 
 @dataclass(frozen=True)
 class PackageFileMap:
@@ -297,6 +300,18 @@ def is_file_reachable(
     # name; only the config names them by path.
     if path in rescues.bundler_alias_targets:
         return True
+
+    # Nothing ever ``#import``s an Objective-C ``.m``: the header declares the
+    # interface and the implementation is joined to it by target membership in
+    # the Xcode project, which is not source. ``in_degree=0`` on a ``.m`` is
+    # therefore a property of the language rather than evidence of deadness,
+    # and left alone it reported every implementation file in a library as
+    # unreachable. The header answers for it. Recursion is one level deep: a
+    # ``.h`` never re-enters this branch.
+    if path.endswith(_OBJC_SOURCE_SUFFIXES) and node_data.get("language") == "objectivec":
+        header = f"{path.rsplit('.', 1)[0]}.h"
+        if header in graph and is_file_reachable(header, graph, rescues):
+            return True
 
     packages = rescues.package_files
     if path.endswith(".go"):

@@ -788,6 +788,10 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     # ingestion/sfc_source.py), so the TS node map applies verbatim.
     "svelte": _TS,
     "vue": _TS,
+    # Razor reaches the walker as a C# buffer (its ``@code`` / ``@{ }``
+    # regions projected by the same sfc_source seam), so the C# node map
+    # applies verbatim.
+    "razor": _CSHARP,
     "javascript": _JS,
     "jsx": _JS,
     "go": _GO,

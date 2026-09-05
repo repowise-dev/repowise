@@ -7,9 +7,17 @@ emit is best-effort so it can never break or slow a tool response.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from repowise.server.mcp_server._savings import wrapper
+
+
+def _size(result) -> tuple[int, int]:
+    """The size the wrapper should report, from the same formula the budget uses."""
+    chars = len(json.dumps(result, separators=(",", ":"), default=str))
+    return chars, chars // 4
 
 
 class TestTelemetryProperties:
@@ -32,6 +40,7 @@ class TestTelemetryProperties:
             "_meta": {"index_behind": True, "embedder_degraded": False, "timing_ms": 12.3},
         }
         props = wrapper._telemetry_properties("get_answer", result, 42)
+        chars, tokens = _size(result)
         assert props == {
             "tool": "get_answer",
             "status": "ok",
@@ -41,6 +50,8 @@ class TestTelemetryProperties:
             "grounding": "exact_symbol",
             "index_behind": True,
             "embedder_degraded": False,
+            "response_chars": chars,
+            "response_tokens": tokens,
         }
 
     def test_degraded_answer_reports_why_synthesis_was_missing(self):
@@ -95,11 +106,44 @@ class TestTelemetryProperties:
         props = wrapper._telemetry_properties("search_codebase", result, 5)
         assert props["results_bucket"] == "1-3"
         # Only coarse keys — no results/paths reach the wire.
-        assert set(props) == {"tool", "status", "duration_ms", "results_bucket"}
+        assert set(props) == {
+            "tool",
+            "status",
+            "duration_ms",
+            "results_bucket",
+            "response_chars",
+            "response_tokens",
+        }
+        assert (props["response_chars"], props["response_tokens"]) == _size(result)
 
     def test_non_dict_result_is_safe(self):
         props = wrapper._telemetry_properties("get_overview", "unexpected", 1)
         assert props == {"tool": "get_overview", "status": "ok", "duration_ms": 1}
+
+    def test_response_size_is_the_serialised_payload(self):
+        """Size is a number about the payload, not any of its content."""
+        result = {"answer": "x" * 100, "confidence": "high"}
+        props = wrapper._telemetry_properties("get_answer", result, 1)
+        chars, tokens = _size(result)
+        assert props["response_chars"] == chars
+        assert props["response_tokens"] == tokens == chars // 4
+
+    def test_unserialisable_result_reports_no_size(self, monkeypatch: pytest.MonkeyPatch):
+        """A dump that blows up drops the size keys instead of failing the emit."""
+
+        class _Boom:
+            @staticmethod
+            def dumps(*a, **k):
+                raise TypeError("nope")
+
+        monkeypatch.setattr(wrapper, "json", _Boom)
+        props = wrapper._telemetry_properties("get_answer", {"confidence": "high"}, 1)
+        assert props == {
+            "tool": "get_answer",
+            "status": "ok",
+            "duration_ms": 1,
+            "confidence": "high",
+        }
 
 
 @pytest.mark.asyncio
@@ -137,3 +181,12 @@ async def test_telemetry_failure_never_breaks_the_tool(monkeypatch: pytest.Monke
     # The tool result must survive a telemetry emit that raises.
     out = await wrapper.instrument(get_overview)()
     assert out == {"ok": True, "_meta": {}}
+
+
+def test_response_size_prefers_the_budget_stamp(monkeypatch: pytest.MonkeyPatch):
+    """The budget pass already measured the payload; a second dump is waste."""
+    monkeypatch.setattr(wrapper, "_semantic_search_state", lambda: None)
+    result = {"answer": "x" * 50, "_meta": {"response_budget": {"serialized_chars": 4000}}}
+    props = wrapper._telemetry_properties("get_answer", result, 1)
+    assert props["response_chars"] == 4000
+    assert props["response_tokens"] == 1000

@@ -57,6 +57,65 @@ def _save(
     )
 
 
+def _save_many(root: Path, count: int) -> None:
+    """`count` breaking changes, each crossing a repo boundary."""
+    save_breaking_change_report(
+        BreakingChangeReport(
+            generated_at=(STAMP + timedelta(seconds=5)).isoformat(),
+            changes=[
+                BreakingChange(
+                    kind="removed_endpoint",
+                    severity="breaking",
+                    contract_id=f"http::GET::/thing/{i}",
+                    contract_type="http",
+                    provider_repo="api",
+                    provider_file="src/routes.ts",
+                    provider_symbol="handler",
+                    provider_service=None,
+                    detail=f"http::GET::/thing/{i} was removed",
+                    impacted_consumers=[
+                        ImpactedConsumer(
+                            repo="frontend",
+                            service=None,
+                            node_id="frontend",
+                            file="src/api.ts",
+                            symbol="getThing",
+                            match_type="exact",
+                            confidence=0.9,
+                        )
+                    ],
+                )
+                for i in range(count)
+            ],
+        ),
+        root,
+    )
+
+
+def test_names_the_first_few_changes_under_the_count(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    _save_many(tmp_path, 5)
+    _print_breaking_changes(tmp_path, STAMP)
+    out = capsys.readouterr().out
+    assert "5 breaking contract change(s)" in out
+    for i in range(3):
+        assert f"http::GET::/thing/{i}" in out
+    assert "http::GET::/thing/3" not in out
+    assert "api -> frontend" in out
+    assert "and 2 more" in out
+
+
+def test_no_overflow_line_when_every_change_is_named(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    _save_many(tmp_path, 2)
+    _print_breaking_changes(tmp_path, STAMP)
+    out = capsys.readouterr().out
+    assert "http::GET::/thing/1" in out
+    assert "more" not in out
+
+
 def test_reports_a_report_this_update_wrote(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     _save(tmp_path, generated_at=(STAMP + timedelta(seconds=5)).isoformat())
     _print_breaking_changes(tmp_path, STAMP)
