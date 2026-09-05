@@ -60,9 +60,9 @@ async def make_cost_tracker(repo_path: Path, repo_name: str) -> CostTracker:
         busy_timeout_ms=_COST_TRACKER_BUSY_TIMEOUT_MS,
     )
     await engine.dispose()
-    # buffered=True defers every per-call INSERT to a single ``flush()`` after
-    # generation, so cost writes never contend with the generation writer
-    # (issue #326). Call ``flush_cost_tracker`` once heavy DB work is done.
+    # buffered=True avoids write contention (issue #326) and, just as load
+    # bearing now, keeps the pool empty so nothing refills it before flush
+    # runs and reintroduces the cross-loop reuse from issue #2062.
     return CostTracker(session_factory=sf, repo_id=repo_id, buffered=True)
 
 
