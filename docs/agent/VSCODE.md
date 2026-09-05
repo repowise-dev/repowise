@@ -115,6 +115,21 @@ transcript mining after the session. What the extension itself surfaces in the
 gutter, on hover and in the dashboards is unaffected. Full comparison:
 [INTEGRATIONS.md](INTEGRATIONS.md).
 
+## Language Model Tools (Copilot Chat)
+
+In addition to standard MCP tools, the VS Code extension registers **6 native Language Model Tools** via VS Code's `vscode.lm.registerTool` API. When using GitHub Copilot Chat in Agent mode, Copilot can call these tools directly to inspect the Repowise index without requiring external server processes:
+
+| Tool Name | Parameters | Purpose |
+|---|---|---|
+| `repowise_searchCodebase` | `query` (string), `limit` (optional number) | Hybrid semantic + full-text search over indexed wiki pages. Returns ranked snippets and file targets. |
+| `repowise_getFileHealth` | `filePath` (string) | Defect, maintainability, and performance scores for a file, plus active biomarker findings. |
+| `repowise_getRefactoringPlans` | `filePath` (string) | Refactoring plans targeting symbols in the file, including effort bucket, confidence, and blast radius. |
+| `repowise_getBranchRisk` | `base` (optional string) | Scores uncommitted changes / working HEAD against the base branch, returning risk percentile, review priority, and risk drivers. |
+| `repowise_getSymbolInfo` | `filePath` (string), `symbolName` (optional string) | Line bounds, primary owner, callers, callees, and governing ADR decisions for indexed symbols. |
+| `repowise_getFileDocs` | `filePath` (string) | Reads the generated Repowise wiki page content for a specified file. |
+
+All native LM tools are read-only, bounded (max 30,000 chars per payload to avoid token flooding), and respect workspace boundary checks. Toggle native LM tool availability via `repowise.agentTools.enabled` in settings.
+
 ## Settings
 
 The fastest way to tune everything is **Repowise: Open Settings**, a panel
@@ -125,6 +140,7 @@ covering every surface with plain-language descriptions. The full list:
 | `repowise.server.autoStart` | `ask` | Start the local server automatically, ask first, or never |
 | `repowise.server.port` | discover | Override the server port instead of automatic discovery |
 | `repowise.cliPath` | PATH | Absolute path to the `repowise` executable |
+| `repowise.agentTools.enabled` | `true` | Enable or disable native VS Code Language Model Tools for Copilot Chat |
 | `repowise.diagnostics.enabled` | `false` | Publish health findings to the Problems panel |
 | `repowise.diagnostics.minSeverity` | `high` | Lowest severity surfaced in the Problems panel |
 | `repowise.diagnostics.dimensions` | all | Health dimensions included in the Problems panel |
