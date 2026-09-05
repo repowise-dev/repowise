@@ -101,7 +101,7 @@ export function PageGenerateButton({
   async function confirm() {
     setLaunching(true);
     try {
-      const res = await regeneratePage(page.id, { cascade });
+      const res = await regeneratePage(page.id, { cascade, repoId });
       setJobId(res.job_id);
       setConfirmOpen(false);
     } catch (e) {
