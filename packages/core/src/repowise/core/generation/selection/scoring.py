@@ -84,9 +84,14 @@ def score_file(
 
     base += kg_bonus
 
-    # Penalties.
+    # Penalties. Actual test specs are penalized so substantive production code
+    # ranks higher under caps; test support/infrastructure files (fixtures, helpers)
+    # are preserved without penalty.
     if fi.is_test:
-        base *= _PENALTY_TEST
+        from repowise.core.test_paths import is_test_support_path
+
+        if not is_test_support_path(fi.path, getattr(fi, "language", None)):
+            base *= _PENALTY_TEST
     if (
         n_symbols <= _PENALTY_TRIVIAL_SYMBOL_CAP
         and fi.size_bytes < _PENALTY_TRIVIAL_SIZE_BYTES
