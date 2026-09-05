@@ -1726,5 +1726,17 @@
         "title": null
       }
     ]
+  },
+  "set_finding_status": {
+    "_meta": {
+      "contract_version": null,
+      "embedder_degraded": null
+    },
+    "id": null,
+    "note": null,
+    "public_id": null,
+    "status": null,
+    "status_changed_at": null,
+    "status_reason": null
   }
 }

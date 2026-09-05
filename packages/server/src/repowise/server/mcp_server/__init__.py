@@ -52,6 +52,7 @@ from repowise.server.mcp_server import _state
 #: imports; individually they are what a single-tool consumer pays for.
 _TOOL_MODULES: dict[str, str] = {
     "generate_refactoring_code": "tool_refactoring",
+    "set_finding_status": "tool_findings",
     "get_answer": "tool_answer",
     "get_architecture": "tool_architecture",
     "get_blast_radius": "tool_blast_radius",
