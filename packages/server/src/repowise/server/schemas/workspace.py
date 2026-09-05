@@ -149,6 +149,14 @@ class WorkspaceContractDetail(BaseModel):
     unmatched_reason: str | None = None
 
 
+class WorkspaceCoChangeEvidence(BaseModel):
+    """Bounded supporting evidence for one co-change pair (#483)."""
+
+    authors: list[str] = []
+    commit_pairs: list[dict] = []
+    max_gap_hours: float = 0.0
+
+
 class WorkspaceCoChangeEntry(BaseModel):
     source_repo: str
     source_file: str
@@ -157,6 +165,7 @@ class WorkspaceCoChangeEntry(BaseModel):
     strength: float
     frequency: int
     last_date: str
+    evidence: WorkspaceCoChangeEvidence | None = None
 
 
 class WorkspaceCoChangesResponse(BaseModel):
