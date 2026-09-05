@@ -92,13 +92,21 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# Current stamp: paired-test detection changed. ``_has_paired_test_file`` had
+# Current stamp: C gained a complexity node map. ``LANGUAGE_NODE_MAPS`` had no
+# ``c`` entry, so every C file scored as if it had no branches: ``max_ccn`` and
+# the maintainability index were computed off an empty node set and persisted
+# that way. The map is present now, so a C file's stored complexity metrics and
+# the findings keyed off them change on the next update. C-free repos are
+# unaffected; the stamp is what makes a C repo re-score instead of waiting out
+# the decay timer.
+#
+# v8: paired-test detection changed. ``_has_paired_test_file`` had
 # ``test_<stem>.py`` hardcoded, so the prefix layout only ever matched Python;
 # it now follows the file's own suffix, and ``<stem>_spec`` joins the suffix
 # forms. Files that were counted untested and are not become tested, which
 # moves untested-hotspot findings and the scores that carry them, on every
 # language with a prefix or spec convention rather than Ruby alone.
-HEALTH_ANALYZER_VERSION = 8
+HEALTH_ANALYZER_VERSION = 9
 
 # Method-level smells that make the dataflow / Extract Method pass worthwhile.
 # Only files carrying one of these get a CFG + def/use + reaching pass built.
