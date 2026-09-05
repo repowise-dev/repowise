@@ -33,6 +33,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from repowise.core.sqlite_pragmas import apply_sqlite_pragmas
+
 SESSIONS_DIRNAME = "sessions"
 SESSIONS_DB_FILENAME = "sessions.db"
 
@@ -60,6 +62,9 @@ MAX_SPAN_ATTEMPTS = 3
 #: Cap on the distinct session ids tracked per structured decision. Two is
 #: enough to promote; beyond a handful the extra ids only pad evidence.
 _MAX_SESSIONS_TRACKED = 20
+
+#: Retry window for a contended open, in milliseconds.
+_BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS raw_candidates (
@@ -231,9 +236,7 @@ class SessionStagingStore:
         self.db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
+        apply_sqlite_pragmas(self._conn, _BUSY_TIMEOUT_MS)
         self._conn.executescript(_SCHEMA)
         _migrate_injections_columns(self._conn)
         self._conn.commit()

@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from repowise.core.fts_query import build_fts5_query, meaningful_terms
+from repowise.core.sqlite_pragmas import apply_sqlite_pragmas
 
 _log = logging.getLogger(__name__)
 
@@ -76,6 +77,9 @@ _RERANK_WINDOW_MAX = 50
 #: was derived from gone. The episode itself stays: the body is the content and
 #: the pointer was only ever provenance.
 SOURCE_GONE_NOTE = " (source no longer on disk)"
+
+#: Retry window for a contended open, in milliseconds.
+_BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS episodes (
@@ -228,9 +232,7 @@ class EpisodeStore:
         self.max_rows = max_rows
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
+        apply_sqlite_pragmas(self._conn, _BUSY_TIMEOUT_MS)
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
         self.fts_enabled = self._ensure_fts()

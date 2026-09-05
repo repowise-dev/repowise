@@ -21,6 +21,7 @@ import structlog
 
 from repowise.core.distill import tracking
 from repowise.core.distill.markers import REF_LENGTH, is_valid_ref
+from repowise.core.sqlite_pragmas import apply_sqlite_pragmas
 
 logger = structlog.get_logger(__name__)
 
@@ -31,6 +32,9 @@ OMISSIONS_DB_FILENAME = "omissions.db"
 DEFAULT_TTL_DAYS = 7
 #: Compressed-content size cap; oldest rows pruned first when exceeded.
 DEFAULT_MAX_MB = 50
+
+#: Retry window for a contended open, in milliseconds.
+_BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS omissions (
@@ -104,9 +108,7 @@ class OmissionStore:
         self.max_mb = max_mb
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
+        apply_sqlite_pragmas(self._conn, _BUSY_TIMEOUT_MS)
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
