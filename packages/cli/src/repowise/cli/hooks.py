@@ -57,13 +57,21 @@ _LEGACY_HOOK_FINGERPRINTS = (
 # The outer ``{ ... } &`` brace group ensures the queued marker is written
 # synchronously (so the augment hook sees it on the *next* tool call after
 # the commit) before the heavy update spawns into the background.
+#
+# Two gates keep a default-on hook boring. It fires only when
+# ``.repowise/state.json`` exists, which is the precondition ``repowise
+# update`` itself checks, so a dry-run directory or a deleted store does not
+# fail on every commit forever. And when ``repowise`` is not on PATH it looks
+# only in the repo's own ``.venv``; the old ``uv run`` fallback resolved
+# whatever project ``uv`` found above the repo, on every commit, in repos
+# that were not Python projects at all.
 _HOOK_SCRIPT = """\
 # repowise-hook-start
 # Auto-syncs repowise wiki after each commit (background, non-blocking).
 # Installed by: repowise hook install
 {
   ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-  [ -d "$ROOT/.repowise" ] || exit 0
+  [ -f "$ROOT/.repowise/state.json" ] || exit 0
   HEAD=$(git rev-parse HEAD 2>/dev/null) || HEAD=""
   TS=$(date +%s 2>/dev/null) || TS=""
   if [ -n "$TS" ]; then
@@ -79,8 +87,10 @@ _HOOK_SCRIPT = """\
     cd "$ROOT" || exit 1
     if command -v repowise >/dev/null 2>&1; then
       repowise update >> "$LOG" 2>&1
-    elif command -v uv >/dev/null 2>&1; then
-      uv run repowise update >> "$LOG" 2>&1
+    elif [ -x "$ROOT/.venv/bin/repowise" ]; then
+      "$ROOT/.venv/bin/repowise" update >> "$LOG" 2>&1
+    elif [ -x "$ROOT/.venv/Scripts/repowise.exe" ]; then
+      "$ROOT/.venv/Scripts/repowise.exe" update >> "$LOG" 2>&1
     fi
   ) &
 } >/dev/null 2>&1
@@ -125,6 +135,19 @@ def _hooks_dir(repo_path: Path) -> Path | None:
     if root is None:
         return None
     return root / ".git" / "hooks"
+
+
+def _is_shell_hook(content: str) -> bool:
+    """Whether an existing hook file can take an appended POSIX sh block.
+
+    A hook with no shebang, or a sh, bash, dash, zsh or ksh one, can. A hook
+    written for node or python cannot, and appending shell to it would break
+    the user's own hook on every commit after this one.
+    """
+    first = content.split("\n", 1)[0].strip()
+    if not first.startswith("#!"):
+        return True
+    return re.search(r"\b(sh|bash|dash|zsh|ksh)\b", first) is not None
 
 
 def _strip_legacy_block(content: str) -> tuple[str, bool]:
@@ -226,6 +249,8 @@ def install(repo_path: Path) -> str:
     migrated_legacy = False
     if hook_path.exists():
         content = hook_path.read_text(encoding="utf-8")
+        if not _is_shell_hook(content):
+            return "not installed: the existing post-commit hook is not a shell script"
         content, migrated_legacy = _strip_legacy_block(content)
         if migrated_legacy:
             hook_path.write_text(content, encoding="utf-8")

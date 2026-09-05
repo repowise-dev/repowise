@@ -10,6 +10,8 @@ run still asks.
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -127,3 +129,72 @@ def test_uninstall_removes_what_the_default_installed(repo: Path, editor_setup_o
     offer_hook_install(_Console(), [repo], yes=True)
     assert hooks.uninstall(repo) == "removed"
     assert hooks.status(repo) == "not installed"
+
+
+def test_a_repo_that_is_not_git_gets_no_hook_and_no_consent_line(tmp_path: Path, editor_setup_on) -> None:
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    console = _Console()
+    offer_hook_install(console, [plain], yes=True)
+    assert "not a git repository" in console.text
+    assert "repowise hook uninstall" not in console.text
+
+
+def test_a_hook_for_another_interpreter_is_refused_not_corrupted(repo: Path, editor_setup_on) -> None:
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    original = "#!/usr/bin/env node\nconsole.log('mine')\n"
+    (hooks_dir / "post-commit").write_text(original)
+    console = _Console()
+    offer_hook_install(console, [repo], yes=True)
+    assert (hooks_dir / "post-commit").read_text() == original
+    assert "not a shell script" in console.text
+    assert "repowise hook uninstall" not in console.text
+    assert hooks.status(repo) == "not installed"
+
+
+def test_a_shell_hook_keeps_its_content_and_gains_the_block(repo: Path, editor_setup_on) -> None:
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "post-commit").write_text("#!/bin/bash\necho mine\n")
+    offer_hook_install(_Console(), [repo], yes=True)
+    content = (hooks_dir / "post-commit").read_text()
+    assert content.startswith("#!/bin/bash\necho mine\n")
+    assert hooks.status(repo) == "installed"
+
+
+def _run_hook(repo: Path) -> None:
+    sh = shutil.which("sh") or shutil.which("bash")
+    if sh is None:
+        pytest.skip("no POSIX shell to run the hook under")
+    git = shutil.which("git")
+    assert git is not None
+    # Only the shell and git are reachable, so the hook can find no repowise
+    # and the test observes the queued marker, never a real update.
+    path = os.pathsep.join({str(Path(sh).parent): None, str(Path(git).parent): None})
+    env = {"PATH": path, "SYSTEMROOT": os.environ.get("SYSTEMROOT", "")}
+    subprocess.run([sh, str(repo / ".git" / "hooks" / "post-commit")], cwd=repo, env=env, check=True, timeout=30)
+
+
+def test_the_hook_is_inert_without_a_store(repo: Path, editor_setup_on) -> None:
+    hooks.install(repo)
+    (repo / ".repowise").mkdir()
+    _run_hook(repo)
+    assert not (repo / ".repowise" / ".update.queued").exists()
+
+
+def test_the_hook_queues_an_update_when_a_store_exists(repo: Path, editor_setup_on) -> None:
+    hooks.install(repo)
+    (repo / "seed.txt").write_text("seed\n")
+    subprocess.run(["git", "add", "seed.txt"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-qm", "seed"],
+        cwd=repo,
+        check=True,
+    )
+    (repo / ".repowise").mkdir()
+    (repo / ".repowise" / "state.json").write_text("{}")
+    _run_hook(repo)
+    queued = repo / ".repowise" / ".update.queued"
+    assert queued.exists()
+    assert "target_commit" in queued.read_text()

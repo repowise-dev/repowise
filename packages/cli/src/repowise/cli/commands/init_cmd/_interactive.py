@@ -243,7 +243,7 @@ def _install_hook(console_obj: Any, repo_path: Path, label: str) -> bool:
     except Exception as exc:  # a hook is not worth failing a finished init over
         console_obj.print(f"  [{WARN}]{label}: post-commit hook not installed ({exc})[/]")
         return False
-    if result == "not a git repository":
+    if result.startswith("not "):
         console_obj.print(f"  [dim]{label}: no post-commit hook, {result}.[/dim]")
         return False
     console_obj.print(f"  [{OK}]✓[/] {label}: post-commit hook {result}")

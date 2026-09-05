@@ -42,8 +42,15 @@ class StoreUnavailableError(RuntimeError):
 
 
 def _store_unavailable(
-    where: str, repo_path: str | None, exc: BaseException
+    where: str | None, repo_path: str | None, exc: BaseException
 ) -> StoreUnavailableError:
+    """``where`` is the repo-local directory, or None when an env URL is in use;
+    a configured database gets its own remedy, not the directory one."""
+    if where is None:
+        return StoreUnavailableError(
+            f"repowise MCP: cannot open the configured database: {exc}. "
+            "Check REPOWISE_DB_URL and that the database server is reachable."
+        )
     repo = repo_path or "the repository"
     return StoreUnavailableError(
         f"repowise MCP: cannot open the index store at {where}: {exc}. "
@@ -458,8 +465,19 @@ async def _lifespan(server: FastMCP):
             embedder_factory=lambda: _resolve_embedder(),
         )
 
-        # Eagerly load the default repo so tools work immediately
-        default_ctx = await registry.get_default()
+        # Eagerly load the default repo so tools work immediately. A failure
+        # here leaves the lifespan before its teardown, so the background
+        # tasks are cancelled by hand or they outlive the loop.
+        try:
+            default_ctx = await registry.get_default()
+        except (OSError, OperationalError) as exc:
+            await _cancel_task(_release_task)
+            await _cancel_task(_warm_task)
+            raise _store_unavailable(str(ws_root), str(ws_root), exc) from exc
+        except BaseException:
+            await _cancel_task(_release_task)
+            await _cancel_task(_warm_task)
+            raise
 
         _state._registry = registry
         _state._workspace_root = str(ws_root)
@@ -528,7 +546,7 @@ async def _lifespan(server: FastMCP):
     configured_db_url = get_configured_db_url()
 
     # When repo path is set and no env override, prefer repo-local DB.
-    store_location = "the configured database"
+    store_location: str | None = None
     try:
         if _state._repo_path and configured_db_url is None:
             db_path = get_repo_db_path(_state._repo_path)
