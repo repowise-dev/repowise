@@ -1519,6 +1519,18 @@ patterns. Dead code analysis is pure graph traversal + SQL (no LLM calls), so it
 completes in seconds and can be re-run cheaply. repowise surfaces candidates,
 humans decide before deleting anything.
 
+### Single-threaded BLAS pre-allocation cap
+
+Importing `numpy` on a high-core system initialises BLAS runtimes (OpenBLAS, MKL, Accelerate) which commit a private per-thread workspace for every CPU core on the host. On a 32-core machine, this commits ~750 MB of un-trackable memory per process at import time. `limit_blas_threads()` (`core/blas_threads.py`) pins `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, and `VECLIB_MAXIMUM_THREADS` to `1` before numpy is loaded, halving process peak memory (e.g. 1547 MB down to 777 MB) while preserving wall-clock performance. `OMP_NUM_THREADS` is left unpinned so igraph's OpenMP-parallel community detection retains multi-core execution.
+
+### Inter-process single-flight update locking
+
+To coordinate concurrent `repowise update` invocations across git post-commit hooks, file watchers, and CLI commands, `core/update_lock.py` manages atomic single-flight locks (`.repowise/.update.lock` and `.repowise-workspace/.update.lock`). Locks contain PID, creation-time tokens, target commit, and timestamp to distinguish running updates from crashed ones. Accompanying markers (`.update.queued` and `.update.pending`) allow hooks to suppress stale-wiki notices immediately and roll forward in-flight runs when new commits arrive.
+
+### HMAC cache security and sealing
+
+On-disk pickle caches inside `.repowise/` can be targeted by repository artifacts (CWE-502). `core/cache_seal.py` seals all pickled caches using HMAC-SHA256 bound to a domain string and a machine-local key (`~/.config/repowise/cache_hmac_key` or `REPOWISE_CACHE_HMAC_KEY`). Unsealed or tampered cache files are rejected prior to `pickle.load` and degrade safely to cache re-computation.
+
 ### Async-first throughout
 
 All database operations use async SQLAlchemy with `aiosqlite`. The event loop
