@@ -98,6 +98,7 @@ _KNOWN: dict[str, int] = {
     # prefix to resolve the package it came from. Neither wants a type.
     _PREFIX + "framework_edges/rust.py": 1,
     _PREFIX + "framework_edges/go.py": 1,
+    _PREFIX + "framework_edges/flask.py": 1,
     # Takes the qualifier HEAD of `OrderHandlers.GetOrder` to reach the
     # declaring type. It does want a type, but the shared helper returns the
     # trailing segment, which is the member — the opposite end, the same reason

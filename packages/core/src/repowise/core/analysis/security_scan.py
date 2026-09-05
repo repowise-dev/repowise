@@ -22,12 +22,67 @@ import ast
 import logging
 import re
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.test_paths import is_test_related_path
+
 logger = logging.getLogger(__name__)
+
+_CREDENTIAL_EXACT_PLACEHOLDERS: frozenset[str] = frozenset({"password", "changeit"})
+
+_CREDENTIAL_SUBSTRING_PLACEHOLDERS: tuple[str, ...] = (
+    "example",
+    "changeme",
+    "placeholder",
+    "dummy",
+    "sample",
+    "fake",
+    "xxx",
+    "your_",
+    "your-",
+    "...",
+    "fixture",
+)
+
+_LOW_SEVERITY_PATH_TOKENS: frozenset[str] = frozenset(
+    {
+        "test",
+        "tests",
+        "__tests__",
+        "__test__",
+        "fixtures",
+        "__fixtures__",
+        "spec",
+        "specs",
+        "mock",
+        "mocks",
+        "__mocks__",
+        "example",
+        "examples",
+    }
+)
+
+
+def _is_valid_credential_value(val: str) -> bool:
+    """True when *val* is at least 8 chars and not a known placeholder."""
+    if len(val) < 8:
+        return False
+    v = val.lower().strip()
+    if v.startswith("<") or v in _CREDENTIAL_EXACT_PLACEHOLDERS:
+        return False
+    return not any(p in v for p in _CREDENTIAL_SUBSTRING_PLACEHOLDERS)
+
+
+def _is_low_severity_path(file_path: str) -> bool:
+    """True when *file_path* is test material or under fixture, spec, mock, or example directories."""
+    posix_path = file_path.replace("\\", "/")
+    parts = [p.lower() for p in PurePosixPath(posix_path).parts]
+    return any(p in _LOW_SEVERITY_PATH_TOKENS for p in parts) or is_test_related_path(posix_path)
+
 
 # ---------------------------------------------------------------------------
 # Pattern registry: (compiled_pattern, kind_label, severity)
@@ -78,8 +133,8 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     # concatenating these patterns' *source text*, which drops per-pattern
     # flags. A flag here would leave the prefilter case-sensitive and it would
     # reject the line before the pattern ever ran.
-    (re.compile(r"(?i:password)\s*=\s*['\"]"), "hardcoded_password", "high"),
-    (re.compile(r"(?i:api_?key|secret)\s*=\s*['\"]"), "hardcoded_secret", "high"),
+    (re.compile(r"(?i:password)\s*=\s*['\"]([^'\"]*)"), "hardcoded_password", "high"),
+    (re.compile(r"(?i:api_?key|secret)\s*=\s*['\"]([^'\"]*)"), "hardcoded_secret", "high"),
     (re.compile(r'f[\'"].*SELECT.*\{.*\}'), "fstring_sql", "med"),
     (re.compile(r"\.execute\(\s*[\'\"]\s*SELECT.*\+"), "concat_sql", "med"),
     (re.compile(r"verify\s*=\s*False"), "tls_verify_false", "med"),
@@ -373,13 +428,21 @@ class SecurityScanner:
         findings.extend(_call_findings(file_path, source))
 
         # Line-by-line pattern scan
+        is_low_sev_file = _is_low_severity_path(file_path)
         for lineno, line in enumerate(lines, start=1):
             if not _ANY_PATTERN.search(line):
                 continue
             for pattern, kind, severity in _PATTERNS:
                 if kind in _CALL_KINDS:
                     continue
-                if pattern.search(line):
+                match = pattern.search(line)
+                if match:
+                    if kind in SECRET_KINDS:
+                        val = match.group(1) if match.groups() else ""
+                        if not _is_valid_credential_value(val):
+                            continue
+                        if is_low_sev_file:
+                            severity = "low"
                     # Trim snippet to keep it concise
                     snippet = line.strip()[:120]
                     findings.append(
