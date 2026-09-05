@@ -1007,7 +1007,12 @@ def init_command(
     # ---- Interactive mode (TTY, no explicit flags) ----
     # --yes forces non-interactive even on a TTY (mirrors the workspace path),
     # so a scripted `init -y` never blocks on the mode-selection menu.
-    is_interactive = sys.stdin.isatty() and provider_name is None and not index_only and not yes
+    # --resume also forces non-interactive: reuse stored answers and resume without
+    # re-prompting (fixes issue #2098).
+    if resume:
+        mode_desc = "fast index-only" if index_only else "full"
+        console.print(f"[dim]Resuming a {mode_desc} run — reusing stored configuration.[/dim]")
+    is_interactive = sys.stdin.isatty() and provider_name is None and not index_only and not yes and not resume
 
     # Output language picked in the advanced-mode generation section; None
     # until chosen. Resolved below: flag > this > config.yaml > English.
