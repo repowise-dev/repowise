@@ -115,6 +115,7 @@ class TestCostGateBlocks:
 class TestHookOfferDegrades:
     def test_eof_on_hook_offer_does_not_raise(self, monkeypatch, tmp_path):
         """A finished run must not fail on an optional trailing question."""
+        monkeypatch.delenv("REPOWISE_SKIP_EDITOR_SETUP", raising=False)
         monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
         monkeypatch.setattr(
             "repowise.cli.commands.init_cmd._interactive.click.confirm",

@@ -584,6 +584,7 @@ def _workspace_init(
     agents_md: bool | None,
     codex_setup: bool | None,
     distill_hook: bool | None,
+    hook: bool | None,
     editor_setup: bool,
     save_key: bool,
     include_submodules: bool,
@@ -871,15 +872,17 @@ def _workspace_init(
         docs_outcomes=docs_outcomes,
     )
 
-    # Offer to install post-commit hooks. Skipped on a dry run, which must
-    # not write anything.
+    # Post-commit auto-sync hooks, the same default for every indexed repo.
+    # Skipped on a dry run, which must not write anything.
     indexed_repos = [repo for repo in selected if repo.alias not in [e[0] for e in errors]]
     if indexed_repos and not dry_run:
         offer_hook_install(
             console,
             [r.path for r in indexed_repos],
             aliases=[r.alias for r in indexed_repos],
+            flag=hook,
             yes=yes,
+            no_editor_setup=not editor_setup,
         )
     # Opt-in distill command-rewrite hook for Claude Code: one user-level
     # install, with the verdict recorded per repo. Applied to *all* selected

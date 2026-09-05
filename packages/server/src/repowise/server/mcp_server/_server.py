@@ -10,6 +10,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from repowise.core.persistence.database import (
@@ -26,6 +27,36 @@ from repowise.core.providers.embedding.base import KeylessEmbedder
 from repowise.server.mcp_server import _state
 
 _log = __import__("logging").getLogger("repowise.mcp")
+
+
+class StoreUnavailableError(RuntimeError):
+    """The repo-local index store cannot be created or opened.
+
+    Raised out of the lifespan so the process exits once with a message that
+    names the path and the fix. Before this the same failure escaped as a
+    bare traceback, and an MCP host treats a server that dies at startup as
+    one to respawn, so an unwritable .repowise became a crash loop. Click-free
+    because the server does not depend on the CLI; the mcp command turns it
+    into a clean non-zero exit.
+    """
+
+
+def _store_unavailable(
+    where: str | None, repo_path: str | None, exc: BaseException
+) -> StoreUnavailableError:
+    """``where`` is the repo-local directory, or None when an env URL is in use;
+    a configured database gets its own remedy, not the directory one."""
+    if where is None:
+        return StoreUnavailableError(
+            f"repowise MCP: cannot open the configured database: {exc}. "
+            "Check REPOWISE_DB_URL and that the database server is reachable."
+        )
+    repo = repo_path or "the repository"
+    return StoreUnavailableError(
+        f"repowise MCP: cannot open the index store at {where}: {exc}. "
+        f"Run 'repowise init' in {repo} to create it, or fix the permissions "
+        "on that directory."
+    )
 
 
 # Per-embedder remediation hints, appended to the ERROR log and the `_meta`
@@ -235,6 +266,34 @@ def _resolve_embedder():
         return KeylessEmbedder()
 
 
+#: How often the running server re-reads release currency. The PyPI fetch
+#: itself is TTL-cached on disk for a day and shared with the CLI advisory, so
+#: this bounds only the in-process refresh, never the network.
+_RELEASE_RECHECK_S = 6 * 3600
+
+
+async def _poll_release_check() -> None:
+    """Keep ``_state._release_check`` current for the life of the server.
+
+    Runs off the event loop thread because the miss path does a network
+    fetch; a tool call never waits on it. Never raises: a failed check is
+    recorded as unknown and retried on the next pass.
+    """
+    from repowise.core.upgrade.release import check_latest_version_cached
+    from repowise.server import __version__
+
+    while True:
+        try:
+            _state._release_check = await asyncio.to_thread(
+                check_latest_version_cached, __version__
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.debug("repowise MCP: release check failed", exc_info=True)
+        await asyncio.sleep(_RELEASE_RECHECK_S)
+
+
 async def _cancel_task(task: asyncio.Task) -> None:
     """Cancel a lifespan background task and swallow its unwind."""
     task.cancel()
@@ -386,6 +445,7 @@ async def _lifespan(server: FastMCP):
     # call can otherwise land mid-import and wedge the loop.
     _state._lancedb_ready = asyncio.Event()
     _warm_task = asyncio.create_task(_warm_lancedb(), name="lancedb-warmup")
+    _release_task = asyncio.create_task(_poll_release_check(), name="release-check")
 
     # --- Workspace detection ------------------------------------------------
     ws_root, ws_config, ws_repo_alias = _detect_workspace(_state._repo_path)
@@ -405,8 +465,19 @@ async def _lifespan(server: FastMCP):
             embedder_factory=lambda: _resolve_embedder(),
         )
 
-        # Eagerly load the default repo so tools work immediately
-        default_ctx = await registry.get_default()
+        # Eagerly load the default repo so tools work immediately. A failure
+        # here leaves the lifespan before its teardown, so the background
+        # tasks are cancelled by hand or they outlive the loop.
+        try:
+            default_ctx = await registry.get_default()
+        except (OSError, OperationalError) as exc:
+            await _cancel_task(_release_task)
+            await _cancel_task(_warm_task)
+            raise _store_unavailable(str(ws_root), str(ws_root), exc) from exc
+        except BaseException:
+            await _cancel_task(_release_task)
+            await _cancel_task(_warm_task)
+            raise
 
         _state._registry = registry
         _state._workspace_root = str(ws_root)
@@ -458,6 +529,7 @@ async def _lifespan(server: FastMCP):
 
         yield
 
+        await _cancel_task(_release_task)
         await _cancel_task(_warm_task)
         _state._lancedb_ready = None
         _state._cross_repo_enricher = None
@@ -474,26 +546,38 @@ async def _lifespan(server: FastMCP):
     configured_db_url = get_configured_db_url()
 
     # When repo path is set and no env override, prefer repo-local DB.
-    if _state._repo_path and configured_db_url is None:
-        db_path = get_repo_db_path(_state._repo_path)
-        repowise_dir = db_path.parent
-        if not repowise_dir.exists():
-            _log.warning(
-                "No .repowise directory at %s — run 'repowise init' first",
-                _state._repo_path,
-            )
-            repowise_dir.mkdir(parents=True, exist_ok=True)
-        elif not db_path.exists():
-            _log.warning(
-                "No wiki.db in %s — run 'repowise init' to generate the wiki",
-                repowise_dir,
-            )
+    store_location: str | None = None
+    try:
+        if _state._repo_path and configured_db_url is None:
+            db_path = get_repo_db_path(_state._repo_path)
+            repowise_dir = db_path.parent
+            store_location = str(repowise_dir)
+            if not repowise_dir.exists():
+                _log.warning(
+                    "No .repowise directory at %s — run 'repowise init' first",
+                    _state._repo_path,
+                )
+                repowise_dir.mkdir(parents=True, exist_ok=True)
+            elif not db_path.exists():
+                _log.warning(
+                    "No wiki.db in %s — run 'repowise init' to generate the wiki",
+                    repowise_dir,
+                )
 
-    db_url = resolve_db_url(_state._repo_path)
+        db_url = resolve_db_url(_state._repo_path)
 
-    _log.info("repowise MCP: initialising database…")
-    engine = create_engine(db_url)
-    await init_db(engine)
+        _log.info("repowise MCP: initialising database…")
+        engine = create_engine(db_url)
+        try:
+            await init_db(engine)
+        except (OSError, OperationalError):
+            await engine.dispose()
+            raise
+    except (OSError, OperationalError) as exc:
+        # A read-only or missing directory, or a .repowise that is a file.
+        await _cancel_task(_release_task)
+        await _cancel_task(_warm_task)
+        raise _store_unavailable(store_location, _state._repo_path, exc) from exc
 
     _state._session_factory = async_sessionmaker(
         engine, expire_on_commit=False, class_=AsyncSession
@@ -524,6 +608,7 @@ async def _lifespan(server: FastMCP):
 
     yield
 
+    await _cancel_task(_release_task)
     await _cancel_task(_bg_task)
     await _cancel_task(_warm_task)
     _state._lancedb_ready = None

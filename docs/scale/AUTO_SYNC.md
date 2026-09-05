@@ -21,7 +21,7 @@ local development.
 
 ### Setup
 
-`repowise init` will offer to install the hook automatically at the end
+`repowise init` installs the hook by default (interactive runs ask first; `--no-hook` skips it) at the end
 of the setup wizard. You can also install or manage it manually:
 
 ```bash

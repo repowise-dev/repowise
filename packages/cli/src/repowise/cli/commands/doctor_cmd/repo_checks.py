@@ -111,6 +111,44 @@ async def _all_pages_for_reconciliation(session: object, repo_id: str) -> list:
 
 
 
+def _repowise_dir_check(repowise_dir: _DoctorPath) -> DoctorCheck:
+    """Exists and writable, probed with a real file: os.access lies on Windows."""
+    if not repowise_dir.exists():
+        return _check(".repowise/ directory", False, f"{repowise_dir} (run 'repowise init')")
+    probe = repowise_dir / ".doctor-write-probe"
+    try:
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        return _check(
+            ".repowise/ directory",
+            False,
+            f"{repowise_dir} is not writable ({exc.strerror or exc}); fix its permissions",
+        )
+    return _check(".repowise/ directory", True, str(repowise_dir))
+
+
+def _autosync_hook_check(repo_path: _DoctorPath) -> DoctorCheck:
+    """Report the post-commit hook through hooks.status, which asks git for the
+    real hooks directory, so worktrees and core.hooksPath read correctly."""
+    try:
+        from repowise.cli.hooks import status as _hook_status
+
+        state = _hook_status(repo_path)
+    except Exception as exc:
+        return _check("Post-commit hook", True, f"could not read hook state ({exc})")
+    if state.startswith("installed"):
+        return _check("Post-commit hook", True, state)
+    if state == "not installed":
+        return _check(
+            "Post-commit hook",
+            True,
+            "not installed; the index updates only when you run 'repowise update' "
+            "('repowise hook install' turns auto-sync on)",
+        )
+    return _check("Post-commit hook", True, state)
+
+
 def _run_repo_checks(
     repo_path: _DoctorPath, repair: bool, *, fmt: str = "table"
 ) -> tuple[bool, list[DoctorCheck]]:
@@ -133,9 +171,15 @@ def _run_repo_checks(
     except Exception:
         checks.append(_check("Git repository", False, "Not a git repo"))
 
-    # 2. .repowise/ exists?
+    # 2. .repowise/ exists and takes a write? The MCP server refuses to start
+    # on a directory it cannot write, so an existence-only row would say OK
+    # for the one state that makes every tool call fail.
     repowise_dir = get_repowise_dir(repo_path)
-    checks.append(_check(".repowise/ directory", repowise_dir.exists(), str(repowise_dir)))
+    checks.append(_repowise_dir_check(repowise_dir))
+
+    # 2b. Post-commit auto-sync hook. init installs it by default; not having
+    # it is a choice (--no-hook), so its absence is informational, not a fail.
+    checks.append(_autosync_hook_check(repo_path))
 
     # 3. Database connectable?
     db_path = repowise_dir / "wiki.db"

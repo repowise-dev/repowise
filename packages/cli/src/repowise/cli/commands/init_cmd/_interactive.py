@@ -167,30 +167,87 @@ def offer_hook_install(
     repo_paths: list[Path],
     aliases: list[str] | None = None,
     *,
+    flag: bool | None = None,
     yes: bool = False,
+    no_editor_setup: bool = False,
 ) -> None:
-    """Interactively offer to install post-commit hooks for auto-sync.
+    """Install the post-commit auto-sync hook, asking only when someone can answer.
 
-    For a single repo, asks yes/no.  For multiple repos (workspace), lets the
-    user pick which repos to install hooks for.  When ``yes`` is True all
-    interactive prompts are skipped (no hook is installed silently).
+    ``flag`` is the resolved ``--hook/--no-hook`` value. ``True`` installs
+    without a prompt; ``False`` skips and says how to install later; ``None``
+    prompts when interactive and otherwise installs and prints one line naming
+    ``repowise hook uninstall``, which is the consent pattern for a default
+    that is on. ``--yes`` and a missing terminal both take that install path:
+    they are the routes the product recommends, and a hook they silently
+    skipped is why most indexes went stale.
+
+    A git hook is a write outside ``.repowise/``, so ``--no-editor-setup`` (or
+    ``REPOWISE_SKIP_EDITOR_SETUP``) keeps it off, the way it keeps the distill
+    rewrite hook off; only an explicit ``--hook`` is told why nothing happened.
+    A failed install is reported and never fails the run: the index and wiki
+    are already written by the time this runs.
     """
-    if yes:
-        return  # --yes: skip all interactive prompts
-    if not sys.stdin.isatty():
-        return  # Non-interactive — skip
+    from repowise.cli.editor_setup import is_editor_setup_disabled
+
+    if not repo_paths:
+        return
+
+    if is_editor_setup_disabled(no_editor_setup):
+        if flag:
+            console_obj.print(
+                "  [dim]Post-commit hook not installed: editor setup is off for this "
+                "run. Run 'repowise hook install' to set it up.[/dim]"
+            )
+        return
+
+    if flag is False:
+        console_obj.print(
+            "  [dim]Skipped the post-commit hook. Run 'repowise hook install' later "
+            "to set it up.[/dim]"
+        )
+        return
+
+    if flag is None and not yes and sys.stdin.isatty():
+        try:
+            _offer_hook_install_prompts(console_obj, repo_paths, aliases)
+        except (click.Abort, EOFError):
+            # isatty() claimed a terminal that cannot answer (Windows Git Bash
+            # ``< /dev/null``, pty wrappers, ``docker run -t`` without -i). This
+            # is the last step of a run whose index and wiki are already
+            # written, and an optional hook is not worth failing it over:
+            # decline and exit clean. Ctrl-C lands here too.
+            console_obj.print(
+                "\n  [dim]Skipped the hook. Run 'repowise hook install' later to set it up.[/dim]"
+            )
+        return
+
+    installed = 0
+    for i, rp in enumerate(repo_paths):
+        label = aliases[i] if aliases else rp.name
+        if _install_hook(console_obj, rp, label):
+            installed += 1
+    if installed:
+        undo = "repowise hook uninstall" + (" --workspace" if len(repo_paths) > 1 else "")
+        console_obj.print(
+            f"  [dim]Auto-sync is on: repowise update runs after each commit. "
+            f"Run '{undo}' to turn it off.[/dim]"
+        )
+
+
+def _install_hook(console_obj: Any, repo_path: Path, label: str) -> bool:
+    """Install one repo's hook and report it. Returns whether it is in place."""
+    from repowise.cli.hooks import install
 
     try:
-        _offer_hook_install_prompts(console_obj, repo_paths, aliases)
-    except (click.Abort, EOFError):
-        # isatty() claimed a terminal that cannot answer (Windows Git Bash
-        # ``< /dev/null``, pty wrappers, ``docker run -t`` without -i). This is
-        # the last step of a run whose index and wiki are already written, and
-        # an optional hook is not worth failing it over: decline and exit
-        # clean. Ctrl-C lands here too, which asks for the same outcome.
-        console_obj.print(
-            "\n  [dim]Skipped the hook. Run 'repowise hook install' later to set it up.[/dim]"
-        )
+        result = install(repo_path)
+    except Exception as exc:  # a hook is not worth failing a finished init over
+        console_obj.print(f"  [{WARN}]{label}: post-commit hook not installed ({exc})[/]")
+        return False
+    if result.startswith("not "):
+        console_obj.print(f"  [dim]{label}: no post-commit hook, {result}.[/dim]")
+        return False
+    console_obj.print(f"  [{OK}]✓[/] {label}: post-commit hook {result}")
+    return True
 
 
 def _offer_hook_install_prompts(
@@ -199,7 +256,7 @@ def _offer_hook_install_prompts(
     aliases: list[str] | None,
 ) -> None:
     """Ask which repos get a post-commit hook, and install it. Prompts."""
-    from repowise.cli.hooks import install, status
+    from repowise.cli.hooks import status
 
     # Filter to repos that don't already have the hook
     candidates: list[tuple[Path, str]] = []
@@ -220,8 +277,7 @@ def _offer_hook_install_prompts(
     if len(candidates) == 1:
         rp, label = candidates[0]
         if click.confirm(f"  Install post-commit hook for {label}?", default=True):
-            result = install(rp)
-            console_obj.print(f"  [{OK}]✓[/] {label}: {result}")
+            _install_hook(console_obj, rp, label)
         else:
             console_obj.print("  [dim]Skipped. Run 'repowise hook install' later to set up.[/dim]")
     else:
@@ -249,9 +305,8 @@ def _offer_hook_install_prompts(
         for idx in selected_indices:
             if 0 <= idx < len(candidates):
                 rp, label = candidates[idx]
-                result = install(rp)
-                console_obj.print(f"  [{OK}]✓[/] {label}: {result}")
-                installed += 1
+                if _install_hook(console_obj, rp, label):
+                    installed += 1
 
         if installed == 0:
             console_obj.print(
