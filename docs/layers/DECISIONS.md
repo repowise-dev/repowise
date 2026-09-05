@@ -242,8 +242,8 @@ get_why()                                          # health dashboard
 
 ## Where decisions come from
 
-Five capture sources run at index time, each a pass over the repo and its git
-history.
+Six capture sources run at index time, each a pass over the repo, its git
+history, or the graph it just built.
 
 | Source | Key | Reads | Notes |
 |--------|-----|-------|-------|
@@ -252,6 +252,7 @@ history.
 | Git archaeology | `git_archaeology` | Commit messages | Gated on 19 decision verbs (migrate, switch to, replace, adopt, deprecate, drop, rewrite, split, revert, and the rest). |
 | PR bodies | `pr` | Squash-merge and PR commit bodies | A body only qualifies when it looks like a PR description (`## Why`, `## Motivation`, `## Context`, `Closes #`, `Before:` / `After:`). Up to 25 bodies. |
 | Code comments | `comment` | Block comments and docstrings on high-centrality files | Bounded to 30 nodes, and to prose carrying a rationale cue ("because", "instead of", "rather than", "trade-off", "we chose", "deliberately"). Centrality-bounded on purpose: comment archaeology across a whole repo is noise. |
+| Conventions | `conventions` | The import graph | Off by default; `repowise decision source set conventions --on`. No model. Proposes a majority pattern the graph proves: an in-repo wrapper of an I/O library (an HTTP client, a database driver, a subprocess runner, a filesystem or lock primitive) that most files reach the library through, while few import it directly. The wrapper is a function whose body uses the library, or a module-level client built from it (`service = axios.create()`) that its importers call. The record states the counts and lists the direct importers by path, and nothing else; test files, re-export barrels and the wrapper's own file never count. Go and Java are counted by package. A library with two wrappers proposes nothing. At most 10 per index. |
 
 Three more sources sit outside the index-time set: `session` (deterministic
 gates over your coding-agent transcripts, below), `session_discovery` (one
@@ -290,6 +291,7 @@ pr               disabled            no   This source is switched off.
 comment          disabled            no   This source is switched off.
 session            deterministic_only  no   Decision LLM extraction is off. The deterministic stage still runs.
 session_discovery  disabled            no   This source is switched off.
+conventions        disabled            no   This source is switched off.
 cli                always_on           -    Manual entry is always available.
 
   Discovery budget: up to 12 session(s), 30,000 input tokens per update.
@@ -349,7 +351,7 @@ confidence = 0.4 + 0.5 * (best_source_rank / 9)
 ```
 
 The rank ladder is `cli` 9, `session` 8, `adr` and `pr` 7, `commit` and
-`git_archaeology` 6, `inline_marker` 4, `comment` 3, and the heuristic tiers
+`git_archaeology` 6, `conventions` 6, `inline_marker` 4, `comment` 3, and the heuristic tiers
 below that. `session` sits above `adr` because a transcript carries what a person
 actually said while deciding, and a document is someone's later write-up of it;
 with the order reversed the write-up overwrote the words. Retired sources keep

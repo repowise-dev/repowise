@@ -997,7 +997,7 @@ repowise decision llm --on|--off [PATH]           # all decision-extraction mode
 | `--reason TEXT` | On `dismiss`: why it was tombstoned. |
 | `--superseded-by ID` | On `deprecate`: writes an explicit lineage edge and keeps the retired id resolving. |
 | `--state STATE` | On `candidates`: `open` (default), `accepted`, `merged`, `needs_split`, `dismissed`, `all`. |
-| `--lane NAME` | On `candidates`: only candidates raised by that extraction lane (`pr`, `session`, `session_discovery`, `comment`, `git_archaeology`, `adr`, `inline_marker`, `cli`). Unrelated to the review lanes the Decisions page splits on. |
+| `--lane NAME` | On `candidates`: only candidates raised by that extraction lane (`pr`, `session`, `session_discovery`, `comment`, `git_archaeology`, `adr`, `inline_marker`, `conventions`, `cli`). Unrelated to the review lanes the Decisions page splits on. |
 | `--apply` | On `migrate`: write the plan. Without it the command reports and writes nothing. |
 | `--dry-run` | On `import`: report and write nothing. |
 

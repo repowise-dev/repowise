@@ -401,6 +401,7 @@ decisions:
       enabled: true
       llm: false
     session_discovery: true # one broad model pass over new transcript prose
+    conventions: false      # import patterns the graph proves, no model
   discovery:                # budget for that one pass, per update
     max_sessions: 12        # 1-24
     max_input_tokens: 30000 # 2000-60000
@@ -409,7 +410,7 @@ decisions:
 Every key is optional. **A config with no `decisions:` block behaves exactly as
 it did before these switches existed**: every source that shipped on is on,
 model stages on. That resolved policy is named `default`. A source added after
-those switches existed (`session_discovery` is the first) stays off until you
+those switches existed (`session_discovery` and `conventions`) stays off until you
 ask for it, so upgrading never starts a model call nobody enabled. The same
 holds for a config that names a preset *and* lists its sources: that list is
 what the preset covered when it was written, so a source added to that preset
