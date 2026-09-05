@@ -205,7 +205,7 @@ def _offer_hook_install_prompts(
     candidates: list[tuple[Path, str]] = []
     for i, rp in enumerate(repo_paths):
         label = aliases[i] if aliases else rp.name
-        if status(rp) != "installed":
+        if not status(rp).startswith("installed"):
             candidates.append((rp, label))
 
     if not candidates:

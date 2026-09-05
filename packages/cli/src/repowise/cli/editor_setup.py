@@ -103,7 +103,7 @@ def detect_editor_setup_outcome(
     try:
         from repowise.cli.hooks import status as _hook_status
 
-        autosync = _hook_status(repo_path) == "installed"
+        autosync = _hook_status(repo_path).startswith("installed")
     except Exception:
         pass
 
