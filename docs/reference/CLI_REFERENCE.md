@@ -1098,7 +1098,7 @@ typo from a successful transition. `dismiss` skips its confirmation prompt under
 | Flag | Description |
 |------|-------------|
 | `--status` | `active`, `proposed`, `deprecated`, `superseded`, `dismissed`, `all` |
-| `--source` | `adr`, `cli`, `comment`, `commit`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all` |
+| `--source` | `adr`, `cli`, `comment`, `commit`, `conventions`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all` |
 | `--proposed` | Shortcut for `--status proposed` |
 | `--stale-only` | Only stale decisions |
 | `--format` | `table` (default) or `json` |

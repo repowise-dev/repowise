@@ -756,7 +756,7 @@ repowise decision SUBCOMMAND [OPTIONS]
 | Flag | Type | Description |
 |------|------|-------------|
 | `--status` | choice | Filter by status: `proposed`, `active`, `deprecated`, `superseded`, `all` |
-| `--source` | choice | Filter by origin: `adr`, `cli`, `comment`, `commit`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all` |
+| `--source` | choice | Filter by origin: `adr`, `cli`, `comment`, `commit`, `conventions`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all` |
 | `--proposed` | flag | Show only proposed decisions |
 | `--stale-only` | flag | Show only decisions with staleness score ≥ 0.5 |
 
