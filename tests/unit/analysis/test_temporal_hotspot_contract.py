@@ -10,8 +10,6 @@ with no I/O, so no fixtures, DB, or async are needed.
 
 from __future__ import annotations
 
-import pytest
-
 from repowise.core.analysis.risk_semantics import structural_impact_contract
 
 
