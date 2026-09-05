@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from repowise.core.providers.embedding.base import Embedder
 
 from ..search import _SNIPPET_LEN, SearchResult, snippet_around
@@ -9,10 +11,12 @@ from ._base import STORED_SNIPPET_CHARS, VectorStore, iter_embed_chunks
 
 __all__ = ["STORED_SNIPPET_CHARS", "LanceDBVectorStore"]
 
-# DataFusion expands every literal in a large ``IN`` filter into native query
+# DataFusion expands every literal in a large `IN` filter into native query
 # state. A several-thousand-path generation level can otherwise commit
 # gigabytes before returning even though the selected result is small.
 _SUMMARY_PATH_BATCH_SIZE = 100
+
+logger = logging.getLogger(__name__)
 
 # ``STORED_SNIPPET_CHARS`` — how much of a page's content each row keeps — is
 # defined with the embed recipe and re-exported here so the historical import
@@ -326,8 +330,20 @@ class LanceDBVectorStore(VectorStore):
         await self._ensure_connected()
         if self._table is None:
             return set()
-        rows = await self._table.query().select(["page_id"]).to_list()  # type: ignore[union-attr]
-        return {r["page_id"] for r in rows}
+
+        try:
+            rows = await self._table.query().select(["page_id"]).to_list()  # type: ignore[union-attr]
+            return {r["page_id"] for r in rows}
+        except Exception as exc:
+            logger.warning(
+                "Failed to read page IDs from LanceDB vector store at %s. "
+                "The vector store may be damaged. Repowise will regenerate "
+                "pages instead. Run 'repowise reindex' to rebuild the vector store. "
+                "Error: %s",
+                self._db_path,
+                exc,
+            )
+            return set()
 
     async def get_page_summary_by_path(self, path: str) -> dict | None:
         """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.
