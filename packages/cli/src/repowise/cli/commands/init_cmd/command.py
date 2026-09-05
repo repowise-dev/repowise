@@ -324,6 +324,7 @@ def _run_generation_phase(
     resume: bool,
     test_run: bool,
     timings: Any | None = None,
+    warnings: list[str] | None = None,
 ) -> tuple[bool, bool]:
     """Run the LLM generation phase for a single-repo init.
 
@@ -454,6 +455,7 @@ def _run_generation_phase(
         verbose=True,
         test_run=test_run,
         timings=timings,
+        warnings=warnings,
     )
     return False, False
 
@@ -1536,6 +1538,7 @@ def init_command(
             # file. Resuming against it would skip the entire model run and
             # say nothing, so a template wiki is never a run to continue.
             resume=resume and _prior_docs_mode != "deterministic",
+            warnings=run_warnings,
             test_run=test_run,
             timings=callback.table,
         )

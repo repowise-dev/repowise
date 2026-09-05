@@ -260,6 +260,7 @@ def run_repo_generation(
     verbose: bool,
     test_run: bool = False,
     timings: Any | None = None,
+    warnings: list[str] | None = None,
 ) -> list[Any]:
     """Generate wiki pages for one repo and enrich its knowledge graph.
 
@@ -369,6 +370,8 @@ def run_repo_generation(
                 test_run=test_run,
             )
         )
+        if warnings is not None:
+            warnings.extend(gen_callback.warnings)
 
     jobs_dir = Path(repo_path) / ".repowise" / "jobs"
     failed_page_ids: list[str] = []
