@@ -18,6 +18,7 @@ Three things have to hold and each has tests below.
 
 from __future__ import annotations
 
+import contextlib
 import json
 
 import pytest
@@ -744,9 +745,15 @@ def test_logs_are_silenced_at_every_format_not_only_the_machine_ones(
     answer — and inside anything reading it through ``repowise distill``.
     """
     silenced: list = []
+
+    @contextlib.contextmanager
+    def _fake_silence():
+        silenced.append(True)
+        yield
+
     monkeypatch.setattr(
         "repowise.cli.helpers.silence_logs_for_machine_output",
-        lambda: silenced.append(True),
+        _fake_silence,
     )
     monkeypatch.setattr("repowise.cli.tool_bridge.call_tool", lambda p, f, t: {"_meta": {}})
     result = CliRunner(mix_stderr=False).invoke(

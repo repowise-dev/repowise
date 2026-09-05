@@ -10,6 +10,8 @@ Subcommands:
 
 from __future__ import annotations
 
+import contextlib
+
 import click
 
 from repowise.cli.helpers import (
@@ -104,85 +106,86 @@ def security_scan(
             emit_json({"scanned": False, "reason": "history-mode-not-requested"})
         return
 
-    if output_format == "json":
-        silence_logs_for_machine_output()
-
-    from pathlib import Path
-
-    from repowise.core.analysis.history_scan import HistorySecurityScanner
-    from repowise.core.persistence import (
-        create_engine,
-        create_session_factory,
-        get_session,
+    silencer = (
+        silence_logs_for_machine_output() if output_format == "json" else contextlib.nullcontext()
     )
-    from repowise.core.persistence.crud import (
-        get_repository_by_path,
-        upsert_repository,
-    )
+    with silencer:
+        from pathlib import Path
 
-    target = resolve_command_target(path=repo)
-    target.notice(notice_console(output_format), command="security scan --history")
+        from repowise.core.analysis.history_scan import HistorySecurityScanner
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+        )
+        from repowise.core.persistence.crud import (
+            get_repository_by_path,
+            upsert_repository,
+        )
 
-    if target.is_workspace:
-        primary = target.primary_path()
-        if primary is None:
-            raise click.ClickException("Workspace has no primary repo configured.")
-        repo_path = primary
-    else:
-        assert target.repo_path is not None
-        repo_path = target.repo_path
+        target = resolve_command_target(path=repo)
+        target.notice(notice_console(output_format), command="security scan --history")
 
-    ensure_repowise_dir(repo_path)
+        if target.is_workspace:
+            primary = target.primary_path()
+            if primary is None:
+                raise click.ClickException("Workspace has no primary repo configured.")
+            repo_path = primary
+        else:
+            assert target.repo_path is not None
+            repo_path = target.repo_path
 
-    async def _do() -> dict:
-        engine = create_engine(get_db_url_for_repo(repo_path))
-        sf = create_session_factory(engine)
-        async with get_session(sf) as session:
-            row = await get_repository_by_path(session, str(repo_path))
-            if row is None:
-                row = await upsert_repository(
-                    session,
-                    name=repo_path.name,
-                    local_path=str(repo_path),
+        ensure_repowise_dir(repo_path)
+
+        async def _do() -> dict:
+            engine = create_engine(get_db_url_for_repo(repo_path))
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                row = await get_repository_by_path(session, str(repo_path))
+                if row is None:
+                    row = await upsert_repository(
+                        session,
+                        name=repo_path.name,
+                        local_path=str(repo_path),
+                    )
+                scanner = HistorySecurityScanner(session, row.id)
+                summary = await scanner.scan_history(
+                    Path(repo_path),
+                    since=since,
+                    to=to,
+                    secrets_only=not all_patterns,
+                    progress=lambda msg: (
+                        console.print(f"[dim]{msg}[/dim]") if output_format != "json" else None
+                    ),
                 )
-            scanner = HistorySecurityScanner(session, row.id)
-            summary = await scanner.scan_history(
-                Path(repo_path),
-                since=since,
-                to=to,
-                secrets_only=not all_patterns,
-                progress=lambda msg: (
-                    console.print(f"[dim]{msg}[/dim]") if output_format != "json" else None
-                ),
-            )
-            await session.commit()
-            return {
-                "commits_scanned": summary.commits_scanned,
-                "blobs_scanned": summary.blobs_scanned,
-                "files_scanned": summary.files_scanned,
-                "findings_inserted": summary.findings_inserted,
-                "by_severity": summary.by_severity,
-                "by_kind": summary.by_kind,
-            }
+                await session.commit()
+                return {
+                    "commits_scanned": summary.commits_scanned,
+                    "blobs_scanned": summary.blobs_scanned,
+                    "files_scanned": summary.files_scanned,
+                    "findings_inserted": summary.findings_inserted,
+                    "by_severity": summary.by_severity,
+                    "by_kind": summary.by_kind,
+                }
 
-    result = run_async(_do())
+        result = run_async(_do())
 
-    if output_format == "json":
-        emit_json(result)
-        return
+        if output_format == "json":
+            emit_json(result)
+            return
 
-    console.print(f"[bold]repowise security scan --history[/bold] — {repo_path}")
-    console.print(f"  Commits scanned: {result['commits_scanned']}")
-    console.print(f"  Blobs scanned:   {result['blobs_scanned']}")
-    console.print(f"  Files scanned:   {result['files_scanned']}")
-    console.print(f"  Findings stored: {result['findings_inserted']}")
-    if result["by_severity"]:
-        sev = ", ".join(f"{k}={v}" for k, v in sorted(result["by_severity"].items()))
-        console.print(f"  By severity:     {sev}")
-    if result["by_kind"]:
-        kinds = ", ".join(f"{k}={v}" for k, v in sorted(result["by_kind"].items()))
-        console.print(f"  By kind:         {kinds}")
-    console.print(
-        "\nFindings are written to the security_findings table and show up in "
-        "`repowise server`'s security API and UI. Re-running is idempotent."
-    )
+        console.print(f"[bold]repowise security scan --history[/bold] — {repo_path}")
+        console.print(f"  Commits scanned: {result['commits_scanned']}")
+        console.print(f"  Blobs scanned:   {result['blobs_scanned']}")
+        console.print(f"  Files scanned:   {result['files_scanned']}")
+        console.print(f"  Findings stored: {result['findings_inserted']}")
+        if result["by_severity"]:
+            sev = ", ".join(f"{k}={v}" for k, v in sorted(result["by_severity"].items()))
+            console.print(f"  By severity:     {sev}")
+        if result["by_kind"]:
+            kinds = ", ".join(f"{k}={v}" for k, v in sorted(result["by_kind"].items()))
+            console.print(f"  By kind:         {kinds}")
+        console.print(
+            "\nFindings are written to the security_findings table and show up in "
+            "`repowise server`'s security API and UI. Re-running is idempotent."
+        )

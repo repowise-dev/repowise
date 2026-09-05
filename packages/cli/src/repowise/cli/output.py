@@ -85,9 +85,9 @@ def _silence_when_machine_readable(ctx: Any, param: Any, value: str) -> str:
     a module that logs on import.
     """
     if value != "table":
-        from repowise.cli.helpers import silence_logs_for_machine_output
+        from repowise.cli.helpers import silence_logs_for_machine_output_until_close
 
-        silence_logs_for_machine_output()
+        silence_logs_for_machine_output_until_close()
     return value
 
 
@@ -121,9 +121,9 @@ def _silence_when_alias_selects_json(ctx: Any, param: Any, value: bool) -> bool:
     the one a legacy caller asked for.
     """
     if value:
-        from repowise.cli.helpers import silence_logs_for_machine_output
+        from repowise.cli.helpers import silence_logs_for_machine_output_until_close
 
-        silence_logs_for_machine_output()
+        silence_logs_for_machine_output_until_close()
     return value
 
 

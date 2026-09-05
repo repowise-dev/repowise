@@ -35,7 +35,7 @@ from repowise.cli.helpers import (
     rotate_update_log_if_needed,
     run_async,
     save_state,
-    silence_logs_for_machine_output,
+    silence_logs_for_machine_output_until_close,
     try_acquire_update_lock,
     write_update_pending,
 )
@@ -606,7 +606,7 @@ def run_update(
     # into whatever runs next in the same process.
     emitter: JsonProgressEmitter | None = None
     if progress == "json":
-        silence_logs_for_machine_output()
+        silence_logs_for_machine_output_until_close()
         console.file = sys.stderr
         # Restore to None (rather than a captured file object) so `console`
         # goes back to resolving sys.stdout dynamically on each print, its
